@@ -23,7 +23,6 @@ import {
 	type files_nodes_WriteContext,
 	files_nodes_writer_matches_policy,
 } from "../server/files-write-policy.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
@@ -581,7 +580,6 @@ export const archive_plugin_path = internalMutation({
 				nodeIds: [node._id, ...activeDescendants.map((descendant) => descendant._id)],
 				updatedBy: args.userId,
 				now,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 
 			return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
@@ -630,7 +628,6 @@ export const archive_plugin_path = internalMutation({
 			nodeIds: [node._id],
 			updatedBy: args.userId,
 			now,
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		});
 
 		return Result({ _yay: { archivedNodes: 1 } });

@@ -703,7 +703,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("moveCohortId", undefined)
 						.gte("treePath", `/${first.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${first.pluginVersionId}/`)),
 				)
@@ -1780,7 +1781,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/meetings/meeting-1")
 						.eq("archiveOperationId", null),
 				)
@@ -2368,7 +2370,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/media/locked-note.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2415,7 +2418,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/locked-source-summary.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2636,7 +2640,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", "root")
 						.eq("name", "plugin-live-image-20260702t011841z.png.description.md")
 						.eq("archiveOperationId", null),
@@ -3169,7 +3174,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/expired.png.md")
 						.eq("archiveOperationId", null),
 				)
@@ -7516,7 +7522,8 @@ describe("plugins metadata file doors", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)
@@ -9331,6 +9338,34 @@ describe("plugins metadata file doors", () => {
 					role: "admin",
 				}),
 			).toEqual({ _yay: null });
+			if (change === "readers") {
+				// A plugin binds only a restricted folder. A Files manager restricts it first.
+				const open = await door_call({
+					t,
+					path: "/api/v1/files/plugin-access/set",
+					apiToken: run.apiToken,
+					body: { path: "/member-folder", access },
+				});
+				expect(open.status).toBe(409);
+				expect(await open.json()).toEqual({
+					message: "Restrict this item first, then a plugin can decide who reads it",
+				});
+				expect(
+					await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+						membershipId: fixture.membership.membershipId,
+						nodeId,
+					}),
+				).toEqual({ _yay: null });
+				expect(
+					await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+						membershipId: fixture.membership.membershipId,
+						nodeId,
+						principal: { kind: "user", userId: member.userId },
+						level: "manage",
+					}),
+				).toEqual({ _yay: null });
+				await grant_file_account(fixture, nodeId);
+			}
 			const accepted = await door_call({
 				t,
 				path: "/api/v1/files/plugin-access/set",
@@ -9437,11 +9472,11 @@ describe("plugins metadata file doors", () => {
 		).toBe(200);
 	});
 
-	// A folder's lock and binding change only the folder. /probe/sub inherits the /probe scope, so the binding
-	// restricts it and cascades. The cascade stops at the nested restricted folder, so the member needs manage
-	// on the folder only, like the Properties setter.
+	// A folder's lock changes only the folder, so the member needs manage on the folder only, like the
+	// Properties setter. A binding decides the readers of the whole folder, so it refuses a folder that holds
+	// a restricted folder.
 	test.each(["lock", "binding"] as const)(
-		"the access door changes the folder %s without manage permission on a nested scope",
+		"the access door changes the folder %s without manage permission on a nested scope, or refuses the binding",
 		async (change) => {
 			const t = test_convex();
 			const fixture = await install_file_doors_plugin(t);
@@ -9464,8 +9499,9 @@ describe("plugins metadata file doors", () => {
 			const sub = (await find_active_node({ t, fixture, path: "/probe/sub" }))!;
 			const nested = (await find_active_node({ t, fixture, path: "/probe/sub/nested" }))!;
 
+			// A plugin binds only a restricted folder, so the binding case restricts /probe/sub in place of /probe.
 			for (const [nodeId, level] of [
-				[root._id, "manage"],
+				[change === "binding" ? sub._id : root._id, "manage"],
 				[nested._id, "write"],
 			] as const) {
 				expect(
@@ -9511,18 +9547,18 @@ describe("plugins metadata file doors", () => {
 					access: change === "lock" ? { readOnly: true } : { readScopeId: "private" },
 				},
 			});
-			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ nodeId: sub._id });
-
 			if (change === "lock") {
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({ nodeId: sub._id });
 				expect((await t.run((ctx) => ctx.db.get("files_nodes", sub._id)))?.writePolicy).toMatchObject({
 					mode: "writer",
 				});
 			} else {
-				expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toEqual([
-					expect.objectContaining({ nodeId: sub._id, scopeId: "private" }),
-				]);
-				expect((await t.run((ctx) => ctx.db.get("files_nodes", sub._id)))?.restrictedScopeNodeId).toBe(sub._id);
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({
+					message: "A folder inside has its own restricted access, so a plugin cannot decide who reads this folder",
+				});
+				expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toEqual([]);
 			}
 			expect(
 				await t.run(async (ctx) => ({
@@ -9532,11 +9568,7 @@ describe("plugins metadata file doors", () => {
 						.collect()
 						.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
 				})),
-			).toEqual({
-				...nestedBefore,
-				// The binding restricts /probe/sub, so the nested root now points at it as its parent area.
-				node: { ...nestedBefore.node, parentScopeNodeId: change === "binding" ? sub._id : root._id },
-			});
+			).toEqual(nestedBefore);
 		},
 	);
 
@@ -10412,7 +10444,8 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("moveCohortId", undefined)
 							.gte("treePath", `/${version._id}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${version._id}/`)),
 					)
@@ -10439,7 +10472,8 @@ describe("plugins admin hard delete", () => {
 						.withIndex("by_organization_workspace_treePath", (q) =>
 							q
 								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+								.eq("moveCohortId", undefined)
 								.gte("treePath", `/${registered.pluginVersionId}/`)
 								.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 						)
@@ -10463,7 +10497,8 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("moveCohortId", undefined)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
@@ -11873,7 +11908,8 @@ describe("plugins admin hard delete", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined),
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("moveCohortId", undefined),
 				)
 				.collect(),
 		);

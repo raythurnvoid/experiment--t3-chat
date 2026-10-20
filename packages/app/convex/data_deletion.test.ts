@@ -4386,7 +4386,6 @@ describe("process_workspace_deletion_request", () => {
 				nodeId,
 				token: "a".repeat(64),
 				restrictedScopeNodeId: null,
-				ancestorNodeIds: [],
 				createdBy: db.userId,
 				createdAt: Date.now(),
 			});
@@ -6286,7 +6285,11 @@ describe("process_workspace_deletion_request", () => {
 			workspaceId: user.defaultWorkspaceId,
 			userId: user.userId,
 		};
-		const nodeId = await data_deletion_test_seed_shared_folder(t, { ...scope, readerIds: [user.userId], name: "shared" });
+		const nodeId = await data_deletion_test_seed_shared_folder(t, {
+			...scope,
+			readerIds: [user.userId],
+			name: "shared",
+		});
 		// A stray row, like one a dashboard edit leaves behind: no flush ever reaches it again.
 		await t.run(async (ctx) => {
 			const { _id, _creationTime, ...row } = (await ctx.db
@@ -6371,7 +6374,10 @@ describe("process_workspace_deletion_request", () => {
 					(["access_control_permission_grants", "files_share_rows", "files_nodes"] as const).map(
 						async (table) =>
 							(await ctx.db.query(table).collect()).filter(
-								(doc) => doc.workspaceId === scope.workspaceId && (table !== "access_control_permission_grants" || ("resourceKind" in doc && doc.resourceKind === "file")),
+								(doc) =>
+									doc.workspaceId === scope.workspaceId &&
+									(table !== "access_control_permission_grants" ||
+										("resourceKind" in doc && doc.resourceKind === "file")),
 							).length,
 					),
 				),
@@ -6418,14 +6424,16 @@ describe("process_workspace_deletion_request", () => {
 			remove: [],
 		});
 		const count_docs = () =>
-			t.run(async (ctx) =>
-				(
+			t.run(
+				async (ctx) =>
 					await Promise.all(
 						(
 							["files_metadata_catalog", "files_metadata_catalog_deltas", "files_metadata_catalog_compactors"] as const
-						).map(async (table) => (await ctx.db.query(table).collect()).filter((doc) => doc.workspaceId === scope.workspaceId).length),
-					)
-				),
+						).map(
+							async (table) =>
+								(await ctx.db.query(table).collect()).filter((doc) => doc.workspaceId === scope.workspaceId).length,
+						),
+					),
 			);
 		const [rows, deltas, markers] = await count_docs();
 		expect(rows).toBeGreaterThan(0);

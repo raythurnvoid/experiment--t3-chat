@@ -5,14 +5,24 @@ import type { FunctionArgs } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_apply_file_pending_move, test_convex, test_rename_node, test_move_nodes, test_finish_pending_update_run, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
-import { files_media_validation_db_advance_version, files_media_validation_db_capture_versions } from "./files_media_validation.ts";
+import {
+	test_apply_file_pending_move,
+	test_convex,
+	test_rename_node,
+	test_move_nodes,
+	test_finish_pending_update_run,
+	test_create_saved_text_file,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
+import {
+	files_media_validation_db_advance_version,
+	files_media_validation_db_capture_versions,
+} from "./files_media_validation.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -225,10 +235,10 @@ describe("saved file media validation clocks", () => {
 		expect(
 			(
 				await test_move_nodes(f.t, f.asUser, {
-						membershipId: f.db.membershipId,
-						itemIds: [parent],
-						targetParentId: destination,
-					})
+					membershipId: f.db.membershipId,
+					itemIds: [parent],
+					targetParentId: destination,
+				})
 			)._nay,
 		).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", parent))).toMatchObject({
@@ -492,7 +502,6 @@ describe("saved file media validation clocks", () => {
 				nodeIds: [nodeId],
 				updatedBy: f.db.userId,
 				now: Date.now(),
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			}),
 		);
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).toBeTruthy();
@@ -725,10 +734,10 @@ describe("saved file media validation clocks", () => {
 				expect(
 					(
 						await test_move_nodes(f.t, f.asUser, {
-								membershipId: scope.membershipId,
-								itemIds: [nodeId],
-								targetParentId: "root",
-							})
+							membershipId: scope.membershipId,
+							itemIds: [nodeId],
+							targetParentId: "root",
+						})
 					)._nay,
 				).toBeUndefined();
 				break;

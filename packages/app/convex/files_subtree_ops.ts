@@ -56,9 +56,6 @@ export const files_subtree_ops_STEP_MAX_NODES = 75;
  * `files_subtree_ops_db_find_blocker` stops at the first op that blocks any path, so it cannot tell
  * which other paths a later op blocks. This reads every op of the workspace once instead. It returns
  * null past `maxOps` ops, because a partial scan could miss a blocker.
- *
- * `beforeNextRead` is called before each read, with the op read last or null before the first read.
- * When it returns false, the scan stops and returns null.
  */
 export async function files_subtree_ops_db_find_blocked_paths(
 	ctx: QueryCtx | MutationCtx,
@@ -67,12 +64,10 @@ export async function files_subtree_ops_db_find_blocked_paths(
 		workspaceId: Id<"organizations_workspaces">;
 		treePaths: readonly string[];
 		maxOps: number;
-		beforeNextRead?: (lastOp: Doc<"files_subtree_ops"> | null) => boolean;
 	},
 ) {
 	const blocked = args.treePaths.map(() => false);
 	let opCount = 0;
-	if (args.beforeNextRead?.(null) === false) return null;
 	for await (const op of ctx.db
 		.query("files_subtree_ops")
 		.withIndex("by_organization_workspace_kind", (q) =>
@@ -85,8 +80,6 @@ export async function files_subtree_ops_db_find_blocked_paths(
 		for (const [index, treePath] of args.treePaths.entries()) {
 			blocked[index] ||= busyPaths.some((busyPath) => tree_paths_overlap(busyPath, treePath));
 		}
-
-		if (args.beforeNextRead?.(op) === false) return null;
 	}
 	return blocked;
 }
@@ -134,7 +127,8 @@ async function db_read_children(
 			.withIndex("by_organization_workspace_parent_name", (q) =>
 				q
 					.eq("organizationId", folder.organizationId)
-					.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", folder.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("parentId", folder._id)
 					.eq("name", cursor.name)
 					.eq("_creationTime", cursor.creationTime),
@@ -156,7 +150,8 @@ async function db_read_children(
 					.withIndex("by_organization_workspace_parent_name", (q) =>
 						q
 							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", folder.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("parentId", folder._id),
 					)
 					.take(PAGE_SIZE + 1)
@@ -165,7 +160,8 @@ async function db_read_children(
 					.withIndex("by_organization_workspace_parent_name", (q) =>
 						q
 							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", folder.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("parentId", folder._id)
 							.eq("name", cursor.name)
 							.gt("_creationTime", cursor.creationTime),
@@ -180,7 +176,8 @@ async function db_read_children(
 				.withIndex("by_organization_workspace_parent_name", (q) =>
 					q
 						.eq("organizationId", folder.organizationId)
-						.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", folder.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", folder._id)
 						.gt("name", cursor.name),
 				)

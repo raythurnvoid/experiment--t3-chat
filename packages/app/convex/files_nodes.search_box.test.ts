@@ -105,7 +105,12 @@ describe("search box doors", () => {
 				name: "files_search_metadata",
 				key: seeded.db.userId,
 			});
-			return await search_saved_plans({ asWho: seeded.asOwner, membershipId: seeded.db.membershipId, plans, folderPath });
+			return await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans,
+				folderPath,
+			});
 		};
 
 		// `status:open` from either metadata kind: the open task, the fixed task through its map, the archive.
@@ -696,7 +701,6 @@ describe("search box doors", () => {
 					nodeId,
 					token: `token-${nodeId}`,
 					restrictedScopeNodeId: null,
-					ancestorNodeIds: [],
 					createdBy: seeded.db.userId,
 					createdAt: Date.now(),
 				});
@@ -864,7 +868,6 @@ describe("search box locked hits", () => {
 					nodeId,
 					token: `token-${nodeId}`,
 					restrictedScopeNodeId: null,
-					ancestorNodeIds: [],
 					createdBy: seeded.db.userId,
 					createdAt: Date.now(),
 				});

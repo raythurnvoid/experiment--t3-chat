@@ -1,21 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
-import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import type { Doc, Id } from "./_generated/dataModel.js";
+import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with, test_move_nodes } from "./setup.test.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
-import {
-	files_share_links_create_cleanup_state,
-	files_share_links_db_delete_for_roots,
-	files_share_links_MAX_PER_WORKSPACE,
-} from "./files_share_links_db.ts";
+import { files_share_links_db_delete_for_scope, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { organizations_db_create_workspace } from "./organizations.ts";
+import { plugins_data_db_prepare_file_access_binding } from "./plugins_data.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import {
-	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-	organizations_GLOBAL_ORGANIZATION_ID,
-} from "../shared/organizations.ts";
 import {
 	mock_share_storage,
 	fixture,
@@ -25,20 +18,11 @@ import {
 	seed_big_folder,
 	read_links,
 	link_on,
-	insert_media_file,
 	insert_restricted_folder,
+	restrict_and_bind,
 	view_of,
+	type Fixture,
 } from "./files_share_links.setup.test.ts";
-
-// Record the cleanup state that each link delete gets, so a batch test can check that the batch loads the
-// workspace links only once.
-vi.mock("./files_share_links_db.ts", async (importOriginal) => {
-	const original = await importOriginal<typeof import("./files_share_links_db.ts")>();
-	return {
-		...original,
-		files_share_links_db_delete_for_roots: vi.fn(original.files_share_links_db_delete_for_roots),
-	};
-});
 
 beforeEach(mock_share_storage);
 
@@ -91,7 +75,6 @@ describe("set_node_share_link", () => {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			restrictedScopeNodeId: null,
-			ancestorNodeIds: [],
 		});
 	});
 
@@ -243,37 +226,30 @@ describe("set_node_share_link", () => {
 		const nodeId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/team/notes.md" });
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		const folderId = node!.parentId as Id<"files_nodes">;
-		const installationId = await insert_installation(f);
-		const bindingId = await f.t.run(async (ctx) => {
-			return await ctx.db.insert("plugins_file_access_bindings", {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				installationId,
-				scopeId: "team",
-				nodeId,
-				updatedAt: Date.now(),
-			});
-		});
-		const turn_on = () =>
-			f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		const turn_on = async (nodeId: Id<"files_nodes">) => {
+			await reset_rate_limits(f.t, [f.db.userId]);
+			return await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
 				membershipId: f.db.membershipId,
 				nodeId,
 				enabled: true,
 			});
+		};
 
 		// A plugin can bind one file, not only a folder.
-		expect((await turn_on())._nay?.message).toBe(
+		const installationId = await restrict_and_bind(f, f.nodeId);
+		expect((await turn_on(f.nodeId))._nay?.message).toBe(
 			"A plugin decides who can read this file, so it cannot have a public link",
 		);
 
-		await f.t.run((ctx) => ctx.db.patch("plugins_file_access_bindings", bindingId, { nodeId: folderId }));
-		expect((await turn_on())._nay?.message).toBe(
+		await restrict_and_bind(f, folderId);
+		expect((await turn_on(nodeId))._nay?.message).toBe(
 			"A plugin decides who can read this file, so it cannot have a public link",
 		);
 
-		await f.t.run((ctx) => ctx.db.delete("plugins_file_access_bindings", bindingId));
-		expect(await turn_on()).toEqual({ _yay: null });
-		expect((await read_links(f.t, nodeId))[0]?.ancestorNodeIds).toEqual([folderId]);
+		// A detach keeps the folder restricted, and the plugin no longer decides its readers.
+		await apply_binding(f, { installationId, folderId: f.nodeId, readScopeId: null });
+		expect(await turn_on(f.nodeId)).toEqual({ _yay: null });
+		expect((await read_links(f.t, f.nodeId))[0]?.restrictedScopeNodeId).toBe(f.nodeId);
 	});
 
 	test("refuses a file in a plugin's external folder until a human sharing change detaches it", async () => {
@@ -281,6 +257,12 @@ describe("set_node_share_link", () => {
 		const nodeId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/out/report.md" });
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		const folderId = node!.parentId as Id<"files_nodes">;
+		// The plugin's external folder writer makes a new restricted folder for its binding.
+		await reset_rate_limits(f.t, [f.db.userId]);
+		expect(
+			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderId }))
+				._nay,
+		).toBeUndefined();
 		const installationId = await insert_installation(f);
 		const bindingId = await f.t.run(async (ctx) => {
 			const writerId = await ctx.db.insert("plugins_external_file_writers", {
@@ -369,31 +351,48 @@ describe("set_node_share_link", () => {
 		expect(await on()).toEqual({ _yay: null });
 	});
 
-	test("uses the live scope while a restrict op still runs, and Off still works", async () => {
-		const f = await fixture({ memberRole: "admin" });
+	test("refuses while the file stores a folder that is no longer restricted, and Off still works", async () => {
+		const f = await fixture();
 		const { nodeId, folderId } = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		const args = { membershipId: f.db.membershipId, nodeId: folderId };
+		expect((await f.asOwner.mutation(api.files_sharing.restrict_node, args))._nay).toBeUndefined();
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 
-		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: folderId,
-		});
-		expect(restricted._nay).toBeUndefined();
-		// The file still stores the old open scope. Only the live walk sees the restricted folder.
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBeNull();
-
-		const args = { membershipId: f.memberMembershipId, nodeId };
-		const refused = await f.asMember.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: true });
-		expect(refused._nay?.message).toBe("Permission denied");
+		// The unrestrict job stops before the file, so the file still stores the old restricted folder.
+		await reset_rate_limits(f.t, [f.db.userId]);
+		expect((await f.asOwner.mutation(api.files_sharing.unrestrict_node, args))._nay).toBeUndefined();
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBe(folderId);
 
 		await reset_rate_limits(f.t, [f.db.userId]);
-		const ownerArgs = { membershipId: f.db.membershipId, nodeId };
-		const busy = await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...ownerArgs, enabled: true });
-		expect(busy._nay?.message).toBe("Wait until the running file job finishes");
+		const fileArgs = { membershipId: f.db.membershipId, nodeId };
+		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...fileArgs, enabled: true });
+		expect(refused._nay?.message).toBe("Wait until the access change of a folder above finishes");
 		expect(await read_links(f.t, nodeId)).toHaveLength(0);
-
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...ownerArgs, enabled: false })).toEqual({
+		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...fileArgs, enabled: false })).toEqual({
 			_yay: null,
 		});
+
+		// Control: once the job reaches the file, the same file gets its link.
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		await link_on(f, nodeId);
+	});
+
+	test("allows a link on a file that a restrict job has not reached yet, and the job ends it", async () => {
+		const f = await fixture();
+		const { nodeId, folderId } = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		expect(
+			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderId }))
+				._nay,
+		).toBeUndefined();
+		// The file still stores the open scope. Its link works until the job writes the file.
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBeNull();
+		const link = await link_on(f, nodeId);
+		expect(link.restrictedScopeNodeId).toBeNull();
+
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBe(folderId);
+		expect(await read_links(f.t, nodeId)).toEqual([]);
+		expect(await view_of(f, link.token)).toBeNull();
 	});
 
 	test("refuses past the workspace link limit", async () => {
@@ -407,7 +406,6 @@ describe("set_node_share_link", () => {
 					nodeId: f.nodeId,
 					token: `filler-${index}`,
 					restrictedScopeNodeId: null,
-					ancestorNodeIds: [],
 					createdBy: f.db.userId,
 					createdAt: Date.now(),
 				});
@@ -427,14 +425,14 @@ describe("set_node_share_link", () => {
 		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, args)).toEqual({ _yay: null });
 	});
 
-	test("works under 64 folders, refuses under 65, shows a shallower image after a too-deep one, and restricting the top folder ends the deep link", async () => {
+	test("works under 100 folders", async () => {
 		const f = await fixture();
-		// A chain of 65 folders, `/d00/d01/.../d64`. Seeded directly, because only the depth matters here.
+		// A chain of 100 folders, `/d00/d01/.../d99`. Seeded directly, because only the depth matters here.
 		const folderIds = await f.t.run(async (ctx) => {
 			const ids: Id<"files_nodes">[] = [];
 			let parentId: Id<"files_nodes"> | "root" = "root";
 			let path = "";
-			for (let index = 0; index < 65; index++) {
+			for (let index = 0; index < 100; index++) {
 				const name = `d${String(index).padStart(2, "0")}`;
 				path = `${path}/${name}`;
 				const folderId: Id<"files_nodes"> = await ctx.db.insert("files_nodes", {
@@ -467,81 +465,38 @@ describe("set_node_share_link", () => {
 					pathDepth: folder.pathDepth + 1,
 				});
 			});
-		const deeperId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/deeper.md" });
-		await place_under(f.nodeId, folderIds[63]!);
-		await place_under(deeperId, folderIds[64]!);
+		await place_under(f.nodeId, folderIds[99]!);
 
+		// No check walks the folders above, so the depth does not matter.
 		const link = await link_on(f, f.nodeId);
-		expect(link.ancestorNodeIds).toHaveLength(64);
 		expect(await view_of(f, link.token)).not.toBeNull();
-
-		// The live scope walk stops past 64 folders, so the file looks missing.
-		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
-			membershipId: f.db.membershipId,
-			nodeId: deeperId,
-			enabled: true,
-		});
-		expect(refused._nay?.message).toBe("Not found");
-		expect(await read_links(f.t, deeperId)).toEqual([]);
-
-		// The too-deep image is read first. It must not hide a shallower image in the same folders.
-		const insert_image = async (folderId: Id<"files_nodes">, name: string) => {
-			const folder = (await f.t.run((ctx) => ctx.db.get("files_nodes", folderId)))!;
-			return await insert_media_file(f, {
-				parentId: folderId,
-				path: `${folder.path}/${name}`,
-				contentType: "image/png",
-			});
-		};
-		const deepImageId = await insert_image(folderIds[64]!, "deep.png");
-		const shallowImageId = await insert_image(folderIds[10]!, "shallow.png");
-		const galleryId = await test_create_saved_text_file(f.t, {
-			membershipId: f.db.membershipId,
-			path: "/gallery.md",
-			textContent: `![a](bonobo-file://${deepImageId})\n\n![b](bonobo-file://${shallowImageId})`,
-		});
-		const gallery = await view_of(f, (await link_on(f, galleryId)).token);
-		expect(gallery?.media.map((item) => item.available)).toEqual([false, true]);
-
-		await reset_rate_limits(f.t, [f.db.userId]);
-		expect(
-			(
-				await f.asOwner.mutation(api.files_sharing.restrict_node, {
-					membershipId: f.db.membershipId,
-					nodeId: folderIds[0]!,
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(await read_links(f.t, f.nodeId)).toEqual([]);
-		expect(await view_of(f, link.token)).toBeNull();
 	});
 });
 
 describe("files_nodes_db_set_restricted_scope", () => {
-	test("restricting a folder ends the links below it before its job reaches them, and opening it again does not bring them back", async () => {
+	test("opening a restricted folder ends the links inside before its job reaches them, and restricting it again does not bring them back", async () => {
 		const f = await fixture();
 		const { nodeId, folderId } = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		const args = { membershipId: f.db.membershipId, nodeId: folderId };
+		expect((await f.asOwner.mutation(api.files_sharing.restrict_node, args))._nay).toBeUndefined();
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 		const link = await link_on(f, nodeId);
+		expect(link.restrictedScopeNodeId).toBe(folderId);
 		const outside = await link_on(f, f.nodeId);
 
 		await reset_rate_limits(f.t, [f.db.userId]);
-		const args = { membershipId: f.db.membershipId, nodeId: folderId };
-		expect((await f.asOwner.mutation(api.files_sharing.restrict_node, args))._nay).toBeUndefined();
-		// The job has not reached the file yet, so only the folder root hook can have deleted the link.
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBeNull();
+		expect((await f.asOwner.mutation(api.files_sharing.unrestrict_node, args))._nay).toBeUndefined();
+		// The job has not reached the file yet, so only the folder's own scope change can have deleted the link.
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBe(folderId);
 		expect(await read_links(f.t, nodeId)).toEqual([]);
 		expect(await read_links(f.t, f.nodeId)).toEqual([outside]);
 		expect(await view_of(f, link.token)).toBeNull();
 
-		// Opening the folder again before the job reaches the file does not bring the old link back.
+		// Restricting again makes the stored scope live again. A link that survived would show.
 		await reset_rate_limits(f.t, [f.db.userId]);
-		expect((await f.asOwner.mutation(api.files_sharing.unrestrict_node, args))._nay).toBeUndefined();
-		expect(await read_links(f.t, nodeId)).toEqual([]);
-
-		// Both jobs reach the file later and find an open folder, so they do not change its scope. The old
-		// token must still show nothing.
+		expect((await f.asOwner.mutation(api.files_sharing.restrict_node, args))._nay).toBeUndefined();
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBeNull();
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBe(folderId);
 		expect(await read_links(f.t, nodeId)).toEqual([]);
 		expect(await view_of(f, link.token)).toBeNull();
 
@@ -550,7 +505,7 @@ describe("files_nodes_db_set_restricted_scope", () => {
 		expect(await view_of(f, fresh.token)).not.toBeNull();
 	});
 
-	test("a scope write that changes nothing keeps the link", async () => {
+	test("a scope write that changes nothing keeps the link, and a real change ends it", async () => {
 		const f = await fixture();
 		const link = await link_on(f, f.nodeId);
 		const set_scope = (restrictedScopeNodeId: Id<"files_nodes"> | null) =>
@@ -561,7 +516,6 @@ describe("files_nodes_db_set_restricted_scope", () => {
 					workspaceId: f.db.workspaceId,
 					nodeId: f.nodeId,
 					restrictedScopeNodeId,
-					shareLinkCleanup: files_share_links_create_cleanup_state(),
 				}),
 			);
 
@@ -574,7 +528,7 @@ describe("files_nodes_db_set_restricted_scope", () => {
 });
 
 describe("create_upload_nodes", () => {
-	test("a replacing batch ends the replaced links with one cleanup, and a locked file keeps its link", async () => {
+	test("a replacing batch ends the replaced links, and a locked file keeps its link", async () => {
 		const f = await fixture();
 		const otherId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/other.md" });
 		const lockedId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/locked.md" });
@@ -589,8 +543,6 @@ describe("create_upload_nodes", () => {
 			}),
 		).toEqual({ _yay: null });
 		await reset_rate_limits(f.t, [f.db.userId]);
-		const deleteForRoots = vi.mocked(files_share_links_db_delete_for_roots);
-		deleteForRoots.mockClear();
 
 		const uploaded = await f.asOwner.mutation(api.files_nodes.create_upload_nodes, {
 			membershipId: f.db.membershipId,
@@ -604,13 +556,11 @@ describe("create_upload_nodes", () => {
 		});
 		expect(uploaded._yay?.skipped).toEqual([{ relativePath: "locked.md", reason: "conflict" }]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([kept]);
-		expect(new Set(deleteForRoots.mock.calls.map(([call]) => call.state)).size).toBe(1);
-		expect(deleteForRoots).toHaveBeenCalledTimes(2);
 	});
 });
 
 describe("create_file_upload_targets", () => {
-	test("a replacing API batch ends the replaced links with one cleanup", async () => {
+	test("a replacing API batch ends the replaced links", async () => {
 		const f = await fixture();
 		const otherId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/other.md" });
 		await link_on(f, f.nodeId);
@@ -626,9 +576,6 @@ describe("create_file_upload_targets", () => {
 		if (key._nay) {
 			throw new Error(key._nay.message);
 		}
-		const deleteForRoots = vi.mocked(files_share_links_db_delete_for_roots);
-		deleteForRoots.mockClear();
-
 		const created = await f.t.mutation(internal.public_api.create_file_upload_targets, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -640,8 +587,6 @@ describe("create_file_upload_targets", () => {
 		});
 		expect(created._nay).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([]);
-		expect(new Set(deleteForRoots.mock.calls.map(([call]) => call.state)).size).toBe(1);
-		expect(deleteForRoots).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -662,35 +607,11 @@ describe("create_upload_node", () => {
 	});
 });
 
-describe("files_share_links_db_delete_for_roots", () => {
-	test("loads the workspace links once per cleanup state and skips scopes that cannot have links", async () => {
-		const f = await fixture();
-		const otherId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/other.md" });
-		await link_on(f, f.nodeId);
-		await link_on(f, otherId);
-
-		const linkQueries = await f.t.run(async (ctx) => {
-			const query = vi.spyOn(ctx.db, "query");
-			const state = files_share_links_create_cleanup_state();
-			const tenant = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId };
-			await files_share_links_db_delete_for_roots({ ctx, ...tenant, rootNodeIds: [f.nodeId], state });
-			await files_share_links_db_delete_for_roots({ ctx, ...tenant, rootNodeIds: [f.nodeId, otherId], state });
-			await files_share_links_db_delete_for_roots({
-				ctx,
-				organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-				workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-				rootNodeIds: [f.nodeId],
-				state: files_share_links_create_cleanup_state(),
-			});
-			return query.mock.calls.filter(([table]) => table === "files_share_links").length;
-		});
-		expect(linkQueries).toBe(1);
-		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([]);
-	});
-
-	test("reads every link a workspace may hold", async () => {
+describe("files_share_links_db_delete_for_scope", () => {
+	test("deletes every link a workspace may hold in one scope, and only that scope", async () => {
 		const f = await fixture();
 		const folderId = await insert_restricted_folder(f, "team");
+		const kept = await link_on(f, f.nodeId);
 		// Seeded directly: 500 links through `set_node_share_link` would also pay its rate limit.
 		await f.t.run(async (ctx) => {
 			for (let index = 0; index < files_share_links_MAX_PER_WORKSPACE; index++) {
@@ -716,7 +637,6 @@ describe("files_share_links_db_delete_for_roots", () => {
 					nodeId,
 					token: index.toString(16).padStart(64, "0"),
 					restrictedScopeNodeId: folderId,
-					ancestorNodeIds: [folderId],
 					createdBy: f.db.userId,
 					createdAt: Date.now(),
 				});
@@ -724,46 +644,137 @@ describe("files_share_links_db_delete_for_roots", () => {
 		});
 
 		await f.t.run((ctx) =>
-			files_share_links_db_delete_for_roots({
-				ctx,
+			files_share_links_db_delete_for_scope(ctx, {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
-				rootNodeIds: [folderId],
-				state: files_share_links_create_cleanup_state(),
+				scopeNodeId: folderId,
 			}),
 		);
-		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_share_links").collect())).toEqual([kept]);
+	});
+});
+
+/**
+ * Restrict the folder of a new file at `${path}/notes.md` and let its scope job end.
+ */
+async function restricted_folder(f: Fixture, path: string) {
+	const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: `${path}/notes.md` });
+	const folderId = (await f.t.run((ctx) => ctx.db.get("files_nodes", fileId)))!.parentId as Id<"files_nodes">;
+	await reset_rate_limits(f.t, [f.db.userId]);
+	expect(
+		(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderId }))
+			._nay,
+	).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	return { fileId, folderId };
+}
+
+describe("plugins_data_db_prepare_file_access_binding", () => {
+	async function prepare_for(f: Fixture) {
+		const installationId = await insert_installation(f);
+		return (nodeId: Id<"files_nodes">) =>
+			f.t.run(async (ctx) => {
+				const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+				return await plugins_data_db_prepare_file_access_binding(ctx, { installation, nodeId, readScopeId: "team" });
+			});
+	}
+
+	test("binds only a restricted node whose job has ended and that holds no other restricted folder", async () => {
+		const f = await fixture();
+		const prepare = await prepare_for(f);
+
+		// A file holds nothing, so it binds in one step.
+		expect((await prepare(f.nodeId))._nay).toBeUndefined();
+		const open = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: "root",
+			path: "open",
+		});
+		expect((await prepare(open._yay!.nodeId))._nay?.message).toBe(
+			"Restrict this item first, then a plugin can decide who reads it",
+		);
+
+		const big = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: big.folderId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await prepare(big.folderId))._nay?.message).toBe("Wait until the access change of this folder finishes");
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect((await prepare(big.folderId))._nay).toBeUndefined();
+
+		const team = await restricted_folder(f, "/team");
+		await restricted_folder(f, "/team/inner");
+		expect((await prepare(team.folderId))._nay?.message).toBe(
+			"A folder inside has its own restricted access, so a plugin cannot decide who reads this folder",
+		);
+	});
+
+	// A Move holds its folders only in the "before" and "after" views until it ends.
+	test("sees a restricted folder that a Move holds, on the way in and on the way out", async () => {
+		const f = await fixture();
+		const prepare = await prepare_for(f);
+		const team = await restricted_folder(f, "/team");
+		const moving = await restricted_folder(f, "/a/private");
+		const message = "A folder inside has its own restricted access, so a plugin cannot decide who reads this folder";
+		let heldSteps = 0;
+		const move = async (targetParentId: Doc<"files_nodes">["parentId"]) => {
+			await reset_rate_limits(f.t, [f.db.userId]);
+			return await test_move_nodes(f.t, f.asOwner, {
+				membershipId: f.db.membershipId,
+				itemIds: [moving.folderId],
+				targetParentId,
+				onStep: async () => {
+					if ((await f.t.run((ctx) => ctx.db.get("files_nodes", moving.folderId)))?.moveCohortId === undefined) return;
+					heldSteps++;
+					expect((await prepare(team.folderId))._nay?.message).toBe(message);
+				},
+			});
+		};
+
+		expect((await prepare(team.folderId))._nay).toBeUndefined();
+		expect(await move(team.folderId)).toEqual({ _yay: null });
+		expect(heldSteps).toBeGreaterThan(0);
+		expect((await prepare(team.folderId))._nay?.message).toBe(message);
+
+		heldSteps = 0;
+		expect(await move("root")).toEqual({ _yay: null });
+		expect(heldSteps).toBeGreaterThan(0);
+		expect((await prepare(team.folderId))._nay).toBeUndefined();
 	});
 });
 
 describe("plugins_data_db_apply_file_access_binding", () => {
-	test("binding an already restricted folder ends the links below it", async () => {
+	test("binding a restricted folder ends the links in its area and keeps the others", async () => {
 		const f = await fixture();
-		const nodeId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/team/notes.md" });
-		const folderId = (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.parentId as Id<"files_nodes">;
-		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: folderId,
-		});
-		expect(restricted._nay).toBeUndefined();
-		await link_on(f, nodeId);
+		const team = await restricted_folder(f, "/team");
+		const other = await restricted_folder(f, "/other");
+		await link_on(f, team.fileId);
 		const outside = await link_on(f, f.nodeId);
+		const otherLink = await link_on(f, other.fileId);
 		const installationId = await insert_installation(f);
 
-		await apply_binding(f, { installationId, folderId, readScopeId: "team" });
-		expect(await read_links(f.t, nodeId)).toEqual([]);
+		await apply_binding(f, { installationId, folderId: team.folderId, readScopeId: "team" });
+		expect(await read_links(f.t, team.fileId)).toEqual([]);
 		expect(await read_links(f.t, f.nodeId)).toEqual([outside]);
+		expect(await read_links(f.t, other.fileId)).toEqual([otherLink]);
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			membershipId: f.db.membershipId,
+			nodeId: team.fileId,
+			enabled: true,
+		});
+		expect(refused._nay?.message).toBe("A plugin decides who can read this file, so it cannot have a public link");
 	});
 
-	test("a detach after binding an already restricted folder does not bring the old link back", async () => {
+	test("a detach after binding a restricted folder does not bring the old link back", async () => {
 		const f = await fixture();
-		const nodeId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/team/notes.md" });
-		const folderId = (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.parentId as Id<"files_nodes">;
-		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: folderId,
-		});
-		expect(restricted._nay).toBeUndefined();
+		const { fileId: nodeId, folderId } = await restricted_folder(f, "/team");
 		const link = await link_on(f, nodeId);
 		const installationId = await insert_installation(f);
 
@@ -780,6 +791,92 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 		// Control: a new link on the same file shows, so the old token is dead only because its doc is gone.
 		const fresh = await link_on(f, nodeId);
 		expect(await view_of(f, fresh.token)).not.toBeNull();
+	});
+});
+
+describe("restrict_node", () => {
+	test("refuses inside a bound folder", async () => {
+		const f = await fixture();
+		const team = await restricted_folder(f, "/team");
+		const inner = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: team.folderId,
+			path: "inner",
+		});
+		const innerId = inner._yay!.nodeId;
+		await restrict_and_bind(f, team.folderId);
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const refused = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: f.db.membershipId,
+			nodeId: innerId,
+		});
+		expect(refused._nay?.message).toBe(
+			"A plugin decides who can read this item, so it cannot be restricted on its own",
+		);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", innerId)))?.restrictedScopeNodeId).toBe(team.folderId);
+
+		// Control: a folder outside a bound area gets restricted.
+		await restricted_folder(f, "/open");
+	});
+});
+
+describe("Move into a bound folder", () => {
+	test("refuses a restricted folder, also one inside a moved folder, and moves a plain folder", async () => {
+		const f = await fixture();
+		const team = await restricted_folder(f, "/team");
+		await restrict_and_bind(f, team.folderId);
+		const restricted = await restricted_folder(f, "/a/private");
+		const plainId = (await f.t.run((ctx) => ctx.db.get("files_nodes", restricted.folderId)))!
+			.parentId as Id<"files_nodes">;
+		const move = async (itemId: Id<"files_nodes">) => {
+			await reset_rate_limits(f.t, [f.db.userId]);
+			return await test_move_nodes(f.t, f.asOwner, {
+				membershipId: f.db.membershipId,
+				itemIds: [itemId],
+				targetParentId: team.folderId,
+			});
+		};
+		const message = "A plugin decides who can read the destination, so a restricted folder cannot move there.";
+
+		expect((await move(restricted.folderId))._nay?.message).toBe(message);
+		expect((await move(plainId))._nay?.message).toBe(message);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", plainId)))?.path).toBe("/a");
+
+		// Control: a plain folder with no restricted folder inside moves in.
+		const loose = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId: "root",
+			path: "loose",
+		});
+		expect(await move(loose._yay!.nodeId)).toEqual({ _yay: null });
+	});
+});
+
+describe("restore into a bound folder", () => {
+	test("refuses a restricted folder that comes back into a bound folder", async () => {
+		const f = await fixture();
+		const team = await restricted_folder(f, "/team");
+		const inner = await restricted_folder(f, "/team/inner");
+		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [inner.folderId],
+		});
+		expect(archived._nay).toBeUndefined();
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		// An archived folder is not in the area, so the bind is allowed.
+		await restrict_and_bind(f, team.folderId);
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const started = await f.asOwner.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [inner.folderId],
+		});
+		expect(started._nay?.message).toBe(
+			"A plugin decides who can read the folder it comes back to, so a restricted folder cannot be restored there.",
+		);
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", inner.folderId)))?.archiveOperationId).not.toBeNull();
 	});
 });
 

@@ -130,12 +130,7 @@ import { convex_error, convex_invalid_cursor_error, v_result } from "../server/c
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
-import {
-	files_share_links_create_cleanup_state,
-	files_share_links_db_delete_for_node,
-	files_share_links_db_delete_for_roots,
-	type files_share_links_CleanupState,
-} from "./files_share_links_db.ts";
+import { files_share_links_db_delete_for_node, files_share_links_db_delete_for_scope } from "./files_share_links_db.ts";
 import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
@@ -660,12 +655,9 @@ export const resolve_new_node_path = internalQuery({
  * metadata field docs get the new flag in the same transaction, and all its committed docs get the
  * new area. Archived docs too, because a restore does not rewrite the flag.
  *
- * A scope change also deletes the public links on this node and below it, now. The scope op reaches
- * the items inside later, and a restrict then unrestrict before it gets there must not bring an old
- * link back.
- *
- * Pass `null` as `shareLinkCleanup` only for a folder this mutation just created. It has no links, so
- * this skips the link scan.
+ * A scope change also deletes the node's own public link and every link whose stored scope is this
+ * node, now. The scope op reaches the items inside later, but they keep this node as their scope id
+ * until then, so no other step would delete those links.
  */
 export async function files_nodes_db_set_restricted_scope(args: {
 	ctx: MutationCtx;
@@ -673,19 +665,14 @@ export async function files_nodes_db_set_restricted_scope(args: {
 	workspaceId: Doc<"files_nodes">["workspaceId"];
 	nodeId: Id<"files_nodes">;
 	restrictedScopeNodeId: Id<"files_nodes"> | null;
-	shareLinkCleanup: files_share_links_CleanupState | null;
 }) {
-	const { ctx, shareLinkCleanup } = args;
+	const { ctx } = args;
 
 	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-	if (shareLinkCleanup && node?.restrictedScopeNodeId !== args.restrictedScopeNodeId) {
-		await files_share_links_db_delete_for_roots({
-			ctx,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			rootNodeIds: [args.nodeId],
-			state: shareLinkCleanup,
-		});
+	if (node?.restrictedScopeNodeId !== args.restrictedScopeNodeId) {
+		const { organizationId, workspaceId, nodeId } = args;
+		await files_share_links_db_delete_for_node(ctx, { organizationId, workspaceId, nodeId });
+		await files_share_links_db_delete_for_scope(ctx, { organizationId, workspaceId, scopeNodeId: nodeId });
 	}
 
 	const isRestrictedScopeRoot = args.restrictedScopeNodeId === args.nodeId;
@@ -2534,7 +2521,6 @@ export const create_upload_node = mutation({
 				nodeIds: [existingNode._id],
 				updatedBy: userAuth.id,
 				now,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 		}
 
@@ -2838,8 +2824,6 @@ export const create_upload_nodes = mutation({
 			{ node: Doc<"files_nodes"> | null; skipReason: "conflict" | "path_blocked" | null }
 		>();
 		const runnable: Array<(typeof validated)[number] & { existingNodeId: Id<"files_nodes"> | null }> = [];
-		// Share one link cleanup across the replaced files, so the workspace links load only once.
-		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		const folders = new Map<string, Doc<"files_nodes">>();
 
 		// Conflicts with nodes that already exist in the workspace are per-item skips, never call
@@ -3034,7 +3018,6 @@ export const create_upload_nodes = mutation({
 					nodeIds: [item.existingNodeId],
 					updatedBy: userAuth.id,
 					now,
-					shareLinkCleanup,
 				});
 			}
 			const assetId = await ctx.db.insert("files_r2_assets", {
@@ -3798,14 +3781,19 @@ export async function files_nodes_db_restore_node(
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
 }
 
+/**
+ * Archive the named nodes under one new archive operation.
+ *
+ * It stamps only the named nodes, and each stamp deletes that node's public link. Name a folder only
+ * with all its active descendants, or archive it through the archive run.
+ */
 export async function files_nodes_db_archive_nodes(args: {
 	ctx: MutationCtx;
 	nodeIds: Array<Id<"files_nodes">>;
 	updatedBy: Id<"users">;
 	now: number;
-	shareLinkCleanup: files_share_links_CleanupState;
 }) {
-	const { ctx, shareLinkCleanup } = args;
+	const { ctx } = args;
 
 	const archiveOperationId = crypto.randomUUID();
 	// A node named twice would schedule its saved scope job twice in parallel, and make two job docs.
@@ -3824,17 +3812,6 @@ export async function files_nodes_db_archive_nodes(args: {
 		if (proofWorkspaces.has(fileNode.workspaceId)) continue;
 		if (fileNode.kind === "folder" || (await files_media_validation_db_can_back_media(ctx, fileNode)))
 			proofWorkspaces.add(fileNode.workspaceId);
-	}
-
-	// Archive stamps only the named nodes. Delete the public links below them too, once per workspace.
-	for (const [workspaceId, organizationId] of archivedWorkspaces) {
-		await files_share_links_db_delete_for_roots({
-			ctx,
-			organizationId,
-			workspaceId,
-			rootNodeIds: fileNodes.filter((fileNode) => fileNode.workspaceId === workspaceId).map((fileNode) => fileNode._id),
-			state: shareLinkCleanup,
-		});
 	}
 
 	await Promise.all(
@@ -4026,7 +4003,6 @@ export const archive_nodes = mutation({
 				hasPaginated: false,
 			},
 			previousRunId: null,
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		});
 		if (started._nay || !started._yay) return started;
 
@@ -4152,7 +4128,6 @@ export const unarchive_nodes = mutation({
 			checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
 			hasPaginated: false,
 		};
-		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		let firstJob = null;
 		let previousJob = null;
 		for (const [archiveOperationId, topTreePath] of [...topTreePathByOperationId].toSorted((a, b) =>
@@ -4170,7 +4145,6 @@ export const unarchive_nodes = mutation({
 				treePaths: [topTreePath],
 				budget,
 				previousRunId: previousJob?.runId ?? null,
-				shareLinkCleanup,
 			});
 			if (started._nay) {
 				return started;

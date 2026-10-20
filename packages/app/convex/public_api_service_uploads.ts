@@ -24,14 +24,17 @@ import {
 } from "./access_control.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
-import { files_nodes_db_archive_nodes, files_nodes_db_hard_delete_node, files_nodes_db_set_write_policy } from "./files_nodes.ts";
+import {
+	files_nodes_db_archive_nodes,
+	files_nodes_db_hard_delete_node,
+	files_nodes_db_set_write_policy,
+} from "./files_nodes.ts";
 import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	r2_create_asset_key,
@@ -63,7 +66,10 @@ import {
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 
 // #region shared
 
@@ -1642,7 +1648,6 @@ export const delete_upload_target = internalMutation({
 				nodeIds: committedNodes.map((node) => node._id),
 				updatedBy: args.principal.actorUserId,
 				now,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 		}
 
@@ -1748,18 +1753,31 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
 		const normal = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined).eq("parentId", parentId),
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("parentId", parentId),
 			)
 			.take(remaining + 1);
-		const selected = view.cohortId === null ? [] : await ctx.db.query("files_saved_places")
-			.withIndex("by_view_parent_name_archive", (q) => q.eq("cohortId", view.cohortId)
-				.eq("view", view.view).eq("parentId", parentId)).take(remaining + 1);
+		const selected =
+			view.cohortId === null
+				? []
+				: await ctx.db
+						.query("files_saved_places")
+						.withIndex("by_view_parent_name_archive", (q) =>
+							q.eq("cohortId", view.cohortId).eq("view", view.view).eq("parentId", parentId),
+						)
+						.take(remaining + 1);
 		if (normal.length + selected.length > remaining) {
 			return null;
 		}
 		const children = [...normal];
 		for (const place of selected) {
-			const node = await files_saved_placement_db_get_node(ctx.db, place.nodeId, { cohortId: place.cohortId, view: place.view });
+			const node = await files_saved_placement_db_get_node(ctx.db, place.nodeId, {
+				cohortId: place.cohortId,
+				view: place.view,
+			});
 			if (!node) throw should_never_happen("A selected service archive node is missing", { nodeId: place.nodeId });
 			children.push(node);
 		}
@@ -2057,7 +2075,6 @@ export const archive_destination = internalMutation({
 			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
 			updatedBy: args.principal.actorUserId,
 			now,
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		});
 
 		return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });

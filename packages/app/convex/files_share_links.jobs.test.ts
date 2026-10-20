@@ -172,7 +172,8 @@ describe("public Move share links", () => {
 		).toEqual({ _yay: null });
 		expect(await read_links(f.t, nodeId)).toEqual([]);
 
-		// The link doc named only `big` as an ancestor, not `dest`. So only the move hook can end it.
+		// The link doc stores the open scope. Restricting `dest` and opening it again keep that scope, so only
+		// the move hook can end it.
 		for (const door of [api.files_sharing.restrict_node, api.files_sharing.unrestrict_node]) {
 			await reset_rate_limits(f.t, [f.db.userId]);
 			expect(
@@ -243,10 +244,12 @@ describe("archive_nodes", () => {
 		expect(await read_links(f.t, f.nodeId)).toEqual([outside]);
 	});
 
-	test("the step that ends the check ends the links before it stamps the files inside", async () => {
+	test("each apply step ends the links of the files it stamps", async () => {
 		const f = await fixture();
-		// One check step reads at most 500 nodes, and one apply step stamps at most 30. The file sorts last.
+		// One check step reads at most 500 nodes, and one apply step stamps at most 30. `a.md` sorts first and
+		// `zz.md` sorts last.
 		const { nodeId, folderId } = await seed_big_folder(f, 600);
+		const firstId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/big/a.md" });
 		// A writer list inside makes the archive run its check in the background. Without one, the request archives
 		// right away and there is no check phase to watch.
 		expect(
@@ -256,6 +259,7 @@ describe("archive_nodes", () => {
 				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
 			}),
 		).toEqual({ _yay: null });
+		const firstLink = await link_on(f, firstId);
 		const link = await link_on(f, nodeId);
 		const outside = await link_on(f, f.nodeId);
 
@@ -265,12 +269,13 @@ describe("archive_nodes", () => {
 		});
 		const runId = started._yay!.runId;
 		const read_run = () => f.t.run((ctx) => ctx.db.get("files_archive_runs", runId));
+		const read_archive = (id: Id<"files_nodes">) =>
+			f.t.run(async (ctx) => (await ctx.db.get("files_nodes", id))?.archiveOperationId);
 		expect((await read_run())?.phase).toBe("check");
 
-		// Run the steps the scheduler would run, one at a time, until the check ends.
-		for (let count = 0; (await read_run())?.phase === "check"; count++) {
+		// Run the steps the scheduler would run, one at a time, until the apply stamps `a.md`.
+		for (let count = 0; (await read_archive(firstId)) === null; count++) {
 			expect(count).toBeLessThan(10);
-			expect(await read_links(f.t, nodeId)).toEqual([link]);
 			const { opId, step } = await f.t.run(async (ctx) => {
 				const op = await ctx.db
 					.query("files_subtree_ops")
@@ -286,12 +291,18 @@ describe("archive_nodes", () => {
 		}
 		expect((await read_run())?.phase).toBe("apply");
 
-		// The apply stamps the named folder first. It has not stamped the file yet, but the link is already gone.
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", folderId)))?.archiveOperationId).not.toBeNull();
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.archiveOperationId).toBeNull();
+		// The stamped file lost its link. The file the apply has not reached still shows.
+		expect(await read_archive(nodeId)).toBeNull();
+		expect(await read_links(f.t, firstId)).toEqual([]);
+		expect(await view_of(f, firstLink.token)).toBeNull();
+		expect(await read_links(f.t, nodeId)).toEqual([link]);
+		expect(await view_of(f, link.token)).not.toBeNull();
+
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await read_archive(nodeId)).not.toBeNull();
 		expect(await read_links(f.t, nodeId)).toEqual([]);
-		expect(await read_links(f.t, f.nodeId)).toEqual([outside]);
 		expect(await view_of(f, link.token)).toBeNull();
+		expect(await read_links(f.t, f.nodeId)).toEqual([outside]);
 
 		await reset_rate_limits(f.t, [f.db.userId]);
 		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
@@ -300,7 +311,19 @@ describe("archive_nodes", () => {
 			enabled: true,
 		});
 		expect(refused._nay?.message).toBe("This file is archived");
+
+		// A restore does not bring the old links back.
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const restored = await f.asOwner.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [folderId],
+		});
+		expect(restored._nay).toBeUndefined();
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await read_archive(nodeId)).toBeNull();
+		expect(await read_links(f.t, firstId)).toEqual([]);
 		expect(await read_links(f.t, nodeId)).toEqual([]);
+		expect(await view_of(f, link.token)).toBeNull();
 	});
 
 	test("a named item that the check refuses keeps its link", async () => {

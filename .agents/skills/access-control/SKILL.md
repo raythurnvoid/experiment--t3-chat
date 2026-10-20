@@ -1260,10 +1260,8 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
   grant would not work here: the checker reads grants on the restricted scope node, so a grant on
   one file inside a restricted folder would never match, and a grant on the folder would open
   every file in it.
-- The doc also stores `restrictedScopeNodeId` (the file's live scope when the link was turned on)
-  and `ancestorNodeIds` (the folders from the parent up to the root, at most 64). The lifecycle
-  helpers use the ancestor list to find links under a folder without loading nodes. Neither field
-  leaves the server.
+- The doc also stores `restrictedScopeNodeId`, the file's stored scope when the link was turned on.
+  `by_organization_workspace_scope` finds every link of one area. The field never leaves the server.
 - `createdBy` and `createdAt` are display data. The link does not depend on the creator's
   membership, role, or account.
 - A workspace has at most 500 links (`files_share_links_MAX_PER_WORKSPACE`). This is a code bound
@@ -1275,38 +1273,41 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
 
 - It charges `files_sharing_write` first.
 - Both On and Off need an active membership and `content.permissions.manage` on the file's
-  **live** scope. `files_share_links_db_resolve_live_scope` walks `parentId` up to the root (at most
-  64 folders) and finds the nearest restricted root. The stored scope can be old while a scope job
-  runs, and a manager must not publish a file inside a folder that was just restricted.
+  **stored** scope. No check walks the folders above. While a scope job runs, a file it has not
+  reached keeps its old scope, so a manager of the old area can still turn its link on. The job
+  ends that link when it writes the file (see "Lifecycle" below).
 - On also needs all of these:
   - a signed-in user, not an anonymous one ("Sign in to create a public link"). So an anonymous
     upgrade never has to find and secure links;
-  - `content.read` on the live scope. Nobody publishes what they cannot read;
-  - every check in `files_share_links_db_check_live_file`: the node is a file, not a folder; it
-    and every folder above it are not archived; the organization and workspace are live (see
-    check 4 below); no plugin binding on the file or a folder above it; a finished asset; a
-    supported text shape; and no queued or running subtree job on the file's path;
+  - `content.read` on the stored scope. Nobody publishes what they cannot read;
+  - every check in `files_share_links_db_check_live_file`: the node is a file, not a folder, and is
+    not archived; the organization and workspace are live (see check 4 below); the scope node is
+    live (`db_check_scope`, below); a finished asset; and a supported text shape;
   - fewer than 500 links in the workspace.
-- Off needs only the live manage permission. It skips On's file checks, so a manager can turn a
-  link off while a job runs or after the file is archived. A missing link is a success.
+- `db_check_scope` reads the stored scope node and its plugin bindings, at most 5 docs. `dead`
+  means the node is gone, in another tenant, or no longer its own restricted root, and On refuses
+  with "Wait until the access change of a folder above finishes". `bound` means a plugin decides
+  who reads the area, and On refuses. A null scope is always fine.
+- Off needs only the manage permission. It skips On's file checks, so a manager can turn a link off
+  while a job runs or after the file is archived. A missing link is a success.
 - Agents, bash tools, API keys, and `/api/v1` never reach this mutation.
 - `get_node_share_state` returns `link: { token, createdBy, createdAt } | null`. Only a caller with
-  live `content.permissions.manage` gets the link. Every other reader gets `link: null`.
+  `content.permissions.manage` on the stored scope gets the link. Every other reader gets
+  `link: null`.
 
 ### What the public view checks on every read
 
 `files_share_links.get_share_link_view({ token })` never reads `ctx.auth`. Every refusal answers
 `null`, so a wrong token, a turned-off link, an archived file, and a deleted workspace look the
-same. Stored fields are not enough, because a background job updates the items inside a folder
-later. A file can still store "open" while a folder above it is already restricted or archived. So
-every read checks the live state again:
+same. **A link checks only the file's stored state and its scope node, with a fixed number of exact
+reads and no folder walk. It ends when a job writes the file, or at once for its whole area when its
+scope node changes.** So every read checks:
 
 1. The doc exists. Its node exists, is a file of the doc's organization and workspace, and is not
    archived.
-2. Every folder above the file, read by `parentId` up to the root (at most 64), exists, is a folder
-   of the same tenant, and is not archived. The live scope must equal the doc's
-   `restrictedScopeNodeId`.
-3. The file and every folder above it have no `plugins_file_access_bindings` doc and no attached
+2. The file's stored `restrictedScopeNodeId` equals the doc's.
+3. `db_check_scope` answers `ok`: the scope is null, or the scope node is a live restricted root of
+   the same tenant with no `plugins_file_access_bindings` doc and no attached
    `plugins_external_file_bindings` doc (`detachedAt === null`). A plugin reader list would be
    bypassed by a public link.
 4. The organization and workspace exist, the workspace has no `pluginDataPurgeStartedAt`, and
@@ -1315,14 +1316,16 @@ every read checks the live state again:
 5. The file's asset belongs to the same tenant, has an `r2Key`, and has no
    `unfinalizedExpiresAt`. The stored text shape matches the content type. A stored blob with an
    editable text type and `textKind: null` cannot be shared.
-6. No queued or running subtree job overlaps the file's path. `files_subtree_ops_db_find_blocked_paths`
-   reads the workspace's jobs once for the file and every embed. More than 500 jobs refuses the
-   view, because a partial scan could miss the blocking job.
-7. The whole view stays inside a read budget (1,500 calls, 16,000 docs, 8 MiB) and returns at most
+6. The whole view stays inside a read budget (1,500 calls, 16,000 docs, 8 MiB) and returns at most
    1,000,000 bytes. Past a budget the view refuses, or the rest of the embeds show as unavailable.
 
-The query is reactive. A change to the doc, the file, a folder above it, an embed, or a workspace
-job runs it again, and an open page clears when the answer turns `null`.
+A folder above that is archived, restricted, or bound while its job runs does not hide the file at
+once. The file shows until the job writes it, and that write ends the link. These windows are an
+accepted product rule. The one exception is the scope node itself: a change to it ends every link
+of its area in the same transaction.
+
+The query is reactive. A change to the doc, the file, its scope node, or an embed runs it again, and
+an open page clears when the answer turns `null`.
 
 ### What the visitor sees
 
@@ -1384,9 +1387,9 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
    through a draft.
 3. E's content type is an inline-safe image or video type (`files_is_inline_media_content_type`),
    and it matches the node: an image node needs an image file, a video node needs a video file.
-4. E passes the same live checks as D: not archived, live folders, no plugin binding, no running
-   job on its path, and a finished asset.
-5. **Same audience:** E's live restricted scope equals D's live restricted scope. Both are open to
+4. E is not archived and has a finished asset.
+5. **Same audience:** E's stored restricted scope equals D's stored restricted scope, so D's scope
+   check answers for E too. Both are open to
    the workspace, or both sit inside the same restricted folder. Everyone who can read or write D
    can then read E: inside a restricted folder all grants sit on the scope node and write includes
    read, and in an open scope members read every open file through their roles. Without this rule,
@@ -1420,10 +1423,15 @@ lifecycle helper deletes the link doc for good. Turning it on again is a new dec
 token. There are two helpers in `files_share_links_db.ts`:
 
 - `files_share_links_db_delete_for_node` deletes the link of one exact file.
-- `files_share_links_db_delete_for_roots` deletes every link on a set of roots or below them. It
-  matches `nodeId` and `ancestorNodeIds` in memory and never loads file nodes. A
-  `files_share_links_CleanupState` belongs to one mutation. It loads each workspace's link docs at
-  most once, so a batch does not reload 500 links per item. Never keep it in a module cache.
+- `files_share_links_db_delete_for_scope` deletes every link whose stored scope is one node, on
+  `by_organization_workspace_scope`. It reads at most 501 docs and throws past 500, which the
+  workspace cap makes unreachable. Call it when the node becomes or stops being a restricted root,
+  or gets a plugin binding: the files inside keep the same scope id then, so no job deletes their
+  links.
+
+A link inside a folder never needs a walk to end. Each job that changes the files below a folder
+ends each file's link when it writes that file. Only the scope node's own change needs the area
+delete.
 
 Both skip global, plugin-volume, and reserved scopes, which never hold links. The module imports no
 lifecycle or access-control module, so every caller can import it without a cycle.
@@ -1431,15 +1439,14 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Event | Where the delete runs |
 | --- | --- |
 | Turn the link off | `set_node_share_link` with `enabled: false` |
-| Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, for the node and everything below, only when the scope really changes, before the patch. This covers `restrict_node`, `unrestrict_node`, and plugin bindings. A restrict then unrestrict before the scope job reaches the file does not bring the link back |
+| Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, only when the scope really changes, before the patch: the node's own link and every link of its area (`delete_for_scope`). This covers `restrict_node` and `unrestrict_node`. A restrict then unrestrict before the scope job reaches the file does not bring the link back |
 | A scope job gives the file a new scope | `files_nodes_db_rebuild_node`, only when the scope changes. A new path alone (a folder above was renamed) keeps the link |
 | Move to another folder, including replacement and a new parent created by the same Move | The cohort worker stages link revocation for reparented roots and replaced occupants in pages. The group switch ends their links. Rename in the same folder keeps links. Move ends a link even when the new folder has the same audience |
-| Archive | `files_nodes_db_archive_node` (the exact node), `files_nodes_db_archive_nodes` (the named roots and below, once per workspace), and the archive job when its check passes, for the roots the check kept. A queued, refused, or stopped check keeps the links |
+| Archive | `files_nodes_db_archive_node`, once per stamped node. `files_nodes_db_archive_nodes` stamps only the nodes it is given, so a caller names a folder with all its active descendants, or uses the archive job. The archive job ends each file's link in the apply step that stamps it. A queued, refused, or stopped check keeps the links |
 | Restore from the archive | `files_nodes_db_restore_node`. A restored file comes back with no link |
 | Archive-and-create replacement | The archive helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that archive and recreate. The new file has no link |
 | Remove a failed file creation | `files_nodes_db_hard_delete_node` |
-| A plugin reader list takes over the file or a folder above it, or lets go of it | `plugins_data_db_apply_file_access_binding`, even when the node was already restricted |
-| A plugin binding is detached or cleaned up | `db_detach_file_access_binding` (a manual sharing change), `db_sync_file_access_bindings` with `removeUserIds: "all"` (scope deletion and stranded-scope cleanup), and the uninstall binding drain. A detach never brings a link back |
+| A plugin reader list takes over a file or a restricted folder | `plugins_data_db_apply_file_access_binding`: the node's own link and every link of its area. A folder must already be a restricted root whose scope job has ended and that holds no restricted folder, so its area is the whole folder. A file binds in one step, and the restrict in the bind ends its link |
 | An exact service-account `content.write` grant on the file is removed or lowered to View | `access_control_db_set_service_account_grant`, before it deletes the grant. Rule 6 no longer sees that account after the grant goes, but the account may have added images before |
 | Workspace or organization purge | The `data_deletion.ts` content purge drains `files_share_links` in batches, before grants and file nodes. The deletion request, or `pluginDataPurgeStartedAt` for a preserved-home data reset, already hides every link before the purge starts |
 
@@ -1459,8 +1466,33 @@ What keeps a link:
 - The creator leaving, losing rights, or deleting their account.
 - Copies. A copy is a new file with no link.
 
-A file node that is gone or archived without a hook still shows nothing, because the view checks
-the live state on every read.
+- A plugin binding that is detached or cleaned up (`db_detach_file_access_binding`,
+  `db_sync_file_access_bindings` with `removeUserIds: "all"`, and the uninstall binding drain).
+  A bound area holds no links, because the bind ended them and On refuses there, so there is
+  nothing to end.
+
+A file node that is gone or archived without a hook still shows nothing, because the view reads
+the file on every read.
+
+**A bound area holds no restricted folder.** The plugin decides who reads the whole area, and a
+restricted folder inside would have its own reader list and could get links again. So these
+refuse:
+
+- `restrict_node` on an item inside a bound area: "A plugin decides who can read this item, so it
+  cannot be restricted on its own".
+- A Move that puts a restricted folder, or a folder that holds one, into a bound area
+  (`files_move_cohorts.ts`, checked for every moved node): "A plugin decides who can read the
+  destination, so a restricted folder cannot move there."
+- A restore that brings a restricted folder back into a bound area (`db_land_node` in
+  `files_archive_runs.ts`): "A plugin decides who can read the folder it comes back to, so a
+  restricted folder cannot be restored there."
+- A bind of a folder that holds a restricted folder, read on
+  `by_org_ws_parentScope_archive_treePath` and, while a Move holds the workspace, on both Move views
+  of `files_saved_places`.
+
+Known gaps: a manual sharing change detaches the binding of a node inside a bound area and leaves a
+plain restricted node there, which can get links again. Two cases reach this: a nested restricted
+folder bound before this rule, and a file that a plugin bound on its own inside its bound folder.
 
 ### Seeing links inside Files
 

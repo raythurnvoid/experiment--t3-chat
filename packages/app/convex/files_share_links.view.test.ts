@@ -4,6 +4,7 @@ import { api, components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -12,11 +13,11 @@ import {
 	fixture,
 	reset_rate_limits,
 	insert_installation,
+	seed_big_folder,
 	read_links,
 	link_on,
 	insert_media_file,
 	insert_restricted_folder,
-	insert_subtree_op,
 	view_of,
 	type Fixture,
 } from "./files_share_links.setup.test.ts";
@@ -90,24 +91,44 @@ describe("get_share_link_view", () => {
 		expect(await view_of(f, fullLink.token)).toBeNull();
 	});
 
-	test("reads the live folders above the file, not the link's stored state", async () => {
+	test("shows the file until the restrict job writes it, then the job ends the link", async () => {
 		const f = await fixture();
+		const { nodeId, folderId } = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		const link = await link_on(f, nodeId);
+
+		expect(
+			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderId }))
+				._nay,
+		).toBeUndefined();
+		// The first step of the job did not reach the file, so it still stores the open scope.
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBeNull();
+		expect(await view_of(f, link.token)).not.toBeNull();
+
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBe(folderId);
+		expect(await read_links(f.t, nodeId)).toEqual([]);
+		expect(await view_of(f, link.token)).toBeNull();
+	});
+
+	test("reads the stored scope of the file and the live state of its scope folder", async () => {
+		const f = await fixture();
+		const folderId = await insert_restricted_folder(f, "team");
 		const nodeId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/team/notes.md" });
-		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-		const folderId = node!.parentId as Id<"files_nodes">;
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.restrictedScopeNodeId).toBe(folderId);
 		const link = await link_on(f, nodeId);
 		expect(await view_of(f, link.token)).not.toBeNull();
 
-		// Each change below skips the file lifecycle, like a job that has not reached the file yet.
+		// Each change below skips the scope lifecycle, like a job that has not reached the file yet.
 		const changes = [
-			{ restrictedScopeNodeId: folderId, isRestrictedScopeRoot: true },
-			{ archiveOperationId: "archive-op" },
+			{ node: nodeId, change: { restrictedScopeNodeId: null } },
+			{ node: folderId, change: { restrictedScopeNodeId: null, isRestrictedScopeRoot: false } },
+			{ node: nodeId, change: { archiveOperationId: "archive-op" } },
 		];
-		for (const change of changes) {
-			const before = await f.t.run((ctx) => ctx.db.get("files_nodes", folderId));
-			await f.t.run((ctx) => ctx.db.patch("files_nodes", folderId, change));
+		for (const { node, change } of changes) {
+			const before = await f.t.run((ctx) => ctx.db.get("files_nodes", node));
+			await f.t.run((ctx) => ctx.db.patch("files_nodes", node, change));
 			expect(await view_of(f, link.token)).toBeNull();
-			await f.t.run((ctx) => ctx.db.replace("files_nodes", folderId, before!));
+			await f.t.run((ctx) => ctx.db.replace("files_nodes", node, before!));
 			expect(await view_of(f, link.token)).not.toBeNull();
 		}
 
@@ -127,19 +148,9 @@ describe("get_share_link_view", () => {
 		expect(await view_of(f, link.token)).not.toBeNull();
 	});
 
-	test("shows nothing while a file job or a deletion covers the file", async () => {
+	test("shows nothing while a deletion covers the file", async () => {
 		const f = await fixture();
 		const link = await link_on(f, f.nodeId);
-
-		// A later job on another path must not clear the block of an earlier job.
-		const opId = await insert_subtree_op(f, "/");
-		const otherOpId = await insert_subtree_op(f, "/other/");
-		expect(await view_of(f, link.token)).toBeNull();
-		await f.t.run(async (ctx) => {
-			await ctx.db.delete("files_subtree_ops", opId);
-			await ctx.db.delete("files_subtree_ops", otherOpId);
-		});
-		expect(await view_of(f, link.token)).not.toBeNull();
 
 		// A data-only reset of the workspace leaves no deletion request. Its purge flag alone hides the page.
 		await f.t.run((ctx) =>
@@ -174,12 +185,12 @@ describe("get_share_link_view", () => {
 			path: "/private/secret.png",
 			contentType: "image/png",
 		});
+		await f.t.run((ctx) => ctx.db.patch("files_nodes", privateImageId, { restrictedScopeNodeId: privateFolderId }));
 		const svgImageId = await insert_media_file(f, {
 			parentId: "root",
 			path: "/logo.svg",
 			contentType: "image/svg+xml",
 		});
-		const busyImageId = await insert_media_file(f, { parentId: "root", path: "/busy.png", contentType: "image/png" });
 		// An image restricted by itself, with no restricted folder above it.
 		const selfRestrictedImageId = await insert_media_file(f, {
 			parentId: "root",
@@ -208,7 +219,6 @@ describe("get_share_link_view", () => {
 				`![Photo](bonobo-file://${openImageId})`,
 				`![Secret](bonobo-file://${privateImageId})`,
 				`![Logo](bonobo-file://${svgImageId})`,
-				`![Busy](bonobo-file://${busyImageId})`,
 				"![Missing](bonobo-file://not-a-real-id)",
 				`![Other](bonobo-file://${otherImageId})`,
 				// A video tag that points at an image.
@@ -217,7 +227,6 @@ describe("get_share_link_view", () => {
 			].join("\n\n"),
 		});
 		const link = await link_on(f, nodeId);
-		await insert_subtree_op(f, "/busy.png");
 
 		const view = await view_of(f, link.token);
 		expect(view?.media).toEqual([
@@ -228,7 +237,6 @@ describe("get_share_link_view", () => {
 			{ index: 4, available: false },
 			{ index: 5, available: false },
 			{ index: 6, available: false },
-			{ index: 7, available: false },
 		]);
 		// Only the shown image keeps its alt text. The editor often fills alt with a private file name.
 		const json = view?.content.kind === "rich_text" ? view.content.json : "";
@@ -236,7 +244,6 @@ describe("get_share_link_view", () => {
 		for (const hidden of [
 			"Secret",
 			"Logo",
-			"Busy",
 			"Missing",
 			"Other",
 			"Restricted",
@@ -295,7 +302,7 @@ describe("get_share_link_view", () => {
 		});
 		const link = await link_on(f, nodeId);
 
-		// The team image reuses the folder walk of the file, so this also covers the cached walk.
+		// Only the team image stores the same scope as the file.
 		expect((await view_of(f, link.token))?.media).toEqual([
 			{ index: 0, available: true, kind: "image" },
 			{ index: 1, available: false },
@@ -425,67 +432,6 @@ describe("get_share_link_view", () => {
 		const json = view?.content.kind === "rich_text" ? view.content.json : "";
 		expect(json).toContain('"alt":"Photo 49"');
 		expect(json).not.toContain("Photo 50");
-	});
-
-	test("shows the file when checking its media spends the read limits", async () => {
-		const f = await fixture();
-		// Put each image under its own chain of 30 folders. The view reads every folder above each image, so
-		// 50 images need more read calls than one view may use.
-		const images = await f.t.run(async (ctx) => {
-			const result: Array<{ parentId: Id<"files_nodes"> | "root"; path: string }> = [];
-			for (let chain = 0; chain < 50; chain++) {
-				let parentId: Id<"files_nodes"> | "root" = "root";
-				let path = "";
-				for (let depth = 0; depth < 30; depth++) {
-					const name = `c${chain}-${depth}`;
-					path += `/${name}`;
-					parentId = await ctx.db.insert("files_nodes", {
-						...test_mocks.files.base(),
-						organizationId: f.db.organizationId,
-						workspaceId: f.db.workspaceId,
-						createdBy: f.db.userId,
-						updatedBy: f.db.userId,
-						parentId,
-						name,
-						sortName: files_sort_text_key(name),
-						path,
-						treePath: `${path}/`,
-						pathDepth: depth + 1,
-					});
-				}
-				result.push({ parentId, path: `${path}/photo.png` });
-			}
-			return result;
-		});
-		const imageIds: Id<"files_nodes">[] = [];
-		for (const image of images) {
-			imageIds.push(await insert_media_file(f, { ...image, contentType: "image/png" }));
-		}
-		const nodeId = await test_create_saved_text_file(f.t, {
-			membershipId: f.db.membershipId,
-			path: "/page.md",
-			textContent: imageIds.map((imageId, index) => `![Photo ${index}](bonobo-file://${imageId})`).join("\n\n"),
-		});
-		const link = await link_on(f, nodeId);
-
-		const view = await view_of(f, link.token);
-		expect(view?.media).toHaveLength(50);
-		expect(view?.media[0].available).toBe(true);
-		expect(view?.media[49].available).toBe(false);
-	});
-
-	test("shows nothing when the workspace has more file jobs than one view reads", async () => {
-		const f = await fixture();
-		const link = await link_on(f, f.nodeId);
-
-		// Jobs on other paths do not block the file, but a view reads at most 500 of them.
-		for (let index = 0; index < 500; index++) {
-			await insert_subtree_op(f, `/other-${index}/`);
-		}
-		expect(await view_of(f, link.token)).not.toBeNull();
-
-		await insert_subtree_op(f, "/other-500/");
-		expect(await view_of(f, link.token)).toBeNull();
 	});
 });
 

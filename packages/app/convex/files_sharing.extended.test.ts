@@ -531,7 +531,7 @@ test("an account grant on an item inside a restricted folder makes it an extende
 	expect(await can(f, subject, otherId)).toBe(false);
 });
 
-test("binding a folder with added people to a private space removes them first", async () => {
+test("binding a folder with added people to a private space needs a restrict first, which removes them", async () => {
 	const f = await fixture();
 	const folderId = await seed_folder(f, "/b");
 	const serviceAccountId = await create_account(f);
@@ -539,6 +539,8 @@ test("binding a folder with added people to a private space removes them first",
 	expect((await share_with_account(f, folderId, serviceAccountId, "write"))._nay).toBeUndefined();
 	const installationId = await insert_installation(f);
 
+	// A plugin binds only a restricted folder.
+	await set_restricted(f, folderId, true);
 	await apply_binding(f, { installationId, folderId, readScopeId: "team" });
 
 	// The private space has no members yet, so nobody is left on the folder.

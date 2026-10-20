@@ -8,7 +8,6 @@ import { pending_chunks, pending_metadata } from "./files_move_pages.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { run_job } from "./files_pending_overlay.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { accept_input, advance as advance_transfer } from "./files_transfer.ts";
 import {
 	test_convex,
@@ -172,30 +171,31 @@ test("pending scope pages follow the latest saved path and archive state without
 	});
 	expect(initial.proposal).not.toBeNull();
 	expect(initial.proposal?.pendingMove).toBeUndefined();
-	const readPendingDocs = async () => await t.run(async (ctx) => {
-		const node = (await ctx.db.get("files_nodes", nodeId))!;
-		const chunks = await ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("target.kind", "saved")
-					.eq("target.id", nodeId),
-			)
-			.collect();
-		const metadata = await ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_target_fieldPath", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("target.kind", "saved")
-					.eq("target.id", nodeId),
-			)
-			.collect();
-		return { node, chunks, metadata, proposal: await ctx.db.get("files_pending_updates", initial.proposal!._id) };
-	});
+	const readPendingDocs = async () =>
+		await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", nodeId))!;
+			const chunks = await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_target_chunkIndex", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", nodeId),
+				)
+				.collect();
+			const metadata = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_target_fieldPath", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("target.kind", "saved")
+						.eq("target.id", nodeId),
+				)
+				.collect();
+			return { node, chunks, metadata, proposal: await ctx.db.get("files_pending_updates", initial.proposal!._id) };
+		});
 	const original = await readPendingDocs();
 	const scopePages = { chunks: 0, metadata: 0 };
 	const pageIds = { chunks: new Set<string>(), metadata: new Set<string>() };
@@ -217,9 +217,7 @@ test("pending scope pages follow the latest saved path and archive state without
 				(args as { pendingUpdateId: Id<"files_pending_updates"> }).pendingUpdateId !== initial.proposal!._id
 			)
 				return result;
-			const page = result as unknown as PaginationResult<
-				Doc<"files_plain_text_chunks"> | Doc<"files_metadata_docs">
-			>;
+			const page = result as unknown as PaginationResult<Doc<"files_plain_text_chunks"> | Doc<"files_metadata_docs">>;
 			expect(page.page.length, `${key} stage in native pages`).toBeLessThanOrEqual(8);
 			if (page.page.length > 0) scopePages[key]++;
 			for (const doc of page.page) {
@@ -247,7 +245,8 @@ test("pending scope pages follow the latest saved path and archive state without
 				const result = await handler(ctx, args);
 				if (!recordPages) return result;
 				for (const [index, call] of insert.mock.calls.entries()) {
-					const key = call[0] === "files_plain_text_chunks" ? "chunks" : call[0] === "files_metadata_docs" ? "metadata" : null;
+					const key =
+						call[0] === "files_plain_text_chunks" ? "chunks" : call[0] === "files_metadata_docs" ? "metadata" : null;
 					const fields = call[1] as Partial<Doc<"files_plain_text_chunks"> | Doc<"files_metadata_docs">>;
 					if (
 						!key ||
@@ -255,11 +254,17 @@ test("pending scope pages follow the latest saved path and archive state without
 						fields.pendingUpdateId !== initial.proposal!._id ||
 						fields.moveView?.view !== "after" ||
 						fields.moveView.cohortId !== stageCohortId
-					) continue;
-					expect(fields.path, `${key} AFTER copies use the destination while staging`).toBe("/destination/project/note.md");
+					)
+						continue;
+					expect(fields.path, `${key} AFTER copies use the destination while staging`).toBe(
+						"/destination/project/note.md",
+					);
 					if (key === "metadata") expect(fields).toMatchObject({ treePath: "/destination/project/note.md" });
-					const id = await insert.mock.results[index]!.value as string;
-					expect(stagedDocs[key].some((doc) => doc.id === id), `${key} AFTER copies are observed once`).toBe(false);
+					const id = (await insert.mock.results[index]!.value) as string;
+					expect(
+						stagedDocs[key].some((doc) => doc.id === id),
+						`${key} AFTER copies are observed once`,
+					).toBe(false);
 					stagedDocs[key].push({ id, fields: { ...fields } });
 				}
 				return result;
@@ -283,9 +288,9 @@ test("pending scope pages follow the latest saved path and archive state without
 	});
 	await test_finish_transfer_run(asUser, runId);
 	recordPages = false;
-	expect((await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
-		"succeeded",
-	);
+	expect(
+		(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status,
+	).toBe("succeeded");
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/destination/project/note.md");
 	expect(scopePages.chunks, "pending search docs span several scope pages").toBeGreaterThan(1);
 	expect(scopePages.metadata, "pending metadata docs span several scope pages").toBeGreaterThan(1);
@@ -294,13 +299,18 @@ test("pending scope pages follow the latest saved path and archive state without
 			original[key].map((doc) => doc._id).sort(),
 		);
 		expect(stagedDocs[key], `Every ${key} AFTER copy is inserted once`).toHaveLength(original[key].length);
-		expect(stagedDocs[key].map((doc) => doc.fields), `${key} staged payloads keep every source value`).toEqual(
-			expect.arrayContaining(original[key].map(({ _id, _creationTime, ...fields }) => ({
-				...fields,
-				moveView: { cohortId: stageCohortId, view: "after" },
-				path: "/destination/project/note.md",
-				...(key === "metadata" ? { treePath: "/destination/project/note.md" } : {}),
-			}))),
+		expect(
+			stagedDocs[key].map((doc) => doc.fields),
+			`${key} staged payloads keep every source value`,
+		).toEqual(
+			expect.arrayContaining(
+				original[key].map(({ _id, _creationTime, ...fields }) => ({
+					...fields,
+					moveView: { cohortId: stageCohortId, view: "after" },
+					path: "/destination/project/note.md",
+					...(key === "metadata" ? { treePath: "/destination/project/note.md" } : {}),
+				})),
+			),
 		);
 	}
 	const moved = await readPendingDocs();
@@ -515,7 +525,6 @@ test("an Archive that names a node twice makes one saved scope job", async () =>
 			nodeIds: [nodeId, nodeId],
 			updatedBy: db.userId,
 			now: Date.now(),
-			shareLinkCleanup: files_share_links_create_cleanup_state(),
 		}),
 	);
 	const jobs = await t.run((ctx) =>

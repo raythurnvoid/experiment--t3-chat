@@ -16,17 +16,17 @@ import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } fro
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
-import {
-	files_share_links_create_cleanup_state,
-	files_share_links_db_delete_for_roots,
-	type files_share_links_CleanupState,
-} from "./files_share_links_db.ts";
+import { files_share_links_db_delete_for_node, files_share_links_db_delete_for_scope } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_plugin_session } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -3917,8 +3917,8 @@ function db_binding_file_grants(
  * `removeUserIds: "all"` is the teardown form, used when the scope itself was deleted. It also
  * deletes the binding docs, because a binding pointing at a dead scope is a dangling doc. It
  * does NOT un-restrict the bound nodes: the reader list is gone, so the nodes end with zero
- * readers and stay restricted — fail closed. It also ends the public links on and under the bound
- * nodes.
+ * readers and stay restricted — fail closed. A bound area holds no public links, so it has none
+ * to end.
  */
 async function db_sync_file_access_bindings(args: {
 	ctx: MutationCtx;
@@ -3926,9 +3926,8 @@ async function db_sync_file_access_bindings(args: {
 	scopeId: string;
 	addUserIds: Id<"users">[];
 	removeUserIds: Id<"users">[] | "all";
-	shareLinkCleanup: files_share_links_CleanupState;
 }) {
-	const { ctx, shareLinkCleanup } = args;
+	const { ctx } = args;
 
 	const bindings = await ctx.db
 		.query("plugins_file_access_bindings")
@@ -3936,16 +3935,6 @@ async function db_sync_file_access_bindings(args: {
 			q.eq("installationId", args.installation._id).eq("scopeId", args.scopeId),
 		)
 		.collect();
-
-	if (args.removeUserIds === "all") {
-		await files_share_links_db_delete_for_roots({
-			ctx,
-			organizationId: args.installation.organizationId,
-			workspaceId: args.installation.workspaceId,
-			rootNodeIds: bindings.map((binding) => binding.nodeId),
-			state: shareLinkCleanup,
-		});
-	}
 
 	const now = Date.now();
 	let readersChanged = false;
@@ -4058,6 +4047,64 @@ export async function plugins_data_db_prepare_file_access_binding(
 		});
 	}
 
+	// The plugin decides who reads the whole area of the node, so bind only a restricted folder whose scope
+	// op has ended and that holds no other restricted folder. Then every item inside stores this folder as
+	// its scope. A new node and a file hold nothing. A bound node passed this check when it was bound, and
+	// restrict, Move and restore refuse to put a restricted folder in its area since.
+	const node = nodeId && !existingBinding ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
+	if (node?.kind === "folder") {
+		if (node.restrictedScopeNodeId !== node._id) {
+			return Result({ _nay: { message: "Restrict this item first, then a plugin can decide who reads it" } });
+		}
+		if (node.scopeOpId !== undefined) {
+			return Result({ _nay: { message: "Wait until the access change of this folder finishes" } });
+		}
+		// A folder that a Move holds is only in the Move views.
+		const { cohortId } = await files_saved_placement_db_get_view(ctx.db, node);
+		const restrictedInside =
+			(await ctx.db
+				.query("files_nodes")
+				.withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
+					q
+						.eq("organizationId", node.organizationId)
+						.eq("workspaceId", node.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("parentScopeNodeId", node._id)
+						.eq("archiveOperationId", null),
+				)
+				.first()) ??
+			(cohortId === null
+				? null
+				: ((await ctx.db
+						.query("files_saved_places")
+						.withIndex("by_view_parentScope_archive_tree", (q) =>
+							q
+								.eq("cohortId", cohortId)
+								.eq("view", "before")
+								.eq("parentScopeNodeId", node._id)
+								.eq("archiveOperationId", null),
+						)
+						.first()) ??
+					(await ctx.db
+						.query("files_saved_places")
+						.withIndex("by_view_parentScope_archive_tree", (q) =>
+							q
+								.eq("cohortId", cohortId)
+								.eq("view", "after")
+								.eq("parentScopeNodeId", node._id)
+								.eq("archiveOperationId", null),
+						)
+						.first())));
+		if (restrictedInside) {
+			// The caller may not read that folder, so do not name it.
+			return Result({
+				_nay: {
+					message: "A folder inside has its own restricted access, so a plugin cannot decide who reads this folder",
+				},
+			});
+		}
+	}
+
 	return Result({ _yay: { existingBinding, readScopeId } });
 }
 
@@ -4079,25 +4126,22 @@ export async function plugins_data_db_apply_file_access_binding(
 ) {
 	const now = Date.now();
 	const { existingBinding, readScopeId } = args.prepared;
-	const shareLinkCleanup = files_share_links_create_cleanup_state();
-	const shareLinkRoots = {
-		organizationId: args.node.organizationId,
-		workspaceId: args.node.workspaceId,
-		rootNodeIds: [args.node._id],
-	};
 	if (readScopeId === null) {
 		// A detached binding leaves the member's sharing unchanged.
 		if (!existingBinding) {
 			return;
 		}
-		await files_share_links_db_delete_for_roots({ ctx, ...shareLinkRoots, state: shareLinkCleanup });
 		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
 		return;
 	}
 
-	// The plugin now decides who reads this node and everything under it, so end their public links.
-	// Do it even when the node is already restricted and no scope op starts.
-	await files_share_links_db_delete_for_roots({ ctx, ...shareLinkRoots, state: shareLinkCleanup });
+	// The plugin now decides who reads this node's area, so end the links of the node and its area now.
+	// For a node that is not restricted yet, the restrict below does the same deletes.
+	if (args.node.restrictedScopeNodeId === args.node._id) {
+		const { organizationId, workspaceId, _id: nodeId } = args.node;
+		await files_share_links_db_delete_for_node(ctx, { organizationId, workspaceId, nodeId });
+		await files_share_links_db_delete_for_scope(ctx, { organizationId, workspaceId, scopeNodeId: nodeId });
+	}
 
 	let accessChanged = false;
 	// Restrict the node on itself and start a scope op for the items inside, like the member share door does.
@@ -4128,7 +4172,6 @@ export async function plugins_data_db_apply_file_access_binding(
 			workspaceId: args.node.workspaceId,
 			nodeId: args.node._id,
 			restrictedScopeNodeId: args.node._id,
-			shareLinkCleanup,
 		});
 		await files_subtree_ops_db_start_rebuild(ctx, {
 			kind: "scope",
@@ -4232,9 +4275,8 @@ export async function plugins_data_db_keep_scope_managed(args: {
 	scopes: Doc<"plugins_data_scopes">[];
 	excludeUserId?: Id<"users">;
 	deleteIfEmpty?: boolean;
-	shareLinkCleanup: files_share_links_CleanupState;
 }) {
-	const { ctx, shareLinkCleanup } = args;
+	const { ctx } = args;
 
 	const [first] = args.scopes;
 	if (!first) {
@@ -4264,7 +4306,6 @@ export async function plugins_data_db_keep_scope_managed(args: {
 			scopeId: first.scopeId,
 			addUserIds: [],
 			removeUserIds: "all",
-			shareLinkCleanup,
 		});
 		return { deleted: true, hasActivePrincipal: false, promoted: false };
 	}
@@ -4334,8 +4375,6 @@ export const cleanup_stranded_scopes = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		// Share one public link cleanup across every scope this batch deletes.
-		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		for (const pair of args.scopes.slice(0, SCOPE_CLEANUP_BATCH_SIZE)) {
 			const scopes = await ctx.db
 				.query("plugins_data_scopes")
@@ -4360,7 +4399,6 @@ export const cleanup_stranded_scopes = internalMutation({
 				ctx,
 				installation,
 				scopes,
-				shareLinkCleanup,
 			});
 			if (!managed.deleted) {
 				// This job follows a removed direct grant, so even a scope that still had another
@@ -4458,8 +4496,6 @@ export const user_manage_scope = mutation({
 			return authorized;
 		}
 		const { installation, userId, organization, workspace } = authorized._yay;
-		// Share one link cleanup across every scope change below, so the workspace links load only once.
-		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		let creatingRateLimitChecked = false;
 		const chargeCreatingAttempt = async () => {
 			if (creatingRateLimitChecked) {
@@ -4967,7 +5003,6 @@ export const user_manage_scope = mutation({
 				installation,
 				scopes: existing,
 				excludeUserId: userId,
-				shareLinkCleanup,
 			});
 			if (managed.deleted) {
 				return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
@@ -4987,7 +5022,6 @@ export const user_manage_scope = mutation({
 				scopeId: scopeId._yay,
 				addUserIds: [],
 				removeUserIds: [userId],
-				shareLinkCleanup,
 			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -5028,7 +5062,6 @@ export const user_manage_scope = mutation({
 				scopeId: scopeId._yay,
 				addUserIds: [],
 				removeUserIds: "all",
-				shareLinkCleanup,
 			});
 			return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 		}
@@ -5047,7 +5080,6 @@ export const user_manage_scope = mutation({
 				scopes: existing,
 				excludeUserId: target,
 				deleteIfEmpty: false,
-				shareLinkCleanup,
 			});
 			if (!managed.hasActivePrincipal) {
 				return Result({ _nay: { message: "The last person must leave this private space themselves" } });
@@ -5066,7 +5098,6 @@ export const user_manage_scope = mutation({
 				scopeId: scopeId._yay,
 				addUserIds: [],
 				removeUserIds: [target],
-				shareLinkCleanup,
 			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -5118,7 +5149,6 @@ export const user_manage_scope = mutation({
 				scopes: existing,
 				excludeUserId: target,
 				deleteIfEmpty: false,
-				shareLinkCleanup,
 			});
 			if (!managed.hasActivePrincipal) {
 				return Result({ _nay: { message: "Add another person before lowering the last manager's access" } });
@@ -5140,7 +5170,6 @@ export const user_manage_scope = mutation({
 			scopeId: scopeId._yay,
 			addUserIds: [target],
 			removeUserIds: [],
-			shareLinkCleanup,
 		});
 		await Promise.all(
 			existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -6667,13 +6696,6 @@ export async function plugins_data_db_drain_batch(
 		})
 		.take(args.batchSize);
 	if (fileAccessBindings.length > 0) {
-		await files_share_links_db_delete_for_roots({
-			ctx,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			rootNodeIds: fileAccessBindings.map((doc) => doc.nodeId),
-			state: files_share_links_create_cleanup_state(),
-		});
 		await Promise.all(fileAccessBindings.map((doc) => ctx.db.delete("plugins_file_access_bindings", doc._id)));
 		return { done: false, deletedCount: fileAccessBindings.length };
 	}

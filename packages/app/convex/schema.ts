@@ -5372,14 +5372,11 @@ const app_convex_schema = defineSchema({
 		 */
 		token: v.string(),
 		/**
-		 * The file's live restricted scope when the link was turned on. The view refuses when it differs.
+		 * The file's stored restricted scope when the link was turned on. The view refuses when it differs.
+		 * When this node stops being a live restricted root, or gets a plugin binding, every link that
+		 * names it is deleted (`files_share_links_db_delete_for_scope`).
 		 */
 		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
-		/**
-		 * The file's ancestors from its parent up to the workspace root, from the live walk. A reparent
-		 * deletes this doc before they can go stale. Never returned to a visitor or by `list_workspace_links`.
-		 */
-		ancestorNodeIds: v.array(v.id("files_nodes")),
 		/**
 		 * Display and audit data only. The link does not depend on this user's membership.
 		 */
@@ -5388,7 +5385,8 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_token", ["token"])
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
-		.index("by_organization_workspace_node", ["organizationId", "workspaceId", "nodeId"]),
+		.index("by_organization_workspace_node", ["organizationId", "workspaceId", "nodeId"])
+		.index("by_organization_workspace_scope", ["organizationId", "workspaceId", "restrictedScopeNodeId"]),
 
 	/** Exact text chunks for committed Yjs materializations and per-user pending updates. */
 	files_text_chunks: defineTable(

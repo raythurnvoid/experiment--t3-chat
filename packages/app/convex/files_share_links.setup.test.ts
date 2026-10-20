@@ -208,6 +208,22 @@ export function apply_binding(
 }
 
 /**
+ * Bind a node like the plugin API allows it: restrict it, let its scope job end, then bind it to `team`.
+ */
+export async function restrict_and_bind(f: Fixture, nodeId: Id<"files_nodes">) {
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+		membershipId: f.db.membershipId,
+		nodeId,
+	});
+	expect(restricted._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	const installationId = await insert_installation(f);
+	await apply_binding(f, { installationId, folderId: nodeId, readScopeId: "team" });
+	return installationId;
+}
+
+/**
  * Make `/big/zz.md` with `siblingCount` sibling folders. The file sorts after every sibling, so a job
  * step that stops before the last sibling does not reach it.
  */
@@ -320,24 +336,6 @@ export function insert_restricted_folder(f: Fixture, name: string) {
 		await ctx.db.patch("files_nodes", folderId, { restrictedScopeNodeId: folderId });
 		return folderId;
 	});
-}
-
-/**
- * A queued scope job on `treePath`. Seeded directly, so its step never runs.
- */
-export function insert_subtree_op(f: Fixture, treePath: string) {
-	return f.t.run((ctx) =>
-		ctx.db.insert("files_subtree_ops", {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			status: "queued",
-			blockedByOpId: null,
-			rootNodeIds: [],
-			treePaths: [treePath],
-			kind: "scope",
-		}),
-	);
 }
 
 export function view_of(f: Fixture, token: string) {

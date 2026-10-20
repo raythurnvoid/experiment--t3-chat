@@ -53,7 +53,10 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	if (args.dense) {
 		expect(new TextEncoder().encode(textContent).byteLength).toBeLessThanOrEqual(900_000);
 		expect(new TextEncoder().encode(metadataYaml).byteLength).toBeLessThanOrEqual(16 * 1024);
-		expect(files_metadata_preflight_frontmatter(textContent)._yay).toMatchObject({ fieldCount: 128, indexDocumentCount: 512 });
+		expect(files_metadata_preflight_frontmatter(textContent)._yay).toMatchObject({
+			fieldCount: 128,
+			indexDocumentCount: 512,
+		});
 	}
 	const heavyId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
@@ -90,7 +93,11 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	});
 	expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(args.keys * 4);
 	expect(seeded.metadata.filter((doc) => doc.fieldPath.startsWith("metadata."))).toHaveLength(args.keys * 3);
-	if (args.dense) expect(seeded.metadata.every((doc) => doc.fieldPath.length <= 160), "Dense metadata keys fit the catalog").toBe(true);
+	if (args.dense)
+		expect(
+			seeded.metadata.every((doc) => doc.fieldPath.length <= 160),
+			"Dense metadata keys fit the catalog",
+		).toBe(true);
 	// Owner steps page these docs 8 at a time (PAGE_SIZE in files_move_owner_work.ts). Use full pages.
 	expect(seeded.metadata.length, "the metadata fills more than one owner page").toBeGreaterThan(8);
 	let extraLinkId: Id<"files_nodes"> | null = null;
@@ -191,7 +198,6 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 				nodeId: node._id,
 				token: index.toString(16).padStart(64, "0"),
 				restrictedScopeNodeId: node.restrictedScopeNodeId,
-				ancestorNodeIds: node.parentId === files_ROOT_ID ? [] : [seeded.project._id],
 				createdBy: db.userId,
 				createdAt: Date.now(),
 			});
@@ -265,23 +271,28 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		).toHaveLength(50);
 		expect(await ctx.db.query("files_share_links").collect()).toHaveLength(500);
 		return args.dense
-			? await ctx.db
+			? ((await ctx.db
 					.query("files_metadata_docs")
 					.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
 					)
-					.collect() as Metadata[]
+					.collect()) as Metadata[])
 			: [];
 	});
 	const savedTextBeforeMove = args.dense
 		? await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-			subject: { kind: "user" as const, userId: db.userId, plugin: null },
-			organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
-			path: seeded.heavy.path, includePending: false,
-		})
+				subject: { kind: "user" as const, userId: db.userId, plugin: null },
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: seeded.heavy.path,
+				includePending: false,
+			})
 		: null;
 	if (args.dense)
-		expect(savedTextBeforeMove?.content, "Save puts a blank line after the rich-text frontmatter").toBe(frontmatter + "\n" + body);
+		expect(savedTextBeforeMove?.content, "Save puts a blank line after the rich-text frontmatter").toBe(
+			frontmatter + "\n" + body,
+		);
 
 	const { peaks, record, check } = budget_recorder();
 	const metadataPages = measure_cohort(record, metadataBeforeMove);
@@ -351,12 +362,18 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 			expect(cohort).not.toBeNull();
 			expect(page.rowIds.length, "Dense metadata uses 64 rows when the byte bound allows it").toBe(64);
 		}
-		if ((await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt === undefined)
+		if (
+			(await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity
+				.finishedAt === undefined
+		)
 			return false;
-		return await t.run(async (ctx) => !(await ctx.db
-			.query("files_metadata_catalog_compactors")
-			.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-			.first()));
+		return await t.run(
+			async (ctx) =>
+				!(await ctx.db
+					.query("files_metadata_catalog_compactors")
+					.withIndex("by_org_ws", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.first()),
+		);
 	});
 	console.info(
 		"paged Move phase peaks, with the metadata catalog",
@@ -366,11 +383,20 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		activity: { status: "succeeded", progress: { completed: 3, failed: 0, canceled: 0 } },
 	});
 	// A small root can publish inside the Transfer call, whose whole cost is measured above.
-	const cohorts = await t.run((ctx) => ctx.db.query("files_move_cohorts")
-		.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).collect());
+	const cohorts = await t.run((ctx) =>
+		ctx.db
+			.query("files_move_cohorts")
+			.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+			.collect(),
+	);
 	expect(cohorts, "every saved Move root reaches cohort publication").toHaveLength(sources.length);
 	for (const cohort of cohorts)
-		expect(cohort).toMatchObject({ phase: "complete", visibleView: "after", publishedAt: expect.any(Number), errorCode: null });
+		expect(cohort).toMatchObject({
+			phase: "complete",
+			visibleView: "after",
+			publishedAt: expect.any(Number),
+			errorCode: null,
+		});
 	expect(peaks.get("catalog/compactor")?.calls, "the Move's catalog deltas reach the compactor").toBeGreaterThan(0);
 	expect(
 		peaks.get("catalog/compactor")?.measured.documentsWritten,
@@ -381,21 +407,48 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	if (args.dense) {
 		// Check outside the worker too: a worker can catch a failed budget assertion.
 		check("Dense metadata Move stays below the budget after the flush");
-		const metadata = await t.run((ctx) => ctx.db.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId))
-			.collect()) as Metadata[];
-		const metadata_fields = (rows: Doc<"files_metadata_docs">[]) => rows.map((row) => Object.fromEntries(Object.entries(row)
-			.filter(([key]) => !["_id", "_creationTime", "moveView", "path", "treePath", "parentId"].includes(key))))
-			.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+		const metadata = (await t.run((ctx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
+				)
+				.collect(),
+		)) as Metadata[];
+		const metadata_fields = (rows: Doc<"files_metadata_docs">[]) =>
+			rows
+				.map((row) =>
+					Object.fromEntries(
+						Object.entries(row).filter(
+							([key]) => !["_id", "_creationTime", "moveView", "path", "treePath", "parentId"].includes(key),
+						),
+					),
+				)
+				.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 		expect(metadata, "Dense metadata keeps all 896 saved docs").toHaveLength(896);
-		expect(metadata_fields(metadata), "Dense Move keeps the metadata captured after Restrict")
-			.toEqual(metadata_fields(metadataBeforeMove));
-		expect(metadata.every((row) => row.moveView === undefined && row.path === "/target/heavy.md" && row.treePath === row.path)).toBe(true);
-		expect(metadata.filter((row) => row.docKind === "field").every((row) => row.parentId === seeded.target._id)).toBe(true);
-		expect((await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-			subject: { kind: "user" as const, userId: db.userId, plugin: null },
-			organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
-			path: "/target/heavy.md", includePending: false,
-		}))?.content, "Dense metadata Move keeps its saved text").toBe(savedTextBeforeMove?.content);
+		expect(metadata_fields(metadata), "Dense Move keeps the metadata captured after Restrict").toEqual(
+			metadata_fields(metadataBeforeMove),
+		);
+		expect(
+			metadata.every(
+				(row) => row.moveView === undefined && row.path === "/target/heavy.md" && row.treePath === row.path,
+			),
+		).toBe(true);
+		expect(metadata.filter((row) => row.docKind === "field").every((row) => row.parentId === seeded.target._id)).toBe(
+			true,
+		);
+		expect(
+			(
+				await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					subject: { kind: "user" as const, userId: db.userId, plugin: null },
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					path: "/target/heavy.md",
+					includePending: false,
+				})
+			)?.content,
+			"Dense metadata Move keeps its saved text",
+		).toBe(savedTextBeforeMove?.content);
 	}
 };

@@ -72,14 +72,21 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
-import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
+import {
+	files_nodes_db_archive_nodes,
+	files_nodes_db_get_write_policy_management_state,
+	files_nodes_db_set_write_policy,
+	files_nodes_write_policy_management_state_validator,
+	type files_nodes_get_by_path_Result,
+	type files_nodes_read_file_content_from_chunks_Result,
+	type get_file_content_materialization_state_Result,
+} from "./files_nodes.ts";
 import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
@@ -2043,7 +2050,10 @@ export const get_file_read_membership = internalQuery({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 	},
-	returns: v.union(v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.union(v.number(), v.null()) }), v.null()),
+	returns: v.union(
+		v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.union(v.number(), v.null()) }),
+		v.null(),
+	),
 	handler: async (ctx, args) => {
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
@@ -3501,7 +3511,6 @@ export const publish_file_write = internalMutation({
 				nodeIds: [activeNode._id],
 				updatedBy: stage.userId,
 				now,
-				shareLinkCleanup: files_share_links_create_cleanup_state(),
 			});
 		}
 		// A file on the way blocks the create. The create helper would only answer `Not found` for it.
@@ -4660,8 +4669,6 @@ export const create_file_upload_targets = internalMutation({
 			uploadUrl: string;
 			headers: Record<string, string>;
 		}> = [];
-		// Share one link cleanup across the replaced files, so the workspace links load only once.
-		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		const folders = new Map<string, Doc<"files_nodes">>();
 		for (const item of validated) {
 			// Uploading over a name archives whatever holds it, like create_upload_node, so re-runs
@@ -4672,7 +4679,6 @@ export const create_file_upload_targets = internalMutation({
 					nodeIds: [item.collidingNodeId],
 					updatedBy: args.userId,
 					now,
-					shareLinkCleanup,
 				});
 			}
 

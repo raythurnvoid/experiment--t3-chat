@@ -27,7 +27,6 @@ import { server_path_normalize } from "../server/server-utils.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
-import { files_share_links_create_cleanup_state } from "./files_share_links_db.ts";
 import { r2, r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 
 /**
@@ -135,7 +134,8 @@ export const create_upload_targets = internalMutation({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", item.path)
 						.eq("archiveOperationId", null),
 				)
@@ -212,8 +212,6 @@ export const create_upload_targets = internalMutation({
 			uploadUrl: string;
 			headers: Record<string, string>;
 		}> = [];
-		// Share one link cleanup across the replaced files, so the workspace links load only once.
-		const shareLinkCleanup = files_share_links_create_cleanup_state();
 		const folders = new Map<string, Doc<"files_nodes">>();
 		for (const item of validated) {
 			// Importing over a name archives whatever holds it, like create_upload_node, so re-runs
@@ -224,7 +222,6 @@ export const create_upload_targets = internalMutation({
 					nodeIds: [item.collidingNodeId],
 					updatedBy: args.createdBy,
 					now,
-					shareLinkCleanup,
 				});
 			}
 
@@ -475,7 +472,8 @@ export const verify_metadata = internalQuery({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)

@@ -185,11 +185,10 @@ An embed shows only when all of these hold (`db_read_media_node`, `db_check_medi
 2. The file is not archived. Its content type is in the inline-served media set
    (`files_is_inline_media_content_type`) and matches the node: an image node needs `image/*`, and a
    video node needs `video/*`. SVG and other types are unavailable.
-3. It passes the same live checks as the shared document: no archived folder above it, no plugin
-   binding on it or on a folder above it, no queued or running subtree job on its path, and a
-   finished asset.
-4. Same audience: its live restricted scope equals the document's live restricted scope. Both are
-   open to the workspace, or both sit inside the same restricted folder.
+3. It has a finished asset.
+4. Same audience: its stored restricted scope equals the document's stored restricted scope, so
+   the document's scope check answers for it too. Both are open to the workspace, or both sit
+   inside the same restricted folder.
 5. No narrow writers, open scope only. Every service account with an exact `content.write` grant on
    the document must be live (not revoked, same tenant) and able to read the media file, through a
    workspace `content.read` grant or an exact file `content.read` grant. A revoked or missing account

@@ -6,7 +6,10 @@ import { Workpool } from "@convex-dev/workpool";
 import type { Infer } from "convex/values";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_content_version_validator } from "./schema.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_sequence,
+} from "../server/files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "../server/files-saved-content.ts";
 import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { components, internal } from "./_generated/api.js";
@@ -230,4 +233,20 @@ export async function db_get_file_content_materialization_header(
 		asset,
 		yjsSnapshotAsset,
 	};
+}
+
+/**
+ * Whether a plugin decides who reads this node: a reader binding, or an attached external folder
+ * binding. A public link or a restricted folder inside its area would go around that list. Reads 2 docs.
+ */
+export async function files_nodes_db_has_plugin_binding(ctx: QueryCtx | MutationCtx, nodeId: Id<"files_nodes">) {
+	const binding = await ctx.db
+		.query("plugins_file_access_bindings")
+		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+		.first();
+	const externalBinding = await ctx.db
+		.query("plugins_external_file_bindings")
+		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+		.first();
+	return binding !== null || (externalBinding !== null && externalBinding.detachedAt === null);
 }

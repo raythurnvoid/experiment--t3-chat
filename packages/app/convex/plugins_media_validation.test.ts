@@ -297,34 +297,19 @@ async function external_writer(
 }
 
 describe("plugin file media validation clocks", () => {
-	test("advances the workspace clock for a leaf restriction with no new reader grant", async () => {
+	// A binding no longer restricts an open folder, so the clock stays and nothing changes.
+	test("refuses a binding on an open folder and keeps the workspace clock", async () => {
 		const f = await store_fixture({ open: true });
-		// Member cleanup removes scope grants before its queued stranded-scope cleanup.
-		await f.t.run(async (ctx) => {
-			await ctx.db.patch("organizations_workspaces_users", f.db.readerMembershipId, { active: false });
-			await ctx.db.insert("plugins_data_scopes", {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				installationId: f.db.installationId,
-				scopeId: "empty",
-				collection: "notes",
-				keyPrefix: "empty/",
-				createdByUserId: f.db.readerId,
-				lastAppend: null,
-				appendSequence: 0,
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-			});
-		});
 		const before = await snapshot(f);
-		const response = await set_binding(f, "empty");
-		expect(response.status, await response.clone().text()).toBe(200);
+		const response = await set_binding(f, "private");
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			message: "Restrict this item first, then a plugin can decide who reads it",
+		});
 		const after = await snapshot(f);
-		expect(after.nodes.find((node) => node._id === f.nodeId)?.restrictedScopeNodeId).toBe(f.nodeId);
-		expect(after.nodes).toHaveLength(1);
-		expect(file_grants(after, f.nodeId)).toEqual(file_grants(before, f.nodeId));
-		expect(after.bindings).toMatchObject([{ nodeId: f.nodeId, scopeId: "empty" }]);
-		await expect_clock({ f, before, changed: true });
+		expect(after.nodes).toEqual(before.nodes);
+		expect(after.bindings).toEqual([]);
+		await expect_clock({ f, before, changed: false });
 	});
 
 	test("advances the workspace clock for initial mirrored readers and preserves account grants", async () => {
@@ -495,13 +480,16 @@ describe("plugin file media validation clocks", () => {
 		for (const privateRoot of [false, true]) {
 			const f = await fixture();
 			const before = await snapshot(f);
-			const beforeContentRevision = await f.t.run(async (ctx) =>
-				(await ctx.db
-					.query("files_content_versions")
-					.withIndex("by_organization_workspace", (q) =>
-						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-					)
-					.first())?.revision ?? 0,
+			const beforeContentRevision = await f.t.run(
+				async (ctx) =>
+					(
+						await ctx.db
+							.query("files_content_versions")
+							.withIndex("by_organization_workspace", (q) =>
+								q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+							)
+							.first()
+					)?.revision ?? 0,
 			);
 			const result = await f.t.mutation(internal.plugins_external_files.ensure_writer, {
 				...f.credentials,
@@ -519,16 +507,18 @@ describe("plugin file media validation clocks", () => {
 				[],
 			);
 			expect(after.externalBindings).toHaveLength(privateRoot ? 1 : 0);
-			const afterContentRevision = await f.t.run(async (ctx) =>
-				(await ctx.db
-					.query("files_content_versions")
-					.withIndex("by_organization_workspace", (q) =>
-						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-					)
-					.first())?.revision ?? 0,
+			const afterContentRevision = await f.t.run(
+				async (ctx) =>
+					(
+						await ctx.db
+							.query("files_content_versions")
+							.withIndex("by_organization_workspace", (q) =>
+								q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+							)
+							.first()
+					)?.revision ?? 0,
 			);
-			expect(afterContentRevision, "External folder creation keeps its content clock")
-				.toBe(beforeContentRevision);
+			expect(afterContentRevision, "External folder creation keeps its content clock").toBe(beforeContentRevision);
 			const delta =
 				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
 				before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision;
