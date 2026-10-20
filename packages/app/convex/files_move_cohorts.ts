@@ -2527,8 +2527,9 @@ async function db_advance_step(
 	} else if (cohort.workPhase === "owners_closure") {
 		result = await files_move_owner_work_db_collect_closure(ctx, call, limitFactor);
 		next = "content";
+		// Skip content and media work for saved Move and Rename: their bytes do not change.
+		// Stage the transfer's one selected item here so final validation can still require it.
 		if (result._yay?.done && cohort.origin.kind === "transfer") {
-			// Saved Move and Rename keep content and have one selected item.
 			const item = (await ctx.db
 				.query("files_move_cohort_items")
 				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).eq("order", 0))

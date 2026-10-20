@@ -13,6 +13,9 @@ TODO: revisit transferring file versions and comments across workspaces in a fut
 The boundary and Copy lifecycle are in
 [Files transfer runs](../files-explorer-tree/references/transfer.md#workspace-boundary).
 
+For the Move design reasons, retained changes, rejected speed trials and evidence,
+read [Move design and experiment record](references/move-design-and-experiments.md).
+
 Each `files_pending_updates` doc belongs to one user and one saved or private target. It may contain a content proposal, a structural proposal, or both. Saved Files doors still accept a saved `nodeId` and build the tagged target at their boundary.
 
 Bash reads the caller's pending view. Its `file` command reads that view's stored content type without loading content. Public Files APIs, including the short grants used by `execute_code`, read saved files only. A pending create is missing there until Save; pending replacements, moves, and deletes do not change those API reads.

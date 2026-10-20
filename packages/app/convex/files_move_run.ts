@@ -4,6 +4,8 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import { internalAction } from "./_generated/server.js";
 
+// Keep one action from running through an entire large Move.
+// Queue the remaining steps at these bounds; do not limit the selection.
 const RUN_BUDGET_MS = 5_000;
 const RUN_MAX_ADVANCE_CALLS = 128;
 
@@ -28,6 +30,8 @@ export const run = internalAction({
 		const startedAt = Date.now();
 		let step = args.step;
 		try {
+			// Run the next committed step here to avoid a scheduler wait for every phase.
+			// Each mutation still checks access in its own transaction.
 			for (let count = 0; count < RUN_MAX_ADVANCE_CALLS; count++) {
 				let pending: advance_Result = await ctx.runMutation(internal.files_move_cohorts.advance, {
 					cohortId: args.cohortId,
