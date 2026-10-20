@@ -166,6 +166,10 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Conflict answers include the current run revision and, for replacement, the exact target and
   version shown in that conflict. A new unresolved conflict pauses every later
   publication. Already completed files stay. Do not expose names or paths after read access is lost.
+- A saved-view Copy receipt names a skipped locked child only while the same active item remains
+  at its recorded path and the caller can read it or its current direct parent. Use selected saved
+  placement during Move. A readable exact share still works below a locked parent. Losing that
+  name does not remove the receipt row, change its result, or hide readable copied output.
 
 ## Copied content
 

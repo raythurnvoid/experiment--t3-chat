@@ -17,7 +17,11 @@ import app_convex_schema, {
 } from "./schema.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
-import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
+import {
+	server_convex_get_user_fallback_to_anonymous,
+	server_path_parent_of,
+	should_never_happen,
+} from "../server/server-utils.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import type { files_PendingTarget, files_VisibleEntry } from "../shared/files.ts";
 import { files_type_query_db_get_readiness } from "../server/files-type-query.ts";
@@ -450,7 +454,7 @@ const item_view_validator = v.object({
 		v.null(),
 	),
 	errorMessage: v.union(v.string(), v.null()),
-	// A Copy skips a child its user cannot open. Its row shows the path it had, with no other data.
+	// A skipped locked child's path. Saved receipts recheck whether its name is still visible.
 	lockedPath: v.union(v.string(), v.null()),
 });
 
@@ -489,6 +493,35 @@ export const list_items = query({
 			});
 			const output = item.outputTarget ? await reader.resolveTarget(item.outputTarget) : null;
 			const conflict = item.conflictTarget ? await reader.resolveTarget(item.conflictTarget) : null;
+			let lockedPath = item.skipReason === "permission_denied" ? item.sourcePath : null;
+			// A saved Copy's old path is visible only while the same item is still listed there.
+			if (lockedPath !== null && run.sourceView === "saved" && source?.path !== item.sourcePath) {
+				lockedPath = null;
+				const node =
+					item.source.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, item.source.id) : null;
+				if (
+					node &&
+					node.organizationId === sourceScope.organizationId &&
+					node.workspaceId === sourceScope.workspaceId &&
+					node.archiveOperationId === null &&
+					node.path === item.sourcePath
+				) {
+					const parent =
+						node.parentId === "root" ? null : await files_saved_placement_db_get_node(ctx.db, node.parentId);
+					const parentPath = server_path_parent_of(item.sourcePath);
+					if (
+						(node.parentId === "root"
+							? parentPath === "/"
+							: parent?.kind === "folder" &&
+								parent.organizationId === sourceScope.organizationId &&
+								parent.workspaceId === sourceScope.workspaceId &&
+								parent.archiveOperationId === null &&
+								parent.path === parentPath) &&
+						(await sourceReader.canRead(parent))
+					)
+						lockedPath = item.sourcePath;
+				}
+			}
 			page.push({
 				itemId: item._id,
 				state: item.state,
@@ -513,7 +546,7 @@ export const list_items = query({
 							}
 						: null,
 				errorMessage: source ? item.errorMessage : item.errorMessage ? "This item is no longer available" : null,
-				lockedPath: item.skipReason === "permission_denied" ? item.sourcePath : null,
+				lockedPath,
 			});
 		}
 		return { ...items, page };

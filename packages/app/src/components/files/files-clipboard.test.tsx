@@ -1446,7 +1446,7 @@ describe("FilesTransferRunModal", () => {
 		expect(screen.queryByText("Page 2")).toBeNull();
 	});
 
-	test("names a skipped locked item by its path and says Permission denied", async () => {
+	test.each(["/folder/secret-name", null])("shows a skipped item with current path %s", async (lockedPath) => {
 		queryState.run = make_run({ status: "partial" });
 		queryState.runs = [queryState.run];
 		queryState.itemPages.first = {
@@ -1456,7 +1456,7 @@ describe("FilesTransferRunModal", () => {
 					source: null,
 					conflictKind: null,
 					conflict: null,
-					lockedPath: "/folder/secret-name",
+					lockedPath,
 				}),
 			],
 			isDone: true,
@@ -1464,8 +1464,9 @@ describe("FilesTransferRunModal", () => {
 		};
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
-		expect(await screen.findByText("/folder/secret-name")).toBeTruthy();
-		expect(screen.getByText("Skipped: Permission denied")).toBeTruthy();
+		expect(await screen.findByText(lockedPath ?? "Unavailable item")).toBeTruthy();
+		expect(screen.getByText(lockedPath ? "Skipped: Permission denied" : "Skipped")).toBeTruthy();
+		if (!lockedPath) expect(screen.queryByText("/folder/secret-name")).toBeNull();
 	});
 
 	test.each(["uploading", "select", "normalize"] as const)(

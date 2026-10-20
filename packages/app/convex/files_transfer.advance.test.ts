@@ -965,6 +965,37 @@ describe("advance", () => {
 		});
 		expect(await get_node(fixture, "/target/source/open")).not.toBeNull();
 		expect(await get_node(fixture, "/target/source/hidden-name")).toBeNull();
+		const receipt = () =>
+			member.asUser.query(api.files_transfer_queries.list_items, {
+				membershipId: member.membershipId,
+				runId: started._yay.runId,
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+		const before = await receipt();
+		expect(before?.page.find((item) => item.state === "skipped")?.lockedPath).toBe("/source/hidden-name");
+		expect(
+			await asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: db.membershipId,
+				nodeId: folders.get("/source")!,
+			}),
+		).toEqual({ _yay: null });
+		const after = await receipt();
+		expect(after?.page.find((item) => item.state === "skipped")?.lockedPath).toBeNull();
+		expect(after?.page.map(({ itemId, state, output }) => ({ itemId, state, output }))).toEqual(
+			before?.page.map(({ itemId, state, output }) => ({ itemId, state, output })),
+		);
+		expect(await read()).toMatchObject({
+			activity: { status: "succeeded", progress: { completed: 2, skipped: 1 }, errorMessage: null },
+		});
+		expect(
+			await asUser.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: db.membershipId,
+				nodeId: folders.get("/source")!,
+				principal: { kind: "user", userId: member.userId },
+				level: "read",
+			}),
+		).toEqual({ _yay: null });
+		expect((await receipt())?.page.find((item) => item.state === "skipped")?.lockedPath).toBe("/source/hidden-name");
 	});
 
 	// A member's running copy must stop when they are removed and invited again, because the invite
