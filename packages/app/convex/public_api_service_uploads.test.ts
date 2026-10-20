@@ -815,8 +815,7 @@ describe("service upload plan gate", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId)
-							.eq("moveCohortId", undefined)
+							.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 							.eq("path", "/meetings/meeting-1/recording.mp4")
 							.eq("archiveOperationId", null),
 					)
@@ -2016,8 +2015,7 @@ describe("service upload targets", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId)
-							.eq("moveCohortId", undefined)
+							.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 							.eq("path", "/meetings/meeting-1/file-16.bin")
 							.eq("archiveOperationId", null),
 					)
@@ -3357,8 +3355,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -3438,8 +3435,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -3493,8 +3489,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -3584,8 +3579,7 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)

@@ -16,6 +16,7 @@ import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } fro
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_share_links_db_delete_for_node, files_share_links_db_delete_for_scope } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
@@ -30,7 +31,7 @@ import {
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_plugin_session } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_get_utf8_byte_size } from "../shared/files.ts";
+import { files_get_utf8_byte_size, files_ROOT_ID } from "../shared/files.ts";
 import {
 	plugins_data_is_valid_name,
 	plugins_data_MAX_KEY_PREFIX_LENGTH,
@@ -4004,6 +4005,10 @@ export async function plugins_data_db_prepare_file_access_binding(
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
 		nodeId: Id<"files_nodes"> | null;
+		/**
+		 * The node's parent, or the folder a new node goes in.
+		 */
+		parentId: Doc<"files_nodes">["parentId"];
 		readScopeId: string | null;
 	},
 ) {
@@ -4047,10 +4052,18 @@ export async function plugins_data_db_prepare_file_access_binding(
 		});
 	}
 
-	// The plugin decides who reads the whole area of the node, so bind only a restricted folder whose scope
-	// op has ended and that holds no other restricted folder. Then every item inside stores this folder as
-	// its scope. A new node and a file hold nothing. A bound node passed this check when it was bound, and
-	// restrict, Move and restore refuse to put a restricted folder in its area since.
+	// The plugin decides who reads the whole area of the node. So bind only outside an area that a plugin
+	// already decides, and only a restricted folder whose scope op has ended and that holds no other
+	// restricted item. Then every item inside stores this folder as its scope. A new node and a file hold
+	// nothing. A bound node passed these checks when it was bound, and restrict, Move and restore refuse to
+	// put a restricted item in a bound area since.
+	if (!existingBinding) {
+		const parent =
+			args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
+		if (parent?.restrictedScopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, parent.restrictedScopeNodeId))) {
+			return Result({ _nay: { message: "A plugin already decides who can read the folder around this item" } });
+		}
+	}
 	const node = nodeId && !existingBinding ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
 	if (node?.kind === "folder") {
 		if (node.restrictedScopeNodeId !== node._id) {
@@ -4099,7 +4112,7 @@ export async function plugins_data_db_prepare_file_access_binding(
 			// The caller may not read that folder, so do not name it.
 			return Result({
 				_nay: {
-					message: "A folder inside has its own restricted access, so a plugin cannot decide who reads this folder",
+					message: "An item inside has its own restricted access, so a plugin cannot decide who reads this folder",
 				},
 			});
 		}

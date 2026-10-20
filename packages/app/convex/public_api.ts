@@ -72,15 +72,7 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { encodeStateVector } from "yjs";
-import {
-	files_nodes_db_archive_nodes,
-	files_nodes_db_get_write_policy_management_state,
-	files_nodes_db_set_write_policy,
-	files_nodes_write_policy_management_state_validator,
-	type files_nodes_get_by_path_Result,
-	type files_nodes_read_file_content_from_chunks_Result,
-	type get_file_content_materialization_state_Result,
-} from "./files_nodes.ts";
+import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
@@ -2050,10 +2042,7 @@ export const get_file_read_membership = internalQuery({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 	},
-	returns: v.union(
-		v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.union(v.number(), v.null()) }),
-		v.null(),
-	),
+	returns: v.union(v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.union(v.number(), v.null()) }), v.null()),
 	handler: async (ctx, args) => {
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")

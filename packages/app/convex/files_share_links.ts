@@ -618,7 +618,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	}
 	await reads_sync(ctx, reads);
 
-	// Each media file must pass the same checks as the shared file.
+	// Each media file needs the shared file's scope and a finished asset, and every narrow writer must read it.
 	let fileWriterAccountIds: Set<Id<"access_control_service_accounts">> | null | undefined;
 	const accountAccess = new Map<Id<"access_control_service_accounts">, { live: boolean; readsWorkspace: boolean }>();
 	const mediaAssets: Array<Awaited<ReturnType<typeof db_get_finished_asset>>> = [];

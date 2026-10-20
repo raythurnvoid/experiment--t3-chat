@@ -10,6 +10,10 @@ import { organizations_db_create_workspace } from "./organizations.ts";
 import { plugins_data_db_prepare_file_access_binding } from "./plugins_data.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_node_view,
+} from "../server/files-saved-placement.ts";
+import {
 	mock_share_storage,
 	fixture,
 	reset_rate_limits,
@@ -19,6 +23,7 @@ import {
 	read_links,
 	link_on,
 	insert_restricted_folder,
+	create_restricted_folder,
 	restrict_and_bind,
 	view_of,
 	type Fixture,
@@ -654,28 +659,14 @@ describe("files_share_links_db_delete_for_scope", () => {
 	});
 });
 
-/**
- * Restrict the folder of a new file at `${path}/notes.md` and let its scope job end.
- */
-async function restricted_folder(f: Fixture, path: string) {
-	const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: `${path}/notes.md` });
-	const folderId = (await f.t.run((ctx) => ctx.db.get("files_nodes", fileId)))!.parentId as Id<"files_nodes">;
-	await reset_rate_limits(f.t, [f.db.userId]);
-	expect(
-		(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderId }))
-			._nay,
-	).toBeUndefined();
-	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-	return { fileId, folderId };
-}
-
 describe("plugins_data_db_prepare_file_access_binding", () => {
 	async function prepare_for(f: Fixture) {
 		const installationId = await insert_installation(f);
 		return (nodeId: Id<"files_nodes">) =>
 			f.t.run(async (ctx) => {
 				const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
-				return await plugins_data_db_prepare_file_access_binding(ctx, { installation, nodeId, readScopeId: "team" });
+				const { parentId } = (await ctx.db.get("files_nodes", nodeId))!;
+				return await plugins_data_db_prepare_file_access_binding(ctx, { installation, nodeId, parentId, readScopeId: "team" });
 			});
 	}
 
@@ -707,20 +698,43 @@ describe("plugins_data_db_prepare_file_access_binding", () => {
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 		expect((await prepare(big.folderId))._nay).toBeUndefined();
 
-		const team = await restricted_folder(f, "/team");
-		await restricted_folder(f, "/team/inner");
+		const team = await create_restricted_folder(f, "/team");
+		await create_restricted_folder(f, "/team/inner");
 		expect((await prepare(team.folderId))._nay?.message).toBe(
-			"A folder inside has its own restricted access, so a plugin cannot decide who reads this folder",
+			"An item inside has its own restricted access, so a plugin cannot decide who reads this folder",
 		);
+	});
+
+	test("refuses a file or a new node inside an area that a plugin already decides", async () => {
+		const f = await fixture();
+		const prepare = await prepare_for(f);
+		const team = await create_restricted_folder(f, "/team");
+		const installationId = await restrict_and_bind(f, team.folderId);
+		const prepare_new = (parentId: Doc<"files_nodes">["parentId"]) =>
+			f.t.run(async (ctx) => {
+				const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+				return await plugins_data_db_prepare_file_access_binding(ctx, {
+					installation,
+					nodeId: null,
+					parentId,
+					readScopeId: "team",
+				});
+			});
+		const message = "A plugin already decides who can read the folder around this item";
+
+		expect((await prepare(team.fileId))._nay?.message).toBe(message);
+		expect((await prepare_new(team.folderId))._nay?.message).toBe(message);
+		// Control: the same new node outside the bound folder passes.
+		expect((await prepare_new("root"))._nay).toBeUndefined();
 	});
 
 	// A Move holds its folders only in the "before" and "after" views until it ends.
 	test("sees a restricted folder that a Move holds, on the way in and on the way out", async () => {
 		const f = await fixture();
 		const prepare = await prepare_for(f);
-		const team = await restricted_folder(f, "/team");
-		const moving = await restricted_folder(f, "/a/private");
-		const message = "A folder inside has its own restricted access, so a plugin cannot decide who reads this folder";
+		const team = await create_restricted_folder(f, "/team");
+		const moving = await create_restricted_folder(f, "/a/private");
+		const message = "An item inside has its own restricted access, so a plugin cannot decide who reads this folder";
 		let heldSteps = 0;
 		const move = async (targetParentId: Doc<"files_nodes">["parentId"]) => {
 			await reset_rate_limits(f.t, [f.db.userId]);
@@ -751,8 +765,8 @@ describe("plugins_data_db_prepare_file_access_binding", () => {
 describe("plugins_data_db_apply_file_access_binding", () => {
 	test("binding a restricted folder ends the links in its area and keeps the others", async () => {
 		const f = await fixture();
-		const team = await restricted_folder(f, "/team");
-		const other = await restricted_folder(f, "/other");
+		const team = await create_restricted_folder(f, "/team");
+		const other = await create_restricted_folder(f, "/other");
 		await link_on(f, team.fileId);
 		const outside = await link_on(f, f.nodeId);
 		const otherLink = await link_on(f, other.fileId);
@@ -774,7 +788,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 
 	test("a detach after binding a restricted folder does not bring the old link back", async () => {
 		const f = await fixture();
-		const { fileId: nodeId, folderId } = await restricted_folder(f, "/team");
+		const { fileId: nodeId, folderId } = await create_restricted_folder(f, "/team");
 		const link = await link_on(f, nodeId);
 		const installationId = await insert_installation(f);
 
@@ -797,7 +811,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 describe("restrict_node", () => {
 	test("refuses inside a bound folder", async () => {
 		const f = await fixture();
-		const team = await restricted_folder(f, "/team");
+		const team = await create_restricted_folder(f, "/team");
 		const inner = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: f.db.membershipId,
 			parentId: team.folderId,
@@ -817,16 +831,62 @@ describe("restrict_node", () => {
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", innerId)))?.restrictedScopeNodeId).toBe(team.folderId);
 
 		// Control: a folder outside a bound area gets restricted.
-		await restricted_folder(f, "/open");
+		await create_restricted_folder(f, "/open");
+	});
+
+	// The Move checks each item when it stages it, and shows the new place only when all are staged. A
+	// restrict in between must check where the item lands.
+	test("refuses a folder that a Move has staged into a bound folder", async () => {
+		const f = await fixture();
+		const team = await create_restricted_folder(f, "/team");
+		await restrict_and_bind(f, team.folderId);
+		// Enough items that the Move stages them over several steps.
+		const big = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
+		let stagedSteps = 0;
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const moved = await test_move_nodes(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			itemIds: [big.folderId],
+			targetParentId: team.folderId,
+			onStep: async () => {
+				// Staged: the old place still shows, and the new place is in the bound folder.
+				const staged = await f.t.run(async (ctx) => {
+					const view = await files_saved_placement_db_get_node_view(ctx.db, big.folderId);
+					if (view?.view !== "before") return false;
+					const after = await files_saved_placement_db_get_node(ctx.db, big.folderId, {
+						cohortId: view.cohortId,
+						view: "after",
+					});
+					return after?.restrictedScopeNodeId === team.folderId;
+				});
+				if (!staged) return;
+				stagedSteps++;
+				await reset_rate_limits(f.t, [f.db.userId]);
+				const refused = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: big.folderId,
+				});
+				expect(refused._nay?.message).toBe(
+					"A plugin decides who can read this item, so it cannot be restricted on its own",
+				);
+			},
+		});
+		expect(moved).toEqual({ _yay: null });
+		expect(stagedSteps).toBeGreaterThan(0);
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", big.folderId))).toMatchObject({
+			path: "/team/big",
+			restrictedScopeNodeId: team.folderId,
+		});
 	});
 });
 
 describe("Move into a bound folder", () => {
 	test("refuses a restricted folder, also one inside a moved folder, and moves a plain folder", async () => {
 		const f = await fixture();
-		const team = await restricted_folder(f, "/team");
+		const team = await create_restricted_folder(f, "/team");
 		await restrict_and_bind(f, team.folderId);
-		const restricted = await restricted_folder(f, "/a/private");
+		const restricted = await create_restricted_folder(f, "/a/private");
 		const plainId = (await f.t.run((ctx) => ctx.db.get("files_nodes", restricted.folderId)))!
 			.parentId as Id<"files_nodes">;
 		const move = async (itemId: Id<"files_nodes">) => {
@@ -837,7 +897,7 @@ describe("Move into a bound folder", () => {
 				targetParentId: team.folderId,
 			});
 		};
-		const message = "A plugin decides who can read the destination, so a restricted folder cannot move there.";
+		const message = "A plugin decides who can read the destination, so a restricted item cannot move there.";
 
 		expect((await move(restricted.folderId))._nay?.message).toBe(message);
 		expect((await move(plainId))._nay?.message).toBe(message);
@@ -851,13 +911,43 @@ describe("Move into a bound folder", () => {
 		});
 		expect(await move(loose._yay!.nodeId)).toEqual({ _yay: null });
 	});
+
+	// Data from before the bind rules can hold a restricted folder inside a bound folder. A Move into it
+	// does not move that folder, so it must not refuse.
+	test("moves a file into a restricted folder that already sits in a bound folder", async () => {
+		const f = await fixture();
+		const team = await create_restricted_folder(f, "/team");
+		const inner = await create_restricted_folder(f, "/team/inner");
+		const installationId = await insert_installation(f);
+		await f.t.run((ctx) =>
+			ctx.db.insert("plugins_file_access_bindings", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				installationId,
+				scopeId: "team",
+				nodeId: team.folderId,
+				updatedAt: Date.now(),
+			}),
+		);
+		const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/x.md" });
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		expect(
+			await test_move_nodes(f.t, f.asOwner, {
+				membershipId: f.db.membershipId,
+				itemIds: [fileId],
+				targetParentId: inner.folderId,
+			}),
+		).toEqual({ _yay: null });
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", fileId)))?.path).toBe("/team/inner/x.md");
+	});
 });
 
 describe("restore into a bound folder", () => {
 	test("refuses a restricted folder that comes back into a bound folder", async () => {
 		const f = await fixture();
-		const team = await restricted_folder(f, "/team");
-		const inner = await restricted_folder(f, "/team/inner");
+		const team = await create_restricted_folder(f, "/team");
+		const inner = await create_restricted_folder(f, "/team/inner");
 		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
 			membershipId: f.db.membershipId,
 			nodeIds: [inner.folderId],
@@ -873,7 +963,7 @@ describe("restore into a bound folder", () => {
 			nodeIds: [inner.folderId],
 		});
 		expect(started._nay?.message).toBe(
-			"A plugin decides who can read the folder it comes back to, so a restricted folder cannot be restored there.",
+			"A plugin decides who can read the folder it comes back to, so a restricted item cannot be restored there.",
 		);
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", inner.folderId)))?.archiveOperationId).not.toBeNull();

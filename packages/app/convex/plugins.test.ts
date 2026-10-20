@@ -703,8 +703,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 						.gte("treePath", `/${first.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${first.pluginVersionId}/`)),
 				)
@@ -1781,8 +1780,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/meetings/meeting-1")
 						.eq("archiveOperationId", null),
 				)
@@ -2370,8 +2368,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/media/locked-note.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2418,8 +2415,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/locked-source-summary.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2640,8 +2636,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("parentId", "root")
 						.eq("name", "plugin-live-image-20260702t011841z.png.description.md")
 						.eq("archiveOperationId", null),
@@ -3174,8 +3169,7 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", "/expired.png.md")
 						.eq("archiveOperationId", null),
 				)
@@ -7522,8 +7516,7 @@ describe("plugins metadata file doors", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)
@@ -9474,9 +9467,9 @@ describe("plugins metadata file doors", () => {
 
 	// A folder's lock changes only the folder, so the member needs manage on the folder only, like the
 	// Properties setter. A binding decides the readers of the whole folder, so it refuses a folder that holds
-	// a restricted folder.
+	// a restricted item.
 	test.each(["lock", "binding"] as const)(
-		"the access door changes the folder %s without manage permission on a nested scope, or refuses the binding",
+		"the access door over a nested restricted folder: a %s change",
 		async (change) => {
 			const t = test_convex();
 			const fixture = await install_file_doors_plugin(t);
@@ -9556,7 +9549,7 @@ describe("plugins metadata file doors", () => {
 			} else {
 				expect(response.status).toBe(409);
 				expect(await response.json()).toEqual({
-					message: "A folder inside has its own restricted access, so a plugin cannot decide who reads this folder",
+					message: "An item inside has its own restricted access, so a plugin cannot decide who reads this folder",
 				});
 				expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toEqual([]);
 			}
@@ -10444,8 +10437,7 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-							.eq("moveCohortId", undefined)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 							.gte("treePath", `/${version._id}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${version._id}/`)),
 					)
@@ -10472,8 +10464,7 @@ describe("plugins admin hard delete", () => {
 						.withIndex("by_organization_workspace_treePath", (q) =>
 							q
 								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-								.eq("moveCohortId", undefined)
+								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 								.gte("treePath", `/${registered.pluginVersionId}/`)
 								.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 						)
@@ -10497,8 +10488,7 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-							.eq("moveCohortId", undefined)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
@@ -11908,8 +11898,7 @@ describe("plugins admin hard delete", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-						.eq("moveCohortId", undefined),
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined),
 				)
 				.collect(),
 		);

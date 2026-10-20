@@ -105,12 +105,7 @@ describe("search box doors", () => {
 				name: "files_search_metadata",
 				key: seeded.db.userId,
 			});
-			return await search_saved_plans({
-				asWho: seeded.asOwner,
-				membershipId: seeded.db.membershipId,
-				plans,
-				folderPath,
-			});
+			return await search_saved_plans({ asWho: seeded.asOwner, membershipId: seeded.db.membershipId, plans, folderPath });
 		};
 
 		// `status:open` from either metadata kind: the open task, the fixed task through its map, the archive.

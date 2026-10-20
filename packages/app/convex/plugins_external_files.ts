@@ -14,6 +14,7 @@ import { organizations_membership_lifetimes_db_get } from "./organizations_membe
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_set_restricted_scope, files_nodes_db_archive_nodes } from "./files_nodes.ts";
+import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
@@ -272,6 +273,10 @@ export const ensure_writer = internalMutation({
 
 		if (args.readers) {
 			const parent = facts._yay.parentNode;
+			// A public link checks only the binding of its own scope node, so a binding cannot start inside an
+			// area that a plugin already decides. A detach would leave a plain restricted folder there.
+			if (parent?.restrictedScopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, parent.restrictedScopeNodeId)))
+				return Result({ _nay: { message: "A plugin already decides who can read the folder around this item" } });
 			const allowed = await access_control_db_authorize_service_account_grant(ctx, {
 				userAuth: { id: serviceGrant.actorUserId },
 				membership: facts._yay.membership,

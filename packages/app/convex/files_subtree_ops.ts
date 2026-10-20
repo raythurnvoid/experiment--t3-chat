@@ -127,8 +127,7 @@ async function db_read_children(
 			.withIndex("by_organization_workspace_parent_name", (q) =>
 				q
 					.eq("organizationId", folder.organizationId)
-					.eq("workspaceId", folder.workspaceId)
-					.eq("moveCohortId", undefined)
+					.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 					.eq("parentId", folder._id)
 					.eq("name", cursor.name)
 					.eq("_creationTime", cursor.creationTime),
@@ -150,8 +149,7 @@ async function db_read_children(
 					.withIndex("by_organization_workspace_parent_name", (q) =>
 						q
 							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId)
-							.eq("moveCohortId", undefined)
+							.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 							.eq("parentId", folder._id),
 					)
 					.take(PAGE_SIZE + 1)
@@ -160,8 +158,7 @@ async function db_read_children(
 					.withIndex("by_organization_workspace_parent_name", (q) =>
 						q
 							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId)
-							.eq("moveCohortId", undefined)
+							.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 							.eq("parentId", folder._id)
 							.eq("name", cursor.name)
 							.gt("_creationTime", cursor.creationTime),
@@ -176,8 +173,7 @@ async function db_read_children(
 				.withIndex("by_organization_workspace_parent_name", (q) =>
 					q
 						.eq("organizationId", folder.organizationId)
-						.eq("workspaceId", folder.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", folder.workspaceId).eq("moveCohortId", undefined)
 						.eq("parentId", folder._id)
 						.gt("name", cursor.name),
 				)

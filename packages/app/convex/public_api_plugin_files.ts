@@ -119,6 +119,7 @@ async function db_prepare_plugin_access(
 		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
 			installation: args.installation,
 			nodeId: args.node?._id ?? null,
+			parentId: args.parentId,
 			readScopeId: args.readScopeId,
 		});
 		if (prepared._nay) {
@@ -336,6 +337,7 @@ export const ensure_plugin_folder = internalMutation({
 				const preparedBinding = await plugins_data_db_prepare_file_access_binding(ctx, {
 					installation,
 					nodeId,
+					parentId: deepest.parentId,
 					readScopeId: binding.scopeId,
 				});
 				if (preparedBinding._nay) {

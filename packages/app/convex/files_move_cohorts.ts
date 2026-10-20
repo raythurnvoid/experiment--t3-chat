@@ -6,11 +6,7 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import {
-	files_metadata_maps_db_delete,
-	files_metadata_maps_db_read,
-	files_metadata_maps_db_write,
-} from "../server/files-metadata-maps.ts";
+import { files_metadata_maps_db_delete, files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
@@ -529,11 +525,7 @@ export async function files_move_cohorts_db_schedule(
 	if (!cohort || cohort.phase === "complete") return;
 	// Start ready steps before scheduling the first job. Stop at a parent page or publication.
 	if (!args.handoff && !cohort.runJob && cohort.step === 0 && (await files_pending_overlay_db_can_join_step(ctx, 4))) {
-		await files_move_cohorts_db_advance(
-			ctx,
-			{ cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true },
-			4,
-		);
+		await files_move_cohorts_db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true }, 4);
 		cohort = (await ctx.db.get("files_move_cohorts", args.cohortId))!;
 		if (cohort.phase === "complete") return;
 	}
@@ -635,17 +627,20 @@ export async function files_move_cohorts_db_begin_transfer_item(
 	const activity = await activities_db_require_by_source_id(ctx, run._id);
 	if (!activities_is_active(activity.status) || activity.deadlineAt <= Date.now())
 		return Result({ _nay: { name: "stopped", message: "This Move has stopped." } });
-	return await db_begin(ctx, {
-		organizationId: run.organizationId,
-		workspaceId: run.workspaceId,
-		userId: run.userId,
-		membershipId: run.sourceScope.membershipId,
-		membershipLifetime: run.sourceScope.membershipLifetime,
-		origin: { kind: "transfer", runId: run._id, itemId: item._id },
-		fence: args.fence,
-		attemptFence: args.attemptFence,
-		itemCount: 1,
-	});
+	return await db_begin(
+		ctx,
+		{
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			userId: run.userId,
+			membershipId: run.sourceScope.membershipId,
+			membershipLifetime: run.sourceScope.membershipLifetime,
+			origin: { kind: "transfer", runId: run._id, itemId: item._id },
+			fence: args.fence,
+			attemptFence: args.attemptFence,
+			itemCount: 1,
+		},
+	);
 }
 
 async function db_parent_id(
@@ -1376,17 +1371,19 @@ async function db_headers(
 		return tooLong;
 	}
 	const scope = physical.isRestrictedScopeRoot ? physical._id : (parent?.restrictedScopeNodeId ?? null);
-	// A plugin decides who reads the whole bound area, so a restricted folder cannot land in one. This
-	// step visits every node, so a restricted folder inside a moved folder is checked too.
+	// A plugin decides who reads the whole bound area, so a restricted item cannot come into one. This
+	// step visits every node, so a restricted folder inside a moved folder is checked too. A node that
+	// stays in its area, like a destination folder that does not move, passes.
 	if (
 		physical.isRestrictedScopeRoot &&
 		parent?.restrictedScopeNodeId &&
+		old?.parentScopeNodeId !== parent.restrictedScopeNodeId &&
 		(await files_nodes_db_has_plugin_binding(ctx, parent.restrictedScopeNodeId))
 	)
 		return Result({
 			_nay: {
 				name: "permission_denied",
-				message: "A plugin decides who can read the destination, so a restricted folder cannot move there.",
+				message: "A plugin decides who can read the destination, so a restricted item cannot move there.",
 			},
 		});
 	if (selected) {
@@ -1786,11 +1783,7 @@ async function db_sides(
 		joined = true;
 	}
 	// Part 3 reads no page either, so it joins part 2 when the budget allows.
-	if (
-		!paginated &&
-		cursor.part === 3 &&
-		(!joined || (await files_pending_overlay_db_can_join_step(ctx, limitFactor)))
-	) {
+	if (!paginated && cursor.part === 3 && (!joined || (await files_pending_overlay_db_can_join_step(ctx, limitFactor)))) {
 		let reparented = before?.parentId !== after.parentId;
 		if (record.role === "descendant" && item) {
 			const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
@@ -2787,8 +2780,7 @@ export async function files_move_cohorts_db_advance(
 			await files_move_cohorts_db_schedule(ctx, { cohortId: args.cohortId, handoff: true });
 			return { kind: "next" as const, step };
 		}
-		if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx, limitFactor)))
-			return { kind: "next" as const, step };
+		if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) return { kind: "next" as const, step };
 	}
 }
 

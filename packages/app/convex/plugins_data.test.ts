@@ -2078,10 +2078,10 @@ describe("invoke file write preconditions", () => {
 					expect(
 						(
 							await test_move_nodes(t, fixture.asUser, {
-								membershipId: fixture.membershipId,
-								itemIds: [fixture.parentId],
-								targetParentId: files_ROOT_ID,
-							})
+									membershipId: fixture.membershipId,
+									itemIds: [fixture.parentId],
+									targetParentId: files_ROOT_ID,
+								})
 						)._nay,
 					).toBeUndefined();
 				} else {
@@ -12934,6 +12934,7 @@ async function apply_binding(args: {
 		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
 			installation,
 			nodeId: node._id,
+			parentId: node.parentId,
 			readScopeId: args.readScopeId,
 		});
 		if (prepared._nay) {

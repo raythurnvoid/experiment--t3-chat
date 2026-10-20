@@ -84,7 +84,9 @@ export async function files_share_links_db_delete_for_scope(
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		// Never `null`: that would delete every open link of the workspace.
+		/**
+		 * Never `null`: that would delete every open link of the workspace.
+		 */
 		scopeNodeId: Id<"files_nodes">;
 	},
 ) {

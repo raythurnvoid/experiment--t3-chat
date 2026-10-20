@@ -44,7 +44,10 @@ import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_node_view,
+} from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
@@ -1243,11 +1246,18 @@ export const restrict_node = mutation({
 			// from reading as an error.
 			return Result({ _yay: null });
 		}
-		// A plugin decides who reads the whole bound area. A restricted folder inside would leave that list.
-		if (node.restrictedScopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, node.restrictedScopeNodeId))) {
-			return Result({
-				_nay: { message: "A plugin decides who can read this item, so it cannot be restricted on its own" },
-			});
+		// A plugin decides who reads the whole bound area. A restricted item inside would leave that list.
+		// While a Move holds the item, the area it moves into counts too: the Move checked it before this restrict.
+		const moveView = await files_saved_placement_db_get_node_view(ctx.db, node._id);
+		const moved = moveView
+			? await files_saved_placement_db_get_node(ctx.db, node._id, { cohortId: moveView.cohortId, view: "after" })
+			: null;
+		for (const scopeNodeId of [node.restrictedScopeNodeId, moved?.restrictedScopeNodeId]) {
+			if (scopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, scopeNodeId))) {
+				return Result({
+					_nay: { message: "A plugin decides who can read this item, so it cannot be restricted on its own" },
+				});
+			}
 		}
 
 		const isOwner = userAuth.id === organization.ownerUserId;

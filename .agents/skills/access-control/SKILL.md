@@ -1474,25 +1474,29 @@ What keeps a link:
 A file node that is gone or archived without a hook still shows nothing, because the view reads
 the file on every read.
 
-**A bound area holds no restricted folder.** The plugin decides who reads the whole area, and a
-restricted folder inside would have its own reader list and could get links again. So these
-refuse:
+**A bound area holds no other restricted item.** A bound area is an area whose scope node has a
+plugin binding. The plugin decides who reads the whole area. A restricted item inside would have its
+own reader list, and once it has no binding of its own it could get links again. So these refuse:
 
-- `restrict_node` on an item inside a bound area: "A plugin decides who can read this item, so it
-  cannot be restricted on its own".
-- A Move that puts a restricted folder, or a folder that holds one, into a bound area
-  (`files_move_cohorts.ts`, checked for every moved node): "A plugin decides who can read the
-  destination, so a restricted folder cannot move there."
-- A restore that brings a restricted folder back into a bound area (`db_land_node` in
+- `restrict_node` on an item inside a bound area, or on an item that a Move has staged into one
+  (its "after" place): "A plugin decides who can read this item, so it cannot be restricted on its
+  own".
+- A Move that puts a restricted item, or a folder that holds one, into a bound area
+  (`files_move_cohorts.ts`, checked for every moved node that lands in a new area): "A plugin
+  decides who can read the destination, so a restricted item cannot move there." A destination
+  folder that does not move is not checked.
+- A restore that brings a restricted item back into a bound area (`db_land_node` in
   `files_archive_runs.ts`): "A plugin decides who can read the folder it comes back to, so a
-  restricted folder cannot be restored there."
-- A bind of a folder that holds a restricted folder, read on
+  restricted item cannot be restored there."
+- A bind inside a bound area, for an existing node or a new one (`plugins_data_db_prepare_file_access_binding`
+  and `plugins_external_files.ensure_writer`): "A plugin already decides who can read the folder
+  around this item".
+- A bind of a folder that holds a restricted item, read on
   `by_org_ws_parentScope_archive_treePath` and, while a Move holds the workspace, on both Move views
   of `files_saved_places`.
 
-Known gaps: a manual sharing change detaches the binding of a node inside a bound area and leaves a
-plain restricted node there, which can get links again. Two cases reach this: a nested restricted
-folder bound before this rule, and a file that a plugin bound on its own inside its bound folder.
+Data from before these rules may still hold a restricted item inside a bound area. On 2026-10-20 the
+dev deployment had none.
 
 ### Seeing links inside Files
 

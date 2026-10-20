@@ -297,7 +297,7 @@ async function external_writer(
 }
 
 describe("plugin file media validation clocks", () => {
-	// A binding no longer restricts an open folder, so the clock stays and nothing changes.
+	// A plugin binds only a restricted folder, so an open folder is refused and the clock stays.
 	test("refuses a binding on an open folder and keeps the workspace clock", async () => {
 		const f = await store_fixture({ open: true });
 		const before = await snapshot(f);
@@ -480,16 +480,13 @@ describe("plugin file media validation clocks", () => {
 		for (const privateRoot of [false, true]) {
 			const f = await fixture();
 			const before = await snapshot(f);
-			const beforeContentRevision = await f.t.run(
-				async (ctx) =>
-					(
-						await ctx.db
-							.query("files_content_versions")
-							.withIndex("by_organization_workspace", (q) =>
-								q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-							)
-							.first()
-					)?.revision ?? 0,
+			const beforeContentRevision = await f.t.run(async (ctx) =>
+				(await ctx.db
+					.query("files_content_versions")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+					)
+					.first())?.revision ?? 0,
 			);
 			const result = await f.t.mutation(internal.plugins_external_files.ensure_writer, {
 				...f.credentials,
@@ -507,18 +504,16 @@ describe("plugin file media validation clocks", () => {
 				[],
 			);
 			expect(after.externalBindings).toHaveLength(privateRoot ? 1 : 0);
-			const afterContentRevision = await f.t.run(
-				async (ctx) =>
-					(
-						await ctx.db
-							.query("files_content_versions")
-							.withIndex("by_organization_workspace", (q) =>
-								q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-							)
-							.first()
-					)?.revision ?? 0,
+			const afterContentRevision = await f.t.run(async (ctx) =>
+				(await ctx.db
+					.query("files_content_versions")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+					)
+					.first())?.revision ?? 0,
 			);
-			expect(afterContentRevision, "External folder creation keeps its content clock").toBe(beforeContentRevision);
+			expect(afterContentRevision, "External folder creation keeps its content clock")
+				.toBe(beforeContentRevision);
 			const delta =
 				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
 				before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision;

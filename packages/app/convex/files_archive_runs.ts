@@ -1226,7 +1226,7 @@ async function db_land_node(
 
 	const { run, progress } = previousArgs;
 	const landingParentId = landing?._id ?? files_ROOT_ID;
-	// A plugin decides who reads the whole bound area, so a restricted folder cannot come back into one.
+	// A plugin decides who reads the whole bound area, so a restricted item cannot come back into one.
 	if (
 		node.restrictedScopeNodeId === node._id &&
 		landing?.restrictedScopeNodeId &&
@@ -1236,7 +1236,7 @@ async function db_land_node(
 			kind: "failed",
 			nay: {
 				message:
-					"A plugin decides who can read the folder it comes back to, so a restricted folder cannot be restored there.",
+					"A plugin decides who can read the folder it comes back to, so a restricted item cannot be restored there.",
 			},
 		};
 	}
@@ -1526,7 +1526,8 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 /**
  * Run once before the first stamp of an archive, after its check or right away for a fast archive.
  * The queue is empty then. Keep one queue number for each named item. The apply stamps the named items
- * first and queues their folders with these numbers. Each stamp ends that item's public link.
+ * first and queues their folders with these numbers. Each stamp ends that item's public link, so this
+ * needs no link work. A queued, refused, or stopped check never stamps, so its links stay.
  */
 async function db_begin_archive_apply(ctx: MutationCtx, args: StepArgs) {
 	await files_subtree_ops_db_reserve_sequences(ctx, { opId: args.opId, count: args.run.rootNodeIds.length });

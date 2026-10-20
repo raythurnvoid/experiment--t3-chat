@@ -134,8 +134,7 @@ export const create_upload_targets = internalMutation({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", item.path)
 						.eq("archiveOperationId", null),
 				)
@@ -472,8 +471,7 @@ export const verify_metadata = internalQuery({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("moveCohortId", undefined)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)

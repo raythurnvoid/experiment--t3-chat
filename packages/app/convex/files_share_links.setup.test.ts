@@ -192,15 +192,17 @@ export function apply_binding(
 ) {
 	return f.t.run(async (ctx) => {
 		const installation = (await ctx.db.get("plugins_workspace_installations", args.installationId))!;
+		const node = (await ctx.db.get("files_nodes", args.folderId))!;
 		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
 			installation,
-			nodeId: args.folderId,
+			nodeId: node._id,
+			parentId: node.parentId,
 			readScopeId: args.readScopeId,
 		});
 		expect(prepared._nay).toBeUndefined();
 		await plugins_data_db_apply_file_access_binding(ctx, {
 			installation,
-			node: (await ctx.db.get("files_nodes", args.folderId))!,
+			node,
 			prepared: prepared._yay!,
 			userId: f.db.userId,
 		});
@@ -221,6 +223,21 @@ export async function restrict_and_bind(f: Fixture, nodeId: Id<"files_nodes">) {
 	const installationId = await insert_installation(f);
 	await apply_binding(f, { installationId, folderId: nodeId, readScopeId: "team" });
 	return installationId;
+}
+
+/**
+ * Restrict the folder of a new file at `${path}/notes.md` and let its scope job end.
+ */
+export async function create_restricted_folder(f: Fixture, path: string) {
+	const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: `${path}/notes.md` });
+	const folderId = (await f.t.run((ctx) => ctx.db.get("files_nodes", fileId)))!.parentId as Id<"files_nodes">;
+	await reset_rate_limits(f.t, [f.db.userId]);
+	expect(
+		(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderId }))
+			._nay,
+	).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	return { fileId, folderId };
 }
 
 /**

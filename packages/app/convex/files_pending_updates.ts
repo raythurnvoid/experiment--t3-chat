@@ -34,17 +34,7 @@ import app_convex_schema, {
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import { api, internal } from "./_generated/api.js";
-import {
-	files_db_yjs_push_update,
-	files_merge_contiguous_chunks,
-	type files_nodes_get_user_file_write_access_Result,
-	files_nodes_db_require_subtree_writable,
-	files_nodes_db_validate_pending_move_target_for_proposal,
-	files_nodes_db_validate_occupant_replace,
-	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
-	type get_file_content_materialization_header_Result,
-	type get_file_next_yjs_update_Result,
-} from "./files_nodes.ts";
+import { files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_require_subtree_writable, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
@@ -2010,11 +2000,7 @@ export const get_file_pending_update_state_page = query({
 
 		const authorized =
 			args.target.kind === "private"
-				? await files_pending_target_db_get_private(ctx, {
-						membership,
-						privateNodeId: args.target.id,
-						recoveryRead: true,
-					})
+				? await files_pending_target_db_get_private(ctx, { membership, privateNodeId: args.target.id, recoveryRead: true })
 				: await access_control_db_authorize_node(ctx, {
 						userAuth,
 						membership,
@@ -9164,9 +9150,7 @@ async function action_save_private_file_pending_update(args: {
 	billedUserId: Id<"users">;
 	selectedContentStateId: Id<"files_pending_update_yjs_states"> | null;
 	reviewedPrivateParentIds: Id<"files_pending_nodes">[];
-	data: NonNullable<files_pending_target_get_file_pending_target_Result> & {
-		entry: Extract<files_VisibleEntry, { kind: "private" }>;
-	};
+	data: NonNullable<files_pending_target_get_file_pending_target_Result> & { entry: Extract<files_VisibleEntry, { kind: "private" }> };
 }): Promise<files_pending_updates_PrepareContentResult> {
 	const { ctx, data } = args;
 
