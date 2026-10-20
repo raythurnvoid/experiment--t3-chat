@@ -1752,7 +1752,7 @@ export const run_version_review = internalAction({
 		}
 
 		if (context.previousPassed && previousReviewFiles.length > 0) {
-			// Myers diff costs about O(N * D), and both artifacts can be 900,000 bytes. Two releases that
+			// Myers diff costs about O(N * D), and both artifacts can be 1,000,000 bytes. Two releases that
 			// share almost nothing would keep this action busy for a long time. The diff only tells the
 			// reviewer where to look first, so give up on it instead of paying for it. Past the deadline
 			// `createPatch` returns undefined and the review runs on the current artifact alone. That is
@@ -2587,8 +2587,7 @@ async function publish_version_from_github(
 		...preparedReview.reviewFiles.map((file) => ({ path: file.path, rawText: file.source })),
 	];
 
-	// The review cap counts the source bytes, not JSON or framing overhead. Each stored source file has
-	// already passed its own 900,000-byte limit, and this action argument stays below Convex's 16 MiB cap.
+	// Count source bytes separately from JSON framing and the per-file limit.
 	if (
 		preparedReview.reviewFiles.reduce((total, file) => total + files_get_utf8_byte_size(file.source), 0) >
 		REVIEW_BUNDLE_MAX_BYTES

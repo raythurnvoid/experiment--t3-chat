@@ -1279,8 +1279,8 @@ describe("plugins publish_version", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		// The delta pushes the declared per-file bytes over the 900,000 cap.
-		const github = await mock_publish_github_fetch({ artifactBytesDelta: 900_001 });
+		// The delta pushes the declared per-file bytes over the 1,000,000 cap.
+		const github = await mock_publish_github_fetch({ artifactBytesDelta: 1_000_001 });
 
 		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
@@ -1364,7 +1364,7 @@ describe("plugins publish_version", () => {
 		expect(github.uploadUrls.length).toBeGreaterThanOrEqual(13);
 	});
 
-	test("reviews a 900,000-byte text file without charging manifest or JSON framing against the source cap", async () => {
+	test("reviews a 1,000,000-byte text file without charging manifest or JSON framing against the source cap", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
@@ -1376,7 +1376,7 @@ describe("plugins publish_version", () => {
 			files: [
 				{
 					path: "dist/notes.txt",
-					content: `${"a".repeat(900_000 - tailMarker.length)}${tailMarker}`,
+					content: `${"a".repeat(1_000_000 - tailMarker.length)}${tailMarker}`,
 					contentType: "text/plain",
 				},
 			],
@@ -1389,7 +1389,7 @@ describe("plugins publish_version", () => {
 					toolCallId: "tail",
 					toolName: "bash",
 					input: JSON.stringify({
-						command: "grep --start-index 898000 --max-chars 2000 exact-source-tail dist/notes.txt",
+						command: "grep --start-index 998000 --max-chars 2000 exact-source-tail dist/notes.txt",
 					}),
 				},
 			]),

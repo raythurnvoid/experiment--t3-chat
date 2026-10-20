@@ -7,9 +7,9 @@ import { internalAction } from "./_generated/server.js";
 import type { files_nodes_create_file_node_internal_Result } from "./files_nodes_content.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex } from "../server/crypto-utils.ts";
-import { files_get_utf8_byte_size, files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
+import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { organizations_GLOBAL_PLUGINS_WORKSPACE_ID } from "../shared/organizations.ts";
-import { plugins_module_path_schema } from "../shared/plugins.ts";
+import { plugins_MAX_FILE_BYTES, plugins_module_path_schema } from "../shared/plugins.ts";
 
 // Stage source outside the review loop. Bash later reads only the requested indexed ranges.
 export const stage_sources = internalAction({
@@ -23,8 +23,8 @@ export const stage_sources = internalAction({
 			if (!plugins_module_path_schema.safeParse(file.path).success || paths.has(file.path)) {
 				return Result({ _nay: { message: "Plugin review source paths must be unique normalized relative paths" } });
 			}
-			if (files_get_utf8_byte_size(file.source) > files_MAX_TEXT_CONTENT_BYTES) {
-				return Result({ _nay: { message: `Plugin review source exceeds ${files_MAX_TEXT_CONTENT_BYTES} bytes` } });
+			if (files_get_utf8_byte_size(file.source) > plugins_MAX_FILE_BYTES) {
+				return Result({ _nay: { message: `Plugin review source exceeds ${plugins_MAX_FILE_BYTES} bytes` } });
 			}
 			paths.add(file.path);
 		}

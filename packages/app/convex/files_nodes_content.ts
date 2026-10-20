@@ -90,6 +90,7 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import { plugins_MAX_FILE_BYTES } from "../shared/plugins.ts";
 import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
 	files_metadata_entries_validator,
@@ -1140,11 +1141,16 @@ export const create_file_node_internal = internalAction({
 		}
 
 		const byteSize = files_get_utf8_byte_size(args.rawText);
-		if (byteSize > files_MAX_TEXT_CONTENT_BYTES) {
+		// Plugin source is immutable indexed text, with no Yjs state to fit in a wire update.
+		const maxBytes =
+			args.workspaceId === organizations_GLOBAL_PLUGINS_WORKSPACE_ID
+				? plugins_MAX_FILE_BYTES
+				: files_MAX_TEXT_CONTENT_BYTES;
+		if (byteSize > maxBytes) {
 			return Result({
 				_nay: {
 					name: "nay",
-					message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`,
+					message: `Text content exceeds ${maxBytes}-byte limit`,
 				},
 			});
 		}

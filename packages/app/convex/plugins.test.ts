@@ -7338,11 +7338,11 @@ describe("plugins manifest limits", () => {
 		).toMatchObject({ _nay: { message: expect.any(String) } });
 	});
 
-	test("accepts 900000 declared bytes per file and rejects 900001", () => {
-		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 900_000 })] }))).toMatchObject({
+	test("accepts 1000000 declared bytes per file and rejects 1000001", () => {
+		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 1_000_000 })] }))).toMatchObject({
 			_yay: expect.any(Object),
 		});
-		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 900_001 })] }))).toMatchObject({
+		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 1_000_001 })] }))).toMatchObject({
 			_nay: { message: expect.any(String) },
 		});
 	});

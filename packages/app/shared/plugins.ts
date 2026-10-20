@@ -820,8 +820,8 @@ const MAX_PAGE_AGENT_TOOL_DESCRIPTION_LENGTH = 1000;
 const MAX_PAGE_AGENT_TOOL_SCHEMA_BYTES = 8 * 1024;
 const MAX_FILE_PATH_LENGTH = 512;
 const MAX_CONTENT_TYPE_LENGTH = 255;
-// Matches files_MAX_TEXT_CONTENT_BYTES: every artifact file must fit the app's text-content cap.
-const MAX_FILE_BYTES = 900_000;
+// Plugin source snapshots are read-only and do not use the editable Files Yjs limit.
+export const plugins_MAX_FILE_BYTES = 1_000_000;
 
 /** Byte cap for the whole artifact. Publishing checks it twice: on the declared sizes, then on the actual downloaded bytes. */
 export const plugins_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -959,7 +959,7 @@ const manifest_file_schema = z
 	.object({
 		path: plugins_module_path_schema,
 		sha256: z.string().regex(SHA256_REGEX),
-		bytes: z.number().int().nonnegative().max(MAX_FILE_BYTES),
+		bytes: z.number().int().nonnegative().max(plugins_MAX_FILE_BYTES),
 		contentType: z.string().min(1).max(MAX_CONTENT_TYPE_LENGTH),
 	})
 	.strict();
