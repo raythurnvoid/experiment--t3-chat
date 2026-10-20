@@ -1,7 +1,7 @@
 // The later flush tests and the job, share row and ancestor tests, split from files_pending_overlay.test.ts so
 // the two files can run at the same time. See the comment at the top of that file.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, components, internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
@@ -14,6 +14,7 @@ import {
 	test_run_with_flush,
 	test_spy_handler,
 	test_meta_search,
+	test_db_hold_move_slot,
 } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import {
@@ -1828,17 +1829,17 @@ describe("files_nodes ancestors", () => {
 	});
 });
 
-describe("files_nodes node state", () => {
+describe("files_nodes restricted scopes", () => {
 	/**
-	 * Page `check_node_state` to the end without running the jobs first.
+	 * Page `check_restricted_scopes` to the end without running the jobs first.
 	 */
-	const check_node_state = async (f: Fixture) => {
+	const scope_differences = async (f: Fixture) => {
 		const differences: string[] = [];
 		const busyWorkspaceIds: Id<"organizations_workspaces">[] = [];
 		let cursor: string | null = null;
 		do {
 			const page: { differences: string[]; busyWorkspaceIds: Id<"organizations_workspaces">[]; cursor: string | null } =
-				await f.t.query(internal.files_pending_overlay.check_node_state, { cursor });
+				await f.t.query(internal.files_pending_overlay.check_restricted_scopes, { cursor });
 			differences.push(...page.differences);
 			busyWorkspaceIds.push(...page.busyWorkspaceIds);
 			cursor = page.cursor;
@@ -1846,40 +1847,72 @@ describe("files_nodes node state", () => {
 		return { differences: differences.sort(), busyWorkspaceIds };
 	};
 
-	test("reports a wrong scope, a wrong root flag and an active node in an archived folder", async () => {
+	test("the check reports a wrong scope, root flag or boundary, a missing parent and an active node in an archived folder", async () => {
 		const f = await fixture();
 		const r = await f.saved(null, "r", "folder");
 		const inner = await f.saved(r, "inner", "folder");
 		const x = await f.saved(inner, "x.md");
+		const m = await f.saved(null, "m", "folder");
+		const z = await f.saved(m, "z.md");
+		// More nodes than one page, so the archived folder below is checked on the second page.
+		const fill = await f.saved(null, "fill", "folder");
+		await test_run_with_flush(f.t, async (ctx) => {
+			for (let index = 0; index < 1000; index++)
+				await insert_saved_node(ctx, f.u, { parent: fill, name: `${index}.md`, kind: "file" });
+		});
 		const a = await f.saved(null, "a", "folder");
 		const y = await f.saved(a, "y.md");
 		await f.restrict(r);
-		expect(await check_node_state(f)).toEqual({ differences: [], busyWorkspaceIds: [] });
+		// An idle Move slot does not make the workspace busy.
+		await f.t.run((ctx) =>
+			ctx.db.insert("files_move_workspace_slots", {
+				organizationId: f.u.organizationId,
+				workspaceId: f.u.workspaceId,
+				cohortId: null,
+				generation: 0,
+			}),
+		);
+		expect(await scope_differences(f)).toEqual({ differences: [], busyWorkspaceIds: [] });
 
 		await test_run_with_flush(f.t, async (ctx) => {
 			await ctx.db.patch("files_nodes", x._id, { restrictedScopeNodeId: null });
 			await ctx.db.patch("files_nodes", inner._id, { isRestrictedScopeRoot: true });
+			await ctx.db.patch("files_nodes", r._id, { isRestrictedScopeRoot: false, parentScopeNodeId: undefined });
+			await ctx.db.delete("files_nodes", m._id);
 			await ctx.db.patch("files_nodes", a._id, { archiveOperationId: "op" });
 		});
-		expect(await check_node_state(f)).toEqual({
+		expect(await scope_differences(f)).toEqual({
 			differences: [
-				`active ${y._id} is in archived folder ${a._id}`,
+				`active ${y._id} is in archived folder ${a._id} (archive op op)`,
+				`boundary of ${r._id}: stored undefined, expected null`,
+				`parent of ${z._id} is missing`,
 				`root flag of ${inner._id}: stored true, expected false`,
+				`root flag of ${r._id}: stored false, expected true`,
 				`scope of ${x._id}: stored null, expected ${r._id}`,
 			].sort(),
 			busyWorkspaceIds: [],
 		});
 	});
 
-	test("skips and lists a workspace with a running subtree op", async () => {
+	test("a workspace with an unfinished subtree op is skipped and listed, and other workspaces are still checked", async () => {
 		const f = await fixture();
 		const r = await f.saved(null, "r", "folder");
 		await f.saved(r, "x.md");
-		// A difference the skip must hide.
-		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", r._id, { archiveOperationId: "op" }));
-		await f.t.run(async (ctx) => {
-			for (const name of ["files_sharing_write", "files_tree_write"])
-				await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, { name, key: f.u.userId });
+		const q = await f.saved(null, "q.md");
+		const secondWorkspaceId = await f.t.run((ctx) =>
+			ctx.db.insert("organizations_workspaces", {
+				organizationId: f.u.organizationId,
+				name: "second",
+				description: "",
+				default: false,
+				pluginInstallAccess: "owner",
+				updatedAt: Date.now(),
+			}),
+		);
+		// A difference the skip must hide, and one in another workspace that it must not.
+		await test_run_with_flush(f.t, async (ctx) => {
+			await ctx.db.patch("files_nodes", r._id, { archiveOperationId: "op" });
+			await ctx.db.patch("files_nodes", q._id, { workspaceId: secondWorkspaceId, restrictedScopeNodeId: r._id });
 		});
 		// More children than one job step, and no job run, so the restrict's scope op stays.
 		const s = await f.saved(null, "s", "folder");
@@ -1895,6 +1928,36 @@ describe("files_nodes node state", () => {
 		const op = await f.t.run((ctx) => ctx.db.query("files_subtree_ops").first());
 		expect(op?.workspaceId).toBe(f.u.workspaceId);
 
-		expect(await check_node_state(f)).toEqual({ differences: [], busyWorkspaceIds: [f.u.workspaceId] });
+		expect(await scope_differences(f)).toEqual({
+			differences: [`scope of ${q._id}: stored ${r._id}, expected null`],
+			busyWorkspaceIds: [f.u.workspaceId],
+		});
+	});
+
+	test("a workspace with a running Move or a purge is skipped and listed", async () => {
+		const f = await fixture();
+		const r = await f.saved(null, "r", "folder");
+		const x = await f.saved(r, "x.md");
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", r._id, { archiveOperationId: "op" }));
+		expect(await scope_differences(f)).toEqual({
+			differences: [`active ${x._id} is in archived folder ${r._id} (archive op op)`],
+			busyWorkspaceIds: [],
+		});
+
+		await f.t.run((ctx) => test_db_hold_move_slot(ctx, f.db));
+		expect(await scope_differences(f)).toEqual({ differences: [], busyWorkspaceIds: [f.u.workspaceId] });
+
+		await f.t.run(async (ctx) => {
+			const slot = await ctx.db.query("files_move_workspace_slots").unique();
+			if (!slot) throw new Error("Expected a Move slot");
+			await ctx.db.replace("files_move_workspace_slots", slot._id, {
+				organizationId: slot.organizationId,
+				workspaceId: slot.workspaceId,
+				cohortId: null,
+				generation: slot.generation,
+			});
+			await ctx.db.patch("organizations_workspaces", f.u.workspaceId, { pluginDataPurgeStartedAt: Date.now() });
+		});
+		expect(await scope_differences(f)).toEqual({ differences: [], busyWorkspaceIds: [f.u.workspaceId] });
 	});
 });
