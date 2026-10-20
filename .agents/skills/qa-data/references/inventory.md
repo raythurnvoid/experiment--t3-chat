@@ -183,6 +183,18 @@ Its Bash calls list channels and members, then read the saved root and reply in 
 Its saved search turn checks author, attachments, UTC dates, text/JSON output, an exact Next page
 command, `--workspace home`, and refusal of a foreign workspace URL. It used the real paid agent.
 
+Public AI output reads reuse chat `n174yyeysbxqbzk9szcv77pz3x8g9281` in
+`chitchat-qa/metadata-qa-0906`, owned by the QA Edge account. These existing outputs are ready
+and have committed owners. Read their current `byteCount` and `sha256` before a check.
+
+| Output id | Bytes | Use |
+| --- | --- | --- |
+| `ss7np2epc86qsdwm2t4c27pcwx8g84qs` | 65,696 | ASCII text. A 65,536-byte page leaves a second page of 160 bytes. |
+| `ss7rkcp9pawte3wwk1f0kesxks8g9j2f` | 33,380 | Unicode text. A four-byte character starts at byte 33,311. Test offsets 33,311 through 33,314 with limit 4. |
+
+Both passed complete public API reads with matching stored hashes on 2026-10-20.
+Reuse them without sending another model request. Keep their content and ownership unchanged.
+
 File comments reuse these saved files and roots. Open them in Files or Messages:
 
 | File | Channel | Root | State |
@@ -270,3 +282,4 @@ Only the original Chitchat installation was present.
 - 2026-10-18: C2 live checks in `qa-browser/home` passed for locked rows, name sort, guest root filters, Shared, Copy skips and Move with locked children. The viewer's member role and `/protection-bulk-qa` metadata are restored; the temporary guest role is deleted. The eight new empty folders are archived under the two roots above. Three task-created anonymous users are deleted. No existing tenant or account was removed.
 - 2026-10-18: locked-item text checks. In `qa-browser/home`, `qa.perm.viewer` saw "You don't have access to this file" on an embed of a locked file and "Skipped: Permission denied" for a locked folder in the Copy dialog. Roots `/c2-ui-1018` and `/c2-ui-1018-dest` are archived; the viewer keeps one chat whose only message failed with 402. In `chitchat-qa/home`, `ray-test-1` saw "You don't have access to this file." on a View image card; root `/c2-view-image-1018` (restricted by the owner) is archived, and the one-turn chat stays. Six task-created anonymous users are deleted.
 - 2026-10-19: uploaded one 220 KB Markdown file, `/emails/qa-mail-big-email-2026-10-19.md` in `personal/home`, for the Mail plugin big-email read check. No real email in that mailbox was over 30 KB. No grant or other data was added.
+- 2026-10-20: verified two existing AI tool outputs through the public API in `chitchat-qa/metadata-qa-0906`. Complete hashes, paging, four-byte text, EOF, range refusals, scope refusals, and revocation passed. Both temporary keys are revoked. No chat, output, or file was created or changed.
