@@ -231,6 +231,35 @@ describe("saved list action", () => {
 		expect(third.isDone).toBe(true);
 	});
 
+	test("merges both sources in reverse name order across small pages", async () => {
+		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt", "/b.txt", "/z.txt"] });
+		const args = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.db.userId,
+			subject: { kind: "user" as const, userId: f.db.userId, plugin: null },
+			folderPath: "/",
+			minDepth: 1,
+			maxDepth: 1,
+			numItems: 2,
+			order: "desc" as const,
+			cursorScope: "caller",
+		};
+		const ctx: Pick<ActionCtx, "runQuery"> = {
+			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
+		};
+		const pages: string[][] = [];
+		for (let cursor: string | null = null; ;) {
+			const listed = await files_saved_list_page(ctx, { ...args, cursor });
+			const page = listed._yay!;
+			pages.push(page.page.map((node) => node.path));
+			if (page.isDone) break;
+			cursor = page.continueCursor;
+		}
+		// `/old.txt` and `/target` come from the Move view source, the others from the normal one.
+		expect(pages).toEqual([["/z.txt", "/target"], ["/old.txt", "/b.txt"], ["/a.txt"]]);
+	});
+
 	test("binds the global key to scope and the selected cohort view", async () => {
 		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt"] });
 		const args = {

@@ -482,6 +482,7 @@ export type BonoboHttpApi = {
 				kind?: "folder" | "file" | undefined;
 				extension?: string | undefined;
 				contentTypePrefixes?: string[] | undefined;
+				order?: "asc" | "desc" | undefined;
 			};
 			response: {
 				200: {
