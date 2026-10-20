@@ -1283,7 +1283,10 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
   - every check in `files_share_links_db_check_live_file`: the node is a file, not a folder, and is
     not archived; the organization and workspace are live (see check 4 below); the scope node is
     live (`db_check_scope`, below); a finished asset; and a supported text shape;
-  - fewer than 500 links in the workspace.
+  - fewer than 500 links in the workspace;
+  - no Move mark on the file itself (`moveCohortId`), else `move_busy`. A file the Move has not
+    reached yet can get a link: Move link staging reads every held file's link after all captures,
+    so the switch still ends it. This check reads no folder above the file.
 - `db_check_scope` reads the stored scope node and its plugin bindings, at most 5 docs. `dead`
   means the node is gone, in another tenant, or no longer its own restricted root, and On refuses
   with "Wait until the access change of a folder above finishes". `bound` means a plugin decides
@@ -1441,7 +1444,7 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Turn the link off | `set_node_share_link` with `enabled: false` |
 | Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, only when the scope really changes, before the patch: the node's own link and every link of its area (`delete_for_scope`). This covers `restrict_node` and `unrestrict_node`. A restrict then unrestrict before the scope job reaches the file does not bring the link back |
 | A scope job gives the file a new scope | `files_nodes_db_rebuild_node`, only when the scope changes. A new path alone (a folder above was renamed) keeps the link |
-| Move to another folder, including replacement and a new parent created by the same Move | The cohort worker stages link revocation for reparented roots and replaced occupants in pages. The group switch ends their links. Rename in the same folder keeps links. Move ends a link even when the new folder has the same audience |
+| Move to another folder, including replacement and a new parent created by the same Move | The cohort worker stages link revocation for reparented roots and replaced occupants in pages. The group switch ends their links, including a link turned on before the Move reached the file. Rename in the same folder keeps links. Move ends a link even when the new folder has the same audience |
 | Archive | `files_nodes_db_archive_node`, once per stamped node. `files_nodes_db_archive_nodes` stamps only the nodes it is given, so a caller names a folder with all its active descendants, or uses the archive job. The archive job ends each file's link in the apply step that stamps it, and the apply has no stop: user deletion waits for it (`db_drain_user_archive_runs_batch`). A queued, refused, or stopped check keeps the links |
 | Restore from the archive | `files_nodes_db_restore_node`. A restored file comes back with no link |
 | Archive-and-create replacement | The archive helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that archive and recreate. The new file has no link |

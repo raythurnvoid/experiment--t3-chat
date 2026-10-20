@@ -48,7 +48,6 @@ import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_node_view,
 } from "../server/files-saved-placement.ts";
-import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	access_control_ADDED_PEOPLE_LEVEL_MESSAGE,
@@ -1470,7 +1469,7 @@ export const unrestrict_node = mutation({
  * whose scope node changes ends at once (`files_nodes_db_set_restricted_scope`).
  *
  * Off only removes access, so it skips the checks On runs on the file. A manager can turn a link off
- * while a job runs or after the file is archived.
+ * while a job runs or after the file is archived. On waits only while a Move holds the file itself.
  */
 export const set_node_share_link = mutation({
 	args: {
@@ -1534,8 +1533,11 @@ export const set_node_share_link = mutation({
 			}
 			return Result({ _yay: null });
 		}
-		const available = await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: node._id } });
-		if (available._nay) return available;
+		// Move link staging reads each held file's link after every capture. So a file the Move has not
+		// reached yet can get a link, and staging still ends it at the switch. Only the file's own mark waits.
+		if (node.moveCohortId) {
+			return Result({ _nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." } });
+		}
 
 		// Turning it on twice keeps the first token, so a double click does not break a copied link.
 		if (link) {
