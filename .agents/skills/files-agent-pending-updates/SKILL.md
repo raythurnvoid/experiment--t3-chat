@@ -246,6 +246,9 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   a transaction while its budget allows. Selected item, child and replacement producers queue their
   saved subtree ranges directly. The publication step commits the after view and next repair
   step together, then returns. Physical repair starts in a fresh transaction and keeps the slot.
+  A saved Move or Rename keeps content unchanged. After owner discovery finishes, it stages
+  its one transfer item and goes straight to side indexes. Review and Save still prepare
+  selected content and media before side indexes. Both paths keep final validation.
 - Private subtree Discard checks the selected descendants in pages, then fences the approved roots in one small transaction. The unchanged unit clock protects that checked set. Activity counts the full unit when the roots close; cleanup continues after Stop. Discard's other final transactions count their reads, writes, bytes, and query ranges and roll back as `review_too_large` before exceeding the supported budget.
 - Before the switch, each Save group checks its full cost for the pinned payer. Folders, moves,
   unchanged text and replaced occupants add no charge. Private quota changes settle once at the

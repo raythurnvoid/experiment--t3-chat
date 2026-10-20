@@ -2527,6 +2527,15 @@ async function db_advance_step(
 	} else if (cohort.workPhase === "owners_closure") {
 		result = await files_move_owner_work_db_collect_closure(ctx, call, limitFactor);
 		next = "content";
+		if (result._yay?.done && cohort.origin.kind === "transfer") {
+			// Saved Move and Rename keep content and have one selected item.
+			const item = (await ctx.db
+				.query("files_move_cohort_items")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).eq("order", 0))
+				.unique())!;
+			await ctx.db.patch("files_move_cohort_items", item._id, { status: "staged" });
+			next = "sides";
+		}
 	} else if (cohort.workPhase === "content") {
 		const item = await ctx.db
 			.query("files_move_cohort_items")

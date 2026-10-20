@@ -5,6 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_transfer_db_delete_run_batch, files_transfer_db_record_cohort_publication } from "./files_transfer.ts";
+import { create_folder_fixture } from "./files_transfer.setup.test.ts";
 import { test_create_saved_placement_fixture as fixture } from "../server/files-saved-placement.test-fixtures.ts";
 
 beforeEach(() => {
@@ -158,6 +159,194 @@ test("publication records the chosen identity once after Stop and access loss", 
 	expect(child).toMatchObject({ parentId: nodeId, path: "/target/source/child" });
 	expect(source.moveCohortId).toBeUndefined();
 	expect(child.moveCohortId).toBeUndefined();
+});
+
+test.each(["finish", "access_loss"] as const)("resumes a public Move after owner closure (%s)", async (end) => {
+	const { t, db, asUser, folders } = await create_folder_fixture(["/source"]);
+	const nodeId = folders.get("/source")!;
+	const parentId = folders.get("/target")!;
+	const userId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: `closure-${end}` }));
+	expect(
+		await asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userIdToAdd: userId,
+		}),
+	).toEqual({ _yay: null });
+	const membership = await t.run((ctx) =>
+		ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("userId", userId).eq("active", true),
+			)
+			.unique(),
+	);
+	if (!membership) throw new Error("Expected the invited mover");
+	const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: userId });
+	expect(
+		await asMember.query(api.access_control.get_current_user_workspace_permission, {
+			membershipId: membership._id,
+			permission: "content.write",
+		}),
+	).toBe(true);
+	const proposed = await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId,
+		target: { kind: "saved", id: nodeId },
+		destParent: { kind: "root" },
+		destName: "draft-source",
+	});
+	if (proposed._nay) throw new Error(proposed._nay.message);
+	const proposal = await t.run((ctx) =>
+		ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_target", (q) => q.eq("userId", userId).eq("target.kind", "saved").eq("target.id", nodeId))
+			.unique(),
+	);
+	if (!proposal) throw new Error("Expected the mover's pending proposal");
+	const overlay = await import("../server/files-pending-overlay.ts");
+	const canJoin = overlay.files_pending_overlay_db_can_join_step;
+	// Keep the public admission and its stored work; yield before owner closure runs.
+	const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
+		const allowed = await canJoin(ctx, limitFactor);
+		const slot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+			.unique();
+		const cohort = slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+		return allowed && cohort?.workPhase !== "owners_closure";
+	});
+	const started = await asMember.mutation(api.files_transfer.accept_input, {
+		membershipId: membership._id,
+		requestId: `closure-${end}`,
+		kind: "move",
+		sourceIds: [nodeId],
+		expectedSourceCount: 1,
+		targetParentId: parentId,
+	});
+	if (started._nay) throw new Error(started._nay.message);
+	const { runId, activityId } = started._yay;
+	const readCohort = () =>
+		t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohorts")
+				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+				.unique(),
+		);
+	let cohort = await readCohort();
+	for (let pass = 0; !cohort || cohort.workPhase !== "owners_closure"; pass++) {
+		if (pass === 1_000) throw new Error("The public Move did not reach owner closure");
+		if (cohort)
+			await t.action(internal.files_move_run.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
+		else await t.mutation(internal.files_transfer.advance, { runId });
+		cohort = await readCohort();
+	}
+	join.mockRestore();
+	const cohortId = cohort._id;
+	const readItem = () =>
+		t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohort_items")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohortId).eq("order", 0))
+				.unique(),
+		);
+	const item = await readItem();
+	expect(item, "the public handoff keeps the selected transfer item planned").toMatchObject({
+		status: "planned",
+		pendingUpdateId: null,
+		contentId: null,
+		target: { kind: "saved", id: nodeId },
+	});
+	expect(
+		await t.run((ctx) =>
+			ctx.db
+				.query("files_move_owner_work")
+				.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohortId).eq("status", "queued"))
+				.first(),
+		),
+		"the real pending proposal leaves owner closure work",
+	).not.toBeNull();
+	await t.action(internal.files_move_run.run, {
+		cohortId,
+		step: cohort.step,
+		runGeneration: cohort.runJob?.generation ?? null,
+		mode: "step",
+	});
+	cohort = await readCohort();
+	expect(cohort, "processing an owner does not finish closure").toMatchObject({
+		workPhase: "owners_closure",
+		publishedAt: null,
+		visibleView: "before",
+	});
+	expect((await readItem())?.status, "incomplete owner closure keeps the transfer item planned").toBe("planned");
+	if (!cohort) throw new Error("Expected the pending owner closure");
+	for (let pass = 0; cohort.workPhase === "owners_closure"; pass++) {
+		if (pass === 1_000) throw new Error("Owner closure did not finish");
+		await t.action(internal.files_move_run.run, {
+			cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
+		cohort = await readCohort();
+		if (!cohort) throw new Error("Expected the resumed Move cohort");
+	}
+	expect(await readItem(), "completed owner closure stages the exact transfer item").toMatchObject({
+		_id: item!._id,
+		status: "staged",
+		contentId: null,
+	});
+	expect(cohort, "completed owner closure leaves side work unpublished").toMatchObject({
+		workPhase: "sides",
+		phase: "staging",
+		publishedAt: null,
+		visibleView: "before",
+	});
+	expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({ path: "/source", moveCohortId: cohortId });
+	if (end === "access_loss") {
+		const organization = await t.run((ctx) => ctx.db.get("organizations", db.organizationId));
+		if (!organization?.defaultWorkspaceId) throw new Error("Expected the default workspace");
+		expect(
+			await asUser.mutation(api.access_control.set_user_role, {
+				organizationId: db.organizationId,
+				workspaceId: organization.defaultWorkspaceId,
+				userId,
+				role: "viewer",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await asMember.query(api.access_control.get_current_user_workspace_permission, {
+				membershipId: membership._id,
+				permission: "content.write",
+			}),
+			"the public role change removes current write access",
+		).toBe(false);
+	}
+	await test_finish_transfer_run(asMember, runId);
+	expect(await readCohort()).toMatchObject({
+		phase: "complete",
+		visibleView: end === "finish" ? "after" : "before",
+		publishedAt: end === "finish" ? expect.any(Number) : null,
+	});
+	const saved = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+	expect(saved).toMatchObject({
+		_id: nodeId,
+		path: end === "finish" ? "/target/source" : "/source",
+	});
+	expect(saved?.moveCohortId).toBeUndefined();
+	expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+		progress: { completed: end === "finish" ? 1 : 0 },
+	});
+	expect(
+		await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id)),
+		"the saved Move keeps the pending proposal",
+	).toEqual(proposal);
 });
 
 test("Stop before publication leaves the pending item until cohort abort finishes", async () => {

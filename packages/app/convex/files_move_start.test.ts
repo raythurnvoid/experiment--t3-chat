@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import * as move_pages from "./files_move_pages.ts";
@@ -30,6 +31,46 @@ function track_pages<T extends object>(query: T, pages: { count: number }): T {
 			};
 		},
 	});
+}
+
+function observe_move_phases() {
+	const phases = new Map<string, Pick<Doc<"files_move_cohorts">, "_id" | "origin" | "step" | "workPhase">>();
+	// Inline acceptance and Transfer admission can run before the scheduled cohort handler.
+	for (const registered of [accept_input, advance_transfer, advance_cohort])
+		test_spy_handler(registered, async (handler, ctx, args) => {
+			const trackedDb = new Proxy(ctx.db, {
+				get(target, key) {
+					const member: unknown = Reflect.get(target, key);
+					if (typeof member !== "function") return member;
+					if (key !== "get") return member.bind(target);
+					return async (...getArgs: unknown[]) => {
+						const result: unknown = await Reflect.apply(member, target, getArgs);
+						if (getArgs[0] !== "files_move_cohorts") return result;
+						const cohort = result as Doc<"files_move_cohorts"> | null;
+						if (cohort?.origin.kind === "transfer") {
+							const { _id, origin, step, workPhase } = cohort;
+							phases.set(`${_id}:${step}:${workPhase}`, { _id, origin, step, workPhase });
+						}
+						return result;
+					};
+				},
+			});
+			return await handler({ ...ctx, db: trackedDb }, args);
+		});
+	return phases;
+}
+
+function expect_move_phases(phases: ReturnType<typeof observe_move_phases>, runId: Id<"files_transfer_runs">) {
+	const records = [...phases.values()].filter((cohort) => cohort.origin.kind === "transfer" && cohort.origin.runId === runId);
+	expect(new Set(records.map((cohort) => cohort._id)).size, "phase reads belong to one exact Move cohort").toBe(1);
+	const observed = records.map((cohort) => cohort.workPhase);
+	expect(observed, "the real Move reaches closure, sides and publication").toEqual(
+		expect.arrayContaining(["owners_closure", "sides", "publish"]),
+	);
+	expect(
+		observed.filter((phase) => phase === "content" || phase === "media"),
+		"A saved Move stages its item without entering content or media.",
+	).toEqual([]);
 }
 
 describe("initial Move publication", () => {
@@ -188,6 +229,83 @@ describe("initial Move publication", () => {
 		});
 	});
 
+	test("stages an Empty Move to Root and back without content preparation", async () => {
+		const { t, db, asUser, folders } = await create_folder_fixture(["/target/new-folder"]);
+		const sourceId = folders.get("/target/new-folder")!;
+		const aId = folders.get("/target")!;
+		const phases = observe_move_phases();
+		const costs: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>[] = [];
+		test_spy_handler(accept_input, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			// The real wrapper has finished its final flush.
+			costs.push(await ctx.meta.getTransactionMetrics());
+			return result;
+		});
+		// Old final-flush counts use this same fixture and both directions.
+		const targets = [
+			{ direction: "to-root", parentId: "root" as const, path: "/new-folder", queries: 417, writes: 102 },
+			{ direction: "to-a", parentId: aId, path: "/target/new-folder", queries: 537, writes: 121 },
+		];
+		const runs: Id<"files_transfer_runs">[] = [];
+		for (const target of targets) {
+			const before = (await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))!;
+			const accepted = await asUser.mutation(api.files_transfer.accept_input, {
+				membershipId: db.membershipId,
+				requestId: "local-db-attribution-" + target.direction,
+				kind: "move",
+				expectedSourceCount: 1,
+				sourceIds: [sourceId],
+				targetParentId: target.parentId,
+			});
+			if (accepted._nay) throw new Error(accepted._nay.message);
+			const { runId, activityId } = accepted._yay;
+			runs.push(runId);
+			const cost = costs.at(-1)!;
+			console.info("unchanged-content Empty Move acceptance", JSON.stringify({ direction: target.direction, cost }));
+			const cohort = await t.run((ctx) => ctx.db.query("files_move_cohorts")
+				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).unique());
+			expect(cohort, "the public acceptance publishes before repair").toMatchObject({
+				phase: "published", visibleView: "after", workPhase: "finish_content", publishedAt: expect.any(Number),
+			});
+			if (!cohort?.runJob) throw new Error("Expected the current repair owner");
+			expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId)), "physical repair has not run").toMatchObject({
+				parentId: before.parentId, path: before.path, moveCohortId: cohort._id,
+			});
+			const selected = await asUser.query(api.files_tree.list_tree_children, {
+				membershipId: db.membershipId,
+				parentId: target.parentId,
+				kind: "folder",
+				archived: false,
+				restricted: false,
+				stream: "cohort",
+				paginationOpts: { cursor: null, numItems: 100 },
+			});
+			expect(selected.page.filter((node) => node._id === sourceId)).toEqual([
+				expect.objectContaining({ _id: sourceId, parentId: target.parentId, name: "new-folder", path: target.path }),
+			]);
+			expect(new Set(selected.page.map((node) => node._id)).size).toBe(selected.page.length);
+			expect(Object.keys(cost)).toHaveLength(7);
+			for (const [key, metric] of Object.entries(cost))
+				expect(metric.used, `${target.direction}: ${key}; leaves 25% free`)
+					.toBeLessThan((metric.used + metric.remaining) * 0.75);
+			await test_finish_transfer_run(asUser, runId);
+			expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({
+				_id: sourceId, parentId: target.parentId, path: target.path, name: "new-folder",
+			});
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))?.moveCohortId).toBeUndefined();
+			expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+				status: "succeeded", progress: { completed: 1, failed: 0, canceled: 0 },
+			});
+		}
+		expect(costs).toHaveLength(2);
+		// Keep both direction metrics before the named workload assertion.
+		for (const runId of runs) expect_move_phases(phases, runId);
+		for (const [index, target] of targets.entries()) {
+			expect(costs[index]!.databaseQueries.used, `${target.direction}: fewer acceptance queries`).toBeLessThan(target.queries);
+			expect(costs[index]!.documentsWritten.used, `${target.direction}: no extra acceptance writes`).toBeLessThanOrEqual(target.writes);
+		}
+	});
+
 	test("joins native child pages within the initial Move transaction", async () => {
 		const paths = ["/source", "/source/one", "/source/one/leaf"];
 		const { t, db, asUser, folders } = await create_folder_fixture(paths);
@@ -301,6 +419,7 @@ describe("initial Move publication", () => {
 		const { t, db, asUser, folders } = await create_folder_fixture(["/source", ...paths]);
 		const sourceId = folders.get("/source")!;
 		const targetId = folders.get("/target")!;
+		const phases = observe_move_phases();
 		const pages = { count: 0 };
 		let cohortCalls = 0;
 		test_spy_handler(move_pages.descendants, async (handler, ctx, args) => {
@@ -374,6 +493,7 @@ describe("initial Move publication", () => {
 			status: "succeeded",
 			progress: { total: 1, completed: 1, failed: 0, canceled: 0 },
 		});
+		expect_move_phases(phases, runId);
 	});
 
 	test("a public role change after the initial budget handoff prevents publication", async () => {
