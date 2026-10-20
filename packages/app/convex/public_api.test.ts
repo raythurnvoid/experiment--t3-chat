@@ -4475,6 +4475,42 @@ describe("locked and missing paths", () => {
 		]);
 	});
 
+	test('files list with order "desc" pages a folder in reverse name order, locked children included', async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		const paths: string[] = [];
+		const locked: string[] = [];
+		let firstCursor = "";
+		for (let cursor: string | null = null; ;) {
+			const page = await list(t, f.memberCredential, { path: "/", order: "desc", limit: 1, cursor });
+			expect(page.status).toBe(200);
+			for (const item of page.body.items as Array<{ path: string; locked: boolean }>) {
+				paths.push(item.path);
+				if (item.locked) locked.push(item.path);
+			}
+			if (page.body.isDone) break;
+			firstCursor ||= page.body.cursor;
+			cursor = page.body.cursor;
+		}
+		expect(paths).toEqual(["/secret", "/notes", "/hidden.md", "/b.md"]);
+		expect(locked).toEqual(["/secret", "/hidden.md"]);
+
+		// The cursor holds its order. "asc" and no order are the same order.
+		expect(await list(t, f.memberCredential, { path: "/", limit: 1, cursor: firstCursor })).toEqual({
+			status: 400,
+			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+		});
+		const ascFirst = await list(t, f.memberCredential, { path: "/", limit: 1 });
+		expect(
+			(await list(t, f.memberCredential, { path: "/", order: "asc", limit: 1, cursor: ascFirst.body.cursor })).body.items,
+		).toMatchObject([{ path: "/hidden.md" }]);
+		expect(await list(t, f.memberCredential, { path: "/", order: "desc", recursive: true })).toEqual({
+			status: 400,
+			body: { message: 'order: "desc" needs a list without recursive.' },
+		});
+	});
+
 	test("recursive list stops at a locked folder", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);

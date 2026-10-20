@@ -4,7 +4,7 @@ Use the [route index](references/route-index.md) for caller kinds. Paths are wor
 
 ## List and access
 
-POST `/api/v1/files/list` with `{ path, cursor: null, limit: 100 }`. Optional fields are `recursive`, `kind: "file" | "folder"`, `extension`, and `contentTypePrefixes`. `scanLimit` is accepted and ignored. The page size is at most 100. Without `recursive`, it lists direct children in name order. With `recursive: true`, it walks in path order.
+POST `/api/v1/files/list` with `{ path, cursor: null, limit: 100 }`. Optional fields are `recursive`, `kind: "file" | "folder"`, `extension`, `contentTypePrefixes`, and `order: "asc" | "desc"`. `scanLimit` is accepted and ignored. The page size is at most 100. Without `recursive`, it lists direct children in name order, or reverse name order with `order: "desc"`. A cursor works only with the order it was made for. With `recursive: true`, it walks in path order.
 
 Success is `{ items, cursor, isDone }`. Items have `path`, `name`, `kind`, `nodeId`, `contentType`, `updatedAt`, `status`, `size`, and `locked`. A file's status is `pending` until its upload is confirmed, then `ready`. Folders and locked items have `status: null`. Missing sizes are `null`.
 

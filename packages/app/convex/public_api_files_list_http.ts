@@ -45,6 +45,8 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 							extension: z.string().optional(),
 							// Stored content types are at most 255 characters, so a longer value can never match.
 							contentTypePrefixes: z.array(z.string().min(1).max(255)).min(1).max(8).optional(),
+							// Name order of one folder's children. A recursive list reads in path order only.
+							order: z.enum(["asc", "desc"]).optional(),
 						});
 
 						type SearchParams = never;
@@ -124,6 +126,16 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									}),
 								} as const;
 							}
+							if (body._yay.order === "desc" && body._yay.recursive) {
+								return {
+									status: 400,
+									body: await fail({
+										status: 400,
+										message: 'order: "desc" needs a list without recursive.',
+										errorCode: "invalid_input",
+									}),
+								} as const;
+							}
 							const numItems = Math.min(body._yay.limit ?? FILES_LIST_MAX_ITEMS, FILES_LIST_MAX_ITEMS);
 							let listed: Awaited<ReturnType<typeof files_saved_list_page>>;
 							try {
@@ -146,6 +158,9 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									contentTypePrefixes: contentTypePrefixes.size > 0 ? [...contentTypePrefixes] : undefined,
 									minDepth: 1,
 									maxDepth: body._yay.recursive ? undefined : 1,
+									// The order is part of the cursor scope, so a cursor works only with the order it was made for.
+									// Pass "asc" as no order, so a cursor made without the field also works with "asc".
+									order: body._yay.order === "desc" ? "desc" : undefined,
 									// A folder list shows the children the caller cannot open as locked items.
 									...(body._yay.recursive ? {} : { withLocked: true as const }),
 								});
