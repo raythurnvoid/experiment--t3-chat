@@ -18,7 +18,7 @@ import {
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { channels_db_drain_member_batch, channels_db_purge_workspace_batch } from "./channels.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { internalAction, internalQuery, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -2246,31 +2246,19 @@ async function db_drain_user_write_policy_runs_batch(ctx: MutationCtx, args: { u
  * Stop and delete one archive or restore job. Items it already changed keep the job's archive
  * operation id, so they can still be restored or archived as one unit.
  *
- * An archive that already stamps items is left to finish. Public links end only when the job stamps
- * each file, so a stop there would leave files inside an archived folder public. Its op makes
- * `db_user_has_subtree_ops` wait.
+ * An archive that already stamps items is left to finish, and the deletion does not wait for it.
+ * Public links end only when the job stamps each file, so a stop there would leave files inside an
+ * archived folder public. The stamps do not need the user, and the expired Activity deletes the run
+ * later. Move and scope jobs keep running the same way.
  */
 async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId: Id<"users"> }) {
-	const run = await ctx.db
-		.query("files_archive_runs")
-		.withIndex("by_user", (q) => q.eq("userId", args.userId))
-		.first();
-	if (!run || (run.active && run.kind === "archive" && run.phase === "apply")) return 0;
-	const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: run._id });
-	return purged.deletedCount;
-}
-
-/**
- * Wait for this user's move or scope ops, and archives that stamp items, to end. They have no Stop,
- * and the stored paths, scopes and archive stamps in a surviving workspace are right only after the
- * job ends. Each step is small.
- */
-async function db_user_has_subtree_ops(ctx: QueryCtx | MutationCtx, args: { userId: Id<"users"> }) {
-	const op = await ctx.db
-		.query("files_subtree_ops")
-		.withIndex("by_user", (q) => q.eq("userId", args.userId))
-		.first();
-	return op !== null;
+	// Skip the stamping archives, so the user's other jobs behind them are still found.
+	for await (const run of ctx.db.query("files_archive_runs").withIndex("by_user", (q) => q.eq("userId", args.userId))) {
+		if (run.active && run.kind === "archive" && run.phase === "apply") continue;
+		const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: run._id });
+		return purged.deletedCount;
+	}
+	return 0;
 }
 
 /**
@@ -2999,7 +2987,6 @@ async function db_drain_user_finalization_batch(
 
 	const archiveRunCount = await db_drain_user_archive_runs_batch(ctx, args);
 	if (archiveRunCount > 0) return { done: false, deletedCount: archiveRunCount };
-	if (await db_user_has_subtree_ops(ctx, args)) return { done: false, deletedCount: 0 };
 
 	const browserDelete = await files_browser_db_delete_user_batch(ctx, {
 		userId: args.userId,
@@ -3459,23 +3446,20 @@ export const has_deletion_requests_for_user = internalQuery({
 });
 
 /**
- * Says what a user deletion still waits for: a Paste run that drains, or a file job that runs. The
- * admin hard delete uses it only to pick the wait before its next round.
+ * Returns whether the user still has a Paste run. The admin hard delete waits a little before its next
+ * round while one drains, because a retry can block the drain for a while.
  */
-export const user_deletion_waits = internalQuery({
+export const has_transfer_run_for_user = internalQuery({
 	args: {
 		userId: v.id("users"),
 	},
-	returns: v.union(v.literal("transfer"), v.literal("ops"), v.null()),
+	returns: v.boolean(),
 	handler: async (ctx, args) => {
-		// Same order as the deletion. A Paste run also has its own op, and its drain still makes progress.
 		const run = await ctx.db
 			.query("files_transfer_runs")
 			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.first();
-		if (run) return "transfer";
-		if (await db_user_has_subtree_ops(ctx, args)) return "ops";
-		return null;
+		return run !== null;
 	},
 });
 
@@ -4392,7 +4376,6 @@ export const prepare_user_for_hard_deletion = internalMutation({
 
 		const deletedArchiveRunCount = await db_drain_user_archive_runs_batch(ctx, { userId: args.userId });
 		if (deletedArchiveRunCount > 0) return false;
-		if (await db_user_has_subtree_ops(ctx, { userId: args.userId })) return false;
 
 		const browserDelete = await files_browser_db_delete_user_batch(ctx, { userId: args.userId, batchSize });
 		if (!browserDelete.done) return false;

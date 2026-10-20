@@ -156,7 +156,7 @@ describe("archive_nodes", () => {
 		expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBe(olderOperationId);
 	}, 120_000);
 
-	test("deleting the user waits until the stamps end, so no active item stays inside the archived folder", async () => {
+	test("deleting the user does not wait for the stamps, and they still end with no active item inside the archived folder", async () => {
 		const f = await fixture();
 		const member = await add_member(f);
 		// 152 items: more than the request and one step stamp (2 * 75), so the job still runs at the deletion.
@@ -167,20 +167,17 @@ describe("archive_nodes", () => {
 		});
 		const job = archived._yay!;
 
-		for (let pass = 0; pass < 20; pass++) {
-			await f.t.mutation(internal.data_deletion.finalize_user_deletion_data, {
-				userId: member.userId,
-				_test_batchSize: 1,
-			});
-		}
-		const waiting = await f.t.run(async (ctx) => ({
-			run: await ctx.db.get("files_archive_runs", job.runId),
-			membership: await ctx.db.get("organizations_workspaces_users", member.membershipId),
-		}));
-		expect(waiting.run).toMatchObject({ active: true, phase: "apply" });
-		expect(waiting.membership).not.toBeNull();
+		// A later job still in its check. The writer list makes it check first.
+		const later = await seed_tree(f, { name: "later", folderCount: 1, filesPerFolder: 150 });
+		await lock_writer({ f, nodeId: later.fileIds[0]!, userId: member.userId });
+		const laterJob = (
+			await member.asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: member.membershipId,
+				nodeIds: [later.topId],
+			})
+		)._yay!;
+		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", laterJob.runId)))?.phase).toBe("check");
 
-		await run_to_end(f, job);
 		let done = false;
 		for (let pass = 0; pass < 100 && !done; pass++) {
 			done = await f.t.mutation(internal.data_deletion.finalize_user_deletion_data, {
@@ -189,7 +186,22 @@ describe("archive_nodes", () => {
 			});
 		}
 		expect(done).toBe(true);
+		const deleted = await f.t.run(async (ctx) => ({
+			run: await ctx.db.get("files_archive_runs", job.runId),
+			laterRun: await ctx.db.get("files_archive_runs", laterJob.runId),
+			membership: await ctx.db.get("organizations_workspaces_users", member.membershipId),
+		}));
+		expect(deleted.run).toMatchObject({ active: true, phase: "apply" });
+		expect(deleted.membership).toBeNull();
+		// The drain looks past the stamping job, so it stops and deletes the later job too.
+		expect(deleted.laterRun).toBeNull();
+
+		// The stamps do not need the user, even once its row is gone.
+		await f.t.run((ctx) => ctx.db.delete("users", member.userId));
+		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
 		const after = await expect_consistent(f);
-		expect(after.nodes.every((node) => node.archiveOperationId !== null)).toBe(true);
+		const archivedTree = after.nodes.filter((node) => node.path.startsWith("/deleted"));
+		expect(archivedTree).toHaveLength(152);
+		expect(archivedTree.every((node) => node.archiveOperationId !== null)).toBe(true);
 	}, 120_000);
 });

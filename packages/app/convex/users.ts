@@ -1452,8 +1452,6 @@ export const hard_delete_user_now = internalAction({
 		purgeUserMod: v.optional(
 			v.union(v.literal("data"), v.literal("data_and_auth"), v.literal("data_auth_and_user_record")),
 		),
-		// How many rounds in a row waited for a file job. Left out at 0.
-		waitRound: v.optional(v.number()),
 		_test_batchSize: v.optional(v.number()),
 		_test_disableReschedule: v.optional(v.boolean()),
 	},
@@ -1492,19 +1490,16 @@ export const hard_delete_user_now = internalAction({
 		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
 		const purgeUserRecord = purgeUserMod === "data_auth_and_user_record";
 
-		// A Paste run or a file job can keep every round from finishing. Wait 30 s for a Paste run. Wait
-		// longer each round for a file job, up to 30 min, so a stuck job does not keep this action busy.
-		// With neither, the next round starts at once and the wait starts over.
+		// A Paste run retry can block its drain for a while, so wait 30 s instead of trying again at once.
+		// The user's file jobs do not hold the deletion: they keep running without the user.
 		const schedule_next_round = async () => {
 			if (args._test_disableReschedule) return;
-			const waits = await ctx.runQuery(internal.data_deletion.user_deletion_waits, { userId: user._id });
-			const waitRound = args.waitRound ?? 0;
-			if (waits) console.warn("Hard delete waits", { userId: user._id, waits, waitRound });
-			await ctx.scheduler.runAfter(
-				waits === "ops" ? Math.min(30_000 * 2 ** waitRound, 30 * 60_000) : waits === "transfer" ? 30_000 : 0,
-				internal.users.hard_delete_user_now,
-				{ userId: user._id, purgeUserMod, ...(waits === "ops" ? { waitRound: waitRound + 1 } : {}) },
-			);
+			const hasTransferRun = await ctx.runQuery(internal.data_deletion.has_transfer_run_for_user, { userId: user._id });
+			if (hasTransferRun) console.warn("Hard delete waits for a Paste run", { userId: user._id });
+			await ctx.scheduler.runAfter(hasTransferRun ? 30_000 : 0, internal.users.hard_delete_user_now, {
+				userId: user._id,
+				purgeUserMod,
+			});
 		};
 
 		let prepared = false;

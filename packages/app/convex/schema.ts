@@ -6605,8 +6605,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_kind_status", ["organizationId", "workspaceId", "kind", "status"])
 		.index("by_blockedByOp", ["blockedByOpId"])
 		.index("by_archiveRun", ["archiveRunId"])
-		.index("by_transferRun", ["transferRunId"])
-		.index("by_user", ["userId"]),
+		.index("by_transferRun", ["transferRunId"]),
 
 	/**
 	 * The step state of one op. Only steps write it, so a step does not conflict with a new op.

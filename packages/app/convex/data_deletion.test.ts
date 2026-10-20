@@ -8344,7 +8344,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.membership).toBeNull();
 	});
 
-	test("waits for a move op to end before memberships", async () => {
+	test("does not wait for a move op, which still ends without the user", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -8359,17 +8359,13 @@ describe("finalize_user_deletion_data", () => {
 			tag: "move-finalize",
 		});
 
-		const done = await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
-			userId: victim.userId,
-			_test_batchSize: 1,
-		});
-		const waiting = await t.run(async (ctx) => ({
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+		const deleted = await t.run(async (ctx) => ({
 			op: await ctx.db.get("files_subtree_ops", op.opId),
 			membership: await ctx.db.get("organizations_workspaces_users", op.membershipId),
 		}));
-		expect(done).toBe(false);
-		expect(waiting.op).not.toBeNull();
-		expect(waiting.membership).not.toBeNull();
+		expect(deleted.op).not.toBeNull();
+		expect(deleted.membership).toBeNull();
 
 		const walk = await t.run((ctx) =>
 			ctx.db
@@ -8379,13 +8375,7 @@ describe("finalize_user_deletion_data", () => {
 		);
 		const step = walk!.step;
 		await t.mutation(internal.files_subtree_ops.advance, { opId: op.opId, step });
-		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
-		const after = await t.run(async (ctx) => ({
-			op: await ctx.db.get("files_subtree_ops", op.opId),
-			membership: await ctx.db.get("organizations_workspaces_users", op.membershipId),
-		}));
-		expect(after.op).toBeNull();
-		expect(after.membership).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_subtree_ops", op.opId))).toBeNull();
 	});
 
 	test("drains a Bash job before memberships", async () => {

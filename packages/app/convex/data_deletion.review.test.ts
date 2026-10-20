@@ -2179,20 +2179,12 @@ describe("hard_delete_user_now", () => {
 		);
 	});
 
-	test("waits longer each round while a file job of the user runs, and starts over when it ends", async () => {
+	test("does not wait for a file job of the user, which keeps running", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const user = await t.run((ctx) =>
-			data_deletion_test_bootstrap_user(ctx, { clerkUserId: "clerk-review-wait", displayName: "Review wait" }),
+			data_deletion_test_bootstrap_user(ctx, { clerkUserId: "clerk-review-job", displayName: "Review job" }),
 		);
-		await t.run((ctx) =>
-			data_deletion_test_seed_plugin_ui_sessions(ctx, {
-				userId: user.userId,
-				organizationId: user.defaultOrganizationId,
-				workspaceId: user.defaultWorkspaceId,
-				sessionCount: 30,
-			}),
-		);
-		// An op with no step scheduled stands for a job that does not end.
+		// An op with no step scheduled stands for a job that is still running.
 		const opId = await t.run((ctx) =>
 			ctx.db.insert("files_subtree_ops", {
 				kind: "scope",
@@ -2202,47 +2194,28 @@ describe("hard_delete_user_now", () => {
 				status: "running",
 				blockedByOpId: null,
 				rootNodeIds: [],
-				treePaths: ["/stuck/"],
+				treePaths: ["/running/"],
 			}),
 		);
 		const fetchMock = vi.mocked(globalThis.fetch).mockResolvedValue(new Response(null, { status: 200 }));
-		// Runs one round and returns the next round, canceled so the test runs each round by hand.
-		const run_round = async (waitRound?: number) => {
-			await t.action(internal.users.hard_delete_user_now, {
-				userId: user.userId,
-				purgeUserMod: "data_and_auth",
-				_test_batchSize: 1,
-				...(waitRound === undefined ? {} : { waitRound }),
-			});
-			return await t.run(async (ctx) => {
-				const jobs = (await ctx.db.system.query("_scheduled_functions").collect()).filter(
-					(job) => job.state.kind === "pending" && job.name.includes("hard_delete_user_now"),
-				);
-				expect(jobs).toHaveLength(1);
-				await ctx.scheduler.cancel(jobs[0]._id);
-				return { args: jobs[0].args, delay: jobs[0].scheduledTime - Date.now() };
-			});
-		};
 
-		const first = await run_round();
-		expect(first.args).toEqual([{ userId: user.userId, purgeUserMod: "data_and_auth", waitRound: 1 }]);
-		expect(first.delay).toBe(30_000);
-		expect(fetchMock).not.toHaveBeenCalled();
+		await t.action(internal.users.hard_delete_user_now, { userId: user.userId, purgeUserMod: "data_and_auth" });
 
-		const fourth = await run_round(3);
-		expect(fourth.args).toEqual([{ userId: user.userId, purgeUserMod: "data_and_auth", waitRound: 4 }]);
-		expect(fourth.delay).toBe(240_000);
-
-		const capped = await run_round(10);
-		expect(capped.args).toEqual([{ userId: user.userId, purgeUserMod: "data_and_auth", waitRound: 11 }]);
-		expect(capped.delay).toBe(30 * 60_000);
-
-		await t.run((ctx) => ctx.db.delete("files_subtree_ops", opId));
-		// The sessions still need more rounds, but nothing blocks them now.
-		const reset = await run_round(4);
-		expect(reset.args).toEqual([{ userId: user.userId, purgeUserMod: "data_and_auth" }]);
-		expect(reset.delay).toBe(0);
-		expect(fetchMock).not.toHaveBeenCalled();
+		const after = await t.run(async (ctx) => ({
+			user: await ctx.db.get("users", user.userId),
+			op: await ctx.db.get("files_subtree_ops", opId),
+			jobs: (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+				(job) => job.state.kind === "pending" && job.name.includes("hard_delete_user_now"),
+			),
+		}));
+		expect(after.jobs).toEqual([]);
+		expect(after.user?.clerkUserId).toBeNull();
+		expect(after.user?.deletionFinalizationStartedAt).toBeUndefined();
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://api.clerk.com/v1/users/clerk-review-job",
+			expect.objectContaining({ method: "DELETE" }),
+		);
+		expect(after.op).not.toBeNull();
 	});
 
 	test("continues finalization after 25 batches and clears the fence", async () => {
