@@ -915,6 +915,17 @@ and sync still `live`, an email from `lemmino4555@gmail.com` blocked sync at 00:
 page renewed the grant and sync was `live` again 8 seconds later. A second email showed at the top of
 the open page 83 seconds after it was sent, with no reload. 448 tests.
 
+Gmail 0.3.4 was published and installed in `personal/home` on 2026-10-20 (plugin commit
+`e09a196c48b71fe530c13ca4394672a368cd010d`, version doc `hn7z25veq6bmt445ahtbk623q98gnxdb`). The
+Mail page now reads the list again only when the newest saved email's Gmail time grows. The plugin
+status returns it as `newestEmailAt`, read with the new ledger index
+`by_account_emailWritten_internalDate`. Before, any growth of `messagesSynced` re-read the list, and
+backfill of older mail grows it too. The page also shows locked emails as `Locked` rows it does not
+read, and names the folders it skipped because the member cannot open them. Live check: an email from
+`lemmino4555@gmail.com` was saved at 19:36:33 UTC and showed at the top of the open page at 19:37:51,
+with no reload. The locked messages were checked only in tests, because the owner can open every
+folder. 451 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `raythurnvoid/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.

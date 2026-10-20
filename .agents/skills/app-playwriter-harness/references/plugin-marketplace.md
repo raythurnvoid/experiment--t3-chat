@@ -428,7 +428,7 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
-## Page agent tools fixture (Gmail 0.3.3 Mail page)
+## Page agent tools fixture (Gmail 0.3.4 Mail page)
 
 The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the
 separate Mail plugin, which was uninstalled and removed from this repo on 2026-10-19 (its registry
@@ -436,7 +436,7 @@ entry and GitHub repo stay). The page lists the `/emails` files the Gmail sync w
 tools: `get_view`, `open_email`, `list_drafts`, `create_draft`, `update_draft`, `delete_draft`. Drafts
 are real Gmail drafts. No tool can send; only the member's **Send** click does.
 
-Where it lives (verified 2026-10-20): `gmail@0.3.3` is installed in `personal/home`. Pages:
+Where it lives (verified 2026-10-20): `gmail@0.3.4` is installed in `personal/home`. Pages:
 `/w/personal/home/plugins/gmail/pages/gmail` (connection) and
 `/w/personal/home/plugins/gmail/pages/mail` (Mail).
 
@@ -460,8 +460,14 @@ Where it lives (verified 2026-10-20): `gmail@0.3.3` is installed in `personal/ho
   and click Send from page context. To leave that compose page, set `location.href` in the page;
   `page.goto` to a `#search/...` URL stayed on the compose view.
 - **New mail shows without a reload (0.3.2+).** The Mail page reads the sync status every 15 seconds.
-  When `messagesSynced` grows, it reads the newest folder again and puts the new rows at the top.
-  Inside one day, rows are in Gmail id order (newest first), not subject order.
+  Since 0.3.4 it reads the newest folder again only when the status field `newestEmailAt` (the Gmail
+  time of the newest saved email) grows, so backfill of older mail does not re-read the list. New rows
+  go at the top. Inside one day, rows are in Gmail id order (newest first), not subject order.
+- **Locked emails and folders (0.3.4+).** A locked email row has `data-locked` and a `Locked` badge,
+  and opening it shows a "locked in Files" message without a read. Skipped folders are listed in the
+  note with `data-mail-locked-folders`; when the account folder itself is locked, that note is a
+  `role="alert"`. Testing it live needs a second member and a restricted folder (see
+  `second-user-fixtures.md`); the owner can open everything.
 - **Read drafts back from the plugin backend**, not from Press: run
   `vp env exec pnpm exec convex data gmail_drafts` from `plugins/bonobo-plugin-gmail`. A row holds the
   subject and recipients only; the text lives in Gmail. A sent draft's row is deleted.
