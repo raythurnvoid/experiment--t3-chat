@@ -89,7 +89,10 @@ export async function file_editor_rich_text_share_inserted_media(args: {
 			nodeId: args.documentNodeId,
 			src: args.src,
 		});
-		if (result._nay) {
+		// The document became read-only while the file uploaded. Its reference may or may not be saved.
+		if (result._nay?.name === "read_only") {
+			toast.error("This document is read-only now, so the file was not shared through the public link.");
+		} else if (result._nay) {
 			toast.error(`The file was inserted but could not be shared through the public link. ${result._nay.message}`);
 		}
 	} catch (error) {
@@ -766,6 +769,34 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				view.destroy();
 				mutation.mockRestore();
 				vi.unstubAllGlobals();
+			}
+		});
+	});
+
+	describe("file_editor_rich_text_share_inserted_media", () => {
+		test("names a read-only document instead of saying the file was inserted", async () => {
+			const args = {
+				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+				documentNodeId: "document" as app_convex_Id<"files_nodes">,
+				src: "bonobo-file://node",
+			};
+			const mutation = vi.spyOn(app_convex, "mutation");
+			const toastError = vi.spyOn(toast, "error").mockReturnValue("toast");
+			try {
+				mutation.mockResolvedValueOnce({ _nay: { name: "read_only", message: "This item is read-only." } });
+				await file_editor_rich_text_share_inserted_media(args);
+				expect(toastError).toHaveBeenLastCalledWith(
+					"This document is read-only now, so the file was not shared through the public link.",
+				);
+
+				mutation.mockResolvedValueOnce({ _nay: { message: "Permission denied" } });
+				await file_editor_rich_text_share_inserted_media(args);
+				expect(toastError).toHaveBeenLastCalledWith(
+					"The file was inserted but could not be shared through the public link. Permission denied",
+				);
+			} finally {
+				mutation.mockRestore();
+				toastError.mockRestore();
 			}
 		});
 	});

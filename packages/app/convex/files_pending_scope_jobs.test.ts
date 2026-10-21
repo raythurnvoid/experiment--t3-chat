@@ -541,7 +541,8 @@ test("a Restore starts a saved scope job again when its run was lost", async () 
 	});
 	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
 	const args = { membershipId: db.membershipId, nodeIds: [nodeId] };
-	expect(await asUser.mutation(api.files_nodes.archive_nodes, args)).toEqual({ _yay: null });
+	// The bulk archive always uses a job. The archive door copies a small item's docs inline instead.
+	await t.run((ctx) => files_nodes_db_archive_nodes({ ctx, nodeIds: [nodeId], updatedBy: db.userId, now: Date.now() }));
 	// A failed run leaves the job doc the same as a lost one.
 	const lost = (await read_saved_docs(t, nodeId)).job!;
 	await t.run((ctx) => ctx.scheduler.cancel(lost.scheduledFunctionId));

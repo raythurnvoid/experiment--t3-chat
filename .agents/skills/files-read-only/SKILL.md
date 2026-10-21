@@ -121,6 +121,7 @@ The table describes a node whose policy refuses the current writer. ACL still ap
 | Share or change policy | Require management permission separately |
 | General comment, reply, resolve, or reopen | Allow with file `content.write`; these do not change the file |
 | Create an anchored comment | Refuse; this changes a Yjs mark |
+| Approve inserted media for the public link | Refuse; a manager's review in Sharing still works |
 | Discard a whole pending proposal | Allow; retire owned private work and keep saved nodes |
 | Accept, save, or rebase pending work | Refuse |
 | Finish an already accepted upload | Allow; a later lock stops new writes, not this one |
