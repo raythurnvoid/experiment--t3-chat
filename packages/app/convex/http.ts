@@ -13,6 +13,7 @@ import { plugins_service_http_routes } from "./plugins_service_http_routes.ts";
 import { plugins_service_access_http_routes } from "./plugins_service_access_http_routes.ts";
 import { plugins_ui_http_routes } from "./plugins_ui_http_routes.ts";
 import { public_api_files_list_http_routes } from "./public_api_files_list_http.ts";
+import { public_api_files_organize_http_routes } from "./public_api_files_organize_http_routes.ts";
 import { public_api_http_routes } from "./public_api_http_routes.ts";
 import { public_api_ai_chat_http_routes } from "./public_api_ai_chat_http_routes.ts";
 import { public_api_plugin_files_http_routes } from "./public_api_plugin_files_http_routes.ts";
@@ -48,6 +49,7 @@ files_nodes_ai_http_routes(appCors);
 // File listing stays static because it is small and is the hot plugin read path.
 public_api_files_list_http_routes(appCors);
 public_api_http_routes(appCors);
+public_api_files_organize_http_routes(appCors);
 public_api_ai_chat_http_routes(appCors);
 public_api_plugin_files_http_routes(appCors);
 public_api_plugin_writers_http_routes(appCors);

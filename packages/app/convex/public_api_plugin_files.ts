@@ -818,9 +818,9 @@ async function read_writer_proof(args: {
 /**
  * Validate an absolute, already-canonical folder path. The plugin doors refuse non-canonical
  * segments for the same reason the write route does: creation happens verbatim on publish, so a
- * segment the app's own creation flows would reject must never materialize.
+ * segment the app's own creation flows would reject must never materialize. `files/mkdir` uses it too.
  */
-function validate_canonical_folder_path(rawPath: string) {
+export function public_api_validate_canonical_folder_path(rawPath: string) {
 	if (!rawPath.startsWith("/")) {
 		return Result({ _nay: { message: "Path must be absolute." } });
 	}
@@ -900,7 +900,7 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 		} as const;
 	}
 
-	const validatedPath = validate_canonical_folder_path(body._yay.path);
+	const validatedPath = public_api_validate_canonical_folder_path(body._yay.path);
 	if (validatedPath._nay) {
 		return {
 			status: 400,

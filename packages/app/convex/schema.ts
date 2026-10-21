@@ -6532,6 +6532,11 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		/**
+		 * Set when an API key started this job. Missing for jobs started in the app. The job stops its
+		 * checks once the key is revoked or loses `files:write`, like it does when the person leaves.
+		 */
+		credentialId: v.optional(v.id("api_credentials")),
 		kind: v.union(v.literal("archive"), v.literal("restore")),
 		/**
 		 * Archive: the operation id this job writes. Restore: the operation id this job brings back.

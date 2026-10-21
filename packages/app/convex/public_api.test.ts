@@ -28,6 +28,7 @@ import {
 } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { prepare_file_write } from "./public_api.ts";
+import { delete_paths } from "./public_api_files_organize.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	files_get_utf8_byte_size,
@@ -4909,6 +4910,189 @@ describe("locked and missing paths", () => {
 				files: [{ path: "/new.md", contentType: "text/markdown;charset=utf-8", size: 6 }],
 			}),
 		).toMatchObject({ status: 403 });
+	});
+
+	test("files stat answers found, locked, missing, and denied the same way files list does", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const paths = [
+			"/b.md",
+			"/hidden.md",
+			"/secret",
+			"/secret/h01.md",
+			"/secret/nope.md",
+			"/secret/shared/ok.md",
+			"/missing.md",
+			"/notes/x/y.md",
+		];
+
+		expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths })).toMatchObject({
+			status: 200,
+			body: {
+				items: [
+					{ path: "/b.md", status: "found", item: { kind: "file", locked: false } },
+					{ path: "/hidden.md", status: "found", item: { kind: "file", locked: true, status: null } },
+					{ path: "/secret", status: "found", item: { kind: "folder", locked: true } },
+					// Inside a locked folder, a file that exists and one that does not answer the same.
+					{ path: "/secret/h01.md", status: "denied" },
+					{ path: "/secret/nope.md", status: "denied" },
+					{ path: "/secret/shared/ok.md", status: "found", item: { locked: false } },
+					{ path: "/missing.md", status: "missing" },
+					{ path: "/notes/x/y.md", status: "missing" },
+				],
+			},
+		});
+		// Control: the owner opens the file inside the locked folder.
+		expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/secret/h01.md"] })).toMatchObject({
+			status: 200,
+			body: { items: [{ path: "/secret/h01.md", status: "found", item: { locked: false } }] },
+		});
+	});
+
+	test("files mkdir creates nested folders like mkdir -p, and a refusal rolls back the whole batch", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const stat = async (paths: string[]) =>
+			(
+				(await post(t, "/api/v1/files/stat", f.memberCredential, { paths })).body as {
+					items: Array<{ status: string }>;
+				}
+			).items.map((item) => item.status);
+
+		// A locked folder in a readable folder already shows as a locked row, so it is an existing folder.
+		expect(
+			await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/notes/a/b", "/notes", "/secret"] }),
+		).toMatchObject({
+			status: 200,
+			body: {
+				items: [
+					{ path: "/notes/a/b", created: true },
+					{ path: "/notes", created: false },
+					{ path: "/secret", nodeId: f.secretId, created: false },
+				],
+			},
+		});
+		expect(await stat(["/notes/a", "/notes/a/b"])).toEqual(["found", "found"]);
+
+		// The second path is refused, so the first one is not created either.
+		expect(await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/notes/c", "/secret/new"] })).toEqual({
+			status: 403,
+			body: { message: "Permission denied", path: "/secret/new" },
+		});
+		expect(await stat(["/notes/c"])).toEqual(["missing"]);
+
+		expect(await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/b.md"] })).toEqual({
+			status: 409,
+			body: { message: "A file already exists at this path. Pick another path.", path: "/b.md" },
+		});
+		expect(await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/b.md/x"] })).toEqual({
+			status: 409,
+			body: { message: "A file is in the way on this path. Rename or move it, or pick another path.", path: "/b.md/x" },
+		});
+	});
+
+	test("files delete keeps each path's own reason when every path is refused", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		for (const path of ["/ro-a.md", "/ro-b.md"]) {
+			const nodeId = await seed_markdown_file({ t, ...f.db, path, committedMarkdown: "# read-only" });
+			await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "read_only" } }));
+		}
+
+		expect(
+			await post(t, "/api/v1/files/delete", f.memberCredential, { paths: ["/ro-a.md", "/ro-b.md", "/missing.md"] }),
+		).toEqual({
+			status: 200,
+			body: {
+				jobId: null,
+				isDone: true,
+				refused: [
+					{ path: "/missing.md", message: "Not found" },
+					// Not the general "None of these items can be archived…" message.
+					{ path: "/ro-a.md", message: "This item is read-only. Unlock it, then try again." },
+					{ path: "/ro-b.md", message: "This item is read-only. Unlock it, then try again." },
+				],
+			},
+		});
+	});
+
+	test("files delete archives what it can and refuses locked and missing paths alone", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+
+		expect(
+			await post(t, "/api/v1/files/delete", f.memberCredential, {
+				paths: ["/b.md", "/hidden.md", "/secret/h01.md", "/secret/nope.md", "/missing.md"],
+			}),
+		).toEqual({
+			status: 200,
+			body: {
+				jobId: null,
+				isDone: true,
+				refused: [
+					// A locked file, and a file that exists or not inside a locked folder, answer the same.
+					{ path: "/hidden.md", message: "Permission denied" },
+					{ path: "/secret/h01.md", message: "Permission denied" },
+					{ path: "/secret/nope.md", message: "Permission denied" },
+					{ path: "/missing.md", message: "Not found" },
+				],
+			},
+		});
+		expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/hidden.md"] })).toMatchObject({
+			body: { items: [{ status: "missing" }, { status: "found" }] },
+		});
+	});
+
+	test("files delete stays inside the Convex call limit at the largest batch", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const paths = Array.from({ length: 200 }, (_, index) => `/bulk-${String(index).padStart(3, "0")}`);
+		await t.run(async (ctx) => {
+			for (const path of paths) {
+				const name = path.slice(1);
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: files_ROOT_ID,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "folder",
+					path,
+					treePath: `${path}/`,
+					pathDepth: 1,
+				});
+			}
+		});
+		const queries: number[] = [];
+		test_spy_handler(delete_paths, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			queries.push((await ctx.meta.getTransactionMetrics()).databaseQueries.used);
+			return result;
+		});
+
+		// A member, not the owner, so every path pays the full access check.
+		expect((await post(t, "/api/v1/files/delete", f.memberCredential, { paths })).status).toBe(200);
+		expect(queries).toHaveLength(1);
+		expect(queries[0]).toBeLessThan(4096 * 0.8);
+	});
+
+	test("a guest key makes folders only inside the folder shared with the guest", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const guestCredential = await seed_guest(t, f);
+
+		expect(await post(t, "/api/v1/files/mkdir", guestCredential, { paths: ["/secret/shared/new/deep"] })).toMatchObject(
+			{ status: 200, body: { items: [{ path: "/secret/shared/new/deep", created: true }] } },
+		);
+		for (const path of ["/new", "/secret/other"]) {
+			expect(await post(t, "/api/v1/files/mkdir", guestCredential, { paths: [path] }), path).toEqual({
+				status: 403,
+				body: { message: "Permission denied", path },
+			});
+		}
 	});
 });
 

@@ -23,6 +23,10 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
   once in `total`, so the counts still add up.
   Items the archive check counted that somebody else archived, deleted, or moved out before the
   apply reached them count as `skipped` when the job ends.
+- An archive job started by the public API `files/delete` stores the key in
+  `files_archive_runs.credentialId`. Its background steps treat a revoked key like a lost membership,
+  with their own message. The person still sees the job card in the app. Through the API, only that
+  key reads the job with `files/jobs/get` (public-api skill, "Organize routes").
 - `source.id` and `activities.by_source_id` are the only link. Do not add a backlink to the run.
 - Activity owns requester, status, progress, result kind, safe errors, and common times.
   Producer copies of tenant and user IDs exist only for immutable indexes.

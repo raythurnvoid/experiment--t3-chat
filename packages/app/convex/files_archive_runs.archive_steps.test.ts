@@ -324,6 +324,68 @@ describe("archive_nodes", () => {
 		expect((await read_node(f, first.topId)).archiveOperationId).toBeNull();
 	});
 
+	test("a delete through an API key shows its job only to that key, and stops once the key is revoked", async () => {
+		const f = await fixture();
+		// Only a Clerk account can make a key.
+		await f.t.run((ctx) => ctx.db.patch("users", f.db.userId, { clerkUserId: "clerk-delete-key-owner" }));
+		const create_key = async () => {
+			const created = await f.asOwner.mutation(api.public_api.api_credential_create, {
+				serviceAccountId: null,
+				membershipId: f.db.membershipId,
+				name: "Delete key",
+				scopes: ["files:list", "files:write"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.credential;
+		};
+		const credential = await create_key();
+		const post = async (route: string, key: string, body: unknown) => {
+			const response = await f.t.fetch(route, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+		};
+		// The same trees as the test above, so the request ends during the check with work left.
+		await seed_tree(f, { name: "first-passed", folderCount: 2, filesPerFolder: 48 });
+		const refused = await seed_tree(f, { name: "second-refused", folderCount: 1, filesPerFolder: 0 });
+		expect(await archive(f, [refused.folderIds[0]!])).toEqual({ _yay: null });
+		await lock_archived(f, refused.folderIds[0]!);
+
+		const response = await post("/api/v1/files/delete", credential, { paths: ["/first-passed", "/second-refused"] });
+		expect(response).toMatchObject({ status: 200, body: { isDone: false, refused: [{ path: "/second-refused" }] } });
+		const deleted = response.body as { jobId: Id<"activities"> };
+		const activity = await read_activity(f, deleted.jobId);
+		const runId = activity.source.id as Id<"files_archive_runs">;
+		const first = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", runId)))!;
+		expect(first.phase).toBe("check");
+
+		expect(await post("/api/v1/files/jobs/get", credential, { jobId: deleted.jobId })).toMatchObject({
+			status: 200,
+			body: { kind: "delete", status: "running", refused: [{ path: "/second-refused" }] },
+		});
+		// Another key of the same person cannot read it.
+		expect(await post("/api/v1/files/jobs/get", await create_key(), { jobId: deleted.jobId })).toEqual({
+			status: 404,
+			body: { message: "Job not found" },
+		});
+
+		// Revoke stamps `revokedAt`. The key mutations allow only two changes in a row, so stamp it here.
+		await f.t.run((ctx) => ctx.db.patch("api_credentials", first.credentialId!, { revokedAt: Date.now() }));
+		const ended = await run_to_end(f, { runId, activityId: deleted.jobId });
+
+		// The owner still writes everything, so only the revoked key stops the job.
+		expect(ended.activity).toMatchObject({
+			status: "failed",
+			errorMessage: "The API key that started this job was revoked or lost files:write.",
+		});
+		expect((await read_node(f, first.rootNodeIds[0]!)).archiveOperationId).toBeNull();
+		// The person still sees the job in the app.
+		const card = await f.asOwner.query(api.files_archive_runs.get, { membershipId: f.db.membershipId, runId });
+		expect(card).toMatchObject({ activity: { status: "failed" } });
+	});
+
 	test("items somebody else deletes before the apply reaches them count as skipped", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "shrink", folderCount: 3, filesPerFolder: 100 });

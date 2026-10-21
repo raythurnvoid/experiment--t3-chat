@@ -194,6 +194,11 @@ const MEMBERSHIP_LOST = {
 	nay: { message: "You can no longer change these files." },
 } as const satisfies StepOutcome;
 
+const API_KEY_LOST = {
+	kind: "failed",
+	nay: { message: "The API key that started this job was revoked or lost files:write." },
+} as const satisfies StepOutcome;
+
 async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files_archive_runs">) {
 	const activity = await activities_db_require_by_source_id(ctx, runId);
 	if (!activity.progress || !activity.membershipId || activity.membershipLifetime === undefined) {
@@ -1853,6 +1858,10 @@ export async function files_archive_runs_db_start(
 		kind: "archive" | "restore";
 		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
+		/**
+		 * The API key that started the job, or null for the app.
+		 */
+		credentialId: Id<"api_credentials"> | null;
 		archiveOperationId: string;
 		/**
 		 * Archive: the named active items. Restore: empty; the check fills the items that land at the root.
@@ -1929,6 +1938,7 @@ export async function files_archive_runs_db_start(
 		organizationId: args.membership.organizationId,
 		workspaceId: args.membership.workspaceId,
 		userId: args.userAuth.id,
+		credentialId: args.credentialId ?? undefined,
 		kind: args.kind,
 		archiveOperationId: args.archiveOperationId,
 		rootNodeIds: args.kind === "archive" ? args.rootNodeIds : [],
@@ -2081,12 +2091,23 @@ export async function files_archive_runs_db_advance(
 	const { _id: runId, _creationTime: _runCreationTime, ...run } = storedRun;
 	const progress = { ...activity.progress };
 	const membership = await db_get_run_membership({ ctx, run: storedRun, activity });
-	const outcome = await db_step(ctx, {
+	// A job an API key started stops its checks once the key is revoked or loses write, like a lost
+	// membership. Only the steps check this, so the person still sees the job in the app.
+	const credential = storedRun.credentialId ? await ctx.db.get("api_credentials", storedRun.credentialId) : null;
+	const isApiKeyLost =
+		storedRun.credentialId !== undefined &&
+		(!credential ||
+			credential.revokedAt !== null ||
+			credential.userId !== storedRun.userId ||
+			credential.serviceAccountId !== null ||
+			credential.workspaceId !== storedRun.workspaceId ||
+			!credential.scopes.includes("files:write"));
+	const stepOutcome = await db_step(ctx, {
 		opId: args.op._id,
 		run,
 		progress,
 		userAuth: { id: storedRun.userId },
-		membership,
+		membership: isApiKeyLost ? null : membership,
 		now: args.now,
 		budget: {
 			nodes: files_archive_runs_STEP_MAX_NODES,
@@ -2097,6 +2118,7 @@ export async function files_archive_runs_db_advance(
 		checkedScopes: new Map(),
 		writeState: { isWritten: false },
 	});
+	const outcome = isApiKeyLost && stepOutcome === MEMBERSHIP_LOST ? API_KEY_LOST : stepOutcome;
 
 	await db_settle_step(ctx, {
 		opId: args.op._id,

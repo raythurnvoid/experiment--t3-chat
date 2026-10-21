@@ -3941,6 +3941,137 @@ export async function files_nodes_db_archive_nodes(args: {
  */
 const MAX_ARCHIVE_NAMED_NODES = 500;
 
+/**
+ * Archive the named items through the job, like `rm` with several files. The caller checked the
+ * membership, the rate limit, and the item count. `credentialId` is the API key that asked, or null
+ * for the app.
+ */
+export async function files_nodes_db_archive_named_nodes(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		nodeIds: Array<Id<"files_nodes">>;
+		credentialId: Id<"api_credentials"> | null;
+	},
+) {
+	const { userAuth, membership, nodeIds } = args;
+
+	// Like `rm` with several files, a named item that is missing is "Not found" for that item alone,
+	// and one the person cannot open or change is "Permission denied". The job lists it and archives
+	// the others.
+	const refusedNodes = new Map<Id<"files_nodes">, { name: string | null; message: string }>();
+	const fileNodes: Doc<"files_nodes">[] = [];
+	const writableNodeIds = new Set<Id<"files_nodes">>();
+	const loadedNodes = await Promise.all(nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+	// Per node, not per workspace, because a grant on one restricted folder has to be enough to
+	// archive what is inside it. This loop refuses a node the person cannot read. A node they can read
+	// but not change is refused below, only when it is active, so an archived one is still dropped
+	// like in `rm -f`. The write check costs no extra read for an unrestricted tree, and the read
+	// check runs only when the write check fails.
+	for (const [index, fileNode] of loadedNodes.entries()) {
+		if (
+			!fileNode ||
+			fileNode.organizationId !== membership.organizationId ||
+			fileNode.workspaceId !== membership.workspaceId
+		) {
+			refusedNodes.set(nodeIds[index]!, { name: null, message: "Not found" });
+			continue;
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode,
+		});
+		if (!authorized._nay) {
+			writableNodeIds.add(fileNode._id);
+		} else {
+			// A node the person cannot open is locked. It is refused here, whether it is archived or
+			// not, so the answer tells nothing more about it. A member with only folder grants has no
+			// workspace read, so an open node is locked for them too.
+			const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				subject: { kind: "user", userId: userAuth.id, plugin: null },
+				nodes: [fileNode],
+			});
+			if (!readable) {
+				refusedNodes.set(fileNode._id, { name: null, message: "Permission denied" });
+				continue;
+			}
+		}
+		fileNodes.push(fileNode);
+	}
+
+	// Drop an item that is already archived, like `rm -f` drops a missing file. Also drop an item that
+	// sits inside another named folder. The folder's walk archives it, so the job does not count it twice.
+	const activeFileNodes = [
+		...new Map(fileNodes.filter((node) => node.archiveOperationId === null).map((node) => [node._id, node])).values(),
+	];
+	const rootFileNodes = activeFileNodes.filter(
+		(node) =>
+			!activeFileNodes.some(
+				(other) => other.kind === "folder" && other._id !== node._id && node.treePath.startsWith(other.treePath),
+			),
+	);
+	for (const node of rootFileNodes) {
+		if (!writableNodeIds.has(node._id)) refusedNodes.set(node._id, { name: null, message: "Permission denied" });
+	}
+
+	// When index reads prove that the check would pass, the request stamps the named items at once and
+	// the job runs no check. Otherwise the job checks every node inside before it archives anything.
+	const fastCheck = await files_archive_runs_db_check_fast(ctx, {
+		userAuth,
+		membership,
+		nodes: rootFileNodes.filter((node) => !refusedNodes.has(node._id)),
+	});
+	for (const [nodeId, refusal] of fastCheck.refusals) refusedNodes.set(nodeId, refusal);
+
+	const jobFileNodes = rootFileNodes.filter((node) => !refusedNodes.has(node._id));
+	const refusedItems = [...refusedNodes].map(([nodeId, refusal]) => ({ nodeId, refusal }));
+	// The message is general when several items are refused. `data` keeps each item's own reason for the
+	// API, which answers per path.
+	if (jobFileNodes.length === 0) {
+		return refusedItems.length > 0
+			? Result({ _nay: { ...files_archive_runs_get_all_refused_nay(refusedItems), data: { refusedItems } } })
+			: Result({ _yay: null });
+	}
+
+	const started = await files_archive_runs_db_start(ctx, {
+		kind: "archive",
+		userAuth,
+		membership,
+		credentialId: args.credentialId,
+		archiveOperationId: crypto.randomUUID(),
+		rootNodeIds: jobFileNodes.map((node) => node._id),
+		refusedNodes: refusedItems,
+		isFast: fastCheck.isFast,
+		treePaths: jobFileNodes.map((node) => node.treePath),
+		budget: {
+			nodes: files_archive_runs_REQUEST_MAX_NODES,
+			checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
+			hasPaginated: false,
+		},
+		previousRunId: null,
+	});
+	if (started._nay || !started._yay) return started;
+
+	// A named item inside a refused or waiting folder stays active with that folder, so report it too.
+	const job = started._yay;
+	const getNamedIdsWithin = (nodeIds: Array<Id<"files_nodes">>) => {
+		const folders = rootFileNodes.filter((node) => node.kind === "folder" && nodeIds.includes(node._id));
+		return activeFileNodes
+			.filter(
+				(node) => nodeIds.includes(node._id) || folders.some((folder) => node.treePath.startsWith(folder.treePath)),
+			)
+			.map((node) => node._id);
+	};
+	const notArchivedNodeIds = [...new Set([...refusedNodes.keys(), ...getNamedIdsWithin(job.notArchivedNodeIds)])];
+	return Result({ _yay: { ...job, notArchivedNodeIds, waitingNodeIds: getNamedIdsWithin(job.waitingNodeIds) } });
+}
+
 export const archive_nodes = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -4013,116 +4144,18 @@ export const archive_nodes = mutation({
 			nodeIds.push(nodeId);
 		}
 
-		// Like `rm` with several files, a named item that is missing is "Not found" for that item alone,
-		// and one the person cannot open or change is "Permission denied". The job lists it and archives
-		// the others.
-		const refusedNodes = new Map<Id<"files_nodes">, { name: string | null; message: string }>();
-		const fileNodes: Doc<"files_nodes">[] = [];
-		const writableNodeIds = new Set<Id<"files_nodes">>();
-		const loadedNodes = await Promise.all(nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
-		// Per node, not per workspace, because a grant on one restricted folder has to be enough to
-		// archive what is inside it. This loop refuses a node the person cannot read. A node they can read
-		// but not change is refused below, only when it is active, so an archived one is still dropped
-		// like in `rm -f`. The write check costs no extra read for an unrestricted tree, and the read
-		// check runs only when the write check fails.
-		for (const [index, fileNode] of loadedNodes.entries()) {
-			if (
-				!fileNode ||
-				fileNode.organizationId !== membership.organizationId ||
-				fileNode.workspaceId !== membership.workspaceId
-			) {
-				refusedNodes.set(nodeIds[index]!, { name: null, message: "Not found" });
-				continue;
-			}
-
-			const authorized = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.write",
-				fileNode,
-			});
-			if (!authorized._nay) {
-				writableNodeIds.add(fileNode._id);
-			} else {
-				// A node the person cannot open is locked. It is refused here, whether it is archived or
-				// not, so the answer tells nothing more about it. A member with only folder grants has no
-				// workspace read, so an open node is locked for them too.
-				const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					subject: { kind: "user", userId: userAuth.id, plugin: null },
-					nodes: [fileNode],
-				});
-				if (!readable) {
-					refusedNodes.set(fileNode._id, { name: null, message: "Permission denied" });
-					continue;
-				}
-			}
-			fileNodes.push(fileNode);
-		}
-
-		// Drop an item that is already archived, like `rm -f` drops a missing file. Also drop an item that
-		// sits inside another named folder. The folder's walk archives it, so the job does not count it twice.
-		const activeFileNodes = [
-			...new Map(fileNodes.filter((node) => node.archiveOperationId === null).map((node) => [node._id, node])).values(),
-		];
-		const rootFileNodes = activeFileNodes.filter(
-			(node) =>
-				!activeFileNodes.some(
-					(other) => other.kind === "folder" && other._id !== node._id && node.treePath.startsWith(other.treePath),
-				),
-		);
-		for (const node of rootFileNodes) {
-			if (!writableNodeIds.has(node._id)) refusedNodes.set(node._id, { name: null, message: "Permission denied" });
-		}
-
-		// When index reads prove that the check would pass, the request stamps the named items at once and
-		// the job runs no check. Otherwise the job checks every node inside before it archives anything.
-		const fastCheck = await files_archive_runs_db_check_fast(ctx, {
+		const archived = await files_nodes_db_archive_named_nodes(ctx, {
 			userAuth,
 			membership,
-			nodes: rootFileNodes.filter((node) => !refusedNodes.has(node._id)),
+			nodeIds,
+			credentialId: null,
 		});
-		for (const [nodeId, refusal] of fastCheck.refusals) refusedNodes.set(nodeId, refusal);
-
-		const jobFileNodes = rootFileNodes.filter((node) => !refusedNodes.has(node._id));
-		const refusedItems = [...refusedNodes].map(([nodeId, refusal]) => ({ nodeId, refusal }));
-		if (jobFileNodes.length === 0) {
-			return refusedItems.length > 0
-				? Result({ _nay: files_archive_runs_get_all_refused_nay(refusedItems) })
-				: Result({ _yay: null });
+		// The app shows the one message. Only the API reads each item's reason from `data`.
+		if (archived._nay) {
+			const { data: _data, ...nay } = archived._nay;
+			return Result({ _nay: nay });
 		}
-
-		const started = await files_archive_runs_db_start(ctx, {
-			kind: "archive",
-			userAuth,
-			membership,
-			archiveOperationId: crypto.randomUUID(),
-			rootNodeIds: jobFileNodes.map((node) => node._id),
-			refusedNodes: refusedItems,
-			isFast: fastCheck.isFast,
-			treePaths: jobFileNodes.map((node) => node.treePath),
-			budget: {
-				nodes: files_archive_runs_REQUEST_MAX_NODES,
-				checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
-				hasPaginated: false,
-			},
-			previousRunId: null,
-		});
-		if (started._nay || !started._yay) return started;
-
-		// A named item inside a refused or waiting folder stays active with that folder, so report it too.
-		const job = started._yay;
-		const getNamedIdsWithin = (nodeIds: Array<Id<"files_nodes">>) => {
-			const folders = rootFileNodes.filter((node) => node.kind === "folder" && nodeIds.includes(node._id));
-			return activeFileNodes
-				.filter(
-					(node) => nodeIds.includes(node._id) || folders.some((folder) => node.treePath.startsWith(folder.treePath)),
-				)
-				.map((node) => node._id);
-		};
-		const notArchivedNodeIds = [...new Set([...refusedNodes.keys(), ...getNamedIdsWithin(job.notArchivedNodeIds)])];
-		return Result({ _yay: { ...job, notArchivedNodeIds, waitingNodeIds: getNamedIdsWithin(job.waitingNodeIds) } });
+		return archived;
 	},
 });
 
@@ -4243,6 +4276,7 @@ export const unarchive_nodes = mutation({
 				kind: "restore",
 				userAuth,
 				membership,
+				credentialId: null,
 				archiveOperationId,
 				rootNodeIds: [],
 				refusedNodes: [],

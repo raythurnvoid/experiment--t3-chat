@@ -89,6 +89,7 @@ import type { files_nodes_ai_http_routes } from "../convex/files_nodes_ai_http_r
 import type { plugins_data_http_routes } from "../convex/plugins_data_http_routes.ts";
 import type { plugins_invoke_http_routes } from "../convex/plugins_invoke_http_routes.ts";
 import type { public_api_files_list_http_routes } from "../convex/public_api_files_list_http.ts";
+import type { public_api_files_organize_http_routes } from "../convex/public_api_files_organize_http_routes.ts";
 import type { public_api_plugin_files_http_routes } from "../convex/public_api_plugin_files_http_routes.ts";
 import type { public_api_plugin_writers_http_routes } from "../convex/public_api_plugin_writers_http_routes.ts";
 import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
@@ -153,6 +154,14 @@ export interface api_schemas_Main {
 	>["/api/v1/ai-chat/threads/tool-output/read"];
 
 	"/api/v1/files/list": ReturnType<typeof public_api_files_list_http_routes>["/api/v1/files/list"];
+
+	"/api/v1/files/stat": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/stat"];
+
+	"/api/v1/files/mkdir": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/mkdir"];
+
+	"/api/v1/files/delete": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/delete"];
+
+	"/api/v1/files/jobs/get": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/jobs/get"];
 
 	"/api/v1/files/read": ReturnType<typeof public_api_http_routes>["/api/v1/files/read"];
 
