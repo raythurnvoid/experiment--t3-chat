@@ -1426,11 +1426,14 @@ deliberate wider access, not a bug. A plugin is narrower: a plugin write that ad
 `bonobo-file://` ref to a file the plugin cannot read itself (its member inside its sandbox roots) is
 refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
 `file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs the file already had stay,
-and an upload run may embed the file it was started for. A plugin service upload of Markdown with
-such a ref stays a stored file. People's writes are not checked. The public view has no
-credential-scope filter and tracks no
-per-embed writer history. Private API scope checks do not change: the same key still gets 403 from
-`/api/v1/files/download-urls`. No file becomes public just because somebody knows its id, and no
+and an upload run may embed the file it was started for. A write that keeps old refs is refused
+with 409 when the file changed after the route read them. A plugin service upload of Markdown with
+such a ref stays a stored file. People's writes are not checked. The check reads the plugin's text
+and that text after one rebuild from the document, because the rebuild is not always the same text
+(a code block that held a fence once broke open). Later rebuilds, such as a person saving the file, can
+still change it, so this check alone cannot keep a deeply hidden ref off the public page. The
+public view has no credential-scope filter and tracks no per-embed writer history. Private API scope
+checks do not change: the same key still gets 403 from `/api/v1/files/download-urls`. No file becomes public just because somebody knows its id, and no
 link is created for E. Removing the reference, archiving E, turning D off, or an access change that
 makes E fail rules 1 to 6 stops new URLs for E.
 

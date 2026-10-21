@@ -8231,11 +8231,32 @@ describe("files read-only locks", () => {
 		});
 		expect(staleLineage._nay?.message).toBe("The file changed during the write");
 
+		// A plugin write that keeps old file refs also pins the content it read them from.
+		const pinned = await t.run(async (ctx) => ({
+			assetId: (await ctx.db.get("files_nodes", nodeId))!.assetId!,
+			lastSequence: (await ctx.db.get("files_yjs_docs_last_sequences", lineageIds.newLineageId))!.lastSequence,
+		}));
+		for (const stalePin of [
+			{ expectedYjsLastSequence: pinned.lastSequence + 1 },
+			{ expectedContentAssetId: prepared2._yay!.contentSnapshotAssetId },
+		]) {
+			const stale = await t.mutation(internal.public_api.publish_file_fill, {
+				stageId: prepared2._yay!.stageId,
+				content: "# Change\n",
+				expectedNodeId: nodeId,
+				expectedYjsLastSequenceId: lineageIds.newLineageId,
+				...stalePin,
+			});
+			expect(stale._nay?.message).toBe("The file changed during the write");
+		}
+
 		const published2 = await t.mutation(internal.public_api.publish_file_fill, {
 			stageId: prepared2._yay!.stageId,
 			content: "# Change\n",
 			expectedNodeId: nodeId,
 			expectedYjsLastSequenceId: lineageIds.newLineageId,
+			expectedContentAssetId: pinned.assetId,
+			expectedYjsLastSequence: pinned.lastSequence,
 		});
 		expect(published2._nay).toBeUndefined();
 	});

@@ -9,13 +9,14 @@ import { plugins_sandbox_subject } from "../convex/plugins_service_accounts.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
 import type { files_YjsRootKind } from "../shared/files.ts";
 import { files_share_rich_text_MAX_MEDIA, files_share_rich_text_prepare } from "../shared/files-share-rich-text.ts";
-import { files_headless_tiptap_editor_create } from "../shared/files-tiptap.ts";
+import { files_headless_tiptap_editor_create, files_headless_tiptap_editor_get_markdown } from "../shared/files-tiptap.ts";
 import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
 import { files_transfer_rewrite_media_refs } from "./files-transfer-media.ts";
 
 /**
- * The app file refs that `content` adds to `previousContent`. Read them as the editor does, and as the
- * public page does: it parses the saved text on its own. Plain text never shows media.
+ * The app file refs that `content` adds to `previousContent`, and whether it keeps any old ones. Read
+ * them as the editor does, and as the public page does: it parses the saved text on its own. Plain text
+ * never shows media.
  *
  * Run it in an action: parsing a large text is too slow for a mutation.
  */
@@ -27,17 +28,27 @@ export function files_media_refs_added(args: {
 	const refs_of = (text: string) => {
 		const refs = new Set<string>();
 		if (args.rootKind === "plain_text") return Result({ _yay: refs });
-		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: text } });
-		if (editor._nay) return Result({ _nay: { message: editor._nay.message } });
-		try {
-			// With no mappings, every app media ref comes back as unresolved.
-			const found = files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap: new Map() });
-			for (const src of found._nay?.data.unresolvedRefs ?? []) refs.add(src);
-		} finally {
-			editor._yay.destroy();
+		// The saved text is rebuilt from the document, and the rebuild can differ from the text. A gap
+		// in the Markdown writer could then turn text into markdown, as a code block holding a fence
+		// line once did. Read the rebuilt text too. Each later rebuild (for example a person saving the
+		// file) can differ again, so this covers only the rebuild the server does on its own.
+		let current = text;
+		for (let round = 0; round < 2; round++) {
+			const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: current } });
+			if (editor._nay) return Result({ _nay: { message: editor._nay.message } });
+			let rebuilt: string;
+			try {
+				rebuilt = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+				// With no mappings, every app media ref comes back as unresolved.
+				const found = files_transfer_rewrite_media_refs({ mut_editor: editor._yay, referenceMap: new Map() });
+				for (const src of found._nay?.data.unresolvedRefs ?? []) refs.add(src);
+			} finally {
+				editor._yay.destroy();
+			}
+			const prepared = files_share_rich_text_prepare({ text: current, textKind: args.rootKind });
+			for (const item of prepared._yay?.media ?? []) refs.add(item.src);
+			current = rebuilt;
 		}
-		const prepared = files_share_rich_text_prepare({ text, textKind: args.rootKind });
-		for (const item of prepared._yay?.media ?? []) refs.add(item.src);
 		return Result({ _yay: refs });
 	};
 
@@ -45,11 +56,15 @@ export function files_media_refs_added(args: {
 	if (refs._nay) return refs;
 	// An old text that does not parse keeps no refs, so every ref counts as added.
 	const previousRefs = args.previousContent === null ? null : refs_of(args.previousContent)._yay;
+	const fileRefs = [...refs._yay].filter((src) => {
+		const parsed = files_media_parse_src(src);
+		return parsed.kind === "file" || parsed.kind === "private";
+	});
 	return Result({
-		_yay: [...refs._yay].filter((src) => {
-			const parsed = files_media_parse_src(src);
-			return (parsed.kind === "file" || parsed.kind === "private") && !previousRefs?.has(src);
-		}),
+		_yay: {
+			added: fileRefs.filter((src) => !previousRefs?.has(src)),
+			keepsOldRefs: fileRefs.some((src) => previousRefs?.has(src)),
+		},
 	});
 }
 

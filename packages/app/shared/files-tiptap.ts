@@ -1258,7 +1258,9 @@ const files_image_node = Node.create({
 	},
 
 	parseHTML() {
-		return [{ tag: "img[src]" }];
+		// A browser reads an `<image>` tag as `<img>`. Read it the same way on the server, so a server
+		// check sees every image the browser editor would save.
+		return [{ tag: "img[src]" }, { tag: "image[src]" }];
 	},
 
 	renderHTML({ HTMLAttributes }) {

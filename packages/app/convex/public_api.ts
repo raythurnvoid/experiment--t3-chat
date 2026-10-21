@@ -68,7 +68,7 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
-import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_media_refs_added, files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
@@ -3710,6 +3710,13 @@ export const publish_file_fill = internalMutation({
 		nonCollaborative: v.optional(v.boolean()),
 		/** Plugin principals only: the app file refs this content adds. See `db_check_plugin_added_file_refs`. */
 		addedFileRefs: v.optional(v.array(v.string())),
+		/**
+		 * Set when a plugin write keeps old app file refs: the content the route read them from. The old
+		 * refs are allowed only while that content is still the file's. Non-collaborative files pin the
+		 * content asset, and collaborative files pin the last update sequence.
+		 */
+		expectedContentAssetId: v.optional(v.id("files_r2_assets")),
+		expectedYjsLastSequence: v.optional(v.number()),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -3840,6 +3847,15 @@ export const publish_file_fill = internalMutation({
 			!files_node_has_editable_text_content(fileNode) ||
 			(fileNode.collaborationEnabled === false) !== (args.nonCollaborative === true) ||
 			(fileNode.collaborationEnabled !== false && fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
+		) {
+			return Result({ _nay: { message: "The file changed during the write" } });
+		}
+		// Otherwise a stale read could bring back a ref that someone removed during the write.
+		const sequence =
+			args.expectedYjsLastSequence === undefined ? null : await files_saved_placement_db_get_sequence(ctx.db, fileNode);
+		if (
+			(args.expectedContentAssetId !== undefined && fileNode.assetId !== args.expectedContentAssetId) ||
+			(args.expectedYjsLastSequence !== undefined && sequence?.lastSequence !== args.expectedYjsLastSequence)
 		) {
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
@@ -5133,8 +5149,12 @@ export async function public_api_write_one_text_file(
 						committedOnly: true,
 						mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
 					})) as files_nodes_read_file_content_from_chunks_Result);
-		const addedFileRefs = find_added_file_refs(previous?.content ?? null, activeNode.textKind);
-		if (addedFileRefs._nay) return addedFileRefs;
+		// The read goes by path, so it may have found another file there. Then no old ref counts.
+		const fileRefs = find_added_file_refs(
+			previous?.target.kind === "saved" && previous.target.id === activeNode._id ? previous.content : null,
+			activeNode.textKind,
+		);
+		if (fileRefs._nay) return fileRefs;
 
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
 			organizationId: args.organizationId,
@@ -5225,7 +5245,8 @@ export async function public_api_write_one_text_file(
 			content: args.content,
 			expectedNodeId: activeNode._id,
 			nonCollaborative: true,
-			...(addedFileRefs._yay ? { addedFileRefs: addedFileRefs._yay } : {}),
+			...(fileRefs._yay ? { addedFileRefs: fileRefs._yay.added } : {}),
+			...(fileRefs._yay?.keepsOldRefs ? { expectedContentAssetId: activeNode.assetId } : {}),
 		});
 		if (published._nay) {
 			// Conflict is the fallback: structural 409s pass their specific message through,
@@ -5285,9 +5306,8 @@ export async function public_api_write_one_text_file(
 				});
 			}
 
-			// The publish pins this document version, so these old refs are the ones it replaces.
-			const addedFileRefs = find_added_file_refs(currentContent._yay.text, activeNode.textKind);
-			if (addedFileRefs._nay) return addedFileRefs;
+			const fileRefs = find_added_file_refs(currentContent._yay.text, activeNode.textKind);
+			if (fileRefs._nay) return fileRefs;
 
 			// Mirror the snapshot-restore recipe: project the new text into the current
 			// doc and diff against the pre-projection state vector, so open editor sessions
@@ -5479,7 +5499,10 @@ export async function public_api_write_one_text_file(
 					expectedNodeId: activeNode._id,
 					expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
 					...(fillUpdateStageId ? { fillUpdateStageId } : {}),
-					...(addedFileRefs._yay ? { addedFileRefs: addedFileRefs._yay } : {}),
+					...(fileRefs._yay ? { addedFileRefs: fileRefs._yay.added } : {}),
+					...(fileRefs._yay?.keepsOldRefs
+						? { expectedYjsLastSequence: materializationState.yjsLastSequenceDoc.lastSequence }
+						: {}),
 				});
 			} catch (error) {
 				await retire_fill_update_stage();
@@ -5526,8 +5549,8 @@ export async function public_api_write_one_text_file(
 	// The created file's type: the caller's, else the name's hint, else plain text.
 	const createShape = args.shape ?? files_default_text_shape_for_name(path_name_of(args.path));
 	// A replaced file here is not editable text, so it has no refs to keep.
-	const addedFileRefs = find_added_file_refs(null, createShape.rootKind);
-	if (addedFileRefs._nay) return addedFileRefs;
+	const fileRefs = find_added_file_refs(null, createShape.rootKind);
+	if (fileRefs._nay) return fileRefs;
 
 	// A non-collaborative file is created with committed content only, so there is no document to
 	// build and nothing to upload to the Yjs snapshot key.
@@ -5635,7 +5658,7 @@ export async function public_api_write_one_text_file(
 		targetAnchor: prepared._yay.targetAnchor,
 		nonCollaborative: args.nonCollaborative,
 		...(args.requestReadOnly ? { requestReadOnly: true } : {}),
-		...(addedFileRefs._yay ? { addedFileRefs: addedFileRefs._yay } : {}),
+		...(fileRefs._yay ? { addedFileRefs: fileRefs._yay.added } : {}),
 	});
 	if (published._nay) {
 		// Conflict is the fallback: structural 409s pass their specific message through,

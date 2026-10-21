@@ -753,30 +753,29 @@ export const get_service_upload_target_by_asset_id = internalQuery({
 });
 
 /**
- * Whether a plugin service upload may add these app file refs: the plugin's own write rule
- * (`files_media_refs_db_check_plugin_added`). The upload's author is the grant's member.
+ * Why a plugin service upload may not add these app file refs, or null when it may: the plugin's own
+ * write rule (`files_media_refs_db_check_plugin_added`). The upload's author is the grant's member.
  */
-export const check_service_upload_file_refs = internalQuery({
+async function db_check_service_upload_file_refs(
+	ctx: MutationCtx,
 	args: {
-		targetId: v.id("plugin_service_storage_targets"),
-		userId: v.id("users"),
-		addedFileRefs: v.array(v.string()),
+		targetId: Id<"plugin_service_storage_targets">;
+		userId: Id<"users">;
+		addedFileRefs: string[];
 	},
-	returns: v.union(v.null(), v.string()),
-	handler: async (ctx, args) => {
-		const target = await ctx.db.get("plugin_service_storage_targets", args.targetId);
-		const installation = target ? await ctx.db.get("plugins_workspace_installations", target.installationId) : null;
-		if (!target || !installation) return "The plugin installation is gone";
-		const checked = await files_media_refs_db_check_plugin_added(ctx, {
-			organizationId: target.organizationId,
-			workspaceId: target.workspaceId,
-			installation,
-			userId: args.userId,
-			addedFileRefs: args.addedFileRefs,
-		});
-		return checked._nay ? checked._nay.message : null;
-	},
-});
+) {
+	const target = await ctx.db.get("plugin_service_storage_targets", args.targetId);
+	const installation = target ? await ctx.db.get("plugins_workspace_installations", target.installationId) : null;
+	if (!target || !installation) return "The plugin installation is gone";
+	const checked = await files_media_refs_db_check_plugin_added(ctx, {
+		organizationId: target.organizationId,
+		workspaceId: target.workspaceId,
+		installation,
+		userId: args.userId,
+		addedFileRefs: args.addedFileRefs,
+	});
+	return checked._nay ? checked._nay.message : null;
+}
 
 type get_service_upload_target_by_asset_id_Result =
 	typeof get_service_upload_target_by_asset_id extends RegisteredQuery<
@@ -996,8 +995,13 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		versionSnapshotSize: v.number(),
 		text: v.string(),
 		processingWorkAssetIds: v.array(v.id("files_r2_assets")),
+		/** A plugin service upload that adds app file refs: checked here, in the write. */
+		serviceUploadFileRefs: v.optional(
+			v.object({ targetId: v.id("plugin_service_storage_targets"), addedFileRefs: v.array(v.string()) }),
+		),
 	},
-	returns: v.null(),
+	/** Why the plugin may not add its file refs, or null. */
+	returns: v.union(v.null(), v.string()),
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		const finalizeScope = r2_require_real_scope({
@@ -1019,8 +1023,14 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 			worker: { kind: "upload", id: args.expectedUploadAssetId, resume: { kind: "conversion", eventId: args.eventId } },
 			check: { source: { kind: "saved", id: args.fileNodeId } },
 		});
-		if (!fileNode || fileNode.assetId !== args.expectedUploadAssetId || paused) {
-			// The action lost its node while writing R2. Delete only its unpublished output.
+		const lost = !fileNode || fileNode.assetId !== args.expectedUploadAssetId || paused;
+		const refusal =
+			lost || !args.serviceUploadFileRefs
+				? null
+				: await db_check_service_upload_file_refs(ctx, { ...args.serviceUploadFileRefs, userId: args.userId });
+		if (lost || refusal !== null) {
+			// The action lost its node while writing R2, or the plugin may not add these refs. Delete only
+			// its unpublished output.
 			for (const assetId of [args.versionSnapshotAssetId, ...(args.yjsSnapshot ? [args.yjsSnapshot.assetId] : [])]) {
 				const asset = await ctx.db.get("files_r2_assets", assetId);
 				if (!asset || asset.r2Key !== undefined) {
@@ -1033,7 +1043,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 				});
 				await ctx.db.delete("files_r2_assets", assetId);
 			}
-			return null;
+			return refusal;
 		}
 
 		// An accepted upload always finishes. A later lock stops new writes, not this one.
@@ -1238,26 +1248,19 @@ export const finalize_uploaded_text_file = internalAction({
 		const snapshotUpdate = content.snapshotUpdate;
 
 		// A plugin may add refs only to files it can read. Otherwise the upload stays a stored file, like
-		// an upload too large to convert: retrying cannot change the text.
-		if (serviceTarget) {
-			const addedFileRefs = files_media_refs_added({ content: text, previousContent: null, rootKind });
-			const refusal = addedFileRefs._nay
-				? addedFileRefs._nay.message
-				: addedFileRefs._yay.length === 0
-					? null
-					: ((await ctx.runQuery(internal.r2.check_service_upload_file_refs, {
-							targetId: serviceTarget._id,
-							userId: r2_require_real_author(fileNode.createdBy),
-							addedFileRefs: addedFileRefs._yay,
-						})) as string | null);
-			if (refusal !== null) {
-				console.warn("Service upload kept as a stored file", { assetId: asset._id, refusal });
-				await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
-					assetId: asset._id,
-					eventId: args.eventId,
-				});
-				return null;
-			}
+		// an upload too large to convert: retrying cannot change the text. The finalize mutation checks
+		// the refs found here.
+		const fileRefs = serviceTarget ? files_media_refs_added({ content: text, previousContent: null, rootKind }) : null;
+		const keep_stored = async (refusal: string) => {
+			console.warn("Service upload kept as a stored file", { assetId: asset._id, refusal });
+			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
+				assetId: asset._id,
+				eventId: args.eventId,
+			});
+			return null;
+		};
+		if (fileRefs?._nay) {
+			return await keep_stored(fileRefs._nay.message);
 		}
 
 		// A service target may request a non-collaborative text file. Build the Yjs update above as
@@ -1311,7 +1314,7 @@ export const finalize_uploaded_text_file = internalAction({
 			}),
 		]);
 
-		await ctx.runMutation(internal.r2.finalize_text_file_node_from_r2_assets, {
+		const refusal = (await ctx.runMutation(internal.r2.finalize_text_file_node_from_r2_assets, {
 			expectedUploadAssetId: asset._id,
 			eventId: args.eventId,
 			organizationId: fileNode.organizationId,
@@ -1326,7 +1329,13 @@ export const finalize_uploaded_text_file = internalAction({
 			versionSnapshotSize: files_get_utf8_byte_size(text),
 			text,
 			processingWorkAssetIds: [asset._id],
-		});
+			...(serviceTarget && fileRefs?._yay.added.length
+				? { serviceUploadFileRefs: { targetId: serviceTarget._id, addedFileRefs: fileRefs._yay.added } }
+				: {}),
+		})) as string | null;
+		if (refusal !== null) {
+			return await keep_stored(refusal);
+		}
 
 		return null;
 	},

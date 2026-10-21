@@ -8752,6 +8752,14 @@ describe("plugins metadata file doors", () => {
 				message: `This write adds a reference to a file this plugin cannot read: ${src.replace("\\", "")}`,
 			});
 		}
+		// A ref hidden in a code block that breaks open when the saved text is rebuilt from the document,
+		// and an `<image>` tag, which a browser reads as an image.
+		for (const hidden of [
+			`\`\`\`\`\n\`\`\`\n![b](bonobo-file://${locked})\n\`\`\`\n\`\`\`\`\n`,
+			`Hello <image src="bonobo-file://${locked}"> there\n`,
+		]) {
+			expect((await write(`${kept}\n${hidden}`)).status).toBe(403);
+		}
 		expect(await read_doc()).toBe(kept);
 
 		// A ref the file already has stays, even after the plugin loses access to it. This file has no
