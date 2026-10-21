@@ -1313,6 +1313,16 @@ async function db_land_node(
 					occupant,
 				})))
 		) {
+			// Nobody can answer a question for an API job, so it stops with the reason, like an API move.
+			// The API sets a choice for files and folders, so only a Keep both with no free name gets here.
+			if (run.credentialId !== undefined) {
+				return {
+					kind: "failed",
+					nay: {
+						message: `"${node.name}" clashes with an item in the folder it comes back to, and Keep both found no name that fits. Rename or move that item, then restore again.`,
+					},
+				};
+			}
 			run.conflict = { nodeId: node._id, occupantId: occupant._id };
 			run.choice = null;
 			run.revision += 1;
@@ -1890,6 +1900,11 @@ export async function files_archive_runs_db_start(
 		 * at a time, so their steps do not write the same docs at the same moment.
 		 */
 		previousRunId: Id<"files_archive_runs"> | null;
+		/**
+		 * Restore: the clash choices made before the job starts. The app passes nulls and asks at each
+		 * clash. Archive: nulls.
+		 */
+		applyToRemaining: RunFields["applyToRemaining"];
 	},
 ) {
 	if (args.kind === "restore") {
@@ -1951,7 +1966,7 @@ export async function files_archive_runs_db_start(
 		skipOperationId: null,
 		conflict: null,
 		choice: null,
-		applyToRemaining: { file: null, folder: null },
+		applyToRemaining: args.applyToRemaining,
 		revision: 0,
 		// Cancel on a clash wait ends every job of the request, so each job names the first one.
 		requestFirstRunId: previousRun ? (previousRun.requestFirstRunId ?? previousRun._id) : null,
@@ -2014,9 +2029,13 @@ export async function files_archive_runs_db_start(
 	const outcome = blocker || paused ? null : await db_step(ctx, stepArgs);
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
 	// refused a named item keeps its job, so its Activity can list what was not archived. So does a
-	// restore that kept items archived because their paths got too long, so its Activity says so.
+	// restore that kept items archived because their paths got too long, so its Activity says so. So
+	// does a restore an API key started, so a retry with the same request id finds it.
 	if (
-		(outcome?.kind === "done" && progress.blocked === 0 && run.longPathOperationId === undefined) ||
+		(outcome?.kind === "done" &&
+			progress.blocked === 0 &&
+			run.longPathOperationId === undefined &&
+			!(args.kind === "restore" && args.credentialId !== null)) ||
 		(outcome?.kind === "failed" && !stepArgs.writeState.isWritten)
 	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });

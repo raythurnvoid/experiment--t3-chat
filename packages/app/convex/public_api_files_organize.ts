@@ -1,6 +1,6 @@
 // The public API doors that organize files: `/api/v1/files/stat`, `/api/v1/files/mkdir`,
-// `/api/v1/files/move`, `/api/v1/files/copy`, `/api/v1/files/delete`, and `/api/v1/files/jobs/get`
-// (routes in `public_api_files_organize_http_routes.ts`).
+// `/api/v1/files/move`, `/api/v1/files/copy`, `/api/v1/files/delete`, `/api/v1/files/restore`, and
+// `/api/v1/files/jobs/get` (routes in `public_api_files_organize_http_routes.ts`).
 //
 // They act as the API key, with the same Locked, not hidden rules as `files/list`: a path the key
 // cannot open answers "Permission denied", never "not found".
@@ -13,9 +13,14 @@ import { internalQuery, type ActionCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_filter_readable_file_nodes, access_control_subject_validator } from "./access_control.ts";
+import {
+	access_control_db_authorize_membership,
+	access_control_db_can_act_on_file_node,
+	access_control_db_filter_readable_file_nodes,
+	access_control_subject_validator,
+} from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
-import { files_nodes_db_archive_named_nodes } from "./files_nodes.ts";
+import { files_nodes_db_archive_named_nodes, files_nodes_db_restore_named_nodes } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_transfer_db_start_for_api } from "./files_transfer.ts";
 import { files_transfer_queries_db_require_activity } from "./files_transfer_queries.ts";
@@ -601,6 +606,307 @@ export async function public_api_files_organize_http_delete(args: {
 	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
 }
 
+const RESTORE_MAX_PATHS = 200;
+
+const restore_failure_validator = z.object({
+	status: z.union([z.literal(401), z.literal(403), z.literal(409), z.literal(429)]),
+	/** Set on 429. */
+	retryAfterMs: z.number().optional(),
+});
+
+/**
+ * Restore the named paths from the Trash with the app's restore job. Each path names the archived item
+ * at that path. Like Restore in the app, the job brings back everything the same delete archived with
+ * it, one job per delete. A path that is missing, locked, or not archived is refused alone, and the
+ * other paths are still restored.
+ */
+export const restore_paths = internalMutation({
+	args: {
+		credentialId: v.id("api_credentials"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		/** Absolute, normalized paths, not the root. */
+		paths: v.array(v.string()),
+		onConflict: v.union(v.literal("keep_both"), v.literal("skip")),
+		requestId: v.string(),
+	},
+	returns: v.object({
+		jobIds: v.array(v.id("activities")),
+		isDone: v.boolean(),
+		refused: v.array(v.object({ path: v.string(), message: v.string() })),
+	}),
+	handler: async (ctx, args) => {
+		const fail = (failArgs: z.infer<typeof restore_failure_validator> & { message: string }) =>
+			convex_error({
+				message: failArgs.message,
+				data: {
+					status: failArgs.status,
+					...(failArgs.retryAfterMs !== undefined ? { retryAfterMs: failArgs.retryAfterMs } : {}),
+				},
+			});
+
+		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			principalRef: { kind: "user_api_key", credentialId: args.credentialId },
+			path: args.paths[0],
+			eachPathChecked: true,
+			now: Date.now(),
+		});
+		if (revalidated._nay) {
+			throw fail({
+				message: revalidated._nay.message,
+				status: revalidated._nay.message === "Unauthenticated" ? 401 : 403,
+			});
+		}
+		const { subject } = revalidated._yay.writeContext;
+		// The restore job checks each item as a person with a membership. A key bound to a service account
+		// has narrower grants than its person, so it must not run as that person.
+		if (subject.kind !== "user") {
+			throw fail({ message: "Keys bound to a service account cannot restore files yet.", status: 403 });
+		}
+
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			throw fail({ message: "Unauthenticated", status: 401 });
+		}
+
+		// Look for an earlier run first: after a finished restore, the paths are no longer archived. The
+		// key's id in the request id keeps it apart from the request ids of other keys.
+		const requestId = `api:${args.credentialId}:${args.requestId}`;
+		const inputHash = await crypto_sha256_hex(JSON.stringify([args.paths, args.onConflict]));
+		const previous = await ctx.db
+			.query("files_archive_runs")
+			.withIndex("by_user_workspace_apiRequest", (q) =>
+				q.eq("userId", args.userId).eq("workspaceId", args.workspaceId).eq("apiRequest.requestId", requestId),
+			)
+			.unique();
+		if (previous?.apiRequest) {
+			if (previous.apiRequest.inputHash !== inputHash) {
+				throw fail({
+					message: "This requestId was already used for another request. Send a new requestId.",
+					status: 409,
+				});
+			}
+			// At most one job per path, so at most 200 reads.
+			const activities = await Promise.all(
+				previous.apiRequest.activityIds.map((activityId) => ctx.db.get("activities", activityId)),
+			);
+			return {
+				jobIds: previous.apiRequest.activityIds,
+				// History cleanup deletes a job 7 days after it ends.
+				isDone: activities.every((activity) => !activity || !activities_is_active(activity.status)),
+				refused: previous.apiRequest.refused,
+			};
+		}
+
+		// The same bucket as Restore in the app, so a key cannot restore faster than its person.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: args.userId });
+		if (rateLimit) {
+			throw fail({ message: rateLimit.message, status: 429, retryAfterMs: rateLimit.retryAfterMs });
+		}
+
+		// Resolve each path to the archived item there, as the key. Locked answers "Permission denied",
+		// never "Not found". Each path costs a few index reads, never a read of a whole folder.
+		const refused: Array<{ path: string; message: string }> = [];
+		const nodes: Doc<"files_nodes">[] = [];
+		const pathsByOperationId = new Map<string, string[]>();
+		for (const path of args.paths) {
+			// Two reads are enough to tell one archived item from several.
+			const archived = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("path", path)
+						.gt("archiveOperationId", null),
+				)
+				.take(2);
+			// No archived item here. Answer like the tree does, so a path inside a locked folder stays
+			// "Permission denied" whether it exists or not.
+			if (archived.length === 0) {
+				const access = await files_db_get_path_access(ctx, { ...args, subject, path });
+				refused.push({
+					path,
+					message:
+						access.status === "locked"
+							? "Permission denied"
+							: access.status === "found"
+								? "Not in the Trash"
+								: "Not found",
+				});
+				continue;
+			}
+
+			// An archived item the key cannot open is locked, like a locked row in its folder.
+			let isReadable = true;
+			for (const fileNode of archived) {
+				isReadable &&= await access_control_db_can_act_on_file_node(ctx, {
+					...args,
+					subject,
+					fileNode,
+					permission: "content.read",
+				});
+			}
+			if (!isReadable) {
+				refused.push({ path, message: "Permission denied" });
+				continue;
+			}
+			// The same path was archived more than once, for example after a new item took the name.
+			if (archived.length > 1) {
+				refused.push({ path, message: "Several deleted items have this path. Restore the one you want in the app." });
+				continue;
+			}
+
+			// Per node, like Restore in the app. An archived node keeps the restricted scope it had.
+			const node = archived[0]!;
+			const authorized = await access_control_db_authorize_membership(ctx, {
+				userAuth: { id: args.userId },
+				membership,
+				permission: "content.write",
+				fileNode: node,
+			});
+			if (authorized._nay) {
+				refused.push({ path, message: authorized._nay.message });
+				continue;
+			}
+			nodes.push(node);
+			const operationPaths = pathsByOperationId.get(node.archiveOperationId!) ?? [];
+			pathsByOperationId.set(node.archiveOperationId!, [...operationPaths, path]);
+		}
+		if (nodes.length === 0) {
+			return { jobIds: [], isDone: true, refused };
+		}
+
+		const restored = await files_nodes_db_restore_named_nodes(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodes,
+			credentialId: args.credentialId,
+			// Nobody can answer a question for an API job, so the choice is made up front.
+			applyToRemaining: { file: args.onConflict, folder: args.onConflict },
+			stopAtRefusal: false,
+		});
+		// A refused delete operation refuses every path that named an item of it.
+		for (const refusal of restored.refusals) {
+			for (const path of pathsByOperationId.get(refusal.archiveOperationId)!) {
+				refused.push({ path, message: refusal.nay.message });
+			}
+		}
+
+		const jobIds = restored.jobs.map((job) => job.activityId);
+		// An API restore always keeps its jobs, so the first one can hold the request for a retry.
+		const firstJob = restored.jobs[0];
+		if (firstJob) {
+			await ctx.db.patch("files_archive_runs", firstJob.runId, {
+				apiRequest: { requestId, inputHash, refused, activityIds: jobIds },
+			});
+		}
+		return { jobIds, isDone: restored.jobs.every((job) => job.isDone), refused };
+	},
+});
+
+type restore_paths_Result =
+	typeof restore_paths extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+const restore_body_validator = z.object({
+	paths: z.array(z.string()).min(1).max(RESTORE_MAX_PATHS),
+	onConflict: z.union([z.literal("keep_both"), z.literal("skip")]).optional(),
+	/**
+	 * Send the same `requestId` and body again to retry safely. The answer then names the same jobs.
+	 */
+	requestId: z.string().min(1).max(64),
+});
+
+export type public_api_files_organize_http_restore_Body = z.infer<typeof restore_body_validator>;
+
+export async function public_api_files_organize_http_restore(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/restore";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
+		requiredScope: "files:write" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+
+	const body = await server_request_json_parse_and_validate(request, restore_body_validator);
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+
+	const paths: string[] = [];
+	for (const rawPath of body._yay.paths) {
+		if (!rawPath.startsWith("/")) {
+			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
+		}
+		const normalized = server_path_normalize(rawPath);
+		if (normalized === "/") {
+			return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
+		}
+		if (paths.includes(normalized)) {
+			return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
+		}
+		paths.push(normalized);
+	}
+
+	// One token per call. The restore job also charges the person's tree-write bucket.
+	const rateLimit = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_files_write_bulk",
+		key: `${principal.kind}:${principal.principalKey}`,
+	});
+	if (rateLimit) {
+		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+	}
+
+	let result: restore_paths_Result;
+	try {
+		result = (await ctx.runMutation(internal.public_api_files_organize.restore_paths, {
+			credentialId: principal.credentialId,
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId: principal.userId,
+			paths,
+			// Keep both never loses an item, and the app asks nothing for an API job.
+			onConflict: body._yay.onConflict ?? "keep_both",
+			requestId: body._yay.requestId,
+		})) as restore_paths_Result;
+	} catch (error) {
+		const failure =
+			error instanceof ConvexError
+				? z.object({ message: z.string(), data: restore_failure_validator }).safeParse(error.data)
+				: null;
+		if (!failure?.success) throw error;
+		const { status, retryAfterMs } = failure.data.data;
+		return { status, body: { message: failure.data.message, retryAfterMs } } as const;
+	}
+	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
+}
+
 // One selection page of the transfer job, so the whole selection is sent and sealed in one request.
 const TRANSFER_MAX_PATHS = files_TRANSFER_SELECTION_PAGE_SIZE;
 
@@ -964,7 +1270,7 @@ export const get_job = internalQuery({
 	returns: v.union(
 		v.object({
 			jobId: v.id("activities"),
-			kind: v.union(v.literal("delete"), v.literal("move"), v.literal("copy")),
+			kind: v.union(v.literal("delete"), v.literal("restore"), v.literal("move"), v.literal("copy")),
 			status: app_convex_schema.tables.activities.validator.fields.status,
 			progress: app_convex_schema.tables.activities.validator.fields.progress,
 			errorMessage: v.union(v.string(), v.null()),
@@ -1043,7 +1349,7 @@ export const get_job = internalQuery({
 		)
 			return null;
 
-		// At most 200 refused items, because a delete names at most 200 paths.
+		// At most 200 refused items, because a delete names at most 200 paths. A restore has none.
 		const nodes = (
 			await Promise.all(run.refusedItems.map((refusedItem) => ctx.db.get("files_nodes", refusedItem.nodeId)))
 		).flatMap((node) => (node && node.workspaceId === run.workspaceId ? [node] : []));
@@ -1058,15 +1364,19 @@ export const get_job = internalQuery({
 
 		return {
 			jobId: activity._id,
-			kind: "delete" as const,
+			kind: run.kind === "archive" ? ("delete" as const) : ("restore" as const),
 			status: activity.status,
 			progress: activity.progress,
 			errorMessage: activity.errorMessage,
-			refused: run.refusedItems.map((refusedItem) => ({
-				path: pathByNodeId.get(refusedItem.nodeId) ?? null,
-				message: refusedItem.refusal.message,
-			})),
-			// A delete names at most 200 paths, so all its refused items fit in one page.
+			refused: [
+				// The paths a restore refused come on its first job only, like the start of a move.
+				...(run.apiRequest?.refused ?? []),
+				...run.refusedItems.map((refusedItem) => ({
+					path: pathByNodeId.get(refusedItem.nodeId) ?? null,
+					message: refusedItem.refusal.message,
+				})),
+			],
+			// A delete or a restore names at most 200 paths, so all its refused items fit in one page.
 			refusedCursor: null,
 		};
 	},

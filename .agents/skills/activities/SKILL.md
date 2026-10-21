@@ -23,10 +23,13 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
   once in `total`, so the counts still add up.
   Items the archive check counted that somebody else archived, deleted, or moved out before the
   apply reached them count as `skipped` when the job ends.
-- An archive job started by the public API `files/delete` stores the key in
-  `files_archive_runs.credentialId`. Its background steps treat a revoked key like a lost membership,
-  with their own message. The person still sees the job card in the app. Through the API, only that
-  key reads the job with `files/jobs/get` (public-api skill, "Organize routes").
+- An archive or restore job started by the public API `files/delete` or `files/restore` stores the
+  key in `files_archive_runs.credentialId`. Its background steps treat a revoked key like a lost
+  membership, with their own message. The person still sees the job card in the app. Through the API,
+  only that key reads the job with `files/jobs/get` (public-api skill, "Organize routes").
+- A restore started by `files/restore` keeps its run and Activity even when it ends inside the
+  request, so a retry with the same request id can find it. Nobody can answer a clash question for it,
+  so it fails with the reason where an app restore would wait for a choice.
 - A transfer job started by `files/move` or `files/copy` stores the key in its run origin
   (`files_transfer_runs.origin.credentialId`) and follows the same rules.
 - `source.id` and `activities.by_source_id` are the only link. Do not add a backlink to the run.

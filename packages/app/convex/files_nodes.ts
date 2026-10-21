@@ -4055,6 +4055,7 @@ export async function files_nodes_db_archive_named_nodes(
 			hasPaginated: false,
 		},
 		previousRunId: null,
+		applyToRemaining: { file: null, folder: null },
 	});
 	if (started._nay || !started._yay) return started;
 
@@ -4238,65 +4239,108 @@ export const unarchive_nodes = mutation({
 			if (authorized._nay) return authorized;
 		}
 
-		// Restore brings back every item archived together with a named item. Take the operations
-		// parents first, so a later operation can land in a folder an earlier one restored. Order them by
-		// each operation's top item, not by the named item, which can sit deep inside its operation. The
-		// operations share one budget, so the first ones run inside this request. After the first job, each
-		// job waits for the job before it, so their steps do not write the same docs at the same time.
-		const topTreePathByOperationId = new Map<string, string>();
-		for (const fileNode of fileNodes._yay) {
-			const archiveOperationId = fileNode.archiveOperationId;
-			if (archiveOperationId === null || topTreePathByOperationId.has(archiveOperationId)) continue;
-			const topNode = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("archiveOperationId", archiveOperationId),
-				)
-				.first();
-			// The query always finds at least `fileNode`. The fallback only satisfies the type.
-			topTreePathByOperationId.set(archiveOperationId, (topNode ?? fileNode).treePath);
-		}
-
-		const budget = {
-			nodes: files_archive_runs_REQUEST_MAX_NODES,
-			checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
-			hasPaginated: false,
-		};
-		let firstJob = null;
-		let previousJob = null;
-		for (const [archiveOperationId, topTreePath] of [...topTreePathByOperationId].toSorted((a, b) =>
-			a[1] < b[1] ? -1 : 1,
-		)) {
-			// A refusal here keeps the operations restored before it. Each operation is one unit.
-			const started = await files_archive_runs_db_start(ctx, {
-				kind: "restore",
-				userAuth,
-				membership,
-				credentialId: null,
-				archiveOperationId,
-				rootNodeIds: [],
-				refusedNodes: [],
-				isFast: false,
-				treePaths: [topTreePath],
-				budget,
-				previousRunId: previousJob?.runId ?? null,
-			});
-			if (started._nay) {
-				return started;
-			}
-			firstJob ??= started._yay;
-			previousJob = started._yay ?? previousJob;
-		}
-
+		const restored = await files_nodes_db_restore_named_nodes(ctx, {
+			userAuth,
+			membership,
+			nodes: fileNodes._yay,
+			credentialId: null,
+			applyToRemaining: { file: null, folder: null },
+			stopAtRefusal: true,
+		});
 		// A restore never leaves out one named item. One refusal ends the whole restore, so the caller
 		// needs only the job.
+		const refusal = restored.refusals[0];
+		if (refusal) {
+			return Result({ _nay: refusal.nay });
+		}
+		const firstJob = restored.jobs[0] ?? null;
 		return Result({ _yay: firstJob && { runId: firstJob.runId, activityId: firstJob.activityId } });
 	},
 });
+
+/**
+ * Restore the archive operation of each named node through the job. Restore brings back every item
+ * archived together with a named item. The caller checked the membership, the rate limit, the item
+ * count, and write access on each node. `credentialId` is the API key that asked, or null for the app.
+ *
+ * Each operation is one unit. A refused operation keeps the operations restored before it. With
+ * `stopAtRefusal` the rest are not started. Without it they are, like `rm` with several files.
+ */
+export async function files_nodes_db_restore_named_nodes(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		nodes: Doc<"files_nodes">[];
+		credentialId: Id<"api_credentials"> | null;
+		applyToRemaining: Doc<"files_archive_runs">["applyToRemaining"];
+		stopAtRefusal: boolean;
+	},
+) {
+	const { membership } = args;
+
+	// Take the operations parents first, so a later operation can land in a folder an earlier one
+	// restored. Order them by each operation's top item, not by the named item, which can sit deep
+	// inside its operation. The operations share one budget, so the first ones run inside this request.
+	// After the first job, each job waits for the job before it, so their steps do not write the same
+	// docs at the same time.
+	const topTreePathByOperationId = new Map<string, string>();
+	for (const fileNode of args.nodes) {
+		const archiveOperationId = fileNode.archiveOperationId;
+		if (archiveOperationId === null || topTreePathByOperationId.has(archiveOperationId)) continue;
+		const topNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("archiveOperationId", archiveOperationId),
+			)
+			.first();
+		// The query always finds at least `fileNode`. The fallback only satisfies the type.
+		topTreePathByOperationId.set(archiveOperationId, (topNode ?? fileNode).treePath);
+	}
+
+	const budget = {
+		nodes: files_archive_runs_REQUEST_MAX_NODES,
+		checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
+		hasPaginated: false,
+	};
+	const jobs = [];
+	const refusals = [];
+	let previousJob = null;
+	for (const [archiveOperationId, topTreePath] of [...topTreePathByOperationId].toSorted((a, b) =>
+		a[1] < b[1] ? -1 : 1,
+	)) {
+		const started = await files_archive_runs_db_start(ctx, {
+			kind: "restore",
+			userAuth: args.userAuth,
+			membership,
+			credentialId: args.credentialId,
+			archiveOperationId,
+			rootNodeIds: [],
+			refusedNodes: [],
+			isFast: false,
+			treePaths: [topTreePath],
+			budget,
+			previousRunId: previousJob?.runId ?? null,
+			applyToRemaining: args.applyToRemaining,
+		});
+		if (started._nay) {
+			refusals.push({ archiveOperationId, nay: started._nay });
+			if (args.stopAtRefusal) break;
+			continue;
+		}
+		if (!started._yay) continue;
+		jobs.push(started._yay);
+		// A job that already ended deleted its op, so the next job has nothing to wait for. It may still
+		// exist, to list items kept archived or for an API retry.
+		if (!started._yay.isDone) previousJob = started._yay;
+	}
+
+	return { jobs, refusals };
+}
 // #endregion archive nodes
 
 export const get_authorized_by_path = query({

@@ -363,8 +363,9 @@ of not counting locked items.
     of the parent's operation is running, the item joins that operation instead and comes back with it.
     If an archive job of the parent's operation is running, the restore is refused as busy.
   - The operations of one restore call share the request's first step. After the first job starts, each
-    later job waits as a `queued` op behind the job before it, so their steps never write the same docs
-    at the same time. A restore also waits while any of its busy paths overlaps another subtree op. Each job saves
+    later job waits as a `queued` op behind the last earlier job that did not end inside the request, so
+    their steps never write the same docs at the same time. A job that ended has no op left to wait for,
+    even when its run stays to list kept items or for an API retry. A restore also waits while any of its busy paths overlaps another subtree op. Each job saves
     the first job's id in `requestFirstRunId`. When an op ends, `files_subtree_ops_db_delete` starts each
     waiter that overlaps nothing any more. It stops near the transaction limits, and
     `release_waiters` goes on with the rest. A queued job has no Stop and a 24-hour deadline; when it

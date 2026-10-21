@@ -35,6 +35,8 @@ describe("http routes", () => {
 				"OPTIONS /api/v1/files/copy",
 				"POST /api/v1/files/delete",
 				"OPTIONS /api/v1/files/delete",
+				"POST /api/v1/files/restore",
+				"OPTIONS /api/v1/files/restore",
 				"POST /api/v1/files/download-urls",
 				"OPTIONS /api/v1/files/download-urls",
 				"POST /api/v1/files/jobs/get",

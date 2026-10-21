@@ -6635,8 +6635,31 @@ const app_convex_schema = defineSchema({
 		 * is not `skipOperationId`, so restoring them again does not ask about the items the person skipped.
 		 */
 		longPathOperationId: v.optional(v.string()),
+		/**
+		 * Set only on the first job of a restore that the public API `files/restore` started. A retry with
+		 * the same request id finds it, and answers with the same jobs instead of restoring again.
+		 * `requestId` holds the key's id, so it never matches a request id of another key.
+		 */
+		apiRequest: v.optional(
+			v.object({
+				requestId: v.string(),
+				/**
+				 * A hash of the request body. A retry with the same `requestId` must send the same body.
+				 */
+				inputHash: v.string(),
+				/**
+				 * The paths refused before any job started.
+				 */
+				refused: v.array(v.object({ path: v.string(), message: v.string() })),
+				/**
+				 * Every job of the request, this one first. One job per archive operation.
+				 */
+				activityIds: v.array(v.id("activities")),
+			}),
+		),
 	})
 		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
+		.index("by_user_workspace_apiRequest", ["userId", "workspaceId", "apiRequest.requestId"])
 		.index("by_requestFirstRun_active", ["requestFirstRunId", "active"])
 		.index("by_organization_workspace_archiveOperation_active", [
 			"organizationId",
