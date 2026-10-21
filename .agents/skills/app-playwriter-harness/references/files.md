@@ -217,7 +217,10 @@ with a one-cent minimum. Repeated events and recovery must not count or charge a
 Use a QA folder in `chitchat-qa`, where uploads do not start the user's upload plugins.
 Drive `.FilesSidebar input[type=file]:not([webkitdirectory])` with one absolute file path per call.
 Keep fixtures in the personal task folder. A large `setInputFiles` can exceed five seconds after it
-has started the upload. After a timeout, inspect the folder and backend before retrying.
+has started the upload. The sidebar resizes a PNG, JPEG or WebP over 2048 px to fit 2048 px before
+upload (`files-image-compression.ts`), so the stored file can be much smaller than the one you sent.
+For a large image fixture, keep it at 2048 px or less and grow its bytes instead, for example with a
+16-bit PNG (seen 2026-10-22). After a timeout, inspect the folder and backend before retrying.
 A name that already exists in the folder uploads nothing until you choose: it opens the
 `File already exists` dialog (`.FilesSidebarUploadConflictModal`, Rename or Replace), not a toast.
 Look for that dialog before you report that an upload did nothing (seen 2026-10-21).
