@@ -100,7 +100,7 @@
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
 		"common": "workspace:*",
-		"convex": "^1.46.0",
+		"convex": "^1.47.0",
 		"convex-helpers": "^0.1.124",
 		"dedent": "^1.7.2",
 		"diff": "^8.0.4",

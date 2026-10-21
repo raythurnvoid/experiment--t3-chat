@@ -30,7 +30,7 @@ overrides:
   "@floating-ui/dom": "1.8.0"
   "@polar-sh/sdk": "0.49.0"
   "@tiptap/y-tiptap": "workspace:*"
-  convex: "1.46.0"
+  convex: "1.47.0"
   marked: "17.0.6"
   react: "19.3.0"
   react-dom: "19.3.0"
