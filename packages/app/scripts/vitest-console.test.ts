@@ -41,7 +41,14 @@ function run_console(errorKind: "teardown" | "reporter") {
 	`;
 	const result = spawnSync(
 		process.execPath,
-		["--input-type=module", "-e", code, path.join(vitestRoot, consoleChunks[0]), path.join(vitestRoot, utilsChunks[0]), errorKind],
+		[
+			"--input-type=module",
+			"-e",
+			code,
+			path.join(vitestRoot, consoleChunks[0]),
+			path.join(vitestRoot, utilsChunks[0]),
+			errorKind,
+		],
 		{ cwd: appRoot, encoding: "utf8", timeout: 10_000 },
 	);
 	expect(result.error).toBeUndefined();
@@ -53,7 +60,11 @@ describe("Vitest console replies", () => {
 	test("keeps a posted log when its worker closes before the reply", () => {
 		const result = run_console("teardown");
 		expect(result.logs).toEqual(["posted test log\n"]);
-		expect(result.errors, "a posted log must not fail when its worker has closed").toEqual([]);
+		// This fails when node_modules was installed before the patch. Run pnpm install again.
+		expect(
+			result.errors,
+			"a posted log must not fail when its worker has closed (is patches/vitest@4.1.10.patch installed?)",
+		).toEqual([]);
 	});
 
 	test("keeps reporter errors that are not worker teardown errors", () => {
