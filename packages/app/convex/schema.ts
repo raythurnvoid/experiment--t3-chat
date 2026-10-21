@@ -6669,6 +6669,27 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_user", ["userId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * One item that a restore started by an API key renamed with Keep both, or skipped because an item
+	 * with its name was there. Nobody saw the clash, so `files/jobs/get` lists these a page at a time. A
+	 * restore started in the app writes none, because it asks the person at each clash.
+	 */
+	files_archive_run_items: defineTable({
+		runId: v.id("files_archive_runs"),
+		/**
+		 * The job's count of handled items when this item landed, so pages follow the job's order.
+		 */
+		order: v.number(),
+		/**
+		 * Where the item comes back with its old name.
+		 */
+		path: v.string(),
+		/**
+		 * The path with the new name. null when the item was skipped and stays in the Trash.
+		 */
+		newPath: v.union(v.string(), v.null()),
+	}).index("by_run_order", ["runId", "order"]),
 	// #endregion files archive runs
 
 	// #region files subtree ops

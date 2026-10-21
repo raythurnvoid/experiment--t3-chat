@@ -156,6 +156,7 @@ type RunProgress = NonNullable<Doc<"activities">["progress"]>;
 
 type StepArgs = {
 	opId: Id<"files_subtree_ops">;
+	runId: Id<"files_archive_runs">;
 	/**
 	 * A copy of the run that the step changes. The caller saves it.
 	 */
@@ -1378,6 +1379,15 @@ async function db_land_node(
 			now: args.now,
 			savedScope: "follow",
 		});
+		// Nobody saw the clash of an API job, so list the item. It stays in the Trash.
+		if (isSkipped && run.credentialId !== undefined) {
+			await ctx.db.insert("files_archive_run_items", {
+				runId: args.runId,
+				order: progress.completed + progress.skipped,
+				path,
+				newPath: null,
+			});
+		}
 		args.writeState.isWritten = true;
 		progress.skipped += 1;
 		return null;
@@ -1401,6 +1411,15 @@ async function db_land_node(
 			savedScope: "follow",
 		});
 		args.budget.nodes -= 1;
+	}
+	// Nobody saw the clash of an API job, so list the new name. Otherwise the caller cannot find the item.
+	if (name !== node.name && run.credentialId !== undefined) {
+		await ctx.db.insert("files_archive_run_items", {
+			runId: args.runId,
+			order: progress.completed + progress.skipped,
+			path: path_join(landing?.path ?? "/", node.name),
+			newPath: path,
+		});
 	}
 	args.writeState.isWritten = true;
 	progress.completed += 1;
@@ -2029,6 +2048,7 @@ export async function files_archive_runs_db_start(
 
 	const stepArgs: StepArgs = {
 		opId,
+		runId,
 		run,
 		progress,
 		userAuth: args.userAuth,
@@ -2148,6 +2168,7 @@ export async function files_archive_runs_db_advance(
 		}));
 	const stepOutcome = await db_step(ctx, {
 		opId: args.op._id,
+		runId,
 		run,
 		progress,
 		userAuth: { id: storedRun.userId },
@@ -2475,6 +2496,14 @@ export async function files_archive_runs_db_delete_run_batch(
 
 	// Stop first, so a step that is already scheduled writes nothing.
 	await files_archive_runs_db_request_stop(ctx, { runId: run._id, reason: "user", now: Date.now() });
+	// A restore can list many renamed or skipped items, so delete them 50 per call.
+	const items = await ctx.db
+		.query("files_archive_run_items")
+		.withIndex("by_run_order", (q) => q.eq("runId", run._id))
+		.take(50);
+	for (const item of items) await ctx.db.delete("files_archive_run_items", item._id);
+	if (items.length > 0) return { done: false, deletedCount: items.length };
+
 	const activity = await activities_db_require_by_source_id(ctx, run._id);
 	const deletedActivity = await activities_db_delete(ctx, activity._id);
 	if (!deletedActivity.done) return deletedActivity;

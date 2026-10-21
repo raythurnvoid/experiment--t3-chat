@@ -5199,6 +5199,7 @@ describe("locked and missing paths", () => {
 					progress: expect.objectContaining({ completed: 2, failed: 0 }),
 					errorMessage: null,
 					refused,
+					renamed: [],
 					refusedCursor: null,
 				},
 			});

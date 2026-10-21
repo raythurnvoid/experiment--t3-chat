@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { test_mocks } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -243,5 +244,78 @@ describe("files/restore", () => {
 			},
 		});
 		expect((await read_node(f, archivedId)).archiveOperationId).not.toBeNull();
+	});
+
+	test("jobs/get names each item that Keep both renamed or Skip left in the Trash", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		// One delete with more clashing files than one jobs/get page.
+		const archiveOperationId = crypto.randomUUID();
+		for (let index = 0; index < 101; index++) {
+			const name = `c${String(index).padStart(3, "0")}.md`;
+			await insert_root_file(f, { name, archiveOperationId });
+			await insert_root_file(f, { name, archiveOperationId: null });
+		}
+
+		const response = await post(f, "/api/v1/files/restore", ownerKey.credential, {
+			paths: ["/c000.md"],
+			requestId: "renamed",
+		});
+		const jobId = (response.body.jobIds as Array<Id<"activities">>)[0]!;
+		const runId = (await read_activity(f, jobId)).source.id as Id<"files_archive_runs">;
+		await run_to_end(f, { runId, activityId: jobId });
+
+		const firstPage = await post(f, "/api/v1/files/jobs/get", ownerKey.credential, { jobId });
+		expect(firstPage).toMatchObject({
+			status: 200,
+			body: { status: "succeeded", refused: [], refusedCursor: expect.any(String) },
+		});
+		expect(firstPage.body.renamed).toHaveLength(100);
+		const secondPage = await post(f, "/api/v1/files/jobs/get", ownerKey.credential, {
+			jobId,
+			cursor: firstPage.body.refusedCursor,
+		});
+		expect(secondPage).toMatchObject({ status: 200, body: { refused: [], refusedCursor: null } });
+		const renamed = [...(firstPage.body.renamed as unknown[]), ...(secondPage.body.renamed as unknown[])];
+		expect(renamed).toHaveLength(101);
+		expect(new Set(renamed.map((item) => JSON.stringify(item))).size).toBe(101);
+		expect(renamed).toContainEqual({ path: "/c100.md", newPath: "/c100-2.md" });
+
+		// Skip leaves the item in the Trash, and the job says so.
+		const skippedId = await insert_root_file(f, { name: "kept.md", archiveOperationId: crypto.randomUUID() });
+		await insert_root_file(f, { name: "kept.md", archiveOperationId: null });
+		const skipped = await post(f, "/api/v1/files/restore", ownerKey.credential, {
+			paths: ["/kept.md"],
+			onConflict: "skip",
+			requestId: "skipped",
+		});
+		expect(skipped).toMatchObject({ status: 200, body: { isDone: true, refused: [] } });
+		expect(
+			await post(f, "/api/v1/files/jobs/get", ownerKey.credential, {
+				jobId: (skipped.body.jobIds as string[])[0],
+			}),
+		).toMatchObject({
+			status: 200,
+			body: {
+				refused: [
+					{ path: "/kept.md", message: "An item with this name is already there, so this item stays in the Trash." },
+				],
+				renamed: [],
+			},
+		});
+		expect((await read_node(f, skippedId)).archiveOperationId).not.toBeNull();
+
+		// History cleanup deletes the listed items together with the job.
+		await f.t.run(async (ctx) => {
+			while (!(await files_archive_runs_db_delete_run_batch(ctx, { runId })).done);
+		});
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("files_archive_run_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.collect(),
+			),
+		).toEqual([]);
 	});
 });

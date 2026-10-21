@@ -1236,7 +1236,7 @@ export async function public_api_files_organize_http_transfer(args: {
 	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
 }
 
-// Refused items of a move or copy job per `jobs/get` page.
+// Refused items of a move or copy job, or renamed and skipped items of a restore, per `jobs/get` page.
 const JOB_REFUSED_PAGE_SIZE = 100;
 
 /**
@@ -1260,7 +1260,11 @@ export const get_job = internalQuery({
 			progress: app_convex_schema.tables.activities.validator.fields.progress,
 			errorMessage: v.union(v.string(), v.null()),
 			refused: v.array(v.object({ path: v.union(v.string(), v.null()), message: v.string() })),
-			/** Set when more refused items follow. Send it back as `cursor`. */
+			/**
+			 * Restore: the items that Keep both brought back under a new name. Move and copy never rename.
+			 */
+			renamed: v.array(v.object({ path: v.string(), newPath: v.string() })),
+			/** Set when more refused or renamed items follow. Send it back as `cursor`. */
 			refusedCursor: v.union(v.string(), v.null()),
 		}),
 		v.null(),
@@ -1321,6 +1325,7 @@ export const get_job = internalQuery({
 						message: part === "failed" ? (item.errorMessage ?? "Failed") : "Permission denied",
 					})),
 				],
+				renamed: [],
 				refusedCursor,
 			};
 		}
@@ -1352,6 +1357,14 @@ export const get_job = internalQuery({
 		});
 		const pathByNodeId = new Map(readableNodes.map((node) => [node._id, node.path]));
 
+		// A restore lists the items it renamed or skipped for a clash, read by their index in item order.
+		// The cursor says the last order read, so a page costs the same for a small job and a huge one.
+		const afterOrder = args.cursor ? Number(args.cursor.split(":")[1]) : -1;
+		const items = await ctx.db
+			.query("files_archive_run_items")
+			.withIndex("by_run_order", (q) => q.eq("runId", run._id).gt("order", afterOrder))
+			.take(JOB_REFUSED_PAGE_SIZE);
+
 		return {
 			jobId: activity._id,
 			kind: run.kind === "archive" ? ("delete" as const) : ("restore" as const),
@@ -1359,15 +1372,30 @@ export const get_job = internalQuery({
 			progress: activity.progress,
 			errorMessage: activity.errorMessage,
 			refused: [
+				// A delete or a restore names at most 200 paths, so its refused paths fit on the first page.
 				// The paths a restore refused come on its first job only, like the start of a move.
-				...(run.apiRequest?.refused ?? []),
-				...run.refusedItems.map((refusedItem) => ({
-					path: pathByNodeId.get(refusedItem.nodeId) ?? null,
-					message: refusedItem.refusal.message,
-				})),
+				...(args.cursor
+					? []
+					: [
+							...(run.apiRequest?.refused ?? []),
+							...run.refusedItems.map((refusedItem) => ({
+								path: pathByNodeId.get(refusedItem.nodeId) ?? null,
+								message: refusedItem.refusal.message,
+							})),
+						]),
+				...items.flatMap((item) =>
+					item.newPath === null
+						? [
+								{
+									path: item.path,
+									message: "An item with this name is already there, so this item stays in the Trash.",
+								},
+							]
+						: [],
+				),
 			],
-			// A delete or a restore names at most 200 paths, so all its refused items fit in one page.
-			refusedCursor: null,
+			renamed: items.flatMap((item) => (item.newPath === null ? [] : [{ path: item.path, newPath: item.newPath }])),
+			refusedCursor: items.length === JOB_REFUSED_PAGE_SIZE ? `items:${items.at(-1)!.order}` : null,
 		};
 	},
 });
@@ -1379,10 +1407,10 @@ type get_job_Result =
 
 const jobs_get_body_validator = z.object({
 	jobId: z.string().max(64),
-	/** `refusedCursor` from the last page, to read more refused items. */
+	/** `refusedCursor` from the last page, to read more refused or renamed items. */
 	cursor: z
 		.string()
-		.regex(/^(failed|denied):-?\d{1,9}$/u)
+		.regex(/^(failed|denied|items):-?\d{1,9}$/u)
 		.nullable()
 		.optional(),
 });
