@@ -100,7 +100,7 @@ afterEach(() => {
 });
 
 describe("upload plan gate", () => {
-	const PLAN_REFUSAL = "This workspace's plan does not include file uploads";
+	const PLAN_REFUSAL = "File uploads need a paid plan";
 
 	async function read_upload_docs(t: ReturnType<typeof test_convex>) {
 		return await t.run(async (ctx) => ({

@@ -285,7 +285,7 @@ Do not verify a feature from UI visibility alone. For a user-facing async pipeli
 When a user-owned terminal is already running dev servers or tails, inspect the transcript before restarting anything. For this repo, Cursor terminal logs are under:
 
 ```powershell
-C:\Users\rt0\.cursor\projects\c-Users-rt0-Documents-workspace-rt0-t3-chat\terminals
+%USERPROFILE%\.cursor\projects\<workspace-path-slug>-t3-chat\terminals
 ```
 
 Read the most recent terminal files with `Get-Content -Tail`. Use this to confirm whether servers are running, whether a previous CLI is stuck retrying, and which deployment a human configured. Search for the task marker and quote only the needed lines. Redact secrets, tokens, signed URLs, private content, and unrelated user commands.
@@ -308,7 +308,7 @@ To deploy by hand, build with `pnpm exec vite build --base /` in `packages/app`,
 
 # GitHub Pages Frontend
 
-The hosted SPA is [https://raythurnvoid.github.io/experiment--t3-chat/](https://raythurnvoid.github.io/experiment--t3-chat/). GitHub Pages is `build_type: workflow`. The workflow file is `.github/workflows/deploy-pages.yml`. It runs on `workflow_dispatch` and on push to the `deploy` branch.
+The hosted SPA is `https://<owner>.github.io/experiment--t3-chat/`. GitHub Pages is `build_type: workflow`. The workflow file is `.github/workflows/deploy-pages.yml`. It runs on `workflow_dispatch` and on push to the `deploy` branch.
 
 The `deploy` branch is only a pointer at the commit you want to ship. It is not a long-lived history. After `main` has the workflow file:
 
@@ -316,11 +316,11 @@ The `deploy` branch is only a pointer at the commit you want to ship. It is not 
 git push origin main:deploy
 ```
 
-A push to `deploy` does not always start a run. If `gh run list` still shows the old job, dispatch it as the Return Void account (pin `GH_TOKEN`, do not `gh auth switch`):
+A push to `deploy` does not always start a run. If `gh run list` still shows the old job, dispatch it as the repo owner's account (pin `GH_TOKEN`, do not `gh auth switch`):
 
 ```powershell
-$env:GH_TOKEN = (gh auth token --user raythurnvoid)
-gh workflow run "Deploy App To GitHub Pages" --repo raythurnvoid/experiment--t3-chat --ref deploy
+$env:GH_TOKEN = (gh auth token --user <owner>)
+gh workflow run "Deploy App To GitHub Pages" --repo <owner>/experiment--t3-chat --ref deploy
 Remove-Item Env:GH_TOKEN
 ```
 
@@ -330,4 +330,4 @@ GitHub Pages serves the app under `/experiment--t3-chat/`, not at the domain roo
 
 Prove the live site with a new `Last-Modified`, a new hashed script name, and a 404 for the previous hash. Opening the URL is not enough if the HTML still points at the old files. The Clerk and Convex values come from GitHub Actions variables `VITE_CLERK_PUBLISHABLE_KEY`, `VITE_CONVEX_URL`, and `VITE_CONVEX_HTTP_URL`. Do not print those values in reports.
 
-Opening a file on GitHub Pages does a browser `fetch()` of a signed R2 URL (Yjs snapshot, media, uploads). Convex `ALLOWED_ORIGINS` can already include `https://raythurnvoid.github.io` while the R2 bucket still allows only `http://localhost:5173`. That looks like a CORS error on `/files`, not a Pages or Convex deploy. The live policy lives on bucket `bonobo-senate-press-files`. Apply `packages/r2-upload-finalizer/r2-files-cors.json` and confirm with `wrangler r2 bucket cors list`. Keep localhost in the same rule.
+Opening a file on GitHub Pages does a browser `fetch()` of a signed R2 URL (Yjs snapshot, media, uploads). Convex `ALLOWED_ORIGINS` can already include `https://<owner>.github.io` while the R2 bucket still allows only `http://localhost:5173`. That looks like a CORS error on `/files`, not a Pages or Convex deploy. The live policy lives on bucket `bonobo-senate-press-files`. Apply `packages/r2-upload-finalizer/r2-files-cors.json` and confirm with `wrangler r2 bucket cors list`. Keep localhost in the same rule.

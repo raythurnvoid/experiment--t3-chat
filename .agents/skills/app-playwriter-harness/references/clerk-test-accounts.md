@@ -28,7 +28,7 @@ All emails end with `+clerk_test@example.com` and all accept the code `424242`.
 
 **Check billing before agent chat.** On 2026-10-11, `qa.perm.owner` had a subscription, a usage snapshot and available credit. Its native Agent Bash check passed in `qa-browser/home`. This seeded state does not prove Polar can bootstrap an `example.com` account. For a second user, `ray-test-1+clerk_test@gmail.com` (Convex `users` id `m570f2kgg8jq3qka7snprkpeks8cme94`, code `424242`) held the `member` role in `chitchat-qa/home` and had credits on 2026-10-08. Read back billing and membership before using either fixture. By 2026-10-18 `qa-browser` had no credits left, so do not count on that older state.
 
-**Uploads need a paid plan on the account that uploads.** The `qa.perm.*` accounts have none, so `qa-browser` uploads fail with `This workspace's plan does not include file uploads` (the text says workspace, but the check reads the uploader's plan; see the qa-data skill, "Pick An Account"). For uploads, images, videos, public pages with media, or any other paid feature, sign in as `qa.paid.owner` and use `f5-repro-org/home`. Its Pro plan was seeded with `billing:apply_polar_customer_state_refresh` (section "Polar bootstrap and seeded billing"). Use `eur`, the app's currency, and include a subscription meter: the refresh throws for a paid metered plan without one. Read `billing.get_usage_snapshot` first; if the balance or plan changed, reseed only when the user asks.
+**Uploads need a paid plan on the account that uploads.** The `qa.perm.*` accounts have none, so `qa-browser` uploads fail with `File uploads need a paid plan` (see the qa-data skill, "Pick An Account"). For uploads, images, videos, public pages with media, or any other paid feature, sign in as `qa.paid.owner` and use `f5-repro-org/home`. Its Pro plan was seeded with `billing:apply_polar_customer_state_refresh` (section "Polar bootstrap and seeded billing"). Use `eur`, the app's currency, and include a subscription meter: the refresh throws for a paid metered plan without one. Read `billing.get_usage_snapshot` first; if the balance or plan changed, reseed only when the user asks.
 
 **A guest must be a member.** A "guest" is a workspace member whose role has no `content.read`. `set_node_share_grant` refuses a user who is not a member (`This person is not a member of this workspace`), so `ray-test-1` cannot get a share in `qa-browser/home` as it is. On 2026-10-11 the owner invited it, then gave it a temporary custom role with only `workspace.mcp.use` (`access_control.create_role` + `set_user_role`), and `get_current_user_workspace_permission(content.read)` answered `false`. Undo it after the check: `organizations.remove_user_from_organization`, then `access_control.delete_role`.
 
@@ -92,7 +92,7 @@ Same setup as `second-user-fixtures.md` section 1: launch the installed Chrome f
 
 ```powershell
 $prof = "<personal AI folder>\<topic>-<YYYY-MM-DD>\qa-clerk-profile"
-$chrome = "C:\Users\rt0\.playwriter\browsers\chrome-<version>\chrome-win64\chrome.exe"
+$chrome = "$env:USERPROFILE\.playwriter\browsers\chrome-<version>\chrome-win64\chrome.exe"
 Start-Process $chrome -ArgumentList @("--remote-debugging-port=9223", "--user-data-dir=$prof", "--no-first-run", "--no-default-browser-check", "http://localhost:5173/")
 vp env exec pnpx playwriter session new --direct 127.0.0.1:9223
 ```

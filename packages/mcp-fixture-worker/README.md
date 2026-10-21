@@ -2,7 +2,7 @@
 
 This Worker serves MCP test servers at a public HTTPS URL, for live QA of the chat agent's MCP tools. Convex dev runs in the cloud, so it cannot reach a test server on a laptop.
 
-Base URL: `https://bonobo-senate-mcp-fixture.ray-thurne-void.workers.dev`. Every path not listed below answers 404.
+Base URL: `https://bonobo-senate-mcp-fixture.<account>.workers.dev`. Every path not listed below answers 404.
 
 - `/modern-basic`: the `modern-basic` server, with no sign-in and no secrets. The Data Probe plugin (`plugins/bonobo-plugin-data-probe`, version 0.3.0 and later) declares it as its `fixture` MCP server.
 - `/oauth-call-only/mcp`: lists its tools without a token and asks for sign-in only on `tools/call`. Saved as a member's own server, it saves with no sign-in, and the first Connect pins the sign-in server.

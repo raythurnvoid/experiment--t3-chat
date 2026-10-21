@@ -1075,7 +1075,7 @@ describe("bash_run_command", () => {
 
 			const inserted = (await runner.t.mutation(internal.github_mounts.upsert_mount, {
 				name,
-				owner: "raythurnvoid",
+				owner: "test-owner",
 				repo: "experiment--t3-chat",
 				ref: "main",
 			})) as { _yay?: { mountId: Id<"github_mounts"> }; _nay?: { message: string } };

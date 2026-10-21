@@ -795,7 +795,7 @@ describe("service upload authorization", () => {
 });
 
 describe("service upload plan gate", () => {
-	const PLAN_REFUSAL = "This workspace's plan does not include file uploads";
+	const PLAN_REFUSAL = "File uploads need a paid plan";
 
 	test("refuses a target when the payer is on Free, and writes nothing", async () => {
 		const t = test_convex();

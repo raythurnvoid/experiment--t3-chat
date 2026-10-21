@@ -1,4 +1,4 @@
-// One-off data-import backend for operator-driven bulk imports (currently the Sybill export).
+// One-off data-import backend for operator-driven bulk imports (currently one meeting-data export).
 //
 // Internal functions only: the import CLI invokes them through `convex run` with the deployment
 // admin session, never from app clients. Text files go through the public API write route; this

@@ -117,7 +117,7 @@ async function authorize_write(ctx: MutationCtx, args: Infer<typeof files_ingest
 	if (!organization) return Result({ _nay: { message: "Unauthorized" } });
 	const billedUserId = billing_pick_billed_user_id({ userId: args.userId, organization });
 	if (!(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan)
-		return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+		return Result({ _nay: { message: "File uploads need a paid plan" } });
 	return authorized;
 }
 

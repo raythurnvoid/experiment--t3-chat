@@ -183,7 +183,7 @@ on selectors, rows, threads, theme and transcripts still do.
 - The frame attaches a beat after `domcontentloaded`. A `frames()` read taken immediately after
   `goto` returns the host page only; wait ~8-10 s, or re-read, before deciding the frame is missing.
 - **On the GitHub Pages host the route is the same, but the identity is not.** The deployed app is
-  `https://raythurnvoid.github.io/experiment--t3-chat/` and the QA Edge profile is often anonymous
+  `https://<owner>.github.io/experiment--t3-chat/` and the QA Edge profile is often anonymous
   there, which is why an earlier Pages pass found zero channels and proved only that the frame
   mounted. Do the run in the isolated scratch browser instead, signed in as
   `qa.perm.owner+clerk_test@example.com` (see `clerk-test-accounts.md`), and open

@@ -211,7 +211,7 @@ describe("image destination steps", () => {
 	test("checks the destination payer's plan before generation", async () => {
 		const f = await setup();
 		await f.t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: f.personal.userId, plan: "Free" }));
-		await expect(f.prepare([["personal"]])).rejects.toThrow("This workspace's plan does not include file uploads");
+		await expect(f.prepare([["personal"]])).rejects.toThrow("File uploads need a paid plan");
 		await f.t.run((ctx) => test_mocks_fill_db_with.plan(ctx, { userId: f.personal.userId, plan: "Pro" }));
 		expect((await f.prepare([["personal"]]))?.activeTools).toEqual(["image_generation"]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);

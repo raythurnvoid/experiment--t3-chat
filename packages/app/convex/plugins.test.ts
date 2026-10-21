@@ -680,8 +680,8 @@ describe("plugins Phase 0", () => {
 		const second = await register_media_plugin({
 			t,
 			userId: membership.userId,
-			sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
-			sourceOwner: "sybill-ai-engineering",
+			sourceRepositoryUrl: "https://github.com/example-org/media-plugin",
+			sourceOwner: "example-org",
 			sourceRepo: "media-plugin",
 			sourceCommitSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
 		});
@@ -867,8 +867,8 @@ describe("plugins Phase 0", () => {
 		const first = await register_media_plugin({
 			t,
 			userId: membership.userId,
-			sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
-			sourceOwner: "sybill-ai-engineering",
+			sourceRepositoryUrl: "https://github.com/example-org/media-plugin",
+			sourceOwner: "example-org",
 			sourceRepo: "media-plugin",
 		});
 		const replacement = await register_media_plugin({

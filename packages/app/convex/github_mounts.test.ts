@@ -20,7 +20,7 @@ import type { Id } from "./_generated/dataModel.js";
 
 const test = baseTest.sequential;
 
-const OWNER = "raythurnvoid";
+const OWNER = "test-owner";
 const REPO = "experiment--t3-chat";
 const REF = "main";
 const MOUNT = "t3-chat";

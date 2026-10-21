@@ -13,7 +13,7 @@ Prefer importing vendored TypeScript source files instead of compiled JavaScript
 
 Use these existing vendors as the local pattern:
 
-- `../../../packages/app/vendor/polar` — closest reference for the fork-based remote layout (`origin` = `raythurnvoid/polar` fork, `upstream` = `get-convex/polar`, branch `rt0-updates`)
+- `../../../packages/app/vendor/polar` — closest reference for the fork-based remote layout (`origin` = `<owner>/polar` fork, `upstream` = `get-convex/polar`, branch `rt0-updates`)
 - `../../../packages/app/vendor/novel`
 - `../../../packages/app/vendor/headless-tree`
 - `../../../.gitmodules`
@@ -34,7 +34,7 @@ Use the `gh` CLI to create the fork without cloning (the clone happens via `git 
 Before forking:
 
 - Confirm the user authorized creating or changing the fork and pushing its patch branch. A request to use this repo's fork workflow normally grants that authority; a read-only review does not.
-- Run `gh auth status` and confirm the active account is the one that should own the fork (often `raythurnvoid` for this repo). Existing vendor metadata is not fully uniform, so do not infer the owner from one entry.
+- Run `gh auth status` and confirm the active account is the one that should own the fork (often the repo owner's account for this repo). Existing vendor metadata is not fully uniform, so do not infer the owner from one entry.
 - If the active `gh` account is wrong, stop and ask the user to switch accounts (`gh auth switch`) before continuing. Do not silently fork into the wrong account.
 
 Example:
@@ -54,7 +54,7 @@ Add the new repository under `packages/app/vendor/<name>`, using the **fork URL*
 Example:
 
 ```bash
-git submodule add https://github.com/raythurnvoid/rate-limiter.git packages/app/vendor/rate-limiter
+git submodule add https://github.com/<owner>/rate-limiter.git packages/app/vendor/rate-limiter
 ```
 
 ## 3. Add the upstream remote and a local patch branch
@@ -89,7 +89,7 @@ If a local `rt0-updates` branch already exists, use `git switch rt0-updates`. In
 Verify with `git remote -v`; the result should look like the existing `polar` vendor:
 
 ```
-origin    https://github.com/raythurnvoid/<repo> (fetch/push)
+origin    https://github.com/<owner>/<repo> (fetch/push)
 upstream  https://github.com/<original-owner>/<repo>.git (fetch/push)
 ```
 
@@ -229,7 +229,7 @@ Match the existing `polar` vendor entry:
 ```ini
 [submodule "packages/app/vendor/rate-limiter"]
 	path = packages/app/vendor/rate-limiter
-	url = https://github.com/raythurnvoid/rate-limiter
+	url = https://github.com/<owner>/rate-limiter
 	branch = rt0-updates
 ```
 
@@ -238,7 +238,7 @@ If a previous attempt added a wrong URL (for example, the upstream URL instead o
 ```bash
 git submodule sync "packages/app/vendor/<name>"
 cd "packages/app/vendor/<name>"
-git remote set-url origin "https://github.com/raythurnvoid/<repo>.git"
+git remote set-url origin "https://github.com/<owner>/<repo>.git"
 ```
 
 `git submodule add` normally stages the new gitlink and `.gitmodules` change. Inspect the index after the command and do not disturb unrelated user-staged files.

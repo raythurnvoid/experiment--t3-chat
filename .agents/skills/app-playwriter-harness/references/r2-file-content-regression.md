@@ -20,7 +20,7 @@ $browserKey = "<exact KEY from browser list>"
 $sessionOutput = vp env exec pnpx playwriter session new --browser $browserKey
 $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
-vp env exec pnpx playwriter -s $session -f "C:/Users/rt0/Documents/workspace/rt0/t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
+vp env exec pnpx playwriter -s $session -f "<workspace>/t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
 vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" }); console.log(await state.appPlaywriterHarness.observe({ label: "files tab", search: /Files|Agent|Comments|Toolbar|Upload|New file|New folder/i }));'
 ```
 
@@ -92,7 +92,7 @@ state.r2Put = state.page.waitForRequest((request) => {
   const url = new URL(request.url());
   return request.method() === "PUT" && url.pathname.includes("/assets/") && url.searchParams.has("X-Amz-Signature");
 });
-await state.page.locator(".FilesSidebar input[type=file]:not([webkitdirectory])").setInputFiles("C:/Users/rt0/Documents/workspace/rt0/t3-chat/.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf");
+await state.page.locator(".FilesSidebar input[type=file]:not([webkitdirectory])").setInputFiles("<workspace>/t3-chat/.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf");
 state.r2Request = await state.r2Put;
 state.r2Upload = {
   url: state.r2Request.url(),

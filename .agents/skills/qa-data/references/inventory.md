@@ -17,7 +17,7 @@ means look but do not change anything.
 
 | Workspace | Reached by | Policy | Use it for |
 | --- | --- | --- | --- |
-| `chitchat-qa/xfer-qa-0914` | QA Edge profile (Ray) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. |
+| `chitchat-qa/xfer-qa-0914` | QA Edge profile (owner) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. |
 | `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.3.0 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
 | `chitchat-qa/metadata-qa-0906` | QA Edge profile | reuse | Metadata checks. Chitchat and Council installed. |
 | `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat page and its transcript files. Its plan has no file uploads (seen 2026-10-18). Agent chat has credits; `qa.perm.member` cannot restrict here, only the owner can. Empty GitHub Sources service account `rd7tqp8qb5vkfa0jvnp8kgjj398fbctd` remains without grants after both test uninstalls. Reinstall needs permission to manage this account. |
@@ -25,8 +25,8 @@ means look but do not change anything.
 | `qa-tmp-share/home` | `qa.perm.member` (owner) | reuse | Cross-org share checks. No plugin installations. Empty reusable Data Probe and GitHub Sources service accounts remain without file grants. |
 | `f5-repro-org/home` | `qa.paid.owner` (owner) in a scratch browser | reuse | Checks that need a paid plan: uploads, images and videos, public pages with media, Save with credits. The owner account has a Pro plan (the plan is the acting account's, see the qa-data skill). Uploads, links, "Anyone on the web" and the Move door work, and no plugin runs were seen after uploads (2026-10-21). Root: `README.md`, `/public-image-qa`, and an archived restricted `f5-repro-0025`. |
 | `personal/home` of each `qa.perm.*` account | that account | reuse | Almost empty. |
-| `personal/home` (Ray) | QA Edge profile | reuse for QA folders only | Ray's main workspace. **Every upload here runs the image, pdf, video, and data-probe plugins**, so upload here only to test those plugins. Ray's own notes (`/tasks`, `/inbox`, `/todo.md`, `/README.md`) are read-only. |
-| `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings; setup stays Owner only. Private GitHub Mount check is complete. The sample repo `raythurnvoid/bonobo-mounts-private-qa-20260929` stays private for reuse. Its test installation, copied files and token are removed; three runs and 18 API call records remain. Empty GitHub Sources account `rd7zqff8p0vvqc155ehk9n4s4x8fa15s` remains for reuse. Reinstall needs service-account management. Files still has only the automatic `/README.md`. |
+| `personal/home` (owner) | QA Edge profile | reuse for QA folders only | The owner's main workspace. **Every upload here runs the image, pdf, video, and data-probe plugins**, so upload here only to test those plugins. The owner's own notes (`/tasks`, `/inbox`, `/todo.md`, `/README.md`) are read-only. |
+| `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings; setup stays Owner only. Private GitHub Mount check is complete. The sample repo `bonobo-mounts-private-qa-20260929` (owned by the repo owner's GitHub account) stays private for reuse. Its test installation, copied files and token are removed; three runs and 18 API call records remain. Empty GitHub Sources account `rd7zqff8p0vvqc155ehk9n4s4x8fa15s` remains for reuse. Reinstall needs service-account management. Files still has only the automatic `/README.md`. |
 | `sybill-demo/demo` | QA Edge profile | read-only | Large realistic import: `/people` (about 9,700 files), `/companies` (1,000+ in one folder), `/emails`, `/meetings`, `/email-attachments` (Office files). About 10 GB stored. Use it for load, paging, and search on big data. |
 | `sybill-demo/home` | QA Edge profile | reuse | Empty. |
 
@@ -36,7 +36,7 @@ Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts be
 
 | User id | Who | Notes |
 | --- | --- | --- |
-| `m577heygr826f2wgk6r30mk1vd8928q2` | Ray's own account. The QA Edge profile is signed in as it. | Never sign it out. |
+| `m577heygr826f2wgk6r30mk1vd8928q2` | The owner's main account. The QA Edge profile is signed in as it. | Never sign it out. |
 | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | `qa.perm.owner` | Owns `qa-browser`. |
 | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | `qa.perm.admin` | Personal org only. |
 | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns `qa-tmp-share`, member of `chitchat-qa` and `qa-browser` (seen 2026-10-11). |
@@ -132,7 +132,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | --- | --- |
 | Meeting recordings with transcript and summary | `personal/home:/meetings` (about 44 files) |
 | Chitchat transcripts | `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d`, `qa-browser/home:/chitchat` ([chitchat.md](../../app-playwriter-harness/references/chitchat.md)) |
-| External repo Mount | `personal/home:/.mounts/github/native-popovers`. GitHub Sources copies the public `raythurnvoid/react-native-popovers` repo. Its first copy has 70 text files. Use Bash to read it; it stays out of the Files sidebar. |
+| External repo Mount | `personal/home:/.mounts/github/native-popovers`. GitHub Sources copies the public `<owner>/react-native-popovers` repo. Its first copy has 70 text files. Use Bash to read it; it stays out of the Files sidebar. |
 
 ### Repo files for uploads
 
@@ -287,7 +287,7 @@ Only the original Chitchat installation was present.
 - 2026-10-18: C2 live checks in `qa-browser/home` passed for locked rows, name sort, guest root filters, Shared, Copy skips and Move with locked children. The viewer's member role and `/protection-bulk-qa` metadata are restored; the temporary guest role is deleted. The eight new empty folders are archived under the two roots above. Three task-created anonymous users are deleted. No existing tenant or account was removed.
 - 2026-10-18: locked-item text checks. In `qa-browser/home`, `qa.perm.viewer` saw "You don't have access to this file" on an embed of a locked file and "Skipped: Permission denied" for a locked folder in the Copy dialog. Roots `/c2-ui-1018` and `/c2-ui-1018-dest` are archived; the viewer keeps one chat whose only message failed with 402. In `chitchat-qa/home`, `ray-test-1` saw "You don't have access to this file." on a View image card; root `/c2-view-image-1018` (restricted by the owner) is archived, and the one-turn chat stays. Six task-created anonymous users are deleted.
 - 2026-10-19: uploaded one 220 KB Markdown file, `/emails/qa-mail-big-email-2026-10-19.md` in `personal/home`, for the Mail plugin big-email read check. No real email in that mailbox was over 30 KB. No grant or other data was added.
-- 2026-10-21: `press-api` helper checks. In `chitchat-qa/xfer-qa-0914`, uploaded the 7-file `/press-api-upload-qa/upload-sample` set and wrote `markdown-update-repro.md`; the key `press-api-skill-qa` stays saved on Ray's PC. In `personal/home`, updated `/.agents/skills/press-api` with text writes only (no uploads); the install key is revoked (verify 401). No new tenant or user.
+- 2026-10-21: `press-api` helper checks. In `chitchat-qa/xfer-qa-0914`, uploaded the 7-file `/press-api-upload-qa/upload-sample` set and wrote `markdown-update-repro.md`; the key `press-api-skill-qa` stays saved on the dev PC. In `personal/home`, updated `/.agents/skills/press-api` with text writes only (no uploads); the install key is revoked (verify 401). No new tenant or user.
 - 2026-10-20/21: archive and restore timing checks in `qa-browser/home` as the owner. `/copy-2`, `/copy-4` and `/qa-sort-0924` were archived and restored many times; each ends active with the same ids and paths. `/qa-sort-0924/j.json` got 9 metadata keys for a few minutes and then empty metadata again. No new file, tenant or user.
 - 2026-10-21: archive-request timing (named items only) in `qa-browser/home` as the owner. `/qa-search-0905/tasks` (1 child), `/copy-2`, `/qa-sort-0924` and the empty `/seed/f00` were archived and restored 6 times each; each ends active with the same ids, paths and child counts. No new file, tenant or user.
 - 2026-10-21: Restrict timing checks in `qa-browser/home` as the owner. The first 200 folders of `/copy-4` got the metadata key `qa-restrict-1021: x` for about an hour, then empty metadata again. `/copy-4` was restricted and unrestricted many times and ends open, with no grants and no links. Two catalog `check` rebuilds ran and were cleared. No new file, tenant or user.

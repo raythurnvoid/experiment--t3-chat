@@ -1,6 +1,6 @@
 # Plugin backend execution checks
 
-Use the published `raythurnvoid/bonobo-plugin-data-probe` fixture. Version 0.4.2 accepts
+Use the published `<owner>/bonobo-plugin-data-probe` fixture. Version 0.4.2 accepts
 403 for the denied read and folder list. Version 0.4.1 accepted 404 there. Version 0.4.0 keeps
 the response and PNG cases and adds scheduled permission checks. Version 0.3.0 added
 the MCP fixture and skill. Publish through the normal reviewed-SHA flow. Keep existing

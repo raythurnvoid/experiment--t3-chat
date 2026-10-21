@@ -617,11 +617,11 @@ describe("copy_transfer_file scopes", () => {
 				sourceWorkspace: "current",
 				destinationWorkspace: "personal",
 			}),
-		).rejects.toThrow("This workspace's plan does not include file uploads");
+		).rejects.toThrow("File uploads need a paid plan");
 		expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(before);
 		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_items").first())).toMatchObject({
 			state: "failed",
-			errorMessage: "This workspace's plan does not include file uploads",
+			errorMessage: "File uploads need a paid plan",
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(1);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);

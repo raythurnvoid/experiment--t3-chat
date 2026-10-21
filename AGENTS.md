@@ -12,7 +12,7 @@ The app's display and product name is **Bonobo Senate**. Use it in UI, docs, ski
 - Do not rewrite a whole source file through PowerShell. `Get-Content` without `-Raw` returns an array of lines, and `Set-Content` rejoins them with CRLF, so the file silently changes every line ending. Git normalizes it back on commit, which hides the damage from the diff, but until then the file no longer matches the rest of the repo. Use the agent's targeted edit tool for source edits.
 - Dev servers: check whether one is already running before you start anything, and never start a second copy on another port. The user runs these themselves sometimes, so a duplicate on port 5174 or a second Convex watcher is the real mistake here, not starting one at all.
   - Check the ports and processes: `netstat -ano | grep -E ":5173|:3210"` for Vite, and `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'convex|vite' }` for what is actually running. Read the command line, not just the port — `convex mcp start` matches `convex` and is NOT the watcher.
-  - The user's own Cursor terminals are readable at `C:\Users\rt0\.cursor\projects\c-Users-rt0-Documents-workspace-rt0-t3-chat\terminals\*.txt`. Use it to see which commands the user started; it shows their integrated terminals only, so a server started anywhere else does not appear there. Port and process inspection is the authority.
+  - The user's own Cursor terminals are readable at `%USERPROFILE%\.cursor\projects\<workspace-path-slug>-t3-chat\terminals\*.txt`. Use it to see which commands the user started; it shows their integrated terminals only, so a server started anywhere else does not appear there. Port and process inspection is the authority.
   - If it is already running, use it. If it is NOT running and you need it, start it — `vp env exec pnpm --dir packages/app run dev` for Vite, `vp env exec pnpm --dir packages/app exec convex dev` for the Convex watcher (background it; only while every uncommitted change in `git status` is yours, see the push rule below). Do not ask permission for the dev deployment and do not skip a verification step because a server was down.
   - `convex dev --once` pushes the working tree once and exits. Use it for a one-shot push; use the watcher when you are about to iterate against the browser. Both push the whole working tree, including other agents' uncommitted edits: follow [Push Only A Pushed Commit](.agents/skills/convex-admin-ops/SKILL.md#push-only-a-pushed-commit) first.
 - When full app lint is needed, use `vp env exec pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full Oxlint check.
@@ -187,9 +187,9 @@ Use [references-submodules/README.md](references-submodules/README.md) as the ma
 - When you update a direct dependency, and a local checkout of that package already exists under `references-submodules/` or in the personal sources folder, move that checkout to the git commit that published the same version. Do not leave the local source on an older or newer commit than the package you installed.
 - `references-submodules/assistant-ui/` is research-only. The app does not use `@assistant-ui/*` packages at runtime.
 - The app uses the published `file-selector` and `@atlaskit/pragmatic-drag-and-drop` packages. Their repositories under `references-submodules/` are source references only.
-- `packages/council` is a first-party app submodule (the Council Worker, repo `raythurnvoid/bonobo-senate-council`) — neither a vendored dependency nor a research reference. It sits outside the pnpm workspace on purpose and carries its own lockfile and tools; run `vp env exec pnpm --dir packages/council --ignore-workspace install` after a submodule update before using its scripts.
-- `packages/native-popovers` is a first-party submodule (repo `raythurnvoid/react-native-popovers`) and a pnpm workspace package. `MyTooltip`, `MyPopover`, `MyMenu`, `MyContextMenu`, `MyHoverCard`, `MySelect`, `MySearchSelect`, and `MyCombobox` are built on its `native-popovers/tooltip`, `/popover`, `/menu`, `/hovercard`, `/select`, and `/combobox` entries, and the React Compiler also compiles its `src/`. Its CSS layer `native_popovers` must stay after `base` in the `app.css` layer order. Change it in its own repo and update the gitlink here to point to the new submodule commit. If pushing both repos, push the submodule first.
-- `packages/bonobo-senate-skills` is a first-party submodule (public repo `raythurnvoid/bonobo-senate-skills`) that holds the shareable agent skills, today `press-api`. It is not a pnpm package. `.agents/skills/press-api` is a committed symlink into it, so project agents and the skill test read the submodule files. Edit the skill in the submodule, commit and push there first, then update the gitlink here. The repo README lists the install and update steps for other people.
+- `packages/council` is a first-party app submodule (the Council Worker, repo `<owner>/bonobo-senate-council`) — neither a vendored dependency nor a research reference. It sits outside the pnpm workspace on purpose and carries its own lockfile and tools; run `vp env exec pnpm --dir packages/council --ignore-workspace install` after a submodule update before using its scripts.
+- `packages/native-popovers` is a first-party submodule (repo `<owner>/react-native-popovers`) and a pnpm workspace package. `MyTooltip`, `MyPopover`, `MyMenu`, `MyContextMenu`, `MyHoverCard`, `MySelect`, `MySearchSelect`, and `MyCombobox` are built on its `native-popovers/tooltip`, `/popover`, `/menu`, `/hovercard`, `/select`, and `/combobox` entries, and the React Compiler also compiles its `src/`. Its CSS layer `native_popovers` must stay after `base` in the `app.css` layer order. Change it in its own repo and update the gitlink here to point to the new submodule commit. If pushing both repos, push the submodule first.
+- `packages/bonobo-senate-skills` is a first-party submodule (public repo `<owner>/bonobo-senate-skills`) that holds the shareable agent skills, today `press-api`. It is not a pnpm package. `.agents/skills/press-api` is a committed symlink into it, so project agents and the skill test read the submodule files. Edit the skill in the submodule, commit and push there first, then update the gitlink here. The repo README lists the install and update steps for other people.
 
 ## Third-party documentation research
 
@@ -1434,20 +1434,22 @@ A package upgrade has the same problem on the frontend side. Vite pre-bundles de
 
 We work directly on `main`. Commit on `main` and push straight to `origin main`, with no pull request. Plan the work so it ends with that push.
 
-The `gh` CLI holds two accounts. Another agent works on a different repository as `dloreto` and switches the active account whenever it needs to, so the active account can flip at any moment — this is expected and will not change. A plain `git push` from this repo then fails with `403 ... denied to dloreto`. Do not "fix" the active account with `gh auth switch` (it can flip back mid-session and it disturbs the other agent); always push with the command below, which pins the account per invocation. It reads the token into an environment variable so the token is never printed; keep it that way.
+The `gh` CLI holds two accounts. Another agent works on a different repository as a second GitHub account and switches the active account whenever it needs to, so the active account can flip at any moment — this is expected and will not change. A plain `git push` from this repo then fails with `403 ... denied to <second account>`. Do not "fix" the active account with `gh auth switch` (it can flip back mid-session and it disturbs the other agent); always push with the command below, which pins the account per invocation. It reads the token into an environment variable so the token is never printed; keep it that way.
 
 Run it in PowerShell only (the backtick before `$GH_TOKEN_RV` is a PowerShell escape; in Git Bash the line breaks). Run all lines in the same shell call so the variable reaches git — with a separate call the push silently sends an empty password.
 
+In the push command below, and where repo docs name this repo's GitHub account, `<owner>` is the account that owns this repo: the owner in `git remote get-url origin`. Put the real name in when you run a command.
+
 ```powershell
-$env:GH_TOKEN_RV = (gh auth token --user raythurnvoid)
-git -c credential.helper= -c "credential.helper=!f() { echo username=raythurnvoid; echo password=`$GH_TOKEN_RV; }; f" push origin main
+$env:GH_TOKEN_RV = (gh auth token --user <owner>)
+git -c credential.helper= -c "credential.helper=!f() { echo username=<owner>; echo password=`$GH_TOKEN_RV; }; f" push origin main
 Remove-Item Env:GH_TOKEN_RV
 ```
 
 The account flip also affects `gh` write commands (`gh issue create`, comments): they run as whatever account is active at that moment. Pin those per invocation too, in one shell call, without printing the token:
 
 ```powershell
-$env:GH_TOKEN = (gh auth token --user raythurnvoid)
+$env:GH_TOKEN = (gh auth token --user <owner>)
 gh issue create -R <owner>/<repo> --title "..." --body-file <path>
 Remove-Item Env:GH_TOKEN
 ```

@@ -38,7 +38,7 @@ export async function files_stored_uploads_db_admit(
 		args.billedUserId ?? billing_pick_billed_user_id({ userId: args.actorUserId, organization: args.organization });
 	const { hasPaidPlan } = await billing_db_check_paid_plan(ctx, { userId: billedUserId });
 	if (!hasPaidPlan) {
-		return Result({ _nay: { name: "plan_required", message: "This workspace's plan does not include file uploads" } });
+		return Result({ _nay: { name: "plan_required", message: "File uploads need a paid plan" } });
 	}
 	let totalBytes = 0;
 	for (const bytes of args.declaredBytes) {

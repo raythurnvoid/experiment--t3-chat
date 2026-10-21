@@ -377,7 +377,7 @@ over-reports lowercase `function (` lines.
 
 Data Probe 0.3.0 (`plugins/bonobo-plugin-data-probe`) declares one MCP server, `fixture`, and one
 skill, `mcp-echo`. The server is the public fixture Worker
-`https://bonobo-senate-mcp-fixture.ray-thurne-void.workers.dev/modern-basic` (source in
+`https://bonobo-senate-mcp-fixture.<account>.workers.dev/modern-basic` (source in
 `packages/mcp-fixture-worker`). It has the tools `echo` and `picture` and no sign-in. Convex dev runs
 in the cloud, so a server on a laptop cannot be used for live MCP checks. Use this one.
 
@@ -533,7 +533,7 @@ await input.setInputFiles({
 Allow about 30 seconds after the upload: the R2 event, the conversion pass and the plugin dispatch are
 all asynchronous. Then read `plugins_event_runs` to see whether the run happened and what it settled as.
 
-`raythurnvoid/bonobo-plugin-data-probe` is the fixture plugin for plugin-data QA — its backend writes one
+`<owner>/bonobo-plugin-data-probe` is the fixture plugin for plugin-data QA — its backend writes one
 document per upload and its page lists them. Its page still runs a hand-vendored pre-0.8.0 bridge
 (`fetchJson` reads, none of the SDK data wrappers that 0.13.0 later deleted), and it works on the direct-Convex host — verified 2026-08-18
 on 0.1.0 (`/w/personal/home/plugins/data-probe/pages/data-probe` renders "Recorded uploads (N)"). Do
@@ -737,8 +737,8 @@ not authorized for this workspace` when the host refused the grant or the plugin
 Use this when a person wants a real call with guests and files in `/meetings/<id>/`. It is not the
 fake-audio scratch-Chrome loop above.
 
-- **Paid plan first.** Service uploads refuse Free and anonymous users (`This workspace's plan does
-not include plugin service file storage`). Only `Pay As You Go` and `Pro` store recording files. Prove it
+- **Paid plan first.** Service uploads refuse Free and anonymous users (`File uploads need a paid
+plan`). Only `Pay As You Go` and `Pro` store recording files. Prove it
   from the signed-in account: `app_convex.query(app_convex_api.billing.get_current_user_subscription)`
   is null for anonymous, and that session is treated as Free. Do not start a recorded call on the QA
   Edge anonymous tab and expect Files to fill.

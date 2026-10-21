@@ -12,7 +12,7 @@ vi.mock("convex/react", () => ({
 		Object.fromEntries(
 			Object.keys(queries).map((key) => [
 				key,
-				{ displayName: key === "owner_1" ? "Owner Ray" : key === "user_1" ? "Ada" : "Workspace member" },
+				{ displayName: key === "owner_1" ? "Owner Sam" : key === "user_1" ? "Ada" : "Workspace member" },
 			]),
 		),
 }));
@@ -99,8 +99,8 @@ describe("PluginsManagementAccess", () => {
 				],
 			}),
 		);
-		expect(screen.getByText("Owner Ray (owner) always has access.")).not.toBeNull();
-		expect(screen.queryByRole("button", { name: "Remove Owner Ray" })).toBeNull();
+		expect(screen.getByText("Owner Sam (owner) always has access.")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Remove Owner Sam" })).toBeNull();
 	});
 
 	test("saves only one installation and keeps a refused edit in the form", async () => {

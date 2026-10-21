@@ -412,7 +412,7 @@ function published_plugin(overrides: {
 		displayName: overrides.name,
 		description: "A plugin",
 		version: "0.2.0",
-		publisherDisplayName: "Ray Publisher",
+		publisherDisplayName: "Test Publisher",
 		reviewStatus: "passed",
 		canProcessFiles: overrides.canProcessFiles,
 		canInstall: overrides.canInstall ?? true,
@@ -466,9 +466,9 @@ function publisher_plugin_fixture() {
 	return {
 		repository: {
 			_id: "repository_1",
-			owner: "ray",
+			owner: "test-owner",
 			repo: "bonobo-plugin-media",
-			repositoryUrl: "https://github.com/ray/bonobo-plugin-media",
+			repositoryUrl: "https://github.com/test-owner/bonobo-plugin-media",
 			lastPublishAttempt: undefined,
 		},
 		versions: [],
@@ -561,7 +561,7 @@ const SCHEDULE = {
 	grantId: "grant_2",
 	userName: "Ada",
 	payerUserId: "owner_1",
-	payerName: "Owner Ray",
+	payerName: "Owner Sam",
 	assignmentError: null,
 	lastRun: { runId: "run_1", status: "failed", updatedAt: 1_700_000_000_000, errorMessage: "Source was unavailable" },
 };
@@ -603,7 +603,7 @@ function setQueries(args: {
 					organizationOwnerUserId: "owner_1",
 				};
 			case "get_anagraphic":
-				return { displayName: "Owner Ray" };
+				return { displayName: "Owner Sam" };
 			case "plugins_access.get_my_run_as_grant":
 			case "plugins_access.get_installation_access":
 			case "plugins.get_installation_schedule":
@@ -870,7 +870,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		expect(accept, "a scheduled install must wait for direct Me consent").toHaveProperty("disabled", true);
 		expect(dialog.textContent).toContain("Runs every 30 minutes");
 		expect(dialog.textContent).toContain("Folder sharing limits do not apply");
-		expect(dialog.textContent).toContain("Scheduled writes are billed to Owner Ray");
+		expect(dialog.textContent).toContain("Scheduled writes are billed to Owner Sam");
 		expect(dialog.textContent).toContain("Other writes use this installation's billing settings");
 		expect(dialog.textContent).not.toContain("triggering upload");
 		fireEvent.change(within(dialog).getByRole("textbox", { name: "Configuration YAML" }), {
@@ -1083,7 +1083,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		render(<PageComponent />);
 		const schedule = screen.getByRole("region", { name: "Schedule" });
 		expect(schedule.textContent).toContain("Ada");
-		expect(schedule.textContent).toContain("Owner Ray");
+		expect(schedule.textContent).toContain("Owner Sam");
 		expect(within(schedule).getByRole("button", { name: "Run now" })).toHaveProperty("disabled", true);
 		fireEvent.click(within(schedule).getByRole("combobox", { name: "Run as" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Grace" }));
@@ -1936,7 +1936,7 @@ describe("RoutePluginsPlugin", () => {
 		expect(installButton.disabled).toBe(true);
 		expect(installButton.getAttribute("aria-busy")).toBeNull();
 		expect(
-			(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }) as HTMLButtonElement).disabled,
+			(screen.getByRole("button", { name: "Publish test-owner/bonobo-plugin-media" }) as HTMLButtonElement).disabled,
 		).toBe(true);
 		expect(screen.getByRole("menuitem", { name: "Remove claim" }).getAttribute("aria-disabled")).toBe("true");
 
@@ -2051,11 +2051,11 @@ describe("RoutePluginsPlugin", () => {
 		setQueries({ plugin: pluginA, installations: [], publisherPlugin: publisherA });
 		const view = render(<PageComponent />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+		fireEvent.click(screen.getByRole("button", { name: "Publish test-owner/bonobo-plugin-media" }));
 		setQueries({ plugin: pluginB, installations: [], publisherPlugin: publisherB });
 		view.rerender(<PageComponent />);
 		expect(screen.getByRole("heading", { level: 1, name: "media-b" })).toBeTruthy();
-		expect(screen.queryByRole("button", { name: "Publish ray/bonobo-plugin-media" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Publish test-owner/bonobo-plugin-media" })).toBeNull();
 		expect(
 			(screen.getByRole("button", { name: "Publish fork/bonobo-plugin-media-b" }) as HTMLButtonElement).disabled,
 		).toBe(true);
@@ -2063,7 +2063,7 @@ describe("RoutePluginsPlugin", () => {
 
 		await act(async () => finishHead({ _yay: { sourceCommitSha: headSha } }));
 		const reviewedCommit = await screen.findByRole("textbox");
-		expect(screen.getByRole("dialog").textContent).toContain("Publish ray/bonobo-plugin-media");
+		expect(screen.getByRole("dialog").textContent).toContain("Publish test-owner/bonobo-plugin-media");
 		fireEvent.change(reviewedCommit, { target: { value: headSha } });
 		fireEvent.click(screen.getByRole("button", { name: "Publish reviewed commit" }));
 
@@ -2099,7 +2099,7 @@ describe("RoutePluginsPlugin", () => {
 		setQueries({ plugin, installations: [], publisherPlugin: publisher_plugin_fixture() });
 		const view = render(<PageComponent />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+		fireEvent.click(screen.getByRole("button", { name: "Publish test-owner/bonobo-plugin-media" }));
 		useQueryMock.mockImplementation((query: string) => {
 			switch (query) {
 				case "plugins.list_published_plugins":
@@ -2153,7 +2153,7 @@ describe("RoutePluginsPlugin", () => {
 		setQueries({ plugin: pluginA, installations: [], publisherPlugin: publisherA });
 		const view = render(<PageComponent />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+		fireEvent.click(screen.getByRole("button", { name: "Publish test-owner/bonobo-plugin-media" }));
 		fireEvent.change(await screen.findByRole("textbox"), { target: { value: headSha } });
 		fireEvent.click(screen.getByRole("button", { name: "Publish reviewed commit" }));
 
@@ -2183,7 +2183,7 @@ describe("RoutePluginsPlugin", () => {
 		);
 
 		render(<PageComponent />);
-		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+		fireEvent.click(screen.getByRole("button", { name: "Publish test-owner/bonobo-plugin-media" }));
 
 		const updateButton = screen.getByRole("button", { name: "Update" }) as HTMLButtonElement;
 		const uninstallButton = screen.getByRole("button", { name: "Uninstall" }) as HTMLButtonElement;
@@ -2220,7 +2220,7 @@ describe("RoutePluginsPlugin", () => {
 		fireEvent.click(acceptButton);
 
 		const publishButton = screen.getByRole("button", {
-			name: "Publish ray/bonobo-plugin-media",
+			name: "Publish test-owner/bonobo-plugin-media",
 		}) as HTMLButtonElement;
 		expect(acceptButton.disabled).toBe(false);
 		expect(publishButton.disabled).toBe(true);
@@ -2248,7 +2248,7 @@ describe("RoutePluginsPlugin", () => {
 		fireEvent.click(uninstallButton);
 
 		const publishButton = screen.getByRole("button", {
-			name: "Publish ray/bonobo-plugin-media",
+			name: "Publish test-owner/bonobo-plugin-media",
 		}) as HTMLButtonElement;
 		expect(uninstallButton.disabled).toBe(false);
 		expect(uninstallButton.getAttribute("aria-busy")).toBe("true");
@@ -2304,7 +2304,7 @@ describe("RoutePluginsPlugin", () => {
 		);
 
 		const { rerender } = render(<PageComponent />);
-		expect(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Publish test-owner/bonobo-plugin-media" })).toBeTruthy();
 		const removeItem = screen.getByRole("menuitem", { name: "Remove claim" });
 		fireEvent.click(removeItem);
 

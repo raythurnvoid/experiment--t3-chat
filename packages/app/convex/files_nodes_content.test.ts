@@ -584,7 +584,7 @@ describe("copy_transfer_file", () => {
 				await asUser.mutation(api.files_metadata.set_entries, {
 					membershipId: db.membershipId,
 					fileNodeId: nodeId,
-					metadataYaml: "owner: Ray\nchecked: true\ncount: 4",
+					metadataYaml: "owner: Ada\nchecked: true\ncount: 4",
 				})
 			)._nay,
 		).toBeUndefined();
@@ -1519,7 +1519,7 @@ describe("copy_transfer_file", () => {
 		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
 		expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(storageCalls);
 		expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.errorMessage).toBe(
-			"This workspace's plan does not include file uploads",
+			"File uploads need a paid plan",
 		);
 	});
 

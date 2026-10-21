@@ -3538,8 +3538,8 @@ describe("plugins publish_version", () => {
 		await t.run(async (ctx) => {
 			const anagraphicId = await ctx.db.insert("users_anagraphics", {
 				userId: membership.userId,
-				displayName: "Ray Publisher",
-				email: "ray@example.com",
+				displayName: "Test Publisher",
+				email: "ada@example.com",
 				updatedAt: Date.now(),
 			});
 			await ctx.db.patch("users", membership.userId, { anagraphic: anagraphicId });
@@ -3579,21 +3579,21 @@ describe("plugins publish_version", () => {
 				pluginVersionId: alphaVersionId,
 				name: "alpha",
 				version: "1.0.0",
-				publisherDisplayName: "Ray Publisher",
+				publisherDisplayName: "Test Publisher",
 				reviewStatus: "pending",
 			},
 			{
 				pluginVersionId: latestBetaVersionId,
 				name: "beta",
 				version: "0.1.9",
-				publisherDisplayName: "Ray Publisher",
+				publisherDisplayName: "Test Publisher",
 				reviewStatus: "pending",
 			},
 			{
 				pluginVersionId: latestMediaVersionId,
 				name: "media",
 				version: "0.2.0",
-				publisherDisplayName: "Ray Publisher",
+				publisherDisplayName: "Test Publisher",
 				reviewStatus: "passed",
 			},
 		]);

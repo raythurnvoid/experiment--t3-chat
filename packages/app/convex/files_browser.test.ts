@@ -2839,7 +2839,7 @@ describe("save_browser_download", () => {
 
 		runnerQueue.push(runner_download_info(), { ok: true });
 		expect(await save_download({ t, fixture, sessionId: started._yay.session.sessionId })).toEqual({
-			_nay: { name: "plan_required", message: "This workspace's plan does not include file uploads" },
+			_nay: { name: "plan_required", message: "File uploads need a paid plan" },
 		});
 		expect(runnerCalls.map((call) => call.route)).toEqual(["open", "download-info"]);
 		expect(await t.run((ctx) => ctx.db.query("files_browser_download_saves").collect())).toEqual([]);

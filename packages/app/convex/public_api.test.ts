@@ -6236,7 +6236,7 @@ describe("files upload-urls", () => {
 			}),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "This workspace's plan does not include file uploads" });
+		expect(await refused.json()).toEqual({ message: "File uploads need a paid plan" });
 
 		// A mutation that returns `_nay` still commits whatever it wrote first, so the plan door has to
 		// come before the quota doc is created. No node and no quota doc means it did.

@@ -191,7 +191,7 @@ The fullscreen dialog exposes:
 Prefer the Blob route below. `download.saveAs()` fails in extension mode even under a Windows relay:
 it throws `ENOENT … copyfile 'C:\…\Temp\playwright-artifacts-…\<uuid>' -> <dest>`, and writing into
 `os.tmpdir()` first does not help, because the file that is missing is the *source* artifact, not
-the destination. The download itself still succeeds and lands in `C:\Users\rt0\Downloads\<suggestedFilename>`,
+the destination. The download itself still succeeds and lands in `%USERPROFILE%\Downloads\<suggestedFilename>`,
 so the reliable recipe is: trigger the Blob download, then `Move-Item` the file out of `~/Downloads`
 into the dated personal-AI folder (verified byte-exact against `blob.size`, 2026-08-18).
 

@@ -117,7 +117,7 @@ describe("advance", () => {
 			)?.errorMessage,
 		).toBe(
 			state === "Free"
-				? "This workspace's plan does not include file uploads"
+				? "File uploads need a paid plan"
 				: "This workspace has reached its storage limit",
 		);
 	});
@@ -688,7 +688,7 @@ describe("advance", () => {
 				await asUser.mutation(api.files_metadata.set_entries, {
 					membershipId: db.membershipId,
 					fileNodeId: folders.get("/source")!,
-					metadataYaml: "owner: Ray",
+					metadataYaml: "owner: Ada",
 				})
 			)._nay,
 		).toBeUndefined();
@@ -713,7 +713,7 @@ describe("advance", () => {
 				membershipId: db.membershipId,
 				fileNodeId: copiedRoot!._id,
 			}),
-		).toEqual([{ key: "owner", value: "Ray" }]);
+		).toEqual([{ key: "owner", value: "Ada" }]);
 		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toEqual([]);
 	});
 
@@ -762,7 +762,7 @@ describe("advance", () => {
 				errorMessage:
 					index === 0
 						? "The source file is still saving. Try again."
-						: "This workspace's plan does not include file uploads",
+						: "File uploads need a paid plan",
 			});
 			await t.mutation(internal.files_transfer.handle_copy_complete, {
 				workId: item.workId,

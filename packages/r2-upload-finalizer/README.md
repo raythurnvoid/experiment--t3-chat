@@ -144,7 +144,7 @@ The browser uploads (`PUT`) and reads (`GET`) files with signed R2 URLs, straigh
 bucket: the Files sidebar and the rich text media upload put files, and the Files page loads
 Yjs snapshots and media. Convex `ALLOWED_ORIGINS` only covers Convex routes. The bucket has
 its own CORS policy, and it must list the same app origins, or those `fetch()` calls fail with
-a CORS error on `https://raythurnvoid.github.io`. Apply [r2-files-cors.json](r2-files-cors.json)
+a CORS error on `https://<owner>.github.io`. Apply [r2-files-cors.json](r2-files-cors.json)
 after changing origins or allowed headers. Keep `Content-Type`, `If-None-Match`, and localhost.
 
 Nothing reads that file automatically. `wrangler.jsonc` does not reference it, `wrangler deploy`

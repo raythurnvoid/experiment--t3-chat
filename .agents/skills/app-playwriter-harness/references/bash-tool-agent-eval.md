@@ -766,14 +766,14 @@ current proof for published plugin copies; use the evaluation above for those co
 The legacy mirror is an agent-only read-only Bash surface. It must never appear in the Files
 sidebar or any public API file route. The scenarios below tested a real synced legacy mirror.
 
-Fixture: mount `/.mounts/t3-chat` (source `t3-chat`, owner `raythurnvoid` / repo `experiment--t3-chat` @ `main`). For the full eval fixture, sync to terminal `status: "idle"` and confirm `lastCommitSha != null` before running so the repo contents are complete. Bash mount visibility is gated on `lastCommitSha` (the mount serves the immutable commit root `/<name>/<commitSha>/...`), so a mount whose first sync is running or errored exposes nothing, and shell paths never show the commit sha. Against a deployment where the GitHub mount code is already pushed, use:
+Fixture: mount `/.mounts/t3-chat` (source `t3-chat`, owner `<owner>` / repo `experiment--t3-chat` @ `main`). For the full eval fixture, sync to terminal `status: "idle"` and confirm `lastCommitSha != null` before running so the repo contents are complete. Bash mount visibility is gated on `lastCommitSha` (the mount serves the immutable commit root `/<name>/<commitSha>/...`), so a mount whose first sync is running or errored exposes nothing, and shell paths never show the commit sha. Against a deployment where the GitHub mount code is already pushed, use:
 
 ```powershell
-Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
+Push-Location <workspace>\t3-chat\packages\app
 
 $upsertArgs = @{
 	name = "t3-chat"
-	owner = "raythurnvoid"
+	owner = "<owner>"
 	repo = "experiment--t3-chat"
 	ref = "main"
 } | ConvertTo-Json -Compress

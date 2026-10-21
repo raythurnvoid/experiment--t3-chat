@@ -1337,7 +1337,7 @@ export const check_image_output = internalMutation({
 		const organization = (await ctx.db.get("organizations", destination._yay.organizationId))!;
 		const billedUserId = billing_pick_billed_user_id({ userId: args.source.userId, organization });
 		if (!(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan)
-			return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+			return Result({ _nay: { message: "File uploads need a paid plan" } });
 		const planned = await files_nodes_db_plan_private_node_by_path(ctx, {
 			...destination._yay,
 			userId: args.source.userId,

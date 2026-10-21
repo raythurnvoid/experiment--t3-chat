@@ -185,7 +185,7 @@ describe("create_upload_target", () => {
 			name: "small.bin",
 			size: 8,
 		});
-		expect(result._nay?.message).toBe("This workspace's plan does not include file uploads");
+		expect(result._nay?.message).toBe("File uploads need a paid plan");
 		await f.t.run(async (ctx) => {
 			expect(await ctx.db.query("channels").collect()).toEqual([]);
 			expect(await ctx.db.query("channels_uploads").collect()).toEqual([]);

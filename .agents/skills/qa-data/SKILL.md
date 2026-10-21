@@ -20,7 +20,7 @@ accounts, and a "what do you need" table that points to real files.
 2. **Test on what exists.** In the `reuse` workspaces you may open, edit, rename, move, copy,
    share, and comment on existing files. If a catalog row describes a file's content and you
    change it, put the content back when you are done.
-3. **Do not touch `read-only` data.** That is `sybill-demo/demo`, Ray's own notes, and files that
+3. **Do not touch `read-only` data.** That is `sybill-demo/demo`, the owner's own notes, and files that
    a plugin writes. Read them, but do not change them.
 4. **Create only when nothing fits.** Then:
    - Make it small: an empty folder or a short text file beats an upload.
@@ -49,10 +49,9 @@ accounts, and a "what do you need" table that points to real files.
 
 **The plan belongs to the account, not the workspace.** Uploads and credits are checked on the
 plan of the account that acts. The org owner pays only when the org's `billingMode` is
-`organization_owner`, and the QA orgs use `user`. The refusal text says "This workspace's plan does
-not include file uploads", but it means the signed-in account's plan. So `qa.paid.owner` can upload
-in any workspace it is a member of, and a second user invited into `f5-repro-org` pays with its own
-plan.
+`organization_owner`, and the QA orgs use `user`. A refused upload says "File uploads need a paid
+plan". So `qa.paid.owner` can upload in any workspace it is a member of, and a second user
+invited into `f5-repro-org` pays with its own plan.
 
 Sign-in steps and the account list are in
 [clerk-test-accounts.md](../app-playwriter-harness/references/clerk-test-accounts.md). Before you
@@ -88,7 +87,7 @@ personal `+ai` folder, never to the repo.
 windows are missing, so check the time ranges the script prints.
 
 ```powershell
-$d = "C:/Users/rt0/Documents/workspace/rt0/t3-chat-+personal/+ai/<task>-<YYYY-MM-DD>"
+$d = "<workspace>/t3-chat-+personal/+ai/<task>-<YYYY-MM-DD>"
 foreach ($t in "users", "organizations", "organizations_workspaces", "organizations_workspaces_users", "plugins_workspace_installations", "ai_chat_threads", "files_nodes", "files_r2_assets") {
 	vp env exec pnpm --dir packages/app exec convex data $t --format jsonArray --limit 8000 > "$d/$t.json"
 	echo "$t EXIT: $LASTEXITCODE"

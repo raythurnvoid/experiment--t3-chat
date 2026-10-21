@@ -1502,7 +1502,7 @@ async function db_resolve_transfer_copy_billed_user(
 		});
 		if (admitted._nay) return admitted;
 	} else if (args.storedFile && !(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan) {
-		return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+		return Result({ _nay: { message: "File uploads need a paid plan" } });
 	}
 
 	// Ownership changes affect later files, not this file's work or retries.

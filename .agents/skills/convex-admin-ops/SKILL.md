@@ -27,7 +27,7 @@ Before a live Convex operation, load the domain skill that owns the behavior bei
 Run Convex commands from `packages/app` through Vite Plus and the installed Node CLI. This direct invocation preserves JSON arguments on this machine:
 
 ```powershell
-Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
+Push-Location <workspace>\t3-chat\packages\app
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable "<module:function>" '<json args>'
 Pop-Location
 ```
@@ -192,7 +192,7 @@ Workspace members can uninstall a plugin from its plugin detail page (`plugins.u
 Run preview → delete → preview readback from `packages/app`:
 
 ```powershell
-Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
+Push-Location <workspace>\t3-chat\packages\app
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:hard_delete_plugin_from_registry '{"pluginName":"<name>"}'
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
@@ -234,7 +234,7 @@ For large imports:
 
 R2 events can arrive several minutes late through Cloudflare queue retries, so wait on `unfinalizedActive`, not raw `unfinalized`. A crashed create attempt can leave an unfinished asset. The hourly cleanup checks unreferenced assets after 24 hours. For a pending upload with a node, recovery checks the actual R2 object before retirement. After eight days, a missing ordinary upload can lose its unlocked placeholder; a service upload keeps a retired placeholder for a fresh attempt. A saved or archived file with confirmed content stays. Never remove an asset alone while a node or snapshot still uses it.
 
-The import CLI that drives this module lives in the separate private repo `raythurnvoid/bonobo-senate-press-cli`.
+The import CLI that drives this module lives in the separate private repo `bonobo-senate-press-cli` (owned by the repo owner's GitHub account).
 
 Run these functions with the direct-node JSON form from the Windows CLI Invocation section.
 
@@ -265,7 +265,7 @@ From `packages/app`, export to a new path and name the operation in the file:
 
 ```powershell
 $deployment = "<confirmed-deployment>"
-$snapshotDirectory = "C:\Users\rt0\Documents\workspace\rt0\t3-chat-+personal\+ai\convex-recovery-<YYYY-MM-DD>"
+$snapshotDirectory = "<workspace>\t3-chat-+personal\+ai\convex-recovery-<YYYY-MM-DD>"
 $snapshotPath = Join-Path $snapshotDirectory "before-<operation>.zip"
 
 New-Item -ItemType Directory -Force -Path $snapshotDirectory | Out-Null
@@ -283,7 +283,7 @@ Import only as an explicitly approved recovery action. Confirm the deployment, s
 
 ```powershell
 $deployment = "<confirmed-deployment>"
-$snapshotPath = "C:\Users\rt0\Documents\workspace\rt0\t3-chat-+personal\+ai\convex-recovery-<YYYY-MM-DD>\before-<operation>.zip"
+$snapshotPath = "<workspace>\t3-chat-+personal\+ai\convex-recovery-<YYYY-MM-DD>\before-<operation>.zip"
 
 Get-Item -LiteralPath $snapshotPath | Select-Object FullName, Length
 Get-FileHash -LiteralPath $snapshotPath -Algorithm SHA256

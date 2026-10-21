@@ -2590,7 +2590,7 @@ describe("move", () => {
 				await asUser.mutation(api.files_metadata.set_entries, {
 					membershipId: db.membershipId,
 					fileNodeId: sourceId,
-					metadataYaml: ["owner: Ray", "priority: 3"].join("\n"),
+					metadataYaml: ["owner: Ada", "priority: 3"].join("\n"),
 				})
 			)._nay,
 		).toBeUndefined();

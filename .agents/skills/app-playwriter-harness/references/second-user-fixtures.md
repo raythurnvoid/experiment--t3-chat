@@ -31,7 +31,7 @@ If headless startup is unavailable on the machine, launch the installed Chrome f
 
 ```powershell
 $prof = "<personal AI folder>\<topic>-<YYYY-MM-DD>\qa-anon-profile"
-$chrome = "C:\Users\rt0\.playwriter\browsers\chrome-<version>\chrome-win64\chrome.exe"
+$chrome = "$env:USERPROFILE\.playwriter\browsers\chrome-<version>\chrome-win64\chrome.exe"
 Start-Process $chrome -ArgumentList @("--remote-debugging-port=9223", "--user-data-dir=$prof", "--no-first-run", "--no-default-browser-check", "http://localhost:5173/")
 ```
 
@@ -59,7 +59,7 @@ A freshly minted anonymous user is a real non-paying payer, so it is the cheapes
 
 Do not try the other route — patching the signed-in account's `billing_usage_snapshots` row. It bricks the app; see the entry in `known-hazards.md`.
 
-Upload plan gate, verified 2026-08-21 (both browser doors refuse with `This workspace's plan does not include file uploads`):
+Upload plan gate, verified 2026-08-21 (both browser doors refuse with `File uploads need a paid plan`):
 
 ```js
 const m = await import("/src/lib/app-convex-client.ts");

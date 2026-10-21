@@ -303,7 +303,7 @@ export async function files_move_content_db_publish_accounting(ctx: MutationCtx,
 	if (cohort.storedFileCount > 0) {
 		if (!(await billing_db_check_paid_plan(ctx, { userId: cohort.billedUserId })).hasPaidPlan)
 			return Result({
-				_nay: { name: "plan_required", message: "This workspace's plan does not include file uploads" },
+				_nay: { name: "plan_required", message: "File uploads need a paid plan" },
 			});
 		const id = await quotas_db_ensure(ctx, {
 			quotaName: "stored_file_bytes",
