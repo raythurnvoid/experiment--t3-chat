@@ -13,6 +13,7 @@ import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_metadata_committed_field_sort_fields, files_metadata_db_patch_file_scope } from "./files_metadata.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import * as resolver from "../server/files-visible-resolve.ts";
+import * as overlay from "../server/files-pending-overlay.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
@@ -88,13 +89,14 @@ describe("discard_file_pending_update", () => {
 	};
 
 	test.each([
-		[0, 0, 0],
-		[20, 0, 0],
-		[0, 65, 0],
-		[0, 0, 128],
-	])(
-		"discards a 256-node private folder that claims a saved name, saved depth %i, stored frames %i, chats %i",
-		async (depth, frameCount, threadCount) => {
+		[0, 0, 0, false],
+		[20, 0, 0, false],
+		[0, 65, 0, false],
+		[0, 0, 128, false],
+		[0, 0, 0, true],
+	] as const)(
+		"discards a 256-node private folder that claims a saved name, saved depth %i, stored frames %i, chats %i, unrelated Move %s",
+		async (depth, frameCount, threadCount, unrelatedMove) => {
 			const t = test_convex({ transactionLimits: true });
 			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
@@ -214,6 +216,53 @@ describe("discard_file_pending_update", () => {
 				const proposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 				await start_unfinished_work(t, proposals, frameCount);
 			}
+			if (unrelatedMove) {
+				const folders = [];
+				for (const path of ["/moving", "/destination"]) {
+					const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+						membershipId: db.membershipId,
+						parentId: "root",
+						path,
+					});
+					if (folder._nay) throw new Error(folder._nay.message);
+					folders.push(folder._yay.nodeId);
+				}
+				const canJoin = overlay.files_pending_overlay_db_can_join_step;
+				// Leave native Move queued while Discard measures the active workspace guards.
+				const join = vi
+					.spyOn(overlay, "files_pending_overlay_db_can_join_step")
+					.mockImplementation(async (ctx, factor) => {
+						const allowed = await canJoin(ctx, factor);
+						const slot = await ctx.db.query("files_move_workspace_slots").first();
+						return allowed && !slot?.cohortId;
+					});
+				try {
+					const started = await asOwner.mutation(api.files_transfer.accept_input, {
+						membershipId: db.membershipId,
+						requestId: "discard-unrelated-move",
+						kind: "move",
+						sourceIds: [folders[0]!],
+						expectedSourceCount: 1,
+						targetParentId: folders[1]!,
+					});
+					if (started._nay) throw new Error(started._nay.message);
+					expect(
+						await asOwner.mutation(api.files_transfer.seal, {
+							membershipId: db.membershipId,
+							runId: started._yay.runId,
+						}),
+					).toEqual({ _yay: null });
+					for (let step = 0; step < 20; step++) {
+						const slot = await t.run((ctx) => ctx.db.query("files_move_workspace_slots").first());
+						if (slot?.cohortId) break;
+						await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+					}
+					const slot = await t.run((ctx) => ctx.db.query("files_move_workspace_slots").first());
+					expect(slot?.cohortId, "native Move owns the workspace before Discard").toBeTruthy();
+				} finally {
+					join.mockRestore();
+				}
+			}
 
 			const { result, cost } = await asOwner.run(async (ctx) => {
 				const before = await ctx.meta.getTransactionMetrics();
@@ -234,6 +283,11 @@ describe("discard_file_pending_update", () => {
 			const nodes = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
 			expect(nodes.filter((node) => node.state !== "discarded")).toEqual([]);
 			expect_under_convex_limits(cost);
+			if (unrelatedMove)
+				await finish_scheduled(
+					t,
+					async () => await t.run(async (ctx) => (await ctx.db.query("files_pending_overlay_jobs").first()) === null),
+				);
 			await t.run(async (ctx) => {
 				expect(
 					await ctx.db
@@ -547,8 +601,8 @@ describe("hard delete", () => {
 });
 
 describe("saved scope job", () => {
-	// Archive and Restore patch only the nodes. The saved scope job then copies the new scope onto each
-	// file's saved chunks and metadata docs, one page per run.
+	// Full-size files have more than 16 chunks, so Archive and Restore patch only their nodes. The saved
+	// scope job then copies the new scope onto each file's saved chunks and metadata docs, one page per run.
 	test("keeps Archive and Restore of two full-size files at the longest path under the budget", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

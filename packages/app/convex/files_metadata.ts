@@ -455,9 +455,9 @@ export async function files_metadata_db_patch_file_scope(
 	},
 ) {
 	// Committed metadata is bounded by its write caps. Archive and Restore copy path and archive state
-	// onto these docs in the same mutation, or in a saved scope job when the node has many docs
-	// (`files_pending_overlay_db_follow_saved_scope`). The area of the items inside follows in a saved
-	// scope job.
+	// onto these docs, and the scope op copies the area of the items inside. Each copies in the same
+	// mutation as the node, or in a saved scope job when the node has many docs
+	// (`files_pending_overlay_db_follow_saved_scope`).
 	const docs = await ctx.db
 		.query("files_metadata_docs")
 		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>

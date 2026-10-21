@@ -406,6 +406,24 @@ describe("catalog hook and compactor", () => {
 		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toEqual([]);
 	});
 
+	test("a run that applied the last delta keeps the marker for one more run", async () => {
+		const { t, scope } = await seed();
+		const a = await create_folder(t, scope, "/a");
+		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.first" })]);
+		const marker = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").unique());
+		vi.setSystemTime(Date.now() + 5001);
+		await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: marker!._id });
+		expect(await list_deltas(t)).toEqual([]);
+		// A walk step that is still running read this marker. Deleting it now would make that step run again.
+		expect(await t.run(async (ctx) => await ctx.db.get("files_metadata_catalog_compactors", marker!._id))).toEqual(
+			marker,
+		);
+		// The next run has nothing to apply, so it ends the chain.
+		vi.setSystemTime(Date.now() + 5001);
+		await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: marker!._id });
+		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toEqual([]);
+	});
+
 	test("drift clamps to zero and logs one line without values", async () => {
 		const { t, scope } = await seed();
 		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -872,9 +890,10 @@ describe("catalog rebuild and check", () => {
 			const marker = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first());
 			phases.push(marker?.phase ?? "none");
 		});
-		// Three clear jobs, then two seed pages. A seeding marker stays while no delta waits.
+		// Three clear jobs, then two seed pages. A seeding marker stays while no delta waits. The last page
+		// sets it to draining, and the run after it applied deltas, so the marker stays for one more run.
 		expect(jobs).toBe(5);
-		expect(phases).toEqual(["clearing", "clearing", "seeding", "seeding", "none"]);
+		expect(phases).toEqual(["clearing", "clearing", "seeding", "seeding", "draining"]);
 		expect(await list_rows(t)).toEqual(expected);
 		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
 

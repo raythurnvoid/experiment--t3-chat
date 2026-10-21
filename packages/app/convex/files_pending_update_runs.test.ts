@@ -16,6 +16,8 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_pending_update_runs_db_record_cohort_publication } from "./files_pending_update_runs_db.ts";
 import { files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
+import { archive, run_to_end as finish_archive, seed_tree } from "./files_archive_runs.setup.test.ts";
+import * as pendingOverlay from "../server/files-pending-overlay.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -124,6 +126,156 @@ async function finish_review(f: Awaited<ReturnType<typeof fixture>>, runId: Id<"
 }
 
 describe("review jobs", () => {
+	test("Discard keeps a held saved proposal and resumes after Move releases it", async () => {
+		const f = await fixture();
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("discard-move" as never);
+		vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
+		const parentId = await saved_folder(f, "parent");
+		const destinationId = await saved_folder(f, "destination");
+		const created = await f.asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: f.db.membershipId,
+			parentId,
+			path: "child",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...f.scope,
+			target: { kind: "saved", id: created._yay.nodeId },
+			destParent: { kind: "root" },
+			destName: "draft-child",
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+		const proposal = (await f.t.run((ctx) => ctx.db.query("files_pending_updates").unique()))!;
+		const review = await start_review({ f, kind: "discard", proposals: [proposal] });
+		const canJoin = pendingOverlay.files_pending_overlay_db_can_join_step;
+		vi.spyOn(pendingOverlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, factor) => {
+			const allowed = await canJoin(ctx, factor);
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique();
+			return allowed && !slot?.cohortId;
+		});
+		const started = await f.asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: f.db.membershipId,
+			requestId: "discard-move",
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [parentId],
+			targetParentId: destinationId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		let held = false;
+		for (let step = 0; step < 100 && !held; step++) {
+			const cohort = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohorts")
+					.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", started._yay.runId))
+					.first(),
+			);
+			if (cohort)
+				await f.t.action(internal.files_move_run.run, {
+					cohortId: cohort._id,
+					step: cohort.step,
+					runGeneration: cohort.runJob?.generation ?? null,
+					mode: "step",
+				});
+			else await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+			held =
+				(
+					await f.t.run((ctx) =>
+						ctx.db
+							.query("files_move_source_reservations")
+							.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", parentId))
+							.unique(),
+					)
+				)?.mode === "children";
+		}
+		expect(held, "the native Move closed the source parent's direct children").toBe(true);
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId: review.runId });
+		const unit = (await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", review.runId))
+				.unique(),
+		))!;
+		expect(unit.status).toBe("preparing");
+		await f.t.action(internal.files_pending_update_runs.prepare_unit, {
+			runId: review.runId,
+			fence: 0,
+			unitId: unit._id,
+			attemptFence: unit.attemptFence,
+		});
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id)),
+			"busy Discard keeps the exact proposal",
+		).toEqual(proposal);
+		expect(
+			await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unit._id)),
+			"busy Discard retries without spending an attempt",
+		).toMatchObject({ status: "queued", attemptCount: 0 });
+		expect((await f.t.run((ctx) => ctx.db.get("activities", review.activityId)))?.progress).toMatchObject({
+			completed: 0,
+			blocked: 0,
+		});
+		expect(
+			await f.asUser.mutation(api.files_transfer.stop, { membershipId: f.db.membershipId, runId: started._yay.runId }),
+		).toEqual({ _yay: null });
+		for (let step = 0; step < 100; step++) {
+			const cohort = (await f.t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohorts")
+					.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", started._yay.runId))
+					.first(),
+			))!;
+			if (cohort.phase === "complete") break;
+			await f.t.action(internal.files_move_run.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
+		}
+		const finished = await finish_review(f, review.runId);
+		expect(finished?.activity).toMatchObject({ status: "succeeded", progress: { completed: 1 } });
+		expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toBeNull();
+	});
+
+	test("waits when Archive starts after planning, then resumes after its repair", async () => {
+		const f = await fixture();
+		const archiveFixture = { ...f, asOwner: f.asUser };
+		const tree = await seed_tree(archiveFixture, { name: "archive", folderCount: 2, filesPerFolder: 80 });
+		const proposal = await private_folder(f, "/review-draft");
+		const review = await start_review({ f, kind: "accept", proposals: [proposal] });
+		const archived = await archive(archiveFixture, [tree.topId]);
+		if (archived._nay || !archived._yay) throw new Error("Expected a running Archive");
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", tree.topId)))?.archiveOperationId).not.toBeNull();
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", tree.fileIds.at(-1)!)))?.archiveOperationId).toBeNull();
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId: review.runId });
+		const unit = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", review.runId))
+				.unique(),
+		);
+		expect(unit?.status).toBe("preparing");
+		expect(unit?.cohortId, "Review cannot select a Move view over partial Archive paths").toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("files_move_workspace_slots").collect())).toEqual([]);
+		const retry = await f.t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).find(
+				(job) => job.name.endsWith("files_pending_update_runs:advance") && job.scheduledTime === Date.now() + 1000,
+			),
+		);
+		expect(retry?.args[0]).toMatchObject({ runId: review.runId });
+		await finish_archive(archiveFixture, archived._yay);
+		await f.t.mutation(internal.files_pending_update_runs.advance, { runId: review.runId });
+		expect((await f.t.run((ctx) => ctx.db.get("files_pending_update_run_units", unit!._id)))?.cohortId).not.toBeNull();
+		const finished = await finish_review(f, review.runId);
+		expect(finished?.activity.status).toBe("succeeded");
+	});
+
 	test("polls less often while a folder-wide job runs", async () => {
 		const f = await fixture();
 		// A big Restrict still walks this folder.

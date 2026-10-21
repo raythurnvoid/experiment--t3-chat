@@ -541,9 +541,11 @@ test("a Restore starts a saved scope job again when its run was lost", async () 
 	});
 	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
 	const args = { membershipId: db.membershipId, nodeIds: [nodeId] };
-	expect(await asUser.mutation(api.files_nodes.archive_nodes, args)).toEqual({ _yay: null });
+	// The bulk archive always uses a job. The archive door copies a small item's docs inline instead.
+	await t.run((ctx) => files_nodes_db_archive_nodes({ ctx, nodeIds: [nodeId], updatedBy: db.userId, now: Date.now() }));
 	// A failed run leaves the job doc the same as a lost one.
 	const lost = (await read_saved_docs(t, nodeId)).job!;
+	expect(lost, "Archive leaves a saved scope job for recovery").not.toBeNull();
 	await t.run((ctx) => ctx.scheduler.cancel(lost.scheduledFunctionId));
 
 	expect(await asUser.mutation(api.files_nodes.unarchive_nodes, args)).toEqual({ _yay: null });
@@ -556,7 +558,7 @@ test("a Restore starts a saved scope job again when its run was lost", async () 
 	expect(stale_docs(restored)).toEqual([]);
 }, 60_000);
 
-test("an area change walks only the metadata docs, and starts no job for a file without them", async () => {
+test("an area change copies few metadata docs at once, and walks many in a job without the text chunks", async () => {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -570,13 +572,23 @@ test("an area change walks only the metadata docs, and starts no job for a file 
 		path: "/team/note.md",
 		textContent: "---\ntitle: Note\n---\nSaved text.\n",
 	});
+	const frontmatter = Array.from({ length: 17 }, (_, index) => `key${index}: value${index}`).join("\n");
+	const bigId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId,
+		path: "/team/big.md",
+		textContent: `---\n${frontmatter}\n---\nSaved text.\n`,
+	});
 	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
 	expect((await read_saved_docs(t, plainId)).metadata).toEqual([]);
 	const note = await read_saved_docs(t, noteId);
 	expect(note.metadata.length).toBeGreaterThan(0);
-	// Only a walk of the chunks would fix this stale chunk.
-	const chunkId = note.chunks[0]!._id;
-	await t.run((ctx) => ctx.db.patch("files_plain_text_chunks", chunkId, { path: "/stale" }));
+	const big = await read_saved_docs(t, bigId);
+	expect(big.metadata.length, "more docs than the step copies itself").toBeGreaterThan(16);
+	// Only a walk of the chunks would fix these stale chunks.
+	const staleChunkIds = [note.chunks[0]!._id, big.chunks[0]!._id];
+	await t.run(async (ctx) => {
+		for (const chunkId of staleChunkIds) await ctx.db.patch("files_plain_text_chunks", chunkId, { path: "/stale" });
+	});
 	const jobKeys: string[] = [];
 	test_spy_handler(run_job, async (handler, ctx, args) => {
 		const { kind, key } = args as { kind: string; key: string };
@@ -588,15 +600,25 @@ test("an area change walks only the metadata docs, and starts no job for a file 
 	expect(
 		(await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: folderId }))._nay,
 	).toBeUndefined();
-	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
-	expect(new Set(jobKeys), "only the file with metadata gets a job").toEqual(new Set([noteId]));
-	const restricted = await read_saved_docs(t, noteId);
-	expect(restricted.job).toBeNull();
-	expect(
-		restricted.metadata.map((doc) => doc.sourceKind === "committed" && doc.restrictedScopeNodeId),
-		"the metadata docs follow the area",
-	).toEqual(restricted.metadata.map(() => folderId));
-	expect(restricted.chunks.find((chunk) => chunk._id === chunkId)?.path, "the job skips the text chunks").toBe(
-		"/stale",
+	const areas = (docs: Doc<"files_metadata_docs">[]) =>
+		docs.map((doc) => doc.sourceKind === "committed" && doc.restrictedScopeNodeId);
+	const noteRestricted = await read_saved_docs(t, noteId);
+	expect(noteRestricted.job, "a file with few metadata docs gets no job").toBeNull();
+	expect(areas(noteRestricted.metadata), "its metadata docs follow the area in the request").toEqual(
+		noteRestricted.metadata.map(() => folderId),
 	);
+	expect(JSON.parse((await read_saved_docs(t, bigId)).job!.cursor!)).toMatchObject({ metadataOnly: true });
+
+	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
+	expect(new Set(jobKeys), "only the file with many metadata docs runs a job").toEqual(new Set([bigId]));
+	const bigRestricted = await read_saved_docs(t, bigId);
+	expect(bigRestricted.job).toBeNull();
+	expect(areas(bigRestricted.metadata), "the job moves the metadata docs to the area").toEqual(
+		bigRestricted.metadata.map(() => folderId),
+	);
+	const chunks = [...(await read_saved_docs(t, noteId)).chunks, ...bigRestricted.chunks];
+	expect(
+		staleChunkIds.map((chunkId) => chunks.find((chunk) => chunk._id === chunkId)?.path),
+		"an area change skips the text chunks",
+	).toEqual(["/stale", "/stale"]);
 }, 60_000);

@@ -26,9 +26,11 @@ type Capability = {
 const STATE = Symbol("files_move_reservations");
 type Scope = Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">;
 type State = {
+	raw: QueryCtx["db"];
 	capability: Capability | null;
 	securityNodes: Set<Id<"files_nodes">>;
 	knownScopes: Map<string, Scope>;
+	nodes: Map<string, Promise<Doc<"files_nodes"> | Doc<"files_pending_nodes"> | null>>;
 	sourceReads: Map<string, Promise<Doc<"files_move_source_reservations"> | null>>;
 	slots: Map<string, Promise<Id<"files_move_cohorts"> | null>>;
 	holders: Map<string, Promise<Id<"files_move_cohorts"> | null>>;
@@ -54,12 +56,23 @@ export async function files_move_reservations_db_get_source(db: QueryCtx["db"], 
 	return await read;
 }
 
-async function get_parent(db: QueryCtx["db"], source: Extract<Source, { kind: "saved" | "private" }>) {
-	if (source.kind === "saved") {
-		const node = await db.get("files_nodes", source.id);
-		return node && node.parentId !== "root" ? { kind: "saved" as const, id: node.parentId } : null;
+// Preflight and raw guards share node reads. Every node write clears its cached value.
+async function get_node(db: QueryCtx["db"], source: Extract<Source, { kind: "saved" | "private" }>) {
+	const state = (db as GuardedDb)[STATE];
+	const nodes = state?.nodes;
+	const key = `${source.kind}:${source.id}`;
+	let read = nodes?.get(key);
+	if (!read) {
+		const reader = state?.raw ?? db;
+		read =
+			source.kind === "saved" ? reader.get("files_nodes", source.id) : reader.get("files_pending_nodes", source.id);
+		nodes?.set(key, read);
 	}
-	const node = await db.get("files_pending_nodes", source.id);
+	return await read;
+}
+
+async function get_parent(db: QueryCtx["db"], source: Extract<Source, { kind: "private" }>) {
+	const node = (await get_node(db, source)) as Doc<"files_pending_nodes"> | null;
 	return node && node.parent.kind !== "root" ? node.parent : null;
 }
 
@@ -82,13 +95,13 @@ async function get_slot_cohort(db: QueryCtx["db"], scope: Scope) {
 	return await cohortId;
 }
 
-// The first subtree reservation on this node or above it. During a Move, each node is read
-// once per transaction, so a new chain or many files in one deep folder do not walk again.
+// Private folders keep their subtree hold. Stop at saved folders: their holds cover direct children only.
 function get_subtree_holder(
 	db: QueryCtx["db"],
 	node: Extract<Source, { kind: "saved" | "private" }>,
 	holders = (db as GuardedDb)[STATE]?.holders,
 ): Promise<Id<"files_move_cohorts"> | null> {
+	if (node.kind === "saved") return Promise.resolve(null);
 	const key = `${node.kind}:${node.id}`;
 	let holder = holders?.get(key);
 	if (!holder) {
@@ -104,19 +117,12 @@ function get_subtree_holder(
 }
 
 /**
- * Check one source, its ancestors, and one destination slot.
+ * Check the exact source, an explicit parent, and one destination slot.
  */
 export async function files_move_reservations_db_find_blocker(db: QueryCtx["db"], args: Check) {
 	let parent = args.parent?.kind === "root" ? null : (args.parent ?? null);
 	const node = parent ?? (args.source?.kind === "saved" || args.source?.kind === "private" ? args.source : null);
-	const scope =
-		args.wholeWorkspace ??
-		args.slot ??
-		(node?.kind === "saved"
-			? await db.get("files_nodes", node.id)
-			: node
-				? await db.get("files_pending_nodes", node.id)
-				: null);
+	const scope = args.wholeWorkspace ?? args.slot ?? (node ? await get_node(db, node) : null);
 	if (scope) {
 		// A Move holds its workspace slot while any of its reservations or slot claims exist.
 		// So a free slot means nothing here is busy, and no parent walk is needed.
@@ -128,8 +134,11 @@ export async function files_move_reservations_db_find_blocker(db: QueryCtx["db"]
 		const reservation = await files_move_reservations_db_get_source(db, args.source);
 		if (reservation) return reservation.cohortId;
 	}
-	if (!parent && (args.source?.kind === "saved" || args.source?.kind === "private"))
-		parent = await get_parent(db, args.source);
+	if (parent?.kind === "saved") {
+		const reservation = await files_move_reservations_db_get_source(db, parent);
+		if (reservation?.mode === "children") return reservation.cohortId;
+	}
+	if (!parent && args.source?.kind === "private") parent = await get_parent(db, args.source);
 	if (parent) {
 		const holder = await get_subtree_holder(db, parent);
 		if (holder) return holder;
@@ -167,6 +176,84 @@ export async function files_move_reservations_db_check(db: QueryCtx["db"], args:
 	)
 		return Result({ _yay: null });
 	return Result({ _nay: BUSY });
+}
+
+function parent_check(db: QueryCtx["db"], scope: Scope, parent: files_PendingParent, name: string): Check {
+	const organizationId = db.normalizeId("organizations", scope.organizationId);
+	const workspaceId = db.normalizeId("organizations_workspaces", scope.workspaceId);
+	return {
+		parent,
+		...(parent.kind !== "private" && organizationId && workspaceId
+			? {
+					slot: {
+						organizationId,
+						workspaceId,
+						parentId: parent.kind === "root" ? "root" : parent.id,
+						name,
+					},
+				}
+			: {}),
+	};
+}
+
+async function pending_membership_checks(
+	db: QueryCtx["db"],
+	target: Doc<"files_pending_updates">["target"],
+	pendingMoves: Array<Doc<"files_pending_updates">["pendingMove"]>,
+	scope?: Scope,
+) {
+	const node = await get_node(db, target);
+	const checks: Check[] = [];
+	if (node) {
+		const parent: files_PendingParent =
+			"parentId" in node
+				? node.parentId === "root"
+					? { kind: "root" }
+					: { kind: "saved", id: node.parentId }
+				: node.parent;
+		checks.push(parent_check(db, node, parent, node.name));
+	}
+	const targetScope = scope ?? node;
+	if (targetScope) {
+		for (const move of pendingMoves) {
+			if (move) checks.push(parent_check(db, targetScope, move.destParent, move.destName));
+		}
+	}
+	return checks;
+}
+
+/**
+ * Check the exact node and its optional proposal before a write. Membership changes also check
+ * the old and new parents. Removing the owner's draft needs no new access to its old destination.
+ */
+export async function files_move_reservations_db_check_node_write(
+	db: QueryCtx["db"],
+	args: {
+		target: Doc<"files_pending_updates">["target"];
+		pendingUpdate: Doc<"files_pending_updates"> | null;
+		membership: boolean;
+		pendingMove?: Doc<"files_pending_updates">["pendingMove"];
+	},
+) {
+	const scope = args.pendingUpdate ?? (await get_node(db, args.target));
+	// A free workspace slot means none of these nodes or claims can be held.
+	if (scope && !(await get_slot_cohort(db, scope))) return Result({ _yay: null });
+	const checks: Check[] = [{ source: args.target }];
+	if (args.pendingUpdate) checks.push({ source: { kind: "proposal", id: args.pendingUpdate._id } });
+	if (args.membership)
+		checks.push(
+			...(await pending_membership_checks(
+				db,
+				args.target,
+				[args.pendingUpdate?.pendingMove, args.pendingMove],
+				args.pendingUpdate ?? undefined,
+			)),
+		);
+	for (const check of checks) {
+		const result = await files_move_reservations_db_check(db, check);
+		if (result._nay) return result;
+	}
+	return Result({ _yay: null });
 }
 
 /**
@@ -413,9 +500,11 @@ export async function files_move_reservations_db_is_rename_allocation(
 export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 	const raw = ctx.db;
 	const state: State = {
+		raw,
 		capability: null,
 		securityNodes: new Set(),
 		knownScopes: new Map(),
+		nodes: new Map(),
 		sourceReads: new Map(),
 		slots: new Map(),
 		holders: new Map(),
@@ -439,6 +528,13 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		// A new map, so a walk still in flight fills only the old one.
 		state.holders = new Map();
 	}
+	function forget_reads() {
+		state.nodes.clear();
+		state.knownScopes.clear();
+		state.slots.clear();
+		state.sourceReads.clear();
+		forget_blockers();
+	}
 	function find_blocker(check: Check) {
 		const key = JSON.stringify(check);
 		let blocker = blockers.get(key);
@@ -460,6 +556,28 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		const scopes = old && next ? [old, next] : [value];
 		if (!(await Promise.all(scopes.map((scope) => scope_is_active(scope as Scope)))).some(Boolean)) return;
 		const checks: Check[] = [];
+		// Only membership changes can move a child behind a folder page's cursor.
+		const membershipFields =
+			table === "files_nodes"
+				? [
+						"organizationId",
+						"workspaceId",
+						"parentId",
+						"kind",
+						"name",
+						"path",
+						"treePath",
+						"pathDepth",
+						"archiveOperationId",
+						"publishedFromPrivateNodeId",
+					]
+				: table === "files_pending_nodes"
+					? ["organizationId", "workspaceId", "userId", "parent", "kind", "name", "state", "creationGeneration"]
+					: table === "files_pending_updates"
+						? ["organizationId", "workspaceId", "userId", "target", "pendingMove", "pendingArchive"]
+						: [];
+		const membershipChanged =
+			!old || !next || membershipFields.some((field) => JSON.stringify(old[field]) !== JSON.stringify(next[field]));
 		for (const doc of old && next ? [old, next] : [value]) {
 			const source = source_of(table, id, doc);
 			if (source) checks.push({ source });
@@ -470,6 +588,12 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 				table === "files_pending_update_text_inputs"
 			) {
 				if (doc.target) checks.push({ source: doc.target as Doc<"files_pending_updates">["target"] });
+			}
+			if (table === "files_pending_updates" && membershipChanged) {
+				const pendingUpdate = doc as Doc<"files_pending_updates">;
+				checks.push(
+					...(await pending_membership_checks(db, pendingUpdate.target, [pendingUpdate.pendingMove], pendingUpdate)),
+				);
 			}
 			if (table === "files_pending_update_yjs_state_pages") {
 				const family = await raw.get(
@@ -487,7 +611,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 					checks.push({ source: { kind: "private", id: doc.publishedFromPrivateNodeId as Id<"files_pending_nodes"> } });
 				const organizationId = raw.normalizeId("organizations", doc.organizationId as string);
 				const workspaceId = raw.normalizeId("organizations_workspaces", doc.workspaceId as string);
-				if (organizationId && workspaceId)
+				if (organizationId && workspaceId && membershipChanged)
 					checks.push({
 						...(!id && !old && typeof doc.moveCohortId === "string"
 							? { wholeWorkspace: { organizationId, workspaceId } }
@@ -501,8 +625,8 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 							name: doc.name as string,
 						},
 					});
-			} else if (table === "files_pending_nodes" && doc.parent)
-				checks.push({ parent: doc.parent as files_PendingParent });
+			} else if (table === "files_pending_nodes" && doc.parent && membershipChanged)
+				checks.push(parent_check(db, doc as Scope, doc.parent as files_PendingParent, doc.name as string));
 		}
 		for (const check of checks) {
 			const blocker = await find_blocker(check);
@@ -642,6 +766,16 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 	}
 	const db = new Proxy(raw, {
 		get(target, property) {
+			if (property === "get")
+				return async (...args: unknown[]) => {
+					const id = args[args.length - 1] as string;
+					const table = args.length === 2 ? args[0] : null;
+					if (table === "files_nodes" || (table === null && target.normalizeId("files_nodes", id)))
+						return await get_node(db, { kind: "saved", id: id as Id<"files_nodes"> });
+					if (table === "files_pending_nodes" || (table === null && target.normalizeId("files_pending_nodes", id)))
+						return await get_node(db, { kind: "private", id: id as Id<"files_pending_nodes"> });
+					return await Reflect.apply(Reflect.get(target, "get"), target, args);
+				};
 			if (property === STATE) return state;
 			if (property === "insert")
 				return async (table: TableNames, value: Fields) => {
@@ -687,10 +821,16 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						(table === "files_nodes" || table === "files_pending_nodes") &&
 						(property !== "patch" || "parentId" in value! || "parent" in value!);
 					if (changesBlockers) forget_blockers();
+					const source = table === "files_nodes" ? "saved" : table === "files_pending_nodes" ? "private" : null;
+					const nodeKey = source ? `${source}:${args[tableFirst ? 1 : 0]}` : null;
 					const write = async () => {
-						const result: unknown = await Reflect.apply(Reflect.get(target, property), target, args);
-						if (changesBlockers) forget_blockers();
-						return result;
+						if (nodeKey) state.nodes.delete(nodeKey);
+						try {
+							return await Reflect.apply(Reflect.get(target, property), target, args);
+						} finally {
+							if (nodeKey) state.nodes.delete(nodeKey);
+							if (changesBlockers) forget_blockers();
+						}
 					};
 					if (table && (SOURCE_TABLES.has(table) || SIDE_TABLES.has(table))) {
 						const id = args[tableFirst ? 1 : 0] as Id<TableNames>;
@@ -713,7 +853,11 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 							((table === "files_metadata_docs" && "fileNodeId" in known && "pendingUpdateId" in known) ||
 								(table === "files_metadata_maps" && "owner" in known))
 								? known
-								: await target.get(table, id)
+								: table === "files_nodes"
+									? await get_node(db, { kind: "saved", id: id as Id<"files_nodes"> })
+									: table === "files_pending_nodes"
+										? await get_node(db, { kind: "private", id: id as Id<"files_pending_nodes"> })
+										: await target.get(table, id as Id<typeof table>)
 						) as Fields | null;
 						const next = property === "patch" ? { ...old, ...value } : value;
 						await guard(table, id, old, next, property === "patch" ? value : null);
@@ -724,5 +868,14 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
-	return { db };
+	const runMutation: MutationCtx["runMutation"] = async (mutation, ...args) => {
+		// A child mutation has its own wrapper and can change nodes or holds read by this one.
+		forget_reads();
+		try {
+			return await ctx.runMutation(mutation, ...args);
+		} finally {
+			forget_reads();
+		}
+	};
+	return { db, runMutation };
 }

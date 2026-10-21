@@ -291,6 +291,9 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 					...review,
 					media: review.media.map((entry, entryIndex) => (entryIndex === index ? { ...item, shared: true } : entry)),
 				});
+			} else {
+				// The link ended or is being changed, for example by a Move, since the list loaded.
+				setError("This public link changed or stopped working. Select Refresh list.");
 			}
 		} catch (error) {
 			console.error("[FilesShareModalMedia.handleShare] Failed to share media", { error });

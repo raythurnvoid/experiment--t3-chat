@@ -63,6 +63,10 @@ import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
+import {
+	files_move_reservations_db_check,
+	files_move_reservations_db_check_node_write,
+} from "../server/files-move-reservations.ts";
 
 // #region shared
 
@@ -631,6 +635,12 @@ async function db_settle_canonicalized_target(
 		now: number;
 	},
 ) {
+	const busy = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: { kind: "saved", id: args.target.nodeId },
+		pendingUpdate: null,
+		membership: args.actualBytes > args.target.declaredBytes,
+	});
+	if (busy._nay) return busy;
 	const organization = await ctx.db.get("organizations", args.target.organizationId);
 	if (!organization) {
 		const errorMessage = "target.organizationId points to a missing organizations doc";
@@ -664,7 +674,8 @@ async function db_settle_canonicalized_target(
 			putMayArriveUntil: (args.asset.uploadUrlExpiresAt ?? args.now + UPLOAD_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 		});
 		await ctx.db.patch("files_r2_assets", args.asset._id, { uploadRetiredAt: args.now, updatedAt: args.now });
-		await db_release_expired_target(ctx, { target: args.target, now: args.now, releaseReason: "oversized" });
+		const released = await db_release_expired_target(ctx, { target: args.target, now: args.now, releaseReason: "oversized" });
+		if (released._nay) return released;
 		return Result({ _nay: { name: REFUSAL_OVERSIZED_UPLOAD, message: settled._nay.message } });
 	}
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
@@ -717,6 +728,12 @@ async function db_release_expired_target(
 		releaseReason?: "oversized";
 	},
 ) {
+	const busy = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: { kind: "saved", id: args.target.nodeId },
+		pendingUpdate: null,
+		membership: true,
+	});
+	if (busy._nay) return busy;
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
 		state: "released",
 		...(args.releaseReason ? { releaseReason: args.releaseReason } : {}),
@@ -727,6 +744,7 @@ async function db_release_expired_target(
 		workspaceId: args.target.workspaceId,
 		nodeId: args.target.nodeId,
 	});
+	return Result({ _yay: null });
 }
 
 const target_pending_response_validator = v.object({
@@ -876,7 +894,8 @@ export const create_upload_target = internalMutation({
 			// still charges nothing.
 			const asset = await ctx.db.get("files_r2_assets", existingTarget.assetId);
 			if (!asset) {
-				await db_release_expired_target(ctx, { target: existingTarget, now });
+				const released = await db_release_expired_target(ctx, { target: existingTarget, now });
+				if (released._nay) return released;
 				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target's upload expired" } });
 			}
 			if (asset.r2Key !== undefined) {
@@ -1174,6 +1193,8 @@ async function db_remint_pending_target(
 	ctx: MutationCtx,
 	args: { target: Doc<"plugin_service_storage_targets">; asset: Doc<"files_r2_assets">; now: number },
 ) {
+	const busy = await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: args.target.nodeId } });
+	if (busy._nay) return busy;
 	const organization = await ctx.db.get("organizations", args.target.organizationId);
 	if (!organization) return Result({ _nay: { message: "Not found" } });
 	const admission = await files_stored_uploads_db_admit(ctx, {
@@ -1307,7 +1328,8 @@ export const remint_upload_target = internalMutation({
 
 		const asset = await ctx.db.get("files_r2_assets", target.assetId);
 		if (!asset) {
-			await db_release_expired_target(ctx, { target, now });
+			const released = await db_release_expired_target(ctx, { target, now });
+			if (released._nay) return released;
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target's upload expired" } });
 		}
 		// The object already reached its canonical key: a fresh URL would be useless, so answer
@@ -1418,7 +1440,8 @@ export const finalize_upload_target = internalMutation({
 		const asset = await ctx.db.get("files_r2_assets", target.assetId);
 		// A missing current asset cannot finish. Keep the released target and any earlier charges.
 		if (!asset) {
-			await db_release_expired_target(ctx, { target, now });
+			const released = await db_release_expired_target(ctx, { target, now });
+			if (released._nay) return released;
 			return Result({
 				_yay: {
 					state: "released" as const,
@@ -1620,6 +1643,14 @@ export const delete_upload_target = internalMutation({
 				}
 				policiesToClear.push({ node: match.node, writeContext });
 			}
+		}
+		for (const match of matches) {
+			const busy = await files_move_reservations_db_check_node_write(ctx.db, {
+				target: { kind: "saved", id: match.target.nodeId },
+				pendingUpdate: null,
+				membership: true,
+			});
+			if (busy._nay) return busy;
 		}
 
 		const now = Date.now();

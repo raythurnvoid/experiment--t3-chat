@@ -67,6 +67,7 @@ import { organizations_db_get_membership } from "./organizations_memberships_db.
 import {
 	files_move_reservations_db_enter,
 	files_move_reservations_db_find_blocker,
+	files_move_reservations_db_check_node_write,
 	files_move_reservations_db_note_source,
 } from "../server/files-move-reservations.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
@@ -2569,10 +2570,11 @@ export const expire_file_pending_updates = internalMutation({
 			// its file, even the retry patch below. So stop and try this draft and the later ones again.
 			if (
 				moveId &&
-				((await files_move_reservations_db_find_blocker(ctx.db, {
-					source: { kind: "proposal", id: pendingUpdate._id },
-				})) ||
-					(await files_move_reservations_db_find_blocker(ctx.db, { source: pendingUpdate.target })))
+				(await files_move_reservations_db_check_node_write(ctx.db, {
+					target: pendingUpdate.target,
+					pendingUpdate,
+					membership: true,
+				}))._nay
 			) {
 				await db_schedule_expiry_check({ ctx, check, checkAt: now + EXPIRY_RETRY_MS });
 				return null;
@@ -3066,9 +3068,6 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		const currentTarget = await db_check_operation_batch_target(ctx, batch);
 		if (currentTarget._nay) return currentTarget;
 
-		// Consume the batch either way: this call ends the operation.
-		await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: args.operationBatchId });
-
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -3076,6 +3075,21 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 			target: { kind: "saved", id: args.nodeId },
 			pendingUpdateId: args.pendingUpdateId,
 		});
+		// A busy removal keeps its batch. Stale operations still consume theirs below.
+		if (
+			pendingUpdate &&
+			pendingUpdate.revision === args.expectedRevision &&
+			!files_pending_update_content_is_stale(pendingUpdate, file)
+		) {
+			const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+				target: pendingUpdate.target,
+				pendingUpdate,
+				membership: !pendingUpdate.pendingMove && !pendingUpdate.pendingArchive,
+			});
+			if (writable._nay) return writable;
+		}
+		// Consume the batch either way: this call ends the operation.
+		await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: args.operationBatchId });
 		if (!pendingUpdate) {
 			return Result({ _yay: { pendingUpdate: null, currentYjsLastSequenceId: file.yjsLastSequenceId ?? null } });
 		}
@@ -3560,6 +3574,13 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		) {
 			return Result({ _nay: { name: "pending_content_changed", message: "Pending update changed, retry the write" } });
 		}
+
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: args.nodeId },
+			pendingUpdate: existingPendingUpdate,
+			membership: !existingPendingUpdate,
+		});
+		if (writable._nay) return writable;
 
 		const now = Date.now();
 		const unstagedSize = files_get_utf8_byte_size(args.unstagedText);
@@ -4740,6 +4761,13 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			if (destPath !== source.entry.path) {
 				const now = Date.now();
 				const pendingUpdate = source.entry.pendingUpdate;
+				const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+					target: args.target,
+					pendingUpdate,
+					membership: true,
+					pendingMove: { destParent: args.destParent, destName: args.destName, fromPath: source.entry.path },
+				});
+				if (writable._nay) return writable;
 				const replaced = replacement?._yay;
 				const threadIds = [
 					...new Set([
@@ -4876,6 +4904,12 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				target: args.target,
 			});
 			if (pendingUpdateToCancel?.pendingMove) {
+				const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+					target: args.target,
+					pendingUpdate: pendingUpdateToCancel,
+					membership: true,
+				});
+				if (writable._nay) return writable;
 				await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: pendingUpdateToCancel });
 				return Result({
 					_yay: {
@@ -4942,6 +4976,13 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				...(args.threadId ? [args.threadId] : []),
 			]),
 		];
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: args.target,
+			pendingUpdate: existingPendingUpdate,
+			membership: true,
+			pendingMove: { destParent: args.destParent, destName: args.destName, fromPath: node.path },
+		});
+		if (writable._nay) return writable;
 		if (replacesEntry?.kind === "private") {
 			const discarded = await files_pending_nodes_db_discard(ctx, {
 				...args,
@@ -5138,6 +5179,12 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 		});
 
 		const now = Date.now();
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: args.target,
+			pendingUpdate: existingPendingUpdate,
+			membership: existingPendingUpdate?.pendingArchive?.fromPath !== node.path || !!existingPendingUpdate?.pendingMove,
+		});
+		if (writable._nay) return writable;
 		// Contributor set: an agent rm records its thread once per doc; client deletes pass no threadId.
 		const nextThreadIds =
 			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)
@@ -5316,6 +5363,12 @@ export async function files_pending_updates_db_discard_saved(
 ) {
 	const scope = { organizationId: pendingUpdate.organizationId, workspaceId: pendingUpdate.workspaceId };
 	// Removing the owner's whole proposal needs no current access to the saved file.
+	const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: pendingUpdate.target,
+		pendingUpdate,
+		membership: true,
+	});
+	if (writable._nay) return writable;
 	if (pendingUpdate.pendingReplacement)
 		await files_pending_update_db_release_replacement_asset(ctx, {
 			...scope,
@@ -5395,6 +5448,14 @@ export const discard_file_pending_structural = mutation({
 			// Already gone (another tab discarded or accepted it): a no-op success.
 			return Result({ _yay: null });
 		}
+		if (!pendingUpdate.pendingArchive && !pendingUpdate.copiedFrom && !pendingUpdate.pendingMove)
+			return Result({ _yay: null });
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: pendingUpdate.target,
+			pendingUpdate,
+			membership: true,
+		});
+		if (writable._nay) return writable;
 
 		if (pendingUpdate.pendingArchive) {
 			// Discarding a delete never touches the node: clear the proposal; a doc that
@@ -5534,6 +5595,12 @@ export const discard_file_pending_content = mutation({
 
 		// Release the whole-file copy's staged object. A move on the same doc survives.
 		if (pendingUpdate.pendingReplacement) {
+			const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+				target: pendingUpdate.target,
+				pendingUpdate,
+				membership: !pendingUpdate.pendingMove,
+			});
+			if (writable._nay) return writable;
 			await files_pending_update_db_release_replacement_asset(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -5629,7 +5696,14 @@ export const discard_file_pending_content = mutation({
 		}
 
 		// Reverting unstaged to staged can remove every content change. Stale content also goes.
-		if (stale || stagedText._yay === baseText._yay) {
+		const removeContent = stale || stagedText._yay === baseText._yay;
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: pendingUpdate.target,
+			pendingUpdate,
+			membership: removeContent && !pendingUpdate.pendingMove && !pendingUpdate.pendingArchive,
+		});
+		if (writable._nay) return writable;
+		if (removeContent) {
 			// A move or delete proposed on the same doc stays; only the content goes.
 			if (pendingUpdate.pendingMove || pendingUpdate.pendingArchive) {
 				const now = Date.now();
@@ -5931,6 +6005,16 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		}
 
 		const now = Date.now();
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: existingPendingUpdate.target,
+			pendingUpdate: existingPendingUpdate,
+			membership:
+				!!args.preparation &&
+				!args.preparation.hasChanges &&
+				!existingPendingUpdate.pendingMove &&
+				!existingPendingUpdate.pendingArchive,
+		});
+		if (writable._nay) return writable;
 		if (args.preparation && !args.preparation.hasChanges) {
 			await files_db_expire_pending_update_operation_batch(ctx, { operationBatchId: batch._id });
 			await files_db_retire_pending_update_yjs_states(ctx, {
@@ -7871,6 +7955,13 @@ async function files_pending_updates_db_save_yjs(args: {
 		}
 	}
 
+	const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: pendingUpdate.target,
+		pendingUpdate,
+		membership: !args.partial && !pendingUpdate.pendingMove,
+	});
+	if (writable._nay) return writable;
+
 	let newSequence: number | null = null;
 	if (args.trustedStageId) {
 		const stage = await ctx.db.get("files_yjs_trusted_update_stages", args.trustedStageId);
@@ -8320,6 +8411,13 @@ async function files_pending_updates_db_save_asset(args: {
 			return stateValidation;
 		}
 	}
+
+	const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: pendingUpdate.target,
+		pendingUpdate,
+		membership: !args.partial && !pendingUpdate.pendingMove,
+	});
+	if (writable._nay) return writable;
 
 	if (args.publish) {
 		const reservation = await ctx.db

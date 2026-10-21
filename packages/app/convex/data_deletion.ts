@@ -20,7 +20,10 @@ import { channels_db_drain_member_batch, channels_db_purge_workspace_batch } fro
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
+import {
+	files_move_reservations_db_check_node_write,
+	files_move_reservations_db_note_source,
+} from "../server/files-move-reservations.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { presence } from "./presence.ts";
@@ -2895,7 +2898,7 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 		.take(args.batchSize);
 	if (expiryChecks.length > 0) {
 		await Promise.all(expiryChecks.map((doc) => ctx.db.delete("files_pending_update_expiry_checks", doc._id)));
-		return expiryChecks.length;
+		return { done: false, deletedCount: expiryChecks.length };
 	}
 
 	const pendingUpdates = await ctx.db
@@ -2904,8 +2907,15 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 		.take(args.batchSize);
 	const pendingUpdate = pendingUpdates[0];
 	if (!pendingUpdate) {
-		return 0;
+		return { done: true, deletedCount: 0 };
 	}
+	// Keep the draft and its children together while another user's Move is reading them.
+	const busy = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: pendingUpdate.target,
+		pendingUpdate,
+		membership: true,
+	});
+	if (busy._nay) return { done: false, deletedCount: 0 };
 
 	const plainTextChunks = await ctx.db
 		.query("files_plain_text_chunks")
@@ -2913,7 +2923,7 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 		.take(args.batchSize);
 	if (plainTextChunks.length > 0) {
 		await Promise.all(plainTextChunks.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)));
-		return plainTextChunks.length;
+		return { done: false, deletedCount: plainTextChunks.length };
 	}
 
 	const textChunks = await ctx.db
@@ -2922,7 +2932,7 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 		.take(args.batchSize);
 	if (textChunks.length > 0) {
 		await Promise.all(textChunks.map((doc) => ctx.db.delete("files_text_chunks", doc._id)));
-		return textChunks.length;
+		return { done: false, deletedCount: textChunks.length };
 	}
 
 	const metadataDocs = await ctx.db
@@ -2931,7 +2941,7 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 		.take(args.batchSize);
 	if (metadataDocs.length > 0) {
 		await Promise.all(metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
-		return metadataDocs.length;
+		return { done: false, deletedCount: metadataDocs.length };
 	}
 
 	const assetIds = new Set<Id<"files_r2_assets">>();
@@ -2945,7 +2955,7 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 		});
 	}
 	await files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id });
-	return 1;
+	return { done: false, deletedCount: 1 };
 }
 
 /**
@@ -3041,10 +3051,8 @@ async function db_drain_user_finalization_batch(
 		return { done: false, deletedCount: ingestionReceipts.length };
 	}
 
-	const pendingUpdateCount = await db_drain_user_pending_updates_batch(ctx, args);
-	if (pendingUpdateCount > 0) {
-		return { done: false, deletedCount: pendingUpdateCount };
-	}
+	const pendingUpdates = await db_drain_user_pending_updates_batch(ctx, args);
+	if (!pendingUpdates.done) return pendingUpdates;
 
 	const lastSequenceDocs = await ctx.db
 		.query("files_pending_updates_last_sequence_saved")

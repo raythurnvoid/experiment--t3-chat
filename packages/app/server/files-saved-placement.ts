@@ -282,15 +282,46 @@ export async function files_saved_placement_db_get_path(
 	fixedView: files_saved_placement_FixedView,
 ) {
 	if (args.path === "/") return null;
-	const names = args.path.slice(1).split("/");
-	let parentId: Doc<"files_nodes">["parentId"] = "root";
-	let node: Doc<"files_nodes"> | null = null;
-	for (let index = 0; index < names.length; index++) {
-		node = await files_saved_placement_db_get_slot(db, { ...args, parentId, name: names[index]! }, fixedView);
-		if (!node || (index < names.length - 1 && node.kind !== "folder")) return null;
-		parentId = node._id;
+	const place = await db
+		.query("files_saved_places")
+		.withIndex("by_view_path_archive", (q) =>
+			q
+				.eq("cohortId", fixedView.cohortId)
+				.eq("view", fixedView.view)
+				.eq("path", args.path)
+				.eq("archiveOperationId", null),
+		)
+		.unique();
+	if (place) {
+		const node = await files_saved_placement_db_get_node(db, place.nodeId, fixedView);
+		if (
+			!node ||
+			place.organizationId !== args.organizationId ||
+			place.workspaceId !== args.workspaceId ||
+			node.organizationId !== args.organizationId ||
+			node.workspaceId !== args.workspaceId ||
+			node._creationTime !== place.nodeCreationTime ||
+			node.path !== args.path ||
+			node.archiveOperationId !== null
+		)
+			throw should_never_happen("Saved path owner does not match its place", {
+				placeId: place._id,
+				nodeId: place.nodeId,
+			});
+		return node;
 	}
-	return node;
+	// Reserved physical nodes stay out of this index, including a selected empty claim.
+	return await db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("moveCohortId", undefined)
+				.eq("path", args.path)
+				.eq("archiveOperationId", null),
+		)
+		.unique();
 }
 
 /**

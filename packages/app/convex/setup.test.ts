@@ -474,11 +474,13 @@ export async function test_db_hold_move_source(
 	scope: Parameters<typeof test_db_hold_move_slot>[1],
 	source: { kind: "saved"; id: Id<"files_nodes"> },
 ) {
+	const node = await ctx.db.get("files_nodes", source.id);
+	if (!node) throw new Error("Expected a saved Move source");
 	const cohortId = await test_db_hold_move_slot(ctx, scope);
 	await ctx.db.insert("files_move_source_reservations", {
 		cohortId,
 		source,
-		mode: "subtree",
+		mode: node.kind === "folder" ? "children" : "placement",
 		userId: null,
 		generation: 1,
 	});

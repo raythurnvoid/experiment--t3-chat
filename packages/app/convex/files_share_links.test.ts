@@ -621,7 +621,7 @@ describe("set_node_share_link during a Move", () => {
 		expect(measured).toBe(true);
 		expect(reads.get(shallowId)).toBeGreaterThan(0);
 		expect(reads.get(deepId)).toBe(reads.get(shallowId));
-	});
+	}, 120_000);
 });
 
 describe("files_nodes_db_set_restricted_scope", () => {

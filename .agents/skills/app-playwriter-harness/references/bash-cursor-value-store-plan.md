@@ -20,7 +20,7 @@ Missing, removed, malformed, and expired IDs use the existing Bash recovery erro
 | `remove_all({ before? })` | Delete values created at or before a fixed cutoff, defaulting to now. Delete five per batch and schedule the remaining batches. Values in later batches remain readable until their batch runs. Newer values survive. |
 | `cleanup_expired({ expiresAt? })` | Scan expiry metadata and delete expired values in batches of ten. Keep the first cutoff across scheduled batches. Return `{ deletedCount, done }` for each batch. |
 
-`value_store` holds `value: string`, `expiresAt: number | null`, `metadataId: Id | null`, and the owner `userId`, indexed by `by_user`. All fields are top-level. `userId` is optional only for rows written before it existed; `put` always sets it, and those old rows expire by TTL. A get reads only this doc, including its expiry.
+`value_store` holds `value: string`, `expiresAt: number | null`, `metadataId: Id | null`, and the owner `userId`, indexed by `by_user`. All fields are required and top-level. A get reads only this doc, including its expiry.
 
 Only expiring values have a companion `value_store_metadata` doc with `valueId` and the same `expiresAt`, indexed by `by_expiresAt`. Compute the deadline once, then insert both docs and link them in the same mutation. The payload is stored only in `value_store`. Permanent values have null expiry and null metadata ID. Reads trust the atomic writer and do not load metadata or compare the two copies.
 

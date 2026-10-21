@@ -114,6 +114,7 @@ import {
 } from "../server/files-saved-placement.ts";
 import {
 	files_move_reservations_db_check,
+	files_move_reservations_db_check_node_write,
 	files_move_reservations_db_enter_security,
 	files_move_reservations_db_find_blocker,
 } from "../server/files-move-reservations.ts";
@@ -1664,6 +1665,20 @@ export async function files_nodes_db_plan_private_node_by_path(
 
 	const tooLong = files_check_name_and_path_length({ names: segments.slice(missingFrom) });
 	if (tooLong._nay) return tooLong;
+	const busy = await files_move_reservations_db_check(ctx.db, {
+		parent,
+		...(parent.kind !== "private"
+			? {
+					slot: {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						parentId: parent.kind === "root" ? files_ROOT_ID : parent.id,
+						name: segments[missingFrom]!,
+					},
+				}
+			: {}),
+	});
+	if (busy._nay) return busy;
 
 	const missingCount = segments.length - missingFrom;
 	// Bound the ancestor checks and writes of one implicit-parent create.
@@ -3262,6 +3277,12 @@ export const discard_failed_upload_node = mutation({
 			return Result({ _yay: { removed: false } });
 		}
 		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
+		const busy = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: node._id },
+			pendingUpdate: null,
+			membership: true,
+		});
+		if (busy._nay) return busy;
 
 		// Cancel removes the unfinished upload even if it is locked. A lock stops new
 		// writes, not cleanup of an upload that never landed. Landed files return early above.
@@ -3603,7 +3624,9 @@ export const rename_node = mutation({
 
 /**
  * Give a child the path and restricted scope that its live parent implies. Its saved chunks and
- * metadata docs follow in a job. A move or restrict job calls this for each child after the parent is right. Returns whether it
+ * metadata docs follow in this mutation when there are few, else in a saved scope job
+ * (`files_pending_overlay_db_follow_saved_scope`). A restrict or restore job calls this for each child
+ * after the parent is right, and checks the transaction limits between children. Returns whether it
  * wrote anything. The caller advances the media validation version once after its writes.
  *
  * It never writes `archiveOperationId`. An archive job may stamp the same child, and a patch keeps
@@ -3659,23 +3682,11 @@ export async function files_nodes_db_rebuild_node(
 	}
 
 	await ctx.db.patch("files_nodes", node._id, fields);
-	if (node.path !== path) await files_pending_overlay_db_schedule_saved_scope(ctx, node);
+	if (node.path !== path) await files_pending_overlay_db_follow_saved_scope(ctx, node);
 	// Only the area changed. Metadata docs copy it for the catalog's area rows; text chunks have no
-	// area. A node without metadata needs no job.
-	else if (
-		node.restrictedScopeNodeId !== fields.restrictedScopeNodeId &&
-		(await ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_source_fileNode", (q) =>
-				q
-					.eq("organizationId", node.organizationId)
-					.eq("workspaceId", node.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", node._id),
-			)
-			.first())
-	)
-		await files_pending_overlay_db_schedule_saved_scope(ctx, node, { metadataOnly: true });
+	// area. A node without metadata docs writes nothing more.
+	else if (node.restrictedScopeNodeId !== fields.restrictedScopeNodeId)
+		await files_pending_overlay_db_follow_saved_scope(ctx, node, { metadataOnly: true });
 	return true;
 }
 

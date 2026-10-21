@@ -202,6 +202,17 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   it before and after the write. Each new step still checks current access and capability fences.
   Existing parent folders that keep their placement do not collect unrelated drafts. Changed
   sources still collect affected owners, including drafts inside a moved folder.
+  A saved item stays writable until Move captures that exact item. Capturing a saved folder
+  closes only its direct child and proposal membership. It does not lock its saved descendants.
+  Content edits to an existing, uncaptured draft can continue. Creating, removing, or moving a
+  proposal checks its physical parent and its old and new destination claims before any write.
+  This includes Save, Discard, expiry, Copy replacement, and account cleanup. A busy result keeps
+  the proposal and its children intact. Private folder holds still cover their private subtree;
+  that check stops when it reaches a saved parent.
+  Before owner collection finishes for a moved saved folder, the worker closes each saved folder
+  below it in indexed pages, including archived folders. It uses the existing work queue and
+  source holds. A short page is not the end unless the database says it is done. Stop and repair
+  drain those holds through the normal cohort cleanup.
   One node's empty owner ranges share a step through exact `first()` checks. Empty child ranges
   and empty metadata or plain-text side ranges use the same rule. Each step uses
   at most one paginated query. Any paginated page ends the step, including an empty cursor tail,

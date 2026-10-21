@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 
@@ -15,6 +15,7 @@ import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import {
 	test_convex,
+	test_finish_transfer_run,
 	test_db_hold_move_source,
 	test_fill_saved_file_with_max_chunks,
 	test_LIMITS_AT_75_PERCENT,
@@ -28,6 +29,7 @@ import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import * as pending_overlay from "../server/files-pending-overlay.ts";
 import {
 	files_NAME_MAX_LENGTH,
 	files_NEW_FOLDER_DEPTH_MAX,
@@ -2190,6 +2192,166 @@ describe("service upload targets", () => {
 		expect(await read_quota(t, fixture)).toBeNull();
 		// The URL window moved forward so the next PUT fits inside it.
 		expect(assets[0]!.uploadUrlExpiresAt).toBeGreaterThanOrEqual(assetBefore!.uploadUrlExpiresAt!);
+	});
+
+	test("pending retry waits for its Move capture without changing the accepted attempt", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
+		const destination = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.membershipId,
+			parentId: target.destinationNodeId,
+			path: "moved",
+		});
+		if (destination._nay) throw new Error(destination._nay.message);
+		const started = await asOwner.mutation(api.files_transfer.accept_input, {
+			membershipId: fixture.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [target.nodeId],
+			targetParentId: destination._yay.nodeId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(await asOwner.mutation(api.files_transfer.seal, {
+			membershipId: fixture.membershipId,
+			runId: started._yay.runId,
+		})).toEqual({ _yay: null });
+		const readAttempt = () => t.run(async (ctx) => ({
+			target: await ctx.db.get("plugin_service_storage_targets", target._id),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			attempts: await ctx.db.query("plugin_service_storage_attempts").collect(),
+			deletions: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+		}));
+		let checked = false;
+		await test_finish_transfer_run(asOwner, started._yay.runId, async () => {
+			if (checked) return;
+			const captured = await t.run((ctx) => ctx.db.query("files_move_source_reservations")
+				.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", target.nodeId)).first());
+			if (!captured) return;
+			const before = await readAttempt();
+			for (const path of [CREATE_TARGET_PATH, REMINT_PATH]) {
+				await expect(call({
+					t, path, bearer: sealed,
+					body: path === CREATE_TARGET_PATH ? target_body() : { idempotencyKey: "meeting-1", targetKey: "recording" },
+				}), "a captured retry returns a typed busy reply").resolves.toMatchObject({ status: 409 });
+			}
+			expect(await readAttempt(), "busy retries leave the accepted attempt intact").toEqual(before);
+			checked = true;
+		});
+		expect(checked, "the real Move captured the pending upload").toBe(true);
+		const resumed = await call({
+			t, path: REMINT_PATH, bearer: sealed,
+			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
+		});
+		expect(resumed.status, await resumed.clone().text()).toBe(200);
+		expect(await resumed.json()).toMatchObject({ state: "pending", nodeId: String(target.nodeId) });
+		expect((await read_targets(t))[0]?.assetId).not.toBe(target.assetId);
+	});
+
+	test.each(["before", "after", "oversized", "missing", "delete", "retire", "discard"] as const)("upload holds: %s", async (mode) => {
+		const t = test_convex({ transactionLimits: true });
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
+		if (!node || node.parentId === "root") throw new Error("Expected a meeting folder");
+		const parentId = node.parentId;
+		if (mode === "missing") await t.run((ctx) => ctx.db.delete("files_r2_assets", target.assetId));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
+		// Yield at each real transaction so both sides of capture can be tested.
+		const join = vi.spyOn(pending_overlay, "files_pending_overlay_db_can_join_step").mockResolvedValue(false);
+		onTestFinished(() => join.mockRestore());
+		const destination = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.membershipId, parentId: target.destinationNodeId, path: "moved",
+		});
+		if (destination._nay) throw new Error(destination._nay.message);
+		const started = await asOwner.mutation(api.files_transfer.accept_input, {
+			membershipId: fixture.membershipId, requestId: crypto.randomUUID(), kind: "move",
+			expectedSourceCount: 1, sourceIds: [parentId], targetParentId: destination._yay.nodeId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(await asOwner.mutation(api.files_transfer.seal, {
+			membershipId: fixture.membershipId, runId: started._yay.runId,
+		})).toEqual({ _yay: null });
+		const actualBytes = mode === "oversized" ? 5 * MIB : 3 * MIB;
+		const event = {
+			assetId: target.assetId,
+			r2Key: `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${target.assetId}`,
+			size: actualBytes, etag: "etag-service-upload", eventId: `service-upload-test-${String(target._id)}`,
+		};
+		const cleanupNow = Date.now() + 9 * 24 * 60 * 60 * 1000;
+		const snapshot = () => t.run(async (ctx) => ({
+			target: await ctx.db.get("plugin_service_storage_targets", target._id),
+			asset: await ctx.db.get("files_r2_assets", target.assetId),
+			node: await ctx.db.get("files_nodes", target.nodeId),
+			deletions: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+		}));
+		let checked = false;
+		await test_finish_transfer_run(asOwner, started._yay.runId, async () => {
+			if (checked) return;
+			const holds = await t.run(async (ctx) => ({
+				parent: await ctx.db.query("files_move_source_reservations").withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", parentId)).first(),
+				child: await ctx.db.query("files_move_source_reservations").withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", node._id)).first(),
+			}));
+			if (holds.parent?.mode !== "children" || Boolean(holds.child) !== (mode === "after" || mode === "retire")) return;
+			const before = await snapshot();
+			if (mode === "missing" || mode === "delete") {
+				for (const path of mode === "missing" ? [CREATE_TARGET_PATH, REMINT_PATH, FINALIZE_PATH] : [DELETE_PATH]) {
+					await expect(call({ t, path, bearer: sealed, body: path === CREATE_TARGET_PATH ? target_body() : { idempotencyKey: "meeting-1", targetKey: "recording" } }), "membership changes return typed busy").resolves.toMatchObject({ status: 409 });
+				}
+				expect(await snapshot(), "busy membership changes write nothing").toEqual(before);
+			} else if (mode === "discard") {
+				await expect(asOwner.mutation(api.files_nodes.discard_failed_upload_node, {
+					membershipId: fixture.membershipId, nodeId: target.nodeId,
+				}), "failed-upload discard returns typed busy").resolves.toMatchObject({ _nay: { name: "move_busy" } });
+				expect(await snapshot(), "busy discard writes nothing").toEqual(before);
+			} else if (mode === "retire") {
+				await expect(t.mutation(internal.r2.retire_missing_upload, { assetId: target.assetId, _test_now: cleanupNow }), "cleanup waits without throwing").resolves.toBeNull();
+				expect(await snapshot(), "busy retirement writes nothing").toEqual(before);
+			} else {
+				await expect(t.mutation(internal.r2.process_uploaded_asset_event, event), "accepted completion returns normally").resolves.toEqual({ _yay: null });
+				const waiters = await t.run((ctx) => ctx.db.query("files_move_waiters").collect());
+				if (mode === "before") {
+					expect(waiters, "valid completion does not inherit the parent hold").toHaveLength(0);
+					expect((await snapshot()).asset).toMatchObject({ size: actualBytes, r2Key: event.r2Key });
+				} else {
+					expect(waiters, "blocked completion keeps its event bytes").toEqual([expect.objectContaining({ worker: { kind: "upload", id: target.assetId, resume: { kind: "event", r2Key: event.r2Key, size: actualBytes, etag: event.etag, eventId: event.eventId } } })]);
+					expect(await snapshot(), "paused completion writes no content or deletion").toEqual(before);
+					expect(await read_quota(t, fixture)).toBeNull();
+				}
+			}
+			checked = true;
+		}, { stepwise: true });
+		expect(checked, "the real Move reached the requested hold boundary").toBe(true);
+		if (mode === "missing" || mode === "delete") {
+			const response = await call({ t, path: mode === "missing" ? FINALIZE_PATH : DELETE_PATH, bearer: sealed, body: { idempotencyKey: "meeting-1", targetKey: "recording" } });
+			expect(response.status, await response.clone().text()).toBe(200);
+			expect((await snapshot()).node).toBeNull();
+		} else if (mode === "discard") {
+			expect(await asOwner.mutation(api.files_nodes.discard_failed_upload_node, {
+				membershipId: fixture.membershipId, nodeId: target.nodeId,
+			})).toEqual({ _yay: { removed: true } });
+		} else if (mode === "retire") {
+			await t.mutation(internal.r2.retire_missing_upload, { assetId: target.assetId, _test_now: cleanupNow });
+			expect((await snapshot()).asset).toMatchObject({ uploadRetiredAt: cleanupNow });
+		} else {
+			if (mode !== "before") {
+				const scheduled = await t.run(async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name === "r2:process_uploaded_asset_event"));
+				expect(scheduled.map((job) => job.args), "wake preserves the complete event").toEqual([[event]]);
+			}
+			await t.mutation(internal.r2.process_uploaded_asset_event, event);
+			await t.mutation(internal.r2.process_uploaded_asset_event, event);
+			expect((await read_quota(t, fixture))?.usedCount ?? 0, "replay charges actual bytes once").toBe(mode === "oversized" ? 0 : actualBytes);
+			const after = await snapshot();
+			expect(after.target?.state).toBe(mode === "oversized" ? "released" : "committed");
+			if (mode === "oversized") expect(after.node).toBeNull();
+			else expect(after.node).toMatchObject({ contentByteSize: actualBytes, path: "/meetings/moved/meeting-1/recording.mp4" });
+		}
 	});
 
 	test("remint sets the file byte size to the new attempt's declared size", async () => {

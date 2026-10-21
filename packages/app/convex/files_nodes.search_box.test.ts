@@ -264,6 +264,15 @@ describe("search box doors", () => {
 				now: Date.now(),
 			}),
 		);
+		// Nine more keys add 18 docs (a field doc and a value doc each), more than 16, so the scope op leaves
+		// them to a saved scope job. A file with fewer docs gets the new area in the scope op itself, with no
+		// lag.
+		const written = await seeded.asOwner.mutation(api.files_metadata.set_entries, {
+			membershipId: seeded.db.membershipId,
+			fileNodeId: seeded.openTaskId,
+			metadataYaml: Array.from({ length: 9 }, (_, index) => `extra${index}: x`).join("\n"),
+		});
+		if (written._nay) throw new Error(written._nay.message);
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
 			membershipId: seeded.db.membershipId,

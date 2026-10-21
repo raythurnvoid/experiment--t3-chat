@@ -1,10 +1,11 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
-import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import {
 	test_convex as test_convex_base,
+	test_finish_transfer_run,
 	test_get_file_yjs_pointers,
 	test_mocks,
 	test_mocks_fill_db_with,
@@ -43,6 +44,7 @@ import {
 } from "../shared/files-metadata.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
+import * as pending_overlay from "../server/files-pending-overlay.ts";
 
 vi.mock("ai", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("ai")>();
@@ -2586,6 +2588,56 @@ describe("r2 asset content", () => {
 
 describe("cleanup_expired_unfinalized_assets", () => {
 	const DAY_MS = 24 * 60 * 60 * 1000;
+
+	test.each(["retire", "oversized"] as const)("ordinary upload waits for Move before %s", async (mode) => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const parent = await asUser.mutation(api.files_nodes.create_folder_node, { membershipId: db.membershipId, parentId: "root", path: "uploads" });
+		const destination = await asUser.mutation(api.files_nodes.create_folder_node, { membershipId: db.membershipId, parentId: "root", path: "moved" });
+		if (parent._nay || destination._nay) throw new Error("Expected folders");
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId, parentId: parent._yay.nodeId, filename: "file.png", contentType: "image/png", size: 1024,
+		});
+		if (upload._nay) throw new Error(upload._nay.message);
+		const { nodeId, assetId } = upload._yay;
+		const join = vi.spyOn(pending_overlay, "files_pending_overlay_db_can_join_step").mockResolvedValue(false);
+		onTestFinished(() => join.mockRestore());
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId, requestId: crypto.randomUUID(), kind: "move", expectedSourceCount: 1,
+			sourceIds: [parent._yay.nodeId], targetParentId: destination._yay.nodeId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId })).toEqual({ _yay: null });
+		const event = { assetId, r2Key: expected_asset_key({ ...db, assetId }), size: 2048, eventId: "ordinary-oversized-move" };
+		const cleanupNow = Date.now() + 9 * DAY_MS;
+		const snapshot = () => t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId), asset: await ctx.db.get("files_r2_assets", assetId),
+			deletions: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+		}));
+		let checked = false;
+		await test_finish_transfer_run(asUser, started._yay.runId, async () => {
+			if (checked) return;
+			const holds = await t.run(async (ctx) => ({
+				parent: await ctx.db.query("files_move_source_reservations").withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", parent._yay.nodeId)).first(),
+				child: await ctx.db.query("files_move_source_reservations").withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", nodeId)).first(),
+			}));
+			if (holds.parent?.mode !== "children" || holds.child) return;
+			const before = await snapshot();
+			if (mode === "retire") await expect(t.mutation(internal.r2.retire_missing_upload, { assetId, _test_now: cleanupNow }), "missing ordinary upload waits without throwing").resolves.toBeNull();
+			else {
+				await expect(t.mutation(internal.r2.process_uploaded_asset_event, event), "oversized ordinary upload waits without throwing").resolves.toEqual({ _yay: null });
+				expect(await t.run((ctx) => ctx.db.query("files_move_waiters").collect())).toHaveLength(1);
+			}
+			expect(await snapshot(), "parent hold preserves the unfinished upload").toEqual(before);
+			checked = true;
+		}, { stepwise: true });
+		expect(checked, "native Move reached the parent-only hold").toBe(true);
+		if (mode === "retire") await t.mutation(internal.r2.retire_missing_upload, { assetId, _test_now: cleanupNow });
+		else await t.mutation(internal.r2.process_uploaded_asset_event, event);
+		expect((await snapshot()).node).toBeNull();
+	});
 
 	async function seed_unfinalized_asset(
 		t: ReturnType<typeof test_convex>,

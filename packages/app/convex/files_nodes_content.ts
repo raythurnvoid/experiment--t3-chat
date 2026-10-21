@@ -138,7 +138,10 @@ import {
 	files_pending_update_db_release_replacement_asset,
 } from "./files_pending_updates_db.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
-import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
+import {
+	files_move_reservations_db_pause_worker,
+	files_move_reservations_db_check_node_write,
+} from "../server/files-move-reservations.ts";
 import {
 	r2,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
@@ -161,6 +164,7 @@ import { files_nodes_db_require_user_writable } from "../server/files-write-poli
 import {
 	files_transfer_db_complete_copy_item,
 	files_transfer_db_fail_copy_item,
+	files_transfer_db_wait_copy_item,
 	files_transfer_db_prepare_copy_item,
 	files_transfer_db_get_entry_version,
 	files_transfer_source_versions_equal,
@@ -2713,6 +2717,15 @@ export const finalize_transfer_file_copy = internalMutation({
 			};
 			const target = { kind: "saved" as const, id: existing.node._id };
 			const previous = existing.pendingUpdate;
+			const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+				target,
+				pendingUpdate: previous,
+				membership: !previous,
+			});
+			if (writable._nay) {
+				await files_transfer_db_wait_copy_item(ctx, { run, item });
+				return Result({ _yay: null });
+			}
 			const revision = (previous?.revision ?? 0) + 1;
 			const threadId = run.origin.kind === "agent" ? run.origin.threadId : undefined;
 			const threadIds =
@@ -6249,6 +6262,20 @@ async function db_install_file_content_replacement(
 	) {
 		return Result({ _nay: { message: "Replacement assets do not match" } });
 	}
+	const pendingUpdates = await ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
+		.collect();
+	// Check every affected owner before changing assets or collaboration history.
+	for (const pendingUpdate of pendingUpdates) {
+		if (!files_pending_update_content_of(pendingUpdate)) continue;
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: pendingUpdate.target,
+			pendingUpdate,
+			membership: args.pendingContent === "drop" && !pendingUpdate.pendingMove && !pendingUpdate.pendingArchive,
+		});
+		if (writable._nay) return writable;
+	}
 
 	// A new document starts at sequence zero. Retire the old cleanup before publishing it.
 	if (
@@ -6777,6 +6804,13 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 	if (!check.hasCredits) {
 		return Result({ _nay: { message: "Insufficient funds" } });
 	}
+
+	const proposalWritable = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: pendingUpdate.target,
+		pendingUpdate,
+		membership: !pendingUpdate.pendingMove,
+	});
+	if (proposalWritable._nay) return proposalWritable;
 
 	const installed = await db_install_file_content_replacement(ctx, {
 		membership,

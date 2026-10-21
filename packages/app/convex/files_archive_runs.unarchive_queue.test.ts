@@ -171,7 +171,10 @@ describe("unarchive_nodes", () => {
 			path: "/d0/f000.md",
 			treePath: "/d0/f000.md",
 		});
-		await expect_consistent(f);
+		const state = await expect_consistent(f);
+		// A small item copies its new path onto its side docs in the step, with no saved scope job. So the
+		// check above compared its side docs too.
+		expect(state.savedScopeJobs.map((job) => job.key)).not.toContain(tree.fileIds[0]);
 	});
 
 	test("a folder lands even when an item archived on its own inside has many side docs", async () => {

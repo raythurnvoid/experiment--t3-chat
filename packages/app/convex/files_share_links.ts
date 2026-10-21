@@ -970,7 +970,8 @@ async function db_approve_media(
 		!(await db_is_workspace_live(ctx, link))
 	)
 		return Result({ _yay: { shared: false } });
-	// Inserting media is an edit, so a read-only document refuses it. A manager's review is not an edit.
+	// Inserting media is an edit, so a read-only document with a live link refuses it. With no link
+	// nothing is approved, so the answer stays `shared: false`. A manager's review is not an edit.
 	if (!args.review) {
 		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: userAuth.id });
 		if (writable._nay) return writable;

@@ -121,6 +121,7 @@ The table describes a node whose policy refuses the current writer. ACL still ap
 | Share or change policy | Require management permission separately |
 | General comment, reply, resolve, or reopen | Allow with file `content.write`; these do not change the file |
 | Create an anchored comment | Refuse; this changes a Yjs mark |
+| Approve inserted media for the public link | Refuse; a manager's review in Sharing still works |
 | Discard a whole pending proposal | Allow; retire owned private work and keep saved nodes |
 | Accept, save, or rebase pending work | Refuse |
 | Finish an already accepted upload | Allow; a later lock stops new writes, not this one |
@@ -238,6 +239,9 @@ of not counting locked items.
   policy before its first write. Both collaboration toggles require content write, not
   policy-management permission. Accepted upload finish (R2 publish, text conversion) is not
   a new write: it always completes, even after a later lock.
+  A Move hold is separate from write policy. Completion waits while the exact file is captured,
+  then resumes with the accepted bytes. A saved parent's child hold alone does not block a size
+  update. Cleanup that removes a placeholder must also wait for that parent's child hold.
 - Rename and move check the named item and its immediate parent before any write. Archive, unarchive,
   replace, and delete check every removed or replaced item. Archived descendants use their real parent
   links. Equal paths in separate archived and active trees are not the same node. A refusal about a

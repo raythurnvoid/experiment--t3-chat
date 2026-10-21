@@ -152,29 +152,34 @@ async function cleanup(f: Fixture, mode: "finish" | "abort") {
 	throw new Error("Owner cleanup did not finish");
 }
 
-async function add_owners(f: Fixture, count: number) {
-	for (let index = 0; index < count; index++) {
-		const home = await f.t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
-		);
-		vi.setSystemTime(Date.now() + 10_000);
-		expect(
-			await f.asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				userIdToAdd: home.userId,
-			}),
-		).toEqual({ _yay: null });
-		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: home.userId,
-			target: { kind: "saved", id: f.nodeId },
-			destParent: { kind: "saved", id: f.parentId },
-			destName: `owner-${index}.txt`,
-		});
-		expect(moved._nay).toBeUndefined();
-	}
+async function fixture_with_owners(count: number) {
+	return await fixture({
+		beforeMove: async (f) => {
+			const asUser = f.t.withIdentity({ issuer: "https://clerk.test", external_id: f.db.userId });
+			for (let index = 0; index < count; index++) {
+				const home = await f.t.run((ctx) =>
+					test_mocks_fill_db_with.membership(ctx, { organizationName: "personal", workspaceName: "home" }),
+				);
+				vi.setSystemTime(Date.now() + 10_000);
+				expect(
+					await asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						userIdToAdd: home.userId,
+					}),
+				).toEqual({ _yay: null });
+				const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					userId: home.userId,
+					target: { kind: "saved", id: f.nodeId },
+					destParent: { kind: "saved", id: f.parentId },
+					destName: `owner-${index}.txt`,
+				});
+				expect(moved._nay).toBeUndefined();
+			}
+		},
+	});
 }
 
 async function private_folder(f: Fixture, name: string, parent: files_PendingParent = { kind: "root" }) {
@@ -1448,8 +1453,7 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 }, 600_000);
 
 test("collects and stages several native owner pages once, then keeps chosen IDs during cleanup", async () => {
-	const f = await fixture();
-	await add_owners(f, 12);
+	const f = await fixture_with_owners(12);
 	await collect(f);
 	const read_work = () =>
 		f.t.run((ctx) =>
@@ -1497,8 +1501,7 @@ test("collects and stages several native owner pages once, then keeps chosen IDs
 });
 
 test.each([5, 6, 7])("resumes saved owner cleanup phase %i before the new typed cleanup", async (startPhase) => {
-	const f = await fixture();
-	if (startPhase === 7) await add_owners(f, 1);
+	const f = await fixture_with_owners(startPhase === 7 ? 1 : 0);
 	await collect(f);
 	await stage(f);
 	const mode = startPhase === 6 ? "abort" : "finish";
@@ -1866,8 +1869,7 @@ test.each([8, 9, 13])(
 );
 
 test("source marker staging does not flush native crowded owner copies", async () => {
-	const f = await fixture();
-	await add_owners(f, 12);
+	const f = await fixture_with_owners(12);
 	await f.t.run((ctx) =>
 		ctx.db.insert("files_move_source_reservations", {
 			cohortId: f.cohortId,
@@ -1908,8 +1910,7 @@ test("source marker staging does not flush native crowded owner copies", async (
 });
 
 test("owner collection rejects stale attempts and stale page replies", async () => {
-	const f = await fixture();
-	await add_owners(f, 1);
+	const f = await fixture_with_owners(1);
 	await phase(f, "owners_collect");
 	const args = { ...step_args(f), nodeRecordId: f.recordId, cursor: null };
 	const staleAttempt = { ...args, attemptFence: args.attemptFence - 1 };

@@ -584,9 +584,10 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   Convex, so a page of them is not a real read bound. A long value still counts in its key's string kind.
   Drafts, global and plugin volume workspaces never count. A restrict or an unrestrict patches the
   flag on the node's own field docs (`files_nodes_db_set_restricted_scope`), so its keys move between
-  `parent` and `parent_restricted`. It also patches the area on the node's docs, and the saved scope job
-  patches it on the docs of the items inside, so their `area_*` counts move to the new area. The `key`
-  and `value` rows do not change. A grant change writes nothing here.
+  `parent` and `parent_restricted`. It also patches the area on the node's docs. The scope job patches it
+  on the docs of each item inside when it reaches the item, or starts a saved scope job for an item with
+  more than 16 metadata docs. So their `area_*` counts move to the new area. The `key` and `value` rows
+  do not change. A grant change writes nothing here.
 - **Move views.** A doc tagged with a Move cohort's `moveView` counts in the rows of that view, like share
   rows. Readers merge the normal rows with the visible view's rows, so a key never disappears or doubles
   while a Move stages, publishes, cleans up or aborts. Publication writes nothing here.
@@ -599,7 +600,11 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   No saver patches a shared doc, so parallel saves of the same key do not conflict.
 - **Compactor** (`compact_metadata_catalog` in `convex/files_pending_overlay.ts`). Each run gets its marker
   by id (a missing marker ends the chain), applies up to 500 deltas older than 5 seconds to their rows,
-  deletes them, and schedules itself again while any delta is left; otherwise it deletes the marker. Drift
+  deletes them, and schedules itself again while any delta is left. A run that applied deltas also
+  schedules one more run, so only a run with nothing to apply and no delta left deletes the marker. A
+  scope job or an archive job inserts deltas in steps a few seconds apart, and each step reads the
+  marker. If a run between two steps deleted it, the running step would conflict and do all its work
+  again. A step that runs past that one more run can still conflict, but rarely. Drift
   (a count below 0) never throws: it clamps to 0 and logs one `files_metadata_catalog drift` line per run,
   with no value. Runs apply deltas in creation order and a doc is added before it is removed, so only a
   count below 0 is drift. A key row lives until its `count` and all its `kindCounts` are 0. A paged writer
@@ -632,9 +637,10 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   `key`, `value` and `parent_restricted`; a member reads the `area_*` rows of one area they can open; a
   member who reads a folder reads its `parent` rows. See "Suggestions".
 - **Late is fine.** After a restrict, an item inside keeps its old access until the scope job reaches it
-  (`AGENTS.md`). Its docs, and so its area rows, follow a few seconds later: the saved scope job, then
-  the compactor. Until then the open area still suggests the moved values. The catalog has counts, not
-  rows, so it cannot check each doc's node like a search can.
+  (`AGENTS.md`). Its docs, and so its area rows, follow a few seconds later: the scope job (or the
+  item's saved scope job, when it has many docs), then the compactor. Until then the open area still
+  suggests the moved values. The catalog has counts, not rows, so it cannot check each doc's node like a
+  search can.
 
 # Suggestions
 
@@ -707,7 +713,7 @@ and values from the catalog. Each read is one index range, so it costs the same 
   boundary also resets when the request changes. The typed text stays.
 - **What a member does not get.** Values of other restricted areas they can open show only inside a
   folder of that area, not at the root; they can still type them. After a restrict, the open area keeps
-  suggesting the moved values until the saved scope job and the compactor run ("Late is fine" in
+  suggesting the moved values until the scope job and the compactor reach them ("Late is fine" in
   "Catalog"). A search engine could merge every area a caller can open; then delete the catalog
   tables, the leaf module, the overlay hook, the compactor, its cron, the rebuild and check tools and
   the data deletion pass. "Starts with" can become "contains" again.

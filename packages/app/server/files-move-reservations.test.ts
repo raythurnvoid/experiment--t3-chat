@@ -123,10 +123,10 @@ describe("Move write reservations", () => {
 			expect(await files_move_reservations_db_get_source(guarded.db, source)).toEqual(
 				await ctx.db.get("files_move_source_reservations", reservationId),
 			);
-			await guarded.db.patch("files_move_source_reservations", reservationId, { generation: 2, mode: "subtree" });
+			await guarded.db.patch("files_move_source_reservations", reservationId, { generation: 2, mode: "children" });
 			expect(await files_move_reservations_db_get_source(guarded.db, source)).toMatchObject({
 				generation: 2,
-				mode: "subtree",
+				mode: "children",
 			});
 			await guarded.db.replace("files_move_source_reservations", reservationId, { ...value, generation: 3 });
 			expect(await files_move_reservations_db_get_source(guarded.db, source)).toMatchObject({
@@ -140,17 +140,19 @@ describe("Move write reservations", () => {
 			ctx.db.insert("files_move_source_reservations", {
 				cohortId: f.cohortId,
 				source,
-				mode: "subtree",
+				mode: "children",
 				userId: null,
 				generation: 4,
 			}),
 		);
 		expect(
-			await f.t.run((ctx) => files_move_reservations_db_find_blocker(files_move_reservations_db_wrap(ctx).db, { source })),
+			await f.t.run((ctx) =>
+				files_move_reservations_db_find_blocker(files_move_reservations_db_wrap(ctx).db, { source }),
+			),
 		).toBe(f.cohortId);
 	});
 
-	test("protects descendants only when their ancestor reserves its subtree", async () => {
+	test("a saved folder hold closes direct membership but leaves uncaptured content writable", async () => {
 		const f = await fixture();
 		const reservationId = await f.t.run((ctx) =>
 			ctx.db.insert("files_move_source_reservations", {
@@ -179,8 +181,78 @@ describe("Move write reservations", () => {
 		const read = () =>
 			f.t.run((ctx) => files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: childId } }));
 		expect(await read()).toBeNull();
-		await f.t.run((ctx) => ctx.db.patch("files_move_source_reservations", reservationId, { mode: "subtree" }));
-		expect(await read(), "a reserved ancestor blocks a child write").toBe(f.cohortId);
+		await f.t.run((ctx) => ctx.db.patch("files_move_source_reservations", reservationId, { mode: "children" }));
+		expect(await read(), "an uncaptured child has no inherited content hold").toBeNull();
+		expect(
+			await f.t.run((ctx) =>
+				files_move_reservations_db_find_blocker(ctx.db, {
+					parent: { kind: "saved", id: f.parentId },
+				}),
+			),
+			"the direct parent closes membership",
+		).toBe(f.cohortId);
+		await f.t.run(async (ctx) => {
+			const { db } = files_move_reservations_db_wrap(ctx);
+			await db.patch("files_nodes", childId, { contentByteSize: 7 });
+		});
+		await expect(
+			f.t.run(async (ctx) => {
+				const { db } = files_move_reservations_db_wrap(ctx);
+				await db.patch("files_nodes", childId, { name: "renamed" });
+			}),
+		).rejects.toThrow("This item is being moved");
+	});
+
+	test("private subtree holds stop at the saved boundary", async () => {
+		let privateId: Id<"files_pending_nodes"> | undefined;
+		let childId: Id<"files_pending_nodes"> | undefined;
+		const f = await fixture({
+			beforeMove: async ({ t, db }) => {
+				const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					kind: "folder",
+					path: "/target/private/child",
+				});
+				if (created._nay || !created._yay.pendingUpdateId) throw new Error("Expected a private folder");
+				await t.run(async (ctx) => {
+					const proposal = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId!);
+					if (proposal?.target.kind !== "private") throw new Error("Expected a private target");
+					childId = proposal.target.id;
+					const child = await ctx.db.get("files_pending_nodes", childId);
+					if (child?.parent.kind !== "private") throw new Error("Expected the private parent");
+					privateId = child.parent.id;
+				});
+			},
+		});
+		if (!privateId || !childId) throw new Error("Expected both private folders");
+		const source = { kind: "private" as const, id: childId };
+		await f.t.run(async (ctx) => {
+			const { db } = files_move_reservations_db_wrap(ctx);
+			await db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: f.parentId },
+				mode: "children",
+				userId: null,
+				generation: 1,
+			});
+			expect(
+				await files_move_reservations_db_find_blocker(db, { source }),
+				"a saved hold does not pass through an uncaptured private folder",
+			).toBeNull();
+			await db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "private", id: privateId! },
+				mode: "subtree",
+				userId: f.db.userId,
+				generation: 1,
+			});
+			expect(
+				await files_move_reservations_db_find_blocker(db, { source }),
+				"a private hold still covers private descendants",
+			).toBe(f.cohortId);
+		});
 	});
 
 	test("keeps staging narrow and rejects old fences before a physical source write", async () => {
@@ -1083,6 +1155,55 @@ describe("Move write reservations", () => {
 		expect(cost.ranges, "index ranges of 896 deletes and 896 inserts during a Move").toBeLessThan(16);
 	});
 
+	test("node reads reuse a value only until the next write", async () => {
+		const f = await fixture({ normalPaths: ["/free.txt"] });
+		const nodeId = f.normalNodes.get("/free.txt")!;
+		await f.t.run(async (ctx) => {
+			const { db } = files_move_reservations_db_wrap(ctx);
+			const before = await ctx.meta.getTransactionMetrics();
+			expect(await db.get("files_nodes", nodeId)).not.toBeNull();
+			expect(await db.get("files_nodes", nodeId)).not.toBeNull();
+			expect((await ctx.meta.getTransactionMetrics()).databaseQueries.used - before.databaseQueries.used).toBe(1);
+			await db.patch("files_nodes", nodeId, { contentByteSize: 17 });
+			expect((await db.get("files_nodes", nodeId))?.contentByteSize, "a patch clears the old node").toBe(17);
+			const { _id, _creationTime, ...node } = (await db.get("files_nodes", nodeId))!;
+			await db.replace("files_nodes", nodeId, { ...node, contentByteSize: 23 });
+			expect((await db.get("files_nodes", nodeId))?.contentByteSize, "a replace clears the old node").toBe(23);
+			await db.delete("files_nodes", nodeId);
+			expect(await db.get("files_nodes", nodeId), "a delete clears the old node").toBeNull();
+		});
+	});
+
+	test("a child mutation clears private node reads", async () => {
+		const f = await fixture();
+		const scope = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
+		const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+			...scope,
+			path: "/draft",
+			kind: "folder",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const target = created._yay.target;
+		if (target.kind !== "private") throw new Error("Expected a private target");
+		await f.t.run(async (ctx) => {
+			const guarded = files_move_reservations_db_wrap(ctx);
+			expect((await guarded.db.get("files_pending_nodes", target.id))?.name).toBe("draft");
+			expect(
+				(
+					await guarded.runMutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+						...scope,
+						target,
+						destParent: { kind: "root" },
+						destName: "renamed.txt",
+					})
+				)._nay,
+			).toBeUndefined();
+			expect((await guarded.db.get("files_pending_nodes", target.id))?.name, "child writes stay visible").toBe(
+				"renamed.txt",
+			);
+		});
+	});
+
 	test("a reservation added later in the same mutation still blocks a side write", async () => {
 		const f = await fixture();
 		const fileId = await f.t.run((ctx) =>
@@ -1122,8 +1243,8 @@ describe("Move write reservations", () => {
 				written.push("metadata.a");
 				await guarded.db.insert("files_move_source_reservations", {
 					cohortId: f.cohortId,
-					source: { kind: "saved", id: f.parentId },
-					mode: "subtree",
+					source: { kind: "saved", id: fileId },
+					mode: "placement",
 					userId: null,
 					generation: 1,
 				});
@@ -1134,7 +1255,7 @@ describe("Move write reservations", () => {
 		expect(written, "only the write before the reservation passes").toEqual(["metadata.a"]);
 	});
 
-	test("a busy check reads the free Move slot only, and a Move reads each parent once per mutation", async () => {
+	test("a saved parent check has a fixed cost at any depth and sees new holds", async () => {
 		const f = await fixture();
 		// A chain of 64 folders below the fixture's target folder, outside the Move.
 		const chain = await f.t.run(async (ctx) => {
@@ -1181,7 +1302,7 @@ describe("Move write reservations", () => {
 			const { db } = files_move_reservations_db_wrap(ctx);
 			const first = await ranges(ctx, db, create("x"));
 			expect(first.blocker).toBeNull();
-			expect(first.ranges, "the first create walks the 65 parents").toBeGreaterThan(65);
+			expect(first.ranges, "the first create checks one parent and slot at depth 65").toBeLessThanOrEqual(4);
 			const second = await ranges(ctx, db, create("y"));
 			expect(second, "the second create in the same folder reads no parent again").toEqual({
 				blocker: null,
@@ -1190,8 +1311,8 @@ describe("Move write reservations", () => {
 			// A new reservation drops the kept answers, so a Move that starts here is seen at once.
 			await db.insert("files_move_source_reservations", {
 				cohortId: f.cohortId,
-				source: { kind: "saved", id: chain[10]! },
-				mode: "subtree",
+				source: { kind: "saved", id: deepId },
+				mode: "children",
 				userId: null,
 				generation: 1,
 			});
@@ -1227,13 +1348,13 @@ describe("Move write reservations", () => {
 		});
 	});
 
-	test("a Move's own parent change drops the kept parent answers in the same mutation", async () => {
+	test("moving a saved folder below a held parent does not extend that hold to grandchildren", async () => {
 		const f = await fixture();
 		const outsideId = await f.t.run(async (ctx) => {
 			await ctx.db.insert("files_move_source_reservations", {
 				cohortId: f.cohortId,
 				source: { kind: "saved", id: f.parentId },
-				mode: "subtree",
+				mode: "children",
 				userId: null,
 				generation: 1,
 			});
@@ -1273,12 +1394,12 @@ describe("Move write reservations", () => {
 				}),
 			).toEqual({ _yay: null });
 			expect(await files_move_reservations_db_find_blocker(guarded.db, create)).toBeNull();
-			// The Move itself puts the folder inside its source, so a create there must wait from now on.
+			// The saved parent holds its direct membership, not the folder's children.
 			await guarded.db.patch("files_nodes", outsideId, { parentId: f.parentId });
 			expect(
 				await files_move_reservations_db_find_blocker(guarded.db, create),
 				"a create in the folder after its parent changed",
-			).toBe(f.cohortId);
+			).toBeNull();
 		});
 	});
 

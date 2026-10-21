@@ -34,7 +34,6 @@ import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_path,
 	files_saved_placement_db_get_sequence,
-	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_view,
 } from "./files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "./files-saved-content.ts";
@@ -368,10 +367,8 @@ export async function files_db_get_visible_node_by_path(
 }
 
 /**
- * Path lookups for one request, with the same rules as `files_db_get_visible_node_by_path`. Without a
- * Move, a path is one index read. While a Move holds the workspace, or a move op rewrites stored paths,
- * a path is found by name from the root. Then every folder on the way is kept, so the paths of one
- * request read each folder only once.
+ * Path lookups for one request. A Move pins its selected view and uses exact path indexes.
+ * A move op still walks names while it rewrites stored paths.
  */
 export async function files_db_create_path_lookups(
 	ctx: QueryCtx | MutationCtx,
@@ -402,7 +399,6 @@ export async function files_db_create_path_lookups(
 					)
 					.first()
 			: null;
-	const walk = fixedView !== undefined || moveOp !== null;
 	const nodes = new Map<string, Doc<"files_nodes"> | null>();
 	// The folders the request names: each found parent and each new folder.
 	const named = new Set<string>();
@@ -418,20 +414,18 @@ export async function files_db_create_path_lookups(
 			path += `/${name}`;
 			let node = nodes.get(path);
 			if (node === undefined) {
-				node = fixedView
-					? await files_saved_placement_db_get_slot(ctx.db, { organizationId, workspaceId, parentId, name }, fixedView)
-					: await ctx.db
-							.query("files_nodes")
-							.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-								q
-									.eq("organizationId", organizationId)
-									.eq("workspaceId", workspaceId)
-									.eq("moveCohortId", undefined)
-									.eq("parentId", parentId)
-									.eq("name", name)
-									.eq("archiveOperationId", null),
-							)
-							.first();
+				node = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+						q
+							.eq("organizationId", organizationId)
+							.eq("workspaceId", workspaceId)
+							.eq("moveCohortId", undefined)
+							.eq("parentId", parentId)
+							.eq("name", name)
+							.eq("archiveOperationId", null),
+					)
+					.first();
 				nodes.set(path, node);
 			}
 			if (!node) break;
@@ -445,24 +439,27 @@ export async function files_db_create_path_lookups(
 	 * Look up one path.
 	 */
 	async function get(path: string) {
-		if (walk) {
+		if (path === "/") return null;
+		if (moveOp) {
 			const names = path.slice(1).split("/");
 			const found = await walk_names(names, names.length);
 			return found.depth === names.length ? found.node : null;
 		}
 		let node = nodes.get(path);
 		if (node === undefined) {
-			node = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("path", path)
-						.eq("archiveOperationId", null),
-				)
-				.first();
+			node = fixedView
+				? await files_saved_placement_db_get_path(ctx.db, { organizationId, workspaceId, path }, fixedView)
+				: await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+							q
+								.eq("organizationId", organizationId)
+								.eq("workspaceId", workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("path", path)
+								.eq("archiveOperationId", null),
+						)
+						.first();
 			nodes.set(path, node);
 		}
 		return node;
@@ -476,7 +473,27 @@ export async function files_db_create_path_lookups(
 	 */
 	async function find_existing_parent(path: string) {
 		const segments = path_extract_segments_from(path);
-		if (walk) return await walk_names(segments, segments.length - 1);
+		if (moveOp) return await walk_names(segments, segments.length - 1);
+		if (fixedView) {
+			const parentDepth = segments.length - 1;
+			if (parentDepth < 1) return { node: null, depth: 0 };
+			const prefix = (depth: number) => `/${segments.slice(0, depth).join("/")}`;
+			const direct = await get(prefix(parentDepth));
+			if (direct) return { node: direct, depth: parentDepth };
+			// Move waits for path repairs, so existing prefixes are contiguous in its selected view.
+			let lower = 0;
+			let upper = parentDepth;
+			let node: Doc<"files_nodes"> | null = null;
+			while (upper - lower > 1) {
+				const middle = Math.floor((lower + upper) / 2);
+				const found = await get(prefix(middle));
+				if (found) {
+					lower = middle;
+					node = found;
+				} else upper = middle;
+			}
+			return { node, depth: lower };
+		}
 		for (let depth = segments.length - 1; depth >= 1; depth--) {
 			const node = await get(`/${segments.slice(0, depth).join("/")}`);
 			if (node) return { node, depth };

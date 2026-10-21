@@ -531,6 +531,7 @@ Poll it: the editor mounts a few seconds after `domcontentloaded`, and until the
 - **A CSS-only edit can stay unapplied in an open tab.** On 2026-09-29 the rich text editor's computed `padding-right` still read the old value about a second after a save to `file-editor-rich-text.css` and several reads later, and a `reload()` showed the new one. Before measuring a CSS change, read the edited property with `getComputedStyle` and check that it matches the file. Reload when it does not. Tell the user to reload too when they say a change "does not move".
 - **Editing a route module (`src/routes/**`) makes the next navigation in an open tab log `Cannot access 'rootRouteImport' before initialization`and`Cannot read properties of undefined (reading 'routesById')`page errors** (TanStack Router's generated route tree hot update; seen 2026-09-05 after an edit to the files route's`validateSearch`). The page still renders, and a fresh `goto` afterwards shows no error. Reload once before reading results, and do not report these as a fault in the change.
 - That crash's damage outlives the blank screen: the dead React tree took the Convex auth refresh loop with it, so on that same page a later `page.evaluate` Convex action answers `Unauthenticated` even though the user is signed in and a fresh tab works fine. Always `goto`/`reload` first and wait for the route content, then run evaluate-driven Convex calls. Hit twice on `create_text_node` 2026-08-08.
+- Copying backend files into place (for example an A/B run that swaps `convex/` or `server/` files before each `convex dev --once`) has the same effect: Vite reloads modules in the open tab, and its next `page.evaluate` Convex calls answer `Unauthenticated`. After each swap, reload the tab and wait until a membership query succeeds before the next call. Hit 2026-10-21.
 - The sidebar `New file` / `New folder` buttons being disabled on every cold page load was an app bug, found 2026-08-04 and fixed 2026-08-08: `files-sidebar.tsx` called the `canWriteParentId` useFn during render, so the React Compiler cached the first render's answer from before the write-permission query resolved. If a permission-gated control looks wrongly disabled again, run this differential first — it separates a real permission refusal from a frozen render value in one minute: (1) probe the backend answer directly from page context (`app_convex.query(app_convex_api.access_control.get_current_user_workspace_permission, { membershipId, permission: "content.write" })`); (2) client-navigate away and back (two link clicks, no reload). Backend true + enabled-after-remount means a useFn (or other stable-identity function) is being called during render and the compiler memoized it.
 - Creating fixtures through the app's own Convex client from page context (`await import("/src/lib/app-convex-client.ts")`) works for any mutation the signed-in user may call, and is the fastest route when UI would need many steps. Get the membershipId with `organizations.get_membership_by_organization_workspace_name({ organizationName, workspaceName })`.
 
@@ -2966,6 +2967,15 @@ on dev change a lot (one copy-2 restore step took 4.85 s instead of about 1.3 s)
 3 or more runs. Time phases with `console.time` inside the step. In archive steps, about half of the
 time is the per-item `files_subtree_ops_db_is_near_limits` call, because its overlay flush does the
 derived work of the item stamped before. Hit 2026-10-20, cause found 2026-10-21.
+
+The Restrict scope op copies the area of small items inside its steps too. Measure these walks on
+items with metadata. Each step then writes metadata catalog deltas and reads the workspace's compactor
+marker, and a fixture without metadata hides that cost. On 2026-10-21 a compactor run deleted the
+marker between two steps, so every step conflicted once and did all its work again (an `advance` with
+`occInfo` on `files_metadata_catalog_compactors` in `convex logs`). The compactor now keeps the marker
+for one more run, and the steps no longer conflict. On `/copy-4` with metadata on 200 folders, the copy
+inside the step cut a Restrict from about 210 `run_job` executions to none. The walk still takes about
+16 s, as before.
 
 ## A headless scratch Chrome opens a tiny window, and the filter bar list covers the sidebar
 

@@ -1009,8 +1009,9 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
   or a restricted area R (needs `content.read` on R itself, so added people inside R get nothing).
   One area per call; a member never reads rows of an area they cannot open, and every refusal gets
   the same empty answer. A grant change writes no catalog row. After a restrict the area rows follow
-  the saved scope job ("late is fine"). `list_folder_fields` shows restricted children's keys to the
-  owner only (see above). See the `file-metadata` skill, "Suggestions".
+  late: the scope job patches each item's docs when it reaches the item (or the item's saved scope job
+  does), then the compactor applies the counts ("late is fine"). `list_folder_fields` shows restricted
+  children's keys to the owner only (see above). See the `file-metadata` skill, "Suggestions".
 - `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
   the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
   { fileNode })` with `content.read`. A private target or a refusal returns null, including after a
@@ -1057,7 +1058,8 @@ The model:
   keeps its own scope. The first step runs inside the request, so a small folder is done at once,
   unless a Move holds the workspace: then every step, the first one too, waits for the Move. A
   bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so the recover
-  cron finds the op. A move job rewrites scope the same way.
+  cron finds the op. A Move does not use this walk: it publishes its items with their new scope (see
+  below).
 - Until a scope job writes a child, the child keeps its stored scope. Every permission check, for
   reads and writes, trusts that stored scope. So a child of a newly restricted folder keeps its old
   access until the job rewrites it. This per-file timing is the chosen design: each file follows its
@@ -1408,7 +1410,8 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
 5. E's stored restricted scope equals D's stored restricted scope. This is a scope boundary, not
    proof that D's editor can read E. Add people may give the editor access to D alone.
 6. `files_share_link_media` holds an approval for this exact link, media node and asset. The
-   approval action checks the authenticated person's write access to D and read access to E.
+   approval action checks the authenticated person's write access to D (manage access for a
+   review in Sharing) and read access to E.
    It uses the existing per-node access checks. It adds no parent walk or writer-list scan.
 
 A document inside a restricted folder that embeds an image from an open folder still shows a gray
@@ -1420,9 +1423,11 @@ reference stays gray on the public page. It never blocks Save. Opening a documen
 or rebuilding its Yjs text must not approve media.
 
 The editor's file picker and upload completion approve the deliberately inserted image or video
-for the current link. With no link they create no approval. A manager can also review saved media
-in Sharing and approve each listed item. Review pins the link and asset; a replacement needs a
-fresh review. Existing links keep their text and URLs, but old images need this review once.
+for the current link. With no link they create no approval. A read-only document refuses this
+approval. Approvals charge their own `files_share_link_media_write` bucket. A manager can also
+review saved media in Sharing and approve each listed item. Review pins the link and asset; a
+replacement needs a fresh review. Existing links keep their text and URLs, but old images need
+this review once.
 No old content is treated as proof of an author's read access. New links start with no approvals.
 
 Checked plugin additions record approvals in the final write. A plugin write that adds a new

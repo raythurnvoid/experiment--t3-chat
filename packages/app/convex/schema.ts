@@ -2249,11 +2249,8 @@ const app_convex_schema = defineSchema({
 		metadataId: v.union(v.id("value_store_metadata"), v.null()),
 		/**
 		 * The owner. Values can hold private data, like file paths, so account deletion removes them.
-		 * `put` always sets it. Only rows written before this field have no owner. Every value has a
-		 * TTL (24 hours for Bash cursors, `SEARCH_SAVED_CURSOR_TTL_MS` for the search box), so those
-		 * rows expire on their own. Make it required once rows older than the longest TTL are gone.
 		 */
-		userId: v.optional(v.id("users")),
+		userId: v.id("users"),
 	}).index("by_user", ["userId"]),
 	/**
 	 * Only expiring values have metadata, so cleanup scans small docs.
@@ -2473,7 +2470,13 @@ const app_convex_schema = defineSchema({
 			v.object({ kind: v.literal("proposal"), id: v.id("files_pending_updates") }),
 			v.object({ kind: v.literal("receipt"), id: v.id("files_pending_node_publish_receipts") }),
 		),
-		mode: v.union(v.literal("placement"), v.literal("subtree"), v.literal("proposal"), v.literal("receipt")),
+		mode: v.union(
+			v.literal("placement"),
+			v.literal("children"),
+			v.literal("subtree"),
+			v.literal("proposal"),
+			v.literal("receipt"),
+		),
 		userId: v.union(v.id("users"), v.null()),
 		generation: v.number(),
 	})
@@ -2690,6 +2693,7 @@ const app_convex_schema = defineSchema({
 				[
 					"saved_subtree",
 					"source_owners",
+					"owner_saved_folders",
 					"pending_children",
 					"pending_moves",
 					"owner_prefix",
@@ -2720,7 +2724,7 @@ const app_convex_schema = defineSchema({
 			v.object({ kind: v.literal("cohort") }),
 		),
 		phase: v.union(
-			...(["collect", "plan", "stage", "validate", "abort", "finish", "wake"] as const).map((phase) =>
+			...(["collect", "plan", "stage", "validate", "abort", "finish", "wake", "frontier"] as const).map((phase) =>
 				v.literal(phase),
 			),
 		),
@@ -2758,6 +2762,14 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
 		.index("by_cohort_view_node", ["cohortId", "view", "nodeId"])
+		.index("by_view_path_archive", [
+			"cohortId",
+			"view",
+			"path",
+			"archiveOperationId",
+			"nodeCreationTime",
+			"nodeId",
+		])
 		.index("by_view_parent_name_archive", [
 			"cohortId",
 			"view",
@@ -2768,6 +2780,15 @@ const app_convex_schema = defineSchema({
 			"nodeId",
 		])
 		.index("by_view_parent_name", ["cohortId", "view", "parentId", "name", "nodeCreationTime", "nodeId"])
+		.index("by_view_parent_kind_name", [
+			"cohortId",
+			"view",
+			"parentId",
+			"kind",
+			"name",
+			"nodeCreationTime",
+			"nodeId",
+		])
 		.index("by_view_parent_archive_name", [
 			"cohortId",
 			"view",
@@ -5028,6 +5049,15 @@ const app_convex_schema = defineSchema({
 			"moveCohortId",
 			"parentId",
 			"archiveOperationId",
+			"name",
+		])
+		// Move closes saved folders across all archive generations before collecting their owners.
+		.index("by_org_ws_parent_kind_name", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"parentId",
+			"kind",
 			"name",
 		])
 		// One kind of one folder's active children, by name. `get_folder_readme` reads the folder's files.

@@ -15,7 +15,8 @@
 // Only saved, active (not archived) docs of real workspaces count, and only fields the search grammar
 // can name in at most 160 characters. A restrict or an unrestrict patches the flag on the node's
 // field docs, so their keys move between `parent` and `parent_restricted`. It also patches the area
-// on the node's docs, and the saved scope job patches it on the docs of the items inside. A doc of a
+// on the node's docs, and the scope op patches it on the docs of each item inside when it reaches the
+// item, or starts a saved scope job for an item with many docs. A doc of a
 // Move cohort counts in the rows of its own view (`moveView`), like share rows
 // (`server/files-share-rows.ts`), and readers merge the normal rows with the visible view's rows.
 //
@@ -25,8 +26,9 @@
 //
 // Late is fine: after a restrict, an item inside keeps its old access until the scope job reaches it
 // (`AGENTS.md`: a file is restricted once the background job has reached it). Its docs, and so its
-// area rows, follow a few seconds later: the saved scope job, then the compactor. The catalog has
-// counts, not rows, so it cannot check each doc's node like a search can.
+// area rows, follow a few seconds later: the scope op (or the item's saved scope job, when it has many
+// docs), then the compactor. The catalog has counts, not rows, so it cannot check each doc's node like
+// a search can.
 //
 // Writes: the overlay wrapper (`server/files-pending-overlay.ts`) adds each metadata doc write to a
 // change map, and every flush inserts one delta per changed row and clears the map. Savers never
@@ -292,8 +294,8 @@ function db_get_row(ctx: QueryCtx, row: Row) {
 
 /**
  * One compactor run: apply up to `COMPACT_BATCH_SIZE` old deltas of the marker's workspace to their
- * rows, delete them, then schedule the next run or end the chain. A missing marker ends the chain:
- * a purge or a rebuild deleted it.
+ * rows, delete them, then schedule the next run or end the chain. A run with nothing to apply and no
+ * delta left ends the chain. A missing marker ends it too: a purge or a rebuild deleted it.
  *
  * Drift (a count below 0) never throws: it clamps to 0 and logs one line per run. A throw would stop
  * the chain, and with it every later key. A rebuild in a quiet window fixes drift.
@@ -368,8 +370,11 @@ export async function files_metadata_catalog_db_compact(
 		.query("files_metadata_catalog_deltas")
 		.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
 		.first();
-	// A seeding rebuild keeps its marker and chain until its last page.
-	if (next || marker.phase === "seeding")
+	// A seeding rebuild keeps its marker and chain until its last page. A run that applied deltas also
+	// schedules one more run, so the chain ends only after a run with nothing to apply. A walk, like a
+	// Restrict, inserts deltas in steps a few seconds apart. If this run deleted the marker while the
+	// next step runs, that step, which read the marker, would conflict and do all its work again.
+	if (next || deltas.length > 0 || marker.phase === "seeding")
 		await ctx.scheduler.runAfter(
 			// The read above takes a delta only once it is more than the cutoff old.
 			next ? Math.max(0, next._creationTime + COMPACT_CUTOFF_MS + 1 - Date.now()) : COMPACT_CUTOFF_MS,
