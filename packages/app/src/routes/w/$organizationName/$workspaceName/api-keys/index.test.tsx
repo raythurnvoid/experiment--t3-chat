@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { editor as monaco_editor } from "monaco-editor";
 import type { JSX, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -117,6 +118,52 @@ vi.mock("@/components/my-modal.tsx", () => ({
 	},
 }));
 
+// Monaco cannot run in happy-dom, so the stub is a textarea honoring `value` and `onChange`. Its
+// mount handle holds a model from the `monaco-editor` test stub, so the page can set markers on it.
+// Keep one handle per editor: `useFn` is mocked above, so `onMount` changes on every render, and a new
+// handle each time would make the page store a new editor on every render, forever.
+vi.mock("@monaco-editor/react", async () => {
+	const { useEffect, useState } = await import("react");
+	const { editor } = await import("monaco-editor");
+
+	return {
+		Editor: function Editor(props: {
+			value?: string;
+			options?: { ariaLabel?: string };
+			onChange?: (value: string | undefined) => void;
+			onMount?: (editor: unknown) => void;
+		}) {
+			const { value, options, onChange, onMount } = props;
+			const [model] = useState(() => editor.createModel(value ?? ""));
+			const [handle] = useState(() => ({
+				getModel: () => model,
+				updateOptions: () => {},
+				setPosition: () => {},
+				focus: () => {},
+			}));
+
+			useEffect(() => {
+				model.setValue(value ?? "");
+			}, [model, value]);
+
+			useEffect(() => {
+				onMount?.(handle);
+			}, [handle, onMount]);
+
+			return (
+				<textarea
+					aria-label={options?.ariaLabel ?? "Editor"}
+					value={value}
+					onChange={(event) => onChange?.(event.currentTarget.value)}
+				/>
+			);
+		},
+	};
+});
+
+// This module configures the real monaco languages at import time, which the stub cannot serve.
+vi.mock("@/lib/app-monaco-config.ts", () => ({ app_monaco_THEME_NAME_DARK: "app-dark" }));
+
 vi.mock("@/components/my-tabs.tsx", () => ({
 	MyTabs: function MyTabs(props: { children?: ReactNode }) {
 		return <div>{props.children}</div>;
@@ -184,6 +231,23 @@ function renderRoute() {
 	return render(<PageComponent />);
 }
 
+function getSetupEditor() {
+	return screen.getByRole("textbox", { name: "API key setup JSON" });
+}
+
+/**
+ * Replace the setup text, like a paste into the editor.
+ */
+function pasteSetup(setup: { name: string; scopes: string[] } | string) {
+	fireEvent.change(getSetupEditor(), {
+		target: { value: typeof setup === "string" ? setup : JSON.stringify(setup, null, 2) },
+	});
+}
+
+function submitSetup() {
+	fireEvent.submit(getSetupEditor().closest("form")!);
+}
+
 describe("RouteApiKeys", () => {
 	beforeEach(() => {
 		searchMock.mockReturnValue({});
@@ -206,7 +270,7 @@ describe("RouteApiKeys", () => {
 		vi.clearAllMocks();
 	});
 
-	test("creates, tests, and clears a key with the default read scopes", async () => {
+	test("creates, tests, and clears a key from a pasted setup", async () => {
 		// The verify route answers with the scopes the key still has, so the message can name them.
 		const fetchMock = vi.fn().mockResolvedValue({
 			status: 200,
@@ -221,18 +285,17 @@ describe("RouteApiKeys", () => {
 		renderRoute();
 
 		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const nameInput = screen.getByRole("textbox", { name: "Name" });
-		expect((nameInput.closest("form") as HTMLFormElement).noValidate).toBe(true);
-		expect(document.getElementById(nameInput.getAttribute("aria-describedby") ?? "")).not.toBeNull();
-		expect(screen.getByText("Permissions")).not.toBeNull();
-		expect((screen.getByRole("checkbox", { name: /List files/ }) as HTMLInputElement).checked).toBe(true);
-		expect((screen.getByRole("checkbox", { name: /Read file content/ }) as HTMLInputElement).checked).toBe(true);
-		expect((screen.getByRole("checkbox", { name: /Read my AI conversations/ }) as HTMLInputElement).checked).toBe(false);
-		expect((screen.getByRole("checkbox", { name: /Download files/ }) as HTMLInputElement).checked).toBe(false);
-		expect((screen.getByRole("checkbox", { name: /Write files/ }) as HTMLInputElement).checked).toBe(false);
+		// The untouched default setup only lacks a name. It shows no problems yet, but cannot be created.
+		const form = getSetupEditor().closest("form")!;
+		expect(form.getAttribute("data-api-key-setup-state")).toBe("default");
+		expect(screen.queryByRole("status", { name: "Problems in the setup" })).toBeNull();
+		expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
 
-		fireEvent.change(nameInput, { target: { value: "  Local script  " } });
-		fireEvent.submit(nameInput.closest("form")!);
+		pasteSetup({ name: "  Local script  ", scopes: ["files:list", "files:read", "files:list"] });
+		expect(screen.getByRole("list", { name: "Scopes of the new key" }).textContent).toBe(
+			"List files files:listRead file content files:read",
+		);
+		submitSetup();
 
 		await screen.findByRole("heading", { name: "Save your API key" });
 		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
@@ -258,43 +321,27 @@ describe("RouteApiKeys", () => {
 		expect(screen.queryByText(API_KEY)).toBeNull();
 	});
 
-	test("uses the account link and limits the new key to file scopes", async () => {
+	test("uses the account link and refuses scopes that service account keys cannot use", async () => {
 		searchMock.mockReturnValue({ serviceAccountId: "account_1" });
 		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
 		renderRoute();
 		expect(screen.getByRole("combobox", { name: "Identity" }).textContent).toContain("Publisher");
-		expect(screen.queryByRole("checkbox", { name: /plugin data/i })).toBeNull();
-		// A key bound to a service account cannot hold "files:publish".
-		expect(screen.queryByRole("checkbox", { name: /Make files public/ })).toBeNull();
-		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Deploy key" } });
-		fireEvent.click(screen.getByRole("checkbox", { name: /Manage file policies/ }));
-		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);
+
+		pasteSetup({ name: "Deploy key", scopes: ["files:list", "files:publish"] });
+		expect(screen.getByRole("status", { name: "Problems in the setup" }).textContent).toContain(
+			"Service account keys cannot use files:publish.",
+		);
+		submitSetup();
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		pasteSetup({ name: "Deploy key", scopes: ["files:list", "files:permissions"] });
+		submitSetup();
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
 				membershipId: "membership_1",
 				name: "Deploy key",
 				serviceAccountId: "account_1",
-				scopes: ["files:list", "files:read", "files:permissions"],
-			}),
-		);
-	});
-
-	test("lets a personal key make files public", async () => {
-		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
-		renderRoute();
-		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const publish = screen.getByRole("checkbox", { name: /Make files public/ }) as HTMLInputElement;
-		expect(publish.checked).toBe(false);
-		fireEvent.click(publish);
-		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Publisher" } });
-		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);
-
-		await waitFor(() =>
-			expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
-				serviceAccountId: null,
-				membershipId: "membership_1",
-				name: "Publisher",
-				scopes: ["files:list", "files:read", "files:publish"],
+				scopes: ["files:list", "files:permissions"],
 			}),
 		);
 	});
@@ -303,8 +350,8 @@ describe("RouteApiKeys", () => {
 		searchMock.mockReturnValue({ serviceAccountId: "account_1" });
 		accountPermissionMock.mockReturnValue(false);
 		renderRoute();
-		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Refused key" } });
-		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);
+		pasteSetup({ name: "Refused key", scopes: ["files:list"] });
+		submitSetup();
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
@@ -323,179 +370,43 @@ describe("RouteApiKeys", () => {
 		renderRoute();
 
 		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const nameInput = screen.getByRole("textbox", { name: "Name" });
-		fireEvent.change(nameInput, { target: { value: "Local script" } });
-		fireEvent.submit(nameInput.closest("form")!);
+		pasteSetup({ name: "Local script", scopes: ["files:list"] });
+		submitSetup();
 
 		await screen.findByRole("heading", { name: "Save your API key" });
 		fireEvent.click(screen.getByRole("button", { name: "Test key" }));
 		await screen.findByText("The key is valid, but your current permissions allow none of its scopes.");
 	});
 
-	test("passes exactly the checked scopes to the create mutation", async () => {
-		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
+	test("a setup with problems lists them, marks them, and creates nothing", () => {
+		const setModelMarkers = vi.spyOn(monaco_editor, "setModelMarkers");
 		renderRoute();
 
 		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		fireEvent.click(screen.getByRole("checkbox", { name: /Read file content/ }));
-		fireEvent.click(screen.getByRole("checkbox", { name: /Read my AI conversations/ }));
-		fireEvent.click(screen.getByRole("checkbox", { name: /Download files/ }));
-		fireEvent.click(screen.getByRole("checkbox", { name: /Write files/ }));
+		pasteSetup('{\n  "name": "Importer",\n  "scopes": ["files:raed"]\n}');
 
-		const nameInput = screen.getByRole("textbox", { name: "Name" });
-		fireEvent.change(nameInput, { target: { value: "Importer" } });
-		fireEvent.submit(nameInput.closest("form")!);
+		expect(screen.getByRole("status", { name: "Problems in the setup" }).textContent).toContain(
+			'Unknown scope "files:raed".',
+		);
+		const markers = setModelMarkers.mock.lastCall?.[2] as Array<{ startLineNumber: number; startColumn: number }>;
+		expect(markers).toEqual([expect.objectContaining({ startLineNumber: 3, startColumn: 14 })]);
+		const form = getSetupEditor().closest("form")!;
+		expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
 
-		await screen.findByRole("heading", { name: "Save your API key" });
-		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
-			serviceAccountId: null,
-			membershipId: "membership_1",
-			name: "Importer",
-			scopes: ["files:list", "ai_chat:read", "files:download", "files:write"],
-		});
-	});
-
-	test("clears AI access when switching to a service account and back", async () => {
-		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
-		renderRoute();
-		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		fireEvent.click(screen.getByRole("checkbox", { name: /Read my AI conversations/ }));
-
-		fireEvent.click(screen.getByRole("combobox", { name: "Identity" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Publisher" }));
-		expect(screen.queryByRole("checkbox", { name: /Read my AI conversations/ })).toBeNull();
-		fireEvent.click(screen.getByRole("combobox", { name: "Identity" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Personal" }));
-		expect((screen.getByRole("checkbox", { name: /Read my AI conversations/ }) as HTMLInputElement).checked).toBe(false);
-
-		const nameInput = screen.getByRole("textbox", { name: "Name" });
-		fireEvent.change(nameInput, { target: { value: "Transcript reader" } });
-		fireEvent.submit(nameInput.closest("form")!);
-		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
-			serviceAccountId: null,
-			membershipId: "membership_1",
-			name: "Transcript reader",
-			scopes: ["files:list", "files:read"],
-		});
-	});
-
-	test("disables submit while zero scopes are selected", () => {
-		renderRoute();
-
-		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const nameInput = screen.getByRole("textbox", { name: "Name" });
-		fireEvent.change(nameInput, { target: { value: "No scopes" } });
-		const form = nameInput.closest("form")!;
-		const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
-		expect(submitButton.disabled).toBe(false);
-
-		fireEvent.click(screen.getByRole("checkbox", { name: /List files/ }));
-		fireEvent.click(screen.getByRole("checkbox", { name: /Read file content/ }));
-		expect(submitButton.disabled).toBe(true);
-
-		// A submit that skips the disabled button, like Enter in the name field, must not create a key.
-		fireEvent.submit(form);
+		// A submit that skips the disabled button must not create a key either.
+		submitSetup();
 		expect(mutationMock).not.toHaveBeenCalled();
-
-		fireEvent.click(screen.getByRole("checkbox", { name: /Write files/ }));
-		expect(submitButton.disabled).toBe(false);
 	});
 
-	test("shows the write warning only while files:write is checked", () => {
+	test("shows the write warning while any scope that changes stored data is in the setup", () => {
 		renderRoute();
 
 		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const writeCheckbox = screen.getByRole("checkbox", { name: /Write files/ });
-		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
-		expect(writeCheckbox.getAttribute("aria-describedby")).toBeNull();
-
-		fireEvent.click(writeCheckbox);
-		const warning = screen.getByText(/Treat it like a password/);
-		expect(warning.id).not.toBe("");
-		expect(writeCheckbox.getAttribute("aria-describedby")).toBe(warning.id);
-
-		fireEvent.click(writeCheckbox);
-		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
-		expect(writeCheckbox.getAttribute("aria-describedby")).toBeNull();
-	});
-
-	test("leaves the plugin-data scopes unchecked and submits them only when chosen", () => {
-		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
-		renderRoute();
-
-		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-
-		// Most keys never touch plugin data, and a plugin's documents can hold whatever that plugin
-		// collected. So both stay opt-in, unlike the two file read scopes.
-		const readPluginData = screen.getByRole("checkbox", { name: /Read plugin data/ });
-		const writePluginData = screen.getByRole("checkbox", { name: /Write plugin data/ });
-		expect((readPluginData as HTMLInputElement).checked).toBe(false);
-		expect((writePluginData as HTMLInputElement).checked).toBe(false);
-
-		fireEvent.click(readPluginData);
-		const nameInput = screen.getByRole("textbox", { name: "Name" });
-		fireEvent.change(nameInput, { target: { value: "Council reader" } });
-		fireEvent.submit(nameInput.closest("form")!);
-
-		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
-			serviceAccountId: null,
-			membershipId: "membership_1",
-			name: "Council reader",
-			scopes: ["files:list", "files:read", "plugin_data:read"],
-		});
-	});
-
-	test("shows the write warning for plugin data too, not only for files", () => {
-		renderRoute();
-
-		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const writeFiles = screen.getByRole("checkbox", { name: /Write files/ });
-		const writePluginData = screen.getByRole("checkbox", { name: /Write plugin data/ });
+		pasteSetup({ name: "Reader", scopes: ["files:list", "plugin_data:read"] });
 		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
 
-		// One warning covers every scope that can change stored data, so checking either one shows it
-		// and both point at it.
-		fireEvent.click(writePluginData);
-		const warning = screen.getByText(/Treat it like a password/);
-		expect(writePluginData.getAttribute("aria-describedby")).toBe(warning.id);
-		expect(writeFiles.getAttribute("aria-describedby")).toBeNull();
-
-		fireEvent.click(writeFiles);
-		expect(writeFiles.getAttribute("aria-describedby")).toBe(warning.id);
-
-		// The warning only goes away once no write scope is left.
-		fireEvent.click(writePluginData);
-		expect(screen.getByText(/Treat it like a password/)).not.toBeNull();
-		fireEvent.click(writeFiles);
-		expect(screen.queryByText(/Treat it like a password/)).toBeNull();
-	});
-
-	test("validates the trimmed API key name length", async () => {
-		mutationMock.mockResolvedValue({ _nay: { message: "Create stopped for this test" } });
-		renderRoute();
-		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const input = screen.getByRole("textbox", { name: "Name" });
-
-		fireEvent.change(input, { target: { value: "   " } });
-		const form = input.closest("form")!;
-		const submitButton = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
-		submitButton.focus();
-		expect(document.activeElement).toBe(submitButton);
-		fireEvent.submit(form);
-		expect(screen.getByText("API key name is required")).not.toBeNull();
-		expect(document.activeElement).toBe(input);
-		expect(mutationMock).not.toHaveBeenCalled();
-
-		fireEvent.change(input, { target: { value: ` ${"a".repeat(80)} ` } });
-		fireEvent.submit(input.closest("form")!);
-		await waitFor(() => {
-			expect(mutationMock).toHaveBeenCalledTimes(1);
-		});
-
-		fireEvent.change(input, { target: { value: ` ${"a".repeat(81)} ` } });
-		fireEvent.submit(input.closest("form")!);
-		expect(screen.getByText("API key name must be 80 characters or fewer")).not.toBeNull();
-		expect(mutationMock).toHaveBeenCalledTimes(1);
+		pasteSetup({ name: "Writer", scopes: ["files:list", "plugin_data:write"] });
+		expect(screen.queryByText(/Treat it like a password/)).not.toBeNull();
 	});
 
 	test("shows rotate and revoke confirmations with safe values", async () => {
@@ -532,9 +443,8 @@ describe("RouteApiKeys", () => {
 		);
 		const view = renderRoute();
 		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		const input = screen.getByRole("textbox", { name: "Name" });
-		fireEvent.change(input, { target: { value: "Old workspace" } });
-		fireEvent.submit(input.closest("form")!);
+		pasteSetup({ name: "Old workspace", scopes: ["files:list"] });
+		submitSetup();
 
 		tenantContextMock.mockReturnValue({
 			membershipId: "membership_2",

@@ -226,8 +226,8 @@ takes a **path**, not a node id, so a cross-file check is `body: { path: "/READM
 ## Driving `/api/v1/plugin-data/*` with a user API key
 
 The plugin-data routes are the cheapest way to check plugin-data behaviour end to end, because a user
-API key reaches them without a plugin run. Mint one on the API-keys route with `Read plugin data` and
-`Write plugin data` (see `app-map.md`), then call the route from page context so the request comes
+API key reaches them without a plugin run. Mint one on the API-keys route with the scopes `plugin_data:read` and
+`plugin_data:write` (see `app-map.md`), then call the route from page context so the request comes
 from the app origin:
 
 ```js

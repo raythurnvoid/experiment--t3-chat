@@ -9,7 +9,7 @@ Do this only when the user asks. A key is a real credential on the user's accoun
 - **Never print the key.** Keep it in `state` and print only its length. Mask `pk_[\w.\-*]+` before you print any page text.
 - **Never write the key to a file.** Move it with the clipboard: the page's copy button, then `Get-Clipboard -Raw | ... login`. Clear the clipboard right after.
 - **One workspace per key.** Ask which workspace when it is not clear. "My files" means `personal/home`.
-- **Only the scopes the task needs.** Upload needs `List files`, `Read file content`, and `Write files`.
+- **Only the scopes the task needs.** Upload needs `files:list`, `files:read`, and `files:write`.
 - Use your own tab in the QA Edge profile, and close it at the end. Do not sign in or out.
 
 ## Steps
@@ -24,7 +24,7 @@ Verified 2026-10-21 on the dev app. Run each step as a `-f` runner file from the
    state.page.goto("https://app.dev.bonobo-senate.com/w/personal/home/api-keys").catch(() => {});
    ```
 
-3. **Check the account.** The sidebar button reads `Account: <name>`. An anonymous user cannot create a key: the dialog then shows `Unauthenticated` at its end (see `known-hazards.md`, "Driving the public HTTP API").
+3. **Check the account.** The sidebar button reads `Account: <name>`. An anonymous user cannot create a key: the dialog then shows `Unauthenticated` at its end (see `known-hazards.md`, "Driving the public HTTP API"). The two app origins have separate sign-ins. On 2026-10-21 the QA profile was anonymous on `app.dev` (the page said "You do not have access to this organization/workspace") and signed in on `http://localhost:5173`. Both use the same deployment and API origin, so use whichever origin shows the account. On localhost, hot reload serves any uncommitted edits to the route. If the page goes blank with a page error, reload once.
 4. **Open the create dialog.** Scope the click to the page header, because the dialog's submit button has the same name. The owned tab needs `bringToFront()` or the click can stall.
 
    ```js
@@ -33,12 +33,15 @@ Verified 2026-10-21 on the dev app. Run each step as a `-f` runner file from the
    state.dialog = state.page.locator(".RouteApiKeysCreateModal");
    ```
 
-5. **Name the key and pick scopes.** `List files` and `Read file content` start checked. The checkbox input is a hidden 1x1 box, so click the visible label text, not `check()`. Read the checked list back before you submit.
+5. **Put in the key setup.** The name and scopes are one JSON setup in a Monaco editor. Insert it as one line; do not `type()` it, because Monaco's auto-close doubles typed quotes and brackets. Then read the state and the scope list back before you submit.
 
    ```js
-   await state.dialog.getByRole("textbox", { name: "Name" }).click({ timeout: 2000 });
-   await state.dialog.getByRole("textbox", { name: "Name" }).fill("Laptop upload CLI");
-   await state.dialog.getByText("Write files", { exact: true }).click({ timeout: 2000 });
+   await state.dialog.locator(".view-lines").click({ timeout: 2000 });
+   await state.page.keyboard.press("Control+A");
+   await state.page.keyboard.press("Delete");
+   await state.page.keyboard.insertText('{"name": "Laptop upload CLI", "scopes": ["files:list", "files:read", "files:write"]}');
+   console.log(await state.dialog.locator("form").getAttribute("data-api-key-setup-state")); // "valid"
+   console.log(await state.dialog.getByRole("list", { name: "Scopes of the new key" }).innerText());
    ```
 
 6. **Submit and keep the key in `state`.** The key is `pk_<32 hex>.<64 hex>`, 100 characters.

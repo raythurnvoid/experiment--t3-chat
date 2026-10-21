@@ -1026,9 +1026,9 @@ accounts, and their own keys. Keep the existing signed-in identity.
    enter `File or folder path`, and choose Access level `Can manage`. Confirm `This restricted scope`
    before `Save grant`. On a normal folder the label is `This item and what is inside it`: the grant
    reaches the open items inside, at view or edit only.
-3. Use A's `Create API key` link. It preselects Identity. Bound accounts offer only `List files`,
-   `Read file content`, `Download files`, `Write files`, and `Manage file policies`. Click checkbox
-   labels, not their covered 1px inputs. After creation or rotation, keep the revealed key only in
+3. Use A's `Create API key` link. It preselects Identity. Bound accounts allow only `files:list`,
+   `files:read`, `files:download`, `files:write`, and `files:permissions`. Put the setup JSON in with the
+   recipe in `app-map.md` ("API Keys Route"). After creation or rotation, keep the revealed key only in
    memory. Read `.RouteApiKeysRevealModal [aria-label="New API key"]`, then close with `I saved the key`
    before any snapshot or screenshot. For `Test key`, read only `.RouteApiKeysVerificationStatus`,
    never the reveal dialog's full text.
@@ -1038,7 +1038,7 @@ accounts, and their own keys. Keep the existing signed-in identity.
    save only expected bytes, length, MIME, and hash. `/api/v1/auth/verify` shows account and sponsor IDs.
 5. Change A's grant to `Can view`: read succeeds, write returns 403. Remove its grant: read returns
    404 and write 403. Restore `Can manage` and prove the same write succeeds. Give B the same QA grant
-   and a key with `Write files` only. B's write to A's protected log returns 409. B's policy setter
+   and a key with only `files:write`. B's write to A's protected log returns 409. B's policy setter
    returns 403 without `files:permissions`; A's same setter succeeds. Check unchanged bytes after each
    refusal. Selecting Read-only also refuses A's write with 409.
 6. Select the current human through Properties and save one native editor change. Read it after
