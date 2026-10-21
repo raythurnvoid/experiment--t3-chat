@@ -378,6 +378,13 @@ describe("mcp_custom_config_parse", () => {
 		expect(result.errors[0]).toEqual({ offset: text.indexOf('"headers"'), length: 9, message: "Comma expected" });
 	});
 
+	test("reports deeply nested brackets instead of throwing", () => {
+		expect(mcp_custom_config_parse("[".repeat(16_000))).toEqual({
+			drafts: [],
+			errors: [{ offset: 0, length: 0, message: "The config has too many nested brackets." }],
+		});
+	});
+
 	test("refuses URLs that fail the URL rules", () => {
 		const refusalOf = (url: string) => parse_one(remote_text({ name: "remote", url })).refusal;
 

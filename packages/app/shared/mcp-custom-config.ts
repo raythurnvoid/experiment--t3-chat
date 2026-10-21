@@ -551,7 +551,15 @@ export function mcp_custom_config_parse(text: string) {
 
 	// JSONC: `//` comments and trailing commas are fine.
 	const parseErrors: ParseError[] = [];
-	const root: unknown = parse(text, parseErrors, { allowTrailingComma: true });
+	let root: unknown;
+	try {
+		root = parse(text, parseErrors, { allowTrailingComma: true });
+	} catch {
+		// `parse` calls itself for each nested bracket. About 6,000 brackets, well under the size cap,
+		// overflow the call stack. This runs during render, so show an error instead of crashing the page.
+		errors.push({ offset: 0, length: 0, message: "The config has too many nested brackets." });
+		return { drafts, errors };
+	}
 	if (parseErrors.length > 0) {
 		for (const parseError of parseErrors) {
 			// "CommaExpected" becomes "Comma expected".
