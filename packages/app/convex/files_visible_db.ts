@@ -9,7 +9,7 @@ import {
 	files_saved_placement_db_get_node,
 	type files_saved_placement_FixedView,
 } from "../server/files-saved-placement.ts";
-import type { files_PendingTarget } from "../shared/files.ts";
+import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
 
 /**
  * Reuse parent and permission reads within one query, leaving room for its own work.
@@ -78,6 +78,65 @@ export async function files_visible_db_create_reader(
 		return { status: "resolved" as const, value: outcome.value };
 	}
 
+	/**
+	 * Check one owner-path child at a time, starting at the caller's already authorized root.
+	 */
+	async function resume_traversal(
+		input: { root: files_PendingParent; rootPath: string; target: files_PendingTarget; path: string },
+		options: { stepLimit?: number; allowPagination?: boolean } = {},
+	) {
+		if (!membership) return { status: "hidden" as const, value: null };
+		const resume = args.resume;
+		if (!resume) throw new Error("A durable traversal needs a store and a current fence");
+		const prefix = input.rootPath === "/" ? "/" : `${input.rootPath}/`;
+		if (input.path !== input.rootPath && !input.path.startsWith(prefix))
+			return { status: "hidden" as const, value: null };
+		const key = `traversal:${JSON.stringify([input.root, input.rootPath])}`;
+		const progressKey = `${key}:progress:${input.path}`;
+		type Parent = { fence: string; target: files_PendingParent; path: string };
+		let parent: Parent = { fence: resume.fence, target: input.root, path: input.rootPath };
+		let nextPath = input.path;
+		let progress: string | null = null;
+		if (input.path !== input.rootPath) {
+			progress = await resume.store.get(progressKey);
+			const parentPath = input.path.slice(0, input.path.lastIndexOf("/")) || "/";
+			const cached =
+				progress ??
+				(parentPath === input.rootPath ? null : await resume.store.get(`${key}:parent:${parentPath}`));
+			if (cached) parent = JSON.parse(cached) as Parent;
+			if (parent.fence !== resume.fence) return { status: "invalidated" as const };
+			const slash = input.path.indexOf("/", parent.path === "/" ? 1 : parent.path.length + 1);
+			nextPath = slash < 0 ? input.path : input.path.slice(0, slash);
+		} else if (input.root.kind === "root") return { status: "hidden" as const, value: null };
+		// The index already names the candidate. Only its parents need a name lookup.
+		const outcome =
+			nextPath === input.path
+				? await core.resume({ kind: "target", target: input.target }, options)
+				: await core.resume({ kind: "child", parent: parent.target, path: nextPath }, options);
+		if (outcome.status === "unfinished" || outcome.status === "invalidated") return outcome;
+		if (outcome.status === "hidden" || !outcome.value) return { status: "hidden" as const, value: null };
+		const value = outcome.value;
+		if (value.entry.path !== nextPath) return { status: "hidden" as const, value: null };
+		const target: files_PendingTarget =
+			value.entry.kind === "saved"
+				? { kind: "saved", id: value.entry.node._id }
+				: { kind: "private", id: value.entry.node._id };
+		if (!(await can_read(value.accessNode)))
+			return { status: "locked" as const, path: nextPath, target, kind: value.entry.node.kind };
+		if (value.entry.node.kind === "folder") {
+			parent = { fence: resume.fence, target, path: nextPath };
+			await resume.store.set(`${key}:parent:${nextPath}`, JSON.stringify(parent));
+		}
+		if (nextPath === input.path) {
+			if (progress !== null) await resume.store.delete(progressKey);
+			return { status: "resolved" as const, value };
+		}
+		if (value.entry.node.kind !== "folder") return { status: "hidden" as const, value: null };
+		// Core frames keep unfinished lookups. Progress starts after a parent passes its checks.
+		await resume.store.set(progressKey, JSON.stringify(parent));
+		return { status: "unfinished" as const, paginated: outcome.paginated };
+	}
+
 	async function resolve_target(target: files_PendingTarget) {
 		if (!membership) return null;
 		const result = await core.resolve(target);
@@ -124,6 +183,7 @@ export async function files_visible_db_create_reader(
 			resume_visible({ kind: "target", target }, options),
 		resumePath: (path: string, options?: { stepLimit?: number; allowPagination?: boolean }) =>
 			resume_visible({ kind: "path", path }, options),
+		resumeTraversal: resume_traversal,
 		resolveTarget: resolve_target,
 		/**
 		 * Like `resolveTarget`, but tells a locked saved node from a missing one, so a caller can answer

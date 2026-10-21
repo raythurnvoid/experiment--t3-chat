@@ -766,7 +766,11 @@ export async function bash_find_type_render(args: {
 			`Next page: ${await next()}`,
 		);
 	else if (lines.length === 0) lines.push("0 matches.");
-	return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
+	const denied = denied_lines(
+		page.denied,
+		(path) => args.shellPrefix.replace(/\/$/u, "") + (args.dbPrefix === "/" ? path : path.slice(args.dbPrefix.length)),
+	);
+	return { stdout: `${lines.join("\n")}\n`, stderr: denied, exitCode: denied ? bash_COMMAND_EXIT_FAILURE : 0 };
 }
 
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred

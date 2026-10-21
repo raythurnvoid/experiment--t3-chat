@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { type files_visible_internal_list_Result } from "./files_visible.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
+import type { files_visible_resolve_Store } from "../server/files-visible-resolve.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import type { files_PendingParent } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -697,6 +698,51 @@ describe("has_drafts_in_folder", () => {
 });
 
 describe("files_visible_db_create_reader", () => {
+	test.each([
+		{ path: "/open/direct.txt", parents: [] },
+		{ path: "/open/middle/leaf.txt", parents: ["/open/middle"] },
+	])("resumes $path with progress only for completed parent folders", async ({ path, parents }) => {
+		const f = await fixture();
+		const root = await create_saved(f, "open");
+		for (const parent of parents) await create_saved(f, parent.slice(1));
+		const created = await create_private({ f, path, kind: "file" });
+		const docs = new Map<string, string>();
+		const progressWrites: string[] = [];
+		const progressDeletes: string[] = [];
+		const store: files_visible_resolve_Store = {
+			get: async (key) => docs.get(key) ?? null,
+			set: async (key, value) => {
+				if (key.startsWith("traversal:") && key.includes(":progress:")) progressWrites.push(JSON.parse(value).path);
+				docs.set(key, value);
+			},
+			delete: async (key) => {
+				if (key.startsWith("traversal:") && key.includes(":progress:")) progressDeletes.push(key);
+				docs.delete(key);
+			},
+		};
+		let finished = false;
+		let slices = 0;
+		for (; slices < 200; slices++) {
+			const result = await f.t.run(async (ctx) => {
+				const reader = await files_visible_db_create_reader(ctx, {
+					...f.db,
+					resume: { store, fence: "same-view" },
+				});
+				return await reader.resumeTraversal({ root, rootPath: "/open", target: created.target, path }, { stepLimit: 1 });
+			});
+			if (result.status === "unfinished") continue;
+			expect(result.status).toBe("resolved");
+			if (result.status === "resolved") expect(result.value.entry.path).toBe(path);
+			finished = true;
+			break;
+		}
+		expect(finished).toBe(true);
+		expect(slices).toBeGreaterThan(1);
+		expect(progressWrites, "Only completed intermediate folders need progress").toEqual(parents);
+		expect(progressDeletes).toHaveLength(parents.length ? 1 : 0);
+		expect([...docs.keys()].filter((key) => key.startsWith("traversal:") && key.includes(":progress:"))).toEqual([]);
+	});
+
 	test("resolves preparing files by owner path without exposing a saved placeholder", async () => {
 		const f = await fixture();
 		const created = await create_private({ f, path: "/draft/new.txt", kind: "file" });
