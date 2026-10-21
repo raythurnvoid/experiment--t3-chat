@@ -529,6 +529,11 @@
 	/* Keep the editor wide enough for Monaco's suggest list, which is 430px wide. */
 	.RouteApiKeysCreateModal {
 		width: min(92vw, 600px);
+
+		/* Drop the paint containment of the shared modal here. Monaco draws its right-click menu
+		   with position: fixed inside the editor, and paint containment cut off the part of the
+		   menu that goes past the dialog edge. */
+		contain: layout style;
 	}
 
 	.RouteApiKeysCreateModal-form {

@@ -839,7 +839,7 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 
 				// Show each item's short label on its row, and give it no `detail` and no `documentation`. With
 				// either one, Monaco offers a details panel. That panel opens to the right of the list, past the
-				// editor's edge, where the dialog cuts it off. The full docs stay in the hover and "All scopes".
+				// editor's edge and out of the dialog. The full docs stay in the hover and "All scopes".
 				const range = to_monaco_range(model, suggestion.replace.offset, suggestion.replace.length);
 				if (suggestion.kind === "field") {
 					return {
