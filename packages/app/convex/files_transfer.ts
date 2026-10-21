@@ -12,7 +12,7 @@ import {
 	files_transfer_queries_db_get_owned_run,
 	files_transfer_queries_db_get_entry,
 } from "./files_transfer_queries.ts";
-import { access_control_db_authorize_file_write, access_control_db_authorize_membership } from "./access_control.ts";
+import { access_control_db_authorize_membership } from "./access_control.ts";
 import {
 	activities_db_delete,
 	activities_db_finish,
@@ -44,11 +44,14 @@ import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_cr
 import {
 	files_nodes_db_copied_from_policy_fields,
 	files_nodes_db_require_copiable_write_policy,
+	files_write_policy_db_has_write_context_permission,
 } from "./files_write_policy_db.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import {
 	files_nodes_db_require_user_writable,
-	files_nodes_db_require_user_writable_or_matching_policy,
+	files_nodes_db_require_writable,
+	files_nodes_db_require_writable_or_matching_policy,
+	type files_nodes_WriteContext,
 } from "../server/files-write-policy.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import {
@@ -80,7 +83,10 @@ import {
 	files_nodes_content_db_discard_transfer_file_attempt,
 	files_nodes_content_db_discard_transfer_file_capture,
 } from "./files_transfer_assets_db.ts";
-import { public_api_credentials_db_is_live } from "./public_api_credentials_db.ts";
+import {
+	public_api_credentials_db_get_write_context,
+	public_api_credentials_db_is_live,
+} from "./public_api_credentials_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_subtree_ops_db_delete,
@@ -131,7 +137,8 @@ const files_transfer_workpool = new Workpool(components.files_transfer_workpool,
 });
 
 /**
- * Recheck the chat and both captured memberships before any transfer work.
+ * Recheck the chat and both captured memberships before any transfer work. Also return the write
+ * context the job acts as: the person, or the service account of its API key.
  */
 async function db_get_run_memberships(args: {
 	ctx: QueryCtx | MutationCtx;
@@ -184,7 +191,7 @@ async function db_get_run_memberships(args: {
 		if (authorized._nay) return null;
 	}
 	// A job an API key started stops at its next step once the key is revoked or loses a scope it
-	// needs, like a lost membership. A copy reads its sources, so it also needs read and download.
+	// needs, or its service account is revoked, like a lost membership. A copy reads its sources, so it also needs read and download.
 	if (
 		run.origin.kind === "api" &&
 		!(await public_api_credentials_db_is_live(ctx, {
@@ -229,7 +236,12 @@ async function db_get_run_memberships(args: {
 		}),
 	);
 	const [source, destination] = memberships;
-	return source && destination ? { source, destination } : null;
+	if (!source || !destination) return null;
+	const writeContext = await public_api_credentials_db_get_write_context(ctx, {
+		credentialId: run.origin.kind === "api" ? run.origin.credentialId : null,
+		userId: run.userId,
+	});
+	return { source, destination, writeContext };
 }
 
 export async function files_transfer_db_get_job_copy(
@@ -348,14 +360,14 @@ async function db_get_destination(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		run: Pick<Doc<"files_transfer_runs">, "destinationScope" | "userId" | "sourceView">;
-		membership: Doc<"organizations_workspaces_users">;
+		writeContext: files_nodes_WriteContext;
 		parent: files_PendingParent;
 		expectedPath: string;
 		runWrittenWritePolicy?: Doc<"files_nodes">["writePolicy"];
 	},
 ) {
 	const scope = { ...args.run.destinationScope, userId: args.run.userId, sourceView: args.run.sourceView };
-	const reader = await files_visible_db_create_reader(ctx, scope);
+	const reader = await files_visible_db_create_reader(ctx, { ...scope, subject: args.writeContext.subject });
 	let parent = args.parent;
 	if (parent.kind === "private") {
 		const privateNode = await ctx.db.get("files_pending_nodes", parent.id);
@@ -375,17 +387,23 @@ async function db_get_destination(
 				? ((await reader.resolve(parent))?.accessNode ?? null)
 				: null;
 
-	const authorized = await access_control_db_authorize_file_write(ctx, {
-		userAuth: { id: args.run.userId },
-		membership: args.membership,
-		nodeId: node?._id ?? files_ROOT_ID,
-	});
-	if (authorized._nay) return Result({ _nay: { message: "Permission denied" } });
+	// Ask about the folder where a Move shows it, like every other write check.
+	const placedNode = node ? await files_saved_placement_db_get_node(ctx.db, node._id) : null;
+	if (
+		(node && !placedNode) ||
+		!(await files_write_policy_db_has_write_context_permission(ctx, {
+			...args.run.destinationScope,
+			writeContext: args.writeContext,
+			node: placedNode,
+			permission: "content.write",
+		}))
+	)
+		return Result({ _nay: { message: "Permission denied" } });
 
 	if (node) {
-		const writable = await files_nodes_db_require_user_writable_or_matching_policy(ctx, {
+		const writable = await files_nodes_db_require_writable_or_matching_policy(ctx, {
 			node,
-			userId: args.run.userId,
+			writeContext: args.writeContext,
 			runWrittenWritePolicy: args.runWrittenWritePolicy,
 		});
 		if (writable._nay) return writable;
@@ -727,7 +745,7 @@ async function db_resolve_name(
 	args: {
 		run: Doc<"files_transfer_runs">;
 		item: Doc<"files_transfer_items">;
-		membership: Doc<"organizations_workspaces_users">;
+		writeContext: files_nodes_WriteContext;
 		/**
 		 * Null means a folder this run has not created yet, so nothing saved can be in it.
 		 */
@@ -739,7 +757,9 @@ async function db_resolve_name(
 	},
 ) {
 	const scope = { ...args.run, ...args.run.destinationScope };
-	const reader = args.reader ?? (await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 }));
+	const reader =
+		args.reader ??
+		(await files_visible_db_create_reader(ctx, { ...scope, subject: args.writeContext.subject, readLimit: 2048 }));
 	const choice = args.item.choice ?? args.run.applyToRemaining[args.item.kind];
 	// Publication keeps the planned name even when another worker finishes first.
 	let targetName =
@@ -898,14 +918,23 @@ async function db_resolve_name(
 			if (source) return Result({ _nay: { message: "A copy cannot replace or merge into its sources" } });
 
 			const accessNode = occupant.kind === "saved" ? occupant.node : (await reader.resolve(target))?.accessNode;
-			const authorized = await access_control_db_authorize_file_write(ctx, {
-				userAuth: { id: args.run.userId },
-				membership: args.membership,
-				nodeId: accessNode?._id ?? files_ROOT_ID,
-			});
-			if (authorized._nay) return Result({ _nay: { message: "Permission denied" } });
+			const placedNode = accessNode ? await files_saved_placement_db_get_node(ctx.db, accessNode._id) : null;
+			if (
+				(accessNode && !placedNode) ||
+				!(await files_write_policy_db_has_write_context_permission(ctx, {
+					...args.run.destinationScope,
+					writeContext: args.writeContext,
+					node: placedNode,
+					permission: "content.write",
+				}))
+			)
+				return Result({ _nay: { message: "Permission denied" } });
 			if (accessNode) {
-				const writable = await files_nodes_db_require_user_writable(ctx, { node: accessNode, userId: args.run.userId });
+				const writable = await files_nodes_db_require_writable(ctx, {
+					...args.run.destinationScope,
+					writeContext: args.writeContext,
+					target: { kind: "node", node: accessNode },
+				});
 				if (writable._nay) return writable;
 			}
 
@@ -995,10 +1024,11 @@ export async function files_transfer_db_prepare_copy_item(
 		return Result({ _yay: null });
 	}
 	const membership = memberships.destination;
+	const { writeContext } = memberships;
 
 	const destination = await db_get_destination(ctx, {
 		run,
-		membership,
+		writeContext,
 		parent: run.targetParent,
 		expectedPath: run.targetPath,
 	});
@@ -1009,7 +1039,7 @@ export async function files_transfer_db_prepare_copy_item(
 
 	// A changed or unreadable source pauses only this item for a choice.
 	const sourceScope = { ...run, ...run.sourceScope };
-	const sourceReader = await files_visible_db_create_reader(ctx, sourceScope);
+	const sourceReader = await files_visible_db_create_reader(ctx, { ...sourceScope, subject: writeContext.subject });
 	const sourceEntry = await files_transfer_queries_db_get_entry({ ctx, run: sourceScope, target: item.source, reader: sourceReader });
 	if (!sourceEntry || sourceEntry.path !== item.sourcePath) {
 		await db_pause_item({ ctx, item, kind: "source_changed" });
@@ -1047,7 +1077,7 @@ export async function files_transfer_db_prepare_copy_item(
 		runWrittenWritePolicy = parentItem.outputWritePolicy;
 		const parentDestination = await db_get_destination(ctx, {
 			run,
-			membership,
+			writeContext,
 			parent,
 			expectedPath: parentPath,
 			runWrittenWritePolicy,
@@ -1068,7 +1098,7 @@ export async function files_transfer_db_prepare_copy_item(
 		return Result({ _yay: null });
 	}
 
-	const resolved = await db_resolve_name(ctx, { run, item, membership, parent, parentPath });
+	const resolved = await db_resolve_name(ctx, { run, item, writeContext, parent, parentPath });
 	if (resolved._nay) return resolved;
 	if (!resolved._yay) return Result({ _yay: null });
 	if (item.preparation) {
@@ -1101,6 +1131,7 @@ export async function files_transfer_db_prepare_copy_item(
 			existing: resolved._yay.existing,
 			destinationMembership: membership,
 			sourceMembership: memberships.source,
+			writeContext,
 			copiedPolicies,
 			runWrittenWritePolicy,
 		},
@@ -1428,6 +1459,10 @@ async function db_start(
 		});
 
 	const sourceView = args.origin.kind === "agent" ? ("draft" as const) : ("saved" as const);
+	const writeContext = await public_api_credentials_db_get_write_context(ctx, {
+		credentialId: args.origin.kind === "api" ? args.origin.credentialId : null,
+		userId: membership.userId,
+	});
 	const publication = args.origin.kind === "agent" ? ("proposal" as const) : ("saved" as const);
 	const scope = {
 		organizationId: membership.organizationId,
@@ -1459,7 +1494,11 @@ async function db_start(
 					ctx,
 					run: { ...scope, ...sourceScope, sourceView },
 					target: args.sources[0]!,
-					reader: await files_visible_db_create_reader(ctx, { ...scope, ...sourceScope }),
+					reader: await files_visible_db_create_reader(ctx, {
+						...scope,
+						...sourceScope,
+						subject: writeContext.subject,
+					}),
 				})
 			: null;
 	const tooLong = files_check_name_and_path_length({
@@ -1520,7 +1559,7 @@ async function db_start(
 	if (!args.rename) {
 		const destination = await db_get_destination(ctx, {
 			run: { ...scope, sourceView, destinationScope },
-			membership: args.destinationMembership,
+			writeContext,
 			parent: args.targetParent,
 			expectedPath: args.targetPath,
 		});
@@ -2597,7 +2636,7 @@ export const retry_remaining = mutation({
 
 		const destination = await db_get_destination(ctx, {
 			run,
-			membership: memberships.destination,
+			writeContext: memberships.writeContext,
 			parent: run.targetParent,
 			expectedPath: run.targetPath,
 		});
@@ -2787,7 +2826,11 @@ async function db_copy_retry_manifest(ctx: MutationCtx, run: Doc<"files_transfer
 	await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 }
 
-async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
+async function db_select_sources(
+	ctx: MutationCtx,
+	run: Doc<"files_transfer_runs">,
+	writeContext: files_nodes_WriteContext,
+) {
 	const selection = run.selection!;
 	const items = await ctx.db
 		.query("files_transfer_selection_items")
@@ -2795,7 +2838,7 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 		.take(run.step === "normalize" ? 1 : 8);
 	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	const scope = { ...run, ...run.sourceScope };
-	const reader = await files_visible_db_create_reader(ctx, { ...scope, readLimit: 2048 });
+	const reader = await files_visible_db_create_reader(ctx, { ...scope, subject: writeContext.subject, readLimit: 2048 });
 	let cursor = selection.cursor;
 	let added = 0;
 	let normalizingParentPath = selection.normalizingParentPath;
@@ -2927,14 +2970,14 @@ async function db_select_sources(ctx: MutationCtx, run: Doc<"files_transfer_runs
 	return true;
 }
 
-async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
+async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">, writeContext: files_nodes_WriteContext) {
 	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	const item = await ctx.db
 		.query("files_transfer_items")
 		.withIndex("by_run_discoveryDone_order", (q) => q.eq("runId", run._id).eq("discoveryDone", false))
 		.first();
 	const sourceScope = { ...run, ...run.sourceScope };
-	const reader = await files_visible_db_create_reader(ctx, sourceScope);
+	const reader = await files_visible_db_create_reader(ctx, { ...sourceScope, subject: writeContext.subject });
 
 	if (item) {
 		const parent = item.parentItemId ? await ctx.db.get("files_transfer_items", item.parentItemId) : null;
@@ -2967,7 +3010,7 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 				organizationId: sourceScope.organizationId,
 				workspaceId: sourceScope.workspaceId,
 				visibilityUserId: run.userId,
-				subject: { kind: "user", userId: run.userId, plugin: null },
+				subject: writeContext.subject,
 				overlayUserId: run.userId,
 				requireComplete: true,
 				folderPath: source.path,
@@ -3085,9 +3128,9 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 async function db_plan(args: {
 	ctx: MutationCtx;
 	run: Doc<"files_transfer_runs">;
-	membership: Doc<"organizations_workspaces_users">;
+	writeContext: files_nodes_WriteContext;
 }) {
-	const { ctx, run, membership } = args;
+	const { ctx, run, writeContext } = args;
 
 	const pageSize = run.kind === "move" ? 8 : DISCOVERY_PAGE_SIZE;
 	const items = await ctx.db
@@ -3095,7 +3138,7 @@ async function db_plan(args: {
 		.withIndex("by_run_order", (q) => q.eq("runId", run._id).gt("order", run.planCursor ?? -1))
 		.take(pageSize);
 	const sourceScope = { ...run, ...run.sourceScope };
-	const reader = await files_visible_db_create_reader(ctx, sourceScope);
+	const reader = await files_visible_db_create_reader(ctx, { ...sourceScope, subject: writeContext.subject });
 	const nameLookups = { remaining: MAX_NAME_LOOKUPS_PER_BATCH };
 	let cursor = run.planCursor;
 
@@ -3132,7 +3175,7 @@ async function db_plan(args: {
 		if (parent?.state === "completed" && parent.outputTarget) {
 			const destination = await db_get_destination(ctx, {
 				run,
-				membership,
+				writeContext,
 				parent: parent.outputTarget,
 				expectedPath: parentPath,
 				runWrittenWritePolicy: parent.outputWritePolicy,
@@ -3146,7 +3189,7 @@ async function db_plan(args: {
 		const resolved = await db_resolve_name(ctx, {
 			run,
 			item,
-			membership,
+			writeContext,
 			// A child goes in the folder its parent item makes. A paste never merges folders, so a parent
 			// folder that is only planned is new and empty.
 			parent: parent ? (parent.state === "completed" ? parent.outputTarget : null) : run.targetParent,
@@ -3206,12 +3249,12 @@ async function db_plan(args: {
 async function db_commit_move(args: {
 	ctx: MutationCtx;
 	run: Doc<"files_transfer_runs">;
-	membership: Doc<"organizations_workspaces_users">;
+	writeContext: files_nodes_WriteContext;
 }) {
-	const { ctx, run, membership } = args;
+	const { ctx, run, writeContext } = args;
 
 	const scope = { ...run, ...run.sourceScope };
-	const reader = await files_visible_db_create_reader(ctx, scope);
+	const reader = await files_visible_db_create_reader(ctx, { ...scope, subject: writeContext.subject });
 	if (run.publication === "proposal") {
 		const item = await ctx.db
 			.query("files_transfer_items")
@@ -3238,7 +3281,7 @@ async function db_commit_move(args: {
 		const resolved = await db_resolve_name(ctx, {
 			run,
 			item,
-			membership,
+			writeContext,
 			parent: run.targetParent,
 			parentPath: run.targetPath,
 			reader,
@@ -3324,7 +3367,7 @@ async function db_commit_move(args: {
 		: await db_resolve_name(ctx, {
 				run,
 				item,
-				membership,
+				writeContext,
 				parent: run.targetParent,
 				parentPath: run.targetPath,
 				reader,
@@ -3341,8 +3384,19 @@ async function db_commit_move(args: {
 	}
 
 	if (!run.rename && source.parentId === targetParentId && resolved._yay.path === source.path) {
-		const authorized = await access_control_db_authorize_file_write(ctx, { userAuth: { id: run.userId }, membership, nodeId: source._id });
-		const writable = authorized._nay ? authorized : await files_nodes_db_require_user_writable(ctx, { node: source, userId: run.userId });
+		const authorized = await files_write_policy_db_has_write_context_permission(ctx, {
+			...run.sourceScope,
+			writeContext,
+			node: source,
+			permission: "content.write",
+		});
+		const writable = authorized
+			? await files_nodes_db_require_writable(ctx, {
+					...run.sourceScope,
+					writeContext,
+					target: { kind: "node", node: source },
+				})
+			: Result({ _nay: { message: "Permission denied" } });
 		if (writable._nay) {
 			await db_stop_run({ ctx, run, errorMessage: writable._nay.message });
 			return;
@@ -3555,8 +3609,8 @@ async function db_advance(
 	sealedMemberships?: Awaited<ReturnType<typeof db_get_run_memberships>>,
 ) {
 	// Each joined unit reads the run and its Activity again and repeats the Stop and deadline checks.
-	// A set membership also means this transaction already passed the checks below.
-	let membership: Doc<"organizations_workspaces_users"> | null = null;
+	// A set write context also means this transaction already passed the checks below.
+	let writeContext: files_nodes_WriteContext | null = null;
 	while (true) {
 		const run = await ctx.db.get("files_transfer_runs", args.runId);
 		if (!run) return null;
@@ -3570,7 +3624,7 @@ async function db_advance(
 			await db_cancel_items({ ctx, run, now: Date.now() });
 			return null;
 		}
-		const cohort = membership ? null : await db_get_active_move_cohort(ctx, run);
+		const cohort = writeContext ? null : await db_get_active_move_cohort(ctx, run);
 		if (cohort?.origin.kind === "transfer" && cohort.origin.runId === run._id) {
 			await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id });
 			return null;
@@ -3585,7 +3639,7 @@ async function db_advance(
 		// Run the access, wait and destination checks once per transaction. The joined units write only
 		// this run, its selection and items, and its Activity, so a second check gives the same answer.
 		// If a unit starts to write other docs, check again in each unit.
-		if (!membership) {
+		if (!writeContext) {
 			const memberships = sealedMemberships ?? (await db_get_run_memberships({ ctx, run, activity }));
 			if (!memberships) {
 				await db_stop_run({ ctx, run, errorMessage: "Permission denied" });
@@ -3679,7 +3733,7 @@ async function db_advance(
 			if (!run.rename) {
 				const destination = await db_get_destination(ctx, {
 					run,
-					membership: memberships.destination,
+					writeContext: memberships.writeContext,
 					parent: run.targetParent,
 					expectedPath: run.targetPath,
 				});
@@ -3688,7 +3742,7 @@ async function db_advance(
 					return null;
 				}
 			}
-			membership = memberships.destination;
+			writeContext = memberships.writeContext;
 		}
 
 		if (activity.status === "queued") {
@@ -3703,17 +3757,17 @@ async function db_advance(
 			return null;
 		}
 		if (run.step === "select" || run.step === "normalize") {
-			if (!(await db_select_sources(ctx, run))) return null;
+			if (!(await db_select_sources(ctx, run, writeContext))) return null;
 			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
 		if (run.step === "discover") {
-			await db_discover(ctx, run);
+			await db_discover(ctx, run, writeContext);
 			return null;
 		}
 		if (run.step === "plan") {
-			if (!(await db_plan({ ctx, run, membership }))) return null;
+			if (!(await db_plan({ ctx, run, writeContext }))) return null;
 			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
@@ -3721,7 +3775,7 @@ async function db_advance(
 		if (!run.rename && !(await db_prepare_parent_folders(ctx, run))) return null;
 		// Start refuses cross-workspace Move, and Retry keeps the old scopes, so every Move is in one workspace.
 		if (run.kind === "move") {
-			await db_commit_move({ ctx, run, membership });
+			await db_commit_move({ ctx, run, writeContext });
 			return null;
 		}
 		if (run.inFlight >= MAX_IN_FLIGHT) return null;
@@ -3959,6 +4013,7 @@ async function db_advance(
 
 			const copied = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				userId: run.userId,
+				writeContext,
 				organizationId: run.destinationScope.organizationId,
 				workspaceId: run.destinationScope.workspaceId,
 				parentId: outputParent.kind === "root" ? files_ROOT_ID : outputParent.id,

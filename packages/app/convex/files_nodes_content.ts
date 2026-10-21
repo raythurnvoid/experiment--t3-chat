@@ -1542,6 +1542,7 @@ export const get_transfer_file_copy_data = internalMutation({
 				destinationScope: files_transfer_scope_validator,
 				publication: doc(app_convex_schema, "files_transfer_runs").fields.publication,
 				userId: v.id("users"),
+				subject: access_control_subject_validator,
 				workId: vWorkId,
 				source: files_pending_target_validator,
 				capture: doc(app_convex_schema, "files_transfer_items").fields.capture,
@@ -1570,7 +1571,7 @@ export const get_transfer_file_copy_data = internalMutation({
 		if (prepared._nay) return await fail(prepared._nay.message);
 		if (prepared._yay === null) return prepared;
 
-		const { run, item, sourceEntry, existing } = prepared._yay;
+		const { run, item, sourceEntry, existing, writeContext } = prepared._yay;
 
 		// Only the first invocation owns this attempt's assets.
 		if (item.workId === null || item.stagedAssetIds.length > 0) return Result({ _yay: null });
@@ -1788,6 +1789,7 @@ export const get_transfer_file_copy_data = internalMutation({
 				destinationScope: run.destinationScope,
 				publication: run.publication,
 				userId: run.userId,
+				subject: writeContext.subject,
 				workId: item.workId,
 				source: item.source,
 				capture,
@@ -2459,6 +2461,7 @@ export const finalize_transfer_file_copy = internalMutation({
 			destinationMembership,
 			runWrittenWritePolicy,
 			copiedPolicies,
+			writeContext,
 		} = prepared._yay;
 		const now = Date.now();
 		if (
@@ -2924,6 +2927,7 @@ export const finalize_transfer_file_copy = internalMutation({
 			organizationId: run.destinationScope.organizationId,
 			workspaceId: run.destinationScope.workspaceId,
 			userId: run.userId,
+			writeContext,
 			parentId,
 			path: name,
 			kind: "file",
@@ -3339,7 +3343,9 @@ export const copy_transfer_file = internalAction({
 							organizationId: copyData.destinationScope.organizationId,
 							workspaceId: copyData.destinationScope.workspaceId,
 							userId: copyData.userId,
-							subject: { kind: "user", userId: copyData.userId, plugin: null },
+							// Read as the job's subject. A key bound to a service account replaces only text the
+							// account may read, not text only its person may read.
+							subject: copyData.subject,
 							path: copyData.replacement.path,
 							includePending: false,
 							maxBytes: files_MAX_TEXT_CONTENT_BYTES,

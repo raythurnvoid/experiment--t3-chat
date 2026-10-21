@@ -466,7 +466,7 @@ describe("media sharing clocks", () => {
 		await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
 	});
 
-	test("service-only sharing changes and revocation leave media clocks unchanged", async () => {
+	test("a lost service-account grant advances the workspace clock; a new grant and revocation do not", async () => {
 		const f = await fixture();
 		const nodeId = await create_folder(f);
 		const created = await f.asOwner.mutation(api.access_control.create_service_account, {
@@ -486,9 +486,12 @@ describe("media sharing clocks", () => {
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toHaveLength(1);
 		await expect_clocks({ f, before, changed: [] });
+		// A Move that a key bound to this account started pins this clock, so it must see the lost grant.
 		expect(await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, args)).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
-		await expect_clocks({ f, before, changed: [] });
+		await expect_clocks({ f, before, changed: [f.owner.workspaceId] });
+		// Revocation keeps the grants. Each Move step checks that the account is still active.
+		const removed = await read_clocks(f);
 		expect(
 			await f.asOwner.mutation(api.access_control.revoke_service_account, {
 				membershipId: f.owner.membershipId,
@@ -498,7 +501,7 @@ describe("media sharing clocks", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("access_control_service_accounts", serviceAccountId))).toMatchObject({
 			revokedAt: Date.now(),
 		});
-		await expect_clocks({ f, before, changed: [] });
+		await expect_clocks({ f, before: removed, changed: [] });
 	});
 
 	test("denied sharing leaves all clocks and grants unchanged", async () => {

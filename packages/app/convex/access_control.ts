@@ -700,6 +700,7 @@ export async function access_control_db_set_service_account_grant(
 	);
 	const now = Date.now();
 	let changed = false;
+	let removed = false;
 
 	for (const permission of access_control_FILE_SHARE_PERMISSIONS) {
 		const existing = await ctx.db
@@ -741,7 +742,19 @@ export async function access_control_db_set_service_account_grant(
 			}
 			await ctx.db.delete("access_control_permission_grants", existing._id);
 			changed = true;
+			removed = true;
 		}
+	}
+
+	// A Move that an API key bound to this account started checks each item once, then pins this clock
+	// until it saves. A lost grant must make that Move ask for review. A new grant cannot make a checked
+	// item unsafe, so it does not advance the clock. A revoked account has no live key, and each Move
+	// step checks the key, so its grants can go without stopping other Moves.
+	if (removed && account.revokedAt === null) {
+		await files_media_validation_db_advance_version(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+		});
 	}
 
 	return Result({ _yay: { changed } });
@@ -2646,6 +2659,14 @@ export const set_service_account_role = mutation({
 		const role = args.role ?? undefined;
 		if (account.role !== role) {
 			await ctx.db.patch("access_control_service_accounts", account._id, { role, updatedAt: Date.now() });
+			// Losing the old role's shares must make a running Move of this account ask for review, like a
+			// lost grant in `access_control_db_set_service_account_grant`.
+			if (account.role !== undefined) {
+				await files_media_validation_db_advance_version(ctx, {
+					organizationId: account.organizationId,
+					workspaceId: account.workspaceId,
+				});
+			}
 			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "service_account", serviceAccountId: account._id },

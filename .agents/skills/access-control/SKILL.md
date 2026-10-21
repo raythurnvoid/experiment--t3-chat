@@ -94,7 +94,12 @@ not permission caches. Final publication still checks current access.
 - Human/role file grants, root restriction, membership lifetime, saved media, placement, and write
   policy changes advance the workspace version. Unchanged or refused writes do not advance it.
 - Plugin mirrored human readers follow the same rule, including rollback and empty-reader root
-  restriction. Store-only changes and independent service-account grants are not human media access.
+  restriction. Store-only changes are not human media access.
+- A service-account grant that is removed or lowered, and a changed account role that had one
+  before, advance the workspace version. A Move that a key bound to the account started pins this
+  workspace version, so the change makes the Move ask for review.
+  A new or raised account grant, a first role, and revoke do not. Each Move step checks that the
+  account is still active.
 - Replaced content advances a separate content version (`files_content_versions`), not the
   workspace version. Copy and Save pin it too. A Move group pins only the organization, workspace
   and review versions. Data deletion removes it with the workspace.
@@ -123,7 +128,10 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
     by `plugins_sandbox_subject`.
   - An account-bound API key: `{ kind: "service_account", serviceAccountId }`. The key acts as the
     account. Its sponsor's own access does not matter. So a person who may manage service accounts
-    can act as any account through a key, except inside plugin output folders.
+    can act as any account through a key, except inside plugin output folders. A delete, move, or
+    copy job the key starts acts as the account at every step. The job reads the account from the
+    key it stores (`public_api_credentials_db_get_write_context`), because a key never changes its
+    account. Activity, billing, and the one-transfer-at-a-time slot still belong to the person.
   - A plugin writer request (write, inspect, ensure, reader set and undo) inside this installation's
     own private output folder: `{ kind: "service_account", serviceAccountId, installationId }`,
     built by `plugins_external_files_db_request_subject` only while its human can still read the

@@ -7,6 +7,7 @@ import { activities_is_active } from "./activities_db.ts";
 import { test_db_hold_move_slot, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_archive_runs_db_check_fast, files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_find_blocker, files_subtree_ops_STUCK_CODE } from "./files_subtree_ops_db.ts";
+import { files_nodes_user_write_context } from "../server/files-write-policy.ts";
 import {
 	fixture,
 	add_member,
@@ -692,7 +693,7 @@ describe("files_archive_runs_db_check_fast", () => {
 			const node = (await ctx.db.get("files_nodes", tree.topId))!;
 			const before = await ctx.meta.getTransactionMetrics();
 			const result = await files_archive_runs_db_check_fast(ctx, {
-				userAuth: { id: member.userId },
+				writeContext: files_nodes_user_write_context(member.userId),
 				membership,
 				nodes: [node],
 			});

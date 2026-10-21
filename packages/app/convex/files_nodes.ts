@@ -185,6 +185,7 @@ import {
 } from "./files_archive_runs.ts";
 import { files_transfer_db_start_rename } from "./files_transfer.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
+import { public_api_credentials_db_get_write_context } from "./public_api_credentials_db.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	files_pending_nodes_db_get_ancestry,
@@ -3956,16 +3957,20 @@ export async function files_nodes_db_archive_named_nodes(
 	},
 ) {
 	const { userAuth, membership, nodeIds } = args;
+	const writeContext = await public_api_credentials_db_get_write_context(ctx, {
+		credentialId: args.credentialId,
+		userId: userAuth.id,
+	});
 
 	// Like `rm` with several files, a named item that is missing is "Not found" for that item alone,
-	// and one the person cannot open or change is "Permission denied". The job lists it and archives
-	// the others.
+	// and one the caller cannot open or change is "Permission denied". The caller is the person, or
+	// the service account of the API key. The job lists it and archives the others.
 	const refusedNodes = new Map<Id<"files_nodes">, { name: string | null; message: string }>();
 	const fileNodes: Doc<"files_nodes">[] = [];
 	const writableNodeIds = new Set<Id<"files_nodes">>();
 	const loadedNodes = await Promise.all(nodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
 	// Per node, not per workspace, because a grant on one restricted folder has to be enough to
-	// archive what is inside it. This loop refuses a node the person cannot read. A node they can read
+	// archive what is inside it. This loop refuses a node the caller cannot read. A node they can read
 	// but not change is refused below, only when it is active, so an archived one is still dropped
 	// like in `rm -f`. The write check costs no extra read for an unrestricted tree, and the read
 	// check runs only when the write check fails.
@@ -3979,22 +3984,23 @@ export async function files_nodes_db_archive_named_nodes(
 			continue;
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
+		const authorized = await db_has_write_context_permission(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			writeContext,
+			node: fileNode,
 			permission: "content.write",
-			fileNode,
 		});
-		if (!authorized._nay) {
+		if (authorized) {
 			writableNodeIds.add(fileNode._id);
 		} else {
-			// A node the person cannot open is locked. It is refused here, whether it is archived or
+			// A node the caller cannot open is locked. It is refused here, whether it is archived or
 			// not, so the answer tells nothing more about it. A member with only folder grants has no
 			// workspace read, so an open node is locked for them too.
 			const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				subject: { kind: "user", userId: userAuth.id, plugin: null },
+				subject: writeContext.subject,
 				nodes: [fileNode],
 			});
 			if (!readable) {
@@ -4023,7 +4029,7 @@ export async function files_nodes_db_archive_named_nodes(
 	// When index reads prove that the check would pass, the request stamps the named items at once and
 	// the job runs no check. Otherwise the job checks every node inside before it archives anything.
 	const fastCheck = await files_archive_runs_db_check_fast(ctx, {
-		userAuth,
+		writeContext,
 		membership,
 		nodes: rootFileNodes.filter((node) => !refusedNodes.has(node._id)),
 	});

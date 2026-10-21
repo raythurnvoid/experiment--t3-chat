@@ -161,17 +161,19 @@ export async function files_nodes_db_resolve_parent_new_child_policy(
  * Allow a copy run into the parent it produced while the parent's current policy still equals
  * the value the run wrote there. A null or changed stored value keeps the live refusal.
  */
-export async function files_nodes_db_require_user_writable_or_matching_policy(
+export async function files_nodes_db_require_writable_or_matching_policy(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		node: Doc<"files_nodes">;
-		userId: Id<"users">;
+		writeContext: files_nodes_WriteContext;
 		runWrittenWritePolicy?: Doc<"files_nodes">["writePolicy"];
 	},
 ) {
-	const writable = await files_nodes_db_require_user_writable(ctx, {
-		node: args.node,
-		userId: args.userId,
+	const writable = await files_nodes_db_require_writable(ctx, {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		writeContext: args.writeContext,
+		target: { kind: "node", node: args.node },
 	});
 	if (!writable._nay) {
 		return writable;
@@ -189,6 +191,19 @@ export async function files_nodes_db_require_user_writable_or_matching_policy(
 }
 
 /**
+ * The write context of a person acting in the app, in the agent, or with a personal API key.
+ */
+export function files_nodes_user_write_context(userId: Id<"users">): files_nodes_WriteContext {
+	return {
+		subject: { kind: "user", userId, plugin: null },
+		writer: { kind: "user", userId },
+		actorUserId: userId,
+		resourceScope: { kind: "workspace" },
+		policyReach: "ancestors",
+	};
+}
+
+/**
  * Ordinary app and agent writes always use their current human actor.
  */
 export async function files_nodes_db_require_user_writable(
@@ -199,12 +214,6 @@ export async function files_nodes_db_require_user_writable(
 		organizationId: args.node.organizationId,
 		workspaceId: args.node.workspaceId,
 		target: { kind: "node", node: args.node },
-		writeContext: {
-			subject: { kind: "user", userId: args.userId, plugin: null },
-			writer: { kind: "user", userId: args.userId },
-			actorUserId: args.userId,
-			resourceScope: { kind: "workspace" },
-			policyReach: "ancestors",
-		},
+		writeContext: files_nodes_user_write_context(args.userId),
 	});
 }

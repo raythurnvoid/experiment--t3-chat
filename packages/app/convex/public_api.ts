@@ -104,7 +104,6 @@ import {
 	public_api_PLUGIN_RUN_TOKEN_REGEX,
 	public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 	public_api_PLUGIN_UI_TOKEN_REGEX,
-	public_api_SERVICE_ACCOUNT_SCOPES,
 	type public_api_Scope,
 } from "../shared/public-api.ts";
 import {
@@ -119,6 +118,7 @@ import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
+import { public_api_credentials_db_has_live_account } from "./public_api_credentials_db.ts";
 import {
 	plugins_external_files_db_check_write,
 	plugins_external_files_db_record_write,
@@ -355,28 +355,6 @@ async function authorize_credential_management(
 	return Result({ _yay: { user, membership, organization, workspace } });
 }
 
-async function db_has_live_credential_account(
-	ctx: QueryCtx,
-	credential: Pick<Doc<"api_credentials">, "organizationId" | "workspaceId" | "serviceAccountId" | "scopes">,
-) {
-	if (credential.serviceAccountId === null) {
-		return true;
-	}
-
-	const allowedScopes: readonly public_api_Scope[] = public_api_SERVICE_ACCOUNT_SCOPES;
-	if (credential.scopes.some((scope) => !allowedScopes.includes(scope))) {
-		return false;
-	}
-
-	const account = await ctx.db.get("access_control_service_accounts", credential.serviceAccountId);
-	return (
-		account !== null &&
-		account.revokedAt === null &&
-		account.organizationId === credential.organizationId &&
-		account.workspaceId === credential.workspaceId
-	);
-}
-
 async function authorize_credential_account_binding(
 	ctx: QueryCtx,
 	args: {
@@ -407,7 +385,7 @@ async function authorize_credential_account_binding(
 	}
 
 	if (
-		!(await db_has_live_credential_account(ctx, {
+		!(await public_api_credentials_db_has_live_account(ctx, {
 			organizationId: args.organization._id,
 			workspaceId: args.workspace._id,
 			serviceAccountId: args.serviceAccountId,
@@ -1929,7 +1907,7 @@ export const resolve_principal = internalQuery({
 			if (!crypto_timing_safe_equal(secretHash, credential.secretHash)) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
-			if (!(await db_has_live_credential_account(ctx, credential))) {
+			if (!(await public_api_credentials_db_has_live_account(ctx, credential))) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
@@ -2173,7 +2151,7 @@ async function db_revalidate_user_credential(
 		credential.userId !== args.userId ||
 		credential.organizationId !== args.organizationId ||
 		credential.workspaceId !== args.workspaceId ||
-		!(await db_has_live_credential_account(ctx, credential))
+		!(await public_api_credentials_db_has_live_account(ctx, credential))
 	) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}

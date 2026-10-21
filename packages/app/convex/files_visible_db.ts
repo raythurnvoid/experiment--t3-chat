@@ -2,7 +2,11 @@
 
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { QueryCtx, MutationCtx } from "./_generated/server.js";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import {
+	access_control_create_file_checker,
+	access_control_db_authorize_membership,
+	type access_control_Subject,
+} from "./access_control.ts";
 import { files_db_get_path_access } from "../server/files.ts";
 import { files_visible_resolve_db_create, type files_visible_resolve_Store } from "../server/files-visible-resolve.ts";
 import {
@@ -20,6 +24,11 @@ export async function files_visible_db_create_reader(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		/**
+		 * Read as this subject instead of the person `userId`. A job of an API key bound to a service
+		 * account reads as the account. The person must still be a member.
+		 */
+		subject?: access_control_Subject;
 		fixedView?: files_saved_placement_FixedView;
 		readLimit?: number;
 		resume?: { store: files_visible_resolve_Store; fence: string };
@@ -48,6 +57,7 @@ export async function files_visible_db_create_reader(
 			.first(),
 	);
 
+	const checker = args.subject ? access_control_create_file_checker(ctx, { ...args, subject: args.subject }) : null;
 	const readableByScope = new Map<string, Promise<boolean>>();
 	async function can_read(node: Doc<"files_nodes"> | null) {
 		if (!membership) return false;
@@ -55,12 +65,14 @@ export async function files_visible_db_create_reader(
 		const key = node ? `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}` : "workspace";
 		let readable = readableByScope.get(key);
 		if (!readable) {
-			readable = access_control_db_authorize_membership(ctx, {
-				userAuth: { id: args.userId },
-				membership,
-				permission: "content.read",
-				fileNode: node ?? undefined,
-			}).then((result) => !result._nay);
+			readable = checker
+				? checker.can(node, "content.read")
+				: access_control_db_authorize_membership(ctx, {
+						userAuth: { id: args.userId },
+						membership,
+						permission: "content.read",
+						fileNode: node ?? undefined,
+					}).then((result) => !result._nay);
 			readableByScope.set(key, readable);
 		}
 		return await readable;
@@ -150,7 +162,7 @@ export async function files_visible_db_create_reader(
 	}
 
 	/**
-	 * Why a path this reader cannot show is not there: a saved item the user cannot open is `locked`.
+	 * Why a path this reader cannot show is not there: a saved item the reader cannot open is `locked`.
 	 * A saved item that a draft moved away or deleted is `missing`, like the draft view shows it.
 	 */
 	async function path_access(path: string) {
@@ -158,7 +170,7 @@ export async function files_visible_db_create_reader(
 		const access = await files_db_get_path_access(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			subject: { kind: "user", userId: args.userId, plugin: null },
+			subject: args.subject ?? { kind: "user", userId: args.userId, plugin: null },
 			path,
 		});
 		return access.status === "locked" ? access : { status: "missing" as const };

@@ -13,7 +13,12 @@ import {
 	files_nodes_db_has_plugin_binding,
 	files_nodes_db_resume_file_content_materialization,
 } from "./files_nodes_db.ts";
-import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
+import {
+	files_nodes_db_require_writable,
+	files_nodes_user_write_context,
+	type files_nodes_WriteContext,
+} from "../server/files-write-policy.ts";
+import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
 import { files_subtree_ops_db_find_repair, files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
@@ -31,7 +36,7 @@ import {
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_publish_receipt,
 } from "../server/files-saved-placement.ts";
-import { access_control_db_authorize_membership, access_control_db_extended_chain_allows } from "./access_control.ts";
+import { access_control_db_extended_chain_allows } from "./access_control.ts";
 import {
 	activities_db_get_by_source_id,
 	activities_db_require_by_source_id,
@@ -39,7 +44,10 @@ import {
 } from "./activities_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
-import { public_api_credentials_db_is_live } from "./public_api_credentials_db.ts";
+import {
+	public_api_credentials_db_get_write_context,
+	public_api_credentials_db_is_live,
+} from "./public_api_credentials_db.ts";
 import { files_pending_nodes_db_can_save_to_copied_parent } from "./files_pending_nodes_db.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import {
@@ -420,29 +428,44 @@ async function db_claim_slot(
 	});
 }
 
+/**
+ * Who a Move step acts as: the person's membership, and the write context its access checks use. A
+ * Move that an API key bound to a service account started checks access as the account.
+ */
+type MoveActor = {
+	membership: Doc<"organizations_workspaces_users">;
+	writeContext: files_nodes_WriteContext;
+};
+
 async function db_authorize_node(
 	ctx: QueryCtx | MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 	node: Doc<"files_nodes"> | null,
 	privateSource?: Doc<"files_pending_nodes">,
 ) {
 	if (node && (node.organizationId !== cohort.organizationId || node.workspaceId !== cohort.workspaceId))
 		return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth: { id: cohort.userId },
-		membership,
-		permission: "content.write",
-		fileNode: node ?? undefined,
-	});
-	if (authorized._nay) return authorized;
+	if (
+		!(await files_write_policy_db_has_write_context_permission(ctx, {
+			...cohort,
+			writeContext: actor.writeContext,
+			node,
+			permission: "content.write",
+		}))
+	)
+		return Result({ _nay: { message: "Permission denied" } });
 	if (node) {
-		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: cohort.userId });
+		const writable = await files_nodes_db_require_writable(ctx, {
+			...cohort,
+			writeContext: actor.writeContext,
+			target: { kind: "node", node },
+		});
 		if (
 			writable._nay &&
 			privateSource &&
 			(await files_pending_nodes_db_can_save_to_copied_parent(ctx, {
-				membership,
+				membership: actor.membership,
 				node: privateSource,
 				savedParent: node,
 				cohort: { cohortId: cohort._id, fence: cohort.fence, attemptFence: cohort.attemptFence },
@@ -794,7 +817,7 @@ async function db_allocate_private(
 async function db_items(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 ) {
 	const order = cohort.stagedItemCount;
 	let target: Doc<"files_move_cohort_items">["target"];
@@ -873,7 +896,7 @@ async function db_items(
 			)
 				return Result({ _nay: { name: "source_changed", message: "The source changed. Review this Move again." } });
 		}
-		const authorized = await db_authorize_node(ctx, cohort, membership, node);
+		const authorized = await db_authorize_node(ctx, cohort, actor, node);
 		if (authorized._nay) return authorized;
 		reserved = await db_reserve_saved(ctx, cohort, { node, role: settlementOnly ? "replacement" : "selected" });
 	} else {
@@ -928,7 +951,7 @@ async function db_items(
 async function db_rename_parents(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 ) {
 	if (cohort.origin.kind !== "transfer") return Result({ _yay: { done: true } });
 	const run = (await ctx.db.get("files_transfer_runs", cohort.origin.runId))!;
@@ -969,7 +992,7 @@ async function db_rename_parents(
 		});
 		return Result({ _yay: { done: true } });
 	}
-	const access = await db_authorize_node(ctx, cohort, membership, parent);
+	const access = await db_authorize_node(ctx, cohort, actor, parent);
 	if (access._nay) return access;
 	const name = names[cursor.segmentIndex]!;
 	if (cursor.parentId === run.rename.source.parentId && name === run.rename.source.name)
@@ -1002,7 +1025,7 @@ async function db_rename_parents(
 			.unique();
 		if (selected || folder.kind !== "folder")
 			return Result({ _nay: { name: "destination_changed", message: "This folder already exists." } });
-		const allowed = await db_authorize_node(ctx, cohort, membership, folder);
+		const allowed = await db_authorize_node(ctx, cohort, actor, folder);
 		if (allowed._nay) return allowed;
 		const reserved = await db_reserve_saved(ctx, cohort, { node: folder, role: "anchor" });
 		if (reserved._nay) return reserved;
@@ -1136,7 +1159,7 @@ async function db_add_subtree(
 async function db_descendants(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 ) {
 	// Item, child and replacement producers queue their physical child ranges.
 	let range = await ctx.db
@@ -1162,7 +1185,7 @@ async function db_descendants(
 			cohortId: cohort._id,
 			view: "before",
 		});
-		const authorized = await db_authorize_node(ctx, cohort, membership, selectedNode);
+		const authorized = await db_authorize_node(ctx, cohort, actor, selectedNode);
 		if (authorized._nay) return authorized;
 	}
 	const cursor = JSON.parse(range.cursor!) as { source: "before" | "normal"; cursor: string | null };
@@ -1243,7 +1266,7 @@ async function db_descendants(
 async function db_headers(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 ) {
 	const record = cohort.planningCursor
 		? await ctx.db.get("files_move_cohort_nodes", cohort.planningCursor as Id<"files_move_cohort_nodes">)
@@ -1359,14 +1382,14 @@ async function db_headers(
 				cohortId: cohort._id,
 				view: "before",
 			}))!;
-			const readable = await access_control_db_authorize_membership(ctx, {
-				membership,
-				userAuth: { id: cohort.userId },
+			const readable = await files_write_policy_db_has_write_context_permission(ctx, {
+				...cohort,
+				writeContext: actor.writeContext,
+				node: sourceParent,
 				permission: "content.read",
-				fileNode: sourceParent,
 			});
 			// Move carries locked descendants, but an error must not name anything below them.
-			if (readable._nay) {
+			if (!readable) {
 				const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
 				const source = (await files_saved_placement_db_get_node(ctx.db, root.nodeId, {
 					cohortId: cohort._id,
@@ -1414,7 +1437,7 @@ async function db_headers(
 		if (!run?.rename || old?.parentId !== parentId) {
 			const privateSource =
 				item?.target.kind === "private" ? (await ctx.db.get("files_pending_nodes", item.target.id))! : undefined;
-			const access = await db_authorize_node(ctx, cohort, membership, parent, privateSource);
+			const access = await db_authorize_node(ctx, cohort, actor, parent, privateSource);
 			if (access._nay) return access;
 		}
 		if (old && old.parentId !== "root") {
@@ -1423,7 +1446,11 @@ async function db_headers(
 				view: "before",
 			});
 			if (sourceParent) {
-				const writable = await files_nodes_db_require_user_writable(ctx, { node: sourceParent, userId: cohort.userId });
+				const writable = await files_nodes_db_require_writable(ctx, {
+					...cohort,
+					writeContext: actor.writeContext,
+					target: { kind: "node", node: sourceParent },
+				});
 				if (writable._nay) return writable;
 			}
 		}
@@ -1432,13 +1459,13 @@ async function db_headers(
 			old.restrictedScopeNodeId !== record.nodeId &&
 			old.restrictedScopeNodeId !== scope
 		) {
-			const authorized = await access_control_db_authorize_membership(ctx, {
-				membership,
-				userAuth: { id: cohort.userId },
+			const authorized = await files_write_policy_db_has_write_context_permission(ctx, {
+				...cohort,
+				writeContext: actor.writeContext,
+				node: { ...physical, ...placement_header_from_place(old) },
 				permission: "content.permissions.manage",
-				fileNode: { ...physical, ...placement_header_from_place(old) },
 			});
-			if (authorized._nay)
+			if (!authorized)
 				return Result({
 					_nay: {
 						name: "permission_denied",
@@ -1518,7 +1545,7 @@ async function db_headers(
 	// A restricted folder inside the moved folder moves along and keeps its own people, like a folder
 	// on Linux or Windows. So the mover needs no access to it.
 	if (record.role === "replacement") {
-		const authorized = await db_authorize_node(ctx, cohort, membership, {
+		const authorized = await db_authorize_node(ctx, cohort, actor, {
 			...physical,
 			...placement_header_from_place(old!),
 		});
@@ -1558,7 +1585,7 @@ async function db_headers(
 					return Result({
 						_nay: { name: "destination_changed", message: "The destination is occupied. Review this Move again." },
 					});
-				const access = await db_authorize_node(ctx, cohort, membership, occupant);
+				const access = await db_authorize_node(ctx, cohort, actor, occupant);
 				if (access._nay) return access;
 				if (occupant.kind === "folder") {
 					const child = await ctx.db
@@ -1689,7 +1716,7 @@ async function db_headers(
 async function db_authorize_record(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 	record: Doc<"files_move_cohort_nodes">,
 ) {
 	if (record.role === "anchor") return Result({ _yay: null });
@@ -1699,7 +1726,7 @@ async function db_authorize_record(
 			after.parentId === "root"
 				? null
 				: await files_saved_placement_db_get_node(ctx.db, after.parentId, { cohortId: cohort._id, view: "after" });
-		return await db_authorize_node(ctx, cohort, membership, parent);
+		return await db_authorize_node(ctx, cohort, actor, parent);
 	}
 	let sourceId = record.nodeId;
 	if (record.role === "descendant" && record.itemId) {
@@ -1734,16 +1761,16 @@ async function db_authorize_record(
 			after?.parentId && after.parentId !== "root"
 				? await files_saved_placement_db_get_node(ctx.db, after.parentId, { cohortId: cohort._id, view: "after" })
 				: null;
-		return await db_authorize_node(ctx, cohort, membership, parent, privateNode);
+		return await db_authorize_node(ctx, cohort, actor, parent, privateNode);
 	}
 	if (!node) return Result({ _nay: { name: "needs_review", message: "A moved file is no longer available." } });
-	return await db_authorize_node(ctx, cohort, membership, node);
+	return await db_authorize_node(ctx, cohort, actor, node);
 }
 
 async function db_sides(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 	limitFactor: 4 | 16,
 ) {
 	const cursor = cohort.stagingCursor
@@ -1754,7 +1781,7 @@ async function db_sides(
 		.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).gt("order", cursor.order))
 		.first();
 	if (!record) return Result({ _yay: { done: true } });
-	const access = await db_authorize_record(ctx, cohort, membership, record);
+	const access = await db_authorize_record(ctx, cohort, actor, record);
 	if (access._nay) return access;
 	const after = await files_saved_placement_db_get_node(ctx.db, record.nodeId, { cohortId: cohort._id, view: "after" });
 	if (!after) throw should_never_happen("Move side work has no candidate", { recordId: record._id });
@@ -1985,7 +2012,7 @@ async function db_validate_done(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 async function db_validate(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-	membership: Doc<"organizations_workspaces_users">,
+	actor: MoveActor,
 ) {
 	const item = await ctx.db
 		.query("files_move_cohort_items")
@@ -1998,7 +2025,7 @@ async function db_validate(
 				return Result({ _nay: { name: "needs_review", message: "A reviewed change was revised. Review it again." } });
 		}
 		const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
-		const access = await db_authorize_record(ctx, cohort, membership, record);
+		const access = await db_authorize_record(ctx, cohort, actor, record);
 		if (access._nay) return access;
 		let paged = false;
 		if (item.contentId) {
@@ -2031,7 +2058,7 @@ async function db_validate(
 		.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "staged"))
 		.first();
 	if (record) {
-		const access = await db_authorize_record(ctx, cohort, membership, record);
+		const access = await db_authorize_record(ctx, cohort, actor, record);
 		if (access._nay) return access;
 		if (record.beforePlaceId && record.role !== "anchor") {
 			const before = await files_saved_placement_db_get_node(ctx.db, record.nodeId, {
@@ -2474,24 +2501,31 @@ async function db_retry_repair(
 	);
 }
 
-async function db_parent_running(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
+/**
+ * Get who this step acts as while the job that owns the Move still runs, or null when it stopped.
+ */
+async function db_get_running_write_context(
+	ctx: MutationCtx,
+	cohort: Doc<"files_move_cohorts">,
+): Promise<files_nodes_WriteContext | null> {
 	const activity = await activities_db_require_by_source_id(ctx, cohort.origin.runId);
-	if (!activities_is_active(activity.status) || activity.deadlineAt <= Date.now()) return false;
+	if (!activities_is_active(activity.status) || activity.deadlineAt <= Date.now()) return null;
 	if (cohort.origin.kind === "review") {
 		const run = await ctx.db.get("files_pending_update_runs", cohort.origin.runId);
 		const unit = await ctx.db.get("files_pending_update_run_units", cohort.origin.unitId);
-		return (
-			run?.step === "running" &&
+		return run?.step === "running" &&
 			run.fence === cohort.fence &&
 			run.planEpoch === cohort.origin.planEpoch &&
 			unit?.status === "preparing" &&
 			unit.attemptFence === cohort.attemptFence &&
 			unit.cohortId === cohort._id
-		);
+			? files_nodes_user_write_context(cohort.userId)
+			: null;
 	}
 	const run = await ctx.db.get("files_transfer_runs", cohort.origin.runId);
 	const item = await ctx.db.get("files_transfer_items", cohort.origin.itemId);
-	// A Move that an API key started stops at its next step once the key is revoked or loses write.
+	// A Move that an API key started stops at its next step once the key is revoked or loses write, or
+	// its service account is revoked.
 	if (
 		run?.origin.kind === "api" &&
 		!(await public_api_credentials_db_is_live(ctx, {
@@ -2501,8 +2535,13 @@ async function db_parent_running(ctx: MutationCtx, cohort: Doc<"files_move_cohor
 			scopes: ["files:write"],
 		}))
 	)
-		return false;
-	return run?.revision === cohort.fence && item?.state === "pending" && item.attempt === cohort.attemptFence;
+		return null;
+	if (!run || run.revision !== cohort.fence || item?.state !== "pending" || item.attempt !== cohort.attemptFence)
+		return null;
+	return await public_api_credentials_db_get_write_context(ctx, {
+		credentialId: run.origin.kind === "api" ? run.origin.credentialId : null,
+		userId: run.userId,
+	});
 }
 
 type StageRequest = {
@@ -2540,12 +2579,13 @@ async function db_advance_step(
 	if (cohort.repairNextRetryAt !== undefined && cohort.repairNextRetryAt > Date.now()) return null;
 	const call = { cohortId: cohort._id, fence: cohort.fence, attemptFence: cohort.attemptFence };
 	const repairing = cohort.publishedAt !== null || cohort.phase === "aborting";
-	let membership: Doc<"organizations_workspaces_users"> | null = null;
+	let actor: MoveActor | null = null;
 	let organization: Doc<"organizations"> | null = null;
 	if (!repairing) {
 		membershipReads.docs ??= await db_read_membership(ctx, cohort);
 		const authorized = await db_get_membership(ctx, cohort, membershipReads.docs);
-		if (authorized._nay || !(await db_parent_running(ctx, cohort))) {
+		const writeContext = authorized._nay ? null : await db_get_running_write_context(ctx, cohort);
+		if (authorized._nay || !writeContext) {
 			await db_abort(
 				ctx,
 				cohort,
@@ -2553,7 +2593,8 @@ async function db_advance_step(
 			);
 			return null;
 		}
-		({ membership, organization } = authorized._yay);
+		actor = { membership: authorized._yay.membership, writeContext };
+		organization = authorized._yay.organization;
 		const pins = cohort.clockPins;
 		// Keep this check even with no media: the same pins catch write policy and access changes while staging.
 		if (
@@ -2581,20 +2622,20 @@ async function db_advance_step(
 		| { _nay: { name?: string; message: string }; _yay?: undefined } = Result({ _yay: { done: false } });
 	let next: Doc<"files_move_cohorts">["workPhase"] | null = null;
 	if (cohort.workPhase === "items") {
-		result = await db_items(ctx, cohort, membership!);
+		result = await db_items(ctx, cohort, actor!);
 		// Only a Transfer Rename has parent folders to create.
 		next =
 			cohort.origin.kind === "transfer" && (await ctx.db.get("files_transfer_runs", cohort.origin.runId))?.rename
 				? "rename_parents"
 				: "descendants";
 	} else if (cohort.workPhase === "rename_parents") {
-		result = await db_rename_parents(ctx, cohort, membership!);
+		result = await db_rename_parents(ctx, cohort, actor!);
 		next = "descendants";
 	} else if (cohort.workPhase === "descendants") {
-		result = await db_descendants(ctx, cohort, membership!);
+		result = await db_descendants(ctx, cohort, actor!);
 		next = "headers";
 	} else if (cohort.workPhase === "headers") {
-		result = await db_headers(ctx, cohort, membership!);
+		result = await db_headers(ctx, cohort, actor!);
 		next = "owners_collect";
 		if (result._yay?.done) {
 			const subtree = await ctx.db
@@ -2615,7 +2656,7 @@ async function db_advance_step(
 			.first();
 		if (!record) result = Result({ _yay: { done: true } });
 		else {
-			const access = await db_authorize_record(ctx, cohort, membership!, record);
+			const access = await db_authorize_record(ctx, cohort, actor!, record);
 			if (access._nay) {
 				await db_abort(ctx, cohort, access._nay);
 				return null;
@@ -2667,7 +2708,7 @@ async function db_advance_step(
 		if (!item) result = Result({ _yay: { done: true } });
 		else {
 			const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
-			const access = await db_authorize_record(ctx, cohort, membership!, record);
+			const access = await db_authorize_record(ctx, cohort, actor!, record);
 			if (access._nay) {
 				await db_abort(ctx, cohort, access._nay);
 				return null;
@@ -2745,7 +2786,7 @@ async function db_advance_step(
 		else {
 			const item = (await ctx.db.get("files_move_cohort_items", content.itemId))!;
 			const record = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
-			const access = await db_authorize_record(ctx, cohort, membership!, record);
+			const access = await db_authorize_record(ctx, cohort, actor!, record);
 			if (access._nay) {
 				await db_abort(ctx, cohort, access._nay);
 				return null;
@@ -2770,13 +2811,13 @@ async function db_advance_step(
 		}
 		next = "sides";
 	} else if (cohort.workPhase === "sides") {
-		result = await db_sides(ctx, cohort, membership!, limitFactor);
+		result = await db_sides(ctx, cohort, actor!, limitFactor);
 		next = "owners_stage";
 	} else if (cohort.workPhase === "owners_stage") {
 		result = await files_move_owner_work_db_stage(ctx, call, limitFactor);
 		next = "validate";
 	} else if (cohort.workPhase === "validate") {
-		result = await db_validate(ctx, cohort, membership!);
+		result = await db_validate(ctx, cohort, actor!);
 		next = "publish";
 	} else if (cohort.workPhase === "publish") {
 		result = await db_publish(ctx, cohort, organization!);

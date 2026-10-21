@@ -54,7 +54,12 @@ import {
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
-import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
+import {
+	files_nodes_db_require_user_writable,
+	files_nodes_db_require_writable,
+	type files_nodes_WriteContext,
+} from "../server/files-write-policy.ts";
+import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
 import {
 	files_subtree_ops_db_delete,
 	files_subtree_ops_db_enqueue_nodes,
@@ -81,7 +86,10 @@ import {
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { public_api_credentials_db_is_live } from "./public_api_credentials_db.ts";
+import {
+	public_api_credentials_db_get_write_context,
+	public_api_credentials_db_is_live,
+} from "./public_api_credentials_db.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {
@@ -154,6 +162,11 @@ type StepArgs = {
 	run: RunFields;
 	progress: RunProgress;
 	userAuth: { id: Id<"users"> };
+	/**
+	 * Who the archive checks act as. A job that an API key bound to a service account started checks
+	 * access as the account. A restore always acts as the person.
+	 */
+	writeContext: files_nodes_WriteContext;
 	/**
 	 * Null when the requester left the workspace. The archive stamp walk goes on without them. The
 	 * checks and a restore stop.
@@ -277,10 +290,10 @@ async function db_get_owned_run(
 }
 
 /**
- * The person must still write each node the job changes: the node's own lock, and write access
- * where it lives. Access is asked once per restricted scope, and once for the unrestricted part of
+ * The job's write context (the person, or the service account of its API key) must still write each
+ * node the job changes: the node's own lock, and write access where it lives. Access is asked once per restricted scope, and once for the unrestricted part of
  * the workspace, so an ordinary tree costs one check per step.
- * A lock refusal also returns the locked node. The person passed the write check for it, so they
+ * A lock refusal also returns the locked node. The caller passed the write check for it, so they
  * may read it, and the refusal may name it.
  */
 async function db_check_writable_nodes(
@@ -299,18 +312,23 @@ async function db_check_writable_nodes(
 		const scopeKey = `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}`;
 		let allowed = args.checkedScopes.get(scopeKey);
 		if (allowed === undefined) {
-			const authorized = await access_control_db_authorize_membership(ctx, {
-				userAuth: args.userAuth,
-				membership,
+			allowed = await files_write_policy_db_has_write_context_permission(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				writeContext: args.writeContext,
+				node,
 				permission: "content.write",
-				fileNode: node,
 			});
-			allowed = !authorized._nay;
 			args.checkedScopes.set(scopeKey, allowed);
 		}
 		if (!allowed) return { kind: "failed", nay: { message: "Permission denied" } } as const;
 
-		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: args.userAuth.id });
+		const writable = await files_nodes_db_require_writable(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			writeContext: args.writeContext,
+			target: { kind: "node", node },
+		});
 		if (writable._nay) return { kind: "failed", nay: writable._nay, node } as const;
 	}
 	return null;
@@ -527,14 +545,8 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 		const sweptArgs = {
 			organizationId: args.run.organizationId,
 			workspaceId: args.run.workspaceId,
-			writeContext: {
-				subject: { kind: "user", userId: args.userAuth.id, plugin: null },
-				writer: { kind: "user", userId: args.userAuth.id },
-				actorUserId: args.userAuth.id,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
-		} as const;
+			writeContext: args.writeContext,
+		};
 		const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
 			...sweptArgs,
 			nodes: archivedNodes,
@@ -1716,7 +1728,7 @@ const FAST_CHECK_MAX_OPS = 500;
 
 /**
  * Decide with index reads only whether the archive check would pass for `nodes`: the named items the
- * person may write, with no named item inside another. Then the request stamps the named items itself,
+ * write context may write, with no named item inside another. Then the request stamps the named items itself,
  * and the job runs no check.
  *
  * Returns the named items to refuse now, with the reason the check would give, and `isFast`: true when
@@ -1727,7 +1739,7 @@ const FAST_CHECK_MAX_OPS = 500;
 export async function files_archive_runs_db_check_fast(
 	ctx: MutationCtx,
 	args: {
-		userAuth: { id: Id<"users"> };
+		writeContext: files_nodes_WriteContext;
 		membership: Doc<"organizations_workspaces_users">;
 		nodes: Doc<"files_nodes">[];
 	},
@@ -1737,7 +1749,12 @@ export async function files_archive_runs_db_check_fast(
 
 	// The item's own lock needs no read. The check would refuse it with the same reason.
 	for (const node of args.nodes) {
-		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: args.userAuth.id });
+		const writable = await files_nodes_db_require_writable(ctx, {
+			organizationId,
+			workspaceId,
+			writeContext: args.writeContext,
+			target: { kind: "node", node },
+		});
 		if (writable._nay) refusals.set(node._id, get_named_item_refusal(writable._nay, null));
 	}
 	const nodes = args.nodes.filter((node) => !refusals.has(node._id));
@@ -1773,7 +1790,9 @@ export async function files_archive_runs_db_check_fast(
 	if (!isQuiet) return { refusals, isFast: false };
 
 	const organization = await ctx.db.get("organizations", organizationId);
-	const isOwner = organization?.ownerUserId === args.userAuth.id;
+	// A service account is never the owner, even when the person behind its key is.
+	const { subject } = args.writeContext;
+	const isOwner = subject.kind === "user" && organization?.ownerUserId === subject.userId;
 
 	let isFast = true;
 	for (const node of nodes) {
@@ -2012,6 +2031,10 @@ export async function files_archive_runs_db_start(
 		run,
 		progress,
 		userAuth: args.userAuth,
+		writeContext: await public_api_credentials_db_get_write_context(ctx, {
+			credentialId: args.credentialId,
+			userId: args.userAuth.id,
+		}),
 		membership: args.membership,
 		now,
 		budget: args.budget,
@@ -2111,8 +2134,9 @@ export async function files_archive_runs_db_advance(
 	const { _id: runId, _creationTime: _runCreationTime, ...run } = storedRun;
 	const progress = { ...activity.progress };
 	const membership = await db_get_run_membership({ ctx, run: storedRun, activity });
-	// A job an API key started stops its checks once the key is revoked or loses write, like a lost
-	// membership. Only the steps check this, so the person still sees the job in the app.
+	// A job an API key started stops its checks once the key is revoked or loses write, or its service
+	// account is revoked, like a lost membership. Only the steps check this, so the person still sees
+	// the job in the app.
 	const isApiKeyLost =
 		storedRun.credentialId !== undefined &&
 		!(await public_api_credentials_db_is_live(ctx, {
@@ -2126,6 +2150,12 @@ export async function files_archive_runs_db_advance(
 		run,
 		progress,
 		userAuth: { id: storedRun.userId },
+		// When the key is lost, the step gets no membership, so no check runs. So read the key only while
+		// it is live. A data purge may have deleted it.
+		writeContext: await public_api_credentials_db_get_write_context(ctx, {
+			credentialId: isApiKeyLost ? null : (storedRun.credentialId ?? null),
+			userId: storedRun.userId,
+		}),
 		membership: isApiKeyLost ? null : membership,
 		now: args.now,
 		budget: {

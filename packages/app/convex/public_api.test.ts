@@ -9,6 +9,7 @@ import {
 	test_db_hold_move_source,
 	test_drain_billing_usage_event_outbox,
 	test_fill_saved_file_with_max_chunks,
+	test_finish_archive_jobs,
 	test_finish_transfer_run,
 	test_folder_chain_path,
 	test_LIMITS_AT_75_PERCENT,
@@ -5555,6 +5556,221 @@ describe("locked and missing paths", () => {
 			});
 			expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/dest/notes"] })).toMatchObject({
 				body: { items: [{ status: "missing" }] },
+			});
+		});
+
+		describe("a key bound to a service account", () => {
+			// The owner creates every account key, and the owner passes every app check. So each refusal
+			// below comes from the account's own grants, never from the person behind the key.
+			async function create_account_key(args: {
+				f: Awaited<ReturnType<typeof seed_hidden_folder>>;
+				grants: Array<
+					Pick<FunctionArgs<typeof api.access_control.set_service_account_grant>, "resource" | "level">
+				>;
+				scopes: FunctionArgs<typeof api.public_api.api_credential_create>["scopes"];
+			}) {
+				const { f } = args;
+				const account = await f.asOwner.mutation(api.access_control.create_service_account, {
+					membershipId: f.db.membershipId,
+					name: "Organizer bot",
+				});
+				if (account._nay) throw new Error(account._nay.message);
+				const { serviceAccountId } = account._yay;
+				for (const grant of args.grants) {
+					const granted = await f.asOwner.mutation(api.access_control.set_service_account_grant, {
+						membershipId: f.db.membershipId,
+						serviceAccountId,
+						...grant,
+					});
+					if (granted._nay) throw new Error(granted._nay.message);
+				}
+				// Key creation has a small rate bucket. Let it refill first.
+				vi.advanceTimersByTime(60_000);
+				const key = await f.asOwner.mutation(api.public_api.api_credential_create, {
+					membershipId: f.db.membershipId,
+					serviceAccountId,
+					name: "Organizer bot",
+					scopes: args.scopes,
+				});
+				if (key._nay) throw new Error(key._nay.message);
+				return { ...key._yay, serviceAccountId };
+			}
+
+			test("files delete archives only what the account may change", async () => {
+				const t = test_convex();
+				const f = await seed_hidden_folder(t);
+				const key = await create_account_key({
+					f,
+					grants: [
+						{ resource: { kind: "workspace" }, level: "read" },
+						{ resource: { kind: "file", nodeId: f.secretId }, level: "write" },
+					],
+					scopes: ["files:list", "files:write"],
+				});
+
+				// The account reads `/b.md` but cannot change it.
+				expect(
+					await post(t, "/api/v1/files/delete", key.credential, { paths: ["/b.md", "/secret/h01.md"] }),
+				).toEqual({
+					status: 200,
+					// A refused item keeps the job, so its Activity can list what was not archived.
+					body: {
+						jobId: expect.any(String),
+						isDone: true,
+						refused: [{ path: "/b.md", message: "Permission denied" }],
+					},
+				});
+				expect(
+					await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/secret/h01.md"] }),
+				).toMatchObject({ body: { items: [{ status: "found" }, { status: "missing" }] } });
+
+				// The write grant on `/secret` does not reach `/secret/shared`, its own restricted folder. So the
+				// account cannot delete `/secret` as a whole, though the owner behind the key could.
+				expect(await post(t, "/api/v1/files/delete", key.credential, { paths: ["/secret"] })).toEqual({
+					status: 200,
+					body: {
+						jobId: null,
+						isDone: true,
+						refused: [{ path: "/secret", message: "You cannot change an item inside it." }],
+					},
+				});
+
+				// Control: the person behind the key may delete both.
+				expect(
+					await post(t, "/api/v1/files/delete", f.ownerCredential, { paths: ["/b.md", "/secret"] }),
+				).toMatchObject({ status: 200, body: { refused: [] } });
+				await test_finish_archive_jobs(t);
+				expect(
+					await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/secret/shared/ok.md"] }),
+				).toMatchObject({ body: { items: [{ status: "missing" }, { status: "missing" }] } });
+			});
+
+			test("files move needs the account's own write on the destination and manage to leave a restricted folder", async () => {
+				const t = test_convex();
+				const f = await seed_hidden_folder(t);
+				const reader = await create_account_key({
+					f,
+					grants: [{ resource: { kind: "workspace" }, level: "read" }],
+					scopes: ["files:list", "files:write"],
+				});
+				expect(
+					await post(t, "/api/v1/files/move", reader.credential, { from: ["/b.md"], to: "/notes", requestId: "read-1" }),
+				).toEqual({ status: 403, body: { message: "Permission denied" } });
+
+				// Write on `/secret` lets the account change what is inside, but taking an item out changes who
+				// can open it, which needs Can manage there.
+				const writer = await create_account_key({
+					f,
+					grants: [
+						{ resource: { kind: "workspace" }, level: "write" },
+						{ resource: { kind: "file", nodeId: f.secretId }, level: "write" },
+					],
+					scopes: ["files:list", "files:write", "files:permissions"],
+				});
+				const moved = await post(t, "/api/v1/files/move", writer.credential, {
+					from: ["/b.md", "/secret/h01.md"],
+					to: "/notes",
+					requestId: "write-1",
+				});
+				expect(moved.status).toBe(200);
+				const { jobId } = moved.body as { jobId: string };
+				await finish_move(t, jobId);
+				expect(await post(t, "/api/v1/files/jobs/get", writer.credential, { jobId })).toMatchObject({
+					status: 200,
+					body: {
+						status: "partial",
+						refused: [
+							{ path: "/secret/h01.md", message: "You need Can manage on the shared folder to move this out of it." },
+						],
+					},
+				});
+				expect(
+					await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/notes/b.md", "/secret/h01.md"] }),
+				).toMatchObject({ body: { items: [{ status: "found" }, { status: "found" }] } });
+
+				// Control: the person behind the key may move it out.
+				const sharer = await create_key({
+					asUser: f.asOwner,
+					membershipId: f.db.membershipId,
+					scopes: ["files:list", "files:write", "files:permissions"],
+				});
+				const ownerMove = await post(t, "/api/v1/files/move", sharer.credential, {
+					from: ["/secret/h01.md"],
+					to: "/notes",
+					requestId: "owner-1",
+				});
+				await finish_move(t, (ownerMove.body as { jobId: string }).jobId);
+				expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/notes/h01.md"] })).toMatchObject({
+					body: { items: [{ status: "found" }] },
+				});
+			});
+
+			test("files copy skips the items the account cannot open", async () => {
+				const t = test_convex();
+				const f = await seed_hidden_folder(t);
+				const lockedId = await seed_markdown_file({ t, ...f.db, path: "/mix/locked.md", committedMarkdown: "# no" });
+				await t.run((ctx) =>
+					ctx.db.patch("files_nodes", lockedId, {
+						restrictedScopeNodeId: lockedId,
+						isRestrictedScopeRoot: true,
+						parentScopeNodeId: null,
+					}),
+				);
+				expect((await post(t, "/api/v1/files/mkdir", f.ownerCredential, { paths: ["/mix/sub"] })).status).toBe(200);
+				const key = await create_account_key({
+					f,
+					grants: [{ resource: { kind: "workspace" }, level: "write" }],
+					scopes: ["files:list", "files:read", "files:download", "files:write"],
+				});
+
+				const copy = async (credential: string, to: string) => {
+					const started = await post(t, "/api/v1/files/copy", credential, { from: ["/mix"], to, requestId: to });
+					expect(started.status, to).toBe(200);
+					const { jobId } = started.body as { jobId: string };
+					await finish_copy(t, jobId);
+					const job = await post(t, "/api/v1/files/jobs/get", credential, { jobId, cursor: "denied:-1" });
+					return job.body as { progress: { skipped: number }; refused: Array<{ path: string; message: string }> };
+				};
+				expect(await copy(key.credential, "/notes/bot-copy")).toMatchObject({
+					progress: { skipped: 1 },
+					refused: [{ path: "/mix/locked.md", message: "Permission denied" }],
+				});
+				// Control: the person behind the key may open the locked file, so the copy does not skip it.
+				// It copies no file bytes here, like the tests above.
+				expect(await copy(f.ownerCredential, "/notes/owner-copy")).toMatchObject({
+					progress: { skipped: 0 },
+					refused: [],
+				});
+			});
+
+			test("a job stops at its next step once its account is revoked", async () => {
+				const t = test_convex();
+				const f = await seed_hidden_folder(t);
+				const key = await create_account_key({
+					f,
+					grants: [{ resource: { kind: "workspace" }, level: "write" }],
+					scopes: ["files:list", "files:write"],
+				});
+				const move = await post(t, "/api/v1/files/move", key.credential, {
+					from: ["/b.md"],
+					to: "/notes",
+					requestId: "revoke-account",
+				});
+				expect(move.status).toBe(200);
+				expect(
+					await f.asOwner.mutation(api.access_control.revoke_service_account, {
+						membershipId: f.db.membershipId,
+						serviceAccountId: key.serviceAccountId,
+					}),
+				).toEqual({ _yay: null });
+
+				const { jobId } = move.body as { jobId: string };
+				await finish_move(t, jobId);
+				// The step gate stops it. Without the gate, a later access check would stop it with another message.
+				expect(await get_activity(t, jobId)).toMatchObject({ status: "failed", errorMessage: "Permission denied" });
+				expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md"] })).toMatchObject({
+					body: { items: [{ status: "found" }] },
+				});
 			});
 		});
 

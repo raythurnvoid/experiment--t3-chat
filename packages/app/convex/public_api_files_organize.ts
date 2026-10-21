@@ -27,6 +27,7 @@ import { files_transfer_queries_db_require_activity } from "./files_transfer_que
 import { public_api_db_revalidate_file_write_principal, public_api_get_invalid_name_message } from "./public_api.ts";
 import { public_api_validate_canonical_folder_path } from "./public_api_plugin_files.ts";
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
+import { public_api_credentials_db_get_write_context } from "./public_api_credentials_db.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
 import { rate_limiter_limit_by_key, rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
@@ -439,14 +440,6 @@ export const delete_paths = internalMutation({
 			});
 		}
 		const { subject } = revalidated._yay.writeContext;
-		// The archive job checks each item as a person with a membership. A key bound to a service account
-		// has narrower grants than its person, so it must not run as that person.
-		if (subject.kind !== "user") {
-			throw fail({
-				message: "Keys bound to a service account cannot move, copy, or delete files yet.",
-				status: 403,
-			});
-		}
 
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
@@ -964,14 +957,6 @@ export const transfer_paths = internalMutation({
 			});
 		}
 		const { subject } = revalidated._yay.writeContext;
-		// The transfer job checks each item as a person with a membership. A key bound to a service account
-		// has narrower grants than its person, so it must not run as that person.
-		if (subject.kind !== "user") {
-			throw fail({
-				message: "Keys bound to a service account cannot move, copy, or delete files yet.",
-				status: 403,
-			});
-		}
 
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
@@ -1357,7 +1342,12 @@ export const get_job = internalQuery({
 		const readableNodes = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
-			subject: { kind: "user", userId: run.userId, plugin: null },
+			subject: (
+				await public_api_credentials_db_get_write_context(ctx, {
+					credentialId: args.credentialId,
+					userId: args.userId,
+				})
+			).subject,
 			nodes,
 		});
 		const pathByNodeId = new Map(readableNodes.map((node) => [node._id, node.path]));

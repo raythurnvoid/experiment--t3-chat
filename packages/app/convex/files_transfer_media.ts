@@ -98,22 +98,24 @@ export async function files_transfer_media_db_map_refs(
 	args: {
 		prepared: Pick<
 			NonNullable<Awaited<ReturnType<typeof files_transfer_db_prepare_copy_item>>["_yay"]>,
-			"run" | "item" | "destinationMembership"
+			"run" | "item" | "destinationMembership" | "writeContext"
 		>;
 		refs: string[];
 	},
 ) {
 	if (args.refs.length > files_media_dependencies_PAGE_SIZE)
 		return Result({ _nay: { message: "Invalid media selection page" } });
-	const { run, destinationMembership } = args.prepared;
+	const { run, destinationMembership, writeContext } = args.prepared;
 	const sourceReader = await files_visible_db_create_reader(ctx, {
 		...run.sourceScope,
 		userId: run.userId,
+		subject: writeContext.subject,
 		readLimit: 4096,
 	});
 	const destinationReader = await files_visible_db_create_reader(ctx, {
 		...run.destinationScope,
 		userId: run.userId,
+		subject: writeContext.subject,
 		readLimit: 4096,
 	});
 	const referencePairs: [string, string][] = [];
