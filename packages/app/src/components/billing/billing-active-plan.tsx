@@ -243,9 +243,8 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 	const pendingUpdateText = get_pending_update_text(subscription, scheduledChangeProductName);
 	const title = billing_get_product_display_name(product.name);
 
-	// The snapshot's subscription is the source of truth for billing currency:
-	// Polar's product prices can omit `priceCurrency` for Free, but every
-	// `customer.state_changed` active subscription carries a currency.
+	// The snapshot's subscription is the source of truth for billing currency.
+	// Every `customer.state_changed` active subscription carries a currency.
 	const snapshotSubscription =
 		usageSnapshot?.subscription?.id != null &&
 		usageSnapshot.subscription.id === subscription.id &&

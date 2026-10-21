@@ -14,10 +14,11 @@ function createFreeProduct() {
 		prices: [
 			{
 				id: "price_free",
-				amountType: "free",
+				amountType: "fixed",
 				isArchived: false,
 				productId: "prod_free",
 				priceCurrency: "eur",
+				priceAmount: 0,
 				recurringInterval: "month",
 			},
 		],
