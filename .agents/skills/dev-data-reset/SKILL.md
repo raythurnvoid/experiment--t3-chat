@@ -68,7 +68,7 @@ Drive the owner's signed-in app tab (Clerk user preserved by the wipe). Reload t
 
 Follow `../app-playwriter-harness/SKILL.md` for current browser discovery, exact browser-key selection, session creation, and harness setup. Use `-f` for multi-line runners; short one-line `-e` calls remain valid. Keep each execute call to one action and verify state through `convex data` readbacks instead of in-page sleeps. If the app tab shows the "Something went wrong" error boundary, reload the bound tab with `state.page.reload()` and continue.
 
-First-party plugin repositories (git submodules under `plugins/`):
+First-party plugin repositories (git submodules under `plugins/`; copy the real URLs from `.gitmodules`):
 
 - `https://github.com/<owner>/bonobo-plugin-gallery`
 - `https://github.com/<owner>/bonobo-plugin-image`

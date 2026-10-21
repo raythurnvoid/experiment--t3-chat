@@ -57,7 +57,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - The global `playwriter` command may not exist on this machine. Run it through Vite Plus: `vp env exec pnpx playwriter`.
 - Create sessions and run CLI calls from the task's personal `+ai` folder so generated scratch files stay outside the repository. Load repo helpers through absolute `-f` paths; the CLI reads them before sandbox execution. Check `session list` before trusting sandbox paths. Propose documentation memories through the harness, then edit them with the agent's targeted edit tool.
 - In this repo, run Playwriter through Vite Plus, for example `vp env exec pnpx playwriter browser list`.
-- **`pnpx playwriter` fails with `ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND` (`No package.json ... dlx\<hash>\<id>\node_modules\playwriter`) after it adds ~196 packages.** The cause is the Claude desktop app, not Playwriter. It is a Microsoft Store (MSIX) app, so its processes get a private copy of `AppData\Local` under `AppData\Local\Packages\Claude_<id>\LocalCache\Local`. Inside the repo, `packageManager` pins pnpm 10, and pnpm 10 links dlx packages with junctions that hold the absolute real `AppData` path. Node follows the junction to the real folder, which is empty, and gets `ENOENT`. pnpm 12 (used outside the repo) makes relative symlinks, so it works. Fix: keep the pnpm cache outside `AppData`. On this machine `%USERPROFILE%\.npmrc` sets `cache-dir=%USERPROFILE%\.pnpm-cache`. Check with `vp env exec pnpm config get cache-dir`. Verified 2026-10-17 with pnpm 10.33.0 and playwriter 0.8.0.
+- **`pnpx playwriter` fails with `ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND` (`No package.json ... dlx\<hash>\<id>\node_modules\playwriter`) after it adds ~196 packages.** The cause is the Claude desktop app, not Playwriter. It is a Microsoft Store (MSIX) app, so its processes get a private copy of `AppData\Local` under `AppData\Local\Packages\Claude_<id>\LocalCache\Local`. Inside the repo, `packageManager` pins pnpm 10, and pnpm 10 links dlx packages with junctions that hold the absolute real `AppData` path. Node follows the junction to the real folder, which is empty, and gets `ENOENT`. pnpm 12 (used outside the repo) makes relative symlinks, so it works. Fix: keep the pnpm cache outside `AppData`. On this machine `%USERPROFILE%\.npmrc` sets `cache-dir` to `.pnpm-cache` in the user profile folder. Check with `vp env exec pnpm config get cache-dir`. Verified 2026-10-17 with pnpm 10.33.0 and playwriter 0.8.0.
   - pnpm 12 (outside the repo, for example in the personal `+ai` folder) does not read `cache-dir` from `.npmrc`. `pnpm config get cache-dir` prints `undefined`, the cache lands in `AppData\Local\pnpm-cache`, and `pnpx playwriter` fails with `ERR_PNPM_CLI_DLX_READ_MANIFEST` (`Failed to read the installed manifest ... The system cannot find the path specified`). Set the env var in the same shell call first: `$env:pnpm_config_cache_dir = "$env:USERPROFILE\.pnpm-cache"`. Then `config get cache-dir` prints that path and `pnpx playwriter` works. Verified 2026-10-19 with pnpm 12.14.0.
 - When a nested CLI's `--help` shows Vite Plus help, pass the command after `vp env exec -- ... --help`. Check the printed command name before treating that output as the nested tool's documentation.
 - Do not use Vite Plus package-filtered execution for Playwriter; it changes the cwd to `packages/app`. Keep the personal task folder as cwd and pass absolute helper paths.
@@ -1333,7 +1333,7 @@ before you opened your tab pinned whatever unrelated app the shared browser alre
 Every helper then answered about that tab without failing — `auditAccessibility` returned a clean
 report for another product and `latestLogs` returned `[]`, which reads as "no console errors on my
 route". Hit 2026-08-20, where an
-audit of the files route came back describing `personal-market-radar` widgets. Hit again
+audit of the files route came back describing another repo's widgets. Hit again
 2026-08-23: a session that never called `bindOpenTab` ran `auditAccessibility(...)` with its page
 held only in its own `state`, and the report silently described a peer agent's dashboard-preview
 tab on `localhost:5199` — a surface from this same repo, so nothing about the numbers looked wrong.
@@ -1422,7 +1422,7 @@ this from growing.
 The relay process is shared across repositories, and whichever one started it owns its working
 directory. A runner that builds a fixture path with `path.resolve(".agents/skills/...")` then points
 at the _other_ repo — hit 2026-08-18 as
-`ENOENT … '<workspace>\personal-market-radar\.agents\skills\…'` while
+`ENOENT … '<other repo>\.agents\skills\…'` while
 running from `t3-chat`. Write fixture paths as absolute literals. This is the same relay-ownership
 root cause as the WSL entry above, in a form that survives a Windows-only relay, so `session list`
 showing a clean Windows CWD does not rule it out.
@@ -2035,8 +2035,8 @@ row.matches(":hover"); // stale-hover tells you here, the screenshot never will
 ## Windows backslash paths inside `-e` JavaScript are eaten before Node sees them
 
 `-e 'await ...setInputFiles(["C:\Users\<user>\AppData\..."])'` arrives at the executor as
-`C:Users<user>AppData...`: the shell collapses `\` to `\`, and JavaScript then reads `\U` as `U` and
-`\r` (a user name that starts with `r`) as a carriage return. The path is no longer absolute, so the relay resolves it against its own
+`C:Users<user>AppData...`: the shell collapses `\` to `\`, and JavaScript then reads `\U` as `U`, and a
+folder name that starts with `r`, `n` or `t` becomes a control character. The path is no longer absolute, so the relay resolves it against its own
 CWD and the error reads `ENOENT ... 'C:\...\t3-chat\Users<user>AppData...'`, which looks like a missing
 file rather than a mangled string. Observed 2026-08-24.
 

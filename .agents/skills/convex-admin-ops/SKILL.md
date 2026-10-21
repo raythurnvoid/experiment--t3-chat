@@ -27,7 +27,7 @@ Before a live Convex operation, load the domain skill that owns the behavior bei
 Run Convex commands from `packages/app` through Vite Plus and the installed Node CLI. This direct invocation preserves JSON arguments on this machine:
 
 ```powershell
-Push-Location <workspace>\t3-chat\packages\app
+Push-Location "$(git rev-parse --show-toplevel)\packages\app"
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable "<module:function>" '<json args>'
 Pop-Location
 ```
@@ -192,7 +192,7 @@ Workspace members can uninstall a plugin from its plugin detail page (`plugins.u
 Run preview → delete → preview readback from `packages/app`:
 
 ```powershell
-Push-Location <workspace>\t3-chat\packages\app
+Push-Location "$(git rev-parse --show-toplevel)\packages\app"
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:hard_delete_plugin_from_registry '{"pluginName":"<name>"}'
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
@@ -265,7 +265,7 @@ From `packages/app`, export to a new path and name the operation in the file:
 
 ```powershell
 $deployment = "<confirmed-deployment>"
-$snapshotDirectory = "<workspace>\t3-chat-+personal\+ai\convex-recovery-<YYYY-MM-DD>"
+$snapshotDirectory = "$(git rev-parse --show-toplevel)-+personal\+ai\convex-recovery-<YYYY-MM-DD>"
 $snapshotPath = Join-Path $snapshotDirectory "before-<operation>.zip"
 
 New-Item -ItemType Directory -Force -Path $snapshotDirectory | Out-Null
@@ -283,7 +283,7 @@ Import only as an explicitly approved recovery action. Confirm the deployment, s
 
 ```powershell
 $deployment = "<confirmed-deployment>"
-$snapshotPath = "<workspace>\t3-chat-+personal\+ai\convex-recovery-<YYYY-MM-DD>\before-<operation>.zip"
+$snapshotPath = "$(git rev-parse --show-toplevel)-+personal\+ai\convex-recovery-<YYYY-MM-DD>\before-<operation>.zip"
 
 Get-Item -LiteralPath $snapshotPath | Select-Object FullName, Length
 Get-FileHash -LiteralPath $snapshotPath -Algorithm SHA256

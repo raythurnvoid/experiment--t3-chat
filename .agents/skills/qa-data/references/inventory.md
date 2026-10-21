@@ -36,7 +36,7 @@ Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts be
 
 | User id | Who | Notes |
 | --- | --- | --- |
-| `m577heygr826f2wgk6r30mk1vd8928q2` | The owner's main account. The QA Edge profile is signed in as it. | Never sign it out. |
+| (not written here) | The owner's main account. The QA Edge profile is signed in as it. | Never sign it out. |
 | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | `qa.perm.owner` | Owns `qa-browser`. |
 | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | `qa.perm.admin` | Personal org only. |
 | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns `qa-tmp-share`, member of `chitchat-qa` and `qa-browser` (seen 2026-10-11). |

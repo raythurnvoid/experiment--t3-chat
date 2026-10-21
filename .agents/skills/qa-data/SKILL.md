@@ -87,7 +87,7 @@ personal `+ai` folder, never to the repo.
 windows are missing, so check the time ranges the script prints.
 
 ```powershell
-$d = "<workspace>/t3-chat-+personal/+ai/<task>-<YYYY-MM-DD>"
+$d = "$(git rev-parse --show-toplevel)-+personal/+ai/<task>-<YYYY-MM-DD>"
 foreach ($t in "users", "organizations", "organizations_workspaces", "organizations_workspaces_users", "plugins_workspace_installations", "ai_chat_threads", "files_nodes", "files_r2_assets") {
 	vp env exec pnpm --dir packages/app exec convex data $t --format jsonArray --limit 8000 > "$d/$t.json"
 	echo "$t EXIT: $LASTEXITCODE"

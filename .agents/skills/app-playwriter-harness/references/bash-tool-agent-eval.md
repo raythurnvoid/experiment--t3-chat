@@ -769,11 +769,11 @@ sidebar or any public API file route. The scenarios below tested a real synced l
 Fixture: mount `/.mounts/t3-chat` (source `t3-chat`, owner `<owner>` / repo `experiment--t3-chat` @ `main`). For the full eval fixture, sync to terminal `status: "idle"` and confirm `lastCommitSha != null` before running so the repo contents are complete. Bash mount visibility is gated on `lastCommitSha` (the mount serves the immutable commit root `/<name>/<commitSha>/...`), so a mount whose first sync is running or errored exposes nothing, and shell paths never show the commit sha. Against a deployment where the GitHub mount code is already pushed, use:
 
 ```powershell
-Push-Location <workspace>\t3-chat\packages\app
+Push-Location "$(git rev-parse --show-toplevel)\packages\app"
 
 $upsertArgs = @{
 	name = "t3-chat"
-	owner = "<owner>"
+	owner = "<owner>" # the owner in `git remote get-url origin`
 	repo = "experiment--t3-chat"
 	ref = "main"
 } | ConvertTo-Json -Compress
