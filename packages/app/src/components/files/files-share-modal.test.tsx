@@ -540,7 +540,9 @@ describe("FilesShareModal", () => {
 		mockShareState({ ...FILE_SHARE, link: LINK });
 		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canManage: true };
 		// The file changed while the dialog was open, so the new answer lists nothing.
-		mediaQueryMock.mockResolvedValueOnce({ media: [{ ...photo, isPublic: false }] }).mockResolvedValueOnce({ media: [] });
+		mediaQueryMock
+			.mockResolvedValueOnce({ media: [{ ...photo, isPublic: false }] })
+			.mockResolvedValueOnce({ media: [] });
 		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
 		renderModal();
 		await waitForDialogFocus();
