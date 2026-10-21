@@ -14,6 +14,7 @@ import {
 	test_LIMITS_AT_75_PERCENT,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_rename_node,
 	test_seed_folder_chain,
 	test_spy_handler,
 } from "./setup.test.ts";
@@ -5169,7 +5170,8 @@ describe("locked and missing paths", () => {
 			const t = test_convex();
 			const f = await seed_hidden_folder(t);
 			expect((await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/dest"] })).status).toBe(200);
-			const body = { from: ["/b.md", "/notes", "/hidden.md", "/missing.md"], to: "/dest", requestId: "move-1" };
+			// A folder may end with "/", like in `mv`.
+			const body = { from: ["/b.md", "/notes/", "/hidden.md", "/missing.md"], to: "/dest", requestId: "move-1" };
 			const refused = [
 				{ path: "/hidden.md", message: "Permission denied" },
 				{ path: "/missing.md", message: "Not found" },
@@ -5277,6 +5279,17 @@ describe("locked and missing paths", () => {
 			).toEqual({
 				status: 409,
 				body: { message: '`to` ends with "/", so it must be an existing folder.', path: "/archive/" },
+			});
+			// A trailing "/" on a `from` path refuses a file, like `mv file.md/ dest`.
+			expect(
+				await post(t, "/api/v1/files/move", f.memberCredential, {
+					from: ["/notes/renamed.md/"],
+					to: "/notes/other.md",
+					requestId: "rename-7",
+				}),
+			).toEqual({
+				status: 200,
+				body: { jobId: null, isDone: true, refused: [{ path: "/notes/renamed.md/", message: "Not a folder" }] },
 			});
 			// The API never renames on its own, so a new name must already be clean.
 			expect(
@@ -5494,6 +5507,54 @@ describe("locked and missing paths", () => {
 				}),
 			).toMatchObject({
 				body: { items: [{ status: "found" }, { status: "missing" }, { status: "found" }, { status: "missing" }] },
+			});
+		});
+
+		test("a job stops with the reason where an app job would wait for a choice", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+			expect((await post(t, "/api/v1/files/mkdir", f.ownerCredential, { paths: ["/dest"] })).status).toBe(200);
+			const notes = await t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.filter((q) => q.eq(q.field("path"), "/notes"))
+					.first(),
+			);
+			const copier = await create_key({
+				asUser: f.asOwner,
+				membershipId: f.db.membershipId,
+				scopes: ["files:list", "files:read", "files:download", "files:write"],
+			});
+			const copy = await post(t, "/api/v1/files/copy", copier.credential, {
+				from: ["/notes"],
+				to: "/dest",
+				requestId: "source-changed",
+			});
+			const { jobId } = copy.body as { jobId: string };
+			const activity = (await get_activity(t, jobId))!;
+			if (activity.source.kind !== "files_transfer_run") throw new Error("Not a transfer job");
+			const runId = activity.source.id;
+
+			// Let the copy plan first, so it has read the source. Then rename the source in the app.
+			for (
+				let step = 0;
+				step < 20 && (await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))!.step !== "apply";
+				step++
+			) {
+				await t.mutation(internal.files_transfer.advance, { runId });
+			}
+			expect(
+				(await test_rename_node(t, f.asOwner, { membershipId: f.db.membershipId, nodeId: notes!._id, path: "renamed" }))
+					._nay,
+			).toBeUndefined();
+
+			await finish_copy(t, jobId);
+			expect(await post(t, "/api/v1/files/jobs/get", copier.credential, { jobId })).toMatchObject({
+				status: 200,
+				body: { status: "failed", errorMessage: "Source changed" },
+			});
+			expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/dest/notes"] })).toMatchObject({
+				body: { items: [{ status: "missing" }] },
 			});
 		});
 

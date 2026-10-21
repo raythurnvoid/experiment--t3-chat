@@ -620,7 +620,7 @@ export const transfer_paths = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		kind: v.union(v.literal("move"), v.literal("copy")),
-		/** Absolute, normalized paths, not the root. */
+		/** Absolute, normalized paths, not the root. A trailing "/" means it must be a folder. */
 		from: v.array(v.string()),
 		/**
 		 * An absolute, normalized path. The root means "into the root folder". A trailing "/" means it
@@ -711,12 +711,22 @@ export const transfer_paths = internalMutation({
 		const refused: Array<{ path: string; message: string }> = [];
 		const sources: Array<{ kind: "saved"; id: Id<"files_nodes"> }> = [];
 		for (const path of args.from) {
-			const access = await files_db_get_path_access(ctx, { ...args, subject, path });
-			if (access.status === "found") {
-				sources.push({ kind: "saved", id: access.node._id });
-			} else {
+			const mustBeFolder = path.endsWith("/");
+			const access = await files_db_get_path_access(ctx, {
+				...args,
+				subject,
+				path: mustBeFolder ? path.slice(0, -1) : path,
+			});
+			if (access.status !== "found") {
 				refused.push({ path, message: access.status === "locked" ? "Permission denied" : "Not found" });
+				continue;
 			}
+			// Like `mv file.md/ dest`, a trailing "/" refuses a file.
+			if (mustBeFolder && access.node.kind !== "folder") {
+				refused.push({ path, message: "Not a folder" });
+				continue;
+			}
+			sources.push({ kind: "saved", id: access.node._id });
 		}
 		if (sources.length === 0) {
 			return { jobId: null, isDone: true, refused };
@@ -879,6 +889,7 @@ export async function public_api_files_organize_http_transfer(args: {
 	}
 
 	const from: string[] = [];
+	const fromPaths = new Set<string>();
 	for (const rawPath of body._yay.from) {
 		if (!rawPath.startsWith("/")) {
 			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
@@ -887,10 +898,12 @@ export async function public_api_files_organize_http_transfer(args: {
 		if (normalized === "/") {
 			return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
 		}
-		if (from.includes(normalized)) {
+		if (fromPaths.has(normalized)) {
 			return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
 		}
-		from.push(normalized);
+		fromPaths.add(normalized);
+		// Keep a trailing "/": like in `mv`, it says the path must be a folder.
+		from.push(rawPath.endsWith("/") ? `${normalized}/` : normalized);
 	}
 	if (!body._yay.to.startsWith("/")) {
 		return { status: 400, body: { message: "Path must be absolute.", path: body._yay.to } } as const;
