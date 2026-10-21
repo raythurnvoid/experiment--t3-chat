@@ -1403,7 +1403,8 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
 5. E's stored restricted scope equals D's stored restricted scope. This is a scope boundary, not
    proof that D's editor can read E. Add people may give the editor access to D alone.
 6. `files_share_link_media` holds an approval for this exact link, media node and asset. The
-   approval action checks the authenticated person's write access to D and read access to E.
+   approval action checks the authenticated person's write access to D (manage access for a
+   review in Sharing) and read access to E.
    It uses the existing per-node access checks. It adds no parent walk or writer-list scan.
 
 A document inside a restricted folder that embeds an image from an open folder still shows a gray
@@ -1415,9 +1416,11 @@ reference stays gray on the public page. It never blocks Save. Opening a documen
 or rebuilding its Yjs text must not approve media.
 
 The editor's file picker and upload completion approve the deliberately inserted image or video
-for the current link. With no link they create no approval. A manager can also review saved media
-in Sharing and approve each listed item. Review pins the link and asset; a replacement needs a
-fresh review. Existing links keep their text and URLs, but old images need this review once.
+for the current link. With no link they create no approval. A read-only document refuses this
+approval. Approvals charge their own `files_share_link_media_write` bucket. A manager can also
+review saved media in Sharing and approve each listed item. Review pins the link and asset; a
+replacement needs a fresh review. Existing links keep their text and URLs, but old images need
+this review once.
 No old content is treated as proof of an author's read access. New links start with no approvals.
 
 Checked plugin additions record approvals in the final write. A plugin write that adds a new

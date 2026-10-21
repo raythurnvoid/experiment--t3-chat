@@ -198,13 +198,21 @@ test("approving inserted media does not spend the file tree write quota", async 
 		path: "/page.md",
 		textContent: `![Photo](bonobo-file://${imageId})`,
 	});
-	await link_on(f, nodeId);
+	expect(
+		await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			enabled: true,
+		}),
+	).toEqual({ _yay: null });
+	await reset_rate_limits(f.t, [f.db.userId]);
 	// An upload batch spends the tree quota on its uploads. Their approvals must still go through.
-	await f.t.run(async (ctx) => {
-		for (let index = 0; index < 50; index++) {
-			await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: f.db.userId });
-		}
-	});
+	// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+	vi.spyOn(Date, "now").mockReturnValue(Date.now());
+	const drained = await f.t.run((ctx) =>
+		rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: f.db.userId, count: 50 }),
+	);
+	expect(drained).toBeNull();
 	expect(
 		await f.asOwner.mutation(api.files_share_links.approve_inserted_media, {
 			membershipId: f.db.membershipId,

@@ -512,6 +512,33 @@ describe("FilesShareModal", () => {
 		expect(document.querySelector('[data-share-media="unshared"]')).toBeTruthy();
 	});
 
+	test("says when the link changed and nothing was shared", async () => {
+		mockShareState({ ...FILE_SHARE, link: LINK });
+		mediaQueryMock.mockResolvedValue({
+			linkId: "link_1",
+			media: [
+				{
+					available: true,
+					src: "bonobo-file://image_1",
+					kind: "image",
+					name: "Photo.png",
+					assetId: "asset_1",
+					shared: false,
+				},
+			],
+		});
+		mutationMock.mockResolvedValue({ _yay: { shared: false } });
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("button", { name: "Review images and videos" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Share Photo.png through this link" }));
+
+		expect((await screen.findByRole("alert")).textContent).toBe(
+			"This public link changed or stopped working. Select Refresh list.",
+		);
+		expect(document.querySelector('[data-share-media="unshared"]')).toBeTruthy();
+	});
+
 	test("names a creator who left, and shows Unknown when the profile is missing or failed", () => {
 		mockShareState({ ...FILE_SHARE, link: { ...LINK, createdBy: "gone_1" } });
 
