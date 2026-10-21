@@ -568,15 +568,20 @@ describe("FilesShareModal", () => {
 
 	test("says an item stays public when a folder above still makes it public", async () => {
 		mockShareState({ ...FILE_SHARE, public: "on" });
-		mutationMock.mockResolvedValue({ _yay: { public: "inherited" } });
+		// Like the live query, the dialog reads the new state after the write.
+		mutationMock.mockImplementation(async () => {
+			mockShareState({ ...FILE_SHARE, public: "inherited" });
+			return { _yay: { public: "inherited" } };
+		});
 		renderModal();
 		await waitForDialogFocus();
 		fireEvent.click(screen.getByRole("combobox", { name: "Anyone on the web" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Not public" }));
 
 		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Still public through a folder above"));
-		// The select goes away for an inherited item, so focus must stay in the dialog.
-		expect(document.activeElement).toBe(document.querySelector("[data-share-public]"));
+		// The select is gone for an inherited item, so focus must not fall out of the dialog.
+		await waitFor(() => expect(screen.queryByRole("combobox", { name: "Anyone on the web" })).toBeNull());
+		expect(document.activeElement).toBe(document.querySelector('[data-share-public="inherited"]'));
 		expect(mutationMock).toHaveBeenCalledWith("set_public", {
 			membershipId: "membership_1",
 			nodeId: "node_1",

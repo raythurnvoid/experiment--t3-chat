@@ -57,6 +57,12 @@
 		&:last-child {
 			padding-bottom: 0;
 		}
+
+		/* "Anyone on the web" gets focus when its select goes away. Same outline as the people list. */
+		&:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: 2px;
+		}
 	}
 
 	/* The heading and the sentence sit on the left. The actions sit on the right while they fit. When the
