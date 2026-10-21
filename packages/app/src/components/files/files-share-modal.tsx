@@ -306,7 +306,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 				if (nextItem?.available && !nextItem.isPublic) {
 					setError("This file is public, but this page cannot show it yet. It may still be uploading.");
 				} else {
-					// The row's button is gone now, so keep focus in the dialog. An empty answer removes the list too.
+					// The row's button is gone now, so keep focus in the dialog. No answer or an empty one removes the list too.
 					(next && next.media.length > 0 ? listRef : rootRef).current?.focus();
 				}
 			}
@@ -322,6 +322,9 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 			ref={rootRef}
 			// Not reachable by Tab. `handleMakePublic` focuses it when the new answer has no list.
 			tabIndex={-1}
+			// A role, so the name below is allowed and a screen reader says where focus landed.
+			role="group"
+			aria-label="Images and videos"
 			className={"FilesShareModalMedia" satisfies FilesShareModalLink_ClassNames}
 		>
 			<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>

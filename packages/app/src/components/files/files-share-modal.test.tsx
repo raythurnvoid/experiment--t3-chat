@@ -549,7 +549,7 @@ describe("FilesShareModal", () => {
 
 		expect(await screen.findByText("This file has no saved images or videos.")).toBeTruthy();
 		// The list and its button are gone, so focus must not fall out of the dialog.
-		expect(document.activeElement).toBe(document.querySelector(".FilesShareModalMedia"));
+		expect(document.activeElement).toBe(screen.getByRole("group", { name: "Images and videos" }));
 	});
 
 	test("says when a public image still cannot show, and shows rows the caller cannot change", async () => {
