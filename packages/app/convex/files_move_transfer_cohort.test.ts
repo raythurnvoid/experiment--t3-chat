@@ -448,7 +448,8 @@ test("another accepted Move waits for the workspace cohort before reading its so
 		state: "completed",
 		paginationOpts: { cursor: null, numItems: 8 },
 	});
-	expect(receipt?.page[0]?.source, "receipt source does not expose the old physical header").toBeNull();
+	// Results are job history: the receipt keeps the path the job recorded, not the current one.
+	expect(receipt?.page[0]?.source).toEqual({ target: { kind: "saved", id: f.nodeId }, path: "/old.txt", name: "old.txt" });
 	expect(receipt?.page[0]?.movedNodeId).toBe(f.nodeId);
 	await release(f);
 	await f.t.mutation(internal.files_transfer.advance, { runId });

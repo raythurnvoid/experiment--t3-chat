@@ -413,6 +413,13 @@ describe("Move unchanged plain chunks", () => {
 			await f.t.query(api.files_share_links.get_share_link_view, { token }),
 			"reparented public token ends at publication",
 		).toBeNull();
+		expect(
+			(await f.asUser.query(api.files_sharing.get_node_share_state, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+			}))!.link,
+			"the share dialog shows the ended link as off before cleanup removes it",
+		).toBeNull();
 		await drive_to(f, move, "finish_nodes");
 		await assert_reused(f, original);
 		await finish(f, move);
