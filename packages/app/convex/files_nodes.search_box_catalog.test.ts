@@ -574,7 +574,7 @@ describe("search box doors", () => {
 			nodeId: seeded.tasksFolderId,
 		});
 		if (restricted._nay) throw new Error(restricted._nay.message);
-		// The docs of `/tasks` move to its area with the saved scope job.
+		// The docs inside `/tasks` move to its area in the walk, or in a saved scope job for a big file.
 		await test_finish_saved_scope_jobs(t);
 
 		const search = () =>

@@ -601,8 +601,8 @@ describe("hard delete", () => {
 });
 
 describe("saved scope job", () => {
-	// Archive and Restore patch only the nodes. The saved scope job then copies the new scope onto each
-	// file's saved chunks and metadata docs, one page per run.
+	// Full-size files have more than 16 chunks, so Archive and Restore patch only their nodes. The saved
+	// scope job then copies the new scope onto each file's saved chunks and metadata docs, one page per run.
 	test("keeps Archive and Restore of two full-size files at the longest path under the budget", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

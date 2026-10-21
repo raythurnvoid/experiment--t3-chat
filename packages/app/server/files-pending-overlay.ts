@@ -2497,21 +2497,26 @@ export async function files_pending_overlay_db_schedule_saved_scope(
 }
 
 /**
- * Make a saved node's chunks and metadata docs follow its new path or archive state. A node with few
- * of them is patched in this mutation. A bigger one gets a saved scope job, so one big file costs
+ * Make a saved node's chunks and metadata docs follow its new path, archive state or area. A node with
+ * few of them is patched in this mutation. A bigger one gets a saved scope job, so one big file costs
  * this mutation little.
  *
- * Archive and Restore call this for every item of a step. A job per item would add 2 scheduler runs
- * per item before the next step can start, so small items skip the job.
+ * Archive, Restore and the scope op (Restrict, Unrestrict) call this for every item of a step. A job
+ * per item would add up to 2 scheduler runs per item before the next step can start, so small items
+ * skip the job.
+ *
+ * `metadataOnly`: only the area changed, like in `files_pending_overlay_db_schedule_saved_scope`.
+ * Text chunks have no area, so they are not read.
  */
 export async function files_pending_overlay_db_follow_saved_scope(
 	ctx: MutationCtx,
 	node: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId">,
+	args: { metadataOnly?: boolean } = {},
 ) {
 	// A job of this node may be in the middle of a pass. Let it walk once more, so it cannot write
 	// the old scope after this mutation.
 	if (await files_pending_overlay_db_has_saved_scope_job(ctx, node._id)) {
-		await files_pending_overlay_db_schedule_saved_scope(ctx, node);
+		await files_pending_overlay_db_schedule_saved_scope(ctx, node, args);
 		return;
 	}
 
@@ -2531,7 +2536,7 @@ export async function files_pending_overlay_db_follow_saved_scope(
 		.take(INLINE_SAVED_SCOPE_DOCS + 1);
 	// Only files have text chunks.
 	const chunks =
-		metadataDocs.length > INLINE_SAVED_SCOPE_DOCS || savedNode.kind !== "file"
+		metadataDocs.length > INLINE_SAVED_SCOPE_DOCS || savedNode.kind !== "file" || args.metadataOnly
 			? []
 			: await ctx.db
 					.query("files_plain_text_chunks")
@@ -2545,7 +2550,7 @@ export async function files_pending_overlay_db_follow_saved_scope(
 					)
 					.take(INLINE_SAVED_SCOPE_DOCS + 1);
 	if (metadataDocs.length > INLINE_SAVED_SCOPE_DOCS || chunks.length > INLINE_SAVED_SCOPE_DOCS) {
-		await files_pending_overlay_db_schedule_saved_scope(ctx, node);
+		await files_pending_overlay_db_schedule_saved_scope(ctx, node, args);
 		return;
 	}
 

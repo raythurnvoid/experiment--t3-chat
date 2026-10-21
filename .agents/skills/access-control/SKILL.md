@@ -1009,8 +1009,9 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
   or a restricted area R (needs `content.read` on R itself, so added people inside R get nothing).
   One area per call; a member never reads rows of an area they cannot open, and every refusal gets
   the same empty answer. A grant change writes no catalog row. After a restrict the area rows follow
-  the saved scope job ("late is fine"). `list_folder_fields` shows restricted children's keys to the
-  owner only (see above). See the `file-metadata` skill, "Suggestions".
+  late: the scope job patches each item's docs when it reaches the item (or the item's saved scope job
+  does), then the compactor applies the counts ("late is fine"). `list_folder_fields` shows restricted
+  children's keys to the owner only (see above). See the `file-metadata` skill, "Suggestions".
 - `files_metadata.list_node_fields` and `get_field_values` check the node on every call: they load
   the saved node, check tenant and active state, then `access_control_db_authorize_membership(...,
   { fileNode })` with `content.read`. A private target or a refusal returns null, including after a
