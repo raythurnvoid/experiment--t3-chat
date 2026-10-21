@@ -226,6 +226,11 @@
 	}
 
 	.RouteApiKeysList-revokedSummary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
 		padding: 12px 14px;
 
 		font-size: 13px;
@@ -242,6 +247,22 @@
 
 		&:focus-visible {
 			outline-color: var(--color-fg-12);
+		}
+	}
+
+	.RouteApiKeysList-revokedChevron {
+		flex-shrink: 0;
+		width: 16px;
+		height: 16px;
+
+		transition: transform 0.15s ease;
+
+		.RouteApiKeysList-revoked[open] & {
+			transform: rotate(180deg);
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			transition: none;
 		}
 	}
 	/* #endregion list */
@@ -473,11 +494,20 @@
 	/* #endregion verification status */
 
 	/* #region create modal editor */
+	/* Monaco's suggest and hover popups cannot move to the app-wide popup container from inside a modal
+	   (see `files-properties-modal.tsx`). So let them paint above and below the editor box, and clip
+	   them only at its sides, so they never make the dialog scroll sideways. */
 	.RouteApiKeysCreateModalEditor {
-		overflow: hidden;
+		overflow-x: clip;
 
 		border: 1px solid var(--color-base-1-07);
 		border-radius: 8px;
+
+		/* Round the editor itself, because the box no longer clips its corners. */
+		.monaco-editor,
+		.monaco-editor .overflow-guard {
+			border-radius: 7px;
+		}
 
 		/* Hide Monaco's "Cannot edit in read-only editor" bubble. The editor is read-only only while the
 		   key is being created, and the editor box clips the bubble. Monaco sets `display` inline on the
@@ -496,8 +526,9 @@
 	/* #endregion create modal editor */
 
 	/* #region create modal */
+	/* Keep the editor wide enough for Monaco's suggest list, which is 430px wide. */
 	.RouteApiKeysCreateModal {
-		width: min(92vw, 520px);
+		width: min(92vw, 600px);
 	}
 
 	.RouteApiKeysCreateModal-form {
@@ -574,6 +605,11 @@
 	}
 
 	.RouteApiKeysCreateModal-scopesSummary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
 		padding: 10px 14px;
 
 		font-size: 15px;
@@ -590,6 +626,22 @@
 
 		&:focus-visible {
 			outline-color: var(--color-fg-12);
+		}
+	}
+
+	.RouteApiKeysCreateModal-scopesChevron {
+		flex-shrink: 0;
+		width: 16px;
+		height: 16px;
+
+		transition: transform 0.15s ease;
+
+		.RouteApiKeysCreateModal-scopes[open] & {
+			transform: rotate(180deg);
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			transition: none;
 		}
 	}
 

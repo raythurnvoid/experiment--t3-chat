@@ -67,6 +67,22 @@ export const editor = {
 	setModelMarkers() {},
 };
 
+export const languages = {
+	CompletionItemKind: {
+		Property: 9,
+		Value: 13,
+	},
+	CompletionItemInsertTextRule: {
+		InsertAsSnippet: 4,
+	},
+	registerCompletionItemProvider() {
+		return { dispose() {} };
+	},
+	registerHoverProvider() {
+		return { dispose() {} };
+	},
+};
+
 // The app config turns the worker-backed language features off at import time (tokenizer-only
 // rule), so the stub has to carry the same namespaces.
 export const json = {

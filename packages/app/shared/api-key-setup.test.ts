@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { api_key_setup_parse } from "./api-key-setup.ts";
+import { api_key_setup_parse, api_key_setup_suggest } from "./api-key-setup.ts";
 
 const ALLOWED_SCOPES = ["files:list", "files:read", "files:write", "files:publish"] as const;
 const SERVICE_ACCOUNT_SCOPES = ["files:list", "files:read", "files:write"] as const;
@@ -95,5 +95,32 @@ describe("api_key_setup_parse", () => {
 		const result = parse_personal('{\u00A0"name": "Reader",\u00A0"scopes": ["files:list"]}');
 
 		expect(result.setup).toEqual({ name: "Reader", scopes: ["files:list"] });
+	});
+});
+
+describe("api_key_setup_suggest", () => {
+	test("suggests only the allowed scopes the list does not have yet, and replaces the string under the cursor", () => {
+		const text = '{"name": "Reader", "scopes": ["files:list", "fi"]}';
+
+		const result = api_key_setup_suggest(text, text.indexOf('fi"') + 2, SERVICE_ACCOUNT_SCOPES);
+
+		expect(result).toEqual({
+			kind: "scope",
+			values: ["files:read", "files:write"],
+			replace: { offset: text.indexOf('"fi"'), length: 4 },
+		});
+	});
+
+	test("suggests the missing field names and sees a colon that is already there", () => {
+		const text = '{"name": "Reader", "sc": []}';
+
+		const result = api_key_setup_suggest(text, text.indexOf('sc"') + 2, ALLOWED_SCOPES);
+
+		expect(result).toEqual({
+			kind: "field",
+			values: ["scopes"],
+			replace: { offset: text.indexOf('"sc"'), length: 4 },
+			colonFollows: true,
+		});
 	});
 });

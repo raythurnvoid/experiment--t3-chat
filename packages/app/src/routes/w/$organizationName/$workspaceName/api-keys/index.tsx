@@ -5,9 +5,33 @@ import { createFileRoute } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { useQuery } from "convex/react";
-import { AlertTriangle, CheckCircle2, Info, KeyRound, Plus, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
-import { editor as monaco_editor, MarkerSeverity as monaco_MarkerSeverity } from "monaco-editor";
-import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import {
+	AlertTriangle,
+	CheckCircle2,
+	ChevronDown,
+	Info,
+	KeyRound,
+	Plus,
+	RotateCw,
+	ShieldCheck,
+	Trash2,
+} from "lucide-react";
+import {
+	editor as monaco_editor,
+	languages as monaco_languages,
+	MarkerSeverity as monaco_MarkerSeverity,
+} from "monaco-editor";
+import {
+	memo,
+	useEffect,
+	useId,
+	useImperativeHandle,
+	useLayoutEffect,
+	useRef,
+	useState,
+	type FormEvent,
+	type Ref,
+} from "react";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
@@ -39,7 +63,11 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { cn } from "@/lib/utils.ts";
-import { api_key_setup_parse } from "../../../../../../shared/api-key-setup.ts";
+import {
+	api_key_setup_hover_target,
+	api_key_setup_parse,
+	api_key_setup_suggest,
+} from "../../../../../../shared/api-key-setup.ts";
 import { public_api_SERVICE_ACCOUNT_SCOPES } from "../../../../../../shared/public-api.ts";
 
 const API_KEY_DATETIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
@@ -90,6 +118,18 @@ const API_KEY_SCOPE_ROWS = [
 // The setup accepts only the scopes the "All scopes" list shows, so a pasted scope is always explained there.
 const API_KEY_SETUP_ALLOWED_SCOPES = API_KEY_SCOPE_ROWS.map((row) => row.scope);
 
+// The scopes a service account key may use, in the "All scopes" list order. The editor suggests only
+// these while the Identity is a service account.
+const API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES = API_KEY_SETUP_ALLOWED_SCOPES.filter((scope) =>
+	public_api_SERVICE_ACCOUNT_SCOPES.some((serviceAccountScope) => serviceAccountScope === scope),
+);
+
+// Docs for the two setup fields, shown in the editor's suggestions and on hover.
+const API_KEY_SETUP_FIELD_DOCS = {
+	name: "A name that tells you where the key is used, 1 to 80 characters.",
+	scopes: 'The scopes the key needs, like ["files:list"]. "All scopes" under the editor lists them.',
+} as const;
+
 // Every scope that lets a key change stored data. They share one warning under the scope summary.
 const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = [
 	"files:write",
@@ -98,10 +138,14 @@ const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = [
 	"plugin_data:write",
 ];
 
-// File list and text reads start in the setup. Every other scope stays opt-in.
+// File list and text reads start in the setup. Every other scope stays opt-in. Keep one scope per line,
+// so a new scope starts near the left edge and the suggest list there fits inside the editor.
 const API_KEY_SETUP_DEFAULT_TEXT = `{
   "name": "",
-  "scopes": ["files:list", "files:read"]
+  "scopes": [
+    "files:list",
+    "files:read"
+  ]
 }`;
 
 // A junk paste can give thousands of parse errors. Show only the first ones, in the list and as markers.
@@ -469,6 +513,7 @@ type RouteApiKeysList_ClassNames =
 	| "RouteApiKeysList-items"
 	| "RouteApiKeysList-revoked"
 	| "RouteApiKeysList-revokedSummary"
+	| "RouteApiKeysList-revokedChevron"
 	| "RouteApiKeysList-empty"
 	| "RouteApiKeysList-emptyTitle"
 	| "RouteApiKeysList-emptyDescription";
@@ -524,6 +569,10 @@ const RouteApiKeysList = memo(function RouteApiKeysList(props: RouteApiKeysList_
 				<details className={"RouteApiKeysList-revoked" satisfies RouteApiKeysList_ClassNames}>
 					<summary className={"RouteApiKeysList-revokedSummary" satisfies RouteApiKeysList_ClassNames}>
 						Recent revoked keys ({revokedCredentials.length})
+						<ChevronDown
+							className={"RouteApiKeysList-revokedChevron" satisfies RouteApiKeysList_ClassNames}
+							aria-hidden
+						/>
 					</summary>
 					<ul
 						className={"RouteApiKeysList-items" satisfies RouteApiKeysList_ClassNames}
@@ -545,9 +594,21 @@ type RouteApiKeysCreateModalEditor_ClassNames =
 	| "RouteApiKeysCreateModalEditor"
 	| "RouteApiKeysCreateModalEditor-skeleton";
 
+type RouteApiKeysCreateModalEditor_Ref = {
+	/**
+	 * Put the caret at `offset` in the setup text, scroll it into view, and focus the editor.
+	 */
+	focusAt: (offset: number) => void;
+};
+
 type RouteApiKeysCreateModalEditor_Props = {
+	ref: Ref<RouteApiKeysCreateModalEditor_Ref>;
 	text: string;
 	errors: RouteApiKeys_SetupParse["errors"];
+	/**
+	 * The scope ids the editor suggests. Pass a module constant: a new array registers the suggestions again.
+	 */
+	allowedScopes: readonly RouteApiKeys_Scope[];
 	readOnly: boolean;
 	onTextChange: (text: string) => void;
 };
@@ -555,7 +616,7 @@ type RouteApiKeysCreateModalEditor_Props = {
 const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEditor(
 	props: RouteApiKeysCreateModalEditor_Props,
 ) {
-	const { text, errors, readOnly, onTextChange } = props;
+	const { ref, text, errors, allowedScopes, readOnly, onTextChange } = props;
 	// Keep the editor in state, so the effects below run again once the editor mounts.
 	const [editor, setEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones option updates.
@@ -583,8 +644,31 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 			wordWrap: "on",
 			// Let the mouse wheel scroll the dialog when the pointer is over a short setup.
 			scrollbar: { alwaysConsumeMouseWheel: false },
+			// Monaco counts JSON keys and values as strings, and by default suggests nothing inside strings.
+			// Field names and scope ids are always strings here, so turn suggestions on there.
+			quickSuggestions: { other: "on", comments: "off", strings: "on" },
+			// Show only the suggestions below. Monaco would otherwise fill an empty list with words from the text.
+			suggest: { showWords: false },
 		} satisfies NonNullable<EditorProps["options"]>;
 	});
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			focusAt: (offset) => {
+				const model = editor?.getModel();
+				if (!editor || !model) {
+					return;
+				}
+
+				const position = model.getPositionAt(offset);
+				editor.setPosition(position);
+				editor.revealPositionInCenterIfOutsideViewport(position);
+				editor.focus();
+			},
+		}),
+		[editor],
+	);
 
 	const handleOnMount = useFn<EditorProps["onMount"]>((mountedEditor) => {
 		setEditor(mountedEditor);
@@ -630,6 +714,107 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 		);
 	}, [editor, errors]);
 
+	// Suggest field names and scope ids, and show their docs on hover. Monaco keeps one list of these
+	// providers per language, shared by every editor, so answer only for this editor's model. Remove them
+	// when the editor unmounts, or each new dialog would add another copy of every suggestion.
+	useEffect(() => {
+		if (!editor) {
+			return;
+		}
+
+		const toRange = (model: monaco_editor.ITextModel, offset: number, length: number) => {
+			const start = model.getPositionAt(offset);
+			const end = model.getPositionAt(offset + length);
+			return {
+				startLineNumber: start.lineNumber,
+				startColumn: start.column,
+				endLineNumber: end.lineNumber,
+				endColumn: end.column,
+			};
+		};
+
+		const completionProvider = monaco_languages.registerCompletionItemProvider("json", {
+			triggerCharacters: ['"'],
+			provideCompletionItems: (model, position) => {
+				if (model !== editor.getModel()) {
+					return undefined;
+				}
+
+				const suggestion = api_key_setup_suggest(model.getValue(), model.getOffsetAt(position), allowedScopes);
+				if (!suggestion) {
+					return { suggestions: [] };
+				}
+
+				const range = toRange(model, suggestion.replace.offset, suggestion.replace.length);
+				if (suggestion.kind === "field") {
+					return {
+						suggestions: suggestion.values.map((key) => ({
+							label: key,
+							kind: monaco_languages.CompletionItemKind.Property,
+							detail: API_KEY_SETUP_FIELD_DOCS[key],
+							filterText: `"${key}"`,
+							// Add the value too, with the caret inside it, unless the field already has its colon.
+							insertText: suggestion.colonFollows ? `"${key}"` : key === "name" ? '"name": "$1"' : '"scopes": [$1]',
+							insertTextRules: monaco_languages.CompletionItemInsertTextRule.InsertAsSnippet,
+							range,
+						})),
+					};
+				}
+
+				return {
+					suggestions: suggestion.values.map((scope, index) => ({
+						label: scope,
+						kind: monaco_languages.CompletionItemKind.Value,
+						detail: API_KEY_SCOPE_LABELS[scope],
+						documentation: API_KEY_SCOPE_ROWS.find((row) => row.scope === scope)?.description,
+						filterText: `"${scope}"`,
+						insertText: `"${scope}"`,
+						// Keep the "All scopes" list order instead of sorting by name.
+						sortText: String(index).padStart(2, "0"),
+						range,
+					})),
+				};
+			},
+		});
+
+		const hoverProvider = monaco_languages.registerHoverProvider("json", {
+			provideHover: (model, position) => {
+				if (model !== editor.getModel()) {
+					return undefined;
+				}
+
+				// Build the docs only from our own constants, never from the pasted text.
+				const target = api_key_setup_hover_target(model.getValue(), model.getOffsetAt(position));
+				const range = target ? toRange(model, target.offset, target.length) : undefined;
+				if (target?.kind === "field" && (target.value === "name" || target.value === "scopes")) {
+					return { range, contents: [{ value: API_KEY_SETUP_FIELD_DOCS[target.value] }] };
+				}
+
+				const row = target?.kind === "scope" ? API_KEY_SCOPE_ROWS.find((item) => item.scope === target.value) : null;
+				if (!row) {
+					return undefined;
+				}
+
+				return {
+					range,
+					contents: [
+						{ value: `**${API_KEY_SCOPE_LABELS[row.scope]}** \`${row.scope}\`` },
+						{
+							value: API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope)
+								? row.description
+								: `${row.description} Personal keys only.`,
+						},
+					],
+				};
+			},
+		});
+
+		return () => {
+			completionProvider.dispose();
+			hoverProvider.dispose();
+		};
+	}, [editor, allowedScopes]);
+
 	return (
 		<div className={"RouteApiKeysCreateModalEditor" satisfies RouteApiKeysCreateModalEditor_ClassNames}>
 			<Editor
@@ -667,6 +852,7 @@ type RouteApiKeysCreateModal_ClassNames =
 	| "RouteApiKeysCreateModal-summaryList"
 	| "RouteApiKeysCreateModal-scopes"
 	| "RouteApiKeysCreateModal-scopesSummary"
+	| "RouteApiKeysCreateModal-scopesChevron"
 	| "RouteApiKeysCreateModal-scopeList"
 	| "RouteApiKeysCreateModal-scope"
 	| "RouteApiKeysCreateModal-scopeTitle"
@@ -686,6 +872,11 @@ type RouteApiKeysCreateModal_Props = {
 	 * Null while the editor is empty.
 	 */
 	setupParse: RouteApiKeys_SetupParse | null;
+	/**
+	 * True after a Create click on a setup with problems. The dialog then shows every problem, even on an
+	 * empty editor or the untouched default text.
+	 */
+	submitAttempted: boolean;
 	serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
 	canBindAccount: boolean;
 	error?: string;
@@ -703,6 +894,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		workspaceName,
 		setupText,
 		setupParse,
+		submitAttempted,
 		serviceAccountId,
 		canBindAccount,
 		error,
@@ -712,19 +904,31 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		onServiceAccountChange,
 		onSubmit,
 	} = props;
+	const editorRef = useRef<RouteApiKeysCreateModalEditor_Ref>(null);
+
 	const setup = setupParse?.setup ?? null;
-	// Show no red errors on the untouched default text, which only lacks a name.
+	const setupErrors = setupParse?.errors ?? [{ offset: 0, length: 0, message: "Paste a key setup." }];
+	// Before the first Create click, show no red errors on an empty editor or the untouched default text,
+	// which only lacks a name.
 	const setupState: RouteApiKeysCreateModal_CustomAttributes["data-api-key-setup-state"] =
-		setupParse === null
+		setupParse === null && !submitAttempted
 			? "empty"
-			: setupText === API_KEY_SETUP_DEFAULT_TEXT
+			: setupText === API_KEY_SETUP_DEFAULT_TEXT && !submitAttempted
 				? "default"
 				: setup === null
 					? "invalid"
 					: "valid";
-	const shownErrors = setupState === "invalid" ? (setupParse?.errors.slice(0, API_KEY_SETUP_SHOWN_ERRORS_MAX) ?? []) : [];
-	const hiddenErrorCount = setupState === "invalid" ? (setupParse?.errors.length ?? 0) - shownErrors.length : 0;
+	const shownErrors = setupState === "invalid" ? setupErrors.slice(0, API_KEY_SETUP_SHOWN_ERRORS_MAX) : [];
+	const hiddenErrorCount = setupState === "invalid" ? setupErrors.length - shownErrors.length : 0;
 	const hasWriteScope = setup?.scopes.some((scope) => API_KEY_WRITE_SCOPES.includes(scope)) ?? false;
+
+	const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+		// A setup with problems creates nothing. Put the caret on the first problem, so it is quick to fix.
+		if (setup === null) {
+			editorRef.current?.focusAt(setupErrors[0]?.offset ?? 0);
+		}
+		onSubmit(event);
+	};
 
 	return (
 		<MyModal open={open} setOpen={onOpenChange}>
@@ -737,8 +941,8 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 				// dialog and drop the setup text. Once the text is edited, Tab out of the editor first, then
 				// Escape closes the dialog.
 				hideOnEscape={(event) =>
-					setupState === "empty" ||
-					setupState === "default" ||
+					setupText.trim() === "" ||
+					setupText === API_KEY_SETUP_DEFAULT_TEXT ||
 					!(event.target instanceof Element && event.target.closest(".monaco-editor"))
 				}
 			>
@@ -746,7 +950,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 					className={"RouteApiKeysCreateModal-form" satisfies RouteApiKeysCreateModal_ClassNames}
 					{...({ "data-api-key-setup-state": setupState } satisfies RouteApiKeysCreateModal_CustomAttributes)}
 					noValidate
-					onSubmit={onSubmit}
+					onSubmit={handleSubmit}
 				>
 					<MyModalHeader>
 						<MyModalHeading>Create API key</MyModalHeading>
@@ -782,8 +986,12 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 									it needs.
 								</p>
 								<RouteApiKeysCreateModalEditor
+									ref={editorRef}
 									text={setupText}
 									errors={shownErrors}
+									allowedScopes={
+										serviceAccountId === null ? API_KEY_SETUP_ALLOWED_SCOPES : API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES
+									}
 									readOnly={pending}
 									onTextChange={onSetupTextChange}
 								/>
@@ -834,6 +1042,10 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 							<details className={"RouteApiKeysCreateModal-scopes" satisfies RouteApiKeysCreateModal_ClassNames}>
 								<summary className={"RouteApiKeysCreateModal-scopesSummary" satisfies RouteApiKeysCreateModal_ClassNames}>
 									All scopes
+									<ChevronDown
+										className={"RouteApiKeysCreateModal-scopesChevron" satisfies RouteApiKeysCreateModal_ClassNames}
+										aria-hidden
+									/>
 								</summary>
 								<ul
 									className={"RouteApiKeysCreateModal-scopeList" satisfies RouteApiKeysCreateModal_ClassNames}
@@ -866,7 +1078,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 						</MyButton>
 						<MyButton
 							type="submit"
-							disabled={pending || setup === null || (serviceAccountId !== null && !canBindAccount)}
+							disabled={pending || (serviceAccountId !== null && !canBindAccount)}
 							aria-busy={pending}
 						>
 							{pending ? "Creating..." : "Create API key"}
@@ -1089,6 +1301,7 @@ function RouteApiKeysMembership(props: {
 	// Keep the editor text exactly as the editor gives it. The editor replaces its whole text, and moves
 	// the caret, when this value differs from its own.
 	const [createSetupText, setCreateSetupText] = useState(API_KEY_SETUP_DEFAULT_TEXT);
+	const [createSubmitAttempted, setCreateSubmitAttempted] = useState(false);
 	const [createError, setCreateError] = useState<string>();
 	const [createPending, setCreatePending] = useState(false);
 	const [reveal, setReveal] = useState<RouteApiKeys_Reveal | null>(null);
@@ -1132,6 +1345,7 @@ function RouteApiKeysMembership(props: {
 		setCreateOpen(open);
 		if (!open) {
 			setCreateSetupText(API_KEY_SETUP_DEFAULT_TEXT);
+			setCreateSubmitAttempted(false);
 			setCreateServiceAccountId(null);
 			setCreateError(undefined);
 		}
@@ -1156,10 +1370,13 @@ function RouteApiKeysMembership(props: {
 		event.preventDefault();
 		if (createPending) return;
 
-		// The submit button is disabled while the setup has problems. Keep this guard for form submits
-		// that skip the button.
+		// A setup with problems creates nothing. Show every problem instead, even the ones hidden on the
+		// untouched default text.
 		const setup = createSetupParse?.setup;
-		if (!setup) return;
+		if (!setup) {
+			setCreateSubmitAttempted(true);
+			return;
+		}
 		if (createServiceAccountId !== null && canBindAccount !== true) {
 			return;
 		}
@@ -1182,6 +1399,7 @@ function RouteApiKeysMembership(props: {
 
 				setCreateOpen(false);
 				setCreateSetupText(API_KEY_SETUP_DEFAULT_TEXT);
+				setCreateSubmitAttempted(false);
 				setCreateServiceAccountId(null);
 				setReveal({
 					credential: result._yay.credential,
@@ -1329,6 +1547,7 @@ function RouteApiKeysMembership(props: {
 				workspaceName={workspaceName}
 				setupText={createSetupText}
 				setupParse={createSetupParse}
+				submitAttempted={createSubmitAttempted}
 				serviceAccountId={createServiceAccountId}
 				canBindAccount={canBindAccount === true}
 				error={createError}

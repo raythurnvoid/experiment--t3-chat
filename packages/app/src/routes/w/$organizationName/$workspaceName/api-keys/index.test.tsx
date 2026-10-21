@@ -139,6 +139,7 @@ vi.mock("@monaco-editor/react", async () => {
 				getModel: () => model,
 				updateOptions: () => {},
 				setPosition: () => {},
+				revealPositionInCenterIfOutsideViewport: () => {},
 				focus: () => {},
 			}));
 
@@ -285,11 +286,16 @@ describe("RouteApiKeys", () => {
 		renderRoute();
 
 		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
-		// The untouched default setup only lacks a name. It shows no problems yet, but cannot be created.
+		// The untouched default setup only lacks a name. It shows no problems until Create is pressed.
 		const form = getSetupEditor().closest("form")!;
 		expect(form.getAttribute("data-api-key-setup-state")).toBe("default");
 		expect(screen.queryByRole("status", { name: "Problems in the setup" })).toBeNull();
-		expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+		submitSetup();
+		expect(form.getAttribute("data-api-key-setup-state")).toBe("invalid");
+		expect(screen.getByRole("status", { name: "Problems in the setup" }).textContent).toContain(
+			"API key name is required",
+		);
+		expect(mutationMock).not.toHaveBeenCalled();
 
 		pasteSetup({ name: "  Local script  ", scopes: ["files:list", "files:read", "files:list"] });
 		expect(screen.getByRole("list", { name: "Scopes of the new key" }).textContent).toBe(
@@ -390,10 +396,7 @@ describe("RouteApiKeys", () => {
 		);
 		const markers = setModelMarkers.mock.lastCall?.[2] as Array<{ startLineNumber: number; startColumn: number }>;
 		expect(markers).toEqual([expect.objectContaining({ startLineNumber: 3, startColumn: 14 })]);
-		const form = getSetupEditor().closest("form")!;
-		expect(form.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
 
-		// A submit that skips the disabled button must not create a key either.
 		submitSetup();
 		expect(mutationMock).not.toHaveBeenCalled();
 	});

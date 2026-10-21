@@ -1,4 +1,4 @@
-import { parseTree, printParseErrorCode, type ParseError } from "jsonc-parser";
+import { findNodeAtLocation, findNodeAtOffset, getLocation, parseTree, printParseErrorCode, type ParseError } from "jsonc-parser";
 
 import { files_get_utf8_byte_size } from "./files.ts";
 
@@ -160,4 +160,102 @@ export function api_key_setup_parse<TScope extends string>(
 	}
 
 	return { setup: { name, scopes }, errors };
+}
+
+/**
+ * Find what the editor should suggest at `offset`: the field names at the top level of the setup, or
+ * the scope ids inside the "scopes" list. Fields and scopes already in the setup are left out.
+ *
+ * `replace` is the text a picked suggestion replaces: the whole string under the cursor, quotes
+ * included, or nothing when the cursor is not in a string. `colonFollows` says whether a field name
+ * already has its `:`, so the editor inserts only the name.
+ *
+ * The text may be broken while the user types, so this reads it without refusing anything.
+ */
+export function api_key_setup_suggest<TScope extends string>(
+	text: string,
+	offset: number,
+	allowedScopes: readonly TScope[],
+) {
+	let root: ReturnType<typeof parseTree>;
+	let location: ReturnType<typeof getLocation>;
+	try {
+		root = parseTree(text, [], { allowTrailingComma: true });
+		location = getLocation(text, offset);
+	} catch {
+		// Both call themselves for each nested bracket, so a very deep text overflows the call stack.
+		return null;
+	}
+
+	const node = location.previousNode;
+	const replace =
+		node && node.offset < offset && offset <= node.offset + node.length
+			? { offset: node.offset, length: node.length }
+			: { offset, length: 0 };
+	// Skip the string under the cursor when listing what the setup already has: it is being replaced.
+	const isReplaced = (other: { offset: number }) => replace.length > 0 && other.offset === replace.offset;
+
+	if (location.isAtPropertyKey && location.path.length === 1) {
+		const presentKeys = (root?.type === "object" ? (root.children ?? []) : []).flatMap((property) => {
+			const keyNode = property.children?.[0];
+			return keyNode && !isReplaced(keyNode) ? [keyNode.value] : [];
+		});
+		return {
+			kind: "field" as const,
+			values: (["name", "scopes"] as const).filter((key) => !presentKeys.includes(key)),
+			replace,
+			colonFollows: /^\s*:/u.test(text.slice(replace.offset + replace.length)),
+		};
+	}
+
+	if (location.matches(["scopes", "*"])) {
+		const listNode = root ? findNodeAtLocation(root, ["scopes"]) : undefined;
+		const presentScopes = (listNode?.type === "array" ? (listNode.children ?? []) : [])
+			.filter((item) => item.type === "string" && !isReplaced(item))
+			.map((item) => item.value);
+		return {
+			kind: "scope" as const,
+			values: allowedScopes.filter((scope) => !presentScopes.includes(scope)),
+			replace,
+		};
+	}
+
+	return null;
+}
+
+/**
+ * Find the setup string under `offset` that has docs to show on hover: a top-level field name, or an
+ * item of the top-level "scopes" list. Returns its decoded value and the text range it covers.
+ */
+export function api_key_setup_hover_target(text: string, offset: number) {
+	let root: ReturnType<typeof parseTree>;
+	try {
+		root = parseTree(text, [], { allowTrailingComma: true });
+	} catch {
+		// `parseTree` calls itself for each nested bracket, so a very deep text overflows the call stack.
+		return null;
+	}
+
+	const node = root?.type === "object" ? findNodeAtOffset(root, offset) : undefined;
+	if (node?.type !== "string" || !node.parent) {
+		return null;
+	}
+
+	const range = { offset: node.offset, length: node.length };
+	const property = node.parent;
+	if (property.type === "property" && property.parent === root && property.children?.[0] === node) {
+		return { kind: "field" as const, value: node.value as string, ...range };
+	}
+
+	const listProperty = property.parent;
+	if (
+		property.type === "array" &&
+		listProperty?.type === "property" &&
+		listProperty.parent === root &&
+		listProperty.children?.[0]?.value === "scopes"
+	) {
+		return { kind: "scope" as const, value: node.value as string, ...range };
+	}
+
+	return null;
 }
