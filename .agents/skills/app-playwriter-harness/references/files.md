@@ -1441,6 +1441,8 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   controls can leave radios above the scroll area. At 512×768 the dialog scrolls and keeps its footer
   visible. The quick audit counts 18px radio inputs; inspect their clickable labels before treating
   these size warnings as accessibility failures. Escape returns focus to the Properties trigger.
+  With unsaved changes, Escape inside the Metadata editor does nothing; Tab out first, then Escape
+  closes the dialog (see the Monaco Escape entry in `known-hazards.md`).
 - The editor is Monaco. `.fill()` can leave its model unchanged. Set the text through the editor
   handle from page context:
   `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "Metadata YAML").setValue(yaml)`.

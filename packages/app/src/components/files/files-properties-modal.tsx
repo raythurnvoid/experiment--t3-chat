@@ -1936,6 +1936,10 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 				className={"FilesPropertiesModal" satisfies FilesPropertiesModal_ClassNames}
 				data-files-properties-modal=""
 				unmountOnHide
+				// In Chromium, Monaco does not stop the Escape key, so Escape inside an editor would close the
+				// dialog and drop the unsaved changes. While there are changes, Tab out of the editor first, then
+				// Escape closes the dialog.
+				hideOnEscape={(event) => !dirty || !(event.target instanceof Element && event.target.closest(".monaco-editor"))}
 			>
 				<MyModalHeader>
 					<MyModalHeading>Properties</MyModalHeading>
