@@ -162,7 +162,15 @@ const rate_limiter_CONFIG = {
 	},
 	files_snapshot_write: STRICT_WRITE,
 	files_tree_write: BULK_FILES_WRITE,
-	files_yjs_push_update: STRICT_WRITE,
+	// Live editor typing. The editor sends one batch after each 500 ms pause, so one tab sends up to
+	// about 2 pushes a second. The capacity covers a few open tabs of the same user. Each push also
+	// bills one `file_save` event, so this cap is also the most a user's typing can cost per minute.
+	files_yjs_push_update: {
+		kind: "token bucket",
+		rate: 120,
+		period: MINUTE,
+		capacity: 30,
+	},
 	// A member writing plugin data from a plugin frame. Most calls change one document; atomic private
 	// setup creates its scope, grants, and first document under one charge. The name says "page",
 	// but both frame kinds charge here: a plugin page and a file view. Nothing in `plugins_data.ts`

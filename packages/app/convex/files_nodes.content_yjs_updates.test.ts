@@ -924,7 +924,8 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		sessionId: "rate-limit-session",
 	};
 
-	for (let i = 0; i < 2; i++) {
+	// Live typing sends a push after each short pause, so the bucket allows a burst of 30.
+	for (let i = 0; i < 30; i++) {
 		const result = await asUser.mutation(api.files_nodes.yjs_push_update, pushArgs);
 		if (result._nay) {
 			throw new Error(`Expected initial push #${i + 1} to succeed, got: ${result._nay.message}`);
@@ -933,7 +934,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 
 	const blocked = await asUser.mutation(api.files_nodes.yjs_push_update, pushArgs);
 	if (!blocked._nay) {
-		throw new Error("Expected third push to be rate limited");
+		throw new Error("Expected push 31 to be rate limited");
 	}
 	expect(blocked._nay.message).toBe("Rate limit exceeded");
 
@@ -980,9 +981,9 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 			createdByList: updates.map((update) => update.createdBy),
 		};
 	});
-	expect(stateAfterBlock.updateCount).toBe(2);
-	expect(stateAfterBlock.lastSequence).toBe(2);
-	expect(stateAfterBlock.createdByList).toEqual([db.userId, db.userId]);
+	expect(stateAfterBlock.updateCount).toBe(30);
+	expect(stateAfterBlock.lastSequence).toBe(30);
+	expect(stateAfterBlock.createdByList).toEqual(Array.from({ length: 30 }, () => db.userId));
 });
 
 test("yjs_push_update rate limit applies to anonymous JWT identities", async () => {
@@ -1018,7 +1019,7 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 		sessionId: "rate-limit-anonymous-session",
 	};
 
-	for (let i = 0; i < 2; i++) {
+	for (let i = 0; i < 30; i++) {
 		const result = await asAnonymous.mutation(api.files_nodes.yjs_push_update, pushArgs);
 		if (result._nay) {
 			throw new Error(`Expected anonymous push #${i + 1} to succeed, got: ${result._nay.message}`);
@@ -1027,7 +1028,7 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 
 	const blocked = await asAnonymous.mutation(api.files_nodes.yjs_push_update, pushArgs);
 	if (!blocked._nay) {
-		throw new Error("Expected anonymous third push to be rate limited");
+		throw new Error("Expected anonymous push 31 to be rate limited");
 	}
 	expect(blocked._nay.message).toBe("Rate limit exceeded");
 });
