@@ -1400,42 +1400,46 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
 3. E's content type is an inline-safe image or video type (`files_is_inline_media_content_type`),
    and it matches the node: an image node needs an image file, a video node needs a video file.
 4. E is not archived and has a finished asset.
-5. **Same audience:** E's stored restricted scope equals D's stored restricted scope, so D's scope
-   check answers for E too. Both are open to
-   the workspace, or both sit inside the same restricted folder. Everyone who can read or write D
-   can then read E: inside a restricted folder all grants sit on the scope node and write includes
-   read, and in an open scope members read every open file through their roles. Without this rule,
-   a writer of D could embed a restricted file whose id they know and publish it.
-6. **No narrow writers (open scope only):** a service account can hold `content.write` on one exact
-   open file without reading others. So when D is open, every service account with an exact
-   `content.write` grant on D must be live (not revoked), belong to this workspace, and read E
-   through an exact `content.read` grant on E or a workspace `content.read` grant. A revoked or
-   missing account is never skipped: E stays hidden. More than 50 grants hides E.
+5. E's stored restricted scope equals D's stored restricted scope. This is a scope boundary, not
+   proof that D's editor can read E. Add people may give the editor access to D alone.
+6. `files_share_link_media` holds an approval for this exact link, media node and asset. The
+   approval action checks the authenticated person's write access to D and read access to E.
+   It uses the existing per-node access checks. It adds no parent walk or writer-list scan.
 
-Rule 5 relies on "edit includes view" for custom roles (see "Roles"). A document inside a
-restricted folder that embeds an image from an open folder shows the gray box too. Move or copy the
-image next to the document. E having its own public link does not help: that would make file ids
-secrets again.
+A document inside a restricted folder that embeds an image from an open folder still shows a gray
+box. Move or copy the image next to the document. E having its own public link does not help.
 
-**Automatic publishing (approved product rule).** A successful in-place edit of D keeps D's link and
-token. This holds for human saves, API writes, and plugin writes. Images and videos that the edit
-adds publish through D's link when rules 1 to 6 allow them. Credential download limits do not limit
-these embeds on the public page: a key or plugin run without `files:download`, or one whose direct
-downloads are source-only, can still add an eligible image that visitors of D then see. This is a
-deliberate wider access, not a bug. A plugin is narrower: a plugin write that adds a new
+**Keep saving; approve publication separately.** A successful in-place edit keeps D's link and
+token. Human saves and ordinary API writes keep every media reference as text. An unapproved
+reference stays gray on the public page. It never blocks Save. Opening a document, rendering it,
+or rebuilding its Yjs text must not approve media.
+
+The editor's file picker and upload completion approve the deliberately inserted image or video
+for the current link. With no link they create no approval. A manager can also review saved media
+in Sharing and approve each listed item. Review pins the link and asset; a replacement needs a
+fresh review. Existing links keep their text and URLs, but old images need this review once.
+No old content is treated as proof of an author's read access. New links start with no approvals.
+
+Checked plugin additions record approvals in the final write. A plugin write that adds a new
 `bonobo-file://` ref to a file the plugin cannot read itself (its member inside its sandbox roots) is
 refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
 `file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs the file already had stay,
 and an upload run may embed the file it was started for. A write that keeps old refs is refused
 with 409 when the file changed after the route read them. A plugin service upload of Markdown with
-such a ref stays a stored file. People's writes are not checked. The check reads the plugin's text
+such a ref stays a stored file. The check reads the plugin's text
 and that text after one rebuild from the document, because the rebuild is not always the same text
 (a code block that held a fence once broke open). Later rebuilds, such as a person saving the file, can
-still change it, so this check alone cannot keep a deeply hidden ref off the public page. The
-public view has no credential-scope filter and tracks no per-embed writer history. Private API scope
-checks do not change: the same key still gets 403 from `/api/v1/files/download-urls`. No file becomes public just because somebody knows its id, and no
-link is created for E. Removing the reference, archiving E, turning D off, or an access change that
-makes E fail rules 1 to 6 stops new URLs for E.
+still change it. A newly exposed reference has no approval and cannot publish. The upload source
+exception must prove the exact run source and asset before recording an approval.
+
+An approval grants those exact bytes through D's link. It does not depend on the approver keeping
+their account or membership. Replacing E's asset needs a fresh approval. Archive and scope checks
+still apply; restoring the same approved bytes may show them again. Ending D's link ends every
+approval, even before indexed cleanup removes the docs. The public view and signer share this check.
+
+Private API download scopes do not change. They also do not cancel a deliberate public approval.
+A file id alone never opens a file, and approval creates no public link on E. See the
+[media embed spec](../files-rich-text-embeds/SKILL.md#approving-media-for-a-public-link) for the UI rules.
 
 ### Lifecycle: what ends a link
 
@@ -1468,7 +1472,7 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Archive-and-create replacement | The archive helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that archive and recreate. The new file has no link |
 | Remove a failed file creation | `files_nodes_db_hard_delete_node` |
 | A plugin reader list takes over a file or a restricted folder | `plugins_data_db_apply_file_access_binding`: the node's own link and every link of its area. A folder must already be a restricted root whose scope job has ended and that holds no restricted folder, so its area is the whole folder. A file binds in one step, and the restrict in the bind ends its link |
-| An exact service-account `content.write` grant on the file is removed or lowered to View | `access_control_db_set_service_account_grant`, before it deletes the grant. Rule 6 no longer sees that account after the grant goes, but the account may have added images before |
+| An exact service-account `content.write` grant on the file is removed or lowered to View | `access_control_db_set_service_account_grant`, before it deletes the grant. This existing link-lifetime rule still applies |
 | Workspace or organization purge | The `data_deletion.ts` content purge drains `files_share_links` in batches, before grants and file nodes. The deletion request, or `pluginDataPurgeStartedAt` for a preserved-home data reset, already hides every link before the purge starts |
 
 What keeps a link:
@@ -1482,8 +1486,7 @@ What keeps a link:
 - Human or role share grant changes that do not restrict or unrestrict anything, and role or
   membership changes. These change who can read the file in Files, not the public link.
 - Service-account grant changes other than losing an exact `content.write` grant on the file.
-  Revoking an account keeps its grants and the link, but rule 6 then hides embeds that depend on
-  it.
+  Revoking an account keeps its grants, the link and approvals of already checked bytes.
 - The creator leaving, losing rights, or deleting their account.
 - Copies. A copy is a new file with no link.
 

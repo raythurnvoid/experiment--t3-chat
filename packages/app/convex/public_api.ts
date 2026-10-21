@@ -72,6 +72,7 @@ import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequenc
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_media_refs_added, files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
+import { files_share_link_media_db_approve } from "./files_share_link_media_db.ts";
 import { encodeStateVector } from "yjs";
 import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import {
@@ -2940,7 +2941,7 @@ async function db_check_plugin_added_file_refs(
 		userId: args.stage.userId,
 		// Upload runs write beside the file they were started for, and may embed it.
 		...(args.facts.pluginRun && args.facts.pluginRun.event !== "ui.invoke.requested" && args.facts.pluginRun.fileNodeId
-			? { sourceNodeId: args.facts.pluginRun.fileNodeId }
+			? { sourceNodeId: args.facts.pluginRun.fileNodeId, sourceAssetId: args.facts.pluginRun.assetId }
 			: {}),
 		addedFileRefs: args.addedFileRefs,
 	});
@@ -3896,6 +3897,19 @@ export const publish_file_fill = internalMutation({
 		if (filled._nay) {
 			// Throw so Convex rolls back the snapshot and node writes done above.
 			throw convex_error({ message: "Failed to write file", cause: filled._nay });
+		}
+		if (refsChecked._yay?.length) {
+			const link = await ctx.db
+				.query("files_share_links")
+				.withIndex("by_organization_workspace_node", (q) =>
+					q.eq("organizationId", stage.organizationId).eq("workspaceId", stage.workspaceId).eq("nodeId", fileNode._id),
+				)
+				.first();
+			if (link && link.restrictedScopeNodeId === fileNode.restrictedScopeNodeId) {
+				for (const mediaNode of refsChecked._yay) {
+					await files_share_link_media_db_approve(ctx, { link, mediaNode, userId: stage.userId });
+				}
+			}
 		}
 
 		// Atomic with the fill: the run's output count, the settled call, and the consumed

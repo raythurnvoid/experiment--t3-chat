@@ -13,19 +13,26 @@ import type { RegisteredQuery } from "convex/server";
 import { getConvexSize, v, type Value } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
-import type { Doc, Id, TableNames } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import { action, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
+import { access_control_create_file_checker, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
+import { mutation } from "./functions.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { files_merge_contiguous_chunks } from "./files_nodes.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_nodes_db_get_tree_reader } from "./files_tree_db.ts";
 import { files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
+import {
+	files_share_link_media_db_approve,
+	files_share_link_media_db_resolve_node,
+} from "./files_share_link_media_db.ts";
 import { r2 } from "./r2_client.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_resolve_read_target,
@@ -70,7 +77,7 @@ const SIGNED_URL_TTL_SECONDS = 15 * 60;
  * Part of every public revision. Change it when the public content format changes, so open pages
  * load the new format.
  */
-const SHARE_FORMAT_VERSION = 1;
+const SHARE_FORMAT_VERSION = 2;
 
 // Read limits of one public view. Convex fails a query past 16 MiB of reads, 32,000 docs, or 4,096 index
 // ranges. The view stays well below them, so a large file gives a clean "unavailable" instead.
@@ -87,12 +94,6 @@ const MAX_DOC_BYTES = 1024 * 1024;
  * Largest public view. Below Convex's limits for one value and one query result.
  */
 const MAX_VIEW_BYTES = 1_000_000;
-
-/**
- * Most service accounts one grant list can name. Sharing allows 50 people and accounts per file. Keep it
- * equal to the limit in `access_control_db_set_service_account_grant`.
- */
-const MAX_GRANT_PRINCIPALS = 50;
 
 /**
  * Whether the organization and workspace exist and no deletion has started. Reads 4 docs.
@@ -298,20 +299,6 @@ async function reads_sync(ctx: QueryCtx, reads: ViewReads) {
 	reads.bytes = Math.max(reads.bytes, metrics.bytesRead.used);
 }
 
-async function reads_get<TableName extends TableNames>(args: {
-	ctx: QueryCtx;
-	reads: ViewReads;
-	table: TableName;
-	id: Id<TableName>;
-}) {
-	const { ctx, reads, table, id } = args;
-
-	reads_reserve({ reads, calls: 1, docs: 1 });
-	const doc = await ctx.db.get(table, id);
-	reads_count(reads, doc);
-	return doc;
-}
-
 async function reads_get_node(args: { ctx: QueryCtx; reads: ViewReads; id: Id<"files_nodes"> }) {
 	// A reserved node adds one cohort and one candidate read.
 	reads_reserve({ reads: args.reads, calls: 3, docs: 3 });
@@ -330,83 +317,6 @@ async function* reads_iterate<T extends Value>(reads: ViewReads, docs: AsyncIter
 		yield doc;
 		reads_reserve({ reads, calls: 0, docs: 1 });
 	}
-}
-
-/**
- * The service accounts with `permission` on one exact open file. Null past the sharing cap.
- */
-async function db_read_file_service_accounts(args: {
-	ctx: QueryCtx;
-	reads: ViewReads;
-	nodeId: Id<"files_nodes">;
-	permission: "content.read" | "content.write";
-}) {
-	const { ctx, reads } = args;
-
-	const accountIds = new Set<Id<"access_control_service_accounts">>();
-	let grantCount = 0;
-	for await (const grant of reads_iterate(
-		reads,
-		ctx.db
-			.query("access_control_permission_grants")
-			.withIndex("by_organization_workspace_resource_public_permission", (q) =>
-				q
-					.eq("organizationId", reads.organizationId)
-					.eq("workspaceId", reads.workspaceId)
-					.eq("resourceKind", "file")
-					.eq("resourceId", String(args.nodeId))
-					.eq("principalKind", "service_account")
-					.eq("permission", args.permission),
-			),
-	)) {
-		grantCount += 1;
-		if (grantCount > MAX_GRANT_PRINCIPALS) {
-			return null;
-		}
-		if (grant.serviceAccountId) {
-			accountIds.add(grant.serviceAccountId);
-		}
-	}
-
-	return accountIds;
-}
-
-/**
- * Whether a service account is live in this workspace, and whether it reads every open file.
- */
-async function db_read_service_account_access(args: {
-	ctx: QueryCtx;
-	reads: ViewReads;
-	accountId: Id<"access_control_service_accounts">;
-}) {
-	const { ctx, reads, accountId } = args;
-
-	const account = await reads_get({ ctx, reads, table: "access_control_service_accounts", id: accountId });
-	if (
-		!account ||
-		account.revokedAt !== null ||
-		account.organizationId !== reads.organizationId ||
-		account.workspaceId !== reads.workspaceId
-	) {
-		return { live: false, readsWorkspace: false };
-	}
-
-	reads_reserve({ reads, calls: 1, docs: 1 });
-	const workspaceGrant = await ctx.db
-		.query("access_control_permission_grants")
-		.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
-			q
-				.eq("organizationId", reads.organizationId)
-				.eq("workspaceId", reads.workspaceId)
-				.eq("resourceKind", "workspace")
-				.eq("resourceId", reads.workspaceId)
-				.eq("principalKind", "service_account")
-				.eq("serviceAccountId", accountId)
-				.eq("permission", "content.read"),
-		)
-		.first();
-	reads_count(reads, workspaceGrant);
-	return { live: true, readsWorkspace: workspaceGrant !== null };
 }
 
 /**
@@ -463,18 +373,14 @@ async function db_read_media_node(args: {
 /**
  * The finished asset of a media file that the shared file's visitors may see, or null.
  *
- * The media file must show to the same people as the shared file, so it needs the same stored restricted
- * scope. The shared file's scope check then answers for the media file too. In an open scope, a service
- * account can hold write access to the shared file alone. It could add an image it cannot read and
- * publish it through the link. So every such account must be live and able to read the media file.
+ * Knowing a file id grants nothing. A checked publication must name this link and these exact bytes.
  */
 async function db_check_media_node(args: {
 	ctx: QueryCtx;
 	reads: ViewReads;
 	mediaNode: Doc<"files_nodes">;
+	linkId: Id<"files_share_links">;
 	restrictedScopeNodeId: Id<"files_nodes"> | null;
-	readFileWriters: () => Promise<Set<Id<"access_control_service_accounts">> | null>;
-	accountAccess: Map<Id<"access_control_service_accounts">, { live: boolean; readsWorkspace: boolean }>;
 }) {
 	const { ctx, reads } = args;
 
@@ -482,36 +388,19 @@ async function db_check_media_node(args: {
 		return null;
 	}
 
-	if (args.restrictedScopeNodeId === null) {
-		const writerAccountIds = await args.readFileWriters();
-		if (!writerAccountIds) {
-			return null;
-		}
-
-		if (writerAccountIds.size > 0) {
-			const readerAccountIds = await db_read_file_service_accounts({
-				ctx,
-				reads,
-				nodeId: args.mediaNode._id,
-				permission: "content.read",
-			});
-			if (!readerAccountIds) {
-				return null;
-			}
-
-			for (const accountId of writerAccountIds) {
-				let access = args.accountAccess.get(accountId);
-				if (!access) {
-					access = await db_read_service_account_access({ ctx, reads, accountId });
-					args.accountAccess.set(accountId, access);
-				}
-				// Never skip a revoked or missing account. Its write grant stays, so the media stays hidden.
-				if (!access.live || !(access.readsWorkspace || readerAccountIds.has(accountId))) {
-					return null;
-				}
-			}
-		}
-	}
+	reads_reserve({ reads, calls: 1, docs: 1 });
+	const approval = await ctx.db
+		.query("files_share_link_media")
+		.withIndex("by_link_mediaNode", (q) => q.eq("linkId", args.linkId).eq("mediaNodeId", args.mediaNode._id))
+		.first();
+	reads_count(reads, approval);
+	if (
+		!approval ||
+		approval.assetId !== args.mediaNode.assetId ||
+		approval.organizationId !== reads.organizationId ||
+		approval.workspaceId !== reads.workspaceId
+	)
+		return null;
 
 	reads_reserve({ reads, calls: 1, docs: 1 });
 	return await db_get_finished_asset(ctx, args.mediaNode);
@@ -618,9 +507,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	}
 	await reads_sync(ctx, reads);
 
-	// Each media file needs the shared file's scope and a finished asset, and every narrow writer must read it.
-	let fileWriterAccountIds: Set<Id<"access_control_service_accounts">> | null | undefined;
-	const accountAccess = new Map<Id<"access_control_service_accounts">, { live: boolean; readsWorkspace: boolean }>();
+	// Each media file needs this link's publication record, matching scope and a finished asset.
 	const mediaAssets: Array<Awaited<ReturnType<typeof db_get_finished_asset>>> = [];
 	for (const mediaNode of mediaNodes) {
 		let mediaAsset: Awaited<ReturnType<typeof db_get_finished_asset>> = null;
@@ -630,17 +517,8 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 					ctx,
 					reads,
 					mediaNode,
+					linkId: link._id,
 					restrictedScopeNodeId,
-					readFileWriters: async () => {
-						fileWriterAccountIds ??= await db_read_file_service_accounts({
-							ctx,
-							reads,
-							nodeId: node._id,
-							permission: "content.write",
-						});
-						return fileWriterAccountIds;
-					},
-					accountAccess,
 				});
 				await reads_sync(ctx, reads);
 			} catch (error) {
@@ -702,7 +580,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 		return null;
 	}
 
-	return { view, asset, mediaNodes, mediaAssets };
+	return { view, asset, mediaNodes, mediaAssets, media };
 }
 
 /**
@@ -959,6 +837,189 @@ export const create_share_link_download_urls = action({
 
 		return Result({ _yay: { status: "ready" as const, revision: prepared.revision, urls } });
 	},
+});
+
+/**
+ * Show only readable saved media. Each approval must pin the link and asset shown here.
+ */
+export const get_media_to_share = query({
+	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
+	returns: v.union(
+		v.null(),
+		v.object({
+			linkId: v.id("files_share_links"),
+			media: v.array(
+				v.union(
+					v.object({ available: v.literal(false), kind: v.union(v.literal("image"), v.literal("video")) }),
+					v.object({
+						available: v.literal(true),
+						src: v.string(),
+						kind: v.union(v.literal("image"), v.literal("video")),
+						name: v.string(),
+						assetId: v.id("files_r2_assets"),
+						shared: v.boolean(),
+					}),
+				),
+			),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const reader = await files_nodes_db_get_tree_reader(ctx, args);
+		if (!reader) return null;
+		const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+		if (
+			!node ||
+			node.organizationId !== reader.membership.organizationId ||
+			node.workspaceId !== reader.membership.workspaceId ||
+			!(await reader.checker.can(node, "content.permissions.manage")) ||
+			!(await reader.checker.can(node, "content.read"))
+		)
+			return null;
+		const link = await ctx.db
+			.query("files_share_links")
+			.withIndex("by_organization_workspace_node", (q) =>
+				q
+					.eq("organizationId", reader.membership.organizationId)
+					.eq("workspaceId", reader.membership.workspaceId)
+					.eq("nodeId", node._id),
+			)
+			.first();
+		if (!link || !(await files_share_links_db_is_selected(ctx.db, link))) return null;
+		const prepared = await db_prepare_share_link_view(ctx, link.token);
+		if (!prepared) return null;
+		const media = await Promise.all(
+			prepared.media.map(async (item, index) => {
+				const mediaNode = prepared.mediaNodes[index];
+				if (
+					!mediaNode ||
+					mediaNode.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
+					!mediaNode.assetId ||
+					!(await reader.checker.can(mediaNode, "content.read")) ||
+					!(await db_get_finished_asset(ctx, mediaNode))
+				) {
+					return { available: false as const, kind: item.kind };
+				}
+				return {
+					available: true as const,
+					src: item.src,
+					kind: item.kind,
+					name: mediaNode.name,
+					assetId: mediaNode.assetId,
+					shared: prepared.mediaAssets[index] !== null,
+				};
+			}),
+		);
+		return { linkId: link._id, media };
+	},
+});
+
+async function db_approve_media(
+	ctx: MutationCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		nodeId: Id<"files_nodes">;
+		src: string;
+		review?: { linkId: Id<"files_share_links">; assetId: Id<"files_r2_assets"> };
+	},
+) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!userAuth || !(await ctx.db.get("users", userAuth.id))) return Result({ _nay: { message: "Unauthenticated" } });
+	if (userAuth.isAnonymous) return Result({ _nay: { message: "Sign in to share images and videos" } });
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: userAuth.id,
+		membershipId: args.membershipId,
+	});
+	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
+	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+	if (
+		!node ||
+		node.organizationId !== membership.organizationId ||
+		node.workspaceId !== membership.workspaceId ||
+		node.archiveOperationId !== null
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	const checker = access_control_create_file_checker(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		subject: { kind: "user", userId: userAuth.id, plugin: null },
+	});
+	if (
+		!(await checker.can(node, args.review ? "content.permissions.manage" : "content.write")) ||
+		!(await checker.can(node, "content.read"))
+	) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
+	const link = await ctx.db
+		.query("files_share_links")
+		.withIndex("by_organization_workspace_node", (q) =>
+			q
+				.eq("organizationId", membership.organizationId)
+				.eq("workspaceId", membership.workspaceId)
+				.eq("nodeId", node._id),
+		)
+		.first();
+	if (args.review && link?._id !== args.review.linkId) {
+		return Result({ _nay: { message: "The public link changed. Review the images and videos again." } });
+	}
+	if (!link || !(await files_share_links_db_is_selected(ctx.db, link))) return Result({ _yay: { shared: false } });
+	if (
+		link.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
+		(await db_check_scope(ctx, link)) !== "ok" ||
+		!(await db_is_workspace_live(ctx, link))
+	)
+		return Result({ _yay: { shared: false } });
+	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+	if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
+	const mediaNode = await files_share_link_media_db_resolve_node(ctx, { ...membership, src: args.src });
+	if (!mediaNode || !(await checker.can(mediaNode, "content.read")))
+		return Result({ _nay: { message: "Permission denied" } });
+	if (mediaNode.restrictedScopeNodeId !== node.restrictedScopeNodeId) {
+		return Result({
+			_nay: {
+				message: `“${mediaNode.name}” is in a different restricted area. Copy it next to this document, then insert the copy to share it.`,
+			},
+		});
+	}
+	if (args.review && mediaNode.assetId !== args.review.assetId) {
+		return Result({ _nay: { message: "The image or video changed. Review it again." } });
+	}
+	if (args.review) {
+		const prepared = await db_prepare_share_link_view(ctx, link.token);
+		if (!prepared?.media.some((item) => item.src === args.src)) {
+			return Result({ _nay: { message: "The document changed. Review its images and videos again." } });
+		}
+	}
+	const shared = await files_share_link_media_db_approve(ctx, { link, mediaNode, userId: userAuth.id });
+	return Result({ _yay: { shared } });
+}
+
+/**
+ * Called only when a person chooses to insert this one image or video. Save does not depend on it.
+ */
+export const approve_inserted_media = mutation({
+	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes"), src: v.string() },
+	returns: v_result({ _yay: v.object({ shared: v.boolean() }) }),
+	handler: db_approve_media,
+});
+
+/**
+ * The manager approves the exact item shown in Sharing, never a newly discovered replacement.
+ */
+export const approve_reviewed_media = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		src: v.string(),
+		expectedLinkId: v.id("files_share_links"),
+		expectedAssetId: v.id("files_r2_assets"),
+	},
+	returns: v_result({ _yay: v.object({ shared: v.boolean() }) }),
+	handler: async (ctx, args) =>
+		await db_approve_media(ctx, {
+			...args,
+			review: { linkId: args.expectedLinkId, assetId: args.expectedAssetId },
+		}),
 });
 
 /**

@@ -11,7 +11,7 @@ import * as activities from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	plugins_REVIEW_POLICY_VERSION,
 	plugins_validate_manifest,
@@ -2375,6 +2375,77 @@ describe("plugins Phase 0", () => {
 				.first(),
 		);
 		expect(refusedNode).toBeNull();
+	});
+
+	test("an upload run can publish its pinned source asset but not its replacement", async () => {
+		const t = test_convex();
+		const fixture = await start_running_plugin_run(t);
+		const installation = await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", fixture.installed._yay!.installationId),
+		);
+		// The run keeps its source authority, but cannot read the rest of the workspace.
+		expect(
+			await fixture.asOwner.mutation(api.access_control.remove_service_account_grant, {
+				membershipId: fixture.membership.membershipId,
+				serviceAccountId: installation!.serviceAccountId,
+				resource: { kind: "workspace" },
+			}),
+		).toEqual({ _yay: null });
+		await t.run((ctx) =>
+			ctx.db.patch("files_r2_assets", fixture.upload.assetId, {
+				r2Key: "pinned-source",
+				unfinalizedExpiresAt: undefined,
+			}),
+		);
+		const write = (content: string) =>
+			t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: { Authorization: `Bearer ${fixture.apiToken}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ path: "/summary.md", content, contentType: "text/markdown", nonCollaborative: true }),
+			});
+		expect((await write("Before\n")).status).toBe(200);
+		const document = await t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.filter((q) => q.eq(q.field("path"), "/summary.md"))
+				.first(),
+		);
+		// Read access to the output lets later writes keep its node and link.
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: document!._id,
+				principal: { kind: "service_account", serviceAccountId: installation!.serviceAccountId },
+				level: "write",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.set_node_share_link, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: document!._id,
+				enabled: true,
+			}),
+		).toEqual({ _yay: null });
+		const link = await t.run((ctx) => ctx.db.query("files_share_links").first());
+		const content = `![Source](bonobo-file://${fixture.upload.nodeId})\n`;
+		expect((await write(content)).status).toBe(200);
+		expect(
+			(await t.query(api.files_share_links.get_share_link_view, { token: link!.token }))?.media[0]?.available,
+		).toBe(true);
+		expect((await write("Before\n")).status).toBe(200);
+		await t.run(async (ctx) => {
+			const asset = (await ctx.db.get("files_r2_assets", fixture.upload.assetId))!;
+			const { _id: _oldId, _creationTime: _oldTime, ...fields } = asset;
+			const assetId = await ctx.db.insert("files_r2_assets", { ...fields, r2Key: "replacement-source" });
+			await ctx.db.patch("files_nodes", fixture.upload.nodeId, { assetId });
+		});
+		expect((await write(content)).status).toBe(200);
+		expect(
+			(await t.query(api.files_share_links.get_share_link_view, { token: link!.token }))?.media[0]?.available,
+		).toBe(false);
+		expect((await t.run((ctx) => ctx.db.query("files_share_link_media").first()))?.assetId).toBe(
+			fixture.upload.assetId,
+		);
 	});
 
 	test("a locked triggering file still lets the plugin write a sibling output", async () => {
@@ -8710,6 +8781,78 @@ describe("plugins metadata file doors", () => {
 				mode: "writer",
 				writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 			},
+		});
+	});
+
+	test("a checked plugin insertion publishes its exact image through an existing document link", async () => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
+		const run = await start_file_invoke_run({ t, fixture });
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+		const write = (content: string) =>
+			door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/doc.md", content, contentType: "text/markdown", nonCollaborative: true },
+			});
+		expect((await write("Before\n")).status).toBe(200);
+		const node = (await find_active_node({ t, fixture, path: "/probe/doc.md" }))!;
+		const { imageId, assetId } = await t.run(async (ctx) => {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				kind: "upload",
+				r2Bucket: "test",
+				r2Key: "checked-plugin-photo",
+				size: 4,
+				createdBy: fixture.membership.userId,
+				updatedAt: Date.now(),
+			});
+			const imageId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				createdBy: fixture.membership.userId,
+				updatedBy: fixture.membership.userId,
+				parentId: "root",
+				kind: "file",
+				name: "photo.png",
+				sortName: "photo.png",
+				path: "/photo.png",
+				treePath: "/photo.png",
+				pathDepth: 1,
+				contentType: "image/png",
+				assetId,
+				contentByteSize: 4,
+			});
+			return { imageId, assetId };
+		});
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.set_node_share_link, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: node._id,
+				enabled: true,
+			}),
+		).toEqual({ _yay: null });
+		const link = await t.run((ctx) => ctx.db.query("files_share_links").first());
+		expect((await write(`![Photo](bonobo-file://${imageId})\n`)).status).toBe(200);
+		expect((await t.query(api.files_share_links.get_share_link_view, { token: link!.token }))?.media).toEqual([
+			{ index: 0, available: true, kind: "image" },
+		]);
+		expect(await t.run((ctx) => ctx.db.query("files_share_link_media").first())).toMatchObject({
+			linkId: link!._id,
+			mediaNodeId: imageId,
+			assetId,
 		});
 	});
 

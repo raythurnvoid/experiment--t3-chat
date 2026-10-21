@@ -16,6 +16,7 @@ import {
 	seed_big_folder,
 	read_links,
 	link_on,
+	share_saved_media,
 	insert_media_file,
 	insert_restricted_folder,
 	view_of,
@@ -320,7 +321,7 @@ describe("get_share_link_view", () => {
 		expect(await view_of(f, link.token)).not.toBeNull();
 	});
 
-	test("hides an open image from a writer account that cannot read it", async () => {
+	test("keeps deliberately published bytes when another writer cannot read them", async () => {
 		const f = await fixture();
 		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
 		const nodeId = await test_create_saved_text_file(f.t, {
@@ -360,9 +361,8 @@ describe("get_share_link_view", () => {
 		const shown = await view_of(f, link.token);
 
 		await set_grant({ kind: "file", nodeId }, "write");
-		expect(await available()).toBe(false);
-		// The hidden image changes the revision, so an old signing request is refused.
-		expect((await view_of(f, link.token))?.revision).not.toBe(shown?.revision);
+		expect(await available()).toBe(true);
+		expect((await view_of(f, link.token))?.revision).toBe(shown?.revision);
 
 		await set_grant({ kind: "file", nodeId: imageId }, "read");
 		expect(await available()).toBe(true);
@@ -373,11 +373,11 @@ describe("get_share_link_view", () => {
 
 		await set_grant({ kind: "workspace" }, null);
 		await set_grant({ kind: "file", nodeId: imageId }, "read");
-		// A revoked account keeps its grants. It is never skipped, so the image stays hidden.
+		// Another writer's revocation does not undo the owner's deliberate publication.
 		await f.t.run((ctx) =>
 			ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: Date.now() }),
 		);
-		expect(await available()).toBe(false);
+		expect(await available()).toBe(true);
 	});
 
 	test("shows a draft image only through the saved file it became", async () => {
@@ -408,10 +408,11 @@ describe("get_share_link_view", () => {
 		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: false }]);
 
 		await f.t.run((ctx) => ctx.db.patch("files_nodes", imageId, { publishedFromPrivateNodeId: privateNodeId }));
+		await share_saved_media(f, nodeId);
 		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: true, kind: "image" }]);
 	});
 
-	// No test spends the read budget through media: 50 media cost about 250 calls and at most ~2,750 docs,
+	// No test spends the read budget through media: 50 media need only exact node, approval and asset reads,
 	// far below 1,500 calls and 16,000 docs. A test that seeds enough chunks to pass the doc budget would
 	// likely hit the byte limit first, and all limits throw into the same catch, so it could not tell them apart.
 	test("hides media past the first 50", async () => {
@@ -683,7 +684,7 @@ describe("create_share_link_download_urls", () => {
 		});
 	});
 
-	test("publishes an image that an API key without download scope adds, and only that one", async () => {
+	test("keeps raw API edits private until a manager reviews their images", async () => {
 		const f = await fixture();
 		mock_signed_urls();
 		// Keep uploaded objects in memory, so a second write can read back the first write's saved state.
@@ -766,8 +767,7 @@ describe("create_share_link_download_urls", () => {
 		const headers = { Authorization: `Bearer ${key._yay.credential}`, "Content-Type": "application/json" };
 		const link = await link_on(f, pageId);
 
-		// The owner approved this: an in-place API edit keeps the link, and its new images show when the
-		// embed rules allow them, even though this key cannot download them itself.
+		// An in-place API edit keeps the link and text. It does not prove a publication decision.
 		const written = await f.t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -778,6 +778,23 @@ describe("create_share_link_download_urls", () => {
 		});
 		expect(written.status).toBe(200);
 		expect(await read_links(f.t, pageId)).toEqual([link]);
+		expect((await view_of(f, link.token))?.media.every((item) => !item.available)).toBe(true);
+		const review = await f.asOwner.query(api.files_share_links.get_media_to_share, {
+			membershipId: f.db.membershipId,
+			nodeId: pageId,
+		});
+		const item = review!.media[0]!;
+		expect(item.available).toBe(true);
+		if (!item.available) throw new Error("Expected the readable image");
+		expect(
+			await f.asOwner.mutation(api.files_share_links.approve_reviewed_media, {
+				membershipId: f.db.membershipId,
+				nodeId: pageId,
+				src: item.src,
+				expectedLinkId: review!.linkId,
+				expectedAssetId: item.assetId,
+			}),
+		).toEqual({ _yay: { shared: true } });
 
 		const view = await view_of(f, link.token);
 		expect(view?.media).toEqual([

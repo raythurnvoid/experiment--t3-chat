@@ -5388,6 +5388,21 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_node", ["organizationId", "workspaceId", "nodeId"])
 		.index("by_organization_workspace_scope", ["organizationId", "workspaceId", "restrictedScopeNodeId"]),
 
+	/**
+	 * One deliberate media publication, for the exact bytes this link may show.
+	 */
+	files_share_link_media: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		linkId: v.id("files_share_links"),
+		mediaNodeId: v.id("files_nodes"),
+		assetId: v.id("files_r2_assets"),
+		approvedBy: v.id("users"),
+		approvedAt: v.number(),
+	})
+		.index("by_link_mediaNode", ["linkId", "mediaNodeId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
 	/** Exact text chunks for committed Yjs materializations and per-user pending updates. */
 	files_text_chunks: defineTable(
 		v.union(

@@ -83,6 +83,7 @@ export async function files_media_refs_db_check_plugin_added(
 		userId: Id<"users">;
 		/** An upload run's source file. The run may already download it. */
 		sourceNodeId?: Id<"files_nodes">;
+		sourceAssetId?: Id<"files_r2_assets">;
 		addedFileRefs: string[];
 	},
 ) {
@@ -100,9 +101,11 @@ export async function files_media_refs_db_check_plugin_added(
 		...scope,
 		subject: plugins_sandbox_subject(args.installation, args.userId),
 	});
+	const nodes: Doc<"files_nodes">[] = [];
 	for (const src of args.addedFileRefs) {
 		const parsed = files_media_parse_src(src);
-		const privateId = parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
+		const privateId =
+			parsed.kind === "private" ? ctx.db.normalizeId("files_pending_nodes", parsed.privateNodeId) : null;
 		// A private draft counts only once it is published, as the saved file it became.
 		const target = privateId
 			? await files_pending_nodes_db_resolve_read_target(ctx, { ...scope, target: { kind: "private", id: privateId } })
@@ -130,6 +133,15 @@ export async function files_media_refs_db_check_plugin_added(
 				},
 			});
 		}
+		// Upload authority covers only the source bytes pinned by the run. A replacement needs read access.
+		if (
+			node._id !== args.sourceNodeId ||
+			node.assetId === args.sourceAssetId ||
+			(await checker.can(node, "content.read"))
+		) {
+			nodes.push(node);
+		}
 	}
-	return Result({ _yay: null });
+	// The write sink may publish only these exact checked files and assets, in this transaction.
+	return Result({ _yay: nodes });
 }

@@ -4365,10 +4365,10 @@ describe("process_workspace_deletion_request", () => {
 		expect(await t.run((ctx) => ctx.db.get("ai_chat_bash_invocations", invocation._yay.invocationId))).toBeNull();
 	});
 
-	test("deletes public links before the files they point at", async () => {
+	test("deletes public links and their media approvals before the files they point at", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const { requestId, nodeId, linkId } = await t.run(async (ctx) => {
+		const { requestId, nodeId, linkId, approvalId } = await t.run(async (ctx) => {
 			const nodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: db.organizationId,
@@ -4389,6 +4389,24 @@ describe("process_workspace_deletion_request", () => {
 				createdBy: db.userId,
 				createdAt: Date.now(),
 			});
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "upload",
+				r2Bucket: "test",
+				size: 4,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			});
+			const approvalId = await ctx.db.insert("files_share_link_media", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				linkId,
+				mediaNodeId: nodeId,
+				assetId,
+				approvedBy: db.userId,
+				approvedAt: Date.now(),
+			});
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: db.userId,
 				organizationId: db.organizationId,
@@ -4396,7 +4414,7 @@ describe("process_workspace_deletion_request", () => {
 				scope: "workspace",
 				eligibleAt: 0,
 			});
-			return { requestId, nodeId, linkId };
+			return { requestId, nodeId, linkId, approvalId };
 		});
 
 		let done = false;
@@ -4414,6 +4432,7 @@ describe("process_workspace_deletion_request", () => {
 		}
 		expect(done).toBe(true);
 		expect(await t.run((ctx) => ctx.db.get("files_share_links", linkId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_share_link_media", approvalId))).toBeNull();
 	});
 
 	test("purges a Bash job through its Activity and job-less calls as a batch", async () => {

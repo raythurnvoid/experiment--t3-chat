@@ -34,7 +34,7 @@ import { files_nodes_db_set_extended_scope, files_nodes_db_set_restricted_scope 
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 import { files_share_links_db_check_live_file } from "./files_share_links.ts";
-import { files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
+import { files_share_links_db_delete, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
@@ -1531,7 +1531,7 @@ export const set_node_share_link = mutation({
 			.first();
 		if (!args.enabled) {
 			if (link) {
-				await ctx.db.delete("files_share_links", link._id);
+				await files_share_links_db_delete(ctx, link._id);
 			}
 			return Result({ _yay: null });
 		}

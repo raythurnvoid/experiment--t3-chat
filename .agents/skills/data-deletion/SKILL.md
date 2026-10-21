@@ -343,6 +343,9 @@ Current purge coverage includes:
   the workspace purge fence, already makes the public page answer "does not work". A single node
   purge deletes its link too: `files_nodes_db_hard_delete_node` calls
   `files_share_links_db_delete_for_node` before it deletes the node's other docs.
+- `files_share_link_media` approvals use the tenant index during content purge. Ending one link
+  schedules paged cleanup on its link index. Docs left during cleanup grant nothing: public reads
+  require the live selected link and the exact current asset.
 - `access_control_permission_grants` before their file scope nodes. This purge step also runs for data-only reset, where the preserved home workspace never reaches structure deletion.
 - `files_nodes` after their assets and grants
 - Service destinations, `plugin_service_storage_attempts`, and targets after files and assets, through

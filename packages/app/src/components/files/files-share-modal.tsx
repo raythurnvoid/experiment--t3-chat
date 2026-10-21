@@ -243,8 +243,127 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 // #endregion entry row
 
 // #region link
+type FilesShareModalMedia_Props = {
+	nodeId: app_convex_Id<"files_nodes">;
+	busy: boolean;
+};
+
+const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShareModalMedia_Props) {
+	const { nodeId, busy } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [review, setReview] = useState<
+		app_convex_FunctionReturnType<typeof app_convex_api.files_share_links.get_media_to_share> | undefined
+	>();
+	const [pending, setPending] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+
+	const handleReview = useFn(async () => {
+		if (busy || pending) return;
+		setPending("review");
+		setError(null);
+		try {
+			setReview(await app_convex.query(app_convex_api.files_share_links.get_media_to_share, { membershipId, nodeId }));
+		} catch (error) {
+			console.error("[FilesShareModalMedia.handleReview] Failed to read shared media", { error });
+			setError("Could not load the images and videos. Try again.");
+		}
+		setPending(null);
+	});
+
+	const handleShare = useFn(async (index: number) => {
+		const item = review?.media[index];
+		if (busy || pending || !review || !item?.available) return;
+		setPending(String(index));
+		setError(null);
+		try {
+			// Keep the exact image the person reviewed. Never approve a replacement or a new link on retry.
+			const result = await app_convex.mutation(app_convex_api.files_share_links.approve_reviewed_media, {
+				membershipId,
+				nodeId,
+				src: item.src,
+				expectedLinkId: review.linkId,
+				expectedAssetId: item.assetId,
+			});
+			if (result._nay) {
+				setError(result._nay.message);
+			} else if (result._yay.shared) {
+				setReview({
+					...review,
+					media: review.media.map((entry, entryIndex) => (entryIndex === index ? { ...item, shared: true } : entry)),
+				});
+			}
+		} catch (error) {
+			console.error("[FilesShareModalMedia.handleShare] Failed to share media", { error });
+			setError("Could not share this file. Try again.");
+		}
+		setPending(null);
+	});
+
+	return (
+		<div className={"FilesShareModalMedia" satisfies FilesShareModalLink_ClassNames}>
+			<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+				Images and videos need approval before they appear through this link. Replaced files need approval again.
+			</p>
+			<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+				<MyButton
+					variant="outline"
+					disabled={busy || (pending !== null && pending !== "review")}
+					aria-busy={pending === "review" || undefined}
+					onClick={handleReview}
+				>
+					{pending === "review" ? "Loading..." : review === undefined ? "Review images and videos" : "Refresh list"}
+				</MyButton>
+			</div>
+			{review === null ? (
+				<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+					This public link is no longer available.
+				</p>
+			) : null}
+			{review?.media.length === 0 ? (
+				<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+					No saved images or videos to share.
+				</p>
+			) : null}
+			{review && review.media.length > 0 ? (
+				<ul
+					className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
+					aria-label="Images and videos in the public link"
+				>
+					{review.media.map((item, index) => (
+						<li
+							key={index}
+							className={"FilesShareModalMedia-row" satisfies FilesShareModalLink_ClassNames}
+							data-share-media={item.available && item.shared ? "shared" : "unshared"}
+						>
+							<span>{item.available ? item.name : `This ${item.kind} is not available for sharing.`}</span>
+							{item.available ? (
+								<MyButton
+									variant="outline"
+									disabled={busy || item.shared || (pending !== null && pending !== String(index))}
+									aria-label={`Share ${item.name} through this link`}
+									aria-busy={pending === String(index) || undefined}
+									onClick={() => handleShare(index)}
+								>
+									{pending === String(index) ? "Sharing..." : item.shared ? "Shared" : `Share ${item.kind}`}
+								</MyButton>
+							) : null}
+						</li>
+					))}
+				</ul>
+			) : null}
+			{error ? (
+				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
+					{error}
+				</p>
+			) : null}
+		</div>
+	);
+});
+
 type FilesShareModalLink_ClassNames =
 	| "FilesShareModalLink"
+	| "FilesShareModalMedia"
+	| "FilesShareModalMedia-row"
 	| "FilesShareModalLink-created"
 	| "FilesShareModalLink-error"
 	| "FilesShareModalLink-level-trigger";
@@ -254,6 +373,7 @@ type FilesShareModalLink_CustomAttributes = {
 };
 
 type FilesShareModalLink_Props = {
+	nodeId: app_convex_Id<"files_nodes">;
 	link: { token: string; createdAt: number; creatorName: string } | null;
 	/** The link write is the one being saved. */
 	pending: boolean;
@@ -265,7 +385,7 @@ type FilesShareModalLink_Props = {
 };
 
 const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareModalLink_Props) {
-	const { link, pending, busy, error, onEnabledChange } = props;
+	const { nodeId, link, pending, busy, error, onEnabledChange } = props;
 
 	const levelLabel = link ? access_control_FILE_SHARE_LEVELS.read.label : "No access";
 
@@ -338,6 +458,7 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 					Link created by {link.creatorName} on {format_time(link.createdAt)}.
 				</p>
 			) : null}
+			{link ? <FilesShareModalMedia key={`${nodeId}:${link.token}`} nodeId={nodeId} busy={busy} /> : null}
 
 			{error ? (
 				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
@@ -887,6 +1008,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 							{/* A link opens one file, never a folder, and only a manager may turn it on or off. */}
 							{shareState.nodeKind === "file" && shareState.canManage ? (
 								<FilesShareModalLink
+									nodeId={shareState.nodeId}
 									link={
 										shareState.link
 											? {

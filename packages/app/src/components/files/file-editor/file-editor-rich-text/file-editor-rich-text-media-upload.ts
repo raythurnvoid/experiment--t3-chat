@@ -76,6 +76,29 @@ export function file_editor_rich_text_handle_media_drop(args: {
 }
 
 /**
+ * Only an intentional insertion asks to publish media. Opening a document must never do this.
+ */
+export async function file_editor_rich_text_share_inserted_media(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	documentNodeId: app_convex_Id<"files_nodes">;
+	src: string;
+}) {
+	try {
+		const result = await app_convex.mutation(app_convex_api.files_share_links.approve_inserted_media, {
+			membershipId: args.membershipId,
+			nodeId: args.documentNodeId,
+			src: args.src,
+		});
+		if (result._nay) {
+			toast.error(`The file was inserted but could not be shared through the public link. ${result._nay.message}`);
+		}
+	} catch (error) {
+		console.error("[file_editor_rich_text_share_inserted_media] Failed to share inserted media", { error });
+		toast.error("The file was inserted but could not be shared through the public link. Open Sharing to retry.");
+	}
+}
+
+/**
  * Upload media files into the document at the current selection (or at `dropPos`). The
  * placeholder nodes are inserted synchronously before this returns; the uploads then run in
  * the background. Files from the clipboard get a timestamp name because the browser calls
@@ -429,17 +452,21 @@ async function run_upload_batch(args: {
 	// One file at a time: collisions inside the batch then resolve through the same suffix
 	// retry as collisions with existing files, and the picked names stay deterministic.
 	for (const [index, item] of args.pending.entries()) {
-		const outcome = await upload_one({ view: args.view, membershipId: args.membershipId, target, item }).catch(
-			(error: unknown) => {
-				console.error("[file_editor_rich_text_upload_media_files.run_upload_batch] Unexpected upload error", {
-					error,
-					uploadId: item.uploadId,
-				});
-				remove_upload_node(args.view, item.uploadId);
-				toast.error("Failed to upload file");
-				return "failed" as const;
-			},
-		);
+		const outcome = await upload_one({
+			view: args.view,
+			membershipId: args.membershipId,
+			documentNodeId: args.documentNodeId,
+			target,
+			item,
+		}).catch((error: unknown) => {
+			console.error("[file_editor_rich_text_upload_media_files.run_upload_batch] Unexpected upload error", {
+				error,
+				uploadId: item.uploadId,
+			});
+			remove_upload_node(args.view, item.uploadId);
+			toast.error("Failed to upload file");
+			return "failed" as const;
+		});
 
 		// The tree-write bucket is shared with the whole app; once it refuses, more calls only
 		// push the refill further away, so drop the rest of the batch.
@@ -456,6 +483,7 @@ async function run_upload_batch(args: {
 async function upload_one(args: {
 	view: EditorView;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	documentNodeId: app_convex_Id<"files_nodes">;
 	target: UploadTarget;
 	item: PendingUpload;
 }): Promise<"done" | "failed" | "rate_limited"> {
@@ -530,7 +558,13 @@ async function upload_one(args: {
 		}
 	}
 
-	patch_upload_node({ view, uploadId: item.uploadId, attrs: { uploadId: null } });
+	if (patch_upload_node({ view, uploadId: item.uploadId, attrs: { uploadId: null } })) {
+		await file_editor_rich_text_share_inserted_media({
+			membershipId,
+			documentNodeId: args.documentNodeId,
+			src: files_media_build_file_src(created.nodeId),
+		});
+	}
 	local_upload_remove(item.uploadId);
 	return "done";
 }
@@ -701,6 +735,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const result = await upload_one({
 					view,
 					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					documentNodeId: "document" as app_convex_Id<"files_nodes">,
 					target: {
 						parentId: "folder" as app_convex_Id<"files_nodes">,
 						parentPath: "/assets",
@@ -715,7 +750,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					},
 				});
 				expect(result).toBe("done");
-				expect(mutation).toHaveBeenCalledTimes(1);
+				expect(mutation).toHaveBeenCalledTimes(2);
+				expect(mutation).toHaveBeenLastCalledWith(app_convex_api.files_share_links.approve_inserted_media, {
+					membershipId: "membership",
+					nodeId: "document",
+					src: "bonobo-file://node",
+				});
 				expect(view.state.doc.firstChild?.attrs).toMatchObject({ src: "bonobo-file://node", uploadId: null });
 				expect(fetchMock).toHaveBeenCalledWith("https://r2.test/video", {
 					method: "PUT",

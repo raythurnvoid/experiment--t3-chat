@@ -186,13 +186,11 @@ An embed shows only when all of these hold (`db_read_media_node`, `db_check_medi
    (`files_is_inline_media_content_type`) and matches the node: an image node needs `image/*`, and a
    video node needs `video/*`. SVG and other types are unavailable.
 3. It has a finished asset.
-4. Same audience: its stored restricted scope equals the document's stored restricted scope, so
-   the document's scope check answers for it too. Both are open to the workspace, or both sit
-   inside the same restricted folder.
-5. No narrow writers, open scope only. Every service account with an exact `content.write` grant on
-   the document must be live (not revoked, same tenant) and able to read the media file, through a
-   workspace `content.read` grant or an exact file `content.read` grant. A revoked or missing account
-   is never skipped. More than 50 such grants on either file makes the media unavailable.
+4. Its stored restricted scope equals the document's stored restricted scope. This alone does
+   not prove the editor can read it: Add people can give access to just the document.
+5. `files_share_link_media` has an approval for this exact public link, media node and asset.
+   The authenticated approval checks write access to the document and read access to the media.
+   Public viewing and signing use the same approval check.
 
 Otherwise the view returns `{ index, available: false }`, with no type, name, ID, or reason. The page
 shows a gray box, "This image is not shared" or "This video is not shared", from the node's own kind.
@@ -206,21 +204,32 @@ unavailable. A document inside a restricted folder that embeds an image from an 
 unavailable, because people with only the folder grant may not read the whole workspace. This is
 expected, not a bug. The fix is to move or copy the image next to the document.
 
-Narrow-writer changes:
+## Approving media for a public link
 
-- Removing or downgrading a service account's exact `content.write` grant on the document ends the
-  document's link for good (`access_control_db_set_service_account_grant`). The account may have added
-  media while it could write, and the check no longer sees it.
-- Revoking the account keeps its grant. So its media check fails and every media under rule 5 becomes
-  unavailable, while the page itself stays.
-- Recovery is a manager action: remove the revoked account's write grant, then turn the link on again.
-  That creates a new token. The old token never works again.
-- A new write grant needs no hook. The next view checks the new account.
+Publication is a deliberate action. Never approve media while opening a document, rendering it,
+rebuilding Yjs text, or saving unrelated text. A known file ID grants no access.
 
-Saved human, API, and plugin edits update the page. New media show when the rules above allow them.
-A credential's download scope does not limit this: a key with `files:write` but no `files:download`
-can add a readable image of the same audience, and the link then serves it. This is an approved rule.
-No file becomes public just because someone knows its ID.
+- Picking an existing image or finishing an editor upload approves that exact file for the current
+  link after the access check. With no public link, insertion works normally and creates no approval.
+- A manager can use **Sharing → Review images and videos**, then share a listed item. The request
+  pins the reviewed link and asset. A replaced image or changed link needs a fresh review.
+- Raw Markdown and ordinary API edits keep their references and text. New references remain gray
+  on the public page until a manager reviews them. They do not block Save.
+- Checked plugin-added references record approvals when the write commits. Existing plugin read
+  checks stay in place. An upload source exception must prove the exact run source and asset.
+- Existing links keep their URLs and text. No approval is guessed from old content. Their images
+  need review once. A new link also starts with no approvals.
+- Replacing a media asset needs approval again. An approval grants the exact bytes through this
+  document's link; it does not depend on the approver keeping their membership. Archive and scope
+  checks still apply. Restoring the same approved bytes may make them visible again.
+- Ending the document's link ends all its approvals. Indexed background cleanup removes the docs.
+
+This follows the distinction in familiar apps between a reference and a deliberate publication.
+[Drive shortcuts](https://support.google.com/drive/answer/9700156) and
+[Notion synced blocks](https://www.notion.com/help/synced-blocks) keep source access checks.
+[Google Docs image insertion](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#InsertInlineImageRequest)
+fetches and stores an image copy. Here, approval records permission for exact bytes without copying
+them. Comparing every document reader or walking parent folders is not part of this rule.
 
 `create_share_link_download_urls({ token, revision, targets })` signs 1 to 50 unique targets. It
 charges the `files_share_link_download` bucket (200 targets per minute, keyed by the link doc, shared

@@ -288,7 +288,30 @@ export async function link_on(f: Fixture, nodeId: Id<"files_nodes">) {
 		}),
 	).toEqual({ _yay: null });
 	const [link] = await read_links(f.t, nodeId);
+	await share_saved_media(f, nodeId);
 	return link!;
+}
+
+/**
+ * Simulate the manager's explicit review, separate from turning the link on.
+ */
+export async function share_saved_media(f: Fixture, nodeId: Id<"files_nodes">) {
+	const review = await f.asOwner.query(api.files_share_links.get_media_to_share, {
+		membershipId: f.db.membershipId,
+		nodeId,
+	});
+	for (const item of review?.media ?? []) {
+		if (!item.available || item.shared) continue;
+		expect(
+			await f.asOwner.mutation(api.files_share_links.approve_reviewed_media, {
+				membershipId: f.db.membershipId,
+				nodeId,
+				src: item.src,
+				expectedLinkId: review!.linkId,
+				expectedAssetId: item.assetId,
+			}),
+		).toEqual({ _yay: { shared: true } });
+	}
 }
 
 /**

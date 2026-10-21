@@ -24,6 +24,9 @@ import {
 import { files_media_build_file_src } from "../../../../../shared/files-media.ts";
 import { cn } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { file_editor_rich_text_share_inserted_media } from "./file-editor-rich-text-media-upload.ts";
 
 declare module "@tiptap/core" {
 	interface Commands<ReturnType> {
@@ -79,6 +82,7 @@ export type FileEditorRichTextMediaEmbedPicker_ClassNames = "FileEditorRichTextM
 
 type FileEditorRichTextMediaEmbedPicker_Props = {
 	editor: Editor;
+	documentNodeId: app_convex_Id<"files_nodes"> | null;
 	/** The caret rectangle the popover anchors to, captured when the picker was opened. */
 	anchorRect: { x: number; y: number; width: number; height: number };
 	onClose: () => void;
@@ -100,7 +104,8 @@ function media_row_pickable(row: FilesNodePicker_Row): FilesNodePicker_Pickable 
 export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTextMediaEmbedPicker(
 	props: FileEditorRichTextMediaEmbedPicker_Props,
 ) {
-	const { editor, anchorRect, onClose } = props;
+	const { editor, documentNodeId, anchorRect, onClose } = props;
+	const { membershipId } = AppTenantProvider.useContext();
 
 	const [searchText, setSearchText] = useState("");
 
@@ -112,7 +117,7 @@ export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTe
 
 	const handlePick = useFn((row: FilesNodePicker_Row) => {
 		// The document stores the node reference; the node view signs a url while rendering.
-		editor
+		const inserted = editor
 			.chain()
 			.focus()
 			.insertContent(
@@ -121,6 +126,13 @@ export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTe
 					: { type: "image", attrs: { src: files_media_build_file_src(row.nodeId), alt: row.name } },
 			)
 			.run();
+		if (inserted && documentNodeId) {
+			void file_editor_rich_text_share_inserted_media({
+				membershipId,
+				documentNodeId,
+				src: files_media_build_file_src(row.nodeId),
+			});
+		}
 		onClose();
 	});
 

@@ -2,14 +2,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { queryMock, pageMock, mutationMock, anagraphicsMock, toastSuccessMock, toastErrorMock } = vi.hoisted(() => ({
-	queryMock: vi.fn(),
-	pageMock: vi.fn(),
-	mutationMock: vi.fn(),
-	anagraphicsMock: vi.fn(),
-	toastSuccessMock: vi.fn(),
-	toastErrorMock: vi.fn(),
-}));
+const { queryMock, mediaQueryMock, pageMock, mutationMock, anagraphicsMock, toastSuccessMock, toastErrorMock } =
+	vi.hoisted(() => ({
+		queryMock: vi.fn(),
+		mediaQueryMock: vi.fn(),
+		pageMock: vi.fn(),
+		mutationMock: vi.fn(),
+		anagraphicsMock: vi.fn(),
+		toastSuccessMock: vi.fn(),
+		toastErrorMock: vi.fn(),
+	}));
 
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => queryMock(...args),
@@ -28,8 +30,12 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 
 vi.mock("@/lib/app-convex-client.ts", () => ({
-	app_convex: { mutation: (...args: unknown[]) => mutationMock(...args) },
+	app_convex: {
+		mutation: (...args: unknown[]) => mutationMock(...args),
+		query: (...args: unknown[]) => mediaQueryMock(...args),
+	},
 	app_convex_api: {
+		files_share_links: { get_media_to_share: "media_to_share", approve_reviewed_media: "approve_media" },
 		files_sharing: {
 			get_node_share_state: "sharing",
 			set_node_share_grant: "set_grant",
@@ -94,7 +100,12 @@ const INSIDE_SHARE = {
 			name: "Team",
 			path: "/Team",
 			entries: [
-				{ principal: { kind: "user", userId: "user_1" }, level: "read", serviceAccountName: null, servicePluginName: null },
+				{
+					principal: { kind: "user", userId: "user_1" },
+					level: "read",
+					serviceAccountName: null,
+					servicePluginName: null,
+				},
 			],
 		},
 		extended: [],
@@ -138,6 +149,7 @@ beforeEach(() => {
 		loadMore: vi.fn(),
 	});
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
+	mediaQueryMock.mockReset().mockResolvedValue({ linkId: "link_1", media: [] });
 	anagraphicsMock.mockReset().mockReturnValue({ owner_1: { displayName: "Owner" }, user_1: { displayName: "Ada" } });
 	toastSuccessMock.mockReset();
 	toastErrorMock.mockReset();
@@ -260,7 +272,9 @@ describe("FilesShareModal", () => {
 		renderModal();
 
 		expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
-		expect(screen.getByText("They also get everything inside this folder, except restricted items inside it.")).toBeTruthy();
+		expect(
+			screen.getByText("They also get everything inside this folder, except restricted items inside it."),
+		).toBeTruthy();
 		expect(screen.getByText("Everyone in this workspace can open this.")).toBeTruthy();
 		expect(screen.getByText("Nobody yet.")).toBeTruthy();
 	});
@@ -271,7 +285,9 @@ describe("FilesShareModal", () => {
 
 		expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
 		// The help text is about what is inside a folder, so a file does not show it.
-		expect(screen.queryByText("They also get everything inside this folder, except restricted items inside it.")).toBeNull();
+		expect(
+			screen.queryByText("They also get everything inside this folder, except restricted items inside it."),
+		).toBeNull();
 	});
 
 	test("restrict asks before removing people added here", async () => {
@@ -279,7 +295,12 @@ describe("FilesShareModal", () => {
 			...OPEN_SHARE,
 			access: "extended_root",
 			entries: [
-				{ principal: { kind: "user", userId: "user_1" }, level: "read", serviceAccountName: null, servicePluginName: null },
+				{
+					principal: { kind: "user", userId: "user_1" },
+					level: "read",
+					serviceAccountName: null,
+					servicePluginName: null,
+				},
 			],
 		});
 		renderModal();
@@ -425,6 +446,70 @@ describe("FilesShareModal", () => {
 			nodeId: "node_1",
 			enabled: false,
 		});
+	});
+
+	test("shares only the image and asset the manager reviewed", async () => {
+		mockShareState({ ...FILE_SHARE, link: LINK });
+		mediaQueryMock.mockResolvedValue({
+			linkId: "link_1",
+			media: [
+				{
+					available: true,
+					src: "bonobo-file://image_1",
+					kind: "image",
+					name: "Photo.png",
+					assetId: "asset_1",
+					shared: false,
+				},
+			],
+		});
+		mutationMock.mockResolvedValue({ _yay: { shared: true } });
+		renderModal();
+		await waitForDialogFocus();
+		expect(mediaQueryMock).not.toHaveBeenCalled();
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("button", { name: "Review images and videos" }));
+		const shareButton = await screen.findByRole("button", { name: "Share Photo.png through this link" });
+		expect(mediaQueryMock).toHaveBeenCalledWith("media_to_share", { membershipId: "membership_1", nodeId: "node_1" });
+		expect(mutationMock).not.toHaveBeenCalled();
+		fireEvent.click(shareButton);
+
+		await waitFor(() => expect(document.querySelector('[data-share-media="shared"]')).toBeTruthy());
+		expect(mutationMock).toHaveBeenCalledWith("approve_media", {
+			membershipId: "membership_1",
+			nodeId: "node_1",
+			src: "bonobo-file://image_1",
+			expectedLinkId: "link_1",
+			expectedAssetId: "asset_1",
+		});
+		expect(mediaQueryMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("keeps a changed image unshared and shows the refusal", async () => {
+		mockShareState({ ...FILE_SHARE, link: LINK });
+		mediaQueryMock.mockResolvedValue({
+			linkId: "link_1",
+			media: [
+				{
+					available: true,
+					src: "bonobo-file://image_1",
+					kind: "image",
+					name: "Photo.png",
+					assetId: "asset_1",
+					shared: false,
+				},
+			],
+		});
+		mutationMock.mockResolvedValue({ _nay: { message: "This image changed. Refresh the list and try again." } });
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("button", { name: "Review images and videos" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Share Photo.png through this link" }));
+
+		expect((await screen.findByRole("alert")).textContent).toBe("This image changed. Refresh the list and try again.");
+		expect(document.querySelector('[data-share-media="shared"]')).toBeNull();
+		expect(document.querySelector('[data-share-media="unshared"]')).toBeTruthy();
 	});
 
 	test("names a creator who left, and shows Unknown when the profile is missing or failed", () => {

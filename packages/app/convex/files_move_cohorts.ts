@@ -61,6 +61,7 @@ import { path_join, path_extract_segments_from } from "../server/server-utils.ts
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_share_rows_db_sync_node } from "../server/files-share-rows.ts";
+import { files_share_links_db_delete } from "./files_share_links_db.ts";
 import {
 	files_move_content_db_create,
 	files_move_content_db_finish,
@@ -1856,7 +1857,9 @@ async function db_cleanup_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 		});
 		for (const row of page.page) {
 			if (view === chosen) await ctx.db.patch(table, row._id, { moveView: undefined });
-			else await ctx.db.delete(table, row._id);
+			else if (table === "files_share_links")
+				await files_share_links_db_delete(ctx, row._id as Id<"files_share_links">);
+			else await ctx.db.delete(table, row._id as Id<typeof table>);
 		}
 		// A done page tagged or deleted its whole range, so the cleanup ends when no later family has rows.
 		return { done: page.isDone && !later, paged: true, parentPage: false };

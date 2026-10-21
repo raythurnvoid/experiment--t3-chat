@@ -141,6 +141,28 @@
 	/* #endregion section */
 
 	/* #region link */
+	.FilesShareModalMedia {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.FilesShareModalMedia-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px 12px;
+		padding: 8px 0;
+
+		> span {
+			flex: 1;
+			min-width: 0;
+			font-size: 16px;
+			color: var(--color-fg-11);
+			overflow-wrap: anywhere;
+		}
+	}
+
 	.FilesShareModalLink-created {
 		margin: 0;
 
