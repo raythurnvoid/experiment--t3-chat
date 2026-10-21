@@ -49,6 +49,8 @@ node <skill folder>/scripts/api.mjs call files/list '{"path":"/","cursor":null,"
 
 `call <route> [json | -]` sends one POST to a route from the [route index](references/route-index.md). Use `-` to read the JSON body from stdin, which avoids shell quoting problems. With no body, it sends none (`auth/verify` needs none).
 
+In Windows PowerShell 5.1, always use `-`. It removes the double quotes inside a JSON argument before the script sees it, so the argument form fails. Pipe the body instead: `'{"path":"/","cursor":null,"limit":100}' | node ... call files/list -`.
+
 - Success: the JSON response goes to stdout. A raw byte response (`files/read-bytes`) goes to stdout unchanged, so redirect it to a file.
 - Failure: `HTTP <status>: <message>` and the JSON error body go to stderr, with exit 1. `call` does not retry. On 429, wait `retryAfterMs`, then send the same request again.
 
@@ -67,7 +69,7 @@ The script follows the upload steps in [Files](references/files.md): `upload-url
 
 The output is `{ uploaded: [{ local, path, nodeId }], failed: [{ local, path, message }] }`. Exit 1 means at least one file failed. Empty files are refused, because an upload needs at least 1 byte; use `files/touch` for an empty text file. `--overwrite replace` is the default. `--skip-processing` keeps text files as uploaded bytes instead of editable documents.
 
-An uploaded file is `pending` until the server confirms its bytes. List its folder with `files/list` and wait for `status: "ready"` before you call the upload done.
+An uploaded file is `pending` until the server confirms its bytes. List its folder with `files/list` and wait for `status: "ready"` before you call the upload done. Until then `files/read` answers 404 for it, so a file you just replaced reads as missing for a few seconds.
 
 ## 6. Organize folders
 

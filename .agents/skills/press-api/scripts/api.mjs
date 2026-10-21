@@ -36,12 +36,31 @@ const UPLOAD_BATCH_SIZE = 20;
 // Keep a few PUTs in flight. Each one holds its whole file in memory.
 const UPLOAD_CONCURRENCY = 4;
 
+// Keep the text rows equal to FILES_CONTENT_TYPE_HINT_BY_EXTENSION in packages/app/shared/files.ts.
+// The server turns an upload with one of these types into an editable text file.
 const CONTENT_TYPES = {
 	".md": "text/markdown",
 	".txt": "text/plain",
-	".csv": "text/csv",
-	".json": "application/json",
+	".log": "text/plain",
+	".ini": "text/plain",
 	".html": "text/html",
+	".htm": "text/html",
+	".json": "application/json",
+	".jsonc": "application/json",
+	".yaml": "application/yaml",
+	".yml": "application/yaml",
+	".toml": "application/toml",
+	".csv": "text/csv",
+	".tsv": "text/tab-separated-values",
+	".css": "text/css",
+	".js": "text/javascript",
+	".mjs": "text/javascript",
+	".cjs": "text/javascript",
+	".jsx": "text/javascript",
+	".ts": "text/typescript",
+	".tsx": "text/typescript",
+	".sh": "application/x-sh",
+	".sql": "application/sql",
 	".pdf": "application/pdf",
 	".png": "image/png",
 	".jpg": "image/jpeg",
@@ -147,7 +166,8 @@ function read_hidden(prompt) {
 async function read_stdin() {
 	const chunks = [];
 	for await (const chunk of process.stdin) chunks.push(chunk);
-	return Buffer.concat(chunks).toString("utf8");
+	// Windows PowerShell puts a UTF-8 BOM in front of text it pipes to a program. JSON.parse refuses it.
+	return Buffer.concat(chunks).toString("utf8").replace(/^﻿/u, "");
 }
 // #endregion credentials
 
