@@ -765,7 +765,8 @@ describe("plugins Phase 0", () => {
 		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
 			if (String(input) === "https://r2.test/source-upload") {
 				uploadCount += 1;
-				return new Response(null, { status: uploadCount === 2 ? 500 : 200 });
+				// A 4xx is not resent by `r2_put_object`, so the second file fails for good.
+				return new Response(null, { status: uploadCount === 2 ? 403 : 200 });
 			}
 			return new Response(null, { status: 200 });
 		});
