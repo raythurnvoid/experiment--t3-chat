@@ -924,8 +924,13 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 
 	const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
 		// A setup with problems creates nothing. Put the caret on the first problem, so it is quick to fix.
-		if (setup === null) {
-			editorRef.current?.focusAt(setupErrors[0]?.offset ?? 0);
+		// When the problem is a JSON string, like an empty name `""`, put the caret before its closing
+		// quote, so the next keys the user types go inside the string.
+		const firstError = setupErrors[0];
+		if (setup === null && firstError) {
+			const markedText = setupText.slice(firstError.offset, firstError.offset + firstError.length);
+			const isString = markedText.length >= 2 && markedText.startsWith('"') && markedText.endsWith('"');
+			editorRef.current?.focusAt(isString ? firstError.offset + firstError.length - 1 : firstError.offset);
 		}
 		onSubmit(event);
 	};

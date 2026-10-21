@@ -33,7 +33,7 @@ Verified 2026-10-21 on the dev app. Run each step as a `-f` runner file from the
    state.dialog = state.page.locator(".RouteApiKeysCreateModal");
    ```
 
-5. **Put in the key setup.** The name and scopes are one JSON setup in a Monaco editor. Insert it as one line; do not `type()` it, because Monaco's auto-close doubles typed quotes and brackets. Then read the state and the scope list back before you submit.
+5. **Put in the key setup.** The name and scopes are one JSON setup in a Monaco editor. Insert it as one line; do not `type()` it, because Monaco's auto-close doubles typed quotes and brackets. Then read the state and the scope list back before you submit. The editor suggests scopes while you type; after this one-line insert no suggestion list stays open, and the submit button is still clickable (checked 2026-10-21).
 
    ```js
    await state.dialog.locator(".view-lines").click({ timeout: 2000 });
