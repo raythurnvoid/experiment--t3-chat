@@ -6682,11 +6682,12 @@ const app_convex_schema = defineSchema({
 		 */
 		order: v.number(),
 		/**
-		 * Where the item comes back with its old name.
+		 * The path the item had when it was deleted. A skipped item keeps it in the Trash, so a later
+		 * restore of this path finds it.
 		 */
 		path: v.string(),
 		/**
-		 * The path with the new name. null when the item was skipped and stays in the Trash.
+		 * Where the item came back with its new name. null when the item was skipped and stays in the Trash.
 		 */
 		newPath: v.union(v.string(), v.null()),
 	}).index("by_run_order", ["runId", "order"]),

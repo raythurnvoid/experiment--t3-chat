@@ -281,11 +281,22 @@ describe("files/restore", () => {
 		expect(new Set(renamed.map((item) => JSON.stringify(item))).size).toBe(101);
 		expect(renamed).toContainEqual({ path: "/c100.md", newPath: "/c100-2.md" });
 
-		// Skip leaves the item in the Trash, and the job says so.
+		// Skip leaves the item in the Trash, and the job names the path it keeps there. Its folder is gone, so it
+		// would land at the root, next to an item with its name.
 		const skippedId = await insert_root_file(f, { name: "kept.md", archiveOperationId: crypto.randomUUID() });
+		const goneFolderId = await folder(f, "/gone");
+		await f.t.run(async (ctx) => {
+			await ctx.db.delete("files_nodes", goneFolderId);
+			await ctx.db.patch("files_nodes", skippedId, {
+				parentId: goneFolderId,
+				path: "/gone/kept.md",
+				treePath: "/gone/kept.md",
+				pathDepth: 2,
+			});
+		});
 		await insert_root_file(f, { name: "kept.md", archiveOperationId: null });
 		const skipped = await post(f, "/api/v1/files/restore", ownerKey.credential, {
-			paths: ["/kept.md"],
+			paths: ["/gone/kept.md"],
 			onConflict: "skip",
 			requestId: "skipped",
 		});
@@ -298,7 +309,10 @@ describe("files/restore", () => {
 			status: 200,
 			body: {
 				refused: [
-					{ path: "/kept.md", message: "An item with this name is already there, so this item stays in the Trash." },
+					{
+						path: "/gone/kept.md",
+						message: "An item with this name is already there, so this item stays in the Trash.",
+					},
 				],
 				renamed: [],
 			},

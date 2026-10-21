@@ -1384,7 +1384,8 @@ async function db_land_node(
 			await ctx.db.insert("files_archive_run_items", {
 				runId: args.runId,
 				order: progress.completed + progress.skipped,
-				path,
+				// The item keeps its old path in the Trash. `path` is where it would have landed.
+				path: node.path,
 				newPath: null,
 			});
 		}
@@ -1417,7 +1418,7 @@ async function db_land_node(
 		await ctx.db.insert("files_archive_run_items", {
 			runId: args.runId,
 			order: progress.completed + progress.skipped,
-			path: path_join(landing?.path ?? "/", node.name),
+			path: node.path,
 			newPath: path,
 		});
 	}
