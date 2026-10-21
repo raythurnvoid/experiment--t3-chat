@@ -49,6 +49,13 @@ Use [the Bash evaluation recipe](bash-tool-agent-eval.md) for live checks:
 5. Remove only an ID created for this QA run through `value_store.remove`. Replay its exact continuation in the same chat and check the recovery error.
 6. Keep run evidence in the personal task folder. Do not clear unrelated cursor IDs for a test.
 
+For MIME paging, use a non-owner member and an existing locked folder. First check that
+`find <locked-folder> --content-type text/ --limit 1` says `Permission denied`. Then run
+`find <parent> --content-type application/x-not-present --limit 1` and follow every page.
+Each reached locked folder must appear once, in path order, even without type matches.
+Replay a printed continuation before changing access: the files and denied paths must match,
+but the next cursor ID may differ. Check raw tool output and saved page receipts.
+
 Keep prompts within the selected model's tool-call limit. If the chat says a call was not run because the tool budget was reached, send that exact command in a new message. It is not a Bash failure.
 
 For table-wide readback, paginate each table in a separate inline query. Convex permits only one paginated query per function. Check `isDone` for each table before reporting complete counts.
