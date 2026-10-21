@@ -1360,6 +1360,11 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   `Metadata` (the YAML editor). A folder gets General, Protection, and Metadata.
   `Collaboration` renders only for an editable text file, so an image also shows three sections
   and no empty strip.
+- Its two Monaco editors (the read-only facts block named `Properties` and `Metadata YAML`) show
+  their whole right-click menu, even past the dialog edge. Check it with the "Right-click menu"
+  recipe under "API Keys Route" in `app-map.md`, with the dialog scope
+  `[data-files-properties-modal][data-open="true"]`. The footer `Close` button may ignore
+  `locator.click()`; focus it and press Enter (seen 2026-10-22).
 - The `Collaboration` checkbox is a `MyCheckboxButton` with a covered 1px input:
   click its label, `.FilesPropertiesModalCollaboration-checkbox`.
   Turning it ON writes at once. Turning it OFF opens a confirm dialog

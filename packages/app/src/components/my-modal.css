@@ -39,6 +39,8 @@
 
 		outline: none;
 
+		/* A dialog that holds a Monaco editor sets `contain: layout style` instead. Paint containment
+		   cuts off Monaco's right-click menu where it goes past the dialog edge. */
 		contain: content;
 	}
 

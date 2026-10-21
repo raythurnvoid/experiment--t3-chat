@@ -5,6 +5,11 @@
 	.FilesPropertiesModal {
 		width: min(46rem, calc(100vw - 2rem));
 		max-width: none;
+
+		/* Drop the paint containment of the shared modal here. Monaco draws its right-click menu
+		   with position: fixed inside the editor, and paint containment cut off the part of the
+		   menu that goes past the dialog edge. */
+		contain: layout style;
 	}
 
 	/* Use a fixed height, so the modal does not resize when the content replaces the skeleton. The

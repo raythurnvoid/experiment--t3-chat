@@ -1226,7 +1226,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	// popups can paint past the editor's edge. This editor cannot do that. The app-wide container
 	// sits outside the modal, and Ariakit marks everything outside an open dialog as inert, so the
 	// popups would paint behind the dialog. A container inside the modal does not work either. The
-	// modal sets `contain: content`, which makes the modal the reference box for `position: fixed`,
+	// modal sets layout containment, which makes the modal the reference box for `position: fixed`,
 	// and `fixedOverflowWidgets` writes screen coordinates that would then land in the wrong place.
 	// So the popups stay inside the editor box and clip at its edge. This field is small, so that is
 	// acceptable.
