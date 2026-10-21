@@ -1041,8 +1041,19 @@ once from the top on `errorCode: "invalid_cursor"` and skips tiles it already sh
 bundle 248,091 bytes, two builds byte-identical. SDK 0.21.0+ peers want `convex ^1.46.0` and
 `react ^19.3.0`, so the Gallery bumped both. The root dropped its prettier config (`0938c10c`), so
 a plugin build that runs `prettier --write dist` without its own config now writes 2-space dist
-(about 8% bigger). Gallery got a local `.prettierrc` like Council's. Chitchat and Video Player have
-no local config yet; add one before their next build.
+(about 8% bigger). Gallery got a local `.prettierrc` like Council's. Video Player and Chitchat got the
+same file on 2026-10-21. A plugin repo whose build runs prettier needs this file, or its committed
+`dist` stops matching a plain `build`.
+
+On 2026-10-21 five plugins moved to convex 1.47.0 and were released with new patch versions, because
+a new build with the old version is refused at publish ("already exist with a different artifact
+hash"): Chitchat 0.8.10 (`a4c9592b`, its bundle back to tab format, 762,536 bytes, file limit back to
+900,000), Council 0.2.15 (`b95a7720`), Data Probe 0.4.3 (`40752898`), Gallery 0.1.24 (`47e26fb6`),
+and Video Player 0.1.12 (`1d2c0265`). All were published from the CLI with the owner's
+`--identity`, and every owner installation on the previous version was updated. The first Chitchat
+review stopped with "could not finish its assessment" and called the 26,798-line bundle "a single
+minified line"; the retry of the same commit passed. Before a Council upgrade, check that no meeting
+is `processing` or `deleting` (`packages/council/README.md`, release gate).
 
 Gmail 0.2.4 was published and installed in `personal/home` on 2026-10-11 the same way (plugin commit
 `4a756dbff2b042eeb6711ad37bf9f74fa45c72ba`, version doc `hn7qf8eb759fkf1s6ennhc5pah8g2yh7`). Its page
