@@ -309,11 +309,7 @@ const share_inherited_validator = v.object({
 });
 
 /** "Anyone on the web" of one node. See `db_get_public_state`. */
-export const files_sharing_public_state_validator = v.union(
-	v.literal("on"),
-	v.literal("inherited"),
-	v.literal("off"),
-);
+export const files_sharing_public_state_validator = v.union(v.literal("on"), v.literal("inherited"), v.literal("off"));
 
 type FileSharePrincipal =
 	| { kind: "user"; userId: Id<"users"> }
