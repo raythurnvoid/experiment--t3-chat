@@ -36,6 +36,12 @@ import {
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import {
+	MyCheckboxButton,
+	MyCheckboxButtonContent,
+	MyCheckboxButtonDescription,
+	MyCheckboxButtonLabel,
+} from "@/components/my-checkbox-button.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { ServiceAccountSelect } from "@/components/service-account-select.tsx";
 import {
@@ -65,8 +71,11 @@ import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { cn } from "@/lib/utils.ts";
 import {
 	api_key_setup_hover_target,
+	api_key_setup_listed_scopes,
 	api_key_setup_parse,
+	api_key_setup_quick_fixes,
 	api_key_setup_suggest,
+	api_key_setup_with_scopes,
 } from "../../../../../../shared/api-key-setup.ts";
 import { public_api_SERVICE_ACCOUNT_SCOPES } from "../../../../../../shared/public-api.ts";
 
@@ -153,6 +162,17 @@ const API_KEY_SETUP_DEFAULT_TEXT = `{
     "files:read"
   ]
 }`;
+
+// Common setups, shown as buttons above the editor. A preset changes only the "scopes" list, so a typed
+// name stays. A service account key leaves out the scopes it cannot use.
+const API_KEY_SETUP_PRESETS = [
+	{ label: "Read only", scopes: ["files:list", "files:read"] },
+	{ label: "Upload CLI", scopes: ["files:list", "files:read", "files:write"] },
+	{
+		label: "Full files",
+		scopes: ["files:list", "files:read", "files:download", "files:write", "files:permissions", "files:publish"],
+	},
+] as const satisfies ReadonlyArray<{ label: string; scopes: readonly RouteApiKeys_Scope[] }>;
 
 // A junk paste can give thousands of parse errors. Show only the first ones, in the list and as markers.
 const API_KEY_SETUP_SHOWN_ERRORS_MAX = 20;
@@ -605,6 +625,10 @@ type RouteApiKeysCreateModalEditor_Ref = {
 	 * Put the caret at `offset` in the setup text, scroll it into view, and focus the editor.
 	 */
 	focusAt: (offset: number) => void;
+	/**
+	 * Replace the whole setup text as one undo step, so Ctrl+Z in the editor undoes only this change.
+	 */
+	replaceText: (text: string) => void;
 };
 
 type RouteApiKeysCreateModalEditor_Props = {
@@ -618,6 +642,17 @@ type RouteApiKeysCreateModalEditor_Props = {
 	readOnly: boolean;
 	onTextChange: (text: string) => void;
 };
+
+function to_monaco_range(model: monaco_editor.ITextModel, offset: number, length: number) {
+	const start = model.getPositionAt(offset);
+	const end = model.getPositionAt(offset + length);
+	return {
+		startLineNumber: start.lineNumber,
+		startColumn: start.column,
+		endLineNumber: end.lineNumber,
+		endColumn: end.column,
+	};
+}
 
 const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEditor(
 	props: RouteApiKeysCreateModalEditor_Props,
@@ -654,7 +689,8 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 			// Field names and scope ids are always strings here, so turn suggestions on there.
 			quickSuggestions: { other: "on", comments: "off", strings: "on" },
 			// Show only the suggestions below. Monaco would otherwise fill an empty list with words from the text.
-			suggest: { showWords: false },
+			// Keep suggesting while a picked field's snippet is active, so the scope list opens inside `"scopes": []`.
+			suggest: { showWords: false, snippetsPreventQuickSuggestions: false },
 			// Do not mark every copy of the word under the caret. `:` splits words, so every "files" would light up.
 			occurrencesHighlight: "off",
 		} satisfies NonNullable<EditorProps["options"]>;
@@ -674,8 +710,22 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 				editor.revealPositionInCenterIfOutsideViewport(position);
 				editor.focus();
 			},
+			replaceText: (nextText) => {
+				const model = editor?.getModel();
+				if (!editor || !model) {
+					onTextChange(nextText);
+					return;
+				}
+
+				// The `value` prop would also apply the text as an edit, but it closes the undo step only after
+				// it. Ctrl+Z would then undo the typing just before this change too. The edit calls
+				// `onTextChange` through the editor's change event.
+				editor.pushUndoStop();
+				editor.executeEdits("api-keys-setup-replace", [{ range: model.getFullModelRange(), text: nextText }]);
+				editor.pushUndoStop();
+			},
 		}),
-		[editor],
+		[editor, onTextChange],
 	);
 
 	const handleOnMount = useFn<EditorProps["onMount"]>((mountedEditor) => {
@@ -696,7 +746,9 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 		editor?.updateOptions({ readOnly });
 	}, [editor, readOnly]);
 
-	// The app turns Monaco's own JSON checks off, so show the shared parser's errors as markers.
+	// The app turns Monaco's own JSON checks off, so show the shared parser's errors as markers, and offer
+	// their quick fixes on Ctrl+. and the light bulb. Register the fixes again for each new error list, so
+	// they always match the markers. Answer only for this editor's model, like the providers below.
 	useEffect(() => {
 		const model = editor?.getModel();
 		if (!model) {
@@ -706,21 +758,63 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 		monaco_editor.setModelMarkers(
 			model,
 			MONACO_MARKER_OWNER,
-			errors.map((error) => {
-				const start = model.getPositionAt(error.offset);
-				// A zero-length error still needs one character, or Monaco draws nothing.
-				const end = model.getPositionAt(error.offset + Math.max(error.length, 1));
-				return {
-					severity: monaco_MarkerSeverity.Error,
-					message: error.message,
-					startLineNumber: start.lineNumber,
-					startColumn: start.column,
-					endLineNumber: end.lineNumber,
-					endColumn: end.column,
-				};
-			}),
+			// A zero-length error still needs one character, or Monaco draws nothing.
+			errors.map((error) => ({
+				severity: monaco_MarkerSeverity.Error,
+				message: error.message,
+				...to_monaco_range(model, error.offset, Math.max(error.length, 1)),
+			})),
 		);
-	}, [editor, errors]);
+
+		const codeActionProvider = monaco_languages.registerCodeActionProvider(
+			"json",
+			{
+				provideCodeActions: (actionModel, _range, context) => {
+					if (actionModel !== model) {
+						return undefined;
+					}
+
+					const text = model.getValue();
+					const actions = context.markers.flatMap((marker) => {
+						// Find the error the marker was made from: same message, same start.
+						const error = errors.find((item) => {
+							const start = model.getPositionAt(item.offset);
+							return (
+								item.message === marker.message &&
+								start.lineNumber === marker.startLineNumber &&
+								start.column === marker.startColumn
+							);
+						});
+						if (!error) {
+							return [];
+						}
+
+						return api_key_setup_quick_fixes(text, error, allowedScopes).map((fix, index) => ({
+							title: fix.title,
+							kind: "quickfix",
+							diagnostics: [marker],
+							isPreferred: index === 0,
+							edit: {
+								edits: fix.edits.map((edit) => ({
+									resource: model.uri,
+									// Monaco skips the fix if the text changed after it was made.
+									versionId: model.getVersionId(),
+									textEdit: { range: to_monaco_range(model, edit.offset, edit.length), text: edit.content },
+								})),
+							},
+						}));
+					});
+
+					return { actions, dispose: () => {} };
+				},
+			},
+			{ providedCodeActionKinds: ["quickfix"] },
+		);
+
+		return () => {
+			codeActionProvider.dispose();
+		};
+	}, [editor, errors, allowedScopes]);
 
 	// Suggest field names and scope ids, and show their docs on hover. Monaco keeps one list of these
 	// providers per language, shared by every editor, so answer only for this editor's model. Remove them
@@ -730,19 +824,9 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 			return;
 		}
 
-		const toRange = (model: monaco_editor.ITextModel, offset: number, length: number) => {
-			const start = model.getPositionAt(offset);
-			const end = model.getPositionAt(offset + length);
-			return {
-				startLineNumber: start.lineNumber,
-				startColumn: start.column,
-				endLineNumber: end.lineNumber,
-				endColumn: end.column,
-			};
-		};
-
 		const completionProvider = monaco_languages.registerCompletionItemProvider("json", {
-			triggerCharacters: ['"'],
+			// Open the scope list as soon as a new list item can start: after `[` and after `,`.
+			triggerCharacters: ['"', "[", ","],
 			provideCompletionItems: (model, position) => {
 				if (model !== editor.getModel()) {
 					return undefined;
@@ -756,7 +840,7 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 				// Show each item's short label on its row, and give it no `detail` and no `documentation`. With
 				// either one, Monaco offers a details panel. That panel opens to the right of the list, past the
 				// editor's edge, where the dialog cuts it off. The full docs stay in the hover and "All scopes".
-				const range = toRange(model, suggestion.replace.offset, suggestion.replace.length);
+				const range = to_monaco_range(model, suggestion.replace.offset, suggestion.replace.length);
 				if (suggestion.kind === "field") {
 					return {
 						suggestions: suggestion.values.map((key) => ({
@@ -766,6 +850,11 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 							// Add the value too, with the caret inside it, unless the field already has its colon.
 							insertText: suggestion.colonFollows ? `"${key}"` : key === "name" ? '"name": "$1"' : '"scopes": [$1]',
 							insertTextRules: monaco_languages.CompletionItemInsertTextRule.InsertAsSnippet,
+							// Open the scope list right away inside the new `[]`.
+							command:
+								key === "scopes" && !suggestion.colonFollows
+									? { id: "editor.action.triggerSuggest", title: "Suggest scopes" }
+									: undefined,
 							range,
 						})),
 					};
@@ -793,7 +882,7 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 
 				// Build the docs only from our own constants, never from the pasted text.
 				const target = api_key_setup_hover_target(model.getValue(), model.getOffsetAt(position));
-				const range = target ? toRange(model, target.offset, target.length) : undefined;
+				const range = target ? to_monaco_range(model, target.offset, target.length) : undefined;
 				if (target?.kind === "field" && (target.value === "name" || target.value === "scopes")) {
 					return { range, contents: [{ value: API_KEY_SETUP_FIELD_DOCS[target.value] }] };
 				}
@@ -854,6 +943,7 @@ type RouteApiKeysCreateModal_ClassNames =
 	| "RouteApiKeysCreateModal-setup"
 	| "RouteApiKeysCreateModal-setupTitle"
 	| "RouteApiKeysCreateModal-setupHint"
+	| "RouteApiKeysCreateModal-presets"
 	| "RouteApiKeysCreateModal-errors"
 	| "RouteApiKeysCreateModal-summary"
 	| "RouteApiKeysCreateModal-summaryTitle"
@@ -863,8 +953,7 @@ type RouteApiKeysCreateModal_ClassNames =
 	| "RouteApiKeysCreateModal-scopesChevron"
 	| "RouteApiKeysCreateModal-scopeList"
 	| "RouteApiKeysCreateModal-scope"
-	| "RouteApiKeysCreateModal-scopeTitle"
-	| "RouteApiKeysCreateModal-scopeDescription"
+	| "RouteApiKeysCreateModal-scopeCheckbox"
 	| "RouteApiKeysCreateModal-writeWarning";
 
 type RouteApiKeysCreateModal_CustomAttributes = {
@@ -915,7 +1004,9 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 	const editorRef = useRef<RouteApiKeysCreateModalEditor_Ref>(null);
 
 	const setup = setupParse?.setup ?? null;
-	const setupErrors = setupParse?.errors ?? [{ offset: 0, length: 0, message: "Paste a key setup." }];
+	const setupErrors = setupParse?.errors ?? [
+		{ code: "not_object" as const, offset: 0, length: 0, message: "Paste a key setup." },
+	];
 	// Before the first Create click, show no red errors on an empty editor or the untouched default text,
 	// which only lacks a name.
 	const setupState: RouteApiKeysCreateModal_CustomAttributes["data-api-key-setup-state"] =
@@ -929,6 +1020,34 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 	const shownErrors = setupState === "invalid" ? setupErrors.slice(0, API_KEY_SETUP_SHOWN_ERRORS_MAX) : [];
 	const hiddenErrorCount = setupState === "invalid" ? setupErrors.length - shownErrors.length : 0;
 	const hasWriteScope = setup?.scopes.some((scope) => API_KEY_WRITE_SCOPES.includes(scope)) ?? false;
+	const allowedScopes: readonly RouteApiKeys_Scope[] =
+		serviceAccountId === null ? API_KEY_SETUP_ALLOWED_SCOPES : API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES;
+	// The scope checkboxes mirror the text, which stays the only source of the setup. Null while the JSON is
+	// broken: the checkboxes are then off until the text parses again.
+	const listedScopes = api_key_setup_listed_scopes(setupText);
+
+	// Each change below goes through the editor as one undo step, so Ctrl+Z in the editor undoes it.
+	const handlePresetClick = (scopes: readonly RouteApiKeys_Scope[]) => {
+		const presetScopes = scopes.filter((scope) => allowedScopes.includes(scope));
+		// A broken or empty text cannot keep its name, so start a new setup from the preset.
+		editorRef.current?.replaceText(
+			api_key_setup_with_scopes(setupText, presetScopes) ?? JSON.stringify({ name: "", scopes: presetScopes }, null, 2),
+		);
+	};
+
+	const handleScopeCheckedChange = (scope: RouteApiKeys_Scope, checked: boolean) => {
+		if (listedScopes === null) {
+			return;
+		}
+
+		const nextText = api_key_setup_with_scopes(
+			setupText,
+			checked ? [...listedScopes, scope] : listedScopes.filter((item) => item !== scope),
+		);
+		if (nextText !== null) {
+			editorRef.current?.replaceText(nextText);
+		}
+	};
 
 	const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
 		// A setup with problems creates nothing. Put the caret on the first problem, so it is quick to fix.
@@ -982,8 +1101,8 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 							/>
 							{serviceAccountId ? (
 								<p>
-									Service keys cannot make files public, read AI conversations, or use plugin data. The key acts as
-									this account, with the account's grants.
+									Service keys cannot make files public, read AI conversations, or use plugin data. The key acts as this
+									account, with the account's grants.
 								</p>
 							) : null}
 							{serviceAccountId && !canBindAccount ? (
@@ -995,16 +1114,30 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 									Setup
 								</div>
 								<p className={"RouteApiKeysCreateModal-setupHint" satisfies RouteApiKeysCreateModal_ClassNames}>
-									Paste or edit the key setup as JSON: a name that tells you where the key is used, and the scopes
-									it needs.
+									Paste or edit the key setup as JSON: a name that tells you where the key is used, and the scopes it
+									needs.
 								</p>
+								<div
+									className={"RouteApiKeysCreateModal-presets" satisfies RouteApiKeysCreateModal_ClassNames}
+									role="group"
+									aria-label="Scope presets"
+								>
+									{API_KEY_SETUP_PRESETS.map((preset) => (
+										<MyButton
+											key={preset.label}
+											variant="outline"
+											disabled={pending}
+											onClick={() => handlePresetClick(preset.scopes)}
+										>
+											{preset.label}
+										</MyButton>
+									))}
+								</div>
 								<RouteApiKeysCreateModalEditor
 									ref={editorRef}
 									text={setupText}
 									errors={shownErrors}
-									allowedScopes={
-										serviceAccountId === null ? API_KEY_SETUP_ALLOWED_SCOPES : API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES
-									}
+									allowedScopes={allowedScopes}
 									readOnly={pending}
 									onTextChange={onSetupTextChange}
 								/>
@@ -1053,32 +1186,58 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 							) : null}
 
 							<details className={"RouteApiKeysCreateModal-scopes" satisfies RouteApiKeysCreateModal_ClassNames}>
-								<summary className={"RouteApiKeysCreateModal-scopesSummary" satisfies RouteApiKeysCreateModal_ClassNames}>
+								<summary
+									className={"RouteApiKeysCreateModal-scopesSummary" satisfies RouteApiKeysCreateModal_ClassNames}
+								>
 									All scopes
 									<ChevronDown
 										className={"RouteApiKeysCreateModal-scopesChevron" satisfies RouteApiKeysCreateModal_ClassNames}
 										aria-hidden
 									/>
 								</summary>
+								{listedScopes === null ? (
+									<p className={"RouteApiKeysCreateModal-setupHint" satisfies RouteApiKeysCreateModal_ClassNames}>
+										The setup JSON has a problem. Fix it, or pick a preset, to use these checkboxes.
+									</p>
+								) : null}
 								<ul
 									className={"RouteApiKeysCreateModal-scopeList" satisfies RouteApiKeysCreateModal_ClassNames}
 									aria-label="All scopes"
 								>
-									{API_KEY_SCOPE_ROWS.map((row) => (
-										<li key={row.scope} className={"RouteApiKeysCreateModal-scope" satisfies RouteApiKeysCreateModal_ClassNames}>
-											<span className={"RouteApiKeysCreateModal-scopeTitle" satisfies RouteApiKeysCreateModal_ClassNames}>
-												{API_KEY_SCOPE_LABELS[row.scope]} <code>{row.scope}</code>
-											</span>
-											<span
-												className={"RouteApiKeysCreateModal-scopeDescription" satisfies RouteApiKeysCreateModal_ClassNames}
+									{API_KEY_SCOPE_ROWS.map((row) => {
+										const checked = listedScopes?.includes(row.scope) ?? false;
+										return (
+											<li
+												key={row.scope}
+												className={"RouteApiKeysCreateModal-scope" satisfies RouteApiKeysCreateModal_ClassNames}
 											>
-												{row.description}
-												{public_api_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope)
-													? null
-													: " Personal keys only."}
-											</span>
-										</li>
-									))}
+												<MyCheckboxButton
+													className={
+														"RouteApiKeysCreateModal-scopeCheckbox" satisfies RouteApiKeysCreateModal_ClassNames
+													}
+													variant="outline"
+													checked={checked}
+													// A service account key cannot add a personal-only scope, but can still remove one.
+													disabled={
+														pending || listedScopes === null || (!checked && !allowedScopes.includes(row.scope))
+													}
+													onCheckedChange={(nextChecked) => handleScopeCheckedChange(row.scope, nextChecked)}
+												>
+													<MyCheckboxButtonContent>
+														<MyCheckboxButtonLabel>
+															{API_KEY_SCOPE_LABELS[row.scope]} <code>{row.scope}</code>
+														</MyCheckboxButtonLabel>
+														<MyCheckboxButtonDescription>
+															{row.description}
+															{public_api_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope)
+																? null
+																: " Personal keys only."}
+														</MyCheckboxButtonDescription>
+													</MyCheckboxButtonContent>
+												</MyCheckboxButton>
+											</li>
+										);
+									})}
 								</ul>
 							</details>
 

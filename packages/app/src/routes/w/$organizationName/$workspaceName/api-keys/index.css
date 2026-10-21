@@ -562,6 +562,12 @@
 		color: var(--color-fg-08);
 	}
 
+	.RouteApiKeysCreateModal-presets {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
 	.RouteApiKeysCreateModal-errors {
 		display: flex;
 		flex-direction: column;
@@ -601,6 +607,10 @@
 
 		&[open] > .RouteApiKeysCreateModal-scopesSummary {
 			border-block-end: 1px solid var(--color-base-1-07);
+		}
+
+		& > .RouteApiKeysCreateModal-setupHint {
+			padding: 12px 14px 0;
 		}
 	}
 
@@ -659,19 +669,17 @@
 	.RouteApiKeysCreateModal-scope {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
 	}
 
-	.RouteApiKeysCreateModal-scopeTitle {
-		font-size: 15px;
-		font-weight: 600;
-		color: var(--color-fg-10);
-	}
+	.RouteApiKeysCreateModal-scopeCheckbox {
+		align-items: start;
 
-	.RouteApiKeysCreateModal-scopeDescription {
-		font-size: 15px;
-		line-height: 1.45;
-		color: var(--color-fg-08);
+		height: auto;
+
+		padding: 10px 12px;
+
+		white-space: normal;
+		text-align: start;
 	}
 
 	.RouteApiKeysCreateModal-writeWarning {

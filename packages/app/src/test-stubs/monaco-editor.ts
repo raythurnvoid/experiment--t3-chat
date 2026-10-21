@@ -81,6 +81,9 @@ export const languages = {
 	registerHoverProvider() {
 		return { dispose() {} };
 	},
+	registerCodeActionProvider() {
+		return { dispose() {} };
+	},
 };
 
 // The app config turns the worker-backed language features off at import time (tokenizer-only

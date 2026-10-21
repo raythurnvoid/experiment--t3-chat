@@ -123,7 +123,7 @@ vi.mock("@/components/my-modal.tsx", () => ({
 // Keep one handle per editor: `useFn` is mocked above, so `onMount` changes on every render, and a new
 // handle each time would make the page store a new editor on every render, forever.
 vi.mock("@monaco-editor/react", async () => {
-	const { useEffect, useState } = await import("react");
+	const { useEffect, useRef, useState } = await import("react");
 	const { editor } = await import("monaco-editor");
 
 	return {
@@ -135,12 +135,20 @@ vi.mock("@monaco-editor/react", async () => {
 		}) {
 			const { value, options, onChange, onMount } = props;
 			const [model] = useState(() => editor.createModel(value ?? ""));
+			// Let an edit made through the handle reach the latest `onChange`, like Monaco's change event.
+			const onChangeRef = useRef(onChange);
+			onChangeRef.current = onChange;
 			const [handle] = useState(() => ({
 				getModel: () => model,
 				updateOptions: () => {},
 				setPosition: () => {},
 				revealPositionInCenterIfOutsideViewport: () => {},
 				focus: () => {},
+				pushUndoStop: () => {},
+				executeEdits: (_source: string, edits: Array<{ text: string }>) => {
+					model.setValue(edits[0]!.text);
+					onChangeRef.current?.(edits[0]!.text);
+				},
 			}));
 
 			useEffect(() => {
@@ -410,6 +418,21 @@ describe("RouteApiKeys", () => {
 
 		pasteSetup({ name: "Writer", scopes: ["files:list", "plugin_data:write"] });
 		expect(screen.queryByText(/Treat it like a password/)).not.toBeNull();
+	});
+
+	test("presets and scope checkboxes write the scopes into the setup and keep the typed name", () => {
+		renderRoute();
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		pasteSetup({ name: "Uploader", scopes: ["files:list"] });
+		fireEvent.click(screen.getByRole("button", { name: "Upload CLI" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /^Read file content/ }));
+
+		expect(JSON.parse((getSetupEditor() as HTMLTextAreaElement).value)).toEqual({
+			name: "Uploader",
+			scopes: ["files:list", "files:write"],
+		});
+		expect(screen.getByRole("checkbox", { name: /^Write files/ })).toHaveProperty("checked", true);
 	});
 
 	test("shows rotate and revoke confirmations with safe values", async () => {

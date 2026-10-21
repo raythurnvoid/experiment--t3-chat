@@ -1,5 +1,11 @@
+import { applyEdits } from "jsonc-parser";
 import { describe, expect, test } from "vitest";
-import { api_key_setup_parse, api_key_setup_suggest } from "./api-key-setup.ts";
+import {
+	api_key_setup_parse,
+	api_key_setup_quick_fixes,
+	api_key_setup_suggest,
+	api_key_setup_with_scopes,
+} from "./api-key-setup.ts";
 
 const ALLOWED_SCOPES = ["files:list", "files:read", "files:write", "files:publish"] as const;
 const SERVICE_ACCOUNT_SCOPES = ["files:list", "files:read", "files:write"] as const;
@@ -11,8 +17,8 @@ function parse_personal(text: string) {
 /**
  * The error for the first place `marked` appears in `text`, with the exact offset and length.
  */
-function error_at(text: string, marked: string, message: string) {
-	return { offset: text.indexOf(marked), length: marked.length, message };
+function error_at(text: string, marked: string, code: string, message: string) {
+	return { code, offset: text.indexOf(marked), length: marked.length, message };
 }
 
 describe("api_key_setup_parse", () => {
@@ -33,10 +39,11 @@ describe("api_key_setup_parse", () => {
 
 		expect(result.setup).toBeNull();
 		expect(result.errors).toEqual([
-			error_at(text, '"scope"', 'Unknown field "scope". Use only "name" and "scopes".'),
-			error_at(text, '"files:raed"', 'Unknown scope "files:raed". See "All scopes" for the list.'),
-			error_at(text, '"constructor"', 'Unknown scope "constructor". See "All scopes" for the list.'),
+			error_at(text, '"scope"', "unknown_field", 'Unknown field "scope". Use only "name" and "scopes".'),
+			error_at(text, '"files:raed"', "unknown_scope", 'Unknown scope "files:raed". See "All scopes" for the list.'),
+			error_at(text, '"constructor"', "unknown_scope", 'Unknown scope "constructor". See "All scopes" for the list.'),
 			{
+				code: "duplicate_field",
 				offset: text.lastIndexOf('"scopes"'),
 				length: '"scopes"'.length,
 				message: '"scopes" is in the setup twice. Keep one.',
@@ -54,7 +61,12 @@ describe("api_key_setup_parse", () => {
 
 		expect(result.setup).toBeNull();
 		expect(result.errors).toEqual([
-			error_at(text, '"files:publish"', "Service account keys cannot use files:publish. Remove it, or choose Personal."),
+			error_at(
+				text,
+				'"files:publish"',
+				"scope_not_allowed",
+				"Service account keys cannot use files:publish. Remove it, or choose Personal.",
+			),
 		]);
 	});
 
@@ -64,7 +76,7 @@ describe("api_key_setup_parse", () => {
 		const result = parse_personal(text);
 
 		expect(result.setup).toBeNull();
-		expect(result.errors[0]).toEqual(error_at(text, '"scopes"', "Comma expected"));
+		expect(result.errors[0]).toEqual(error_at(text, '"scopes"', "syntax", "Comma expected"));
 	});
 
 	test("reports deeply nested brackets instead of throwing", () => {
@@ -87,7 +99,7 @@ describe("api_key_setup_parse", () => {
 
 		expect(parse_personal(text)).toEqual({
 			setup: null,
-			errors: [error_at(text, "[]", "Choose at least one scope.")],
+			errors: [error_at(text, "[]", "scopes_empty", "Choose at least one scope.")],
 		});
 	});
 
@@ -122,5 +134,45 @@ describe("api_key_setup_suggest", () => {
 			replace: { offset: text.indexOf('"sc"'), length: 4 },
 			colonFollows: true,
 		});
+	});
+});
+
+describe("api_key_setup_with_scopes", () => {
+	test("rewrites only the scopes list and refuses broken JSON", () => {
+		const text = '{\n  // CI uploads\n  "name": "Uploader", "scopes": ["files:list"] // keep\n}';
+
+		expect(api_key_setup_with_scopes(text, ["files:list", "files:write"])).toBe(
+			'{\n  // CI uploads\n  "name": "Uploader", "scopes": [\n    "files:list",\n    "files:write"\n  ] // keep\n}',
+		);
+		expect(api_key_setup_with_scopes('{"name": "Uploader" "scopes": []}', ["files:list"])).toBeNull();
+	});
+});
+
+describe("api_key_setup_quick_fixes", () => {
+	test("offers a close scope for a typo, and only removal for a word that is not close", () => {
+		const text = '{"name": "Reader", "scopes": ["files:raed", "constructor"]}';
+
+		const titles = parse_personal(text).errors.map((error) =>
+			api_key_setup_quick_fixes(text, error, ALLOWED_SCOPES).map((fix) => fix.title),
+		);
+
+		expect(titles).toEqual([["Change to files:read", "Remove this scope"], ["Remove this scope"]]);
+	});
+
+	test("turns a setup with a typo, an unknown field, and no name into one that parses", () => {
+		let text = '{\n  "scope": [],\n  "scopes": [\n    "files:list",\n    "files:raed"\n  ]\n}';
+
+		// Apply the first fix of the first fixable error until no error has a fix.
+		for (let round = 0; round < 10; round++) {
+			const fix = parse_personal(text)
+				.errors.map((error) => api_key_setup_quick_fixes(text, error, ALLOWED_SCOPES)[0])
+				.find((item) => item !== undefined);
+			if (!fix) {
+				break;
+			}
+			text = applyEdits(text, fix.edits);
+		}
+
+		expect(text).toBe('{\n  "name": "",\n  "scopes": [\n    "files:list",\n    "files:read"\n  ]\n}');
 	});
 });
