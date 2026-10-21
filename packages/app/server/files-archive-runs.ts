@@ -8,9 +8,10 @@
 export const files_archive_runs_CHECK_STEP_MAX_NODES = 500;
 
 /**
- * The Archive or Restore request stamps at most this many nodes itself. A fast archive names at most
- * this many items, so the request stamps every named item. On dev one stamp costs about 60 ms of
- * database time (measured 2026-10-19), so the stamps stay near 0.6 s.
+ * The Archive or Restore request stamps at most this many nodes itself. The archive request stamps
+ * only the named items. A fast archive names at most this many, so the request stamps every named item
+ * and the job stamps what is inside them. On dev one stamp costs about 60 ms of database time
+ * (measured 2026-10-19), so the stamps stay near 0.6 s.
  */
 export const files_archive_runs_REQUEST_MAX_NODES = 10;
 

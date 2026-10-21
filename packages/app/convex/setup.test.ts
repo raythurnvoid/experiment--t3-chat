@@ -371,6 +371,31 @@ export async function test_finish_saved_scope_jobs(t: TestConvexRoot<DataModel>)
 }
 
 /**
+ * Run every archive job to its end. The Archive request stamps only the named items, so a test that
+ * archives a folder with items inside runs this before it reads them.
+ */
+export async function test_finish_archive_jobs(t: TestConvexRoot<DataModel>) {
+	for (let run = 0; run < 10_000; run++) {
+		const walk = await t.run(async (ctx) => {
+			const op = await ctx.db
+				.query("files_subtree_ops")
+				.filter((q) => q.and(q.eq(q.field("kind"), "archive"), q.eq(q.field("status"), "running")))
+				.first();
+			if (!op) return null;
+			return await ctx.db
+				.query("files_subtree_op_walks")
+				.withIndex("by_op", (q) => q.eq("opId", op._id))
+				.unique();
+		});
+		if (!walk) return;
+		await t.mutation(internal.files_subtree_ops.advance, { opId: walk.opId, step: walk.step });
+		const next = await t.run((ctx) => ctx.db.get("files_subtree_op_walks", walk._id));
+		if (next?.step === walk.step) throw new Error("Archive job made no progress");
+	}
+	throw new Error("Archive jobs did not finish");
+}
+
+/**
  * The Move that holds this workspace's Move slot.
  */
 export async function test_db_get_slot_cohort(

@@ -6,6 +6,7 @@ import {
 	test_convex,
 	test_rename_node,
 	test_move_nodes,
+	test_finish_archive_jobs,
 	test_finish_transfer_run,
 	test_get_file_yjs_pointers,
 	test_mocks_cancel_pending_home_file_seeds,
@@ -10225,6 +10226,7 @@ describe("file sharing", () => {
 			nodeIds: [String(outer._yay!.nodeId)],
 		});
 		expect(archived._nay).toBeUndefined();
+		await test_finish_archive_jobs(t);
 
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 

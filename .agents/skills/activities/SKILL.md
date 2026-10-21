@@ -14,9 +14,10 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
 
 - Every transfer, pending review, plugin run, Bash background job, "Apply to contents" protection job,
   archive or restore job, and move or scope job (`files_subtree_ops`) has one Activity, created with
-  the run or op. A small archive, restore, move, or scope change that finishes inside its request
-  makes no run, no op, and no Activity. An archive that refused or could not find some named items
-  keeps its run and Activity, even when it finished inside the request, so the person can see what
+  the run or op. A small archive of files and empty folders, or a small restore, move, or scope
+  change, that finishes inside its request makes no run, no op, and no Activity. An archive of a
+  folder with items inside always has a job, because the request stamps only the named items. An
+  archive that refused or could not find some named items keeps its run and Activity, even when it finished inside the request, so the person can see what
   was not archived (`progress.blocked`). When the request's own check refuses every named item, the
   request answers with the error and makes no run and no Activity. Each refused named item counts
   once in `total`, so the counts still add up.

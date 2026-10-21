@@ -3,8 +3,9 @@
 // so search and lists never see a node and its side docs disagree. A node with many side docs gets a
 // saved scope job instead, and readers skip its docs until the job ends. The request runs a small first step
 // itself (`files_archive_runs_REQUEST_MAX_NODES` stamps and `files_archive_runs_REQUEST_MAX_CHECK_NODES`
-// checked nodes), so it answers fast. A small request finishes inside the request and writes no run,
-// no op, and no Activity, unless the archive refused a named item.
+// checked nodes), so it answers fast. The archive request stamps only the named items, and the job
+// stamps what is inside them. A small archive of files and empty folders, or a small restore, finishes
+// inside the request and writes no run, no op, and no Activity, unless the archive refused a named item.
 //
 // The job is the archive or restore kind of a `files_subtree_ops` op, and it walks by `parentId`
 // through that op's queue. Archive first checks every node inside and writes nothing (a fast archive
@@ -165,6 +166,11 @@ type StepArgs = {
 	 * allows only one, so a later read that needs one ends the step.
 	 */
 	budget: { nodes: number; checkNodes: number; hasPaginated: boolean };
+	/**
+	 * True in the Archive or Restore request, false in a scheduled step. The archive request stamps only
+	 * the named items, so the click answers fast. The job stamps what is inside them.
+	 */
+	isRequest: boolean;
 	/**
 	 * The restricted scopes already checked in this step. The key "" stands for no scope.
 	 */
@@ -601,7 +607,7 @@ async function db_archive_node(
  * Stamp every named item first, so each one leaves the file tree at once. Then stamp the active
  * children of each folder this job stamped, the first named item's folder first. A stamped child
  * leaves the index range the page reads, so each page starts again from the first active child, and
- * a folder is done when that range is empty.
+ * a folder is done when that range is empty. The request stops before the first child (`isRequest`).
  *
  * The check already ran on every node, or the request proved with index reads that it would pass
  * (`files_archive_runs_db_check_fast`). The job cannot stop. So a lock or grant that changes
@@ -644,7 +650,12 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	}
 
 	while (true) {
-		if (args.budget.nodes <= 0 || (count > 0 && (await files_subtree_ops_db_is_near_limits(ctx)))) {
+		// The request stamps no child here, so it skips the stamp budget. It reads one queue row and one
+		// child for each named folder. So 10 named files and empty folders still end inside the request.
+		if (
+			(!args.isRequest && args.budget.nodes <= 0) ||
+			(count > 0 && (await files_subtree_ops_db_is_near_limits(ctx)))
+		) {
 			return { kind: "continue" };
 		}
 
@@ -671,7 +682,10 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 					.eq("parentId", node._id)
 					.eq("archiveOperationId", null),
 			)
-			.take(PAGE_SIZE);
+			.take(args.isRequest ? 1 : PAGE_SIZE);
+		// The request reads one child only to learn whether the folder is empty. An empty named folder ends
+		// inside the request. A folder with an active child keeps its queue row, and the job stamps the children.
+		if (args.isRequest && children.length > 0) return { kind: "continue" };
 		const folderIds = [];
 		let isStopped = false;
 		for (const child of children) {
@@ -1542,7 +1556,8 @@ async function db_begin_archive_apply(ctx: MutationCtx, args: StepArgs) {
 
 /**
  * Run one step: the check walk first, then the changes. A step that finishes the check goes on with
- * the changes in the same mutation, so a small request ends inside the request.
+ * the changes in the same mutation, so a small restore, or a small archive of files and empty folders,
+ * ends inside the request.
  */
 async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	if (args.run.phase === "discover") {
@@ -1974,6 +1989,7 @@ export async function files_archive_runs_db_start(
 		membership: args.membership,
 		now,
 		budget: args.budget,
+		isRequest: true,
 		checkedScopes: new Map(),
 		writeState: { isWritten: false },
 	};
@@ -2077,6 +2093,7 @@ export async function files_archive_runs_db_advance(
 			checkNodes: files_archive_runs_CHECK_STEP_MAX_NODES,
 			hasPaginated: false,
 		},
+		isRequest: false,
 		checkedScopes: new Map(),
 		writeState: { isWritten: false },
 	});

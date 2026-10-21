@@ -9,6 +9,7 @@ import { insert_tree_node, seed_grant_only_member } from "./files_nodes.setup.te
 import {
 	test_compact_metadata_catalog,
 	test_convex,
+	test_finish_archive_jobs,
 	test_finish_saved_scope_jobs,
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
@@ -1605,6 +1606,7 @@ describe("catalog lifecycle", () => {
 			nodeIds: [String(shared)],
 		});
 		expect(archived._nay).toBeUndefined();
+		await test_finish_archive_jobs(t);
 		await test_finish_saved_scope_jobs(t);
 		const keyDeltas = (await list_deltas(t)).filter((delta) => delta.family === "key");
 		expect(keyDeltas.reduce((sum, delta) => sum + delta.count, 0)).toBe(-5);

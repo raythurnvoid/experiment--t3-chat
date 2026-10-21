@@ -15,6 +15,7 @@ import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import {
 	test_convex,
+	test_finish_archive_jobs,
 	test_finish_transfer_run,
 	test_db_hold_move_source,
 	test_fill_saved_file_with_max_chunks,
@@ -3672,7 +3673,8 @@ describe("service upload delete", () => {
 				membershipId: fixture.membershipId,
 				nodeIds: [String(meetingsFolder._id)],
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
+		await test_finish_archive_jobs(t);
 
 		const observedOutside = await call({
 			t,
@@ -4315,7 +4317,8 @@ describe("service upload archive", () => {
 				membershipId: fixture.membershipId,
 				nodeIds: [String(firstTarget.destinationNodeId)],
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
+		await test_finish_archive_jobs(t);
 
 		expect(
 			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) }))
@@ -4330,7 +4333,8 @@ describe("service upload archive", () => {
 				membershipId: fixture.membershipId,
 				nodeIds: [String(secondTarget.destinationNodeId)],
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
+		await test_finish_archive_jobs(t);
 		expect(
 			await asUser.mutation(api.files_nodes.unarchive_nodes, {
 				membershipId: fixture.membershipId,
@@ -4389,7 +4393,8 @@ describe("service upload archive", () => {
 				membershipId: fixture.membershipId,
 				nodeIds: [String(firstTarget.destinationNodeId)],
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
+		await test_finish_archive_jobs(t);
 
 		expect(
 			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ idempotencyKey: "meeting-2" }) }))
@@ -4703,7 +4708,8 @@ describe("service upload archive", () => {
 				membershipId: fixture.membershipId,
 				nodeIds: [String(memberFolder._id)],
 			}),
-		).toEqual({ _yay: null });
+		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
+		await test_finish_archive_jobs(t);
 		await t.run(async (ctx) => {
 			await files_nodes_db_create_node_recursively_at_path(ctx, {
 				userId: fixture.userId,

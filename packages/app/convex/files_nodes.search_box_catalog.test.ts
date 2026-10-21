@@ -10,6 +10,7 @@ import { rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
 import {
 	test_compact_metadata_catalog,
 	test_convex,
+	test_finish_archive_jobs,
 	test_finish_saved_scope_jobs,
 	test_run_with_flush,
 } from "./setup.test.ts";
@@ -437,6 +438,7 @@ describe("search box doors", () => {
 			nodeIds: [archiveFolderId],
 		});
 		if (archived._nay) throw new Error(archived._nay.message);
+		await test_finish_archive_jobs(t);
 		await test_finish_saved_scope_jobs(t);
 
 		expect(await keys()).not.toContain("frontmatter.legacy");

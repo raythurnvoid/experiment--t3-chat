@@ -8,6 +8,7 @@ import {
 	read_activity,
 	run_to_end,
 	archive,
+	archive_to_end,
 	restore,
 	folder,
 	read_node,
@@ -69,7 +70,7 @@ describe("unarchive_nodes path limit", () => {
 		// Three folders of 1,021 to 1,023 characters. A name 7 characters longer pushes them over.
 		for (const name of ["d".repeat(250), "e".repeat(251), "f".repeat(252)]) await folder(f, `${chain}/${name}`);
 		const top = await find_node(f, `/p/${NAMES[0]}`);
-		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		await archive_to_end(f, top._id);
 		await rename_directly(f, { path: "/p", name: "pppppppp" });
 		const nodesBefore = (await read_state(f)).nodes;
 
@@ -89,7 +90,7 @@ describe("unarchive_nodes path limit", () => {
 		// `/first` comes first in the request and waits on a name clash, so the second job runs in the background.
 		const first = await folder(f, "/first");
 		expect(await archive(f, [first])).toEqual({ _yay: null });
-		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		await archive_to_end(f, top._id);
 		await folder(f, "/first");
 		await rename_directly(f, { path: "/p", name: "pppppppp" });
 
@@ -97,7 +98,7 @@ describe("unarchive_nodes path limit", () => {
 		expect(await resolve(f, firstJob.runId, "skip")).toEqual({ _yay: null });
 		await run_to_end(f, firstJob);
 		const secondRun = (await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).find(
-			(run) => run._id !== firstJob.runId,
+			(run) => run.kind === "restore" && run._id !== firstJob.runId,
 		)!;
 		const activity = (await f.t.run((ctx) => ctx.db.query("activities").collect())).find(
 			(item) => item.source.kind === "files_archive_run" && item.source.id === secondRun._id,
@@ -121,7 +122,7 @@ describe("unarchive_nodes path limit", () => {
 		const top = await find_node(f, `/pppppppppp/${NAMES[0]}`);
 		const deepest = await find_node(f, `/pppppppppp/${chain}`);
 		expect(deepest.path.length).toBe(1030);
-		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		await archive_to_end(f, top._id);
 		expect((await read_node(f, top._id)).archivedPathLength, "ordinary paths need no stored allowance").toBeUndefined();
 		expect((await read_node(f, deepest._id)).archivedPathLength, "first Archive keeps the historical path length").toBe(
 			1030,
@@ -146,7 +147,7 @@ describe("unarchive_nodes path limit", () => {
 			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: parent._id, path: "p" }))._nay,
 		).toBeUndefined();
 		expect((await read_node(f, deepest._id)).path).toBe(`/p/${chain}`);
-		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		await archive_to_end(f, top._id);
 		expect(
 			(await read_node(f, deepest._id)).archivedPathLength,
 			"a new Archive does not reuse the old allowance",
@@ -159,7 +160,7 @@ describe("unarchive_nodes path limit", () => {
 		const deepestPath = `/p/${"x".repeat(10)}/${NAMES.join("/")}/${"d".repeat(241)}`;
 		await folder(f, deepestPath);
 		const top = await find_node(f, `/p/${"x".repeat(10)}`);
-		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		await archive_to_end(f, top._id);
 		await folder(f, `/p/${"x".repeat(10)}`);
 
 		const job = (await restore(f, [top._id]))._yay!;
@@ -176,7 +177,7 @@ describe("unarchive_nodes path limit", () => {
 		// The deepest path has 1,024 characters already, so `xx` cannot get a counter.
 		await folder(f, `/p/xx/${NAMES.join("/")}/${"d".repeat(250)}`);
 		const top = await find_node(f, "/p/xx");
-		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		await archive_to_end(f, top._id);
 		await folder(f, "/p/xx");
 
 		const job = (await restore(f, [top._id]))._yay!;
@@ -196,7 +197,8 @@ describe("unarchive_nodes path limit", () => {
 		await folder(f, `/p/${NAMES.join("/")}/${"d".repeat(253)}`);
 		const deepTop = await find_node(f, `/p/${NAMES[0]}`);
 		const notes = await folder(f, "/notes");
-		expect(await archive(f, [deepTop._id, notes])).toEqual({ _yay: null });
+		const archived = (await archive(f, [deepTop._id, notes]))._yay!;
+		expect((await run_to_end(f, archived)).activity.status).toBe("succeeded");
 		await folder(f, "/notes");
 
 		const job = (await restore(f, [notes]))._yay!;
@@ -219,7 +221,8 @@ describe("unarchive_nodes path limit", () => {
 		const short = await folder(f, `/p/${NAMES.join("/")}/e`);
 		// `/first` is in the same operation and comes first. Its clash pauses the job after the check.
 		const first = await folder(f, "/first");
-		expect(await archive(f, [first, top._id])).toEqual({ _yay: null });
+		const archived = (await archive(f, [first, top._id]))._yay!;
+		expect((await run_to_end(f, archived)).activity.status).toBe("succeeded");
 		await folder(f, "/first");
 		const job = (await restore(f, [top._id]))._yay!;
 		expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
@@ -276,7 +279,7 @@ describe("unarchive_nodes path limit", () => {
 			(await read_node(f, deepestId)).archivedPathLength,
 			"Archive within the limit stores no allowance",
 		).toBeUndefined();
-		expect(await archive(f, [top._id])).toEqual({ _yay: null });
+		await archive_to_end(f, top._id);
 		await folder(f, "/p/x");
 		const job = (await restore(f, [top._id]))._yay!;
 		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
@@ -388,7 +391,7 @@ describe("unarchive_nodes path limit", () => {
 			archiveOperationId: null,
 		});
 
-		expect(await archive(f, [topId])).toEqual({ _yay: null });
+		await archive_to_end(f, topId);
 		await create_folder(parentId, "x");
 		const job = (await restore(f, [topId]))._yay!;
 		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });

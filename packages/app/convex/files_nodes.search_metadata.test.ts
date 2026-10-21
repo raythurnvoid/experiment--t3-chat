@@ -14,6 +14,7 @@ import {
 	test_apply_file_pending_move,
 	test_compact_metadata_catalog,
 	test_convex,
+	test_finish_archive_jobs,
 	test_finish_saved_scope_jobs,
 	test_rename_node,
 	test_move_nodes,
@@ -1639,6 +1640,7 @@ describe("folder metadata", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		await test_finish_archive_jobs(t);
 		await test_finish_saved_scope_jobs(t);
 		await assertScope(["/destination/renamed", "/destination/renamed/inner"], true);
 		await test_compact_metadata_catalog(t);

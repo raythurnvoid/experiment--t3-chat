@@ -5,7 +5,7 @@ import type { FunctionArgs } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_apply_file_pending_move, test_convex, test_rename_node, test_move_nodes, test_finish_pending_update_run, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_apply_file_pending_move, test_convex, test_rename_node, test_move_nodes, test_finish_pending_update_run, test_finish_archive_jobs, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_media_validation_db_advance_version, files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
@@ -409,9 +409,13 @@ describe("saved file media validation clocks", () => {
 			const child = withChild ? await folder({ f, path: "child", parentId: nodeId }) : null;
 			const sibling = await folder({ f, path: "keep" });
 			const before = await snapshot(f);
+			// A folder with an item returns a job, and the job archives the item.
 			expect(
 				await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [nodeId] }),
-			).toEqual({ _yay: null });
+			).toEqual(child ? { _yay: expect.objectContaining({ isDone: false }) } : { _yay: null });
+			// The request stamps the folder, so it advances the clock before the job runs.
+			await expect_clock({ f, before, changed: true });
+			await test_finish_archive_jobs(f.t);
 			const archived = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 			expect(archived?.archiveOperationId).toBeTruthy();
 			if (child)
@@ -421,7 +425,6 @@ describe("saved file media validation clocks", () => {
 			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", sibling))).toEqual(
 				before.nodes.find((node) => node._id === sibling),
 			);
-			await expect_clock({ f, before, changed: true });
 		},
 	);
 
@@ -552,10 +555,13 @@ describe("saved file media validation clocks", () => {
 				await f.asUser.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }),
 			).toEqual({ _yay: null });
 		// Archive the child first, so its restore leaves the parent archived.
-		for (const nodeId of [child, parent])
+		// The child has items, so its archive is a job.
+		for (const nodeId of [child, parent]) {
 			expect(
 				await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [nodeId] }),
-			).toEqual({ _yay: null });
+			).toEqual(nodeId === child ? { _yay: expect.objectContaining({ isDone: false }) } : { _yay: null });
+			await test_finish_archive_jobs(f.t);
+		}
 		const before = await snapshot(f);
 		expect(
 			await f.asUser.mutation(api.files_nodes.unarchive_nodes, { membershipId: f.db.membershipId, nodeIds: [child] }),
@@ -587,13 +593,15 @@ describe("saved file media validation clocks", () => {
 			const f = await fixture();
 			const nodeId = await folder({ f, path: "policy" });
 			const child = await folder({ f, path: "child", parentId: nodeId });
-			if (archived)
+			if (archived) {
 				expect(
 					await f.asUser.mutation(api.files_nodes.archive_nodes, {
 						membershipId: f.db.membershipId,
 						nodeIds: [nodeId],
 					}),
-				).toEqual({ _yay: null });
+				).toMatchObject({ _yay: { isDone: false } });
+				await test_finish_archive_jobs(f.t);
+			}
 			const policies: Array<Doc<"files_nodes">["writePolicy"]> = [
 				{ mode: "read_only" },
 				{ mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
@@ -976,13 +984,16 @@ describe("saved file media validation clocks", () => {
 			}),
 		).toEqual({ _yay: null });
 		// Archive the child first, so its restore has to leave the archived restricted parent.
-		for (const nodeId of [child, parent])
+		// The parent still has an item, so its archive is a job.
+		for (const nodeId of [child, parent]) {
 			expect(
 				await f.asUser.mutation(api.files_nodes.archive_nodes, {
 					membershipId: f.db.membershipId,
 					nodeIds: [nodeId],
 				}),
-			).toEqual({ _yay: null });
+			).toEqual(nodeId === parent ? { _yay: expect.objectContaining({ isDone: false }) } : { _yay: null });
+			await test_finish_archive_jobs(f.t);
+		}
 		const before = await snapshot(f);
 		const result = await asMember.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: member.membershipId,

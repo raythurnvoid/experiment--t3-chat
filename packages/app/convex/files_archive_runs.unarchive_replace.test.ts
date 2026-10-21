@@ -329,7 +329,7 @@ describe("unarchive_nodes", () => {
 		test("Replace asks again when the folder in the way gets an archived read-only item", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "hidden", folderCount: 1, filesPerFolder: 1 });
-			expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+			await archive_to_end(f, tree.folderIds[0]!);
 			const occupant = await folder(f, "/hidden/d0");
 			const inside = await folder(f, "/hidden/d0/kept");
 			expect(await archive(f, [inside])).toEqual({ _yay: null });
@@ -355,7 +355,7 @@ describe("unarchive_nodes", () => {
 		test("a node kept archived with its skipped folder must still be writable", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "tag", folderCount: 1, filesPerFolder: 2 });
-			expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+			await archive_to_end(f, tree.folderIds[0]!);
 			const operationId = (await read_node(f, tree.fileIds[0]!)).archiveOperationId;
 			await folder(f, "/tag/d0");
 			const restored = await restore(f, [tree.folderIds[0]!]);
@@ -374,7 +374,7 @@ describe("unarchive_nodes", () => {
 		test("Replace of a folder that still has items is refused", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "folders", folderCount: 1, filesPerFolder: 1 });
-			expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+			await archive_to_end(f, tree.folderIds[0]!);
 			await folder(f, "/folders/d0/kept");
 
 			const restored = await restore(f, [tree.folderIds[0]!]);
@@ -396,7 +396,7 @@ describe("unarchive_nodes", () => {
 		test("Replace is not offered when the folder in the way holds more than 500 items", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "wide", folderCount: 1, filesPerFolder: 1 });
-			expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
+			await archive_to_end(f, tree.topId);
 			// A new `/wide` with 501 archived items inside and no active child. They are inserted archived,
 			// so no archive job runs first.
 			await seed_same_path(f, { name: "wide", count: 501, archiveOperationId: null });
@@ -413,7 +413,7 @@ describe("unarchive_nodes", () => {
 		test("a refused restore keeps the item a Replace would archive", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "keep", folderCount: 1, filesPerFolder: 1 });
-			expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+			await archive_to_end(f, tree.folderIds[0]!);
 			const occupant = await folder(f, "/keep/d0");
 
 			const restored = await restore(f, [tree.folderIds[0]!]);
@@ -432,7 +432,7 @@ describe("unarchive_nodes", () => {
 		test("Replace of a folder that gets items after the choice asks again", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "folders", folderCount: 1, filesPerFolder: 1 });
-			expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+			await archive_to_end(f, tree.folderIds[0]!);
 			await folder(f, "/folders/d0");
 
 			const restored = await restore(f, [tree.folderIds[0]!]);

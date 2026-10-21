@@ -255,8 +255,12 @@ of not counting locked items.
   `files_archive_run`). The job is the `archive` or `restore` kind of a `files_subtree_ops` op, and it
   walks the folder by `parentId`. The request runs a small first step itself: at most 10 stamps and
   100 checked nodes (`files_archive_runs_REQUEST_MAX_NODES`, `files_archive_runs_REQUEST_MAX_CHECK_NODES`),
-  so it answers fast. When that step finishes the work, no run doc, no op, and no Activity exist. A
-  bigger one continues in the background, at most 30 stamps and 500 checked nodes per step. An archive
+  so it answers fast. The archive request stamps only the named items. A named folder with an active
+  child goes on in the job, with the usual "Archiving in the background" toast and Activity card, so
+  the click does not wait for child stamps (about 60 ms each on dev). Up to 10 named files and empty
+  folders end in the request. When the request finishes the work, no run doc, no op, and no Activity
+  exist. A bigger restore, or an archive of a folder with items inside, continues in the background,
+  at most 30 stamps and 500 checked nodes per step. An archive
   op keeps at most 64 busy paths too, merged the same way as a restore's below.
   - Design principle: Archive decides in the request with index reads only. When the indexes cannot
     decide, the request does a small share of the full check and the job does the rest. The request
@@ -392,8 +396,9 @@ of not counting locked items.
     at once, even over a folder another job is archiving: each job stamps only active items, so neither
     overwrites the other's stamp.
   - A request whose first step fails after some writes returns the error ("Stopped partway") and keeps a
-    failed Activity. A restore refusal before any write makes no job. An archive makes no job only
-    when the request refuses every named item, in its own check or in its index reads. When it refuses
+    failed Activity. A restore refusal before any write makes no job. An archive makes no job when
+    it ends in the request with no refusal, or when the request refuses every named item, in its own
+    check or in its index reads. When it refuses
     only some, it keeps the job, so the Activity can list them. In `archive_nodes`, a named id that is
     missing or in another workspace is "Not found" for that item alone. One the person cannot open (a
     locked item, archived or not) or can read but not change is "Permission denied". The job lists it

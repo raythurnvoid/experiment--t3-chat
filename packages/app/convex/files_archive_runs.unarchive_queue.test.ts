@@ -37,7 +37,8 @@ describe("unarchive_nodes", () => {
 		const f = await fixture();
 		const trees = [];
 		for (const name of ["a1", "a2", "b1", "b2"]) {
-			// 76 items: more than the 10 stamps of the request, so each archive and restore is a job.
+			// 76 items: each archive is a job because the folder has items, and each restore is a job
+			// because 76 is more than its 10 stamps.
 			const tree = await seed_tree(f, { name, folderCount: 1, filesPerFolder: 74 });
 			await archive_to_end(f, tree.topId);
 			trees.push(tree);
@@ -117,7 +118,7 @@ describe("unarchive_nodes", () => {
 	test("an item whose old folder is still archived lands at the workspace root", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "orphan", folderCount: 1, filesPerFolder: 2 });
-		expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+		await archive_to_end(f, tree.folderIds[0]!);
 		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
 
 		expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
@@ -131,7 +132,7 @@ describe("unarchive_nodes", () => {
 	test("restoring both operations at once puts the inner one back inside its folder", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "both", folderCount: 1, filesPerFolder: 2 });
-		expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+		await archive_to_end(f, tree.folderIds[0]!);
 		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
 
 		expect(await restore(f, [tree.fileIds[0]!, tree.topId])).toEqual({ _yay: null });
@@ -144,8 +145,8 @@ describe("unarchive_nodes", () => {
 	test("restoring several operations starts with the top one, even when a deep item is named", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "order", folderCount: 2, filesPerFolder: 1 });
-		expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
-		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
+		await archive_to_end(f, tree.folderIds[0]!);
+		await archive_to_end(f, tree.topId);
 
 		// `/order/d0/` sorts before the named `/order/d1/f000.md`, but `/order` holds `d0`.
 		expect(await restore(f, [tree.folderIds[0]!, tree.fileIds[1]!])).toEqual({ _yay: null });
@@ -159,7 +160,7 @@ describe("unarchive_nodes", () => {
 		const tree = await seed_tree(f, { name: "nested", folderCount: 1, filesPerFolder: 2 });
 		expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 		const fileOperationId = (await read_node(f, tree.fileIds[0]!)).archiveOperationId;
-		expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+		await archive_to_end(f, tree.folderIds[0]!);
 		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
 
 		// `/nested` stays archived, so `d0` lands at the workspace root.
@@ -197,7 +198,8 @@ describe("unarchive_nodes", () => {
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
 		// With a limit of 1,000 queries, clearing 200 + 200 folders needs more than one step. 70 + 70 fit in one.
 		const f = await fixture({ transactionLimits: { databaseQueries: 1000 } });
-		// 76 items: more than the 10 stamps of the request, so the archive and the restore are jobs.
+		// 76 items: the archive is a job because the folder has items, and the restore is a job because 76
+		// is more than its 10 stamps.
 		const tree = await seed_tree(f, { name: "drain", folderCount: 1, filesPerFolder: 74 });
 		await archive_to_end(f, tree.topId);
 		const job = (await restore(f, [tree.topId]))._yay!;
@@ -300,7 +302,7 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "ro-archived", folderCount: 1, filesPerFolder: 2 });
 			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
-			expect(await archive(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
+			await archive_to_end(f, tree.folderIds[0]!);
 			await lock({ f, nodeId: tree.folderIds[0]!, locked: true });
 
 			const refused = await restore(f, [tree.fileIds[0]!]);

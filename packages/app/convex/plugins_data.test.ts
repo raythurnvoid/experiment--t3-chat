@@ -18,7 +18,14 @@ import {
 import { files_ROOT_ID } from "../server/files.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { test_convex, test_rename_node, test_move_nodes, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_finish_archive_jobs,
+	test_rename_node,
+	test_move_nodes,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { access_control_SystemRole } from "../shared/access-control.ts";
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX } from "../shared/public-api.ts";
@@ -2097,6 +2104,7 @@ describe("invoke file write preconditions", () => {
 							})
 						)._nay,
 					).toBeUndefined();
+					await test_finish_archive_jobs(t);
 					if (change === "replace") {
 						const replacement = await t.mutation(internal.public_api_plugin_files.ensure_plugin_folder, {
 							organizationId: fixture.organizationId,
@@ -2162,6 +2170,7 @@ describe("invoke file write preconditions", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		await test_finish_archive_jobs(t);
 		const response = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: service_headers(fixture.apiToken),

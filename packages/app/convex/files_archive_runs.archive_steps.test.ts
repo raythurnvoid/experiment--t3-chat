@@ -50,7 +50,7 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "lock", folderCount: 1, filesPerFolder: 74 });
 
-		// The indexes clear the folder, so the request stamps without a check. It stops after 10 stamps.
+		// The indexes clear the folder, so the request stamps it without a check. The job stamps the files.
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;
 		expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBeNull();
@@ -148,7 +148,7 @@ describe("archive_nodes", () => {
 			_yay: {
 				runId: expect.any(String),
 				activityId: expect.any(String),
-				isDone: true,
+				isDone: false,
 				notArchivedNodeIds: [refused.topId, refused.fileIds[0]],
 				// The reason names the locked file, so the toast can say what to unlock.
 				refusedItems: [
@@ -159,6 +159,7 @@ describe("archive_nodes", () => {
 			},
 		});
 		const job = archived._yay!;
+		await run_to_end(f, job);
 
 		const state = await expect_consistent(f);
 		const archivedPaths = state.nodes.filter((node) => node.archiveOperationId !== null).map((node) => node.path);
@@ -233,7 +234,7 @@ describe("archive_nodes", () => {
 
 		const archived = await archive(f, [big.topId, small.topId]);
 		// Somebody archives the small tree on their own before the check reaches it.
-		expect(await archive(f, [small.topId])).toEqual({ _yay: null });
+		await run_to_end(f, (await archive(f, [small.topId]))._yay!);
 		const smallOperationId = (await read_node(f, small.topId)).archiveOperationId;
 		const ended = await run_to_end(f, archived._yay!);
 
@@ -369,7 +370,8 @@ describe("archive_nodes", () => {
 		});
 
 		const archived = await archive(f, [missingId, foreignId, kept.topId]);
-		expect(archived._yay).toMatchObject({ isDone: true, notArchivedNodeIds: [missingId, foreignId] });
+		expect(archived._yay).toMatchObject({ isDone: false, notArchivedNodeIds: [missingId, foreignId] });
+		await run_to_end(f, archived._yay!);
 		expect((await read_node(f, kept.topId)).archiveOperationId).not.toBeNull();
 		expect((await read_node(f, foreignId)).archiveOperationId).toBeNull();
 		const activity = await read_activity(f, archived._yay!.activityId);
@@ -406,7 +408,8 @@ describe("archive_nodes", () => {
 			membershipId: member.membershipId,
 			nodeIds: [locked.topId, kept.topId],
 		});
-		expect(archived._yay).toMatchObject({ isDone: true, notArchivedNodeIds: [locked.topId] });
+		expect(archived._yay).toMatchObject({ isDone: false, notArchivedNodeIds: [locked.topId] });
+		await run_to_end(f, archived._yay!);
 		expect((await read_node(f, locked.topId)).archiveOperationId).toBeNull();
 		const activity = await read_activity(f, archived._yay!.activityId);
 		expect(activity).toMatchObject({ status: "partial", errorMessage: null });
@@ -512,7 +515,7 @@ describe("archive_nodes", () => {
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
 		// With a limit of 1,000 queries, clearing 200 + 200 folders needs more than one step. 70 + 70 fit in one.
 		const f = await fixture({ transactionLimits: { databaseQueries: 1000 } });
-		// 76 items, more than the 10 stamps of the request, so the archive is still a job after it.
+		// A folder with items inside, so the archive is still a job after the request.
 		const tree = await seed_tree(f, { name: "drain", folderCount: 1, filesPerFolder: 74 });
 		const job = (await archive(f, [tree.topId]))._yay!;
 		let run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
@@ -648,7 +651,7 @@ describe("files_archive_runs_db_check_fast", () => {
 describe("files_archive_runs_db_delete_run_batch", () => {
 	test("history cleanup deletes the run with its Activity", async () => {
 		const f = await fixture();
-		// 76 items, more than the 10 stamps of the request, so the archive runs as a job.
+		// A folder with items inside, so the archive runs as a job.
 		const tree = await seed_tree(f, { name: "history", folderCount: 1, filesPerFolder: 74 });
 		const archived = await archive(f, [tree.topId]);
 		const job = archived._yay!;

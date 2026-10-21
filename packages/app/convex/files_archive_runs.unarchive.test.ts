@@ -270,7 +270,8 @@ describe("unarchive_nodes", () => {
 
 	test("refuses to restore an operation that a job is still restoring", async () => {
 		const f = await fixture();
-		// 76 items: more than the 10 stamps of the request, so the archive and the restore are jobs.
+		// 76 items: the archive is a job because the folder has items, and the restore is a job because 76
+		// is more than its 10 stamps.
 		const tree = await seed_tree(f, { name: "twice", folderCount: 1, filesPerFolder: 74 });
 		await archive_to_end(f, tree.topId);
 
@@ -284,7 +285,8 @@ describe("unarchive_nodes", () => {
 		const f = await fixture();
 		const trees = [];
 		for (const name of ["q1", "q2", "q3"]) {
-			// 76 items: more than the 10 stamps of the request, so each archive and restore is a job.
+			// 76 items: each archive is a job because the folder has items, and each restore is a job
+			// because 76 is more than its 10 stamps.
 			const tree = await seed_tree(f, { name, folderCount: 1, filesPerFolder: 74 });
 			await archive_to_end(f, tree.topId);
 			trees.push(tree);

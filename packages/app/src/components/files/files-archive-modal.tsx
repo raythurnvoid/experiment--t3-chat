@@ -116,8 +116,9 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 					return;
 				}
 
-				// A big archive continues as a background job. Its items leave the tree as the job stamps them. While
-				// the job still checks, every waiting item stays in the tree until the check passes.
+				// The archive continues as a background job. For example, the request stamps a named folder and
+				// the job stamps what is inside it. While the job still checks, every waiting item stays in the
+				// tree until the check passes.
 				const { runId, notArchivedNodeIds, refusedItems, waitingNodeIds, isChecking } = result._yay;
 				const action = { label: "View", onClick: () => openArchiveRun(runId) };
 				const waitingNodes = nodes.filter((node) => waitingNodeIds.includes(node._id));

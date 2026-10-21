@@ -10,6 +10,7 @@ import {
 	test_move_nodes,
 	test_create_saved_text_file,
 	test_db_get_slot_cohort,
+	test_finish_archive_jobs,
 	test_finish_transfer_run,
 	test_mocks,
 	test_mocks_fill_db_with,
@@ -2862,6 +2863,7 @@ describe("move", () => {
 						})
 					)._nay,
 				).toBeUndefined();
+				await test_finish_archive_jobs(t);
 			}
 			const actor = access === "owner" ? asUser : member.asUser;
 			const membershipId = access === "owner" ? db.membershipId : member.membershipId;

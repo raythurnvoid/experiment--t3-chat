@@ -15,6 +15,7 @@ import {
 	read_node,
 	lock_writer,
 	add_member,
+	read_activity,
 } from "./files_archive_runs.setup.test.ts";
 
 // A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
@@ -35,15 +36,38 @@ afterEach(() => {
 });
 
 describe("archive_nodes", () => {
-	test("a small archive finishes inside the request and writes no job", async () => {
+	test("the request stamps only the named folder, and a visible job stamps what is inside", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "small", folderCount: 2, filesPerFolder: 3 });
 
-		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
+		const archived = await archive(f, [tree.topId]);
+		const job = archived._yay!;
+		expect(job).toMatchObject({ isDone: false, waitingNodeIds: [], notArchivedNodeIds: [] });
+		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
+		expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).toBeNull();
+		expect(await read_activity(f, job.activityId)).toMatchObject({
+			feedVisible: true,
+			progress: { completed: 1, total: null },
+		});
+		await expect_consistent(f);
 
+		const ended = await run_to_end(f, job);
+		expect(ended.activity.progress).toMatchObject({ total: 9, completed: 9 });
 		const state = await expect_consistent(f);
 		expect(new Set(state.nodes.map((node) => node.archiveOperationId)).size).toBe(1);
-		expect(state.nodes.every((node) => node.archiveOperationId !== null)).toBe(true);
+	});
+
+	test("files and an empty folder finish inside the request and write no job", async () => {
+		const f = await fixture();
+		// 9 files and 1 empty folder: the 10 stamps of the request use its whole budget.
+		const tree = await seed_tree(f, { name: "small", folderCount: 3, filesPerFolder: 3 });
+		const emptyId = await folder(f, "/empty");
+
+		expect(await archive(f, [...tree.fileIds, emptyId])).toEqual({ _yay: null });
+
+		const state = await expect_consistent(f);
+		const archivedIds = state.nodes.filter((node) => node.archiveOperationId !== null).map((node) => node._id);
+		expect(new Set(archivedIds)).toEqual(new Set([...tree.fileIds, emptyId]));
 		expect(await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("activities").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);

@@ -23,6 +23,7 @@ import {
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
+	test_finish_archive_jobs,
 } from "./setup.test.ts";
 import {
 	files_node_has_editable_yjs_state,
@@ -981,6 +982,7 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 		membershipId: db.membershipId,
 		nodeIds: [folderId],
 	});
+	await test_finish_archive_jobs(t);
 
 	const archivedDocs = await t.run(async (ctx) => {
 		const folderFileNode = await ctx.db.get("files_nodes", folderId);
@@ -1021,6 +1023,7 @@ test("unarchive_nodes restores the whole archive operation of a named child", as
 		membershipId: db.membershipId,
 		nodeIds: [db.files.file_root_1._id],
 	});
+	await test_finish_archive_jobs(t);
 
 	const unarchiveResult = await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -1247,6 +1250,7 @@ test("N02 archive child then parent then unarchive parent keeps the child's own 
 		membershipId: db.membershipId,
 		nodeIds: [db.files.file_root_1._id],
 	});
+	await test_finish_archive_jobs(t);
 
 	await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -1728,6 +1732,7 @@ async function seed_reused_read_only_path_tree(t: ReturnType<typeof test_convex>
 	if (archived._nay) {
 		throw new Error(archived._nay.message);
 	}
+	await test_finish_archive_jobs(t);
 	await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: archivedChild._yay.nodeId });
 
 	const activeRoot = await asUser.mutation(api.files_nodes.create_folder_node, {
@@ -3639,6 +3644,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 			nodeIds: [activeRootId],
 		});
 		expect(archived._nay).toBeUndefined();
+		await test_finish_archive_jobs(t);
 		const activeRoot = await read_lock_node(t, activeRootId);
 		const activeChild = await read_lock_node(t, activeChildId);
 		expect(activeRoot?.archiveOperationId).toBeDefined();
@@ -3775,6 +3781,7 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 			nodeIds: [activeRootId],
 		});
 		expect(archivedSecondTree._nay).toBeUndefined();
+		await test_finish_archive_jobs(t);
 		const secondArchiveOperationId = (await read_lock_node(t, activeRootId))?.archiveOperationId;
 		expect(secondArchiveOperationId).toBeDefined();
 
@@ -3804,6 +3811,7 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 			nodeIds: [innerId],
 		});
 		expect(archived._nay).toBeUndefined();
+		await test_finish_archive_jobs(t);
 		const innerArchivedOperationId = (await read_lock_node(t, innerId))?.archiveOperationId;
 		expect(innerArchivedOperationId).toBeDefined();
 
