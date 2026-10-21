@@ -16,6 +16,7 @@ import {
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
 import { FILE_EDITOR_SIDEBAR_TAB_ID_PENDING } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
+import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -105,6 +106,7 @@ export const FilesPendingReviewModal = memo(function FilesPendingReviewModal(pro
 
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+	const isMobile = useIsMobile();
 	const isStopPending = pendingStopSourceIds.has(runId);
 	const isTerminal = run?.activity.finishedAt !== undefined;
 	const progress = run?.activity.progress;
@@ -246,7 +248,8 @@ export const FilesPendingReviewModal = memo(function FilesPendingReviewModal(pro
 					<MyButton variant="ghost" onClick={onClose}>
 						{isTerminal ? "Close" : "Hide"}
 					</MyButton>
-					{run ? (
+					{/* The link opens the Files page, and a phone has no Files page. */}
+					{run && !isMobile ? (
 						<MyLink
 							to="/w/$organizationName/$workspaceName/files"
 							params={{ organizationName, workspaceName }}

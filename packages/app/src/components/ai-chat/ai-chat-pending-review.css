@@ -26,8 +26,9 @@
 	}
 
 	/* Each row path links to the Files diff editor, and a phone has no Files page. Keep the path as
-	   plain text, so a tap does not send the user away from the chat. */
-	.AiChatPendingReview .FileEditorSidebarPending-item-path {
+	   plain text, so a tap does not send the user away from the chat. `MyLink` puts the class on its
+	   inner surface, so turn off taps on the `<a>` around it. */
+	.AiChatPendingReview a:has(> .FileEditorSidebarPending-item-path) {
 		pointer-events: none;
 	}
 }

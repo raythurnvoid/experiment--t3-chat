@@ -260,7 +260,10 @@
 		gap: 4px;
 	}
 
+	/* `DiffMonospaceBlock` sets `width: 100%`. With the side margins that is 32px too wide, so the
+	   block's right edge goes past the panel. */
 	.FileEditorSidebarPending-item-diff {
+		width: auto;
 		margin: 0 16px 12px;
 	}
 

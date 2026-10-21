@@ -480,7 +480,8 @@ state.page.goto("http://localhost:5173/w/personal/home/files").catch(() => {}); 
 - `screenshot()` times out until you call `bringToFront()` on the owned tab.
 - Selectors: `.RootLayout-variant-phone` (phone layout on), `.AiChatHeader` with buttons `Open chats` and `New chat` and title `.AiChatHeader-title`, the drawer `.AiChat-threads` (`display: none` when closed), `.AiChat-drawer-backdrop`, the drawer footer `.AiChat-threads-footer`, and `.AiChat-main` (its `inert` is true while the drawer is open).
 - Check: the drawer opens with focus on `Close`, and Escape, Close, or a thread tap puts focus back on `Open chats`. Enter in the composer adds a second `<p>` and sends nothing.
-- The pending modal needs a chat with pending changes from this chat. Tap the strip's Review button. The modal is `.AiChatPendingReview`.
+- The pending modal needs a chat with pending changes from this chat. Ask the agent in the chat to create one small file. The whole strip is the Review button (`button.FileEditorSidebarPendingStrip`). The modal is `.AiChatPendingReview`. A tap on the row center must land on the row's `<summary>` and open the inline diff, not on the `<a>` to Files. Check that with `document.elementFromPoint`. Discard the row to clean up: the modal closes at 0 changes, and a "Discard reviewed changes" result dialog opens with focus on Close.
+- An HMR update to a component under the tenant provider can crash the page with "AppTenantProvider.useContext must be used within AppTenantProvider". Start `page.reload()` without awaiting it and poll for the composer. An awaited reload with other steps in one call times out before it runs.
 
 ## External links in chat
 
