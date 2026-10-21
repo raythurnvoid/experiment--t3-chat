@@ -1184,6 +1184,7 @@ describe("Move write reservations", () => {
 		});
 		if (created._nay) throw new Error(created._nay.message);
 		const target = created._yay.target;
+		if (target.kind !== "private") throw new Error("Expected a private target");
 		await f.t.run(async (ctx) => {
 			const guarded = files_move_reservations_db_wrap(ctx);
 			expect((await guarded.db.get("files_pending_nodes", target.id))?.name).toBe("draft");

@@ -537,13 +537,15 @@ test("a Restore starts a saved scope job again when its run was lost", async () 
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
 		path: "/project/lost.md",
-		textContent: "---\ntitle: Lost\n---\nSaved text.\n",
+		// Small files repair inline. Keep this fixture on the background recovery path.
+		textContent: `---\n${Array.from({ length: 12 }, (_, index) => `key${index}: value${index}`).join("\n")}\n---\nSaved text.\n`,
 	});
 	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
 	const args = { membershipId: db.membershipId, nodeIds: [nodeId] };
 	expect(await asUser.mutation(api.files_nodes.archive_nodes, args)).toEqual({ _yay: null });
 	// A failed run leaves the job doc the same as a lost one.
 	const lost = (await read_saved_docs(t, nodeId)).job!;
+	expect(lost, "Archive leaves a saved scope job for recovery").not.toBeNull();
 	await t.run((ctx) => ctx.scheduler.cancel(lost.scheduledFunctionId));
 
 	expect(await asUser.mutation(api.files_nodes.unarchive_nodes, args)).toEqual({ _yay: null });

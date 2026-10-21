@@ -774,7 +774,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						return await get_node(db, { kind: "saved", id: id as Id<"files_nodes"> });
 					if (table === "files_pending_nodes" || (table === null && target.normalizeId("files_pending_nodes", id)))
 						return await get_node(db, { kind: "private", id: id as Id<"files_pending_nodes"> });
-					return await Reflect.apply(target.get, target, args);
+					return await Reflect.apply(Reflect.get(target, "get"), target, args);
 				};
 			if (property === STATE) return state;
 			if (property === "insert")
@@ -857,7 +857,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 									? await get_node(db, { kind: "saved", id: id as Id<"files_nodes"> })
 									: table === "files_pending_nodes"
 										? await get_node(db, { kind: "private", id: id as Id<"files_pending_nodes"> })
-										: await target.get(table, id)
+										: await target.get(table, id as Id<typeof table>)
 						) as Fields | null;
 						const next = property === "patch" ? { ...old, ...value } : value;
 						await guard(table, id, old, next, property === "patch" ? value : null);
