@@ -112,6 +112,8 @@ async function make_run_body(opts?: { artifactSource?: string; body?: Record<str
 		host: DEFAULT_HOST,
 		acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: ["https://api.openai.com"],
+		// The runner requires input, and the Convex caller always sends it.
+		input: null,
 		...(opts?.body ?? {}),
 	});
 }
@@ -794,34 +796,27 @@ describe("runner responses", () => {
 		const originalRemove = AbortSignal.prototype.removeEventListener;
 		const listeners = new WeakMap<AbortSignal, Set<EventListenerOrEventListenerObject>>();
 		let maximum = 0;
-		const addSpy = vi.spyOn(AbortSignal.prototype, "addEventListener").mockImplementation(function (args: {
-			type: any;
-			listener: any;
-			options: any;
-		}) {
-			const { type, listener, options } = args;
-
-			if (type === "abort" && listener) {
-				let active = listeners.get(this);
-				if (!active) {
-					active = new Set();
-					listeners.set(this, active);
+		// Keep the DOM's positional (type, listener, options) signature: an args object never matches.
+		const addSpy = vi
+			.spyOn(AbortSignal.prototype, "addEventListener")
+			.mockImplementation(function (type, listener, options) {
+				if (type === "abort" && listener) {
+					let active = listeners.get(this);
+					if (!active) {
+						active = new Set();
+						listeners.set(this, active);
+					}
+					active.add(listener);
+					maximum = Math.max(maximum, active.size);
 				}
-				active.add(listener);
-				maximum = Math.max(maximum, active.size);
-			}
-			return originalAdd.call(this, type, listener, options);
-		});
-		const removeSpy = vi.spyOn(AbortSignal.prototype, "removeEventListener").mockImplementation(function (args: {
-			type: any;
-			listener: any;
-			options: any;
-		}) {
-			const { type, listener, options } = args;
-
-			if (type === "abort" && listener) listeners.get(this)?.delete(listener);
-			return originalRemove.call(this, type, listener, options);
-		});
+				return originalAdd.call(this, type, listener, options);
+			});
+		const removeSpy = vi
+			.spyOn(AbortSignal.prototype, "removeEventListener")
+			.mockImplementation(function (type, listener, options) {
+				if (type === "abort" && listener) listeners.get(this)?.delete(listener);
+				return originalRemove.call(this, type, listener, options);
+			});
 		try {
 			const output = "x".repeat(32_768);
 			const response = await worker.fetch(
