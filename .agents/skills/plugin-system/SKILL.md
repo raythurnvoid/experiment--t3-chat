@@ -981,6 +981,23 @@ cleanup 12), with no Workpool calls and 15-minute waits. The 12-hour grant renew
 `idleSlices`, which adds about 30 calls in that hour. An email sent at 18:47:18 UTC was saved at
 19:00:11, and the next slice ran 1 minute later. 465 tests.
 
+Two more dev-only backend updates followed on 2026-10-21 (plugin commits `9bf2411` and `5a0c7e3`, no
+new version). The 12-hour grant renewal keeps the idle wait. Each OAuth attempt schedules its own
+cleanup, and that cron runs hourly. An idle slice reads the account once. A message that crashes three
+slices before any save is given up, so one bad email cannot stop sync. `messageMark` is now required.
+Live check: with no plugin page open, one idle hour used 32 calls (dispatch 8, `get_worker` 6, the
+slice 4, `finish_slice` 4, `check_slice` 4, sweep 4, one token refresh, one OAuth cleanup).
+
+Gmail 0.3.7 was published and installed in `personal/home` on 2026-10-21 (plugin commit
+`eaa792728dc39497771ed353f1cc18f9128245bd`, version doc `hn7mjs1q84k6w7yhq1ranafd418gptef`). It
+fixes edge cases: an attached photo stays an attachment, a slice job that never starts is cancelled,
+a draft write that Google refuses for a reason other than a rate limit is not retried, attachments
+are matched by MIME part id, and the agent cannot open or change a draft while the member has
+unsaved text. The first publish failed with "Plugin AI review rate limit exceeded; try again in
+97s"; the retry after that wait passed. The update asked for no new consent. Live check: the first
+slice after the update ran with sync `live` and no error. A new-mail save was not checked live. 488
+tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
