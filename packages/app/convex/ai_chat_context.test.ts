@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
-import { ai_chat_context_create, ai_chat_context_read_instructions } from "../server/ai-chat-context.ts";
+import {
+	ai_chat_context_create,
+	ai_chat_context_discover_sources,
+	ai_chat_context_read_instructions,
+} from "../server/ai-chat-context.ts";
 import { files_agent_write_file_text } from "../server/bash-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -146,6 +150,10 @@ async function fixture(personal = false, transactionLimits = false) {
 		if (moved._nay) throw new Error(moved._nay.message);
 	}
 
+	async function discover(args: typeof scope) {
+		return await t.action((ctx) => ai_chat_context_discover_sources(ctx, args));
+	}
+
 	async function system() {
 		return await t.action(async (ctx) => {
 			const result = await ai_chat_context_create(ctx, scope);
@@ -153,12 +161,12 @@ async function fixture(personal = false, transactionLimits = false) {
 			return result._yay.system;
 		});
 	}
-	return { t, db, scope, agentSource, create, member, move, system, asUser, captured: workspaces };
+	return { t, db, scope, agentSource, create, member, move, discover, system, asUser, captured: workspaces };
 }
 
 const skillText = "---\nname: example\ndescription: Saved description\n---\nSKILL_BODY\n";
 
-describe("discover_sources", () => {
+describe("ai_chat_context_discover_sources", () => {
 	test("discovers both roots but no third workspace or another user's home", async () => {
 		const f = await fixture();
 		const fileId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
@@ -198,7 +206,7 @@ describe("discover_sources", () => {
 					});
 				}
 			});
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
+		const found = await f.discover(f.scope);
 		expect(found._yay?.workspaces.map((root) => root.workspaceId)).toEqual([
 			f.db.workspaceId,
 			f.captured.personal.workspaceId,
@@ -217,7 +225,7 @@ describe("discover_sources", () => {
 		const f = await fixture(true);
 		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
 		await f.create({ path: "/AGENTS.md", textContent: "ONE-HOME-RULE" });
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
+		const found = await f.discover(f.scope);
 		expect(found._yay?.workspaces).toHaveLength(1);
 		expect(found._yay?.skills).toEqual([{ workspace: "current", path: "/.agents/skills/example/SKILL.md" }]);
 		expect((await f.system()).match(/ONE-HOME-RULE/gu)).toHaveLength(1);
@@ -234,7 +242,7 @@ describe("discover_sources", () => {
 			path: "/.agents/skills/example/SKILL.md",
 			textContent: skillText,
 		});
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, other))._yay?.skills).toContainEqual({
+		expect((await f.discover(other))._yay?.skills).toContainEqual({
 			workspace: "personal",
 			path: "/.agents/skills/example/SKILL.md",
 		});
@@ -244,7 +252,7 @@ describe("discover_sources", () => {
 				userIdToRemove: other.source.userId,
 			}),
 		).toEqual({ _yay: null });
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, other))._nay?.name).toBe("unavailable");
+		expect((await f.discover(other))._nay?.name).toBe("unavailable");
 		expect(
 			await f.asUser.mutation(api.organizations.invite_user_to_organization_workspace, {
 				organizationId: f.db.organizationId,
@@ -252,7 +260,7 @@ describe("discover_sources", () => {
 				userIdToAdd: other.source.userId,
 			}),
 		).toEqual({ _yay: null });
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, other))._nay?.name).toBe("unavailable");
+		expect((await f.discover(other))._nay?.name).toBe("unavailable");
 	});
 
 	test("reads one SKILL.md path per skill folder, and caps the folders across both roots", async () => {
@@ -296,7 +304,7 @@ describe("discover_sources", () => {
 			});
 		}
 		// Files inside a skill folder cost nothing: each folder costs one exact path read.
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
+		const found = await f.discover(f.scope);
 		expect(found._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/z-late/SKILL.md" },
 			{ workspace: "personal", path: "/.agents/skills/z-late/SKILL.md" },
@@ -312,7 +320,7 @@ describe("discover_sources", () => {
 				await ctx.db.insert("files_nodes", { ...fields, name, path, treePath: `${path}/` });
 			}
 		});
-		const capped = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
+		const capped = await f.discover(f.scope);
 		expect(capped._yay?.skills).toEqual([{ workspace: "personal", path: "/.agents/skills/z-late/SKILL.md" }]);
 		expect(capped._yay?.warning).toContain("incomplete");
 	}, 120_000);
@@ -342,7 +350,7 @@ describe("discover_sources", () => {
 		});
 		await f.create({ path: "/.agents/skills/example/references/details.md", textContent: "RESOURCE_BODY" });
 		await f.create({ path: "/invoices/AGENTS.md", textContent: "SIBLING_BODY" });
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([
+		expect((await f.discover(f.scope))._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/example/SKILL.md" },
 		]);
 		expect(await f.system()).toContain("Saved description");
@@ -354,7 +362,7 @@ describe("discover_sources", () => {
 		const nodeId = await f.create({ path: "/.agents/skills/example/draft.md", textContent: skillText });
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		await f.move({ nodeId, destParentId: node!.parentId, destName: "SKILL.md" });
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([
+		expect((await f.discover(f.scope))._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/example/SKILL.md" },
 		]);
 		expect(await f.system()).toContain("Saved description");
@@ -368,7 +376,7 @@ describe("discover_sources", () => {
 			Promise.all([ctx.db.get("files_nodes", nodeId), ctx.db.get("files_nodes", anchor)]),
 		);
 		await f.move({ nodeId: node!.parentId as Id<"files_nodes">, destParentId: root!.parentId, destName: "example" });
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([
+		expect((await f.discover(f.scope))._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/example/SKILL.md" },
 		]);
 		expect(await f.system()).toContain("Saved description");
@@ -378,9 +386,9 @@ describe("discover_sources", () => {
 		const f = await fixture();
 		const nodeId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
 		await f.move({ nodeId, destParentId: files_ROOT_ID, destName: "other.md" });
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([]);
+		expect((await f.discover(f.scope))._yay?.skills).toEqual([]);
 		const second = await f.member(true);
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, second))._yay?.skills).toEqual([
+		expect((await f.discover(second))._yay?.skills).toEqual([
 			{ workspace: "current", path: "/.agents/skills/example/SKILL.md" },
 		]);
 		await f.t.run(async (ctx) => {
@@ -390,7 +398,7 @@ describe("discover_sources", () => {
 				pendingArchive: { fromPath: "/.agents/skills/example/SKILL.md" },
 			});
 		});
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toEqual([]);
+		expect((await f.discover(f.scope))._yay?.skills).toEqual([]);
 	});
 
 	test("a guest gets their home skills and none from team folders they cannot open", async () => {
@@ -408,7 +416,7 @@ describe("discover_sources", () => {
 			textContent: skillText,
 		});
 
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, guest);
+		const found = await f.discover(guest);
 		// The locked team folder has no skills for the guest, so the catalog is complete.
 		expect(found._yay).toMatchObject({ skills: [{ workspace: "personal", path: "/.agents/skills/mine/SKILL.md" }] });
 		expect(found._yay?.warning).toBeUndefined();
@@ -488,10 +496,10 @@ describe("discover_sources", () => {
 		});
 
 		// The owner gets the skill. The guest has no workspace read, so it gets no plugins.
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.pluginSkills).toEqual([
+		expect((await f.discover(f.scope))._yay?.pluginSkills).toEqual([
 			{ pluginName: "tracker", ...skill },
 		]);
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, guest))._yay?.pluginSkills).toEqual([]);
+		expect((await f.discover(guest))._yay?.pluginSkills).toEqual([]);
 	});
 
 	test("refuses other memberships", async () => {
@@ -499,7 +507,7 @@ describe("discover_sources", () => {
 		const second = await f.member(false);
 		expect(
 			(
-				await f.t.query(internal.ai_chat_context.discover_sources, {
+				await f.discover({
 					source: { ...f.agentSource, userId: second.source.userId },
 				})
 			)._nay?.name,
@@ -510,8 +518,8 @@ describe("discover_sources", () => {
 		const f = await fixture();
 		await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText, workspace: "personal" });
 		const other = await f.member(true);
-		expect((await f.t.query(internal.ai_chat_context.discover_sources, f.scope))._yay?.skills).toHaveLength(1);
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, {
+		expect((await f.discover(f.scope))._yay?.skills).toHaveLength(1);
+		const found = await f.discover({
 			source: { ...f.agentSource, threadId: other.source.threadId },
 		});
 		expect(found._nay?.name).toBe("unavailable");
@@ -541,7 +549,7 @@ describe("discover_sources", () => {
 		});
 		await f.t.run((ctx) => ctx.db.patch("files_nodes", secret, { restrictedScopeNodeId: secret }));
 		const second = await f.member(true);
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, second);
+		const found = await f.discover(second);
 		expect(found._yay?.skills).toEqual([{ workspace: "current", path: "/.agents/skills/example/SKILL.md" }]);
 		expect(JSON.stringify(found)).not.toContain("secret");
 	});
@@ -567,7 +575,7 @@ describe("discover_sources", () => {
 				}
 			});
 		}
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, second);
+		const found = await f.discover(second);
 		expect(found._yay?.skills).toEqual([]);
 		expect(found._yay?.warning).toContain("incomplete");
 	}, 300_000);
@@ -604,7 +612,7 @@ describe("discover_sources", () => {
 				}
 			});
 		}
-		const found = await f.t.query(internal.ai_chat_context.discover_sources, f.scope);
+		const found = await f.discover(f.scope);
 		expect(found._yay?.skills).toHaveLength(100);
 		expect(found._yay?.skills.some((skill) => skill.workspace === "personal")).toBe(true);
 		expect(found._yay?.skills.some((skill) => skill.workspace === "current")).toBe(true);

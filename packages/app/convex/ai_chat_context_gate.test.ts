@@ -26,7 +26,7 @@ describe("ai_chat_context_ENABLED", () => {
 		try {
 			const contextModule = await import("./ai_chat_context.ts");
 			expect(contextModule.ai_chat_context_ENABLED).toBe(false);
-			expect((await t.query(internal.ai_chat_context.discover_sources, { source }))._nay?.name).toBe("unavailable");
+			expect((await t.query(internal.ai_chat_context.resolve_sources, { source }))._nay?.name).toBe("unavailable");
 		} finally {
 			vi.unstubAllEnvs();
 			vi.resetModules();

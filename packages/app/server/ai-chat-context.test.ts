@@ -6,6 +6,12 @@ import type { ActionCtx } from "../convex/_generated/server";
 import { ai_chat_skills_LIMITS } from "./ai-chat-skills.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { ai_chat_context_create, ai_chat_context_read_instructions } from "./ai-chat-context.ts";
+import { files_pending_overlay_list } from "./files-pending-overlay.ts";
+
+vi.mock(import("./files-pending-overlay.ts"), async (importOriginal) => ({
+	...(await importOriginal()),
+	files_pending_overlay_list: vi.fn(),
+}));
 
 const scope = {
 	membershipId: "membership_1" as Id<"organizations_workspaces_users">,
@@ -42,27 +48,28 @@ function fixture(sameHome = false) {
 				workspace?: string;
 				path?: string;
 				mode?: { kind: string; maxBytes: number };
+				folders?: { path: string }[];
 			},
 		): Promise<unknown> => {
 			const targetFiles = args.workspaceId === personal.workspaceId ? personalFiles : files;
 			switch (getFunctionName(ref)) {
 				case "ai_chat_workspaces:resolve":
 					return Result({ _yay: args.workspace === "personal" ? personal : tenant });
-				case "ai_chat_context:discover_sources":
+				case "ai_chat_context:resolve_sources":
 					return Result({
 						_yay: {
 							workspaces: [
 								{ workspace: "current", ...tenant },
 								...(sameHome ? [] : [{ workspace: "personal", ...personal }]),
 							],
-							skills: [...files.keys()]
-								.map((path) => ({ workspace: "current", path }))
-								.concat(sameHome ? [] : [...personalFiles.keys()].map((path) => ({ workspace: "personal", path })))
-								.filter(({ path }) => /^\/\.agents\/skills\/[^/]+\/SKILL\.md$/u.test(path))
-								.slice(0, 100),
 							pluginSkills: [],
 						},
 					});
+				case "ai_chat_context:find_skill_files": {
+					const skillFiles = args.workspace === "personal" ? personalFiles : files;
+					const paths = args.folders!.map((folder) => `${folder.path}/SKILL.md`).filter((path) => skillFiles.has(path));
+					return Result({ _yay: { paths, complete: true } });
+				}
 				case "files_visible:internal_get_by_path":
 					return targetFiles.has(args.path!) ? { node: { kind: "file" }, path: args.path } : null;
 				case "files_nodes:read_file_content_from_chunks": {
@@ -82,6 +89,18 @@ function fixture(sameHome = false) {
 		async (_ref: FunctionReference<"action">, _args: unknown): Promise<{ content: string } | null> => null,
 	);
 	const ctx = { runQuery, runAction } as unknown as ActionCtx;
+	// List every skill folder in one page. The real listing runs several stream queries, which this
+	// fake `runQuery` does not serve.
+	vi.mocked(files_pending_overlay_list).mockImplementation(async (_ctx, args) => {
+		const listedFiles = args.workspaceId === personal.workspaceId ? personalFiles : files;
+		const items = [...listedFiles.keys()]
+			.filter((path) => /^\/\.agents\/skills\/[^/]+\/SKILL\.md$/u.test(path))
+			.map((path) => {
+				const folder = path.slice(0, -"/SKILL.md".length);
+				return { target: { kind: "saved", id: folder }, path: folder, locked: false };
+			});
+		return Result({ _yay: { items, continueCursor: null, isDone: true } }) as never;
+	});
 	async function create() {
 		const result = await ai_chat_context_create(ctx, { source: scope });
 		if (result._nay) throw new Error(result._nay.message);
@@ -109,7 +128,7 @@ describe("ai_chat_context_create", () => {
 		expect(system).not.toMatch(/HIDDEN_BODY|NESTED_RULE/u);
 		expect(context.instructionBytes).toBe("SAME_ROOT".length * 2);
 		expect(
-			f.runQuery.mock.calls.filter(([ref]) => getFunctionName(ref) === "ai_chat_context:discover_sources"),
+			f.runQuery.mock.calls.filter(([ref]) => getFunctionName(ref) === "ai_chat_context:resolve_sources"),
 		).toHaveLength(1);
 	});
 

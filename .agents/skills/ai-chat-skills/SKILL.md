@@ -6,7 +6,7 @@ description: Spec for workspace AGENTS.md and ordinary Agent Skills in app chat.
 # Source files
 
 - [Skill paths](../../../packages/app/convex/ai_chat_context.ts): bounded discovery, membership checks, and pending path visibility.
-- [Request context](../../../packages/app/server/ai-chat-context.ts): root rules, metadata catalog, ancestor reads, and per-turn dedupe.
+- [Request context](../../../packages/app/server/ai-chat-context.ts): the catalog listing, root rules, metadata catalog, ancestor reads, and per-turn dedupe.
 - [Parser and limits](../../../packages/app/server/ai-chat-skills.ts): strict YAML metadata parsing.
 - [Chat route](../../../packages/app/convex/ai_chat.ts): feature gate, context creation, tool registration, history, and final answer step.
 - [Tools](../../../packages/app/server/server-ai-tools.ts) and [Bash filesystem](../../../packages/app/server/bash-utils.ts): ordinary file reads and scoped guidance in tool results.
@@ -38,7 +38,7 @@ Skills, resources, and instructions use the same current-user pending view as or
 - Another user's pending moves and content do not change the current user's view.
 - New reads recheck normal file access. Missing and restricted sources are unavailable.
 
-Discovery takes `{ source }`, using `ai_chat_workspaces_source_validator`. One backend query resolves the trusted pair and checks the source chat creator, captured membership lifetime, and active membership. Active guests are allowed without workspace `content.read`; every skill target still needs read access. It lists the child folders of `/.agents/skills` with the agent merge helper (`files_pending_overlay_list`), then reads one exact `<folder>/SKILL.md` path per folder with one shared reader per root. Files inside a skill folder cost nothing. This includes saved and private files at their current owner paths, including files renamed to `SKILL.md` and folders moved in by a draft. Locked skill folders and Preparing files are omitted. A locked catalog root gives that workspace no skills. Guests can still discover their readable personal/home skills. The scan alternates roots within one total limit of four pages of fifty folders. A scan, reader, read budget, or entry limit produces an incomplete warning. A second root never doubles the limits.
+Discovery (`ai_chat_context_discover_sources`) takes `{ source }`, using `ai_chat_workspaces_source_validator`. The `resolve_sources` query resolves the trusted pair and checks the source chat creator, captured membership lifetime, and active membership. Active guests are allowed without workspace `content.read`; every skill target still needs read access. The chat action then lists the child folders of `/.agents/skills` with the agent merge helper (`files_pending_overlay_list`), one page at a time. For each page, the `find_skill_files` query checks the membership again and reads one exact `<folder>/SKILL.md` path per folder with one shared reader. Keep the listing in the action: Convex allows one paginated read per query, nested `ctx.runQuery` calls included, and one listing page runs several paginated streams. Files inside a skill folder cost nothing. This includes saved and private files at their current owner paths, including files renamed to `SKILL.md` and folders moved in by a draft. Locked skill folders and Preparing files are omitted. A locked catalog root gives that workspace no skills. Guests can still discover their readable personal/home skills. The scan alternates roots within one total limit of four pages of fifty folders. A scan, reader, read budget, or entry limit produces an incomplete warning. A second root never doubles the limits.
 
 Guidance reads use the normal visible-file, chunk, and bounded-content doors. They carry the captured `agentSource` as well as the resolved file workspace. They recheck source authority and target file access, including after awaited content reads. Removal and re-invitation do not revive a context captured under the old membership lifetime.
 
@@ -56,7 +56,7 @@ Read the frontmatter through the ordinary bounded prefix mode. If chunks cannot 
 
 # Plugin skills
 
-A plugin manifest may list skills (see the plugin-system spec). `discover_sources` also returns them: for each **enabled** installation in the **current** workspace whose `acceptedCapabilities` include `agent.skills.contribute`, the installed version's `skills`, in plugin-name order. They never come from the home workspace's installations.
+A plugin manifest may list skills (see the plugin-system spec). `resolve_sources` also returns them: for each **enabled** installation in the **current** workspace whose `acceptedCapabilities` include `agent.skills.contribute`, the installed version's `skills`, in plugin-name order. They never come from the home workspace's installations.
 
 - Catalog entry: `{ source: "plugin", plugin, path, name, description }`, where `path` is `/.plugins/<pluginName>/dist/skills/<name>/SKILL.md`. Name and description come from the version doc. Publish parsed the file's frontmatter and stored its description there, so no file is read at turn setup.
 - Plugin entries come after the workspace entries and share the same 32 KiB budget. When the workspace entries already filled it, no plugin entry is added.

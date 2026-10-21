@@ -4,46 +4,38 @@ import type { RegisteredQuery } from "convex/server";
 import type { Id } from "./_generated/dataModel.js";
 import { internalQuery } from "./_generated/server.js";
 import { v_result } from "../server/convex-utils.ts";
-import { ai_chat_skills_LIMITS } from "../server/ai-chat-skills.ts";
-import { files_pending_overlay_list, files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
+import { files_pending_overlay_list_over_budget } from "../server/files-pending-overlay.ts";
 import { files_visible_is_preparing } from "./files_visible.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
-import { ai_chat_workspaces_source_validator } from "./schema.ts";
+import { ai_chat_workspaces_source_validator, files_pending_target_validator } from "./schema.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 
 export const ai_chat_context_ENABLED = process.env.AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED === "true";
 
-// 4 pages of 50 skill folders is 200 folders, twice the catalog limit. Each folder costs one exact
-// path read of its SKILL.md (about 6 index ranges), so this is the most this query reads before it
-// reports the catalog as incomplete.
-const MAX_CATALOG_PAGES = 4;
-const CATALOG_PAGE_SIZE = 50;
+const workspace_validator = v.union(v.literal("current"), v.literal("personal"));
 
-export const discover_sources = internalQuery({
+/**
+ * Resolve the chat's guidance roots and its plugin skills. The skills catalog in the roots is listed by
+ * the chat action, page by page (`ai_chat_context_discover_sources`).
+ */
+export const resolve_sources = internalQuery({
 	args: { source: ai_chat_workspaces_source_validator },
 	returns: v_result({
 		_yay: v.object({
 			workspaces: v.array(
 				v.object({
-					workspace: v.union(v.literal("current"), v.literal("personal")),
+					workspace: workspace_validator,
 					organizationId: v.id("organizations"),
 					workspaceId: v.id("organizations_workspaces"),
 					organizationName: v.string(),
 					workspaceName: v.string(),
 				}),
 			),
-			skills: v.array(
-				v.object({
-					workspace: v.union(v.literal("current"), v.literal("personal")),
-					path: v.string(),
-				}),
-			),
 			pluginSkills: v.array(
 				v.object({ pluginName: v.string(), name: v.string(), description: v.string(), path: v.string() }),
 			),
-			warning: v.optional(v.string()),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -64,75 +56,6 @@ export const discover_sources = internalQuery({
 			if (!workspaces.some((root) => root.workspaceId === workspaceId))
 				workspaces.push({ workspace, organizationId, workspaceId, organizationName, workspaceName });
 		}
-		const skills: { workspace: "current" | "personal"; path: string }[] = [];
-		const scans = workspaces.map((root) => ({
-			root,
-			cursor: null as string | null,
-			complete: false,
-			reader: null as Awaited<ReturnType<typeof files_visible_db_create_reader>> | null,
-		}));
-		// Alternate roots within one page budget, so a large current catalog cannot hide home.
-		// The listing reads share this query's transaction, so the catalog also stops on their read
-		// budget and reports itself incomplete.
-		const overBudget = async () => files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics());
-		for (let page = 0; page < MAX_CATALOG_PAGES; page++) {
-			const unfinished = scans.filter((scan) => !scan.complete);
-			if (!unfinished.length || (await overBudget())) break;
-			const scan = unfinished[page % unfinished.length];
-			const { organizationId, workspaceId, workspace } = scan.root;
-			// Read through the user's own drafts. A pending rename can turn an ordinary file into
-			// SKILL.md, and a folder move can bring skills into the catalog from elsewhere.
-			const listed = await files_pending_overlay_list(ctx, {
-				agentSource: args.source,
-				organizationId,
-				workspaceId,
-				visibilityUserId: args.source.userId,
-				subject: { kind: "user", userId: args.source.userId, plugin: null },
-				overlayUserId: args.source.userId,
-				folderPath: "/.agents/skills",
-				mode: "children",
-				kind: "folder",
-				order: "asc",
-				numItems: CATALOG_PAGE_SIZE,
-				cursor: scan.cursor,
-			});
-			// A skills folder the user cannot open gives them no skills, so this workspace is done.
-			if (listed._nay?.name === "permission_denied") {
-				scan.complete = true;
-				continue;
-			}
-			// A page that fails leaves the catalog incomplete. Stop here and return the skills found
-			// so far with the warning below, instead of failing the whole chat.
-			if (listed._nay) {
-				break;
-			}
-			// One exact path read per skill folder. One reader per workspace keeps the folder reads cached.
-			const reader = (scan.reader ??= await files_visible_db_create_reader(ctx, {
-				organizationId,
-				workspaceId,
-				userId: args.source.userId,
-				readLimit: 2_000,
-			}));
-			let stopped = false;
-			for (const item of listed._yay.items) {
-				// A locked skill folder cannot be opened, so its SKILL.md cannot be read.
-				if (item.locked) continue;
-				if (await overBudget()) {
-					stopped = true;
-					break;
-				}
-				const found = await reader.findChild(item.target, `${item.path}/SKILL.md`);
-				if (!found || found.entry.node.kind !== "file" || !(await reader.canRead(found.accessNode))) continue;
-				// A private file whose content is not sealed yet cannot be used as a skill.
-				if (found.entry.kind === "private" && files_visible_is_preparing(found.entry.pendingUpdate)) continue;
-				skills.push({ workspace, path: found.entry.path });
-			}
-			if (stopped || reader.exhausted) break;
-			scan.complete = listed._yay.isDone;
-			if (skills.length > ai_chat_skills_LIMITS.discovered) break;
-			scan.cursor = listed._yay.continueCursor;
-		}
-		skills.sort((a, b) => a.workspace.localeCompare(b.workspace) || a.path.localeCompare(b.path));
 
 		// Plugin skills come only from enabled installations in the current workspace, so they never
 		// reach the home workspace. The Bash mount `/.plugins/<pluginName>` follows the same rule, and
@@ -169,19 +92,54 @@ export const discover_sources = internalQuery({
 		return Result({
 			_yay: {
 				workspaces,
-				skills: skills.slice(0, ai_chat_skills_LIMITS.discovered),
 				pluginSkills,
-				...(scans.some((scan) => !scan.complete) || skills.length > ai_chat_skills_LIMITS.discovered
-					? {
-							warning: "The skill catalog is incomplete. Use Bash to inspect each workspace's .agents/skills folder.",
-						}
-					: {}),
 			},
 		});
 	},
 });
 
-export type ai_chat_context_discover_sources_Result =
-	typeof discover_sources extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+export type ai_chat_context_resolve_sources_Result =
+	typeof resolve_sources extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+/**
+ * Find the readable `SKILL.md` in each skill folder of one catalog page. Each folder costs one exact
+ * path read (about 6 index ranges), so one page of 50 folders stays far below the read budget.
+ */
+export const find_skill_files = internalQuery({
+	args: {
+		source: ai_chat_workspaces_source_validator,
+		workspace: workspace_validator,
+		folders: v.array(v.object({ target: files_pending_target_validator, path: v.string() })),
+	},
+	returns: v_result({ _yay: v.object({ paths: v.array(v.string()), complete: v.boolean() }) }),
+	handler: async (ctx, args) => {
+		if (!ai_chat_context_ENABLED)
+			return Result({ _nay: { name: "unavailable", message: "Workspace guidance is unavailable." } });
+		// Resolve again: the chat action lists each page in its own transaction, so the membership may
+		// have changed since `resolve_sources`.
+		const resolved = await ai_chat_workspaces_db_resolve(ctx, { source: args.source, workspace: args.workspace });
+		if (resolved._nay) return Result({ _nay: { name: "unavailable", message: "Workspace guidance is unavailable." } });
+		const { organizationId, workspaceId } = resolved._yay;
+
+		// One reader for the page keeps the shared folder reads cached.
+		const reader = await files_visible_db_create_reader(ctx, {
+			organizationId,
+			workspaceId,
+			userId: args.source.userId,
+			readLimit: 2_000,
+		});
+		const paths: string[] = [];
+		for (const folder of args.folders) {
+			if (files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics()))
+				return Result({ _yay: { paths, complete: false } });
+			const found = await reader.findChild(folder.target, `${folder.path}/SKILL.md`);
+			if (!found || found.entry.node.kind !== "file" || !(await reader.canRead(found.accessNode))) continue;
+			// A private file whose content is not sealed yet cannot be used as a skill.
+			if (found.entry.kind === "private" && files_visible_is_preparing(found.entry.pendingUpdate)) continue;
+			paths.push(found.entry.path);
+		}
+		return Result({ _yay: { paths, complete: !reader.exhausted } });
+	},
+});
