@@ -78,6 +78,11 @@ export async function files_write_policy_db_has_write_context_permission(
 		writeContext: files_nodes_WriteContext;
 		node: Doc<"files_nodes"> | null;
 		permission: access_control_Permission;
+		/**
+		 * The person's membership that this transaction already checked, for example at the start of a
+		 * job step. Pass it so each node check skips reading the user and the membership again.
+		 */
+		membership?: Doc<"organizations_workspaces_users">;
 	},
 ) {
 	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
@@ -87,7 +92,18 @@ export async function files_write_policy_db_has_write_context_permission(
 	}
 
 	const subject = args.writeContext.subject;
-	if (subject.kind === "user") {
+	if (subject.kind === "user" && args.membership) {
+		const membership = args.membership;
+		if (
+			membership.userId !== subject.userId ||
+			membership.organizationId !== organizationId ||
+			membership.workspaceId !== workspaceId ||
+			!membership.active ||
+			membership.pendingOrganizationRemoval
+		) {
+			return false;
+		}
+	} else if (subject.kind === "user") {
 		// The person must still exist and be a member here. An account's liveness is part of its own check.
 		const user = await ctx.db.get("users", subject.userId);
 		if (!user || user.deletedAt != null) {

@@ -435,6 +435,10 @@ async function db_claim_slot(
 type MoveActor = {
 	membership: Doc<"organizations_workspaces_users">;
 	writeContext: files_nodes_WriteContext;
+	/**
+	 * True when an API key started the Move. It refuses each item alone, like `files/delete`.
+	 */
+	apiRun: boolean;
 };
 
 async function db_authorize_node(
@@ -446,15 +450,20 @@ async function db_authorize_node(
 ) {
 	if (node && (node.organizationId !== cohort.organizationId || node.workspaceId !== cohort.workspaceId))
 		return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
+	// An API Move gets a named refusal, so it refuses this item alone. Without a name, the Move asks for
+	// review: the app shows that, but an API Move would stop with "Source changed".
 	if (
 		!(await files_write_policy_db_has_write_context_permission(ctx, {
 			...cohort,
 			writeContext: actor.writeContext,
+			membership: actor.membership,
 			node,
 			permission: "content.write",
 		}))
 	)
-		return Result({ _nay: { message: "Permission denied" } });
+		return Result({
+			_nay: { ...(actor.apiRun ? { name: "permission_denied" } : {}), message: "Permission denied" },
+		});
 	if (node) {
 		const writable = await files_nodes_db_require_writable(ctx, {
 			...cohort,
@@ -1385,6 +1394,7 @@ async function db_headers(
 			const readable = await files_write_policy_db_has_write_context_permission(ctx, {
 				...cohort,
 				writeContext: actor.writeContext,
+				membership: actor.membership,
 				node: sourceParent,
 				permission: "content.read",
 			});
@@ -1462,6 +1472,7 @@ async function db_headers(
 			const authorized = await files_write_policy_db_has_write_context_permission(ctx, {
 				...cohort,
 				writeContext: actor.writeContext,
+				membership: actor.membership,
 				node: { ...physical, ...placement_header_from_place(old) },
 				permission: "content.permissions.manage",
 			});
@@ -2507,7 +2518,7 @@ async function db_retry_repair(
 async function db_get_running_write_context(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
-): Promise<files_nodes_WriteContext | null> {
+): Promise<Omit<MoveActor, "membership"> | null> {
 	const activity = await activities_db_require_by_source_id(ctx, cohort.origin.runId);
 	if (!activities_is_active(activity.status) || activity.deadlineAt <= Date.now()) return null;
 	if (cohort.origin.kind === "review") {
@@ -2519,7 +2530,7 @@ async function db_get_running_write_context(
 			unit?.status === "preparing" &&
 			unit.attemptFence === cohort.attemptFence &&
 			unit.cohortId === cohort._id
-			? files_nodes_user_write_context(cohort.userId)
+			? { writeContext: files_nodes_user_write_context(cohort.userId), apiRun: false }
 			: null;
 	}
 	const run = await ctx.db.get("files_transfer_runs", cohort.origin.runId);
@@ -2538,10 +2549,13 @@ async function db_get_running_write_context(
 		return null;
 	if (!run || run.revision !== cohort.fence || item?.state !== "pending" || item.attempt !== cohort.attemptFence)
 		return null;
-	return await public_api_credentials_db_get_write_context(ctx, {
-		credentialId: run.origin.kind === "api" ? run.origin.credentialId : null,
-		userId: run.userId,
-	});
+	return {
+		writeContext: await public_api_credentials_db_get_write_context(ctx, {
+			credentialId: run.origin.kind === "api" ? run.origin.credentialId : null,
+			userId: run.userId,
+		}),
+		apiRun: run.origin.kind === "api",
+	};
 }
 
 type StageRequest = {
@@ -2584,8 +2598,8 @@ async function db_advance_step(
 	if (!repairing) {
 		membershipReads.docs ??= await db_read_membership(ctx, cohort);
 		const authorized = await db_get_membership(ctx, cohort, membershipReads.docs);
-		const writeContext = authorized._nay ? null : await db_get_running_write_context(ctx, cohort);
-		if (authorized._nay || !writeContext) {
+		const running = authorized._nay ? null : await db_get_running_write_context(ctx, cohort);
+		if (authorized._nay || !running) {
 			await db_abort(
 				ctx,
 				cohort,
@@ -2593,7 +2607,7 @@ async function db_advance_step(
 			);
 			return null;
 		}
-		actor = { membership: authorized._yay.membership, writeContext };
+		actor = { membership: authorized._yay.membership, ...running };
 		organization = authorized._yay.organization;
 		const pins = cohort.clockPins;
 		// Keep this check even with no media: the same pins catch write policy and access changes while staging.

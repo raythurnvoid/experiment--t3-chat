@@ -5688,6 +5688,30 @@ describe("locked and missing paths", () => {
 					await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/notes/b.md", "/secret/h01.md"] }),
 				).toMatchObject({ body: { items: [{ status: "found" }, { status: "found" }] } });
 
+				// The account reads `/notes/b.md` but cannot change it, so the job refuses it alone.
+				const inside = await create_account_key({
+					f,
+					grants: [
+						{ resource: { kind: "workspace" }, level: "read" },
+						{ resource: { kind: "file", nodeId: f.secretId }, level: "manage" },
+					],
+					scopes: ["files:list", "files:write", "files:permissions"],
+				});
+				const intoSecret = await post(t, "/api/v1/files/move", inside.credential, {
+					from: ["/notes/b.md"],
+					to: "/secret",
+					requestId: "inside-1",
+				});
+				expect(intoSecret.status).toBe(200);
+				const intoSecretJobId = (intoSecret.body as { jobId: string }).jobId;
+				await finish_move(t, intoSecretJobId);
+				expect(
+					await post(t, "/api/v1/files/jobs/get", inside.credential, { jobId: intoSecretJobId }),
+				).toMatchObject({
+					status: 200,
+					body: { refused: [{ path: "/notes/b.md", message: "Permission denied" }] },
+				});
+
 				// Control: the person behind the key may move it out.
 				const sharer = await create_key({
 					asUser: f.asOwner,

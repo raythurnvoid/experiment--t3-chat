@@ -316,6 +316,7 @@ async function db_check_writable_nodes(
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				writeContext: args.writeContext,
+				membership,
 				node,
 				permission: "content.write",
 			});

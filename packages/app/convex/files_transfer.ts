@@ -360,6 +360,7 @@ async function db_get_destination(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		run: Pick<Doc<"files_transfer_runs">, "destinationScope" | "userId" | "sourceView">;
+		membership: Doc<"organizations_workspaces_users">;
 		writeContext: files_nodes_WriteContext;
 		parent: files_PendingParent;
 		expectedPath: string;
@@ -394,6 +395,7 @@ async function db_get_destination(
 		!(await files_write_policy_db_has_write_context_permission(ctx, {
 			...args.run.destinationScope,
 			writeContext: args.writeContext,
+			membership: args.membership,
 			node: placedNode,
 			permission: "content.write",
 		}))
@@ -745,6 +747,7 @@ async function db_resolve_name(
 	args: {
 		run: Doc<"files_transfer_runs">;
 		item: Doc<"files_transfer_items">;
+		membership: Doc<"organizations_workspaces_users">;
 		writeContext: files_nodes_WriteContext;
 		/**
 		 * Null means a folder this run has not created yet, so nothing saved can be in it.
@@ -924,6 +927,7 @@ async function db_resolve_name(
 				!(await files_write_policy_db_has_write_context_permission(ctx, {
 					...args.run.destinationScope,
 					writeContext: args.writeContext,
+					membership: args.membership,
 					node: placedNode,
 					permission: "content.write",
 				}))
@@ -1028,6 +1032,7 @@ export async function files_transfer_db_prepare_copy_item(
 
 	const destination = await db_get_destination(ctx, {
 		run,
+		membership,
 		writeContext,
 		parent: run.targetParent,
 		expectedPath: run.targetPath,
@@ -1077,6 +1082,7 @@ export async function files_transfer_db_prepare_copy_item(
 		runWrittenWritePolicy = parentItem.outputWritePolicy;
 		const parentDestination = await db_get_destination(ctx, {
 			run,
+			membership,
 			writeContext,
 			parent,
 			expectedPath: parentPath,
@@ -1098,7 +1104,7 @@ export async function files_transfer_db_prepare_copy_item(
 		return Result({ _yay: null });
 	}
 
-	const resolved = await db_resolve_name(ctx, { run, item, writeContext, parent, parentPath });
+	const resolved = await db_resolve_name(ctx, { run, item, membership, writeContext, parent, parentPath });
 	if (resolved._nay) return resolved;
 	if (!resolved._yay) return Result({ _yay: null });
 	if (item.preparation) {
@@ -1559,6 +1565,7 @@ async function db_start(
 	if (!args.rename) {
 		const destination = await db_get_destination(ctx, {
 			run: { ...scope, sourceView, destinationScope },
+			membership: args.destinationMembership,
 			writeContext,
 			parent: args.targetParent,
 			expectedPath: args.targetPath,
@@ -2636,6 +2643,7 @@ export const retry_remaining = mutation({
 
 		const destination = await db_get_destination(ctx, {
 			run,
+			membership: memberships.destination,
 			writeContext: memberships.writeContext,
 			parent: run.targetParent,
 			expectedPath: run.targetPath,
@@ -3128,9 +3136,10 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">, wr
 async function db_plan(args: {
 	ctx: MutationCtx;
 	run: Doc<"files_transfer_runs">;
+	membership: Doc<"organizations_workspaces_users">;
 	writeContext: files_nodes_WriteContext;
 }) {
-	const { ctx, run, writeContext } = args;
+	const { ctx, run, membership, writeContext } = args;
 
 	const pageSize = run.kind === "move" ? 8 : DISCOVERY_PAGE_SIZE;
 	const items = await ctx.db
@@ -3175,6 +3184,7 @@ async function db_plan(args: {
 		if (parent?.state === "completed" && parent.outputTarget) {
 			const destination = await db_get_destination(ctx, {
 				run,
+				membership,
 				writeContext,
 				parent: parent.outputTarget,
 				expectedPath: parentPath,
@@ -3189,6 +3199,7 @@ async function db_plan(args: {
 		const resolved = await db_resolve_name(ctx, {
 			run,
 			item,
+			membership,
 			writeContext,
 			// A child goes in the folder its parent item makes. A paste never merges folders, so a parent
 			// folder that is only planned is new and empty.
@@ -3249,9 +3260,10 @@ async function db_plan(args: {
 async function db_commit_move(args: {
 	ctx: MutationCtx;
 	run: Doc<"files_transfer_runs">;
+	membership: Doc<"organizations_workspaces_users">;
 	writeContext: files_nodes_WriteContext;
 }) {
-	const { ctx, run, writeContext } = args;
+	const { ctx, run, membership, writeContext } = args;
 
 	const scope = { ...run, ...run.sourceScope };
 	const reader = await files_visible_db_create_reader(ctx, { ...scope, subject: writeContext.subject });
@@ -3281,6 +3293,7 @@ async function db_commit_move(args: {
 		const resolved = await db_resolve_name(ctx, {
 			run,
 			item,
+			membership,
 			writeContext,
 			parent: run.targetParent,
 			parentPath: run.targetPath,
@@ -3367,6 +3380,7 @@ async function db_commit_move(args: {
 		: await db_resolve_name(ctx, {
 				run,
 				item,
+				membership,
 				writeContext,
 				parent: run.targetParent,
 				parentPath: run.targetPath,
@@ -3387,6 +3401,7 @@ async function db_commit_move(args: {
 		const authorized = await files_write_policy_db_has_write_context_permission(ctx, {
 			...run.sourceScope,
 			writeContext,
+			membership,
 			node: source,
 			permission: "content.write",
 		});
@@ -3609,8 +3624,9 @@ async function db_advance(
 	sealedMemberships?: Awaited<ReturnType<typeof db_get_run_memberships>>,
 ) {
 	// Each joined unit reads the run and its Activity again and repeats the Stop and deadline checks.
-	// A set write context also means this transaction already passed the checks below.
-	let writeContext: files_nodes_WriteContext | null = null;
+	// A set `checked` also means this transaction already passed the checks below.
+	let checked: { membership: Doc<"organizations_workspaces_users">; writeContext: files_nodes_WriteContext } | null =
+		null;
 	while (true) {
 		const run = await ctx.db.get("files_transfer_runs", args.runId);
 		if (!run) return null;
@@ -3624,7 +3640,7 @@ async function db_advance(
 			await db_cancel_items({ ctx, run, now: Date.now() });
 			return null;
 		}
-		const cohort = writeContext ? null : await db_get_active_move_cohort(ctx, run);
+		const cohort = checked ? null : await db_get_active_move_cohort(ctx, run);
 		if (cohort?.origin.kind === "transfer" && cohort.origin.runId === run._id) {
 			await files_move_cohorts_db_schedule(ctx, { cohortId: cohort._id });
 			return null;
@@ -3639,7 +3655,7 @@ async function db_advance(
 		// Run the access, wait and destination checks once per transaction. The joined units write only
 		// this run, its selection and items, and its Activity, so a second check gives the same answer.
 		// If a unit starts to write other docs, check again in each unit.
-		if (!writeContext) {
+		if (!checked) {
 			const memberships = sealedMemberships ?? (await db_get_run_memberships({ ctx, run, activity }));
 			if (!memberships) {
 				await db_stop_run({ ctx, run, errorMessage: "Permission denied" });
@@ -3733,6 +3749,7 @@ async function db_advance(
 			if (!run.rename) {
 				const destination = await db_get_destination(ctx, {
 					run,
+					membership: memberships.destination,
 					writeContext: memberships.writeContext,
 					parent: run.targetParent,
 					expectedPath: run.targetPath,
@@ -3742,7 +3759,7 @@ async function db_advance(
 					return null;
 				}
 			}
-			writeContext = memberships.writeContext;
+			checked = { membership: memberships.destination, writeContext: memberships.writeContext };
 		}
 
 		if (activity.status === "queued") {
@@ -3757,17 +3774,17 @@ async function db_advance(
 			return null;
 		}
 		if (run.step === "select" || run.step === "normalize") {
-			if (!(await db_select_sources(ctx, run, writeContext))) return null;
+			if (!(await db_select_sources(ctx, run, checked.writeContext))) return null;
 			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
 		}
 		if (run.step === "discover") {
-			await db_discover(ctx, run, writeContext);
+			await db_discover(ctx, run, checked.writeContext);
 			return null;
 		}
 		if (run.step === "plan") {
-			if (!(await db_plan({ ctx, run, writeContext }))) return null;
+			if (!(await db_plan({ ctx, run, ...checked }))) return null;
 			if (run.kind === "move" && (await files_pending_overlay_db_can_join_step(ctx))) continue;
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 			return null;
@@ -3775,7 +3792,7 @@ async function db_advance(
 		if (!run.rename && !(await db_prepare_parent_folders(ctx, run))) return null;
 		// Start refuses cross-workspace Move, and Retry keeps the old scopes, so every Move is in one workspace.
 		if (run.kind === "move") {
-			await db_commit_move({ ctx, run, writeContext });
+			await db_commit_move({ ctx, run, ...checked });
 			return null;
 		}
 		if (run.inFlight >= MAX_IN_FLIGHT) return null;
@@ -4013,7 +4030,7 @@ async function db_advance(
 
 			const copied = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				userId: run.userId,
-				writeContext,
+				writeContext: checked.writeContext,
 				organizationId: run.destinationScope.organizationId,
 				workspaceId: run.destinationScope.workspaceId,
 				parentId: outputParent.kind === "root" ? files_ROOT_ID : outputParent.id,
