@@ -58,6 +58,7 @@ const TRAILING_NEWLINES_REGEX = /(?<!\n)\n+$/;
 const STRUCTURAL_HTML_WHITESPACE_REGEX = />(?:\n[ \t]*)+</g;
 const TRAILING_HARD_BREAKS_REGEX = /(?<!\\\n)(?:\\\n)+$/;
 const HARD_BREAK_REGEX = /\\\n/g;
+const CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX = /\n<\/code><\/pre>\n$/;
 const VIDEO_BLOCK_START_REGEX = /^<video[\s>]/m;
 const VIDEO_BLOCK_REGEX = /^(<video\b[^>]*>(?:\s*<\/video>)?)[ \t]*(?:\n|$)/;
 // Marked's own paragraph rule, with a cheaper table check. Every instance here uses `gfm: true`.
@@ -324,6 +325,15 @@ function configure_marked(instance: Marked | typeof marked) {
 				const bodyHtml = instance.parseInline(bodyRaw, { async: false, tokenizer: new WorkCountingTokenizer() });
 
 				return `<p>${bodyHtml}${"<br>".repeat(hardBreakCount)}</p>`;
+			},
+
+			// Marked ends the code with a `\n` before `</code>`. The code block keeps every character of
+			// `<pre>`, so that `\n` became part of the code. The save then wrote it as an empty line before
+			// the closing fence. So drop it here.
+			code(token) {
+				return Renderer.prototype.code
+					.call(this, token)
+					.replace(CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX, "</code></pre>\n");
 			},
 
 			// Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>` tag. Then

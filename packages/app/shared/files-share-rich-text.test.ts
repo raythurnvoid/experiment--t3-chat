@@ -314,12 +314,12 @@ describe("files_share_rich_text_prepare", () => {
 		const json = rich_json(publish(markdown).content);
 
 		expect(find_nodes(json, "frontmatter")[0]?.content?.[0]?.text).toBe("title: x\n  indented: y\n");
-		expect(find_nodes(json, "codeBlock")[0]?.content?.[0]?.text).toBe("  a\n\n\tb\n");
+		expect(find_nodes(json, "codeBlock")[0]?.content?.[0]?.text).toBe("  a\n\n\tb");
 
 		const fallback = publish(`${markdown}${"<div>".repeat(40)}x${"</div>".repeat(40)}\n`).content;
 		const text = fallback?.kind === "plain_text" ? fallback.text : "";
 		expect(text).toContain("title: x\n  indented: y\n");
-		expect(text).toContain("  a\n\n\tb\n");
+		expect(text).toContain("  a\n\n\tb");
 	});
 
 	test("keeps task items read-only data and table bounds", () => {
@@ -399,7 +399,7 @@ describe("files_share_rich_text_prepare", () => {
 		// Each entity is its own parser text piece, so this block is past the rich size and falls back.
 		expect(content).toEqual({
 			kind: "plain_text",
-			text: `${"&amp;<>".repeat(100_000)}\n`,
+			text: "&amp;<>".repeat(100_000),
 			formattingFallback: true,
 		});
 	});
@@ -409,7 +409,8 @@ describe("files_share_rich_text_prepare", () => {
 		const text = `${'"'.repeat(99)}\n`.repeat(7_500);
 		const { content } = publish(`\`\`\`\n${text}\`\`\`\n`);
 
-		expect(content).toEqual({ kind: "plain_text", text, formattingFallback: true });
+		// The code ends before the closing fence line, so its last `\n` is not part of the code.
+		expect(content).toEqual({ kind: "plain_text", text: text.slice(0, -1), formattingFallback: true });
 	});
 
 	test("keeps 950 paragraphs rich and shows 1,050 as plain text", () => {

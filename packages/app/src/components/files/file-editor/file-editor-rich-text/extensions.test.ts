@@ -255,10 +255,11 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 	test("keeps code and frontmatter text from turning into Markdown on a save", () => {
 		// Same fixtures as the shared suite: the browser list must write the same bytes.
 		const fixtures = [
-			["````\n```\n![x](bonobo-file://S)\n```\n````\n", "````\n```\n![x](bonobo-file://S)\n```\n\n````\n"],
-			["~~~\n```js\nx\n```\n~~~\n", "````\n```js\nx\n```\n\n````\n"],
-			["~~~a`b\nx\n~~~\n", "```\nx\n\n```\n"],
-			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   \n   ```\n2. Next\n"],
+			["a\n\n```sh\nx\n```\n\nb\n", "a\n\n```sh\nx\n```\n\nb\n"],
+			["````\n```\n![x](bonobo-file://S)\n```\n````\n", "````\n```\n![x](bonobo-file://S)\n```\n````\n"],
+			["~~~\n```js\nx\n```\n~~~\n", "````\n```js\nx\n```\n````\n"],
+			["~~~a`b\nx\n~~~\n", "```\nx\n```\n"],
+			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n"],
 			["1. Install\n  - run setup\n    - on Windows\n2. Done\n", "1. Install\n   - run setup\n     - on Windows\n2. Done\n"],
 			["Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n", "Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n"],
 			["<pre data-frontmatter>a: 1\n---\nb</pre>\n", "<pre data-frontmatter>a: 1\n---\nb</pre>\n"],

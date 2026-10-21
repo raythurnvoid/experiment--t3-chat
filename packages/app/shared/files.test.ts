@@ -2739,16 +2739,16 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 	});
 
 	test("keeps code and frontmatter text from turning into Markdown on a save", () => {
-		// The code block gains one blank line before its closing fence: the parse keeps the `\n` that
-		// marked writes at the end of `<code>`.
 		const fixtures = [
+			// A code block keeps its last line. It must not gain a blank line before the closing fence.
+			["a\n\n```sh\nx\n```\n\nb\n", "a\n\n```sh\nx\n```\n\nb\n"],
 			// Code that holds a fence line.
-			["````\n```\n![x](bonobo-file://S)\n```\n````\n", "````\n```\n![x](bonobo-file://S)\n```\n\n````\n"],
-			["~~~\n```js\nx\n```\n~~~\n", "````\n```js\nx\n```\n\n````\n"],
+			["````\n```\n![x](bonobo-file://S)\n```\n````\n", "````\n```\n![x](bonobo-file://S)\n```\n````\n"],
+			["~~~\n```js\nx\n```\n~~~\n", "````\n```js\nx\n```\n````\n"],
 			// A backtick in the language would make the fence line plain text.
-			["~~~a`b\nx\n~~~\n", "```\nx\n\n```\n"],
+			["~~~a`b\nx\n~~~\n", "```\nx\n```\n"],
 			// Code in an ordered list keeps its indent: `1. ` is three columns.
-			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   \n   ```\n2. Next\n"],
+			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n"],
 			// A bullet nested with 2 spaces stays nested.
 			["1. Install\n  - run setup\n    - on Windows\n2. Done\n", "1. Install\n   - run setup\n     - on Windows\n2. Done\n"],
 			// Frontmatter that is not first, or that holds a `---` line, stays HTML.
