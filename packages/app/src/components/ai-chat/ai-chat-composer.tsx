@@ -67,6 +67,7 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useLiveRef } from "@/hooks/utils-hooks.ts";
+import { is_mobile_layout } from "@/hooks/use-mobile.ts";
 import type { AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
 import {
 	ai_chat_MESSAGE_IMAGE_MAX_COUNT,
@@ -581,8 +582,10 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 							// Do not return `true` or tiptap will set preventDefault
 							return false;
 						}
-					} else if (event.key === "Enter" && !event.shiftKey) {
+					} else if (event.key === "Enter" && !event.shiftKey && !is_mobile_layout()) {
 						// Enter sends the message. Shift+Enter inserts a line break.
+						// A phone keyboard has no Shift+Enter. So in the phone layout Enter falls through and
+						// starts a new line, and the Send button sends.
 						event.preventDefault();
 						rootRef.current?.requestSubmit();
 						return true;

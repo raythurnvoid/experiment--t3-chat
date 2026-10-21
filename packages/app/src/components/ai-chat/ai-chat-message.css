@@ -503,6 +503,15 @@
 	}
 	/* #endregion tool output full */
 
+	/* #region tool edit_file */
+	.AiChatMessagePartToolEditPage-link {
+		/* A phone has no Files page. The phone chat reviews pending files from its pending strip. */
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			display: none;
+		}
+	}
+	/* #endregion tool edit_file */
+
 	/* #region tool bash */
 	.AiChatMessagePartToolBash-terminal {
 		width: calc(100% - 16px);
@@ -531,6 +540,11 @@
 
 	.AiChatMessagePartToolFile-link {
 		width: fit-content;
+
+		/* A phone has no Files page. The phone chat reviews pending files from its pending strip. */
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			display: none;
+		}
 	}
 
 	.AiChatMessagePartToolFileLinks {

@@ -52,6 +52,11 @@
 	.AiChatThreadsHeader-hamburger-button {
 		height: 32px;
 		width: 32px;
+
+		/* A phone has no app sidebar for this button to open. */
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			display: none;
+		}
 	}
 
 	.AiChatThreadsHeader-close-button {
@@ -147,6 +152,11 @@
 
 		/* for the subgrid to work paint and layout container cannot be used */
 		contain: size style;
+
+		/* 44px is the smallest comfortable touch target. */
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			height: 44px;
+		}
 	}
 
 	.AiChatThreadsListItem-title {

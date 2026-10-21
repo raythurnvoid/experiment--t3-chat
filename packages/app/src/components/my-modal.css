@@ -15,9 +15,11 @@
 		left: 50%;
 		transform: translate(-50%, -50%);
 
+		/* `dvh` follows the visible height. On iOS `vh` counts the hidden toolbar too, so the footer
+		   could end up under the toolbar. */
 		width: 90vw;
 		max-width: 600px;
-		max-height: 85vh;
+		max-height: 85dvh;
 
 		/* A column, so the content area shrinks to fit the header and footer. A fixed guess for their
 		   height is too small for a header with a subtitle, and the popover then clips the footer. */
@@ -56,7 +58,7 @@
 	}
 
 	.MyModalScrollableArea {
-		max-height: calc(85vh - 140px);
+		max-height: calc(85dvh - 140px);
 		min-height: 0;
 		overflow-y: auto;
 		padding: 20px;

@@ -29,6 +29,10 @@ vi.mock("@tanstack/react-router", () => ({
 		options,
 		useParams: () => paramsMock(),
 	}),
+	Navigate: function Navigate() {
+		return null;
+	},
+	useMatch: () => true,
 	Outlet: function Outlet() {
 		return (
 			<main>

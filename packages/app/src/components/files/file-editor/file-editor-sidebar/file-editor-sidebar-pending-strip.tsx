@@ -60,12 +60,18 @@ export type FileEditorSidebarPendingStrip_Props = {
 	 * entirely for the user's workspace-wide count.
 	 */
 	threadId?: string | null;
+	/**
+	 * Open the review for the current workspace somewhere else instead of the Files page. The phone
+	 * chat uses it to open a modal, because a phone has no Files page.
+	 */
+	onReview?: () => void;
 };
 
 type FileEditorSidebarPendingStripRow_Props = {
 	count: number;
 	truncated: boolean;
 	destination?: { workspace: "current" | "personal"; organizationName: string; workspaceName: string };
+	onReview?: () => void;
 };
 
 /**
@@ -74,7 +80,7 @@ type FileEditorSidebarPendingStripRow_Props = {
 const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingStripRow(
 	props: FileEditorSidebarPendingStripRow_Props,
 ) {
-	const { count, truncated, destination } = props;
+	const { count, truncated, destination, onReview } = props;
 	const labelScope = destination ? "chat" : "workspace";
 	const destinationLabel = destination
 		? ` in ${destination.workspace === "current" ? "current workspace" : "personal home"}`
@@ -156,7 +162,7 @@ const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingS
 					: ""}
 			</span>
 			{displayCount.count > 0 || displayCount.truncated ? (
-				destination ? (
+				destination && !onReview ? (
 					<Link
 						{...reviewProps}
 						to="/w/$organizationName/$workspaceName/files"
@@ -166,7 +172,7 @@ const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingS
 						{reviewContent}
 					</Link>
 				) : (
-					<button {...reviewProps} type="button">
+					<button {...reviewProps} type="button" onClick={onReview ?? handleClick}>
 						{reviewContent}
 					</button>
 				)
@@ -178,7 +184,7 @@ const FileEditorSidebarPendingStripRow = memo(function FileEditorSidebarPendingS
 export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPendingStrip(
 	props: FileEditorSidebarPendingStrip_Props,
 ) {
-	const { threadId } = props;
+	const { threadId, onReview } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const summary = useFilesPendingUpdatesCount(threadId !== undefined);
 	const destinations = useQuery(
@@ -187,13 +193,18 @@ export const FileEditorSidebarPendingStrip = memo(function FileEditorSidebarPend
 	);
 	if (threadId === undefined) return <FileEditorSidebarPendingStripRow {...summary} />;
 	return (
-		destinations?.map((destination) => (
-			<FileEditorSidebarPendingStripRow
-				key={`${threadId}:${destination.workspace}`}
-				{...destination}
-				destination={destination}
-			/>
-		)) ?? null
+		destinations
+			// `onReview` can show only the current workspace, and a phone has no Files page to link to.
+			// So skip the personal home row there instead of sending the user to another workspace.
+			?.filter((destination) => !onReview || destination.workspace === "current")
+			.map((destination) => (
+				<FileEditorSidebarPendingStripRow
+					key={`${threadId}:${destination.workspace}`}
+					{...destination}
+					destination={destination}
+					onReview={onReview}
+				/>
+			)) ?? null
 	);
 });
 // #endregion strip

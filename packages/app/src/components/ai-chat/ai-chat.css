@@ -7,6 +7,55 @@
 		height: 100%;
 	}
 
+	/* On a phone the thread list is a drawer that slides over the chat from the left. */
+	.AiChat-threads {
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			position: fixed;
+			inset: 0 auto 0 0;
+			z-index: 11;
+
+			width: min(85vw, 320px);
+			/* A fixed drawer is outside the layout padding, so it keeps clear of the notch itself. */
+			padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left);
+
+			overscroll-behavior: contain;
+
+			box-shadow: 0 8px 24px oklch(0 0 0 / 0.5);
+
+			@media (prefers-reduced-motion: no-preference) {
+				transition: translate 200ms ease;
+
+				@starting-style {
+					translate: -100% 0;
+				}
+			}
+		}
+	}
+
+	.AiChat-threads-footer {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		padding: 8px;
+
+		border-top: 1px solid var(--color-fg-02);
+
+		/* The workspace switcher has a fixed width for the app header. Let it fill the drawer. */
+		> .MainAppHeaderOrganizationControls {
+			width: auto;
+			margin: 0;
+		}
+	}
+
+	.AiChat-drawer-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 10;
+
+		background: oklch(0 0 0 / 0.6);
+	}
+
 	.AiChat-main {
 		display: flex;
 		flex: 1;
@@ -51,8 +100,47 @@
 		justify-content: center;
 
 		overflow: hidden auto;
+		overscroll-behavior: contain;
 	}
 	/* #endregion root */
+
+	/* #region header */
+	.AiChatHeader {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 4px;
+
+		flex: none;
+		padding: env(safe-area-inset-top) 4px 0 4px;
+
+		border-bottom: 1px solid var(--color-fg-02);
+		background: var(--color-base-1-02);
+	}
+
+	/* 44px is the smallest comfortable touch target. */
+	.AiChatHeader-button {
+		width: 44px;
+		height: 44px;
+	}
+
+	.AiChatHeader-icon {
+		width: 20px;
+		height: 20px;
+	}
+
+	.AiChatHeader-title {
+		overflow: hidden;
+
+		color: var(--color-fg-11);
+
+		font-size: 1rem;
+		font-weight: 600;
+		text-align: center;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* #endregion header */
 
 	/* #region thread */
 	.AiChatThread {
@@ -111,6 +199,10 @@
 		justify-content: center;
 
 		padding: 0px 20px 20px 20px;
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			/* Keep the composer above the phone home indicator. */
+			padding: 0px 12px max(12px, env(safe-area-inset-bottom)) 12px;
+		}
 
 		width: 100%;
 

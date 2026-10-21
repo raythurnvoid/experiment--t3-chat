@@ -46,6 +46,16 @@ Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a descri
 - Use `MyRadioButtonLabel` and `MyRadioButtonDescription`, or `MyCheckboxButtonContent`, `MyCheckboxButtonLabel` and `MyCheckboxButtonDescription`. Do not write a local label class for them.
 - A disabled button dims its label and description with the rest of the button.
 
+## Phone layout
+
+A phone shows only the agent chat (see "Phone Layout" in the `ai-chat-agent` skill).
+
+- Use the phone query from `src/hooks/use-mobile.ts`: `(pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px)`. Do not use width alone, because a narrow desktop window must keep the desktop layout.
+- Make touch targets at least 44px tall.
+- Keep content clear of the notch and the home bar with `env(safe-area-inset-*)`. The viewport meta has `viewport-fit=cover`.
+- Use `dvh`, not `vh`, for heights that must fit the screen. On iOS, `vh` includes the space under the browser toolbar.
+- Inputs need text of at least 16px. iOS zooms the page in when a smaller input takes focus.
+
 ## Checks for a UI change
 
 - No sentence is smaller than 15px. No text at all is smaller than 13px.

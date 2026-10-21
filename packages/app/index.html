@@ -18,7 +18,15 @@
 		<link rel="dns-prefetch" href="//%VITE_R2_FILES_DOWNLOAD_HOST%" />
 		<link rel="preconnect" href="https://%VITE_R2_FILES_DOWNLOAD_HOST%" crossorigin />
 		<!-- The Clerk hints are added by `main.tsx` for app pages only. The public share page never contacts Clerk. -->
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<!-- `viewport-fit=cover` lets the phone layout pad itself with `env(safe-area-inset-*)`.
+		     `interactive-widget` makes the Android keyboard shrink the page, so the chat composer stays visible. -->
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+		/>
+		<!-- The chat surface color, `--color-base-1-02` in app.css. -->
+		<meta name="theme-color" content="oklch(0.18 0.002 85)" />
+		<link rel="manifest" href="/manifest.webmanifest" />
 		<title>Bonobo Senate</title>
 	</head>
 	<body>

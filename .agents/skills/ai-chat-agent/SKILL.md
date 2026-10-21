@@ -313,6 +313,17 @@ Tests: `convex/ai_chat_runs.test.ts`, `convex/ai_chat_outputs.test.ts`,
 - Task checkboxes are named, disabled status markers. Do not turn them into editable tasks or show bullets beside them. Wrapped and loose task text stays aligned.
 - These are display rules. Do not rewrite saved replies or add Markdown syntax support as part of a style change.
 
+# Phone Layout
+
+A phone shows only the agent chat, like the Claude mobile app. It is the same code as desktop, with a phone-friendly layout. There is no separate mobile app or route.
+
+- A phone is a touch screen that is at most 640px wide, or at most 500px tall when turned sideways: `(pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px)`. `useIsMobile` and `is_mobile_layout` in `../../../packages/app/src/hooks/use-mobile.ts` read it. The phone `@media` rules in CSS repeat the same query; change them together. A narrow desktop window has a mouse, so it keeps the desktop layout. Tablets keep the desktop layout too.
+- The workspace layout (`../../../packages/app/src/routes/w/$organizationName/$workspaceName/route.tsx`) redirects every other workspace page to chat, and hides the app header and sidebar.
+- `AiChatContent` in `ai-chat.tsx` shows a small header: an "Open chats" button, the chat title, and a "New chat" button. The thread list becomes a left drawer with a backdrop. The chat behind it is `inert` while it is open. Opening moves focus to the drawer's Close button. Closing (Close, backdrop, Escape, picking a chat, New chat) moves focus back to "Open chats". The close is committed with `flushSync` first, because an inert button cannot take focus. The drawer footer holds the organization switcher and the account menu.
+- Enter adds a new line on phone, and the Send button sends. A phone keyboard has no Shift+Enter.
+- Links to the Files page are hidden, because a phone has no Files page. The pending strip opens `AiChatPendingReview`, a full-screen modal with the Files Pending changes panel for this chat. See "Client Responsibilities" in `../files-agent-pending-updates/SKILL.md`.
+- Known gaps: same-origin `/files` links inside Markdown replies go through the redirect back to chat, tapping your own message still starts an edit, and there is no on-screen-keyboard code beyond `interactive-widget=resizes-content` in `index.html`.
+
 # Main Request Flow
 
 For `POST /api/chat`:

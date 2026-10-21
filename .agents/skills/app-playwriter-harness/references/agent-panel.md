@@ -29,7 +29,7 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Generated file result                                                                 | `getByRole("button", { name: "Generate image", exact: true })`, then `getByRole("link", { name: "Open in Files" })` inside that tool card; pictures preview in Files, not chat                                                                                                                                           |
 | Chat mode picker                                                                      | `getByRole("combobox", { name: /^Chat mode:/ })`, then `getByRole("option", { name: "Agent" \| "Ask" })`                                                                                                                                                                                                                 |
 | Failed send                                                                           | `role=alert` holds only the text `Message failed to send.`; the `Show error details` and `Retry` buttons are its siblings inside `.AiChatMessageUserSendError`, so search at page scope, not inside `[role=alert]`. The details dialog is named `Error details`. Read `dialog.innerText()`. The raw message is named `Raw error message`, but it is not an input, so `inputValue()` throws. |
-| Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (one link per destination: Current workspace or Personal home; each opens that workspace's Pending changes tab; a fresh chat shows no strip) |
+| Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (one link per destination: Current workspace or Personal home; each opens that workspace's Pending changes tab; a fresh chat shows no strip. In the phone layout it is one button for the current workspace that opens the `.AiChatPendingReview` modal) |
 | Pending-changes tab count badge                                                       | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count)                                                                                                                                                                                 |
 | Composer image attachment badges                                                      | `[aria-label="Image attachments"] li` (each has an `<img>` data-URL preview, a name `<span>`, and a `Remove <filename>` button)                                                                                                                                                                                          |
 | Chat model picker                                                                     | `getByRole("combobox", { name: /^Chat model:/ })` (the trigger is `role="combobox"` with `aria-label` `Chat model: <name>`, so a `button` role query matches nothing, and `button.MySearchSelectTrigger` also matches the View and Past chats triggers; verified 2026-09-27)                                             |
@@ -452,6 +452,35 @@ When the app tab is not foregrounded:
 - `snapshot()`, `screenshot()`, and `innerText` are unreliable — read via `evaluate()` with `textContent`, `getComputedStyle`, `getBoundingClientRect`.
 - Playwright `locator.click()` can hang at `performing click action` on a background trigger. Read its current bounds, use the harness hit test to confirm the target is clear, then use a normal `page.mouse.click` at that observed point. Re-read the resulting state. Do not use forced or DOM clicks, or foreground the user's profile to work around it.
 - The send and Stop buttons hit this too. To send, focus the composer and press Enter instead of clicking the send button. To stop, read the Stop button's box in page context (`document.querySelector('[aria-label="Stop generating"]').getBoundingClientRect()`) and call `page.mouse.click` at its center. `locator.click` on `Stop generating` can hang while the run keeps streaming.
+
+## Phone chat layout
+
+The phone layout needs touch, not only a narrow width (see "Phone Layout" in the `ai-chat-agent` skill). Emulate it in an owned tab opened with `context.newPage()`, before you navigate, and put it back at the end:
+
+```js
+state.page = await context.newPage();
+state.cdp = await getCDPSession({ page: state.page });
+await state.cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+await state.cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+state.page.goto("http://localhost:5173/w/personal/home/files").catch(() => {}); // must land on /chat
+// Later: Emulation.setTouchEmulationEnabled { enabled: false }, clearDeviceMetricsOverride, resetPageScaleFactor.
+```
+
+- In this tab `locator.click()` and `page.mouse.click()` stall at `performing click action`, even after `bringToFront()`. Tap through CDP touch events instead. They work:
+  ```js
+  state.tap = async (locator) => {
+    const box = await locator.boundingBox();
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await state.cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+    await state.cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
+  ```
+  Type with `Input.insertText` and press keys with `Input.dispatchKeyEvent` (`rawKeyDown`, then `keyUp`). A call that ends with a tap or a key can still time out after its effect has landed, so read the state in a new call before you retry.
+- Do not turn on `Emulation.setEmitTouchEventsForMouse`. It does not make mouse clicks work here.
+- `screenshot()` times out until you call `bringToFront()` on the owned tab.
+- Selectors: `.RootLayout-variant-phone` (phone layout on), `.AiChatHeader` with buttons `Open chats` and `New chat` and title `.AiChatHeader-title`, the drawer `.AiChat-threads` (`display: none` when closed), `.AiChat-drawer-backdrop`, the drawer footer `.AiChat-threads-footer`, and `.AiChat-main` (its `inert` is true while the drawer is open).
+- Check: the drawer opens with focus on `Close`, and Escape, Close, or a thread tap puts focus back on `Open chats`. Enter in the composer adds a second `<p>` and sends nothing.
+- The pending modal needs a chat with pending changes from this chat. Tap the strip's Review button. The modal is `.AiChatPendingReview`.
 
 ## External links in chat
 

@@ -1,0 +1,21 @@
+{
+	"name": "Bonobo Senate",
+	"short_name": "Bonobo Senate",
+	"start_url": "./",
+	"scope": "./",
+	"display": "standalone",
+	"background_color": "#141312",
+	"theme_color": "#141312",
+	"icons": [
+		{
+			"src": "press-logo.png",
+			"sizes": "512x512",
+			"type": "image/png"
+		},
+		{
+			"src": "press-logo.svg",
+			"sizes": "any",
+			"type": "image/svg+xml"
+		}
+	]
+}

@@ -139,7 +139,7 @@ function main_app_header_organization_controls_create_disabled_tooltip(args: {
 		: `All ${maxTotal} available workspace slots in this organization are already in use.`;
 }
 
-const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizationControls() {
+export const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizationControls() {
 	const navigate = useNavigate();
 	const auth = AppAuthProvider.useAuth();
 

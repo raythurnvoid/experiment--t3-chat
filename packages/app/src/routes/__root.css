@@ -32,4 +32,17 @@
 			min-width: 0;
 		}
 	}
+
+	/* A phone has no app header or sidebar. The chat gets the whole screen. */
+	.RootLayout-variant-phone {
+		grid-template: 100dvh / minmax(0, 1fr);
+
+		/* Keep the chat clear of the notch when the phone is turned sideways. */
+		padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
+
+		> .RootLayout-content {
+			grid-row: 1;
+			grid-column: 1;
+		}
+	}
 }

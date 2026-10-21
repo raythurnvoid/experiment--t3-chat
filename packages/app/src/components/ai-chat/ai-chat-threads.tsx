@@ -1,6 +1,6 @@
 import "./ai-chat-threads.css";
 
-import type { ChangeEvent, ComponentPropsWithRef, Ref } from "react";
+import type { ChangeEvent, ComponentPropsWithRef, ReactNode, Ref } from "react";
 import { memo, useEffect, useRef, useState } from "react";
 
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -74,7 +74,7 @@ import type { AiChatThreadListController } from "@/hooks/ai-chat-controller.tsx"
 const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";
 
 // #region header
-type AiChatThreadsHeader_ClassNames =
+export type AiChatThreadsHeader_ClassNames =
 	| "AiChatThreadsHeader"
 	| "AiChatThreadsHeader-top-section-left"
 	| "AiChatThreadsHeader-hamburger-button"
@@ -698,6 +698,11 @@ export type AiChatThreads_Props = MySidebar_Props & {
 	onDeleteThread: AiChatThreadsListItem_Props["onDelete"];
 	onRemoveOptimisticThread: (threadId: string) => void;
 	onNewChat: AiChatThreadsTopSection_Props["onNewChat"];
+	/**
+	 * Shown under the thread list. The phone drawer puts the workspace and account controls here,
+	 * because a phone has no app header or sidebar.
+	 */
+	footer: ReactNode;
 };
 
 export const AiChatThreads = memo(function AiChatThreads(props: AiChatThreads_Props) {
@@ -717,6 +722,7 @@ export const AiChatThreads = memo(function AiChatThreads(props: AiChatThreads_Pr
 		onDeleteThread,
 		onRemoveOptimisticThread,
 		onNewChat,
+		footer,
 		...rest
 	} = props;
 	const [searchQuery, setSearchQuery] = useState("");
@@ -766,6 +772,7 @@ export const AiChatThreads = memo(function AiChatThreads(props: AiChatThreads_Pr
 					onRemoveOptimisticThread={onRemoveOptimisticThread}
 				/>
 			</MySidebarScrollableArea>
+			{footer}
 		</MySidebar>
 	);
 });

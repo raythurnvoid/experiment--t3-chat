@@ -86,7 +86,15 @@ if (url_is_share_path(router.state.location.pathname)) {
 	root.render(
 		<ThemeProvider>
 			<AppHotkeysProvider>
-				<ClerkProvider publishableKey={publishableKey} clerkJSVersion={CLERK_JS_VERSION} afterSignOutUrl="/">
+				<ClerkProvider
+					publishableKey={publishableKey}
+					clerkJSVersion={CLERK_JS_VERSION}
+					afterSignOutUrl="/"
+					// iOS zooms the page in when a focused input has text under 16px, and Clerk's inputs are smaller.
+					appearance={{
+						elements: { formFieldInput: { fontSize: "16px" }, otpCodeFieldInput: { fontSize: "16px" } },
+					}}
+				>
 					<AppAuthProvider>
 						<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useConvexAuth}>
 							{/* Keep a query subscribed for 5 minutes after its last user unmounts, so going back to a

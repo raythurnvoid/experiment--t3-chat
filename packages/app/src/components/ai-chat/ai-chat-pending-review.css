@@ -1,0 +1,33 @@
+@layer components {
+	/* Only the phone layout renders this modal, so it always fills the screen. */
+	.AiChatPendingReview {
+		top: 0;
+		left: 0;
+		transform: none;
+
+		width: 100%;
+		max-width: none;
+		height: 100dvh;
+		max-height: none;
+		padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+
+		border: none;
+		border-radius: 0;
+
+		/* The Files sidebar pins this panel to the window under its toolbar. In the modal it only fills
+		   the space under the modal header. */
+		> .FileEditorSidebarPending {
+			position: static;
+
+			flex: 1;
+			height: auto;
+			min-height: 0;
+		}
+	}
+
+	/* Each row path links to the Files diff editor, and a phone has no Files page. Keep the path as
+	   plain text, so a tap does not send the user away from the chat. */
+	.AiChatPendingReview .FileEditorSidebarPending-item-path {
+		pointer-events: none;
+	}
+}

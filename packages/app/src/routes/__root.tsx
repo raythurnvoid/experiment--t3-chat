@@ -20,7 +20,7 @@ import type { AppElementId } from "../lib/dom-utils.ts";
 import { url_is_share_path } from "../lib/urls.ts";
 import { PluginsPublishSessionProvider } from "../components/plugins-publish-session.tsx";
 
-export type RootLayout_ClassNames = "RootLayout" | "RootLayout-content";
+export type RootLayout_ClassNames = "RootLayout" | "RootLayout-variant-phone" | "RootLayout-content";
 
 type RootLayout_CustomAttributes = {
 	"data-app-ready": "";

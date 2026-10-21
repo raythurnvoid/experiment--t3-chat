@@ -652,6 +652,7 @@ cache or chat result.
 - both the strip and the badge count only what the Pending list draws: they read the same list rows, which skip a folder draft that holds a draft (`files_pending_overlay_db_pending_update_is_listed` above)
 - chat rows link to the destination's existing Files route and select Pending changes through `app_state::files_last_tab`. The workspace-wide strip only switches the current sidebar tab. The badge is display-only. No combined Files view or cross-workspace bulk Save is added
 - below a 320px chat-container width, each strip wraps its label above the count and Review action so the destination stays readable. Wider strips keep the compact 42px row
+- the phone chat passes `onReview`, because a phone has no Files page. Then the strip shows only the current-workspace row (not the personal home row), and its Review button calls `onReview` instead of linking. `AiChatPendingReview` (`src/components/ai-chat/ai-chat-pending-review.tsx`) opens `FileEditorSidebarPending` in a full-screen modal with `initialThreadId` set to the chat, so the source selector starts on that chat and Accept all does not touch other chats. Row path links are not tappable in the modal. A row that needs the diff editor still needs a desktop
 - the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
 
 # Write Policies

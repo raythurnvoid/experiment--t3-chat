@@ -1,18 +1,22 @@
 import "./ai-chat.css";
 
-import type { ComponentPropsWithRef, ReactNode, Ref } from "react";
+import type { ComponentPropsWithRef, KeyboardEvent, ReactNode, Ref } from "react";
 import { memo, useState, useEffect, useRef, useDeferredValue, useMemo } from "react";
+import { flushSync } from "react-dom";
 import { useFn, useLiveRef, useStateRef, useThrottle } from "@/hooks/utils-hooks.ts";
+import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { isToolOrDynamicToolUIPart, type FileUIPart } from "ai";
-import { ArrowDown, PanelLeft } from "lucide-react";
+import { ArrowDown, Menu, PanelLeft, SquarePen } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
+import { MainAppHeaderOrganizationControls } from "@/components/main-app-header.tsx";
+import { MainAppSidebarAccountControl } from "@/components/main-app-sidebar-account-control.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
-import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
+import { AiChatThreads, type AiChatThreadsHeader_ClassNames } from "@/components/ai-chat/ai-chat-threads.tsx";
 import {
 	dom_find_first_element_overflowing_element,
 	dom_TypedAttributeAccessor,
@@ -37,6 +41,7 @@ import {
 	type AiChatComposer_Props,
 } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatQueuedMessages } from "@/components/ai-chat/ai-chat-queued-messages.tsx";
+import { AiChatPendingReview } from "@/components/ai-chat/ai-chat-pending-review.tsx";
 import {
 	AiChatMessage,
 	AiChatMessagePendingAssistant,
@@ -1028,18 +1033,70 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 });
 // #endregion thread
 
+// #region header
+type AiChatHeader_ClassNames = "AiChatHeader" | "AiChatHeader-button" | "AiChatHeader-icon" | "AiChatHeader-title";
+
+type AiChatHeader_Props = {
+	menuButtonRef: Ref<HTMLButtonElement>;
+	title: string;
+	onOpenThreads: () => void;
+	onNewChat: () => void;
+};
+
+/**
+ * The phone header. On a phone the thread list is a drawer, so this bar opens it and starts new chats.
+ */
+const AiChatHeader = memo(function AiChatHeader(props: AiChatHeader_Props) {
+	const { menuButtonRef, title, onOpenThreads, onNewChat } = props;
+
+	return (
+		<header className={"AiChatHeader" satisfies AiChatHeader_ClassNames}>
+			<MyIconButton
+				ref={menuButtonRef}
+				variant="ghost-highlightable"
+				tooltip="Open chats"
+				className={"AiChatHeader-button" satisfies AiChatHeader_ClassNames}
+				onClick={onOpenThreads}
+			>
+				<Menu className={"AiChatHeader-icon" satisfies AiChatHeader_ClassNames} />
+			</MyIconButton>
+			<h1 className={"AiChatHeader-title" satisfies AiChatHeader_ClassNames}>{title}</h1>
+			<MyIconButton
+				variant="ghost-highlightable"
+				tooltip="New chat"
+				className={"AiChatHeader-button" satisfies AiChatHeader_ClassNames}
+				onClick={onNewChat}
+			>
+				<SquarePen className={"AiChatHeader-icon" satisfies AiChatHeader_ClassNames} />
+			</MyIconButton>
+		</header>
+	);
+});
+// #endregion header
+
 // #region root
 const AiChatThreadRuntimePanel = memo(function AiChatThreadRuntimePanel(props: {
 	scrollableContainer: HTMLElement | null;
 }) {
 	const { scrollableContainer } = props;
 	const controller = AiChatController.useThreadRuntime();
+	const isMobile = useIsMobile();
 
-	return <AiChatThread controller={controller} scrollableContainer={scrollableContainer} />;
+	return (
+		<AiChatThread
+			controller={controller}
+			scrollableContainer={scrollableContainer}
+			// A phone has no Files page, so review the agent's pending file changes from the chat.
+			composerTopSlot={isMobile ? <AiChatPendingReview threadId={controller.selectedThreadId} /> : undefined}
+		/>
+	);
 });
 
 type AiChat_ClassNames =
 	| "AiChat"
+	| "AiChat-threads"
+	| "AiChat-threads-footer"
+	| "AiChat-drawer-backdrop"
 	| "AiChat-main"
 	| "AiChat-thread-panel"
 	| "AiChat-thread-controls"
@@ -1081,8 +1138,19 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 
 	const { membershipId } = AppTenantProvider.useContext();
 	const controller = AiChatController.useThreadList();
-	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
+	const isMobile = useIsMobile();
+	// On a phone the thread list is a drawer over the chat, so it starts closed.
+	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(!isMobile);
+	const [aiChatSidebarIsMobile, setAiChatSidebarIsMobile] = useState(isMobile);
+	// An iPad Split View or a foldable can cross the phone size without a reload. Start the new layout
+	// fresh, so the drawer does not open over the chat with focus left outside it.
+	if (aiChatSidebarIsMobile !== isMobile) {
+		setAiChatSidebarIsMobile(isMobile);
+		setAiChatSidebarOpen(!isMobile);
+	}
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
+	const threadsRef = useRef<HTMLElement>(null);
+	const headerMenuButtonRef = useRef<HTMLButtonElement>(null);
 	const fallbackSelectedThreadIdRef = useRef<string | null>(null);
 	const lastAppliedUrlThreadIdRef = useRef<string | null>(null);
 
@@ -1096,6 +1164,16 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 		app_convex_api.ai_chat.thread_get,
 		urlThreadId && !urlThreadIdIsOptimistic ? { membershipId, threadId: urlThreadId } : "skip",
 	);
+	const selectedThreadId = controller.selectedThreadId;
+	const selectedThread = selectedThreadId
+		? [
+				...controller.currentThreadsWithOptimistic.unarchived.results,
+				...(controller.currentThreadsWithOptimistic.archived?.results ?? []),
+			].find((thread) => thread._id === selectedThreadId)
+		: undefined;
+	const selectedThreadTitle =
+		(selectedThreadId ? controller.streamingTitleByThreadId[selectedThreadId] : undefined) ??
+		(selectedThread?.title || (urlThread?._id === selectedThreadId ? urlThread?.title : undefined) || "New Chat");
 	const firstThread = useMemo(() => {
 		return (
 			controller.currentThreadsWithOptimistic.unarchived.results
@@ -1109,22 +1187,60 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 	});
 
 	const handleCloseSidebar = useFn(() => {
-		setAiChatSidebarOpen(false);
+		if (!isMobile) {
+			setAiChatSidebarOpen(false);
+			return;
+		}
+
+		// The chat behind the phone drawer is inert until the drawer closes. Commit the close first,
+		// so focus can go back to the header button that opened the drawer.
+		flushSync(() => setAiChatSidebarOpen(false));
+		headerMenuButtonRef.current?.focus();
 	});
 
 	const handleOpenSidebar = useFn(() => {
-		setAiChatSidebarOpen(true);
+		if (!isMobile) {
+			setAiChatSidebarOpen(true);
+			return;
+		}
+
+		// Move focus into the phone drawer, because the chat behind it becomes inert.
+		flushSync(() => setAiChatSidebarOpen(true));
+		threadsRef.current
+			?.querySelector<HTMLElement>(`.${"AiChatThreadsHeader-close-button" satisfies AiChatThreadsHeader_ClassNames}`)
+			?.focus();
+	});
+
+	const handleThreadsKeyDown = useFn((event: KeyboardEvent<HTMLElement>) => {
+		// Menus and modals opened from the drawer sit in portals, but their key events still bubble here
+		// through the React tree. Close the drawer only for an Escape pressed inside the drawer itself.
+		if (
+			isMobile &&
+			event.key === "Escape" &&
+			!event.defaultPrevented &&
+			event.target instanceof Node &&
+			event.currentTarget.contains(event.target)
+		) {
+			handleCloseSidebar();
+		}
 	});
 
 	const handleSelectThread = useFn((threadId: string) => {
 		// A local choice also replaces a URL thread that is still loading.
 		lastAppliedUrlThreadIdRef.current = urlThreadId ?? null;
 		controller.selectThread(threadId);
+		// On a phone the drawer covers the chat, so close it to show the chosen chat.
+		if (isMobile) {
+			handleCloseSidebar();
+		}
 	});
 
 	const handleNewChat = useFn(() => {
 		lastAppliedUrlThreadIdRef.current = urlThreadId ?? null;
 		controller.startNewChat();
+		if (isMobile && aiChatSidebarOpen) {
+			handleCloseSidebar();
+		}
 	});
 
 	useEffect(() => {
@@ -1214,6 +1330,8 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 	return (
 		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>
 			<AiChatThreads
+				ref={threadsRef}
+				className={"AiChat-threads" satisfies AiChat_ClassNames}
 				state={aiChatSidebarOpen ? "expanded" : "closed"}
 				paginatedThreads={controller.currentThreadsWithOptimistic}
 				streamingTitleByThreadId={controller.streamingTitleByThreadId}
@@ -1226,12 +1344,40 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 				onDeleteThread={controller.deleteThread}
 				onRemoveOptimisticThread={controller.removeOptimisticThread}
 				onNewChat={handleNewChat}
+				onKeyDown={handleThreadsKeyDown}
+				footer={
+					isMobile ? (
+						<div className={"AiChat-threads-footer" satisfies AiChat_ClassNames}>
+							<MainAppHeaderOrganizationControls />
+							<MainAppSidebarAccountControl />
+						</div>
+					) : null
+				}
 			/>
+			{isMobile && aiChatSidebarOpen && (
+				// Tapping outside the drawer closes it. Keyboard users close it with Escape or its close button.
+				<div
+					className={"AiChat-drawer-backdrop" satisfies AiChat_ClassNames}
+					aria-hidden
+					onClick={handleCloseSidebar}
+				/>
+			)}
 
 			{/* Main Content Area - takes remaining space */}
-			<div className={"AiChat-main" satisfies AiChat_ClassNames}>
+			<div
+				className={"AiChat-main" satisfies AiChat_ClassNames}
+				inert={isMobile && aiChatSidebarOpen ? true : undefined}
+			>
+				{isMobile && (
+					<AiChatHeader
+						menuButtonRef={headerMenuButtonRef}
+						title={selectedThreadTitle}
+						onOpenThreads={handleOpenSidebar}
+						onNewChat={handleNewChat}
+					/>
+				)}
 				<div className={"AiChat-thread-panel" satisfies AiChat_ClassNames}>
-					{!aiChatSidebarOpen && (
+					{!isMobile && !aiChatSidebarOpen && (
 						<div className={"AiChat-thread-controls" satisfies AiChat_ClassNames}>
 							<MainAppSidebarToggle
 								variant="ghost-highlightable"

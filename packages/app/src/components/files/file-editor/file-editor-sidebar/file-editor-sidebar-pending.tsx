@@ -1436,14 +1436,25 @@ export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending-item-path-text-added"
 	| "FileEditorSidebarPending-item-path-text-deleted";
 
-export const FileEditorSidebarPending = memo(function FileEditorSidebarPending() {
+export type FileEditorSidebarPending_Props = {
+	/**
+	 * Start on this chat's changes instead of "All changes". The phone chat opens the panel from a
+	 * strip that counts only its own chat, so Accept all must not act on other chats.
+	 */
+	initialThreadId?: app_convex_Id<"ai_chat_threads">;
+};
+
+export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(props: FileEditorSidebarPending_Props) {
+	const { initialThreadId } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const { startReview, isStartingReview } = AppActivitiesProvider.useContext();
 
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	// Busy review buttons keep focus until the dialog opens. Handlers block repeated clicks.
 	const isBulkBusy = isSubmitting || isStartingReview;
-	const [selectedSource, setSelectedSource] = useState<FileEditorSidebarPendingSource>(PENDING_SOURCE_ALL);
+	const [selectedSource, setSelectedSource] = useState<FileEditorSidebarPendingSource>(
+		initialThreadId ?? PENDING_SOURCE_ALL,
+	);
 	useGlobalCustomEvent("files::review_all_pending", (event) => {
 		if (event.detail.membershipId === membershipId) setSelectedSource(PENDING_SOURCE_ALL);
 	});

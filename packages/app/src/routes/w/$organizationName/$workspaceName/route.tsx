@@ -1,7 +1,7 @@
 import "./route.css";
 
 import { useClerk } from "@clerk/clerk-react";
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { createFileRoute, Navigate, Outlet, useMatch } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { LogIn } from "lucide-react";
 import { memo, useLayoutEffect, useRef, type Ref } from "react";
@@ -12,6 +12,7 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MainAppHeader } from "@/components/main-app-header.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
@@ -88,6 +89,13 @@ function RouteTenantOrganizationWorkspaceLayout() {
 	const params = Route.useParams();
 	const { organizationName, workspaceName } = params;
 	const auth = AppAuthProvider.useAuth();
+	const isMobile = useIsMobile();
+	const isChatRoute =
+		useMatch({
+			from: "/w/$organizationName/$workspaceName/chat/",
+			shouldThrow: false,
+			select: () => true,
+		}) ?? false;
 	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const focusTargetRef = useRef<HTMLElement>(null);
 	const focusScopeRef = useRef<HTMLElement>(null);
@@ -180,23 +188,37 @@ function RouteTenantOrganizationWorkspaceLayout() {
 			workspaceId={workspaceId}
 			workspaceName={workspaceName}
 		>
-			<div
-				ref={handleFocusScopeRef}
-				className={cn("RootLayout" satisfies RootLayout_ClassNames)}
-				onFocusCapture={handleWorkspaceFocusCapture}
-			>
-				<MainAppHeader />
-				<MainAppSidebar />
+			{/* A phone shows only the agent chat, without the app header and sidebar. Every other
+			    workspace page sends a phone user to the chat. */}
+			{isMobile && !isChatRoute ? (
+				<Navigate
+					to="/w/$organizationName/$workspaceName/chat"
+					params={{ organizationName, workspaceName }}
+					search={{}}
+					replace
+				/>
+			) : (
 				<div
-					ref={handleFocusTargetRef}
-					className={"RootLayout-content" satisfies RootLayout_ClassNames}
-					role="region"
-					aria-label={`${organizationName}/${workspaceName} workspace content`}
-					tabIndex={-1}
+					ref={handleFocusScopeRef}
+					className={cn(
+						"RootLayout" satisfies RootLayout_ClassNames,
+						isMobile && ("RootLayout-variant-phone" satisfies RootLayout_ClassNames),
+					)}
+					onFocusCapture={handleWorkspaceFocusCapture}
 				>
-					<Outlet />
+					{!isMobile && <MainAppHeader />}
+					{!isMobile && <MainAppSidebar />}
+					<div
+						ref={handleFocusTargetRef}
+						className={"RootLayout-content" satisfies RootLayout_ClassNames}
+						role="region"
+						aria-label={`${organizationName}/${workspaceName} workspace content`}
+						tabIndex={-1}
+					>
+						<Outlet />
+					</div>
 				</div>
-			</div>
+			)}
 		</AppTenantProvider>
 	);
 }

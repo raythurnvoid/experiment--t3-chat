@@ -67,6 +67,7 @@ function renderThreads(args: {
 			onDeleteThread={args.onDeleteThread ?? (() => {})}
 			onRemoveOptimisticThread={() => {}}
 			onNewChat={() => {}}
+			footer={null}
 		/>,
 	);
 }
