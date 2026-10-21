@@ -123,9 +123,100 @@ async function db_reserve(
 			userId,
 			generation: 1,
 		});
-	else if (mode === "subtree" && old.mode === "placement")
+	else if ((mode === "children" || mode === "subtree") && old.mode === "placement")
 		await ctx.db.patch("files_move_source_reservations", old._id, { mode });
 	return Result({ _yay: null });
+}
+
+async function db_add_saved_folder(ctx: MutationCtx, cohortId: Id<"files_move_cohorts">, nodeId: Id<"files_nodes">) {
+	const physical = await ctx.db
+		.query("files_move_work_ranges")
+		.withIndex("by_cohort_key", (q) => q.eq("cohortId", cohortId).eq("key", `saved-children:${nodeId}`))
+		.unique();
+	if (physical?.status === "complete") return;
+	await db_add_range(ctx, cohortId, {
+		key: `saved-folders:${nodeId}`,
+		kind: "owner_saved_folders",
+		range: { kind: "node", nodeId },
+		phase: "frontier",
+	});
+}
+
+async function db_collect_saved_folders(ctx: MutationCtx, cohort: Cohort) {
+	const range = await db_next_range(ctx, cohort._id, "frontier");
+	if (!range) return null;
+	if (range.kind !== "owner_saved_folders" || range.range.kind !== "node")
+		throw should_never_happen("Unexpected saved folder work", { rangeId: range._id });
+	const parentId = range.range.nodeId;
+	const held = await db_reserve(ctx, cohort, { kind: "saved", id: parentId }, "children", null);
+	if (held._nay) return held;
+	const cursor = range.cursor
+		? (JSON.parse(range.cursor) as { source: "before" | "normal"; page: string | null })
+		: { source: "before" as const, page: null as string | null };
+	let done = false;
+	let paged = false;
+	let processedCount = range.processedCount;
+	// Close each folder before its child pages. Files need no extra hold here.
+	while (!done) {
+		if (cursor.page === null) {
+			const first =
+				cursor.source === "before"
+					? await ctx.db
+							.query("files_saved_places")
+							.withIndex("by_view_parent_kind_name", (q) =>
+								q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId).eq("kind", "folder"),
+							)
+							.first()
+					: await ctx.db
+							.query("files_nodes")
+							.withIndex("by_org_ws_parent_kind_name", (q) =>
+								q
+									.eq("organizationId", cohort.organizationId)
+									.eq("workspaceId", cohort.workspaceId)
+									.eq("moveCohortId", undefined)
+									.eq("parentId", parentId)
+									.eq("kind", "folder"),
+							)
+							.first();
+			if (!first) {
+				if (cursor.source === "before") {
+					cursor.source = "normal";
+					continue;
+				}
+				done = true;
+				break;
+			}
+		}
+		const page = await ctx.runQuery(internal.files_move_pages.owner_saved_folders, {
+			organizationId: cohort.organizationId,
+			workspaceId: cohort.workspaceId,
+			cohortId: cohort._id,
+			source: cursor.source,
+			parentId,
+			cursor: cursor.page,
+		});
+		paged = true;
+		for (const folder of page.page) {
+			const nodeId = "nodeId" in folder ? folder.nodeId : folder._id;
+			const reserved = await db_reserve(ctx, cohort, { kind: "saved", id: nodeId }, "children", null);
+			if (reserved._nay) return reserved;
+			await db_add_saved_folder(ctx, cohort._id, nodeId);
+		}
+		processedCount += page.page.length;
+		done = cursor.source === "normal" && page.isDone;
+		if (cursor.source === "before" && page.isDone) {
+			cursor.source = "normal";
+			cursor.page = null;
+		} else cursor.page = page.continueCursor;
+		break;
+	}
+	await ctx.db.patch("files_move_work_ranges", range._id, {
+		cursor: JSON.stringify(cursor),
+		status: "running",
+		processedCount,
+	});
+	if (done) await db_complete_range(ctx, range);
+	return Result({ _yay: { done: false, paged, parentPage: false } });
 }
 
 async function db_add_owner(ctx: MutationCtx, cohort: Cohort, userId: Id<"users">, target: files_PendingTarget) {
@@ -160,10 +251,12 @@ async function db_add_owner(ctx: MutationCtx, cohort: Cohort, userId: Id<"users"
 		ctx,
 		cohort,
 		target,
-		node.kind === "folder" ? "subtree" : "placement",
+		node.kind === "folder" ? (target.kind === "saved" ? "children" : "subtree") : "placement",
 		target.kind === "private" ? userId : null,
 	);
 	if (reserved._nay) return reserved;
+	// Owner-only saved roots have no physical child walk to close deeper folders.
+	if (target.kind === "saved" && node.kind === "folder") await db_add_saved_folder(ctx, cohort._id, target.id);
 	if (proposal) {
 		const held = await db_reserve(ctx, cohort, { kind: "proposal", id: proposal._id }, "proposal", userId);
 		if (held._nay) return held;
@@ -259,6 +352,9 @@ export async function files_move_owner_work_db_collect_node(
 	const checked = await db_get_cohort(ctx, args, "owners_collect");
 	if (checked._nay) return checked;
 	const cohort = checked._yay;
+	const frontier = await db_collect_saved_folders(ctx, cohort);
+	if (frontier?._nay) return frontier;
+	if (frontier?._yay) return Result({ _yay: { ...frontier._yay, cursor: args.cursor } });
 	const record = await ctx.db.get("files_move_cohort_nodes", args.nodeRecordId);
 	if (record?.cohortId !== cohort._id)
 		return Result({ _nay: { name: "stopped", message: "This saved input changed." } });
@@ -476,6 +572,8 @@ export async function files_move_owner_work_db_collect_closure(ctx: MutationCtx,
 	const checked = await db_get_cohort(ctx, args, "owners_closure");
 	if (checked._nay) return checked;
 	const cohort = checked._yay;
+	const frontier = await db_collect_saved_folders(ctx, cohort);
+	if (frontier) return frontier;
 	const work = await ctx.db
 		.query("files_move_owner_work")
 		.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "queued"))
@@ -977,7 +1075,9 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 		} else if (cursor.phase === 6) {
 			const pending =
 				mode === "abort"
-					? ((await db_next_range(ctx, cohort._id, "collect")) ?? (await db_next_range(ctx, cohort._id, "stage")))
+					? ((await db_next_range(ctx, cohort._id, "frontier")) ??
+						(await db_next_range(ctx, cohort._id, "collect")) ??
+						(await db_next_range(ctx, cohort._id, "stage")))
 					: null;
 			if (pending) {
 				await db_complete_range(ctx, pending);

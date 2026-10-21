@@ -57,6 +57,7 @@ import {
 	files_move_cohorts_db_schedule,
 } from "./files_move_cohorts.ts";
 import { files_pending_overlay_list, files_pending_overlay_db_can_join_step } from "../server/files-pending-overlay.ts";
+import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_slot,
@@ -1087,6 +1088,23 @@ export async function files_transfer_db_prepare_copy_item(
 			runWrittenWritePolicy,
 		},
 	});
+}
+
+/**
+ * Keep the sealed capture while the callback returns this item to its queue.
+ */
+export async function files_transfer_db_wait_copy_item(
+	ctx: MutationCtx,
+	args: { run: Doc<"files_transfer_runs">; item: Doc<"files_transfer_items"> },
+) {
+	const activity = await files_transfer_queries_db_require_activity(ctx, args.run._id);
+	await ctx.db.patch("files_transfer_items", args.item._id, { errorCode: files_MOVE_WAIT_CODE });
+	await ctx.db.patch("activities", activity._id, {
+		errorCode: files_MOVE_WAIT_CODE,
+		updatedAt: Date.now(),
+		deadlineAt: args.run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
+	});
+	await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, { runId: args.run._id });
 }
 
 export async function files_transfer_db_fence_private_target(
@@ -3506,7 +3524,12 @@ async function db_advance(
 				await db_stop_run({ ctx, run, errorMessage: "Permission denied" });
 				return null;
 			}
-			if (cohort) {
+			if (
+				cohort ||
+				(run.kind === "copy" &&
+					activity.errorCode === files_MOVE_WAIT_CODE &&
+					(await files_move_reservations_db_check(ctx.db, { wholeWorkspace: run.destinationScope }))._nay)
+			) {
 				await ctx.db.patch("activities", activity._id, {
 					updatedAt: Date.now(),
 					deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
@@ -3692,6 +3715,7 @@ async function db_advance(
 		await ctx.db.patch("files_transfer_items", item._id, {
 			state: "copying",
 			attempt,
+			...(item.errorCode === files_MOVE_WAIT_CODE ? { errorCode: null } : {}),
 			attemptExpiresAt: Date.now() + ATTEMPT_TIMEOUT_MS,
 		});
 
@@ -3959,7 +3983,11 @@ async function db_finish_copy_attempt(args: {
 	}
 
 	if (item.state === "copying") {
-		if (activity.status === "awaiting_input" || item.attempt < MAX_ATTEMPTS) {
+		if (
+			activity.status === "awaiting_input" ||
+			item.errorCode === files_MOVE_WAIT_CODE ||
+			item.attempt < MAX_ATTEMPTS
+		) {
 			await ctx.db.patch("files_transfer_items", item._id, { state: "pending" });
 		} else {
 			await files_transfer_db_fail_copy_item(ctx, {

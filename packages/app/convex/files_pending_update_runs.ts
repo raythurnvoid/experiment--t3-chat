@@ -2173,17 +2173,20 @@ async function db_start_cohort_unit(
 		attemptFence: unit.attemptFence,
 	});
 	if (started._nay) {
-		if (started._nay.name === "move_busy") {
-			// Another Move holds the workspace. Its wake resumes this review, and the Activity sweep keeps it alive.
+		if (started._nay.name === "move_busy" || started._nay.name === "repair_busy") {
 			const now = Date.now();
 			const activity = await activities_db_require_by_source_id(ctx, run._id);
 			await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
 			await ctx.db.patch("files_pending_update_run_units", unit._id, { attemptDeadlineAt: now + RUN_TIMEOUT_MS });
 			await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
-			await files_move_reservations_db_pause_worker(ctx, {
-				worker: { kind: "review", id: run._id, fence: run.fence },
-				check: { wholeWorkspace: run },
-			});
+			if (started._nay.name === "repair_busy")
+				await ctx.scheduler.runAfter(1000, internal.files_pending_update_runs.advance, { runId: run._id });
+			else
+				// Another Move wakes this review after repair and release.
+				await files_move_reservations_db_pause_worker(ctx, {
+					worker: { kind: "review", id: run._id, fence: run.fence },
+					check: { wholeWorkspace: run },
+				});
 		} else
 			await db_finish_unit(ctx, {
 				run,
@@ -2691,7 +2694,8 @@ export const commit_unit = internalMutation({
 			// discards does not keep that folder.
 			for (const proposal of selected) {
 				if (proposal.target.kind !== "saved") refuse_unit("needs_review", "This draft needs a new review.");
-				await files_pending_updates_db_discard_saved(ctx, proposal);
+				const discarded = await files_pending_updates_db_discard_saved(ctx, proposal);
+				if (discarded._nay) refuse_unit(discarded._nay.name, discarded._nay.message);
 			}
 
 			for (const root of unit.privateDiscardRoots) {
@@ -2780,6 +2784,29 @@ export const fail_unit = internalMutation({
 			await ctx.db.patch("files_pending_update_runs", run._id, {
 				needsReviewIds: merge_needs_review_ids(run, args.unreviewedIds),
 			});
+
+		if (args.code === "move_busy") {
+			if (unit.workId) await files_review_workpool.cancel(ctx, unit.workId);
+			await ctx.db.patch("files_pending_update_run_units", unit._id, {
+				status: "queued",
+				workId: null,
+				attemptCount: unit.attemptCount - 1,
+				attemptFence: unit.attemptFence + 1,
+				attemptDeadlineAt: null,
+			});
+			const now = Date.now();
+			const activity = await activities_db_require_by_source_id(ctx, run._id);
+			await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + RUN_TIMEOUT_MS });
+			await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
+			if (
+				!(await files_move_reservations_db_pause_worker(ctx, {
+					worker: { kind: "review", id: run._id, fence: run.fence },
+					check: { wholeWorkspace: run },
+				}))
+			)
+				await files_pending_update_runs_db_resume_parked(ctx, { runId: run._id, fence: run.fence });
+			return null;
+		}
 
 		if (
 			(args.code === "rate_limited" || args.code === "temporary_failure" || args.code === "review_changed") &&

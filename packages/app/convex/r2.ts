@@ -79,7 +79,10 @@ import {
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
-import { files_move_reservations_db_pause_worker } from "../server/files-move-reservations.ts";
+import {
+	files_move_reservations_db_check_node_write,
+	files_move_reservations_db_pause_worker,
+} from "../server/files-move-reservations.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -1484,7 +1487,14 @@ export const process_uploaded_asset_event = internalMutation({
 			worker: { kind: "upload", id: asset._id, resume: {
 				kind: "event", r2Key: args.r2Key, size: args.size, etag: args.etag, eventId: args.eventId,
 			} },
-			check: { source: { kind: "saved", id: fileNode._id } },
+			check: {
+				source: { kind: "saved", id: fileNode._id },
+				// Oversized uploads remove their placeholder, so they also change its parent's children.
+				...((serviceTarget || asset.kind === "upload") && args.size > (serviceTarget?.declaredBytes ?? asset.size) ? {
+					parent: fileNode.parentId === "root" ? { kind: "root" as const } : { kind: "saved" as const, id: fileNode.parentId },
+					slot: { ...r2_require_real_scope({ ctx, ...asset }), parentId: fileNode.parentId, name: fileNode.name },
+				} : {}),
+			},
 		})) return Result({ _yay: null });
 
 		if (serviceTarget) {
@@ -1813,10 +1823,17 @@ export const retire_missing_upload = internalMutation({
 		}
 
 		// The recovery window passed with no object. The upload is dead, so remove its
-		// placeholder even if it is locked. A lock stops new writes, not cleanup of an
+		// placeholder even if its write policy is locked. That stops new writes, not cleanup of an
 		// upload that never landed.
 		const target = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 		const keepPlaceholder = target?.state === "pending" && target.assetId === asset._id;
+		const busy = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: node._id },
+			pendingUpdate: null,
+			membership: !keepPlaceholder,
+		});
+		// The cleanup deadline retries this missing-object check after the Move.
+		if (busy._nay) return null;
 		await r2_enqueue_object_deletion_job(ctx, {
 			...scope,
 			r2Key: r2_create_asset_key({ ...scope, assetId: asset._id }),

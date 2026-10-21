@@ -17,8 +17,13 @@ import {
 	files_db_expire_pending_update_operation_batch,
 	files_db_insert_pending_update,
 	files_db_advance_pending_review_version,
+	files_db_get_pending_update,
 } from "../server/files.ts";
 import { files_transfer_db_fence_private_target } from "./files_transfer.ts";
+import {
+	files_move_reservations_db_check,
+	files_move_reservations_db_check_node_write,
+} from "../server/files-move-reservations.ts";
 import {
 	files_pending_nodes_db_get_ancestry,
 	files_pending_nodes_MAX_PRIVATE_ANCESTORS,
@@ -71,6 +76,8 @@ export async function files_pending_nodes_db_create(
 	if (occupant) {
 		return Result({ _nay: { name: "target_changed", message: "A draft already exists at this path" } });
 	}
+	const writable = await files_move_reservations_db_check(ctx.db, { parent: args.parent });
+	if (writable._nay) return writable;
 
 	const privateNodeId = await ctx.db.insert("files_pending_nodes", {
 		organizationId: args.organizationId,
@@ -268,6 +275,14 @@ export async function files_pending_nodes_db_discard(
 				_nay: { name: "needs_review", message: "Review the child drafts before discarding this folder" },
 			});
 		}
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: proposal.target,
+			pendingUpdate: proposal,
+			membership: true,
+		});
+		if (writable._nay) return writable;
+		// Files cannot own children or destination claims.
+		if (node.kind !== "folder") continue;
 
 		const dependent = await ctx.db
 			.query("files_pending_updates")
@@ -409,6 +424,17 @@ export const cleanup_discarded_node = internalMutation({
 		}
 		if (node.state !== "discarded") {
 			throw should_never_happen("Private cleanup target is not discarded", { privateNodeId: node._id });
+		}
+		const target = { kind: "private" as const, id: node._id };
+		const pendingUpdate = await files_db_get_pending_update(ctx, { ...node, target });
+		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+			target,
+			pendingUpdate,
+			membership: true,
+		});
+		if (writable._nay) {
+			await db_schedule_cleanup({ ctx, task, runAt: now + CLEANUP_RETRY_MS });
+			return null;
 		}
 
 		// The approved root fence already hid these children. Closing them is physical cleanup.

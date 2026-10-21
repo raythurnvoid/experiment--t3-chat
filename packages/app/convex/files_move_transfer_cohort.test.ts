@@ -448,7 +448,11 @@ test("another accepted Move waits for the workspace cohort before reading its so
 		state: "completed",
 		paginationOpts: { cursor: null, numItems: 8 },
 	});
-	expect(receipt?.page[0]?.source, "receipt source does not expose the old physical header").toBeNull();
+	expect(receipt?.page[0]?.source, "receipt keeps the source recorded before publication").toEqual({
+		target: original.item.source,
+		name: original.item.sourceName,
+		path: original.item.sourcePath,
+	});
 	expect(receipt?.page[0]?.movedNodeId).toBe(f.nodeId);
 	await release(f);
 	await f.t.mutation(internal.files_transfer.advance, { runId });

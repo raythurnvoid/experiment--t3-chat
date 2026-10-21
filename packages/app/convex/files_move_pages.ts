@@ -58,6 +58,48 @@ export const descendants = internalQuery({
 	},
 });
 
+export const owner_saved_folders = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		cohortId: v.id("files_move_cohorts"),
+		source: v.union(v.literal("before"), v.literal("normal")),
+		parentId: v.id("files_nodes"),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: paginationResultValidator(
+		v.union(doc(app_convex_schema, "files_saved_places"), doc(app_convex_schema, "files_nodes")),
+	),
+	handler: async (ctx, args) => {
+		return args.source === "before"
+			? await ctx.db
+					.query("files_saved_places")
+					.withIndex("by_view_parent_kind_name", (q) =>
+						q.eq("cohortId", args.cohortId).eq("view", "before").eq("parentId", args.parentId).eq("kind", "folder"),
+					)
+					.paginate({
+						cursor: args.cursor,
+						numItems: DESCENDANT_PAGE_SIZE,
+						maximumBytesRead: DESCENDANT_PAGE_BYTES,
+					})
+			: await ctx.db
+					.query("files_nodes")
+					.withIndex("by_org_ws_parent_kind_name", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("moveCohortId", undefined)
+							.eq("parentId", args.parentId)
+							.eq("kind", "folder"),
+					)
+					.paginate({
+						cursor: args.cursor,
+						numItems: DESCENDANT_PAGE_SIZE,
+						maximumBytesRead: DESCENDANT_PAGE_BYTES,
+					});
+	},
+});
+
 export const metadata = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),

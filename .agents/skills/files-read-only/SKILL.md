@@ -238,6 +238,9 @@ of not counting locked items.
   policy before its first write. Both collaboration toggles require content write, not
   policy-management permission. Accepted upload finish (R2 publish, text conversion) is not
   a new write: it always completes, even after a later lock.
+  A Move hold is separate from write policy. Completion waits while the exact file is captured,
+  then resumes with the accepted bytes. A saved parent's child hold alone does not block a size
+  update. Cleanup that removes a placeholder must also wait for that parent's child hold.
 - Rename and move check the named item and its immediate parent before any write. Archive, unarchive,
   replace, and delete check every removed or replaced item. Archived descendants use their real parent
   links. Equal paths in separate archived and active trees are not the same node. A refusal about a

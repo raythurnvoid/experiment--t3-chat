@@ -26,7 +26,7 @@ const customization = {
 		const guarded = files_move_reservations_db_wrap({ ...ctx, db: access.db });
 		const wrapped = files_pending_overlay_db_wrap({ ...ctx, ...guarded });
 		return {
-			ctx: wrapped,
+			ctx: { ...guarded, ...wrapped },
 			args: {},
 			// `onSuccess` gets the raw ctx, so flush the wrapped one that holds the captured writes.
 			onSuccess: async () => {

@@ -146,7 +146,7 @@ test("Move completion wakes every owner page before the next Review", async () =
 		});
 		expect((await cohort())?.step).not.toBe(before.step);
 	}
-	expect(await reservation()).toMatchObject({ cohortId, mode: "subtree" });
+	expect(await reservation()).toMatchObject({ cohortId, mode: "children" });
 	const jobs = await f.t.run(ctx => ctx.db.query("files_pending_overlay_jobs")
 		.withIndex("by_org_ws", q => q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId)).collect());
 	expect(jobs).toHaveLength(9);

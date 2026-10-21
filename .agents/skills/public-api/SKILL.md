@@ -502,10 +502,13 @@ the key's ACL on the deepest existing folder (with the scope stored on it), curr
 and quota. It also refuses a path a Move holds (409 `This item is being moved. Try again when the Move ends.`),
 and a new path with a name over 255 characters or over 1,024 characters in total (400 `Names can have at
 most 255 characters.` or `Paths can have at most 1,024 characters.`). A replace keeps its path.
-Folder limits keep one batch under the 4,096 index reads of a mutation. Each path finds its deepest
-existing folder with `files_db_create_path_lookups`. Without a Move it looks up the parent first, then walks
-up through missing folders. While a Move holds the workspace slot, or a move op runs, it walks each path
-from the root once, and the whole call shares every folder it read, the file lookups too. Each item's
+Each path finds its deepest existing folder with `files_db_create_path_lookups`. Without a Move it
+looks up the parent first, then walks up through missing folders. This keeps active descendants
+readable during partial Archive repair. During Move, the request pins one Before or After view.
+Exact path indexes choose normal nodes or selected places; reserved physical nodes cannot fill a
+selected empty path. Missing parents use binary path probes. Reads depend on the request paths,
+not on saved parent depth. A move op that rewrites physical paths still walks names from the root.
+The whole call caches its path reads. Each item's
 access checks (on its file and on that folder) come right after its lookups, before any other answer for it
 and before later items, so a locked folder answers 403 whether a name below it exists or not. These 403s
 name the path as sent. Only then does a path that would add more than 32 new folders (`files_NEW_FOLDER_DEPTH_MAX`) answer 400 with
@@ -514,14 +517,14 @@ A batch whose new folders plus the existing parents it found number more than 64
 (`files_REQUEST_FOLDER_PREFIXES_MAX`) answers 400
 `{ message: "This request uses too many folders (limit 64). Send fewer files per request.", code: "too_many_folders", path }`,
 with the path that went over. Folders above a found parent do not count, so a file can go into an existing
-folder at any depth. During a Move, reads grow with the depth of each different folder branch, so a batch
-into many different very deep folders can still pass the read limit. A `path` over 4,096 characters
+folder at any depth. The native upload regression checks all 20 files at the 1,024-character path limit
+during an unrelated Move, including the mutation's final flush, under 4,096 index reads. A `path` over 4,096 characters
 (`files_STORED_PATH_MAX_LENGTH`, the older path cap) answers `Paths can have at most 1,024 characters.` in
 the HTTP action, before the batch takes more rate limit slots and before any lookup
 (`files_check_request_path_length`). So paths up to 4,096 stay replaceable while the work per path stays
 bounded. Paths had no cap before that one, so an older stored path can be longer, and no request can name it.
 This route has no raw body byte limit (the 64 KiB limit above is for the plugin data routes): the item
-count and this path check bound it. `write` and `touch` share one walk per mutation the same way and start
+count and this path check bound it. `write` and `touch` share these cached lookups and start
 the create at the found folder. Like upload-urls, they check that folder with the scope stored on it, and a
 file on the way answers 409 `An intermediate segment is owned by a file`.
 One bad item returns 400, 403, or 409 with its `path`, and creates nothing. Each asset stores

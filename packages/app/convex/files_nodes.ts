@@ -114,6 +114,7 @@ import {
 } from "../server/files-saved-placement.ts";
 import {
 	files_move_reservations_db_check,
+	files_move_reservations_db_check_node_write,
 	files_move_reservations_db_enter_security,
 	files_move_reservations_db_find_blocker,
 } from "../server/files-move-reservations.ts";
@@ -1664,6 +1665,20 @@ export async function files_nodes_db_plan_private_node_by_path(
 
 	const tooLong = files_check_name_and_path_length({ names: segments.slice(missingFrom) });
 	if (tooLong._nay) return tooLong;
+	const busy = await files_move_reservations_db_check(ctx.db, {
+		parent,
+		...(parent.kind !== "private"
+			? {
+					slot: {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						parentId: parent.kind === "root" ? files_ROOT_ID : parent.id,
+						name: segments[missingFrom]!,
+					},
+				}
+			: {}),
+	});
+	if (busy._nay) return busy;
 
 	const missingCount = segments.length - missingFrom;
 	// Bound the ancestor checks and writes of one implicit-parent create.
@@ -3262,6 +3277,12 @@ export const discard_failed_upload_node = mutation({
 			return Result({ _yay: { removed: false } });
 		}
 		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
+		const busy = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: node._id },
+			pendingUpdate: null,
+			membership: true,
+		});
+		if (busy._nay) return busy;
 
 		// Cancel removes the unfinished upload even if it is locked. A lock stops new
 		// writes, not cleanup of an upload that never landed. Landed files return early above.

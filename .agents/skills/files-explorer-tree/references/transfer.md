@@ -73,6 +73,11 @@ the same producer with private proposals. `files_pending_updates.ts` and
   Normal names keep their old IDs and content until one small switch selects the complete group.
   Physical repair then drains before the next transfer item. A folder uses the same path.
   Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
+  Review repeats this check after planning, before it selects a new saved view. A repair keeps
+  Review waiting with a one-second retry and fresh deadlines. Once repair ends, Review resumes.
+  Saved path requests pin that view and use exact normal and selected-path indexes. Missing
+  parents use binary path probes during Move. Outside Move, Archive repair keeps the backwards
+  lookup because an active child can still have an archived parent.
   Complete human Move input can join the real parent body after derived writes flush and the budget
   passes. A new cohort starts its ready exact work in that same transaction. Empty folders can
   publish before acceptance returns. Only initial cohort work uses the one-quarter budget and
@@ -258,6 +263,8 @@ the same producer with private proposals. `files_pending_updates.ts` and
   including another chat's proposal on the occupant, requires a new selection. The worker never
   silently includes it. A partial private Save keeps unresolved text on the same proposal, retargets
   it to the saved source, and removes the completed create and move claims.
+  If Move holds a saved proposal when Discard commits, that unit keeps all its changes. It waits
+  for release and retries without spending an attempt or counting the proposal as discarded.
 - Private destination parents keep their identity through Save using their owner-scoped publication
   receipt. Retry keeps that same parent. A moved or discarded parent pauses instead of adopting
   whichever folder now owns the old path. See the [pending spec](../../files-agent-pending-updates/SKILL.md).
@@ -344,6 +351,9 @@ the same producer with private proposals. `files_pending_updates.ts` and
 - Active Copy, proposal Move and review jobs hold their exact proposals against idle expiry. Source folders
   also protect their not-yet-discovered private children. Retry protects later manifest pages
   before their new holds are installed. Holds grant no read or write access.
+- If Move closes proposal membership before an accepted Copy publishes, Copy keeps its captured
+  content and shows `waiting_for_move`. Its existing worker callback returns the item to the queue.
+  The run waits for Move to finish before trying again, with the same access and deadline checks.
 - Retry renews holds on its existing private destination and prepared parents at admission.
   Completed output pins the proposal ID, private creation generation (or null), and replacement
   asset (or null). Keep that pin across completed-item clones, but clear it for a fresh attempt.

@@ -14,7 +14,7 @@ import {
 	files_nodes_db_resume_file_content_materialization,
 } from "./files_nodes_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
-import { files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
+import { files_subtree_ops_db_find_repair, files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_can_join_step,
@@ -230,6 +230,9 @@ async function db_begin(
 			return Result({ _yay: current._id });
 		return Result({ _nay: { name: "move_busy", message: "Another Move is finishing. This Move will wait." } });
 	}
+	// A repair may start after Review planning. Its paths must settle before a view is selected.
+	if (args.origin.kind === "review" && (await files_subtree_ops_db_find_repair(ctx, args)))
+		return Result({ _nay: { name: "repair_busy", message: "Files are still being updated. This review will wait." } });
 	const pins = await files_media_validation_db_capture_versions(ctx, { userId: args.userId, scopes: [args] });
 	const now = Date.now();
 	const generation = (slot?.generation ?? 0) + 1;
@@ -359,7 +362,7 @@ async function db_reserve_source(
 	if (existing) {
 		if (existing.cohortId !== cohort._id)
 			return Result({ _nay: { name: "move_busy", message: "This input is being moved." } });
-		if (mode === "subtree" && existing.mode !== "subtree")
+		if ((mode === "children" || mode === "subtree") && existing.mode === "placement")
 			await ctx.db.patch("files_move_source_reservations", existing._id, { mode });
 		return Result({ _yay: existing._id });
 	}
@@ -464,6 +467,11 @@ async function db_reserve_saved(
 		.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", node._id))
 		.unique();
 	if (existing) {
+		// A destination anchor can later become a source folder in this same Move.
+		if (node.kind === "folder" && args.role !== "anchor") {
+			const held = await db_reserve_source(ctx, cohort, { kind: "saved", id: node._id }, "children");
+			if (held._nay) return held;
+		}
 		if (
 			args.itemId &&
 			(existing.itemId === null ||
@@ -483,7 +491,7 @@ async function db_reserve_saved(
 		ctx,
 		cohort,
 		{ kind: "saved", id: node._id },
-		node.kind === "folder" && args.role !== "anchor" ? "subtree" : "placement",
+		node.kind === "folder" && args.role !== "anchor" ? "children" : "placement",
 	);
 	if (source._nay) return source;
 	const claim = node.archiveOperationId === null ? await db_claim_slot(ctx, cohort, node) : Result({ _yay: null });
@@ -763,7 +771,7 @@ async function db_allocate_private(
 		validatedEpoch: null,
 		sourceReservationId: held._yay,
 	});
-	await db_reserve_source(ctx, cohort, { kind: "saved", id: nodeId }, node.kind === "folder" ? "subtree" : "placement");
+	await db_reserve_source(ctx, cohort, { kind: "saved", id: nodeId }, node.kind === "folder" ? "children" : "placement");
 	await ctx.db.patch("files_move_cohorts", cohort._id, { affectedNodeCount: latest.affectedNodeCount + 1 });
 	await ctx.db.insert("files_pending_node_publish_receipts", {
 		organizationId: cohort.organizationId,
@@ -1045,7 +1053,7 @@ async function db_rename_parents(
 			...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
 		});
 		folder = (await ctx.db.get("files_nodes", nodeId))!;
-		const held = await db_reserve_source(ctx, cohort, { kind: "saved", id: nodeId }, "subtree");
+		const held = await db_reserve_source(ctx, cohort, { kind: "saved", id: nodeId }, "children");
 		if (held._nay) throw should_never_happen("New Rename folder could not be reserved", { nodeId });
 		const afterPlaceId = await ctx.db.insert("files_saved_places", {
 			cohortId: cohort._id,

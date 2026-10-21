@@ -26,6 +26,12 @@ export async function test_create_saved_placement_fixture(args?: {
 	normalPaths?: string[];
 	signedIn?: boolean;
 	transactionLimits?: NonNullable<Parameters<typeof test_convex>[0]>["transactionLimits"];
+	beforeMove?: (args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
+		nodeId: Id<"files_nodes">;
+		parentId: Id<"files_nodes">;
+	}) => Promise<void>;
 }) {
 	const t = test_convex({ transactionLimits: args?.transactionLimits });
 	const db = await t.run(async (ctx) =>
@@ -63,6 +69,7 @@ export async function test_create_saved_placement_fixture(args?: {
 		destName: "new.txt",
 	});
 	if (moved._nay) throw new Error(moved._nay.message);
+	await args?.beforeMove?.({ t, db, nodeId, parentId });
 	const overlay = await import("./files-pending-overlay.ts");
 	const canJoin = overlay.files_pending_overlay_db_can_join_step;
 	// These reader tests seed candidates by hand. Yield before the real cohort starts them.
