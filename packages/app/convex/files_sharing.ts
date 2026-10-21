@@ -43,6 +43,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex } from "../server/crypto-utils.ts";
+import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -748,7 +749,11 @@ export const get_node_share_state = query({
 						)
 						.first()
 				: null;
-		const link = linkDoc ? { token: linkDoc.token, createdBy: linkDoc.createdBy, createdAt: linkDoc.createdAt } : null;
+		// A Move keeps the ended link until its cleanup. The public page already refuses it, so show it as off.
+		const link =
+			linkDoc && (await files_share_links_db_is_selected(ctx.db, linkDoc))
+				? { token: linkDoc.token, createdBy: linkDoc.createdBy, createdAt: linkDoc.createdAt }
+				: null;
 
 		// The stored pointer can be out of date. Resolving it the same way the permission check does
 		// keeps the dialog saying the same thing that check does.

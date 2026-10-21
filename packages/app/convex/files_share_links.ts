@@ -39,6 +39,7 @@ import {
 } from "../server/files-saved-placement.ts";
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
+import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
 	files_editable_text_shape_of,
 	files_get_signed_download_serving,
@@ -969,7 +970,12 @@ async function db_approve_media(
 		!(await db_is_workspace_live(ctx, link))
 	)
 		return Result({ _yay: { shared: false } });
-	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+	// Inserting media is an edit, so a read-only document refuses it. A manager's review is not an edit.
+	if (!args.review) {
+		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: userAuth.id });
+		if (writable._nay) return writable;
+	}
+	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_share_link_media_write", key: userAuth.id });
 	if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
 	const mediaNode = await files_share_link_media_db_resolve_node(ctx, { ...membership, src: args.src });
 	if (!mediaNode || !(await checker.can(mediaNode, "content.read")))

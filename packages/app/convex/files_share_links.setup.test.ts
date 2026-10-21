@@ -83,7 +83,7 @@ export async function fixture(args: { memberRole?: "member" | "admin" } = {}) {
 export async function reset_rate_limits(t: TestConvex, userIds: Id<"users">[]) {
 	await t.run(async (ctx) => {
 		for (const userId of userIds) {
-			for (const name of ["files_sharing_write", "files_tree_write", "roles_write"]) {
+			for (const name of ["files_share_link_media_write", "files_sharing_write", "files_tree_write", "roles_write"]) {
 				await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, { name, key: userId });
 			}
 		}
