@@ -18,7 +18,7 @@ The script reads `T3_API_KEY` and `T3_API_ORIGIN` when `T3_API_KEY` is set. Othe
 
 ## 2. Create a key (the user does this)
 
-Do this only when the user asks for setup. An agent cannot create a key: only a signed-in user can, on the app's API keys page. Tell the user:
+Do this only when the user asks for setup. No API route creates a key: only a signed-in user can, on the app's API keys page. Tell the user:
 
 1. Open the workspace in the app, then open **API keys** (`/w/<organization>/<workspace>/api-keys`).
 2. Create a key with only the scopes the task needs: `files:list` and `files:read` to read; add `files:write` to upload or write; add `files:download` for download URLs and byte reads.
@@ -26,6 +26,8 @@ Do this only when the user asks for setup. An agent cannot create a key: only a 
 4. Copy the API origin from the "Use an API key" section of the same page (the `T3_API_ORIGIN` value). It is not the app website address.
 
 A key works in one workspace only. Another workspace needs its own key.
+
+If the user asks you to create the key for them, and you can control their signed-in browser, you may do these steps there. Never print the key or write it to a file: copy it with the page's copy button, pipe the clipboard into `login` (step 3), then clear the clipboard.
 
 ## 3. Save the key (the user does this)
 
