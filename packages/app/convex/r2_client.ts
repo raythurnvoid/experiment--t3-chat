@@ -16,6 +16,7 @@ import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from 
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error } from "../server/convex-utils.ts";
+import { delay } from "../shared/async-utils.ts";
 import { files_private_storage_db_release } from "./files_private_storage.ts";
 import { ai_chat_outputs_storage_db_release } from "./ai_chat_outputs_storage.ts";
 
@@ -69,35 +70,71 @@ export function r2_create_asset_key(args: {
  */
 export const r2_UNFINALIZED_ASSET_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Try one PUT up to 3 times. A PUT to R2 sometimes gets no answer (observed 2026-10-21: 2 of about
+ * 1,460 small PUTs hit the 30 s deadline), and R2 can answer 429 or 5xx.
+ */
+const PUT_MAX_ATTEMPTS = 3;
+/** R2 allows about one write per second to the same key, so wait before resending after an answer. */
+const PUT_BACKOFF_BASE_MS = 1000;
+
 export async function r2_put_object(
 	ctx: ActionCtx,
 	args: {
 		key: string;
-		body: BodyInit;
+		/** Not a stream: a retry sends the same body again. */
+		body: Exclude<BodyInit, ReadableStream>;
 		contentType?: string;
 		signal?: AbortSignal;
 	},
 ) {
 	// Use signed PUT instead of r2.store() so deterministic content keys remain idempotent across Workpool retries.
+	// The same key and bytes also make a resend below safe, even if a timed-out attempt lands later.
 	const upload = await r2.generateUploadUrl(args.key);
-	const response = await fetch(upload.url, {
-		method: "PUT",
-		headers: args.contentType ? { "Content-Type": args.contentType } : undefined,
-		body: args.body,
-		// Stop and a fixed deadline both end an upload wait.
-		signal: args.signal ? AbortSignal.any([args.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-	});
-	if (!response.ok) {
-		throw convex_error({
+	let failure: unknown;
+	for (let attempt = 1; attempt <= PUT_MAX_ATTEMPTS; attempt++) {
+		let response: Response;
+		try {
+			response = await fetch(upload.url, {
+				method: "PUT",
+				headers: args.contentType ? { "Content-Type": args.contentType } : undefined,
+				body: args.body,
+				// Stop and a fixed deadline both end an upload wait.
+				signal: args.signal ? AbortSignal.any([args.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+			});
+		} catch (error) {
+			// The caller stopped the upload, so do not send it again.
+			if (args.signal?.aborted) {
+				throw error;
+			}
+			// A timeout already waited 30 s, so send again right away.
+			failure = error;
+			continue;
+		}
+		if (response.ok) {
+			await r2.syncMetadata(ctx, args.key);
+			return;
+		}
+
+		failure = convex_error({
 			message: "Failed to write R2 object",
 			cause: {
 				status: response.status,
 				key: args.key,
 			},
 		});
+		// Drain the body so the connection can be reused before the next attempt.
+		await response.text().catch(() => undefined);
+		if (response.status !== 429 && response.status < 500) {
+			break;
+		}
+		if (attempt < PUT_MAX_ATTEMPTS) {
+			await delay(PUT_BACKOFF_BASE_MS * 2 ** (attempt - 1));
+		}
 	}
 
-	await r2.syncMetadata(ctx, args.key);
+	// The loop always tries once, so this holds the fetch error or the error built above.
+	throw failure as Error;
 }
 
 export async function r2_fetch_object_from_bucket(args: { key: string; signal?: AbortSignal }) {

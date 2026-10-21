@@ -42,10 +42,17 @@ accounts, and a "what do you need" table that points to real files.
 
 | The check needs | Use |
 | --- | --- |
-| An owner and a member: permissions, refusals, shares. No uploads. | `qa.perm.owner` and `qa.perm.viewer` in `qa-browser/home`, each in its own scratch browser. This workspace has no file uploads and no credits. |
-| A paid plan: uploads, images, videos, public pages with media, Save with credits. | `qa.paid.owner` in `f5-repro-org/home`, in a scratch browser. Pro plan. |
-| Lots of existing data: big folders, many file types, existing images. | The QA Edge profile and its `chitchat-qa` workspaces. Use the account that is already signed in there; never sign in or out in that profile. |
+| An owner and a member: permissions, refusals, shares. No uploads. | `qa.perm.owner` and `qa.perm.viewer` in `qa-browser/home`, each in its own scratch browser. These accounts have no paid plan, so they cannot upload (seen 2026-10-21). |
+| A paid plan: uploads, images, videos, public pages with media, Save with credits. | `qa.paid.owner` in `f5-repro-org/home`, in a scratch browser. The account has a Pro plan. |
 | An anonymous visitor (public link pages). | A new headless session with no sign-in. Open the share URL first, not `/`. |
+| Lots of existing data: big folders, many file types, existing images. | The QA Edge profile and its `chitchat-qa` workspaces. Use the account that is already signed in there; never sign in or out in that profile. |
+
+**The plan belongs to the account, not the workspace.** Uploads and credits are checked on the
+plan of the account that acts. The org owner pays only when the org's `billingMode` is
+`organization_owner`, and the QA orgs use `user`. The refusal text says "This workspace's plan does
+not include file uploads", but it means the signed-in account's plan. So `qa.paid.owner` can upload
+in any workspace it is a member of, and a second user invited into `f5-repro-org` pays with its own
+plan.
 
 Sign-in steps and the account list are in
 [clerk-test-accounts.md](../app-playwriter-harness/references/clerk-test-accounts.md). Before you

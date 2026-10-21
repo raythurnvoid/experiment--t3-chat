@@ -765,7 +765,8 @@ describe("plugins Phase 0", () => {
 		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
 			if (String(input) === "https://r2.test/source-upload") {
 				uploadCount += 1;
-				return new Response(null, { status: uploadCount === 2 ? 500 : 200 });
+				// A 4xx is not resent by `r2_put_object`, so the second file fails for good.
+				return new Response(null, { status: uploadCount === 2 ? 403 : 200 });
 			}
 			return new Response(null, { status: 200 });
 		});
@@ -2611,7 +2612,10 @@ describe("plugins Phase 0", () => {
 			}),
 		});
 		expect(rejected.status).toBe(400);
-		expect(await rejected.json()).toEqual({ message: "Path must end in a valid file name." });
+		expect(await rejected.json()).toEqual({
+			message:
+				'File name "Plugin Live Image 20260702T011841Z.png.description.md" is not allowed. Use only lowercase letters, digits, and single "-", "_", or "." between them, with none of those at the start or end. Try "plugin-live-image-20260702t011841z.png.description.md".',
+		});
 
 		const response = await t.fetch("/api/v1/files/write", {
 			method: "POST",

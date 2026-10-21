@@ -86,6 +86,13 @@ recover its result. Discard only this run's proposals and verify the saved basel
 If the job finishes before you observe its wait, report that live wait check as
 unverified. A completed job and passing unit tests do not prove a live wait was seen.
 
+For the normal saved checkpoint, put a `printf` marker before and after `find` in
+a background group. In the same Bash call, poll `jobs --transfers N` every half
+second for ten seconds. Require `preparing file search`, then success under the
+same call ID. An initial `queued` state alone is not enough. Read `jobs -o N` again
+and require the same page and cursor, with each marker once. This checks the normal
+pause and resume; a search blocked by pending path work still needs its own check.
+
 ## Resolve copied file links and node IDs
 
 Use a unique `qa-resolve-<runId>` folder with saved marker files, nested folders, a move destination, and a replacement target. Give three files a shared content token and create more than three tree entries for pagination. Verify each saved node ID, path, and marker before scoring. Uploads may normalize names; use actual saved names and test spaces/Unicode in the command suite too.

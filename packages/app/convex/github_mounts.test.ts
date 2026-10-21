@@ -96,7 +96,8 @@ function install_fetch(plan: github_fetch_plan) {
 		}
 		if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
 			if (plan.failUploadForBody !== undefined && init.body === plan.failUploadForBody) {
-				return new Response("upload rejected", { status: 500 });
+				// A 4xx is not resent by `r2_put_object`, so only the Workpool retries this file.
+				return new Response("upload rejected", { status: 403 });
 			}
 			const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
 			r2Objects.set(key, init.body ?? "");

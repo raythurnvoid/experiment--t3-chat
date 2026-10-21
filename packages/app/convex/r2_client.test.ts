@@ -2,7 +2,8 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
-import { r2 } from "./r2_client.ts";
+import type { ActionCtx } from "./_generated/server.js";
+import { r2, r2_put_object } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 
@@ -166,5 +167,39 @@ describe("direct upload publication", () => {
 		);
 		expect((await post_event({ t, upload, id: "review-range", size: 0, etag: "empty" })).status).toBe(500);
 		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.r2Key).toBeUndefined();
+	});
+});
+
+describe("r2_put_object", () => {
+	test("sends the PUT again after a timeout and a 503", async () => {
+		const fetchSpy = vi
+			.fn<typeof fetch>()
+			.mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"))
+			.mockResolvedValueOnce(new Response(null, { status: 503 }))
+			.mockResolvedValueOnce(new Response(null));
+		vi.stubGlobal("fetch", fetchSpy);
+		const syncMetadataSpy = vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+
+		const put = r2_put_object({} as ActionCtx, { key: "retry-key", body: "hello", contentType: "text/markdown" });
+		await vi.runAllTimersAsync();
+		await put;
+		expect(fetchSpy.mock.calls.map(([, init]) => [init?.method, init?.body])).toEqual([
+			["PUT", "hello"],
+			["PUT", "hello"],
+			["PUT", "hello"],
+		]);
+		expect(syncMetadataSpy).toHaveBeenCalledTimes(1);
+	});
+
+	test("does not send the PUT again after a 403", async () => {
+		const fetchSpy = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 403 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		const syncMetadataSpy = vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+
+		await expect(r2_put_object({} as ActionCtx, { key: "denied-key", body: "hello" })).rejects.toThrow(
+			"Failed to write R2 object",
+		);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(syncMetadataSpy).not.toHaveBeenCalled();
 	});
 });

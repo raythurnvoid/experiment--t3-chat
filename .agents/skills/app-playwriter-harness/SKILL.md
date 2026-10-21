@@ -117,6 +117,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/web-browser.md` for the workspace web browser route (`/browser`): driving the live panel, blocked addresses, popups, saved logins and Manage saved data, downloads and file uploads, the agent and two-chat checks, billing readback, and the viewer-role and no-plan fixtures.
 - Read `references/second-user-fixtures.md` before testing any permission refusal, share grant, or other flow the org owner would bypass. It shows how to get a second identity in the browser; prefer a seeded account over a new anonymous user.
 - Read `references/clerk-test-accounts.md` when a check needs a specific signed-in account: how to log in and out as the seeded `+clerk_test` QA accounts in an isolated scratch browser, and the hard rules around it.
+- Read `references/api-keys.md` when the user asks you to create an API key in the app and save it for the `press-api` PC helper (upload from this PC), without the key ever reaching chat or a file.
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.
 - Read `references/plugin-marketplace.md` for installing, updating, and uninstalling plugins from the catalog and detail pages, and for embedding upload fixtures in runners.
 - Read `references/plugin-backend-execution.md` for complete response limits, empty events, saved writes after failure, and live runner/Convex checks.

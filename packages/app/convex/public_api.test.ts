@@ -6284,6 +6284,36 @@ describe("files upload-urls", () => {
 		expect(await response.json()).toEqual({ message: "Request body validation failed" });
 	});
 
+	test("refuses an unclean file or folder name with the rule and the clean name to send", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-name" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-name" });
+		const rule =
+			'Use only lowercase letters, digits, and single "-", "_", or "." between them, with none of those at the start or end.';
+
+		const badFile = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files: [{ path: "/photos/My Photo.PNG", contentType: "image/png", size: 8 }] }),
+		});
+		expect(badFile.status).toBe(400);
+		expect(await badFile.json()).toEqual({
+			message: `File name "My Photo.PNG" is not allowed. ${rule} Try "my-photo.png".`,
+			path: "/photos/My Photo.PNG",
+		});
+
+		const badFolder = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files: [{ path: "/My Photos/a.png", contentType: "image/png", size: 8 }] }),
+		});
+		expect(badFolder.status).toBe(400);
+		expect(await badFolder.json()).toEqual({
+			message: `Folder name "My Photos" is not allowed. ${rule} Try "my-photos".`,
+			path: "/My Photos/a.png",
+		});
+	});
+
 	test("upload-urls charges its own bulk bucket, even for one file", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -6743,7 +6773,8 @@ describe("files write-many", () => {
 		});
 		expect(invalid.status).toBe(400);
 		expect(await invalid.json()).toEqual({
-			message: "Path must end in a valid file name.",
+			message:
+				'File name "Bad Report.txt" is not allowed. Use only lowercase letters, digits, and single "-", "_", or "." between them, with none of those at the start or end. Try "bad-report.txt".',
 			path: "/bad/Bad Report.txt",
 		});
 

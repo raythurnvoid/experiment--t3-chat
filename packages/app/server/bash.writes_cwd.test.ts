@@ -947,8 +947,8 @@ describe("bash_run_command", () => {
 		expect(copied.stdout).toMatch(
 			/^Transfer \S+: 0 ready for review, 0 skipped, 1 failed\. Activity \S+\. Review in Files\.\n$/,
 		);
-		// Each of the three attempts writes content and a Yjs snapshot.
-		expect(failedUploads).toBe(6);
+		// Each of the three attempts writes content and a Yjs snapshot, and `r2_put_object` tries each PUT 3 times.
+		expect(failedUploads).toBe(18);
 		const items = await runner.t.run((ctx) => ctx.db.query("files_transfer_items").collect());
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({ state: "failed", attempt: 3 });
