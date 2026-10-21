@@ -9,6 +9,7 @@ Read [auth](references/auth.md) first. Choose the caller you actually have. A sk
 
 Use the [route index](references/route-index.md) to find the exact route, method, scope, caller kinds, and extra headers. Then read the matching guide:
 
+- [PC setup](references/setup.md): check for an API key, have the user save one, then call routes and upload folders with the helper script.
 - [Files](references/files.md): saved file reads, lists, writes, uploads, downloads, and write policies.
 - [AI conversations](references/ai-conversations.md): export a saved branch by thread ID and read stored tool output.
 - [Plugin data](references/plugin-data.md): documents, key ranges, versioned writes, and reservations.
