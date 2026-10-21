@@ -1360,11 +1360,11 @@ describe("scheduled runner host calls", () => {
 		const f = await fixture();
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
-		const secret = await f.asOwner.mutation(api.plugins.upsert_installation_secret, {
+		const secret = await f.asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: f.owner.membershipId,
 			installationId: f.installationId,
-			name: "API_TOKEN",
-			value: "private-value",
+			secrets: [{ name: "API_TOKEN", value: "private-value" }],
+			deleteNames: [],
 		});
 		if (secret._nay) throw new Error(secret._nay.message);
 		const originalDecrypt = crypto_utils.crypto_decrypt_secret_value;

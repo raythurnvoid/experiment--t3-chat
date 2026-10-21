@@ -4344,11 +4344,11 @@ describe("plugins uninstall_version", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		const saved = await asOwner.mutation(api.plugins.upsert_installation_secret, {
+		const saved = await asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
-			name: "OPENAI_API_KEY",
-			value: "sk-uninstall-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-uninstall-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);

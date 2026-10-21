@@ -913,11 +913,11 @@ describe("plugins Phase 0", () => {
 			throw new Error(installed._nay.message);
 		}
 
-		const saved = await asOwner.mutation(api.plugins.upsert_installation_secret, {
+		const saved = await asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
-			name: "OPENAI_API_KEY",
-			value: "sk-plugin-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-plugin-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -1085,36 +1085,6 @@ describe("plugins Phase 0", () => {
 		expect(rejected).toEqual({ _nay: { message: "Secret values must be at most 16 KiB" } });
 	});
 
-	test("refuses an oversized value in a single installation secret and writes nothing", async () => {
-		const t = test_convex();
-		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin({ t, userId: membership.userId });
-		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.mutation(api.plugins.install_version, {
-			membershipId: membership.membershipId,
-			pluginVersionId: registered.pluginVersionId,
-			...media_plugin_consent,
-		});
-		if (installed._nay) {
-			throw new Error(installed._nay.message);
-		}
-
-		const rejected = await asOwner.mutation(api.plugins.upsert_installation_secret, {
-			membershipId: membership.membershipId,
-			installationId: installed._yay.installationId,
-			name: "QA_BIG",
-			value: "x".repeat(16 * 1024 + 1),
-		});
-
-		// The refusal must carry the validation message, not a raw write-failure text.
-		expect(rejected).toEqual({ _nay: { message: "Secret values must be at most 16 KiB" } });
-		expect(
-			await asOwner.query(api.plugins.list_installation_secrets, {
-				membershipId: membership.membershipId,
-				installationId: installed._yay.installationId,
-			}),
-		).toEqual([]);
-	});
 
 	test("serves installation secrets through the host secret endpoint with a running plugin token", async () => {
 		const t = test_convex();
@@ -1129,11 +1099,11 @@ describe("plugins Phase 0", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		const saved = await asOwner.mutation(api.plugins.upsert_installation_secret, {
+		const saved = await asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
-			name: "OPENAI_API_KEY",
-			value: "sk-runtime-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-runtime-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -5432,10 +5402,10 @@ describe("plugins publisher secrets", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const saved = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -5470,13 +5440,6 @@ describe("plugins publisher secrets", () => {
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
 		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
-				repositoryId: foreignRepositoryId,
-				name: "OPENAI_API_KEY",
-				value: "sk-publisher-secret",
-			}),
-		).toEqual({ _nay: { message: "Unauthorized" } });
-		expect(
 			await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 				repositoryId: foreignRepositoryId,
 				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
@@ -5491,10 +5454,10 @@ describe("plugins publisher secrets", () => {
 		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", removedRepositoryId));
 		refill_manage_rate_limit();
 		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+			await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 				repositoryId: removedRepositoryId,
-				name: "OPENAI_API_KEY",
-				value: "sk-publisher-secret",
+				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+				deleteNames: [],
 			}),
 		).toEqual({ _nay: { message: "Not found" } });
 		expect(
@@ -5512,13 +5475,6 @@ describe("plugins publisher secrets", () => {
 			name: "Anonymous Publisher",
 		});
 
-		expect(
-			await asAnonymous.mutation(api.plugins.upsert_publisher_repository_secret, {
-				repositoryId,
-				name: "OPENAI_API_KEY",
-				value: "sk-publisher-secret",
-			}),
-		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
 			await asAnonymous.mutation(api.plugins.save_publisher_repository_secrets, {
 				repositoryId,
@@ -5542,10 +5498,10 @@ describe("plugins publisher secrets", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const saved = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-old-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-old-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -5592,23 +5548,6 @@ describe("plugins publisher secrets", () => {
 		// The whole batch shares one transaction, so a refused batch must leave no sibling behind.
 		expect(await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId })).toEqual([]);
 		expect(rejected).toEqual({ _nay: { message: "Secret values must be at most 16 KiB" } });
-	});
-
-	test("refuses an oversized value in a single publisher secret and writes nothing", async () => {
-		const t = test_convex();
-		const ownerUserId = await create_publisher_user(t);
-		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
-		const asOwner = t.withIdentity(user_identity(ownerUserId));
-
-		const rejected = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
-			repositoryId,
-			name: "QA_BIG",
-			value: "x".repeat(16 * 1024 + 1),
-		});
-
-		// The refusal must carry the validation message, not a raw write-failure text.
-		expect(rejected).toEqual({ _nay: { message: "Secret values must be at most 16 KiB" } });
-		expect(await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId })).toEqual([]);
 	});
 
 	test("caps the total publisher secrets across repeated writes", async () => {
@@ -5658,15 +5597,6 @@ describe("plugins publisher secrets", () => {
 					.collect(),
 			),
 		).toHaveLength(64);
-
-		refill_manage_rate_limit();
-		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
-				repositoryId,
-				name: "SECRET_64",
-				value: "over-limit",
-			}),
-		).toEqual({ _nay: { message: "Publisher repositories can store at most 64 secrets" } });
 	});
 
 	test("binds publisher secret ciphertext to the owning user and name", async () => {
@@ -5676,10 +5606,10 @@ describe("plugins publisher secrets", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const saved = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -5717,20 +5647,20 @@ describe("plugins publisher secrets", () => {
 			throw new Error(installed._nay.message);
 		}
 
-		const savedInstallation = await asOwner.mutation(api.plugins.upsert_installation_secret, {
+		const savedInstallation = await asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
-			name: "OPENAI_API_KEY",
-			value: "sk-installation-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-installation-secret" }],
+			deleteNames: [],
 		});
 		if (savedInstallation._nay) {
 			throw new Error(savedInstallation._nay.message);
 		}
 		refill_manage_rate_limit();
-		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const savedPublisher = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+			deleteNames: [],
 		});
 		if (savedPublisher._nay) {
 			throw new Error(savedPublisher._nay.message);
@@ -5765,10 +5695,10 @@ describe("plugins publisher secrets", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const savedPublisher = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+			deleteNames: [],
 		});
 		if (savedPublisher._nay) {
 			throw new Error(savedPublisher._nay.message);
@@ -5808,10 +5738,10 @@ describe("plugins publisher secrets", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		const savedA = await asPublisherA.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const savedA = await asPublisherA.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId: repositoryA,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-a",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-a" }],
+			deleteNames: [],
 		});
 		if (savedA._nay) {
 			throw new Error(savedA._nay.message);
@@ -5827,10 +5757,10 @@ describe("plugins publisher secrets", () => {
 		if (claimedB._nay) {
 			throw new Error(claimedB._nay.message);
 		}
-		const savedB = await asPublisherB.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const savedB = await asPublisherB.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId: claimedB._yay.repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-b",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-b" }],
+			deleteNames: [],
 		});
 		if (savedB._nay) {
 			throw new Error(savedB._nay.message);
@@ -5856,10 +5786,10 @@ describe("plugins publisher secrets", () => {
 		if (reclaimedA._nay) {
 			throw new Error(reclaimedA._nay.message);
 		}
-		const restoredA = await asPublisherA.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const restoredA = await asPublisherA.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId: reclaimedA._yay.repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-a-restored",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-a-restored" }],
+			deleteNames: [],
 		});
 		if (restoredA._nay) {
 			throw new Error(restoredA._nay.message);
@@ -5901,10 +5831,10 @@ describe("plugins publisher secrets", () => {
 		});
 		const savedOther = await t
 			.withIdentity(user_identity(otherUserId))
-			.mutation(api.plugins.upsert_publisher_repository_secret, {
+			.mutation(api.plugins.save_publisher_repository_secrets, {
 				repositoryId: otherRepositoryId,
-				name: "OPENAI_API_KEY",
-				value: "sk-unrelated-secret",
+				secrets: [{ name: "OPENAI_API_KEY", value: "sk-unrelated-secret" }],
+				deleteNames: [],
 			});
 		if (savedOther._nay) {
 			throw new Error(savedOther._nay.message);
@@ -5961,18 +5891,18 @@ describe("plugins publisher secrets", () => {
 		const otherRepositoryId = await insert_claimed_repository(t, { ownerUserId, repo: "other-plugin" });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const saved = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
-		const savedOther = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const savedOther = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId: otherRepositoryId,
-			name: "MODAL_TOKEN",
-			value: "modal-secret",
+			secrets: [{ name: "MODAL_TOKEN", value: "modal-secret" }],
+			deleteNames: [],
 		});
 		if (savedOther._nay) {
 			throw new Error(savedOther._nay.message);
@@ -6050,11 +5980,11 @@ describe("plugins get_installation_health", () => {
 		});
 
 		refill_manage_rate_limit();
-		const saved = await fixture.asOwner.mutation(api.plugins.upsert_installation_secret, {
+		const saved = await fixture.asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: fixture.membership.membershipId,
 			installationId: fixture.installationId,
-			name: "OPENAI_API_KEY",
-			value: "sk-health-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-health-secret" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -6075,10 +6005,10 @@ describe("plugins get_installation_health", () => {
 		});
 
 		refill_manage_rate_limit();
-		const saved = await fixture.asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const saved = await fixture.asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId: fixture.repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-default",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-default" }],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -6133,10 +6063,10 @@ describe("plugins get_installation_health", () => {
 		// A publisher-tier row must not clear the notice: that would tell a workspace manager
 		// whether the publisher keeps secrets on this repository.
 		refill_manage_rate_limit();
-		const publisherSaved = await fixture.asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
+		const publisherSaved = await fixture.asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId: fixture.repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-default",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-default" }],
+			deleteNames: [],
 		});
 		if (publisherSaved._nay) {
 			throw new Error(publisherSaved._nay.message);
@@ -6149,11 +6079,11 @@ describe("plugins get_installation_health", () => {
 		).toEqual({ issues: [{ kind: "secrets_capability_unconfigured" }] });
 
 		refill_manage_rate_limit();
-		const installationSaved = await fixture.asOwner.mutation(api.plugins.upsert_installation_secret, {
+		const installationSaved = await fixture.asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: fixture.membership.membershipId,
 			installationId: fixture.installationId,
-			name: "OPENAI_API_KEY",
-			value: "sk-workspace-secret",
+			secrets: [{ name: "OPENAI_API_KEY", value: "sk-workspace-secret" }],
+			deleteNames: [],
 		});
 		if (installationSaved._nay) {
 			throw new Error(installationSaved._nay.message);
