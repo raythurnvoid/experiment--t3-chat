@@ -36,12 +36,19 @@ overrides:
   react-dom: "19.3.0"
   yjs: "13.6.33"
 
-onlyBuiltDependencies:
-  - "@clerk/shared"
-  - core-js
-  - core-js-pure
-  - esbuild
-  - msw
+allowBuilds:
+  "@clerk/shared": true
+  core-js: true
+  core-js-pure: true
+  esbuild: true
+  msw: true
+  # pnpm 10 skipped these build scripts. Keep skipping them; pnpm 12 fails the install on any unlisted one.
+  "@biomejs/biome": false
+  "@mongodb-js/zstd": false
+  "@parcel/watcher": false
+  node-liblzma: false
+  sharp: false
+  workerd: false
 
 # Backport the posted-log shutdown fix: https://github.com/vitest-dev/vitest/pull/11619
 patchedDependencies:
