@@ -1,7 +1,14 @@
+import "./route.css";
+
+import { useClerk } from "@clerk/clerk-react";
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { useLayoutEffect, useRef } from "react";
+import { LogIn } from "lucide-react";
+import { memo, useLayoutEffect, useRef, type Ref } from "react";
 
+import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { Logo } from "@/components/logo.tsx";
+import { MyButton } from "@/components/my-button.tsx";
 import { MainAppHeader } from "@/components/main-app-header.tsx";
 import { MainAppSidebar } from "@/components/main-app-sidebar.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -13,9 +20,74 @@ import { PluginsPublishSessionProvider } from "@/components/plugins-publish-sess
 
 import type { RootLayout_ClassNames } from "@/routes/__root.tsx";
 
+type RouteTenantOrganizationWorkspaceLogin_ClassNames =
+	| "RouteTenantOrganizationWorkspaceLogin"
+	| "RouteTenantOrganizationWorkspaceLogin-panel"
+	| "RouteTenantOrganizationWorkspaceLogin-title"
+	| "RouteTenantOrganizationWorkspaceLogin-description";
+
+type RouteTenantOrganizationWorkspaceLogin_Props = {
+	ref: Ref<HTMLElement>;
+	organizationName: string;
+	workspaceName: string;
+};
+
+const RouteTenantOrganizationWorkspaceLogin = memo(function RouteTenantOrganizationWorkspaceLogin(
+	props: RouteTenantOrganizationWorkspaceLogin_Props,
+) {
+	const { ref, organizationName, workspaceName } = props;
+	const clerk = useClerk();
+
+	const handleOpenSignIn = useFn(() => {
+		// Without a redirect URL, Clerk sends the user to "/" after sign-in, and "/" opens the
+		// default workspace. Pass the current URL so the user comes back to this page.
+		// Drop the hash. If only the hash changes, the browser does not reload, and Clerk waits
+		// for that reload to finish the sign-in. App routes do not use the hash.
+		const url = new URL(window.location.href);
+		url.hash = "";
+		void clerk.openSignIn({ forceRedirectUrl: url.href, signUpForceRedirectUrl: url.href });
+	});
+
+	return (
+		<main
+			ref={ref}
+			className={"RouteTenantOrganizationWorkspaceLogin" satisfies RouteTenantOrganizationWorkspaceLogin_ClassNames}
+			aria-label="Workspace log in"
+			tabIndex={-1}
+		>
+			<div
+				className={
+					"RouteTenantOrganizationWorkspaceLogin-panel" satisfies RouteTenantOrganizationWorkspaceLogin_ClassNames
+				}
+			>
+				<Logo />
+				<h1
+					className={
+						"RouteTenantOrganizationWorkspaceLogin-title" satisfies RouteTenantOrganizationWorkspaceLogin_ClassNames
+					}
+				>
+					Log in to continue
+				</h1>
+				<p
+					className={
+						"RouteTenantOrganizationWorkspaceLogin-description" satisfies RouteTenantOrganizationWorkspaceLogin_ClassNames
+					}
+				>
+					You are logged out. Log in to open {organizationName}/{workspaceName}.
+				</p>
+				<MyButton onClick={handleOpenSignIn}>
+					<LogIn aria-hidden />
+					Log in
+				</MyButton>
+			</div>
+		</main>
+	);
+});
+
 function RouteTenantOrganizationWorkspaceLayout() {
 	const params = Route.useParams();
 	const { organizationName, workspaceName } = params;
+	const auth = AppAuthProvider.useAuth();
 	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const focusTargetRef = useRef<HTMLElement>(null);
 	const focusScopeRef = useRef<HTMLElement>(null);
@@ -72,6 +144,18 @@ function RouteTenantOrganizationWorkspaceLayout() {
 				label="Organization loading"
 				title="Loading workspace"
 				description="Getting your organization and workspace ready."
+			/>
+		);
+	}
+
+	// When Clerk logs the user out, the app gives them a new anonymous user. That user is not a
+	// member of this workspace. So for an anonymous user, no membership means "log in".
+	if (membership === null && auth.isAnonymous) {
+		return (
+			<RouteTenantOrganizationWorkspaceLogin
+				ref={handleStandaloneFocusTargetRef}
+				organizationName={organizationName}
+				workspaceName={workspaceName}
 			/>
 		);
 	}

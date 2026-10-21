@@ -67,6 +67,15 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 stays unauthenticated until `ConvexProviderWithAuth` sets the token. Otherwise the client opens it only on first
 use, after `resolve-user`, and the connection setup (about 300–450 ms) waits for the whole auth bootstrap.
 
+## Logged out on a workspace URL
+
+When the Clerk session ends (it expires, or the user signs out in another tab), the URL does not change. `AppAuthProvider` mints a new anonymous user, and that user is not a member of the workspace in the URL. So the workspace route ([route.tsx](../../../packages/app/src/routes/w/$organizationName/$workspaceName/route.tsx)) shows a **Log in** screen when the membership is `null` and `isAnonymous` is true. A signed-in user without a membership still sees the "no access" alert. An anonymous user who is a member, such as on their own `personal/home`, still sees the workspace.
+
+- The button calls `clerk.openSignIn({ forceRedirectUrl, signUpForceRedirectUrl })` with the current URL minus its hash. Without these, Clerk goes to `/` after sign-in, and `/` opens the default workspace. With them, the page reloads on the same path and query.
+- Drop the hash. Clerk applies the new session only after the redirect reloads the page. A URL that differs from the current one only by a hash does not reload, so the sign-in never finished and the page stayed on Log in (seen with Clerk JS 5.127.2). App routes do not use the hash.
+- Read `isAnonymous` from `AppAuthProvider.useAuth`, not Clerk's `isSignedIn`. The root route waits for `isLoaded`, so a signed-in user never sees the Log in screen while auth loads.
+- An explicit sign-out from the account menu still follows `afterSignOutUrl="/"` and goes home.
+
 ## Three token identities
 
 `auth.config.ts` verifies three providers: Clerk, the anonymous custom JWT, and the plugin-session custom JWT. Only the first two are member identities; the third is deliberately refused by member functions.

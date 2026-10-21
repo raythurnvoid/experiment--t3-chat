@@ -1,15 +1,27 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { JSX, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { membershipMock, paramsMock, setWorkspaceFocusTargetMock } = vi.hoisted(() => ({
+const { authMock, membershipMock, openSignInMock, paramsMock, setWorkspaceFocusTargetMock } = vi.hoisted(() => ({
+	authMock: vi.fn(),
 	membershipMock: vi.fn(),
+	openSignInMock: vi.fn(),
 	paramsMock: vi.fn(),
 	setWorkspaceFocusTargetMock: vi.fn(),
+}));
+
+vi.mock("@clerk/clerk-react", () => ({
+	useClerk: () => ({ openSignIn: openSignInMock }),
+}));
+
+vi.mock("@/components/app-auth.tsx", () => ({
+	AppAuthProvider: {
+		useAuth: () => authMock(),
+	},
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -79,6 +91,7 @@ describe("RouteTenantOrganizationWorkspaceLayout", () => {
 	beforeEach(() => {
 		paramsMock.mockReturnValue({ organizationName: "team", workspaceName: "home" });
 		membershipMock.mockReturnValue(undefined);
+		authMock.mockReturnValue({ isAnonymous: false });
 	});
 
 	afterEach(() => {
@@ -172,6 +185,37 @@ describe("RouteTenantOrganizationWorkspaceLayout", () => {
 		view.rerender(<PageComponent />);
 
 		expect(document.activeElement).toBe(screen.getByRole("alert", { name: "Organization access denied" }));
+	});
+
+	test("shows log in instead of denied to a logged-out visitor and returns to the same URL without the hash", () => {
+		window.history.replaceState(null, "", "/w/team/home/files?x=1#top");
+		authMock.mockReturnValue({ isAnonymous: true });
+		const view = render(<PageComponent />);
+		screen.getByRole("status", { name: "Organization loading" }).focus();
+
+		membershipMock.mockReturnValue(null);
+		view.rerender(<PageComponent />);
+
+		expect(screen.queryByRole("alert", { name: "Organization access denied" })).toBeNull();
+		expect(document.activeElement).toBe(screen.getByRole("main", { name: "Workspace log in" }));
+
+		fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+
+		// Clerk finishes the sign-in only after a full page load, and a hash-only change does not reload.
+		const sameUrl = expect.stringMatching(/\/w\/team\/home\/files\?x=1$/);
+		expect(openSignInMock).toHaveBeenCalledWith({ forceRedirectUrl: sameUrl, signUpForceRedirectUrl: sameUrl });
+	});
+
+	test("keeps the workspace open for an anonymous member", () => {
+		authMock.mockReturnValue({ isAnonymous: true });
+		membershipMock.mockReturnValue({
+			_id: "membership_1",
+			organizationId: "organization_1",
+			workspaceId: "workspace_1",
+		});
+		render(<PageComponent />);
+
+		expect(screen.getByRole("region", { name: "team/home workspace content" })).toBeTruthy();
 	});
 
 	test("does not move focus when the user picked another target during loading", () => {

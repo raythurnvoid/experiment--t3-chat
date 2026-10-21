@@ -225,6 +225,7 @@ keeps the account and binding; it is not a workspace purge.
 # Resolution helpers
 
 - **`get_membership_by_organization_workspace_name`:** resolves validated names against the **current user’s** membership docs and returns only the matching membership doc; **first matching** organization+workspace pair wins (no global sort of candidates). UI that needs organization metadata, including `organization.default`, should compose it from `organizations.list` instead of carrying it in tenant context.
+  - It returns `null` for "not a member", "organization missing" and "workspace missing" alike, so a URL does not reveal whether a name exists. The workspace route (`src/routes/w/$organizationName/$workspaceName/route.tsx`) reads `null` by auth kind: an anonymous user sees a **Log in** screen (see [auth-system: Logged out on a workspace URL](../auth-system/SKILL.md#logged-out-on-a-workspace-url)), and a signed-in user sees the "no access" alert.
 - **`list`:** sorts organizations (default first) and workspaces (primary first, then name / id). Organization docs include `ownerUserId`, so UI can label owner-billed organizations without querying billing state.
 
 # Related files
