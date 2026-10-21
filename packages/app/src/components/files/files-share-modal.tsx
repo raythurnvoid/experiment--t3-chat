@@ -2,7 +2,7 @@ import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, type Ref, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -500,6 +500,7 @@ type FilesShareModalPublic_CustomAttributes = {
 };
 
 type FilesShareModalPublic_Props = {
+	ref?: Ref<HTMLElement>;
 	state: "on" | "inherited" | "off";
 	nodeKindText: "file" | "folder";
 	/** The public write is the one being saved. */
@@ -516,10 +517,13 @@ type FilesShareModalPublic_Props = {
  * never opens the item by itself: that needs a public link.
  */
 const FilesShareModalPublic = memo(function FilesShareModalPublic(props: FilesShareModalPublic_Props) {
-	const { state, nodeKindText, pending, busy, error, onEnabledChange } = props;
+	const { ref, state, nodeKindText, pending, busy, error, onEnabledChange } = props;
 
 	return (
 		<section
+			ref={ref}
+			// Not reachable by Tab, but focus lands here when the select it held goes away.
+			tabIndex={-1}
 			aria-label="Anyone on the web"
 			className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
 			{...({ "data-share-public": state } satisfies FilesShareModalPublic_CustomAttributes)}
@@ -650,6 +654,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	/** The node whose restrict is waiting for a yes. Keyed by node, like `linkError`. */
 	const [restrictConfirmNodeId, setRestrictConfirmNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const listRef = useRef<HTMLUListElement>(null);
+	const publicSectionRef = useRef<HTMLElement>(null);
 	/** Where focus goes when the write a button started replaces the branch that button lived in. */
 	const dialogRef = useRef<HTMLDivElement>(null);
 	const addPrincipalTriggerRef = useRef<HTMLButtonElement>(null);
@@ -750,7 +755,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			/** A function picks the message from the answer, when the answer can differ from the request. */
 			successMessage: string | ((result: { _yay?: { public: "on" | "inherited" | "off" } | null }) => string);
 			/** Runs only when the server said yes, so a refusal leaves the form as the user left it. */
-			onDone?: () => void;
+			onDone?: (result: { _yay?: { public: "on" | "inherited" | "off" } | null }) => void;
 			/** Shows a refusal beside its control instead of in a toast. */
 			onRefused?: (message: string) => void;
 		}) => {
@@ -774,7 +779,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 					}
 
 					toast.success(typeof args.successMessage === "string" ? args.successMessage : args.successMessage(result));
-					args.onDone?.();
+					args.onDone?.(result);
 				})
 				.catch((error) => {
 					console.error("[FilesShareModal.runShareWrite] Failed to change sharing:", {
@@ -922,6 +927,12 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 					: result._yay?.public === "inherited"
 						? "Still public through a folder above"
 						: "No longer public",
+			// An inherited item has no select, so the focused one goes away. Keep focus in the dialog.
+			onDone: (result) => {
+				if (result._yay?.public === "inherited") {
+					publicSectionRef.current?.focus();
+				}
+			},
 			onRefused: (message) => setPublicError({ nodeId: viewNodeId, message }),
 		});
 	});
@@ -1177,6 +1188,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 							{shareState.canManage ? (
 								<FilesShareModalPublic
+									ref={publicSectionRef}
 									state={shareState.public}
 									nodeKindText={nodeKindText}
 									pending={pendingKey === "public"}

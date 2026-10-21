@@ -575,6 +575,8 @@ describe("FilesShareModal", () => {
 		fireEvent.click(await screen.findByRole("option", { name: "Not public" }));
 
 		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Still public through a folder above"));
+		// The select goes away for an inherited item, so focus must stay in the dialog.
+		expect(document.activeElement).toBe(document.querySelector("[data-share-public]"));
 		expect(mutationMock).toHaveBeenCalledWith("set_public", {
 			membershipId: "membership_1",
 			nodeId: "node_1",
