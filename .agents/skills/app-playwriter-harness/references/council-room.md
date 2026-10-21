@@ -1176,7 +1176,7 @@ trap holds in that case, which is why this survives casual testing.
 
 Browser QA on this page pairs with the room test files in `packages/council`, and a
 break-on-purpose proof has to run ONE named test. The package is its own repository with its own
-vitest (installed by `vp env exec pnpm --dir packages/council --ignore-workspace install`; the
+vitest (installed by `vp env exec pnpm --dir packages/council install`; the
 root install does not cover it). The test path is relative to `packages/council`, not to the repo
 root:
 
