@@ -1173,8 +1173,15 @@ export const files_frontmatter_node = Node.create({
 		return ["pre", { "data-frontmatter": "" }, 0];
 	},
 
-	renderMarkdown(node) {
+	renderMarkdown(node, _helpers, context) {
 		const text = (node.content ?? []).map((child) => child.text ?? "").join("");
+		// The `---` fence reads back as frontmatter only at the start of the document, and a `---` line
+		// in the text would end it early. Elsewhere write the HTML that `parseHTML` reads, so the text
+		// never turns into Markdown. A slice written on its own (inline AI prompt text) has no parent type.
+		if (context.index !== 0 || (context.parentType ?? "doc") !== "doc" || /^---$/m.test(text)) {
+			const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+			return `<pre data-frontmatter>${escaped}</pre>`;
+		}
 		// The doc renderer joins block-level siblings with "\n\n",
 		// so frontmatter must not emit its own trailing newlines.
 		return `---\n${text}\n---`;

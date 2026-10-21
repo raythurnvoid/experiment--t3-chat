@@ -2738,6 +2738,32 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		}
 	});
 
+	test("keeps code and frontmatter text from turning into Markdown on a save", () => {
+		// The code block gains one blank line before its closing fence: the parse keeps the `\n` that
+		// marked writes at the end of `<code>`.
+		const fixtures = [
+			// Code that holds a fence line.
+			["````\n```\n![x](bonobo-file://S)\n```\n````\n", "````\n```\n![x](bonobo-file://S)\n```\n\n````\n"],
+			["~~~\n```js\nx\n```\n~~~\n", "````\n```js\nx\n```\n\n````\n"],
+			// A backtick in the language would make the fence line plain text.
+			["~~~a`b\nx\n~~~\n", "```\nx\n\n```\n"],
+			// Code in an ordered list keeps its indent: `1. ` is three columns.
+			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   \n   ```\n2. Next\n"],
+			// A bullet nested with 2 spaces stays nested.
+			["1. Install\n  - run setup\n    - on Windows\n2. Done\n", "1. Install\n   - run setup\n     - on Windows\n2. Done\n"],
+			// Frontmatter that is not first, or that holds a `---` line, stays HTML.
+			["Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n", "Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n"],
+			["<pre data-frontmatter>a: 1\n---\nb</pre>\n", "<pre data-frontmatter>a: 1\n---\nb</pre>\n"],
+		] as const;
+		for (const [fixture, expected] of fixtures) {
+			const once = normalize(fixture);
+			expect(once).toBe(expected);
+			expect(normalize(once)).toBe(once);
+			const json = files_tiptap_markdown_to_json({ markdown: once });
+			expect(JSON.stringify(json._yay)).not.toContain('"type":"image"');
+		}
+	});
+
 	test("settles trailing-newline variants", () => {
 		for (const fixture of ["text", "text\n", "text\n\n\n"]) {
 			const once = normalize(fixture);
