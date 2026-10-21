@@ -2660,7 +2660,7 @@ async function publish_version_from_github(
 
 	// The review allowed the publish: upload dist/bonobo.plugin.json and the build files to R2,
 	// with at most ARTIFACT_UPLOAD_CONCURRENCY uploads running at once.
-	const uploads: Array<{ key: string; body: BodyInit; contentType: string }> = [
+	const uploads: Array<{ key: string; body: Exclude<BodyInit, ReadableStream>; contentType: string }> = [
 		{ key: manifestR2Key, body: manifestText._yay, contentType: "application/json" },
 		...files.map((file) => ({ key: file.r2Key, body: file.body, contentType: file.contentType })),
 	];

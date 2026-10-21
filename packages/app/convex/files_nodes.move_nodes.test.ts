@@ -2277,12 +2277,14 @@ test("create_text_node does not publish a file node when initial R2 writes fail"
 	const secondPutStarted = new Promise<void>((resolve) => {
 		announceSecondPut = resolve;
 	});
-	let putCount = 0;
+	// Every try of the first object fails, so the PUT retry cannot save it. All keys share one test
+	// URL here, so match the object by its body.
+	let failedBody: RequestInit["body"];
 	vi.stubGlobal(
 		"fetch",
-		vi.fn(async () => {
-			putCount += 1;
-			if (putCount === 1) {
+		vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			failedBody ??= init?.body;
+			if (init?.body === failedBody) {
 				return new Response(null, { status: 500 });
 			}
 			announceSecondPut?.();

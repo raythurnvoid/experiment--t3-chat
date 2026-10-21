@@ -179,7 +179,6 @@ const FILES_WRITE_MANY_MAX_ITEMS = 20;
 const FILES_WRITE_MANY_CONCURRENCY = 4;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
-const INVALID_WRITE_FILE_NAME_MESSAGE = "Path must end in a valid file name.";
 const INVALID_WRITE_CONTENT_TYPE_MESSAGE = "contentType must be an editable text type.";
 const ACTIVITIES_TITLE_MAX_CHARS = 120;
 
@@ -4629,13 +4628,21 @@ export const create_file_upload_targets = internalMutation({
 			// Upload names, not Markdown names: files_normalize_name("file", ...) only accepts .md,
 			// while uploaded binaries keep their real extensions like the app's upload flow.
 			const name = path_name_of(item.path);
-			if (files_normalize_upload_file_name(name) !== files_normalize_special_node_path("file", name)) {
-				return Result({ _nay: { message: "Path ends in an invalid file name", data: { path: item.path } } });
+			const cleanName = files_normalize_upload_file_name(name);
+			if (cleanName !== files_normalize_special_node_path("file", name)) {
+				return Result({
+					_nay: { message: invalid_name_message("file", name, cleanName), data: { path: item.path } },
+				});
 			}
 			for (const segment of path_extract_segments_from(item.path).slice(0, -1)) {
 				const normalizedSegment = files_normalize_name("folder", segment);
 				if (normalizedSegment._nay || normalizedSegment._yay !== files_normalize_special_node_path("folder", segment)) {
-					return Result({ _nay: { message: "Path contains an invalid folder name", data: { path: item.path } } });
+					return Result({
+						_nay: {
+							message: invalid_name_message("folder", segment, normalizedSegment._nay ? null : normalizedSegment._yay),
+							data: { path: item.path },
+						},
+					});
 				}
 			}
 
@@ -6469,16 +6476,37 @@ const write_file_body_validator = z.object({
 export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
 
 /**
- * Public writes accept existing special-name spellings. Other names must already be normalized.
- * This check only validates spelling; content-type selection happens at the write door.
+ * The file name a public write accepts in place of this one, or null when no cleanup can save it
+ * (for example a name with "..").
  */
-export function public_api_is_valid_write_file_name(name: string) {
+function clean_write_file_name(name: string) {
 	// Existing special names keep their spelling; validate the canonical spelling only.
 	name = files_normalize_special_node_path("file", name);
 	const normalized = name.toLowerCase().endsWith(".md")
 		? files_normalize_name("file", name)
 		: files_normalize_file_rename_name(name);
-	return !normalized._nay && normalized._yay === name;
+	return normalized._nay ? null : normalized._yay;
+}
+
+/**
+ * Public writes accept existing special-name spellings. Other names must already be normalized.
+ * This check only validates spelling; content-type selection happens at the write door.
+ */
+export function public_api_is_valid_write_file_name(name: string) {
+	return clean_write_file_name(name) === files_normalize_special_node_path("file", name);
+}
+
+/**
+ * One refusal text for a bad file or folder name on every public write route: write, write-many,
+ * touch, and upload-urls. The API never renames, so the text says the rule and the clean name to
+ * send instead. A caller can then fix the name in one try.
+ */
+function invalid_name_message(kind: "file" | "folder", name: string, cleanName: string | null) {
+	return (
+		`${kind === "file" ? "File" : "Folder"} name "${name}" is not allowed. ` +
+		'Use only lowercase letters, digits, and single "-", "_", or "." between them, with none of those at the start or end.' +
+		(cleanName ? ` Try "${cleanName}".` : "")
+	);
 }
 
 export async function public_api_http_write_file(args: {
@@ -6559,7 +6587,7 @@ export async function public_api_http_write_file(args: {
 			status: 400,
 			body: await fail({
 				status: 400,
-				message: INVALID_WRITE_FILE_NAME_MESSAGE,
+				message: invalid_name_message("file", name, clean_write_file_name(name)),
 				errorCode: "invalid_input",
 			}),
 		} as const;
@@ -6585,7 +6613,7 @@ export async function public_api_http_write_file(args: {
 				status: 400,
 				body: await fail({
 					status: 400,
-					message: "Path contains an invalid folder name.",
+					message: invalid_name_message("folder", segment, normalizedSegment._nay ? null : normalizedSegment._yay),
 					errorCode: "invalid_input",
 				}),
 			} as const;
@@ -6994,7 +7022,7 @@ export async function public_api_http_write_many(args: {
 		if (!public_api_is_valid_write_file_name(name)) {
 			return {
 				status: 400,
-				body: { message: INVALID_WRITE_FILE_NAME_MESSAGE, path: file.path },
+				body: { message: invalid_name_message("file", name, clean_write_file_name(name)), path: file.path },
 			} as const;
 		}
 		const shape = file.contentType === undefined ? null : files_editable_text_shape_of(file.contentType);
@@ -7011,7 +7039,10 @@ export async function public_api_http_write_many(args: {
 			if (normalizedSegment._nay || normalizedSegment._yay !== files_normalize_special_node_path("folder", segment)) {
 				return {
 					status: 400,
-					body: { message: "Path contains an invalid folder name.", path: file.path },
+					body: {
+						message: invalid_name_message("folder", segment, normalizedSegment._nay ? null : normalizedSegment._yay),
+						path: file.path,
+					},
 				} as const;
 			}
 		}
@@ -7313,7 +7344,7 @@ export async function public_api_http_touch_files(args: {
 				status: 400,
 				body: await fail({
 					status: 400,
-					message: INVALID_WRITE_FILE_NAME_MESSAGE,
+					message: invalid_name_message("file", name, clean_write_file_name(name)),
 					errorCode: "invalid_input",
 				}),
 			} as const;
@@ -7328,7 +7359,7 @@ export async function public_api_http_touch_files(args: {
 					status: 400,
 					body: await fail({
 						status: 400,
-						message: "Path contains an invalid folder name.",
+						message: invalid_name_message("folder", segment, normalizedSegment._nay ? null : normalizedSegment._yay),
 						errorCode: "invalid_input",
 					}),
 				} as const;
