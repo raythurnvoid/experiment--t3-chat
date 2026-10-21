@@ -531,6 +531,13 @@ export const get = internalQuery({
 	},
 });
 
+// One-time cleanup of the approved old search progress before the new page format.
+export const clear_old_search = internalMutation({
+	args: { queryId: v.id("files_type_queries") },
+	returns: v.number(),
+	handler: async (ctx, args) => await files_type_query_db_delete_batch(ctx.db, args.queryId, 50),
+});
+
 export const cleanup_expired = internalMutation({
 	args: {},
 	returns: v.null(),

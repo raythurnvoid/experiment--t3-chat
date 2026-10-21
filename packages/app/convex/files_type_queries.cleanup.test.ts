@@ -35,6 +35,23 @@ async function fixture() {
 }
 
 describe("file type query cleanup", () => {
+	test("old-search cleanup only removes the named query and its children", async () => {
+		const f = await fixture();
+		const other = await f.t.mutation(internal.files_type_queries.begin, f.input);
+		if (other._nay) throw new Error(other._nay.message);
+		const before = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		const deleted: number[] = [];
+		for (let pass = 0; pass < 5; pass++)
+			deleted.push(await f.t.mutation(internal.files_type_queries.clear_old_search, { queryId: f.queryId }));
+		expect(deleted).toEqual([1, 1, 3, 1, 0]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_type_query_streams").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_type_query_steps").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_type_query_work").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.get("files_type_queries", f.queryId))).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.get("files_type_queries", other._yay.queryId))).not.toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+	});
+
 	test.each(["user", "workspace"] as const)("%s deletion drains queries before their headers", async (scope) => {
 		const f = await fixture();
 		const requestId =
