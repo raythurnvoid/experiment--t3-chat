@@ -1,8 +1,8 @@
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
-import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { getFunctionName } from "convex/server";
+import { getFunctionName, type FunctionArgs } from "convex/server";
 import type { Id } from "./_generated/dataModel";
 import {
 	test_convex,
@@ -28,7 +28,8 @@ import {
 } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { prepare_file_write } from "./public_api.ts";
-import { delete_paths } from "./public_api_files_organize.ts";
+import { delete_paths, transfer_paths } from "./public_api_files_organize.ts";
+import { mock_transfer_storage } from "./files_transfer.setup.test.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	files_get_utf8_byte_size,
@@ -4341,6 +4342,7 @@ describe("locked and missing paths", () => {
 			hiddenFileId,
 			hiddenIds,
 			memberUserId: member.userId,
+			memberMembershipId: member.membershipId,
 			ownerCredential: await create_key(asOwner, db.membershipId),
 			memberCredential: await create_key(asMember, member.membershipId),
 		};
@@ -5093,6 +5095,445 @@ describe("locked and missing paths", () => {
 				body: { message: "Permission denied", path },
 			});
 		}
+	});
+
+	describe("files move and copy", () => {
+		beforeEach(() => {
+			// Fake timers and storage, so the transfer job's scheduled steps and copy workers can run here.
+			mock_transfer_storage();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		async function create_key(args: {
+			asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
+			membershipId: Id<"organizations_workspaces_users">;
+			scopes: FunctionArgs<typeof api.public_api.api_credential_create>["scopes"];
+		}) {
+			// Key creation has a small rate bucket. Let it refill first.
+			vi.advanceTimersByTime(60_000);
+			const created = await args.asUser.mutation(api.public_api.api_credential_create, {
+				serviceAccountId: null,
+				membershipId: args.membershipId,
+				name: `Organizer ${args.scopes.join(" ")}`,
+				scopes: args.scopes,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay;
+		}
+
+		async function get_activity(t: ReturnType<typeof test_convex>, jobId: string) {
+			return await t.run((ctx) => ctx.db.get("activities", jobId as Id<"activities">));
+		}
+
+		async function finish_move(t: ReturnType<typeof test_convex>, jobId: string) {
+			const activity = (await get_activity(t, jobId))!;
+			if (activity.source.kind !== "files_transfer_run") throw new Error("Not a transfer job");
+			await test_finish_transfer_run(t, activity.source.id);
+		}
+
+		// Copy writes each file on a queued worker that the mocked Workpool never runs, so run each one here.
+		async function finish_copy(t: ReturnType<typeof test_convex>, jobId: string) {
+			for (let step = 0; step < 300; step++) {
+				const activity = (await get_activity(t, jobId))!;
+				if (activity.source.kind !== "files_transfer_run") throw new Error("Not a transfer job");
+				if (!["queued", "running", "stopping"].includes(activity.status)) return;
+				const runId = activity.source.id;
+				const working = await t.run((ctx) =>
+					ctx.db
+						.query("files_transfer_items")
+						.withIndex("by_run_order", (q) => q.eq("runId", runId))
+						.filter((q) => q.neq(q.field("workId"), null))
+						.first(),
+				);
+				if (!working) {
+					await t.mutation(internal.files_transfer.advance, { runId });
+					continue;
+				}
+				await t.action(internal.files_nodes_content.copy_transfer_file, {
+					itemId: working._id,
+					attempt: working.attempt,
+				});
+				await t.mutation(internal.files_transfer.handle_copy_complete, {
+					workId: working.workId!,
+					context: { itemId: working._id, attempt: working.attempt },
+					result: { kind: "success", returnValue: null },
+				});
+			}
+			throw new Error("Copy did not finish");
+		}
+
+		test("files move moves what it can, refuses missing and locked paths alone, and retries safely", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+			expect((await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/dest"] })).status).toBe(200);
+			const body = { from: ["/b.md", "/notes", "/hidden.md", "/missing.md"], to: "/dest", requestId: "move-1" };
+			const refused = [
+				{ path: "/hidden.md", message: "Permission denied" },
+				{ path: "/missing.md", message: "Not found" },
+			];
+
+			const started = await post(t, "/api/v1/files/move", f.memberCredential, body);
+			expect(started).toEqual({ status: 200, body: { jobId: expect.any(String), isDone: false, refused } });
+			const { jobId } = started.body as { jobId: string };
+			// One transfer at a time per person and workspace. The answer does not name the other job.
+			expect(
+				await post(t, "/api/v1/files/move", f.memberCredential, { from: ["/b.md"], to: "/notes", requestId: "move-2" }),
+			).toEqual({
+				status: 409,
+				body: { message: "A transfer is already running in this workspace. Wait for it to finish, then try again." },
+			});
+
+			await finish_move(t, jobId);
+			expect(await post(t, "/api/v1/files/jobs/get", f.memberCredential, { jobId })).toEqual({
+				status: 200,
+				body: {
+					jobId,
+					kind: "move",
+					status: "succeeded",
+					progress: expect.objectContaining({ completed: 2, failed: 0 }),
+					errorMessage: null,
+					refused,
+					refusedCursor: null,
+				},
+			});
+			expect(
+				await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["/dest/b.md", "/dest/notes", "/b.md"] }),
+			).toMatchObject({ body: { items: [{ status: "found" }, { status: "found" }, { status: "missing" }] } });
+
+			// The `from` paths are gone now, so a retry must find the job by its request id first.
+			expect(await post(t, "/api/v1/files/move", f.memberCredential, body)).toEqual({
+				status: 200,
+				body: { jobId, isDone: true, refused },
+			});
+			expect(await post(t, "/api/v1/files/move", f.memberCredential, { ...body, to: "/notes" })).toEqual({
+				status: 409,
+				body: { message: "This requestId was already used for another request. Send a new requestId." },
+			});
+			// Another key of the same person cannot read this job.
+			const otherKey = await create_key({
+				asUser: t.withIdentity({
+					issuer: "https://clerk.test",
+					subject: "list-hidden-member",
+					external_id: f.memberUserId,
+				}),
+				membershipId: f.memberMembershipId,
+				scopes: ["files:list"],
+			});
+			expect(await post(t, "/api/v1/files/jobs/get", otherKey.credential, { jobId })).toEqual({
+				status: 404,
+				body: { message: "Job not found" },
+			});
+		});
+
+		test("files move renames one path and needs the folder above `to`", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+
+			const renamed = await post(t, "/api/v1/files/move", f.memberCredential, {
+				from: ["/b.md"],
+				to: "/notes/renamed.md",
+				requestId: "rename-1",
+			});
+			expect(renamed).toMatchObject({ status: 200, body: { refused: [] } });
+			await finish_move(t, (renamed.body as { jobId: string }).jobId);
+			expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["/notes/renamed.md"] })).toMatchObject({
+				body: { items: [{ status: "found" }] },
+			});
+
+			// A missing `to` names the one item. With two paths it would be ambiguous, even when one is refused.
+			expect(
+				await post(t, "/api/v1/files/move", f.memberCredential, {
+					from: ["/notes/renamed.md", "/missing.md"],
+					to: "/new-name.md",
+					requestId: "rename-2",
+				}),
+			).toEqual({
+				status: 400,
+				body: { message: "To move or copy several paths, `to` must be an existing folder.", path: "/new-name.md" },
+			});
+			expect(
+				await post(t, "/api/v1/files/move", f.memberCredential, {
+					from: ["/notes/renamed.md"],
+					to: "/nope/renamed.md",
+					requestId: "rename-3",
+				}),
+			).toEqual({
+				status: 409,
+				body: {
+					message: "The folder above `to` does not exist. Make it with files/mkdir, then try again.",
+					path: "/nope/renamed.md",
+				},
+			});
+			// Like `mv`, a trailing "/" says `to` must be an existing folder. It never turns into a rename.
+			expect(
+				await post(t, "/api/v1/files/move", f.memberCredential, {
+					from: ["/notes/renamed.md"],
+					to: "/archive/",
+					requestId: "rename-5",
+				}),
+			).toEqual({
+				status: 409,
+				body: { message: '`to` ends with "/", so it must be an existing folder.', path: "/archive/" },
+			});
+			// The API never renames on its own, so a new name must already be clean.
+			expect(
+				await post(t, "/api/v1/files/move", f.memberCredential, {
+					from: ["/notes/renamed.md"],
+					to: "/notes/My Draft.md",
+					requestId: "rename-6",
+				}),
+			).toMatchObject({ status: 400, body: { message: expect.stringContaining('Try "my-draft.md"') } });
+			// Writing into a locked folder answers the same as for any locked path.
+			expect(
+				await post(t, "/api/v1/files/move", f.memberCredential, {
+					from: ["/notes/renamed.md"],
+					to: "/secret",
+					requestId: "rename-4",
+				}),
+			).toEqual({ status: 403, body: { message: "Permission denied", path: "/secret" } });
+		});
+
+		test("files copy skips the items the key cannot open and pages them", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+			const lockedId = await seed_markdown_file({ t, ...f.db, path: "/mix/locked.md", committedMarkdown: "# no" });
+			await t.run((ctx) =>
+				ctx.db.patch("files_nodes", lockedId, {
+					restrictedScopeNodeId: lockedId,
+					isRestrictedScopeRoot: true,
+					parentScopeNodeId: null,
+				}),
+			);
+			// A folder child copies with no file bytes, which this test does not need.
+			expect((await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/mix/sub"] })).status).toBe(200);
+
+			const started = await post(t, "/api/v1/files/copy", f.memberCredential, {
+				from: ["/mix"],
+				to: "/notes/mix-copy",
+				requestId: "copy-1",
+			});
+			expect(started).toMatchObject({ status: 200, body: { refused: [] } });
+			const { jobId } = started.body as { jobId: string };
+			await finish_copy(t, jobId);
+
+			// The locked file is skipped like `cp -r` does. Its name shows, like a locked row in its folder.
+			const first = await post(t, "/api/v1/files/jobs/get", f.memberCredential, { jobId });
+			expect(first).toMatchObject({
+				status: 200,
+				body: { kind: "copy", status: "succeeded", refused: [], refusedCursor: "denied:-1" },
+			});
+			expect(await post(t, "/api/v1/files/jobs/get", f.memberCredential, { jobId, cursor: "denied:-1" })).toMatchObject(
+				{
+					status: 200,
+					body: { refused: [{ path: "/mix/locked.md", message: "Permission denied" }], refusedCursor: null },
+				},
+			);
+			expect(
+				await post(t, "/api/v1/files/stat", f.memberCredential, {
+					paths: ["/notes/mix-copy/sub", "/notes/mix-copy/locked.md", "/mix/sub"],
+				}),
+			).toMatchObject({ body: { items: [{ status: "found" }, { status: "missing" }, { status: "found" }] } });
+
+			// A copy reads and writes bytes, so a key without download cannot copy.
+			const writeOnly = await create_key({
+				asUser: f.asOwner,
+				membershipId: f.db.membershipId,
+				scopes: ["files:list", "files:read", "files:write"],
+			});
+			expect(
+				await post(t, "/api/v1/files/copy", writeOnly.credential, {
+					from: ["/b.md"],
+					to: "/notes",
+					requestId: "copy-2",
+				}),
+			).toEqual({
+				status: 403,
+				body: { message: "Copy needs an API key with the files:read and files:download scopes." },
+			});
+		});
+
+		test("an API move needs files:publish to publish an item and files:permissions to share it", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+			const folders = (await post(t, "/api/v1/files/mkdir", f.ownerCredential, { paths: ["/pub", "/pub2", "/team"] }))
+				.body as { items: Array<{ nodeId: Id<"files_nodes"> }> };
+			const [pubId, pub2Id, teamId] = folders.items.map((item) => item.nodeId);
+			const insideId = await seed_markdown_file({ t, ...f.db, path: "/pub2/inside.md", committedMarkdown: "# public" });
+			await t.run(async (ctx) => {
+				// "Anyone on the web" on `/pub` and `/pub2`, and added people on `/team`.
+				await ctx.db.patch("files_nodes", pubId!, { publicScopeNodeId: pubId });
+				await ctx.db.patch("files_nodes", pub2Id!, { publicScopeNodeId: pub2Id });
+				await ctx.db.patch("files_nodes", insideId, { publicScopeNodeId: pub2Id });
+				await ctx.db.patch("files_nodes", teamId!, { extendedScopeNodeId: teamId, parentExtendedScopeNodeId: null });
+			});
+			let requestCount = 0;
+			const move = async (credential: string, from: string[], to: string) => {
+				const started = await post(t, "/api/v1/files/move", credential, {
+					from,
+					to,
+					requestId: `scope-${++requestCount}`,
+				});
+				expect(started.status, to).toBe(200);
+				const { jobId } = started.body as { jobId: string };
+				await finish_move(t, jobId);
+				return (await post(t, "/api/v1/files/jobs/get", credential, { jobId })).body;
+			};
+			// The owner passes every app check, so only the key's scopes can refuse here.
+			const writer = await create_key({
+				asUser: f.asOwner,
+				membershipId: f.db.membershipId,
+				scopes: ["files:list", "files:write"],
+			});
+
+			// A refused item fails alone. An item that was already public through `/pub2` gains no new viewers.
+			expect(await move(writer.credential, ["/b.md", "/pub2/inside.md"], "/pub")).toMatchObject({
+				status: "partial",
+				refused: [
+					{
+						path: "/b.md",
+						message:
+							'Moving "b.md" here would make it public on the web. That needs an API key with the files:publish scope.',
+					},
+				],
+			});
+			expect(await move(writer.credential, ["/notes"], "/team")).toMatchObject({
+				status: "failed",
+				refused: [
+					{
+						path: "/notes",
+						message:
+							'Moving "notes" here would share it with the people added to the destination folder. That needs an API key with the files:permissions scope.',
+					},
+				],
+			});
+			expect(await move(writer.credential, ["/notes"], "/secret")).toMatchObject({
+				status: "failed",
+				refused: [
+					{
+						path: "/notes",
+						message:
+							'Moving "notes" into or out of a restricted folder changes who can open it. That needs an API key with the files:permissions scope.',
+					},
+				],
+			});
+			expect(
+				await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/notes", "/pub/inside.md"] }),
+			).toMatchObject({ body: { items: [{ status: "found" }, { status: "found" }, { status: "found" }] } });
+
+			// Control: the same moves pass for a key with both scopes.
+			const sharer = await create_key({
+				asUser: f.asOwner,
+				membershipId: f.db.membershipId,
+				scopes: ["files:list", "files:write", "files:publish", "files:permissions"],
+			});
+			expect(await move(sharer.credential, ["/b.md"], "/pub")).toMatchObject({ status: "succeeded" });
+			expect(await move(sharer.credential, ["/notes"], "/team")).toMatchObject({ status: "succeeded" });
+			expect(await move(sharer.credential, ["/team/notes"], "/secret")).toMatchObject({ status: "succeeded" });
+		});
+
+		test("a job stops at its next step once its key is revoked", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+			expect((await post(t, "/api/v1/files/mkdir", f.ownerCredential, { paths: ["/dest"] })).status).toBe(200);
+			const revoke = (credentialId: Id<"api_credentials">) =>
+				t.run((ctx) => ctx.db.patch("api_credentials", credentialId, { revokedAt: Date.now() }));
+
+			// A copy has no Move steps, so the transfer job step must stop it.
+			const copier = await create_key({
+				asUser: f.asOwner,
+				membershipId: f.db.membershipId,
+				scopes: ["files:list", "files:read", "files:download", "files:write"],
+			});
+			const copy = await post(t, "/api/v1/files/copy", copier.credential, {
+				from: ["/notes"],
+				to: "/dest",
+				requestId: "revoke-copy",
+			});
+			expect(copy.status).toBe(200);
+			await revoke(copier.credentialId);
+			await finish_copy(t, (copy.body as { jobId: string }).jobId);
+			expect(await get_activity(t, (copy.body as { jobId: string }).jobId), "copy").toMatchObject({ status: "failed" });
+
+			// Revoke a move only after its Move steps began, so the Move step must stop it. Keep each Move
+			// step separate, so the move is not published in the same step that starts it.
+			const overlay = await import("../server/files-pending-overlay.ts");
+			vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockResolvedValue(false);
+			const mover = await create_key({
+				asUser: f.asOwner,
+				membershipId: f.db.membershipId,
+				scopes: ["files:list", "files:write"],
+			});
+			const move = await post(t, "/api/v1/files/move", mover.credential, {
+				from: ["/b.md"],
+				to: "/dest",
+				requestId: "revoke-move",
+			});
+			const moveActivity = (await get_activity(t, (move.body as { jobId: string }).jobId))!;
+			if (moveActivity.source.kind !== "files_transfer_run") throw new Error("Not a transfer job");
+			const runId = moveActivity.source.id;
+			const get_cohort = () =>
+				t.run((ctx) =>
+					ctx.db
+						.query("files_move_cohorts")
+						.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+						.first(),
+				);
+			for (let step = 0; step < 20 && !(await get_cohort()); step++) {
+				await t.mutation(internal.files_transfer.advance, { runId });
+			}
+			expect(await get_cohort()).toMatchObject({ publishedAt: null });
+			await revoke(mover.credentialId);
+			await test_finish_transfer_run(t, runId);
+			expect(await get_activity(t, moveActivity._id), "move").toMatchObject({ status: "failed" });
+			expect(
+				await post(t, "/api/v1/files/stat", f.ownerCredential, {
+					paths: ["/notes", "/dest/notes", "/b.md", "/dest/b.md"],
+				}),
+			).toMatchObject({
+				body: { items: [{ status: "found" }, { status: "missing" }, { status: "found" }, { status: "missing" }] },
+			});
+		});
+
+		test("files move stays inside the Convex call limit at the largest batch", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+			const from = Array.from({ length: 100 }, (_, index) => `/bulk-${String(index).padStart(3, "0")}`);
+			await t.run(async (ctx) => {
+				for (const path of ["/dest", ...from]) {
+					const name = path.slice(1);
+					await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						createdBy: f.db.userId,
+						updatedBy: f.db.userId,
+						parentId: files_ROOT_ID,
+						name,
+						sortName: files_sort_text_key(name),
+						kind: "folder",
+						path,
+						treePath: `${path}/`,
+						pathDepth: 1,
+					});
+				}
+			});
+			const queries: number[] = [];
+			test_spy_handler(transfer_paths, async (handler, ctx, args) => {
+				const result = await handler(ctx, args);
+				queries.push((await ctx.meta.getTransactionMetrics()).databaseQueries.used);
+				return result;
+			});
+
+			// A member, not the owner, so every path pays the full access check.
+			expect(
+				(await post(t, "/api/v1/files/move", f.memberCredential, { from, to: "/dest", requestId: "bulk" })).status,
+			).toBe(200);
+			expect(queries).toHaveLength(1);
+			expect(queries[0]).toBeLessThan(4096 * 0.8);
+		});
 	});
 });
 

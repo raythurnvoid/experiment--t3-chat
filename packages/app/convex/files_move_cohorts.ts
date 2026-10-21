@@ -31,7 +31,7 @@ import {
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_publish_receipt,
 } from "../server/files-saved-placement.ts";
-import { access_control_db_authorize_membership } from "./access_control.ts";
+import { access_control_db_authorize_membership, access_control_db_extended_chain_allows } from "./access_control.ts";
 import {
 	activities_db_get_by_source_id,
 	activities_db_require_by_source_id,
@@ -39,6 +39,7 @@ import {
 } from "./activities_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
+import { public_api_credentials_db_is_live } from "./public_api_credentials_db.ts";
 import { files_pending_nodes_db_can_save_to_copied_parent } from "./files_pending_nodes_db.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import {
@@ -1382,6 +1383,17 @@ async function db_headers(
 		return tooLong;
 	}
 	const scope = physical.isRestrictedScopeRoot ? physical._id : (parent?.restrictedScopeNodeId ?? null);
+	// A public root stays public only inside its own restricted area. A Move into a restricted folder
+	// needs no manage there, so it must not bring the item's "Anyone on the web" along.
+	const publicScopeNodeId =
+		(old ?? physical).publicScopeNodeId === physical._id && (old ?? physical).restrictedScopeNodeId === scope
+			? physical._id
+			: scope === physical._id
+				? undefined
+				: parent?.publicScopeNodeId;
+	// The people added to the new parent's chain can open the item after the Move. An extended root keeps
+	// its own added people and links to that chain too.
+	const destinationExtendedScopeNodeId = scope === physical._id ? null : (parent?.extendedScopeNodeId ?? null);
 	// A plugin decides who reads the whole bound area, so a restricted item cannot come into one. This
 	// step visits every node, so a restricted folder inside a moved folder is checked too. A node that
 	// stays in its area, like a destination folder that does not move, passes.
@@ -1431,6 +1443,74 @@ async function db_headers(
 					_nay: {
 						name: "permission_denied",
 						message: "You need Can manage on the shared folder to move this out of it.",
+					},
+				});
+		}
+
+		// In the app, write on the destination is enough to move an item into a public or shared folder.
+		// An API key must not share or publish more than its scopes allow, so it also needs these scopes.
+		if (run?.origin.kind === "api") {
+			const apiScopes = (await ctx.db.get("api_credentials", run.origin.credentialId))?.scopes ?? [];
+			const before = old ?? physical;
+			const read_before = (nodeId: Id<"files_nodes">) =>
+				files_saved_placement_db_get_node(ctx.db, nodeId, { cohortId: cohort._id, view: "before" });
+			// A restricted folder has its own people. So a move into, out of, or between restricted folders
+			// changes who can open the item. A moved restricted folder keeps its own people.
+			if (
+				!apiScopes.includes("files:permissions") &&
+				scope !== physical._id &&
+				(before.restrictedScopeNodeId ?? null) !== scope
+			)
+				return Result({
+					_nay: {
+						name: "permission_denied",
+						message: `Moving "${name}" into or out of a restricted folder changes who can open it. That needs an API key with the files:permissions scope.`,
+					},
+				});
+			// An item that was already public through another public folder gains no new viewers. Check the
+			// old public folder like `db_get_public_state` does, because its pointer can be old while a scope
+			// job still runs.
+			if (!apiScopes.includes("files:publish") && publicScopeNodeId && publicScopeNodeId !== before.publicScopeNodeId) {
+				const beforePublicRoot = before.publicScopeNodeId ? await read_before(before.publicScopeNodeId) : null;
+				const wasPublic =
+					before.publicScopeNodeId === physical._id ||
+					(!!beforePublicRoot &&
+						beforePublicRoot.archiveOperationId === null &&
+						beforePublicRoot.publicScopeNodeId === beforePublicRoot._id &&
+						beforePublicRoot.restrictedScopeNodeId === before.restrictedScopeNodeId &&
+						beforePublicRoot.kind === "folder" &&
+						before.treePath.startsWith(beforePublicRoot.treePath));
+				if (!wasPublic)
+					return Result({
+						_nay: {
+							name: "permission_denied",
+							message: `Moving "${name}" here would make it public on the web. That needs an API key with the files:publish scope.`,
+						},
+					});
+			}
+			// The people added above the old place can already open the item. The check above keeps the
+			// item in its restricted area here, so the access checker's own walk tells if the destination
+			// chain head is in the old chain.
+			if (
+				!apiScopes.includes("files:permissions") &&
+				destinationExtendedScopeNodeId &&
+				!(await access_control_db_extended_chain_allows(ctx, {
+					organizationId: cohort.organizationId,
+					workspaceId: cohort.workspaceId,
+					node: {
+						_id: physical._id,
+						treePath: before.treePath,
+						restrictedScopeNodeId: before.restrictedScopeNodeId,
+						extendedScopeNodeId: before.extendedScopeNodeId,
+					},
+					get_node: read_before,
+					root_allows: async (rootId) => rootId === destinationExtendedScopeNodeId,
+				}))
+			)
+				return Result({
+					_nay: {
+						name: "permission_denied",
+						message: `Moving "${name}" here would share it with the people added to the destination folder. That needs an API key with the files:permissions scope.`,
 					},
 				});
 		}
@@ -1558,19 +1638,12 @@ async function db_headers(
 				? null
 				: physical.parentExtendedScopeNodeId !== undefined
 					? physical._id
-					: (parent?.extendedScopeNodeId ?? null),
+					: destinationExtendedScopeNodeId,
 		parentExtendedScopeNodeId:
 			scope !== physical._id && physical.parentExtendedScopeNodeId !== undefined
-				? (parent?.extendedScopeNodeId ?? null)
+				? destinationExtendedScopeNodeId
 				: undefined,
-		// A public root stays public only inside its own restricted area. A Move into a restricted folder
-		// needs no manage there, so it must not bring the item's "Anyone on the web" along.
-		publicScopeNodeId:
-			(old ?? physical).publicScopeNodeId === physical._id && (old ?? physical).restrictedScopeNodeId === scope
-				? physical._id
-				: scope === physical._id
-					? undefined
-					: parent?.publicScopeNodeId,
+		publicScopeNodeId,
 		archiveOperationId: afterArchive,
 		// Already archived nodes keep their allowance even if the path changes.
 		archivedPathLength:
@@ -2418,6 +2491,17 @@ async function db_parent_running(ctx: MutationCtx, cohort: Doc<"files_move_cohor
 	}
 	const run = await ctx.db.get("files_transfer_runs", cohort.origin.runId);
 	const item = await ctx.db.get("files_transfer_items", cohort.origin.itemId);
+	// A Move that an API key started stops at its next step once the key is revoked or loses write.
+	if (
+		run?.origin.kind === "api" &&
+		!(await public_api_credentials_db_is_live(ctx, {
+			credentialId: run.origin.credentialId,
+			userId: run.userId,
+			workspaceId: run.workspaceId,
+			scopes: ["files:write"],
+		}))
+	)
+		return false;
 	return run?.revision === cohort.fence && item?.state === "pending" && item.attempt === cohort.attemptFence;
 }
 

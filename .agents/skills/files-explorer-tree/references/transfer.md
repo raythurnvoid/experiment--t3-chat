@@ -1,17 +1,21 @@
 # Files transfer runs
 
-`packages/app/convex/files_transfer.ts` owns human Cut/Copy/Paste and agent Bash `cp` and `mv` runs,
-in a call or in a background job. `files_nodes_content.ts` captures and publishes copied content. Agent output uses
-the same producer with private proposals. `files_pending_updates.ts` and
+`packages/app/convex/files_transfer.ts` owns human Cut/Copy/Paste, agent Bash `cp` and `mv` runs
+(in a call or in a background job), and public API `files/move` and `files/copy` runs.
+`files_nodes_content.ts` captures and publishes copied content. Agent output uses the same producer
+with private proposals. `files_pending_updates.ts` and
 `files_pending_update_runs.ts` own later Save and Discard.
 
 ## Scope and saved state
 
 - Runs use `files_transfer_runs.kind: move|copy`. Items live in `files_transfer_items`.
   The browser clipboard keeps `mode: cut|copy`; Paste translates Cut into Move at `accept_input`.
-- Human runs read saved content and publish saved output. Agent runs read the owner's current
+- Human and API runs read saved content and publish saved output. Agent runs read the owner's current
   saved/private view and publish proposals. Each run stores `sourceView`, `publication`, and its
   immutable origin. It never changes modes during Retry.
+- An API run (`origin.kind: "api"`) never waits for an answer: a conflict it would ask about stops
+  the run, and so does a revoked key. It makes no missing parent folders. See the public-api skill,
+  "Organize routes".
 - Activity owns status, progress, result, deadlines, and membership lifetime. A run keeps only
   immutable intent and executor state such as selection, discovery, planning, retry cursors, revision, and worker count.
 - Agent runs may use the current workspace and the actor's own personal home. Each file scope

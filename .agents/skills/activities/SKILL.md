@@ -27,6 +27,8 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
   `files_archive_runs.credentialId`. Its background steps treat a revoked key like a lost membership,
   with their own message. The person still sees the job card in the app. Through the API, only that
   key reads the job with `files/jobs/get` (public-api skill, "Organize routes").
+- A transfer job started by `files/move` or `files/copy` stores the key in its run origin
+  (`files_transfer_runs.origin.credentialId`) and follows the same rules.
 - `source.id` and `activities.by_source_id` are the only link. Do not add a backlink to the run.
 - Activity owns requester, status, progress, result kind, safe errors, and common times.
   Producer copies of tenant and user IDs exist only for immutable indexes.

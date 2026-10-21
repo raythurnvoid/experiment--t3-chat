@@ -6226,6 +6226,21 @@ const app_convex_schema = defineSchema({
 			v.object({ kind: v.literal("clipboard") }),
 			v.object({ kind: v.literal("agent"), threadId: v.id("ai_chat_threads") }),
 			v.object({ kind: v.literal("rename") }),
+			/**
+			 * Started by a personal API key through `/api/v1/files/move` or `/api/v1/files/copy`.
+			 */
+			v.object({
+				kind: v.literal("api"),
+				credentialId: v.id("api_credentials"),
+				/**
+				 * A hash of the request body. A retry with the same `requestId` must send the same body.
+				 */
+				inputHash: v.string(),
+				/**
+				 * The `from` paths refused before the job started, at most 100. A retry and `jobs/get` show them.
+				 */
+				refused: v.array(v.object({ path: v.string(), message: v.string() })),
+			}),
 		),
 		rename: v.optional(
 			v.object({

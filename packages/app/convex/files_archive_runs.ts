@@ -81,6 +81,7 @@ import {
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { public_api_credentials_db_is_live } from "./public_api_credentials_db.ts";
 import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {
@@ -2093,15 +2094,14 @@ export async function files_archive_runs_db_advance(
 	const membership = await db_get_run_membership({ ctx, run: storedRun, activity });
 	// A job an API key started stops its checks once the key is revoked or loses write, like a lost
 	// membership. Only the steps check this, so the person still sees the job in the app.
-	const credential = storedRun.credentialId ? await ctx.db.get("api_credentials", storedRun.credentialId) : null;
 	const isApiKeyLost =
 		storedRun.credentialId !== undefined &&
-		(!credential ||
-			credential.revokedAt !== null ||
-			credential.userId !== storedRun.userId ||
-			credential.serviceAccountId !== null ||
-			credential.workspaceId !== storedRun.workspaceId ||
-			!credential.scopes.includes("files:write"));
+		!(await public_api_credentials_db_is_live(ctx, {
+			credentialId: storedRun.credentialId,
+			userId: storedRun.userId,
+			workspaceId: storedRun.workspaceId,
+			scopes: ["files:write"],
+		}));
 	const stepOutcome = await db_step(ctx, {
 		opId: args.op._id,
 		run,

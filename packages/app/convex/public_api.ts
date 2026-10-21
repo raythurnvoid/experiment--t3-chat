@@ -6509,6 +6509,23 @@ function invalid_name_message(kind: "file" | "folder", name: string, cleanName: 
 	);
 }
 
+/**
+ * The refusal text for a new file or folder name that is not clean, or null for a clean name. Move and
+ * copy use it for the new name in `to`.
+ */
+export function public_api_get_invalid_name_message(kind: "file" | "folder", name: string) {
+	if (kind === "file") {
+		return public_api_is_valid_write_file_name(name)
+			? null
+			: invalid_name_message("file", name, clean_write_file_name(name));
+	}
+
+	const normalized = files_normalize_name("folder", name);
+	return !normalized._nay && normalized._yay === files_normalize_special_node_path("folder", name)
+		? null
+		: invalid_name_message("folder", name, normalized._nay ? null : normalized._yay);
+}
+
 export async function public_api_http_write_file(args: {
 	ctx: ActionCtx;
 	request: Request;

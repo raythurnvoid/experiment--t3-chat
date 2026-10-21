@@ -159,6 +159,10 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/mkdir": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/mkdir"];
 
+	"/api/v1/files/move": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/move"];
+
+	"/api/v1/files/copy": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/copy"];
+
 	"/api/v1/files/delete": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/delete"];
 
 	"/api/v1/files/jobs/get": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/jobs/get"];

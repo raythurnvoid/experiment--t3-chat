@@ -80,6 +80,7 @@ import {
 	files_nodes_content_db_discard_transfer_file_attempt,
 	files_nodes_content_db_discard_transfer_file_capture,
 } from "./files_transfer_assets_db.ts";
+import { public_api_credentials_db_is_live } from "./public_api_credentials_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_subtree_ops_db_delete,
@@ -182,6 +183,18 @@ async function db_get_run_memberships(args: {
 		});
 		if (authorized._nay) return null;
 	}
+	// A job an API key started stops at its next step once the key is revoked or loses a scope it
+	// needs, like a lost membership. A copy reads its sources, so it also needs read and download.
+	if (
+		run.origin.kind === "api" &&
+		!(await public_api_credentials_db_is_live(ctx, {
+			credentialId: run.origin.credentialId,
+			userId: run.userId,
+			workspaceId: run.workspaceId,
+			scopes: run.kind === "copy" ? ["files:write", "files:read", "files:download"] : ["files:write"],
+		}))
+	)
+		return null;
 
 	// This guard does not write. Equal scopes can share its actor docs.
 	const memberships = await Promise.all(
@@ -391,7 +404,8 @@ async function db_pause_item(args: {
 	if (!run) return;
 	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
 	if (!activities_is_active(activity.status) || activity.status === "stopping") return;
-	if (run.fixedDeadline) {
+	// Nobody can answer a choice for an API job, so it stops with the reason. Items already done stay done.
+	if (run.fixedDeadline || run.origin.kind === "api") {
 		await db_stop_run({ ctx, run, errorMessage: kind === "source_changed" ? "Source changed" : "Destination changed" });
 		return;
 	}
@@ -815,9 +829,12 @@ async function db_resolve_name(
 		}
 
 		const policy = args.run.conflictPolicy[args.item.kind];
-		// Bash -n skips later source branches. An existing destination folder still merges.
+		// Bash `-n` and the API's `onConflict: "skip"` skip later source branches.
+		// An existing destination folder still merges.
 		const effective =
-			reserved && args.run.origin.kind === "agent" && args.run.conflictPolicy.file === "skip"
+			reserved &&
+			(args.run.origin.kind === "agent" || args.run.origin.kind === "api") &&
+			args.run.conflictPolicy.file === "skip"
 				? "skip"
 				: (choice ?? policy);
 
@@ -1583,6 +1600,42 @@ async function db_start(
 	}
 
 	return Result({ _yay: { runId, activityId } });
+}
+
+/**
+ * Start a Move or Copy for a personal API key. The caller resolved and checked the paths as the key.
+ * At most `files_TRANSFER_SELECTION_PAGE_SIZE` sources, so the whole selection fits in one page and
+ * the run starts at once.
+ */
+export async function files_transfer_db_start_for_api(
+	ctx: MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		requestId: string;
+		kind: Doc<"files_transfer_runs">["kind"];
+		sources: files_PendingTarget[];
+		targetParent: files_PendingParent;
+		targetPath: string;
+		targetName: string | null;
+		conflictPolicy: Doc<"files_transfer_runs">["conflictPolicy"];
+		origin: Extract<Doc<"files_transfer_runs">["origin"], { kind: "api" }>;
+	},
+) {
+	const started = await db_start(ctx, {
+		...args,
+		sourceMembership: args.membership,
+		destinationMembership: args.membership,
+		// A saved copy plans its top items into `targetParent`, so that folder must already exist.
+		missingParentNames: [],
+		expectedSourceCount: args.sources.length,
+		feedVisible: true,
+	});
+	if (started._nay) return started;
+
+	const run = (await ctx.db.get("files_transfer_runs", started._yay.runId))!;
+	const sealed = await db_seal({ ctx, run });
+	if (sealed._nay) return sealed;
+	return started;
 }
 
 export async function files_transfer_db_start_rename(
@@ -3405,6 +3458,20 @@ export const settle_cohort = internalMutation({
 					item,
 					kind: cohort.errorCode === "destination_changed" ? "destination_changed" : "source_changed",
 				});
+				return null;
+			}
+			// An API move refuses each item alone, like `files/delete`. The item keeps the refusal, and
+			// `files/jobs/get` lists it. The other items go on.
+			if (run.origin.kind === "api" && cohort.errorCode === "permission_denied") {
+				await ctx.db.patch("files_transfer_items", item._id, {
+					state: "failed",
+					errorMessage: cohort.errorMessage ?? "Permission denied",
+				});
+				await ctx.db.patch("activities", activity._id, {
+					progress: { ...activity.progress, failed: activity.progress.failed + 1 },
+					updatedAt: Date.now(),
+				});
+				await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 				return null;
 			}
 			await db_stop_run({ ctx, run, errorMessage: cohort.errorMessage ?? "This Move could not finish." });
