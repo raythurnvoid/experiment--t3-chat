@@ -124,7 +124,13 @@ const API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES = API_KEY_SETUP_ALLOWED_SCOPES.filter
 	public_api_SERVICE_ACCOUNT_SCOPES.some((serviceAccountScope) => serviceAccountScope === scope),
 );
 
-// Docs for the two setup fields, shown in the editor's suggestions and on hover.
+// Short labels for the two setup fields, shown on each row of the editor's suggestions.
+const API_KEY_SETUP_FIELD_LABELS = {
+	name: "Key name",
+	scopes: "Scope list",
+} as const;
+
+// Docs for the two setup fields, shown on hover.
 const API_KEY_SETUP_FIELD_DOCS = {
 	name: "A name that tells you where the key is used, 1 to 80 characters.",
 	scopes: 'The scopes the key needs, like ["files:list"]. "All scopes" under the editor lists them.',
@@ -649,6 +655,8 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 			quickSuggestions: { other: "on", comments: "off", strings: "on" },
 			// Show only the suggestions below. Monaco would otherwise fill an empty list with words from the text.
 			suggest: { showWords: false },
+			// Do not mark every copy of the word under the caret. `:` splits words, so every "files" would light up.
+			occurrencesHighlight: "off",
 		} satisfies NonNullable<EditorProps["options"]>;
 	});
 
@@ -745,13 +753,15 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 					return { suggestions: [] };
 				}
 
+				// Show each item's short label on its row, and give it no `detail` and no `documentation`. With
+				// either one, Monaco offers a details panel. That panel opens to the right of the list, past the
+				// editor's edge, where the dialog cuts it off. The full docs stay in the hover and "All scopes".
 				const range = toRange(model, suggestion.replace.offset, suggestion.replace.length);
 				if (suggestion.kind === "field") {
 					return {
 						suggestions: suggestion.values.map((key) => ({
-							label: key,
+							label: { label: key, description: API_KEY_SETUP_FIELD_LABELS[key] },
 							kind: monaco_languages.CompletionItemKind.Property,
-							detail: API_KEY_SETUP_FIELD_DOCS[key],
 							filterText: `"${key}"`,
 							// Add the value too, with the caret inside it, unless the field already has its colon.
 							insertText: suggestion.colonFollows ? `"${key}"` : key === "name" ? '"name": "$1"' : '"scopes": [$1]',
@@ -763,10 +773,8 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 
 				return {
 					suggestions: suggestion.values.map((scope, index) => ({
-						label: scope,
+						label: { label: scope, description: API_KEY_SCOPE_LABELS[scope] },
 						kind: monaco_languages.CompletionItemKind.Value,
-						detail: API_KEY_SCOPE_LABELS[scope],
-						documentation: API_KEY_SCOPE_ROWS.find((row) => row.scope === scope)?.description,
 						filterText: `"${scope}"`,
 						insertText: `"${scope}"`,
 						// Keep the "All scopes" list order instead of sorting by name.
