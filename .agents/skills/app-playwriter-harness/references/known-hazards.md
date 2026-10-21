@@ -3005,3 +3005,13 @@ thousands of `ModifyQuerySet` adds and the page shows no rows, which looks like 
 properties of undefined (reading 'call')` until a reload. Install the patch only once (return early
 when the saved original already exists), and only after the step that can fail, such as finding the
 row to click. Hit 2026-10-18.
+
+## `import("/@id/<package>")` can reload every app tab
+
+If Vite has not bundled that exact entry yet (for example `convex/browser` while the app only imports
+`convex/react`), the import makes Vite bundle it, log "optimized dependencies changed. reloading", and
+reload every open app tab. Other agents' tabs reload too, and your next `page.evaluate` fails with
+"Execution context was destroyed". Also, `convex/browser` has no `version` export. To check which
+version of a package Vite serves, search the cache on disk instead:
+`Select-String -Path packages/app/node_modules/.vite/deps/*.js -Pattern 'version = "1\.\d+\.\d+"' -List`.
+Hit 2026-10-21.

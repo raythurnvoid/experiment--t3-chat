@@ -75,9 +75,10 @@ describe("Move owner views", () => {
 		});
 	});
 
-	test("parks child work only for an ancestor subtree reservation", async () => {
+	test("parks child work only when the Move holds the child itself", async () => {
 		const f = await fixture({ normalPaths: ["/target/child.txt"] });
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.normalNodes.get("/target/child.txt")!)))?.parentId).toBe(f.parentId);
+		const childId = f.normalNodes.get("/target/child.txt")!;
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", childId)))?.parentId).toBe(f.parentId);
 		const reservationId = await f.t.run((ctx) =>
 			ctx.db.insert("files_move_source_reservations", {
 				cohortId: f.cohortId,
@@ -92,11 +93,23 @@ describe("Move owner views", () => {
 				files_pending_overlay_db_target_cohort(ctx.db, {
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
-					target: { kind: "saved", id: f.normalNodes.get("/target/child.txt")! },
+					target: { kind: "saved", id: childId },
 				}),
 			);
 		expect(await read(), "an anchor does not park unrelated child work").toBeNull();
+		// Only private folder holds cover their subtree. The Move holds each saved item below a saved folder
+		// on its own, so the child's work waits only for that hold.
 		await f.t.run((ctx) => ctx.db.patch("files_move_source_reservations", reservationId, { mode: "subtree" }));
+		expect(await read(), "a saved folder hold does not park its child's work").toBeNull();
+		await f.t.run((ctx) =>
+			ctx.db.insert("files_move_source_reservations", {
+				cohortId: f.cohortId,
+				source: { kind: "saved", id: childId },
+				mode: "placement",
+				userId: null,
+				generation: 1,
+			}),
+		);
 		expect(await read()).toBe(f.cohortId);
 	});
 

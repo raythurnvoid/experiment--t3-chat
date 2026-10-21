@@ -8986,7 +8986,7 @@ describe("files read-only locks", () => {
 		expect(touched.status, "a touch with new folders below the deep folder").toBe(200);
 	});
 
-	test("write prepare reads each folder once during a Move, and checks names below the folder it finds", async () => {
+	test("write prepare reads the same docs for any path depth during a Move, and checks names below the folder it finds", async () => {
 		const t = test_convex();
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-write-prepare-reads" });
 		const reads: number[] = [];
@@ -9017,7 +9017,7 @@ describe("files read-only locks", () => {
 					pathDepth: pathDepth + 10,
 				});
 			}
-			// Another folder is in a Move, so every path is found by name from the root.
+			// Another folder is in a Move, so path lookups use the Move's pinned view.
 			const movingId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: writer.db.organizationId,
@@ -9050,7 +9050,8 @@ describe("files read-only locks", () => {
 
 		expect((await prepare(50, "f.md"))._nay).toBeUndefined();
 		expect((await prepare(100, "f.md"))._nay).toBeUndefined();
-		expect(reads[1]! - reads[0]!, "50 more folders on the path cost 50 more reads").toBe(50);
+		// During a Move, the path is found with exact path indexes, not by reading each folder by name.
+		expect(reads[1], "50 more folders on the path cost no more reads").toBe(reads[0]);
 		// The new name must be checked even though the folder's stored depth is deeper than the path.
 		expect(
 			await prepare(100, `${"n".repeat(files_NAME_MAX_LENGTH + 1)}.md`),
