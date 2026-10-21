@@ -40,7 +40,7 @@ import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_po
 import { files_share_links_db_check_live_file, files_share_links_db_check_live_node } from "./files_share_links.ts";
 import { files_share_links_db_delete, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
-import { files_subtree_ops_db_find_blocker } from "./files_subtree_ops_db.ts";
+import { files_subtree_ops_busy_tree_paths } from "./files_subtree_ops_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
@@ -309,7 +309,11 @@ const share_inherited_validator = v.object({
 });
 
 /** "Anyone on the web" of one node. See `db_get_public_state`. */
-const share_public_state_validator = v.union(v.literal("on"), v.literal("inherited"), v.literal("off"));
+export const files_sharing_public_state_validator = v.union(
+	v.literal("on"),
+	v.literal("inherited"),
+	v.literal("off"),
+);
 
 type FileSharePrincipal =
 	| { kind: "user"; userId: Id<"users"> }
@@ -660,7 +664,7 @@ export const get_node_share_state = query({
 			 * "Anyone on the web": `on` when the node itself is public, `inherited` when a public folder
 			 * above makes it public, `off` otherwise.
 			 */
-			public: share_public_state_validator,
+			public: files_sharing_public_state_validator,
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -1691,18 +1695,26 @@ export async function files_sharing_db_set_node_public(
 			node.moveCohortId ||
 			(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } }))
 		) {
-			return Result({ _nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." } });
+			return Result({
+				_nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." },
+			});
 		}
-		// A restrict above that has not reached the node yet would leave it in its old area. Wait for it.
-		if (
-			await files_subtree_ops_db_find_blocker(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				treePaths: [node.treePath],
-				waiter: null,
-			})
-		) {
-			return Result({ _nay: { message: "Wait until the access change of this item or a folder above finishes" } });
+		// A job on the node or a folder above, such as a restrict that has not reached the node yet, may
+		// still move it into another area. Wait for it. A job below the node changes nothing here.
+		for await (const op of ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_organization_workspace_kind", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+			)) {
+			if (
+				files_subtree_ops_busy_tree_paths(op).some(
+					(busyPath) => busyPath === node.treePath || (busyPath.endsWith("/") && node.treePath.startsWith(busyPath)),
+				)
+			) {
+				return Result({
+					_nay: { name: "not_ready", message: "Wait until the access change of this item or a folder above finishes" },
+				});
+			}
 		}
 		const live = await files_share_links_db_check_live_node(ctx, {
 			organizationId: args.organizationId,
@@ -1741,7 +1753,7 @@ export const set_node_public = mutation({
 		nodeId: v.id("files_nodes"),
 		enabled: v.boolean(),
 	},
-	returns: v_result({ _yay: v.object({ public: share_public_state_validator }) }),
+	returns: v_result({ _yay: v.object({ public: files_sharing_public_state_validator }) }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {

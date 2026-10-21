@@ -10,7 +10,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-test("link removal cleans more than one page of past publication records", async () => {
+test("link removal cleans more than one page of old media approval docs", async () => {
 	const f = await fixture();
 	const link = await link_on(f, f.nodeId);
 	await f.t.run(async (ctx) => {

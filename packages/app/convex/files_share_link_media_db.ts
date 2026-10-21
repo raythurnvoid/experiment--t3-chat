@@ -1,13 +1,12 @@
-// Old per-link media approvals. "Anyone on the web" replaced them, so nothing reads them for access and
-// nothing writes new ones. The rows stay until their removal is approved. A deleted link still removes
-// its own rows, as before.
+// Old media approval docs. "Anyone on the web" replaced them, so nothing reads them for access and
+// nothing writes new ones. A deleted link and a tenant purge still remove them.
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import { internalMutation } from "./functions.ts";
 
 /**
- * The link is already gone. Old publication docs grant nothing while these pages are removed.
+ * The link is already gone. Its old media approval docs grant nothing while these pages are removed.
  */
 export const cleanup_link_media = internalMutation({
 	args: { linkId: v.id("files_share_links"), cursor: v.union(v.string(), v.null()) },

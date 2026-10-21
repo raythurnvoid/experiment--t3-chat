@@ -1563,7 +1563,7 @@ async function db_headers(
 			scope !== physical._id && physical.parentExtendedScopeNodeId !== undefined
 				? (parent?.extendedScopeNodeId ?? null)
 				: undefined,
-		// A public root stays public only inside its own restricted area. A move into a restricted folder
+		// A public root stays public only inside its own restricted area. A Move into a restricted folder
 		// needs no manage there, so it must not bring the item's "Anyone on the web" along.
 		publicScopeNodeId:
 			(old ?? physical).publicScopeNodeId === physical._id && (old ?? physical).restrictedScopeNodeId === scope

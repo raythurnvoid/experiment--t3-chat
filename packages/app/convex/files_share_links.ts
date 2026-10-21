@@ -260,7 +260,7 @@ export async function files_share_links_db_check_live_node(
 		restrictedScopeNodeId: args.node.restrictedScopeNodeId,
 	});
 	if (scope === "dead") {
-		return Result({ _nay: { message: "Wait until the access change of a folder above finishes" } });
+		return Result({ _nay: { name: "not_ready", message: "Wait until the access change of a folder above finishes" } });
 	}
 	if (scope === "bound") {
 		return Result({ _nay: { message: "A plugin decides who can read this item, so it cannot be public" } });
@@ -877,7 +877,7 @@ export const create_share_link_download_urls = action({
 
 /**
  * The images and videos of a file with a live public link, and whether each one shows there. Names and
- * ids only for files the caller can read: a manager can point the file at any id.
+ * ids only for files the caller can read: the file can embed any file id.
  */
 export const get_media_to_share = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
@@ -889,12 +889,12 @@ export const get_media_to_share = query({
 					v.object({
 						available: v.literal(false),
 						kind: v.union(v.literal("image"), v.literal("video")),
-						public: v.boolean(),
+						isPublic: v.boolean(),
 					}),
 					v.object({
 						available: v.literal(true),
 						kind: v.union(v.literal("image"), v.literal("video")),
-						public: v.boolean(),
+						isPublic: v.boolean(),
 						nodeId: v.id("files_nodes"),
 						name: v.string(),
 						canManage: v.boolean(),
@@ -933,12 +933,12 @@ export const get_media_to_share = query({
 				const mediaNode = prepared.mediaNodes[index];
 				const isPublic = prepared.mediaAssets[index] !== null;
 				if (!mediaNode || !(await reader.checker.can(mediaNode, "content.read"))) {
-					return { available: false as const, kind: item.kind, public: isPublic };
+					return { available: false as const, kind: item.kind, isPublic };
 				}
 				return {
 					available: true as const,
 					kind: item.kind,
-					public: isPublic,
+					isPublic,
 					nodeId: mediaNode._id,
 					name: mediaNode.name,
 					canManage: await reader.checker.can(mediaNode, "content.permissions.manage"),

@@ -501,14 +501,14 @@ describe("FilesShareModal", () => {
 		mediaQueryMock
 			.mockResolvedValueOnce({
 				media: [
-					{ ...photo, public: false },
-					{ available: false, kind: "video", public: false },
+					{ ...photo, isPublic: false },
+					{ available: false, kind: "video", isPublic: false },
 				],
 			})
 			.mockResolvedValueOnce({
 				media: [
-					{ ...photo, public: true },
-					{ available: false, kind: "video", public: false },
+					{ ...photo, isPublic: true },
+					{ available: false, kind: "video", isPublic: false },
 				],
 			});
 		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
@@ -530,6 +530,54 @@ describe("FilesShareModal", () => {
 		});
 		expect(mediaQueryMock).toHaveBeenCalledTimes(2);
 		expect(mediaQueryMock).toHaveBeenCalledWith("media_to_share", { membershipId: "membership_1", nodeId: "node_1" });
+	});
+
+	test("says when a public image still cannot show, and shows rows the caller cannot change", async () => {
+		mockShareState({ ...FILE_SHARE, link: LINK });
+		const photo = {
+			available: true,
+			kind: "image",
+			nodeId: "image_1",
+			name: "Photo.png",
+			canManage: true,
+			isPublic: false,
+		};
+		const media = [
+			photo,
+			{ available: true, kind: "image", nodeId: "image_2", name: "Logo.png", canManage: false, isPublic: false },
+			{ available: false, kind: "image", isPublic: true },
+		];
+		// The second answer still hides the photo, for example while its upload finishes.
+		mediaQueryMock.mockResolvedValue({ media });
+		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Make Photo.png public" }));
+
+		expect((await screen.findByRole("alert")).textContent).toBe(
+			"This file is public, but this page cannot show it yet. It may still be uploading.",
+		);
+		expect(screen.queryByRole("button", { name: "Make Logo.png public" })).toBeNull();
+		const logoRow = screen.getByText("Logo.png").closest("li")!;
+		expect(within(logoRow).getByText("Not public")).toBeTruthy();
+		expect(screen.getByText("This image is public.")).toBeTruthy();
+	});
+
+	test("says an item stays public when a folder above still makes it public", async () => {
+		mockShareState({ ...FILE_SHARE, public: "on" });
+		mutationMock.mockResolvedValue({ _yay: { public: "inherited" } });
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Anyone on the web" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Not public" }));
+
+		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Still public through a folder above"));
+		expect(mutationMock).toHaveBeenCalledWith("set_public", {
+			membershipId: "membership_1",
+			nodeId: "node_1",
+			enabled: false,
+		});
 	});
 
 	test("names a creator who left, and shows Unknown when the profile is missing or failed", () => {

@@ -4990,7 +4990,7 @@ const app_convex_schema = defineSchema({
 		 * the web") points at itself. Missing means not public. Public pages show an embedded file only
 		 * when this points at a live public root; it never opens a file by id.
 		 *
-		 * Creates copy it from the parent. A folder change reaches the items inside through the scope op,
+		 * A new node copies it from its parent. A folder change reaches the items inside through the scope op,
 		 * which stops at restricted folders. A root loses its own flag when its restricted area changes.
 		 */
 		publicScopeNodeId: v.optional(v.id("files_nodes")),
@@ -5430,9 +5430,8 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_scope", ["organizationId", "workspaceId", "restrictedScopeNodeId"]),
 
 	/**
-	 * Old per-link media approvals. Unused: public pages now show only public media
-	 * (`files_nodes.publicScopeNodeId`). Kept until removing the rows is approved. A deleted link and a
-	 * tenant purge still remove their rows.
+	 * Old media approval docs. Unused: public pages now show only public media
+	 * (`files_nodes.publicScopeNodeId`). A deleted link and a tenant purge still remove them.
 	 */
 	files_share_link_media: defineTable({
 		organizationId: v.id("organizations"),

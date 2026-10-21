@@ -74,7 +74,10 @@ function set_root_files() {
 				directoryView: null,
 				page: stream === "normal" && kind === "file" ? files : [],
 			});
-			results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), { ...EMPTY_PAGE, directoryView: null });
+			results.set(watch_key(children, { ...streamArgs.children(true), paginationOpts: { cursor: null } }), {
+				...EMPTY_PAGE,
+				directoryView: null,
+			});
 		}
 		for (const principalIndex of [0, 1, 2] as const) {
 			results.set(
@@ -132,12 +135,15 @@ beforeEach(() => {
 	insertContent.mockReset();
 	onClose.mockReset();
 	// The saved streams wait for the workspace view. No Move is running.
-	results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
-		cohortId: null,
-		view: null,
-		generation: 0,
-		searchGeneration: 0,
-	});
+	results.set(
+		watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+		{
+			cohortId: null,
+			view: null,
+			generation: 0,
+			searchGeneration: 0,
+		},
+	);
 	client = new ConvexReactClient("https://media-picker-test.convex.cloud");
 	// Keep the real pagination and subscription hooks. Only replace the server watches.
 	vi.spyOn(client, "watchQuery").mockImplementation((query, args?, _options?) => {

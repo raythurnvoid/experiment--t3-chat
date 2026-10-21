@@ -79,7 +79,7 @@ import {
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
-import { files_sharing_db_set_node_public } from "./files_sharing.ts";
+import { files_sharing_db_set_node_public, files_sharing_public_state_validator } from "./files_sharing.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
@@ -2352,9 +2352,7 @@ export const set_file_public = internalMutation({
 		nodeId: v.string(),
 		public: v.boolean(),
 	},
-	returns: v_result({
-		_yay: v.object({ public: v.union(v.literal("on"), v.literal("inherited"), v.literal("off")) }),
-	}),
+	returns: v_result({ _yay: v.object({ public: files_sharing_public_state_validator }) }),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:publish" });
 		if (authorized._nay) {
@@ -6409,7 +6407,8 @@ export async function public_api_http_set_file_public(args: {
 					? 401
 					: result._nay.message === "Not found"
 						? 404
-						: result._nay.name === "move_busy"
+						: // A Move or an access change that is still running. Retry later.
+							result._nay.name === "move_busy" || result._nay.name === "not_ready"
 							? 409
 							: 403,
 			body: { message: result._nay.message },

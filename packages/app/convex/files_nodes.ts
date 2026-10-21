@@ -861,7 +861,8 @@ export async function files_nodes_db_set_public_scope(
 	}
 	const physical = await ctx.db.get("files_nodes", args.nodeId);
 	if (!physical) return;
-	const physicalParent = physical.parentId !== files_ROOT_ID ? await ctx.db.get("files_nodes", physical.parentId) : null;
+	const physicalParent =
+		physical.parentId !== files_ROOT_ID ? await ctx.db.get("files_nodes", physical.parentId) : null;
 	await ctx.db.patch("files_nodes", args.nodeId, fields(physical, physicalParent));
 }
 

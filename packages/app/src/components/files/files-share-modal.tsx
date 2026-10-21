@@ -292,7 +292,16 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 			if (result._nay) {
 				setError(result._nay.message);
 			} else {
-				setReview(await app_convex.query(app_convex_api.files_share_links.get_media_to_share, { membershipId, nodeId }));
+				const next = await app_convex.query(app_convex_api.files_share_links.get_media_to_share, {
+					membershipId,
+					nodeId,
+				});
+				setReview(next);
+				// The file is public now, but the page checks more: a finished upload, and no plugin deciding
+				// who reads its folder.
+				if (next?.media[index]?.isPublic === false) {
+					setError("This file is public, but this page cannot show it yet. It may still be uploading.");
+				}
 			}
 		} catch (error) {
 			console.error("[FilesShareModalMedia.handleMakePublic] Failed to make media public", { error });
@@ -336,19 +345,19 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 							key={index}
 							className={"FilesShareModalMedia-row" satisfies FilesShareModalLink_ClassNames}
 							{...({
-								"data-share-media": item.public ? "public" : "not_public",
+								"data-share-media": item.isPublic ? "public" : "not_public",
 							} satisfies FilesShareModalMedia_CustomAttributes)}
 						>
-							{/* A manager can point the file at any id, so a file the caller cannot open stays unnamed. */}
+							{/* The file can embed any file id, so a file the caller cannot open stays unnamed. */}
 							<span>
 								{item.available
 									? item.name
-									: item.public
+									: item.isPublic
 										? `This ${item.kind} is public.`
 										: `This ${item.kind} is not public, and you cannot open it.`}
 							</span>
-							{item.available && item.public ? <span>Public</span> : null}
-							{item.available && !item.public && item.canManage ? (
+							{item.available && item.isPublic ? <span>Public</span> : null}
+							{item.available && !item.isPublic && item.canManage ? (
 								<MyButton
 									variant="outline"
 									disabled={busy || (pending !== null && pending !== String(index))}
@@ -359,7 +368,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 									{pending === String(index) ? "Saving..." : "Make public"}
 								</MyButton>
 							) : null}
-							{item.available && !item.public && !item.canManage ? <span>Not public</span> : null}
+							{item.available && !item.isPublic && !item.canManage ? <span>Not public</span> : null}
 						</li>
 					))}
 				</ul>
@@ -515,9 +524,7 @@ const FilesShareModalPublic = memo(function FilesShareModalPublic(props: FilesSh
 		>
 			<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
 				<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
-					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
-						Anyone on the web
-					</h3>
+					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Anyone on the web</h3>
 					<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
 						{state === "inherited"
 							? `A public folder above makes this ${nodeKindText} public. Turn it off on that folder.`
@@ -737,8 +744,9 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const runShareWrite = useFn(
 		(args: {
 			key: string;
-			request: Promise<{ _nay?: { message: string } }>;
-			successMessage: string;
+			request: Promise<{ _nay?: { message: string }; _yay?: { public: "on" | "inherited" | "off" } | null }>;
+			/** A function picks the message from the answer, when the answer can differ from the request. */
+			successMessage: string | ((result: { _yay?: { public: "on" | "inherited" | "off" } | null }) => string);
 			/** Runs only when the server said yes, so a refusal leaves the form as the user left it. */
 			onDone?: () => void;
 			/** Shows a refusal beside its control instead of in a toast. */
@@ -763,7 +771,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						return;
 					}
 
-					toast.success(args.successMessage);
+					toast.success(typeof args.successMessage === "string" ? args.successMessage : args.successMessage(result));
 					args.onDone?.();
 				})
 				.catch((error) => {
@@ -905,7 +913,13 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				nodeId: viewNodeId,
 				enabled,
 			}),
-			successMessage: enabled ? "Made public" : "No longer public",
+			// Off on an item inside a public folder clears only its own setting, so it stays public.
+			successMessage: (result) =>
+				enabled
+					? "Made public"
+					: result._yay?.public === "inherited"
+						? "Still public through a folder above"
+						: "No longer public",
 			onRefused: (message) => setPublicError({ nodeId: viewNodeId, message }),
 		});
 	});

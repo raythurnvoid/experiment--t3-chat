@@ -1450,8 +1450,8 @@ file by id: a visitor still needs a link token, and the file is then only an emb
   node's stored scope.
 - On also needs: a signed-in user, not an anonymous one ("Sign in to make files public");
   `content.read` on the node; a node that is not archived and a live workspace; no Move mark on the
-  node and no Move reservation for it (`move_busy`); no running scope op on the node or a folder
-  above it (`files_subtree_ops_db_find_blocker`); and `db_check_scope` `ok` (not dead, not bound).
+  node and no Move reservation for it (`move_busy`); no running subtree op on the node or a folder
+  above it (`not_ready`; an op below the node does not count); and `db_check_scope` `ok` (not dead, not bound).
 - Off needs only manage. It works during a Move: `files_nodes_db_set_public_scope` patches both
   Move views too, so the Move end does not write the old value back.
 - Off on an item that is public only through a folder above is refused: "This item is public
@@ -1463,13 +1463,13 @@ file by id: a visitor still needs a link token, and the file is then only an emb
 - `get_node_share_state` returns `public: "on" | "inherited" | "off"`. `inherited` means a public
   folder above makes the node public. It uses the same root checks as the view.
 - `files_share_links.get_media_to_share` feeds Sharing → "Check images and videos" on a file with a
-  live link (manage and read needed). Each item has `public`, from the same check as the public
+  live link (manage and read needed). Each item has `isPublic`, from the same check as the public
   page. Only items the caller can read get `nodeId`, `name`, and `canManage`. The rest stay
-  unnamed, because a manager can point the file at any id.
+  unnamed, because the file can embed any file id.
 
-**Writers.** Every writer uses one rule. `own` is true when the node was its own public root and
-its restricted area does not change. The new value is the node itself when `own`, nothing when the
-node is a restricted root, and else the parent's value. Writers: `db_insert_node` (a new node copies
+**Writers.** Every writer uses one rule. A node that was its own public root stays its own root
+when its restricted area does not change. Otherwise a restricted root gets nothing, and any other
+node gets its parent's value. Writers: `db_insert_node` (a new node copies
 its parent's value, never a copy source's), `files_nodes_db_set_restricted_scope`,
 `files_nodes_db_rebuild_node`, the Move `db_headers` and `db_rename_parents`, and
 `files_nodes_db_restore_node`. So:
@@ -1499,8 +1499,8 @@ its parent's value, never a copy source's), `files_nodes_db_set_restricted_scope
   inside, that item keeps its own public flag. Its stored area never changed, the same as before the
   unrestrict.
 
-The old per-link approval table `files_share_link_media` is unused. Nothing reads or writes it for
-access. It stays until removing its rows is approved; see `../data-deletion/SKILL.md`.
+The old media approval table `files_share_link_media` is unused. Nothing reads or writes it for
+access. A deleted link and a tenant purge still remove its docs; see `../data-deletion/SKILL.md`.
 
 ### Lifecycle: what ends a link
 
