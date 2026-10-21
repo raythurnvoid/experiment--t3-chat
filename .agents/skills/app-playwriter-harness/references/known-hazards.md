@@ -2952,17 +2952,29 @@ and 153–612 docs written. Both moves finished and returned the fixture to its 
 did not reproduce shared-load failure, so it measured step size but not the retry delay after a
 failure. Hit 2026-09-27.
 
-## The wait between folder job steps is commit time, not a scheduler delay
+## The wait between folder job steps is the jobs the step scheduled
 
-The next `files_subtree_ops:advance` runs with `runAfter(0)`, but in `convex logs` it starts 0.6–0.9 s
-after a step that wrote 130–155 docs. After a step that wrote 3–5 docs it starts within 0.02–0.04 s.
-So the wait grows with the writes of the step before, and fewer steps alone do not save that time.
-To find it, sort the `advance` executions by `executionTimestamp` and subtract the end of the step
+The next `files_subtree_ops:advance` runs with `runAfter(0)`, but the scheduler first runs the other
+functions the step scheduled with `runAfter(0)`. In `convex logs` the next step starts right when the
+last of them ends. Archive and Restore used to schedule a saved scope job for every item, and each job
+ran twice (`files_pending_overlay:run_job`), so a 30-item step queued 60 runs and the next step waited
+0.7–0.9 s. Now small items copy their scope inside the step (`files_pending_overlay_db_follow_saved_scope`)
+and the wait is about 0.2 s. It is not commit time. To check it, count the `run_job` executions between
+two steps, and sort the `advance` executions by `executionTimestamp` and subtract the end of the step
 before (`executionTimestamp + executionTime`). Skip the 60 s retries: they write 0 docs. Single runs
 on dev change a lot (one copy-2 restore step took 4.85 s instead of about 1.3 s), so compare medians of
 3 or more runs. Time phases with `console.time` inside the step. In archive steps, about half of the
 time is the per-item `files_subtree_ops_db_is_near_limits` call, because its overlay flush does the
-derived work of the item stamped before. Hit 2026-10-20.
+derived work of the item stamped before. Hit 2026-10-20, cause found 2026-10-21.
+
+## A headless scratch Chrome opens a tiny window, and the filter bar list covers the sidebar
+
+A `chrome.exe --headless=new` scratch browser attached with `session new --direct` has a 764x429
+window and `page.viewportSize()` is null. On a folder page the folder filter bar's suggestion list
+(`.np-ComboboxPositioner`, `:popover-open`) can stay open and cover the sidebar `More options`
+button. `click()` then waits until the call times out, and a mouse click lands on a suggestion. Call
+`page.setViewportSize({ width: 1400, height: 900 })` and press Escape before clicking. Check with
+`document.elementFromPoint(x, y)` when a click does nothing. Hit 2026-10-21.
 
 ## `click()` waits forever on an `aria-disabled` button
 

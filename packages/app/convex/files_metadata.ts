@@ -454,9 +454,10 @@ export async function files_metadata_db_patch_file_scope(
 		restrictedScopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
-	// Committed metadata is bounded by its write caps. Path and archive scope follow the node in the
-	// saved scope job (`files_pending_overlay_db_schedule_saved_scope`), and so does the area of the
-	// items inside.
+	// Committed metadata is bounded by its write caps. Archive and Restore copy path and archive state
+	// onto these docs in the same mutation, or in a saved scope job when the node has many docs
+	// (`files_pending_overlay_db_follow_saved_scope`). The area of the items inside follows in a saved
+	// scope job.
 	const docs = await ctx.db
 		.query("files_metadata_docs")
 		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
@@ -1089,8 +1090,8 @@ export async function files_metadata_db_get_table_field(
 	// Staging and cleanup move each bounded field between these two exact ranges.
 	const metadataDoc = candidates.find((candidate) => candidate !== null);
 	if (!metadataDoc) return null;
-	// After a Restore the doc keeps its archive id until the saved scope job runs. Show no value
-	// until then.
+	// After a Restore of a node with many saved docs, the doc keeps its archive id until the saved
+	// scope job runs. Show no value until then.
 	if (
 		metadataDoc.archiveOperationId !== undefined &&
 		(await files_pending_overlay_db_has_saved_scope_job(ctx, args.fileNode._id))
@@ -1259,7 +1260,8 @@ export const list_node_fields = query({
 				isDone = true;
 				break;
 			}
-			// After a Restore the doc keeps its archive id until the saved scope job runs. Skip it until then.
+			// After a Restore of a node with many saved docs, the doc keeps its archive id until the saved
+			// scope job runs. Skip it until then.
 			const inTransit =
 				metadataDoc.archiveOperationId !== undefined &&
 				(await files_pending_overlay_db_has_saved_scope_job(ctx, fileNode._id));

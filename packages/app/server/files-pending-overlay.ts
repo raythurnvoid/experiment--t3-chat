@@ -41,6 +41,7 @@ import {
 	type files_PendingTarget,
 	type files_SavedStream,
 } from "../shared/files.ts";
+import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { convex_error } from "./convex-utils.ts";
 import {
@@ -214,6 +215,15 @@ const INLINE_OWNER_PATH_PLACES = 50;
  * The inline owner path step also stops after it used this many ranges.
  */
 const INLINE_OWNER_PATH_RANGES = 1000;
+
+/**
+ * A saved node with at most this many saved metadata docs and at most this many text chunks gets its
+ * scope copied in the same mutation, without a saved scope job. A metadata key has a field doc and a
+ * value doc, and a text chunk holds at most 1,200 characters (`MAX_CHUNK_SIZE` in
+ * `server/files-plain-text-chunking.ts`). So this covers about 8 keys and text files up to about
+ * 19,000 characters.
+ */
+const INLINE_SAVED_SCOPE_DOCS = 16;
 
 /**
  * Ids per list job doc (place fields, targets), far below Convex's 8,192 array items.
@@ -2484,6 +2494,110 @@ export async function files_pending_overlay_db_schedule_saved_scope(
 		scheduledFunctionId,
 		attempts: 0,
 	});
+}
+
+/**
+ * Make a saved node's chunks and metadata docs follow its new path or archive state. A node with few
+ * of them is patched in this mutation. A bigger one gets a saved scope job, so one big file costs
+ * this mutation little.
+ *
+ * Archive and Restore call this for every item of a step. A job per item would add 2 scheduler runs
+ * per item before the next step can start, so small items skip the job.
+ */
+export async function files_pending_overlay_db_follow_saved_scope(
+	ctx: MutationCtx,
+	node: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId">,
+) {
+	// A job of this node may be in the middle of a pass. Let it walk once more, so it cannot write
+	// the old scope after this mutation.
+	if (await files_pending_overlay_db_has_saved_scope_job(ctx, node._id)) {
+		await files_pending_overlay_db_schedule_saved_scope(ctx, node);
+		return;
+	}
+
+	// The caller has just written the node, so read its new fields.
+	const savedNode = (await ctx.db.get("files_nodes", node._id))!;
+	const metadataDocs = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_organization_workspace_source_fileNode", (q) =>
+			q
+				.eq("organizationId", savedNode.organizationId)
+				.eq("workspaceId", savedNode.workspaceId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", savedNode._id)
+				.eq("moveView.cohortId", undefined)
+				.eq("moveView.view", undefined),
+		)
+		.take(INLINE_SAVED_SCOPE_DOCS + 1);
+	// Only files have text chunks.
+	const chunks =
+		metadataDocs.length > INLINE_SAVED_SCOPE_DOCS || savedNode.kind !== "file"
+			? []
+			: await ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q
+							.eq("organizationId", savedNode.organizationId)
+							.eq("workspaceId", savedNode.workspaceId)
+							.eq("fileNodeId", savedNode._id)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
+					.take(INLINE_SAVED_SCOPE_DOCS + 1);
+	if (metadataDocs.length > INLINE_SAVED_SCOPE_DOCS || chunks.length > INLINE_SAVED_SCOPE_DOCS) {
+		await files_pending_overlay_db_schedule_saved_scope(ctx, node);
+		return;
+	}
+
+	await files_pending_overlay_db_copy_saved_scope(ctx, { node: savedNode, metadataDocs, chunks });
+}
+
+/**
+ * Copy a saved node's scope onto the given saved docs of that node. Metadata docs get the path,
+ * archive state and area. Plain text chunks get the path and archive state. Only docs that differ are
+ * patched.
+ */
+export async function files_pending_overlay_db_copy_saved_scope(
+	ctx: MutationCtx,
+	args: {
+		node: Doc<"files_nodes">;
+		metadataDocs: Doc<"files_metadata_docs">[];
+		chunks: Doc<"files_plain_text_chunks">[];
+	},
+) {
+	const { node } = args;
+	const archiveOperationId = node.archiveOperationId ?? undefined;
+
+	// The overlay wrapper noted the metadata docs when the caller's query returned them.
+	for (const doc of args.metadataDocs) {
+		const scope: Partial<Doc<"files_metadata_docs">> = {
+			path: node.path,
+			treePath: node.treePath,
+			archiveOperationId,
+			restrictedScopeNodeId: node.restrictedScopeNodeId,
+			// Field docs also copy the folder table sort fields, built like
+			// `files_metadata_committed_field_sort_fields`.
+			...(doc.docKind === "field"
+				? {
+						parentId: node.parentId,
+						isRestrictedScopeRoot: node.restrictedScopeNodeId === node._id,
+						name: node.name,
+						sortName: files_sort_text_key(node.name),
+					}
+				: {}),
+		};
+		const patch = Object.fromEntries(
+			Object.entries(scope).filter(([field, value]) => doc[field as keyof typeof doc] !== value),
+		);
+		if (Object.keys(patch).length > 0) await ctx.db.patch("files_metadata_docs", doc._id, patch);
+	}
+
+	for (const chunk of args.chunks) {
+		if (chunk.path === node.path && chunk.archiveOperationId === archiveOperationId) continue;
+		// The caller read the chunk, so the Move guard needs no second read before the patch.
+		files_move_reservations_db_note_source(ctx.db, { table: "files_plain_text_chunks", id: chunk._id, old: chunk });
+		await ctx.db.patch("files_plain_text_chunks", chunk._id, { path: node.path, archiveOperationId });
+	}
 }
 
 /**

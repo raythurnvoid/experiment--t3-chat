@@ -341,8 +341,11 @@ of not counting locked items.
     folder, because a folder's lock does not block its children. A lock or lost access set during the
     job stops it as failed ("Stopped partway"). The done part keeps its one archive operation id, so Restore brings
     back exactly that part.
-  - A node and its side docs (plain text chunks and metadata docs) change in the same mutation. Each doc
-    keeps its own path, treePath, and archiveOperationId. Until the job stamps a child, the child keeps
+  - A node and its side docs (plain text chunks and metadata docs) change in the same mutation when it
+    has at most 16 of each. A bigger item gets a saved scope job that copies the new scope a few seconds
+    later, and readers skip its docs until then. One job per item made each step wait for 2 job runs
+    per item, so small items do not get one. Each doc keeps its own path, treePath, and
+    archiveOperationId. Until the job stamps a child, the child keeps
     an empty stamp under a stamped folder. Owner text search still finds it (see the
     [pending spec](../files-agent-pending-updates/SKILL.md)).
   - Restore brings back one archive operation. Several operations named in one call run in the order

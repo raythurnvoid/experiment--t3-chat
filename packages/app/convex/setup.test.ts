@@ -348,8 +348,8 @@ export async function test_db_get_overlay_job(
 
 /**
  * Run every saved scope job to its end, so saved chunks and metadata docs follow their nodes after
- * an Archive or Restore. Jobs a Move parks stay. A big folder has a job per file, and each job runs
- * at least twice (metadata, then chunks).
+ * an Archive or Restore. Jobs a Move parks stay. Each item with many saved docs has a job, and each
+ * job runs at least twice (metadata, then chunks).
  */
 export async function test_finish_saved_scope_jobs(t: TestConvexRoot<DataModel>) {
 	for (let run = 0; run < 10_000; run++) {

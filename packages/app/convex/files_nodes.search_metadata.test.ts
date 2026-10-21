@@ -2297,11 +2297,73 @@ describe("list_tree_children_sorted", () => {
 		expect(first.page[0]).not.toHaveProperty("sortFieldValue");
 	});
 
-	test("a restored row's metadata cells show no value until its saved scope job runs", async () => {
+	// 9 keys make 18 metadata docs: more than Archive and Restore patch in their own mutation, so a
+	// saved scope job copies the new scope.
+	const manyMetadataEntries: files_metadata_Entry[] = [
+		{ key: "status", value: "ready" },
+		...Array.from({ length: 8 }, (_, index) => ({ key: `extra${index}`, value: "x" })),
+	];
+
+	test("a restored row with few saved docs shows its metadata at once, with no saved scope job", async () => {
 		vi.useFakeTimers();
 		const { t, db, asOwner, parentId, insert_child, set_metadata } = await seed_folder_table();
 		const fileId = await insert_child({ name: "a.md", kind: "file", updatedAt: 1 });
 		await set_metadata([[fileId, [{ key: "status", value: "ready" }]]]);
+		// The calls an archive run and a restore run make (`files_archive_runs.ts`). Keep both gives a new name.
+		await t.run(async (ctx) =>
+			files_nodes_db_archive_node(ctx, {
+				node: (await ctx.db.get("files_nodes", fileId))!,
+				archiveOperationId: "op-1",
+				updatedBy: db.userId,
+				now: Date.now(),
+				savedScope: "follow",
+			}),
+		);
+		// The Restore must start from docs that say archived.
+		await test_finish_saved_scope_jobs(t);
+		await t.run(async (ctx) =>
+			files_nodes_db_restore_node(ctx, {
+				node: (await ctx.db.get("files_nodes", fileId))!,
+				parent: await ctx.db.get("files_nodes", parentId),
+				name: "a (1).md",
+				updatedBy: db.userId,
+				now: Date.now(),
+			}),
+		);
+
+		expect(
+			await asOwner.query(api.files_metadata.get_field_values, {
+				membershipId: db.membershipId,
+				target: { kind: "saved", id: fileId },
+				fields: ["metadata.status"],
+				afterField: null,
+			}),
+		).toMatchObject({ values: [{ field: "metadata.status", value: "ready" }] });
+		const state = await t.run(async (ctx) => ({
+			jobs: await ctx.db.query("files_pending_overlay_jobs").collect(),
+			metadataDocs: await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", fileId),
+				)
+				.collect(),
+		}));
+		expect(state.jobs).toEqual([]);
+		expect(state.metadataDocs.map((doc) => [doc.docKind, doc.path, doc.archiveOperationId])).toEqual([
+			["field", "/table/a (1).md", undefined],
+			["value", "/table/a (1).md", undefined],
+		]);
+	});
+
+	test("a restored row with many saved docs shows no metadata value until its saved scope job runs", async () => {
+		vi.useFakeTimers();
+		const { t, db, asOwner, parentId, insert_child, set_metadata } = await seed_folder_table();
+		const fileId = await insert_child({ name: "a.md", kind: "file", updatedAt: 1 });
+		await set_metadata([[fileId, manyMetadataEntries]]);
 		const target = { kind: "saved" as const, id: fileId };
 		const cells = () =>
 			asOwner.query(api.files_metadata.get_field_values, {
@@ -2325,6 +2387,7 @@ describe("list_tree_children_sorted", () => {
 				archiveOperationId: "op-1",
 				updatedBy: db.userId,
 				now: Date.now(),
+				savedScope: "follow",
 			}),
 		);
 		await test_finish_saved_scope_jobs(t);
@@ -2344,7 +2407,7 @@ describe("list_tree_children_sorted", () => {
 		await expect(fields(), "a restored row lists no field until the job runs").resolves.toEqual([]);
 		await test_finish_saved_scope_jobs(t);
 		expect(await cells()).toMatchObject({ values: [{ field: "metadata.status", value: "ready" }] });
-		expect(await fields()).toEqual(["metadata.status"]);
+		expect(await fields()).toContain("metadata.status");
 
 		// With no job, a stale archive id is a bug and still fails loudly.
 		await t.run(async (ctx) => {
@@ -2366,7 +2429,7 @@ describe("list_tree_children_sorted", () => {
 		await expect(cells()).rejects.toThrow("metadataDoc source is mismatched");
 	});
 
-	test("a row that Archive and a Keep both Restore renamed in its folder leaves a metadata sort until its saved scope job runs", async () => {
+	test("a row with many saved docs that Archive and a Keep both Restore renamed in its folder leaves a metadata sort until its saved scope job runs", async () => {
 		vi.useFakeTimers();
 		const { t, db, parentId, insert_children, set_metadata, read_page } = await seed_folder_table();
 		const [fileId, keptId] = await insert_children([
@@ -2374,7 +2437,7 @@ describe("list_tree_children_sorted", () => {
 			{ name: "kept.md", kind: "file", updatedAt: 1 },
 		]);
 		await set_metadata([
-			[fileId!, [{ key: "status", value: "ready" }]],
+			[fileId!, manyMetadataEntries],
 			[keptId!, [{ key: "status", value: "ready" }]],
 		]);
 		const names = async () =>
@@ -2393,6 +2456,7 @@ describe("list_tree_children_sorted", () => {
 				archiveOperationId: "op-1",
 				updatedBy: db.userId,
 				now: Date.now(),
+				savedScope: "follow",
 			}),
 		);
 		await t.run(async (ctx) =>

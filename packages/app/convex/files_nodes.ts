@@ -191,6 +191,7 @@ import {
 } from "./files_pending_nodes_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
+	files_pending_overlay_db_follow_saved_scope,
 	files_pending_overlay_db_schedule_saved_scope,
 	files_pending_overlay_list,
 	files_pending_overlay_list_over_budget,
@@ -3682,8 +3683,7 @@ export async function files_nodes_db_rebuild_node(
 
 // #region archive nodes
 /**
- * Archive one node under `archiveOperationId`. Its saved chunks and metadata docs follow in a job,
- * so one big file costs this mutation little. The caller decides whether to advance the media
+ * Archive one node under `archiveOperationId`. The caller decides whether to advance the media
  * validation version (see `files_nodes_db_archive_nodes`).
  *
  * It also deletes the node's own public link. A folder's links below it are the caller's job, because
@@ -3696,6 +3696,13 @@ export async function files_nodes_db_archive_node(
 		archiveOperationId: string;
 		updatedBy: Id<"users">;
 		now: number;
+		/**
+		 * How the node's saved chunks and metadata docs follow. `follow`: patch them in this mutation
+		 * when there are few, else a saved scope job (`files_pending_overlay_db_follow_saved_scope`). Use
+		 * it only when the caller checks the transaction limits between nodes. `job`: always a saved
+		 * scope job, for a caller that archives many nodes in one mutation.
+		 */
+		savedScope: "follow" | "job";
 	},
 ) {
 	await files_share_links_db_delete_for_node(ctx, {
@@ -3715,15 +3722,17 @@ export async function files_nodes_db_archive_node(
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
-	await files_pending_overlay_db_schedule_saved_scope(ctx, args.node);
+	if (args.savedScope === "follow") await files_pending_overlay_db_follow_saved_scope(ctx, args.node);
+	else await files_pending_overlay_db_schedule_saved_scope(ctx, args.node);
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
 }
 
 /**
  * Restore one archived node under `parent`, which is active, or under the workspace root when it is
- * null. Its saved chunks and metadata docs follow in a job. The node takes the parent's
- * restricted scope unless it is its own scope root, like a move. The caller advances the media
- * validation version once after its writes.
+ * null. Its saved chunks and metadata docs follow like `savedScope: "follow"` on Archive, so the
+ * caller checks the transaction limits between nodes. The node takes the parent's restricted scope
+ * unless it is its own scope root, like a move. The caller advances the media validation version once
+ * after its writes.
  *
  * Items inside keep their old path here. The restore job walks the folder and gives them the new
  * path and scope.
@@ -3777,7 +3786,7 @@ export async function files_nodes_db_restore_node(
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
-	await files_pending_overlay_db_schedule_saved_scope(ctx, args.node);
+	await files_pending_overlay_db_follow_saved_scope(ctx, args.node);
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
 }
 
@@ -3814,6 +3823,7 @@ export async function files_nodes_db_archive_nodes(args: {
 			proofWorkspaces.add(fileNode.workspaceId);
 	}
 
+	// Up to a few hundred nodes and no limit check between them, so their docs follow in jobs.
 	await Promise.all(
 		fileNodes.map((fileNode) =>
 			files_nodes_db_archive_node(ctx, {
@@ -3821,6 +3831,7 @@ export async function files_nodes_db_archive_nodes(args: {
 				archiveOperationId,
 				updatedBy: args.updatedBy,
 				now: args.now,
+				savedScope: "job",
 			}),
 		),
 	);

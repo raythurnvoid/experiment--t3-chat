@@ -1,6 +1,7 @@
 // Archive and restore of a big folder do not fit in one mutation. This job changes a batch of nodes
 // per step. Each node's side docs (text chunks, metadata docs) change in the same step as the node,
-// so search and lists never see a node and its side docs disagree. The request runs a small first step
+// so search and lists never see a node and its side docs disagree. A node with many side docs gets a
+// saved scope job instead, and readers skip its docs until the job ends. The request runs a small first step
 // itself (`files_archive_runs_REQUEST_MAX_NODES` stamps and `files_archive_runs_REQUEST_MAX_CHECK_NODES`
 // checked nodes), so it answers fast. A small request finishes inside the request and writes no run,
 // no op, and no Activity, unless the archive refused a named item.
@@ -587,6 +588,7 @@ async function db_archive_node(
 		archiveOperationId: args.run.archiveOperationId,
 		updatedBy: args.userAuth.id,
 		now: args.now,
+		savedScope: "follow",
 	});
 	args.writeState.isWritten = true;
 	args.progress.completed += 1;
@@ -1193,6 +1195,7 @@ async function db_restore_top(
 			archiveOperationId: parentOperationId,
 			updatedBy: args.userAuth.id,
 			now: args.now,
+			savedScope: "follow",
 		});
 		args.writeState.isWritten = true;
 		progress.skipped += 1;
@@ -1330,6 +1333,7 @@ async function db_land_node(
 			archiveOperationId: skipOperationId,
 			updatedBy: args.userAuth.id,
 			now: args.now,
+			savedScope: "follow",
 		});
 		args.writeState.isWritten = true;
 		progress.skipped += 1;
@@ -1351,6 +1355,7 @@ async function db_land_node(
 			archiveOperationId: crypto.randomUUID(),
 			updatedBy: args.userAuth.id,
 			now: args.now,
+			savedScope: "follow",
 		});
 		args.budget.nodes -= 1;
 	}
@@ -1494,6 +1499,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 						archiveOperationId: folder.archiveOperationId,
 						updatedBy: args.userAuth.id,
 						now: args.now,
+						savedScope: "follow",
 					});
 					await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder });
 					progress.skipped += 1;

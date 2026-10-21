@@ -995,8 +995,9 @@ export const list_tree_children_sorted = query({
 					) {
 						return null;
 					}
-					// Archive, then Restore with Keep both, can rename the node in the same folder before the
-					// saved scope job copies the new name. Leave the row out while that job is pending.
+					// Archive, then Restore with Keep both, can rename a node with many saved docs in the same
+					// folder before the saved scope job copies the new name. Leave the row out while that job is
+					// pending.
 					if (
 						(fieldDoc.sortName !== node.sortName || fieldDoc.name !== node.name) &&
 						fieldDoc.nodeKind === node.kind &&

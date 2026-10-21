@@ -18,10 +18,10 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
-import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_child_ancestors,
 	files_pending_overlay_db_compute_target,
+	files_pending_overlay_db_copy_saved_scope,
 	files_pending_overlay_db_create_reader,
 	files_pending_overlay_db_delete_job,
 	files_pending_overlay_db_flush,
@@ -47,7 +47,6 @@ import {
 } from "../server/files-share-rows.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_ancestor_ids, files_pending_update_index_revision, type files_PendingTarget } from "../shared/files.ts";
-import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -628,7 +627,6 @@ async function db_run_saved_scope_job(
 	const cursor = job.cursor
 		? (JSON.parse(job.cursor) as { phase: number; page: string | null; rerun?: boolean; metadataOnly?: boolean })
 		: { phase: 0, page: null };
-	const archiveOperationId = node.archiveOperationId ?? undefined;
 	const paginationOpts = {
 		cursor: cursor.page,
 		numItems: SAVED_SCOPE_PAGE_SIZE,
@@ -648,12 +646,7 @@ async function db_run_saved_scope_job(
 					.eq("moveView.view", undefined),
 			)
 			.paginate(paginationOpts);
-		for (const chunk of page.page) {
-			if (chunk.path === node.path && chunk.archiveOperationId === archiveOperationId) continue;
-			// The page read the chunk, so the Move guard needs no second read before the patch.
-			files_move_reservations_db_note_source(ctx.db, { table: "files_plain_text_chunks", id: chunk._id, old: chunk });
-			await ctx.db.patch("files_plain_text_chunks", chunk._id, { path: node.path, archiveOperationId });
-		}
+		await files_pending_overlay_db_copy_saved_scope(ctx, { node, metadataDocs: [], chunks: page.page });
 		cursor.page = page.continueCursor;
 		isDone = page.isDone;
 	} else {
@@ -670,28 +663,7 @@ async function db_run_saved_scope_job(
 					.eq("moveView.view", undefined),
 			)
 			.paginate(paginationOpts);
-		for (const doc of page.page) {
-			const scope: Partial<Doc<"files_metadata_docs">> = {
-				path: node.path,
-				treePath: node.treePath,
-				archiveOperationId,
-				restrictedScopeNodeId: node.restrictedScopeNodeId,
-				// Field docs also copy the folder table sort fields, built like
-				// `files_metadata_committed_field_sort_fields`.
-				...(doc.docKind === "field"
-					? {
-							parentId: node.parentId,
-							isRestrictedScopeRoot: node.restrictedScopeNodeId === node._id,
-							name: node.name,
-							sortName: files_sort_text_key(node.name),
-						}
-					: {}),
-			};
-			const patch = Object.fromEntries(
-				Object.entries(scope).filter(([field, value]) => doc[field as keyof typeof doc] !== value),
-			);
-			if (Object.keys(patch).length > 0) await ctx.db.patch("files_metadata_docs", doc._id, patch);
-		}
+		await files_pending_overlay_db_copy_saved_scope(ctx, { node, metadataDocs: page.page, chunks: [] });
 		cursor.page = page.continueCursor;
 		isDone = page.isDone;
 	}
