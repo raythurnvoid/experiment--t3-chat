@@ -970,11 +970,14 @@ saved at 12:58:51, and the next slice ran 1 minute later. 465 tests.
 
 Later the same day the Workpool was replaced with plain scheduled functions (plugin commit `0573eb5`,
 dev only, no new version). `dispatch` schedules the slice and a `check_slice` one minute later. The
-slice calls `on_complete` as its last step. If the slice dies, `check_slice` frees the slot. Crashes
-are not retried. Live check: with no plugin page open, one idle hour used 55 calls (dispatch 8, OAuth
+slot is freed in `finish_slice`, in the same write as the slice result (`on_complete` covers a stale
+exit). If the slice dies before that, `check_slice` frees the slot, and a later `dispatch` (or the
+15-minute cron) frees a slot whose job already ended if that check was lost (plugin commit
+`f5b6dbc`). A crash is not retried at once; the next slice resumes the saved checkpoints after a
+backoff. Live check: with no plugin page open, one idle hour used 55 calls (dispatch 8, OAuth
 cleanup 12), with no Workpool calls and 15-minute waits. The 12-hour grant renewal resets
 `idleSlices`, which adds about 30 calls in that hour. An email sent at 18:47:18 UTC was saved at
-19:00:11, and the next slice ran 1 minute later. 464 tests.
+19:00:11, and the next slice ran 1 minute later. 465 tests.
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `raythurnvoid/bonobo-plugin-mail`
