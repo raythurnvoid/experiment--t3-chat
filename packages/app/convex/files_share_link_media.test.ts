@@ -7,6 +7,7 @@ import { test_create_saved_text_file, test_mocks_fill_db_with, test_move_nodes }
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import { files_u8_to_array_buffer } from "../shared/files.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	fixture,
 	insert_media_file,
@@ -187,6 +188,81 @@ test("private insertion approvals do not spend the publication write quota", asy
 			}),
 		).toEqual({ _yay: { shared: false } });
 	}
+});
+
+test("approving inserted media does not spend the file tree write quota", async () => {
+	const f = await fixture();
+	const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+	const nodeId = await test_create_saved_text_file(f.t, {
+		membershipId: f.db.membershipId,
+		path: "/page.md",
+		textContent: `![Photo](bonobo-file://${imageId})`,
+	});
+	await link_on(f, nodeId);
+	// An upload batch spends the tree quota on its uploads. Their approvals must still go through.
+	await f.t.run(async (ctx) => {
+		for (let index = 0; index < 50; index++) {
+			await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: f.db.userId });
+		}
+	});
+	expect(
+		await f.asOwner.mutation(api.files_share_links.approve_inserted_media, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			src: `bonobo-file://${imageId}`,
+		}),
+	).toEqual({ _yay: { shared: true } });
+});
+
+test("a read-only document refuses inserted media but a manager can still review it", async () => {
+	const f = await fixture();
+	const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+	const nodeId = await test_create_saved_text_file(f.t, {
+		membershipId: f.db.membershipId,
+		path: "/page.md",
+		textContent: `![Photo](bonobo-file://${imageId})`,
+	});
+	expect(
+		await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			enabled: true,
+		}),
+	).toEqual({ _yay: null });
+	const [link] = await read_links(f.t, nodeId);
+	expect(
+		(
+			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: f.db.membershipId,
+				nodeId,
+				writePolicy: { mode: "read_only" },
+			})
+		)._nay,
+	).toBeUndefined();
+	expect(
+		await f.asOwner.mutation(api.files_share_links.approve_inserted_media, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			src: `bonobo-file://${imageId}`,
+		}),
+	).toEqual({ _nay: { name: "read_only", message: "This item is read-only." } });
+	expect(await f.t.run((ctx) => ctx.db.query("files_share_link_media").collect())).toEqual([]);
+	const review = await f.asOwner.query(api.files_share_links.get_media_to_share, {
+		membershipId: f.db.membershipId,
+		nodeId,
+	});
+	const item = review!.media[0]!;
+	if (!item.available) throw new Error("Expected a readable image");
+	expect(
+		await f.asOwner.mutation(api.files_share_links.approve_reviewed_media, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			src: item.src,
+			expectedLinkId: review!.linkId,
+			expectedAssetId: item.assetId,
+		}),
+	).toEqual({ _yay: { shared: true } });
+	expect((await view_of(f, link!.token))?.media[0]?.available).toBe(true);
 });
 
 test("a readable image in a different restricted area explains how to share a copy", async () => {

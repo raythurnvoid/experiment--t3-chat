@@ -210,7 +210,9 @@ Publication is a deliberate action. Never approve media while opening a document
 rebuilding Yjs text, or saving unrelated text. A known file ID grants no access.
 
 - Picking an existing image or finishing an editor upload approves that exact file for the current
-  link after the access check. With no public link, insertion works normally and creates no approval.
+  link after the access check. A read-only document refuses it. With no public link, insertion works
+  normally and creates no approval. Approvals charge their own `files_share_link_media_write` bucket
+  (50/min), so an upload batch does not spend `files_tree_write` twice.
 - A manager can use **Sharing → Review images and videos**, then share a listed item. The request
   pins the reviewed link and asset. A replaced image or changed link needs a fresh review.
 - Raw Markdown and ordinary API edits keep their references and text. New references remain gray
