@@ -299,7 +299,9 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 				setReview(next);
 				// The file is public now, but the page checks more: a finished upload, and no plugin deciding
 				// who reads its folder.
-				if (next?.media[index]?.isPublic === false) {
+				// Find the row by id: the list can change order while the page is open.
+				const nextItem = next?.media.find((m) => m.available && m.nodeId === item.nodeId);
+				if (nextItem?.available && !nextItem.isPublic) {
 					setError("This file is public, but this page cannot show it yet. It may still be uploading.");
 				}
 			}

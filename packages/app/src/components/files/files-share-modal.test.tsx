@@ -505,10 +505,11 @@ describe("FilesShareModal", () => {
 					{ available: false, kind: "video", isPublic: false },
 				],
 			})
+			// The new answer can list the rows in another order.
 			.mockResolvedValueOnce({
 				media: [
-					{ ...photo, isPublic: true },
 					{ available: false, kind: "video", isPublic: false },
+					{ ...photo, isPublic: true },
 				],
 			});
 		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
@@ -523,6 +524,7 @@ describe("FilesShareModal", () => {
 		expect(screen.getByText("This video is not public, and you cannot open it.")).toBeTruthy();
 
 		await waitFor(() => expect(document.querySelector('[data-share-media="public"]')).toBeTruthy());
+		expect(screen.queryByRole("alert")).toBeNull();
 		expect(mutationMock).toHaveBeenCalledWith("set_public", {
 			membershipId: "membership_1",
 			nodeId: "image_1",
