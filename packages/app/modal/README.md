@@ -2,7 +2,7 @@
 
 This directory contains the deployable Modal artifact for converting R2-hosted files into Markdown.
 
-Local repository rules say not to install or run Python on this machine. Deploy this from a Python-enabled Modal environment or CI runner instead of bootstrapping Python inside this workspace.
+Python is not installed on this machine. Deploy and test through the Docker-wrapped Modal CLI below.
 
 ## Runtime Contract
 
@@ -48,9 +48,9 @@ Create a Modal Secret named `BONOBO_SENATE_PRESS` with:
 
 - `BONOBO_SENATE_PRESS`
 
-Set matching plugin-runner secrets (see `packages/plugin-runner/wrangler.jsonc`), which reach the PDF plugin as publisher secrets:
+Set the PDF plugin's publisher secrets in Bonobo Senate (the publisher panel of the plugin; they are stored in Convex, not in the plugin runner):
 
-- `MODAL_FILE_CONVERTER_URL`: the deployed Modal `/markitdown` endpoint URL
+- `MODAL_FILE_CONVERTER_URL`: the deployed `/markitdown` endpoint URL, `https://ray-thurne-void--bonobo-senate-press-file-converter-asgi.modal.run/markitdown`. The `label` in `files_markitdown.py` fixes this host, and it must match the outbound origin in the PDF plugin manifest.
 - `MODAL_TOKEN`: the same token value as `BONOBO_SENATE_PRESS`
 
 The plugin calls Modal with `Authorization: Bearer <MODAL_TOKEN>`. Modal compares that value against the `BONOBO_SENATE_PRESS` secret.

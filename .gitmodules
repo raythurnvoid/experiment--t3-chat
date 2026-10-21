@@ -13,7 +13,8 @@
 	url = https://github.com/vercel/ai.git
 [submodule "packages/app/vendor/presence"]
 	path = packages/app/vendor/presence
-	url = https://github.com/get-convex/presence
+	url = https://github.com/raythurnvoid/presence
+	branch = rt0-chat-overrides
 [submodule "novel"]
 	path = packages/app/vendor/novel
 	url = https://github.com/raythurnvoid/novel.git

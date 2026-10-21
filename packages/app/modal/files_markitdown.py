@@ -128,6 +128,6 @@ def files_markitdown_create_app(requests_module=None, converter=None, stream_inf
     secrets=[modal.Secret.from_name("BONOBO_SENATE_PRESS")],
     timeout=15 * 60,
 )
-@modal.asgi_app()
+@modal.asgi_app(label="bonobo-senate-press-file-converter-asgi")
 def files_markitdown_asgi():
     return files_markitdown_create_app()
