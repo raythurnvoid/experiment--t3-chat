@@ -1,13 +1,19 @@
 import { compareValues } from "convex/values";
+import { validate } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import { z } from "zod";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import type { files_type_queries_PageResult, files_type_queries_Request } from "../convex/files_type_queries.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_pending_review_facts_db_get_state } from "./files-pending-review-facts.ts";
 import type { files_saved_placement_View } from "./files-saved-placement.ts";
-import { files_type_stream_db_page } from "./files-type-stream.ts";
+import {
+	files_type_stream_cursor_validator,
+	files_type_stream_db_page,
+	files_type_stream_db_walk,
+} from "./files-type-stream.ts";
 import { server_path_normalize } from "./server-utils.ts";
 
 type Stream = Doc<"files_type_query_streams">;
@@ -72,14 +78,45 @@ export async function files_type_query_db_open_stream(
 
 /**
  * Save a native page before yielding. Physical Move cleanup may move a candidate between sources.
- * Read in migration order, then keep only the range both sources have reached.
+ * Saved sources share one snapshot. Pending sources read in migration order.
+ * Keep only the range both sources have reached.
  */
 export async function files_type_query_db_fill_stream(
-	db: MutationCtx["db"],
+	ctx: MutationCtx,
 	query: Doc<"files_type_queries">,
 	stream: Stream,
 	view: files_saved_placement_View,
 ) {
+	const { db } = ctx;
+	if (stream.kind === "saved") {
+		const work = files_type_query_db_work(db, query._id, query.resolverGeneration);
+		const key = `walk:${stream._id}`;
+		const stored = await work.get(key);
+		const cursor: unknown = stored === null ? null : JSON.parse(stored);
+		if (cursor !== null && !validate(files_type_stream_cursor_validator, cursor))
+			throw should_never_happen("Stored file type walk cursor is invalid", {
+				queryId: query._id,
+				streamId: stream._id,
+			});
+		const page = await files_type_stream_db_walk(ctx, { query, stream, view, cursor });
+		if (page.cursor) await work.set(key, JSON.stringify(page.cursor));
+		else await work.delete(key);
+		await db.patch("files_type_query_streams", stream._id, {
+			buffer: page.items,
+			windowEnd: null,
+			windowDone: page.cursor === null,
+			...(page.items[0]
+				? lower_fields(page.items[0].key)
+				: {
+						done: page.cursor === null,
+						lowerPath: page.lowerPath,
+						lowerCreatedAt: 0,
+						lowerTargetKind: "",
+						lowerTargetId: "",
+					}),
+		});
+		return;
+	}
 	const tags = [undefined, ...(view.cohortId && view.view ? [{ cohortId: view.cohortId, view: view.view }] : [])];
 	if (view.migrationDirection === "to_normal") tags.reverse();
 	const page = await files_type_stream_db_page(db, { query, stream, tag: tags[stream.readSource] });

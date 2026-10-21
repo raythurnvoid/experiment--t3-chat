@@ -5,12 +5,21 @@ import { internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import app_convex_schema, { ai_chat_workspaces_source_validator, files_type_query_item_validator } from "./schema.ts";
+import app_convex_schema, {
+	ai_chat_workspaces_source_validator,
+	files_type_query_item_validator,
+	files_type_query_denied_validator,
+	files_move_view_tag_validator,
+} from "./schema.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
-import { files_db_get_path_access, files_db_get_pending_update, files_db_get_visible_node_by_path } from "../server/files.ts";
+import {
+	files_db_get_path_access,
+	files_db_get_pending_update,
+	files_db_get_visible_node_by_path,
+} from "../server/files.ts";
 import { files_access_version_db_get } from "../server/files-access-version.ts";
 import {
 	files_pending_review_facts_db_pin_structure,
@@ -31,6 +40,7 @@ import {
 	files_type_query_db_work,
 	files_type_query_request_matches,
 } from "../server/files-type-query.ts";
+import { files_type_stream_cursor_validator, files_type_stream_db_saved_page } from "../server/files-type-stream.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
 import {
@@ -63,12 +73,16 @@ const page_validator = v.object({
 	step: v.number(),
 	state: v.union(v.literal("preparing"), v.literal("working"), v.literal("page")),
 	items: v.array(files_type_query_item_validator),
+	denied: v.array(v.string()),
 	isDone: v.boolean(),
 });
 type Page = Infer<typeof page_validator>;
 export type files_type_queries_PageResult =
 	| {
-			_yay: Omit<Page, "items"> & { items: ReadonlyArray<Infer<typeof files_type_query_item_validator>> };
+			_yay: Omit<Page, "items" | "denied"> & {
+				items: ReadonlyArray<Infer<typeof files_type_query_item_validator>>;
+				denied: ReadonlyArray<string>;
+			};
 			_nay?: undefined;
 	  }
 	| { _nay: { message: string; name?: string }; _yay?: undefined };
@@ -250,7 +264,14 @@ async function db_replay(ctx: MutationCtx, query: Query, step: Doc<"files_type_q
 		if (!matches(query, selected?.pendingReplacement?.contentType ?? node.contentType)) return changed();
 	}
 	return Result({
-		_yay: { queryId: query._id, step: step.step + 1, state: "page" as const, items: step.items, isDone: step.isDone },
+		_yay: {
+			queryId: query._id,
+			step: step.step + 1,
+			state: "page" as const,
+			items: step.items,
+			denied: step.denied.map((item) => item.path),
+			isDone: step.isDone,
+		},
 	});
 }
 
@@ -313,7 +334,7 @@ export const advance = internalMutation({
 		if (query.state === "done") return changed();
 		if (args.step !== query.step) return changed();
 		const response = (state: Page["state"]) =>
-			Result({ _yay: { queryId: query._id, step: query.step, state, items: [], isDone: false } });
+			Result({ _yay: { queryId: query._id, step: query.step, state, items: [], denied: [], isDone: false } });
 		if (query.lease && query.lease.token !== args.token && query.lease.until > Date.now()) return response("working");
 		await ctx.db.patch("files_type_queries", query._id, { lease: { token: args.token, until: Date.now() + LEASE_MS } });
 		const current = await db_pin(ctx, query);
@@ -381,17 +402,19 @@ export const advance = internalMutation({
 				queryId: query._id,
 				step: query.step,
 				items,
+				denied: [],
 				sealed: false,
 				isDone: isFile || query.directoriesOnly,
 			});
 			if (!isFile && !query.directoriesOnly) {
-				await files_type_query_db_open_stream(ctx.db, {
-					queryId: query._id,
-					kind: "saved",
-					moveTargetId: null,
-					savedPrefix: prefix,
-					ownerPrefix: prefix,
-				});
+				if (root.kind !== "private")
+					await files_type_query_db_open_stream(ctx.db, {
+						queryId: query._id,
+						kind: "saved",
+						moveTargetId: null,
+						savedPrefix: prefix,
+						ownerPrefix: prefix,
+					});
 				if (reader && query.overlay) {
 					await files_type_query_db_open_stream(ctx.db, {
 						queryId: query._id,
@@ -425,6 +448,7 @@ export const advance = internalMutation({
 				queryId: query._id,
 				step: query.step,
 				items: [],
+				denied: [],
 				sealed: false,
 				isDone: false,
 			});
@@ -435,7 +459,7 @@ export const advance = internalMutation({
 			.query("files_type_query_streams")
 			.withIndex("by_query_done_lower", (q) => q.eq("queryId", query._id).eq("done", false))
 			.first();
-		if (args.seal || step.items.length >= query.limit || !stream || step.isDone) {
+		if (args.seal || step.items.length + step.denied.length >= query.limit || !stream || step.isDone) {
 			const final = await db_pin(ctx, query);
 			if (final.preparing || final.pin !== current.pin) return changed();
 			const isDone = step.isDone || stream === null;
@@ -448,13 +472,41 @@ export const advance = internalMutation({
 			return await db_replay(ctx, { ...query, pin: current.pin }, { ...step, sealed: true, isDone });
 		}
 		if (stream.buffer.length === 0) {
-			await files_type_query_db_fill_stream(ctx.db, query, stream, current.view);
+			await files_type_query_db_fill_stream(ctx, query, stream, current.view);
 			return response("working");
 		}
 		const candidate = stream.buffer[0]!;
-		const resolved = reader ? await reader.resumeTarget(candidate.key.target) : null;
+		const resolved = reader
+			? await reader.resumeTraversal({
+					root: query.root,
+					rootPath: query.rootPath,
+					target: candidate.key.target,
+					path: candidate.key.path.replace(/\/$/u, ""),
+				})
+			: null;
 		if (resolved?.status === "unfinished") return response("working");
 		if (resolved?.status === "invalidated") return changed();
+		if (resolved?.status === "locked") {
+			if (
+				resolved.kind === "folder" &&
+				(resolved.path !== candidate.key.path.replace(/\/$/u, "") ||
+					(resolved.target.kind === candidate.key.target.kind && resolved.target.id === candidate.key.target.id))
+			) {
+				const denied: Infer<typeof files_type_query_denied_validator> = {
+					target: resolved.target,
+					path: resolved.path,
+				};
+				const work = files_type_query_db_work(ctx.db, query._id, generation);
+				const key = `denied:${denied.target.kind}:${denied.target.id}:${denied.path}`;
+				// Saved, draft and moved sources can reach the same locked folder.
+				if ((await work.get(key)) === null) {
+					await ctx.db.patch("files_type_query_steps", step._id, { denied: [...step.denied, denied] });
+					await work.set(key, "true");
+				}
+			}
+			await files_type_query_db_consume(ctx.db, stream);
+			return response("working");
+		}
 		let entry = resolved?.status === "resolved" ? resolved.value.entry : null;
 		if (!reader && candidate.key.target.kind === "saved") {
 			const node = await files_saved_placement_db_get_node(ctx.db, candidate.key.target.id);
@@ -468,6 +520,8 @@ export const advance = internalMutation({
 		}
 		if (
 			entry &&
+			entry.kind === candidate.key.target.kind &&
+			entry.node._id === candidate.key.target.id &&
 			entry.path === candidate.key.path.replace(/\/$/u, "") &&
 			(resolved?.status !== "resolved" || !resolved.value.hidden)
 		) {
@@ -528,6 +582,36 @@ export const get = internalQuery({
 	handler: async (ctx, args) => {
 		const queryId = ctx.db.normalizeId("files_type_queries", args.queryId);
 		return queryId ? await ctx.db.get("files_type_queries", queryId) : null;
+	},
+});
+
+// One byte-bounded native page for the saved MIME walker. Advance checks live authority.
+export const saved_native_page = internalQuery({
+	args: {
+		queryId: v.id("files_type_queries"),
+		tag: v.optional(files_move_view_tag_validator),
+		restricted: v.boolean(),
+		lower: files_type_stream_cursor_validator,
+		upper: v.string(),
+		phase: v.number(),
+		limit: v.number(),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				treePath: v.string(),
+				createdAt: v.number(),
+				nodeId: v.id("files_nodes"),
+				kind: v.union(v.literal("file"), v.literal("folder")),
+			}),
+		),
+		done: v.boolean(),
+		phaseDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const query = await ctx.db.get("files_type_queries", args.queryId);
+		if (!query) return { items: [], done: true, phaseDone: true };
+		return await files_type_stream_db_saved_page(ctx.db, { ...args, query });
 	},
 });
 

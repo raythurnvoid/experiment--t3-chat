@@ -793,10 +793,20 @@ Ordinary content-only saved proposals do not resolve an unused owner path. Whole
 A moved saved file or folder keeps a reference; it does not copy unchanged descendants
 or their MIME into a per-user catalog. Public API discovery stays saved-only.
 
-`files_type_queries` holds one requested search. Child stream docs keep native source
-positions and bounded page buffers. Normal and selected Move sources advance only to
-the common full path key, so a page never loses an unread suffix. The shared resolver
-stores unfinished frames separately. There is no total stream, folder or depth cap.
+`files_type_queries` holds one requested search. Child stream docs keep source positions
+and bounded page buffers. Saved streams read indexed MIME matches only before the next
+restricted root in path order, then enter or skip that folder. This also works while a
+scope job leaves children in different areas. Pending streams keep their type indexes.
+Saved normal and selected Move sources share one transaction and advance only to their
+common full path key, including byte-limited pages. Pending sources retain their ordered
+native reads. The existing work docs keep path cursors and unfinished
+resolver frames. There is no total stream, folder or depth cap.
+
+A search stops at a locked folder and reports it once, even without MIME matches.
+The error uses one page slot and is saved for page replay. Draft and moved candidates
+check each folder from the authorized search start. Checks resume across requests and
+reuse checked parents under the same source and access pins. An exact start inside a
+deep share does not check access above that start.
 
 The MIME and folder predicates are indexed. Current access and pending visibility are
 checked on those candidates. This is the approved narrow exception to the no-scan rule:

@@ -27,7 +27,7 @@ async function fixture() {
 			savedPrefix: "/docs/",
 			ownerPrefix: "/docs/",
 		});
-		await ctx.db.insert("files_type_query_steps", { queryId, step: 0, items: [], sealed: false, isDone: false });
+		await ctx.db.insert("files_type_query_steps", { queryId, step: 0, items: [], denied: [], sealed: false, isDone: false });
 		for (const key of ["root", "frame:1", "frame:2"])
 			await ctx.db.insert("files_type_query_work", { queryId, key, value: "{}" });
 	});

@@ -1,8 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api.js";
+import type { Doc } from "./_generated/dataModel.js";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with, test_LIMITS_AT_75_PERCENT } from "./setup.test.ts";
 import type { files_type_queries_Request } from "./files_type_queries.ts";
 import { create_bash_runner, drain_scheduled_continuations, get_seeded_node_id } from "../server/bash.setup.test.ts";
 import { files_type_query_page } from "../server/files-type-query.ts";
+import { files_content_type_index_fields } from "../shared/files.ts";
 
 type Runner = Awaited<ReturnType<typeof create_bash_runner>>;
 
@@ -21,6 +25,133 @@ function request(runner: Runner, overrides: Partial<files_type_queries_Request> 
 }
 
 describe("file type query scale and retries", () => {
+	test("resumes a 500-area walk and owner path within transaction limits", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const userId = await t.run(async (ctx) => {
+			const id = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				userId: id,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				userId: id,
+				role: "member",
+				now: Date.now(),
+			});
+			return id;
+		});
+		let parent: Doc<"files_nodes"> | null = null;
+		for (let start = 0; start < 500; start += 50) {
+			parent = await t.run(async (ctx) => {
+				let above = parent;
+				for (let depth = start + 1; depth <= start + 50; depth++) {
+					const path = `${above?.path ?? ""}/a`;
+					const id = await ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: scope.organizationId,
+						workspaceId: scope.workspaceId,
+						createdBy: scope.userId,
+						updatedBy: scope.userId,
+						parentId: above?._id ?? "root",
+						name: "a",
+						sortName: "a",
+						path,
+						treePath: `${path}/`,
+						pathDepth: depth,
+					});
+					await ctx.db.patch("files_nodes", id, {
+						isRestrictedScopeRoot: true,
+						restrictedScopeNodeId: id,
+						parentScopeNodeId: above?._id ?? null,
+					});
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: scope.organizationId,
+						workspaceId: scope.workspaceId,
+						resourceKind: "file",
+						resourceId: String(id),
+						principalKind: "user",
+						userId,
+						permission: "content.read",
+						createdAt: 1,
+						updatedAt: 1,
+					});
+					above = (await ctx.db.get("files_nodes", id))!;
+				}
+				return above;
+			});
+		}
+		const deepest = parent!;
+		const path = `${deepest.path}/hit.txt`;
+		expect(path.length).toBeLessThanOrEqual(1024);
+		await t.run((ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				createdBy: scope.userId,
+				updatedBy: scope.userId,
+				parentId: deepest._id,
+				name: "hit.txt",
+				sortName: "hit.txt",
+				path,
+				treePath: path,
+				pathDepth: 501,
+				kind: "file",
+				contentType: "text/plain",
+				...files_content_type_index_fields("text/plain"),
+				restrictedScopeNodeId: deepest._id,
+			}),
+		);
+		const input: files_type_queries_Request = {
+			organizationId: scope.organizationId,
+			workspaceId: scope.workspaceId,
+			userId,
+			overlay: true,
+			rootPath: "/",
+			contentType: "text/",
+			directoriesOnly: false,
+			limit: 1,
+		};
+		const started = await t.mutation(internal.files_type_queries.begin, input);
+		if (started._nay) throw new Error(started._nay.message);
+		let checked = 0;
+		const advance = () =>
+			t.run(async (ctx) => {
+				const result = await ctx.runMutation(internal.files_type_queries.advance, {
+					...input,
+					...started._yay,
+					token: "deep-walk",
+					seal: false,
+				});
+				const metrics = await ctx.meta.getTransactionMetrics();
+				for (const [key, limit] of Object.entries(test_LIMITS_AT_75_PERCENT))
+					expect(metrics[key as keyof typeof metrics].used, key).toBeLessThanOrEqual(limit);
+				checked++;
+				return result;
+			});
+		expect((await advance())._yay?.state).toBe("working");
+		// Start with empty work so every boundary and owner-path step uses real continuation.
+		let paths: string[] = [];
+		for (let step = 0; step < 2_000; step++) {
+			const result = await advance();
+			if (result._nay) throw new Error(result._nay.message);
+			if (result._yay.state === "page") {
+				paths = result._yay.items.map((item) => item.path);
+				expect(result._yay.denied).toEqual([]);
+				break;
+			}
+		}
+		expect(paths).toEqual([path]);
+		expect(checked).toBeGreaterThan(500);
+	}, 120_000);
+
 	test("pages all 257 moved subtrees in exact alphabetical order", async () => {
 		const names = Array.from({ length: 257 }, (_, index) => String(index).padStart(3, "0"));
 		const runner = await create_bash_runner({

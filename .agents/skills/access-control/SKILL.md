@@ -1239,7 +1239,12 @@ read a row under a folder the caller cannot open. Code: `server/files-tree-walk.
   through a few hundred levels runs out of reads.
 - Custom-field `prefix` / `range` keep value order, so they cannot walk. A member reads the open area
   only, and a folder is refused. The owner, plugin volumes and GLOBAL workspaces read every area.
-- Known gap: `find --content-type` keeps its old type indexes and does not walk yet.
+- `find --content-type` reads type indexes only up to the next restricted root in path order.
+  It skips locked subtrees before reading their files. This keeps results complete and sorted
+  while a scope job leaves children in both old and new areas. It stops at locked
+  folders and reports each reached folder once, even when the type has no matches. Each error
+  uses one page slot. Draft and moved paths check each folder from the exact search start;
+  starting inside a deep share does not require access to folders above it.
 
 ## Public file links
 

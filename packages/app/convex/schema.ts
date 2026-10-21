@@ -491,6 +491,11 @@ export const files_type_query_item_validator = v.object({
 	contentType: v.union(v.string(), v.null()),
 });
 
+export const files_type_query_denied_validator = v.object({
+	target: files_pending_target_validator,
+	path: v.string(),
+});
+
 const files_type_query_candidate_validator = v.object({
 	key: files_type_query_key_validator,
 	kind: v.union(v.literal("file"), v.literal("folder")),
@@ -2953,6 +2958,15 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
+		.index("by_view_archive_restricted_tree", [
+			"cohortId",
+			"view",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
 		// The Move view of `files_nodes.by_org_ws_parentScope_archive_treePath`.
 		.index("by_view_parentScope_archive_tree", [
 			"cohortId",
@@ -3159,6 +3173,7 @@ const app_convex_schema = defineSchema({
 		queryId: v.id("files_type_queries"),
 		step: v.number(),
 		items: v.array(files_type_query_item_validator),
+		denied: v.array(files_type_query_denied_validator),
 		sealed: v.boolean(),
 		isDone: v.boolean(),
 	}).index("by_query_step", ["queryId", "step"]),
@@ -5232,6 +5247,15 @@ const app_convex_schema = defineSchema({
 			"moveCohortId",
 			"archiveOperationId",
 			"contentTypeEssence",
+			"treePath",
+		])
+		// MIME reads stop before the next restricted root, including while scope jobs run.
+		.index("by_org_ws_archive_restricted_tree", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
 			"treePath",
 		])
 		.index("by_organization_workspace_asset", ["organizationId", "workspaceId", "assetId"])
