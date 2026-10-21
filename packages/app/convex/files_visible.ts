@@ -53,7 +53,6 @@ import {
 import {
 	files_pending_overlay_LIST_STREAM_MAX_PAGE,
 	files_pending_overlay_list_over_budget,
-	files_pending_overlay_list,
 	files_pending_overlay_window_ranges,
 } from "../server/files-pending-overlay.ts";
 import { convex_error, convex_invalid_cursor_error, v_result } from "../server/convex-utils.ts";
@@ -103,33 +102,6 @@ const STREAM_RECENT_READ_PAGE = 100;
 // about 2,000. A name search starts a new one only while it still fits the Convex limit of 4,096.
 const SEARCH_PARENT_CHECK_MAX_RANGES = 2_300;
 
-const listing_args = {
-	folderPath: v.string(),
-	mode: v.union(v.literal("children"), v.literal("subtree")),
-	numItems: v.number(),
-	cursor: paginationOptsValidator.fields.cursor,
-	order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-	kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
-	lowercaseExtension: v.optional(v.string()),
-	minDepth: v.optional(v.number()),
-	maxDepth: v.optional(v.number()),
-	pathQuery: v.optional(v.string()),
-	orderBy: v.optional(v.union(v.literal("name"), v.literal("updatedAt"))),
-};
-
-const internal_listing_args = v.object({
-	...listing_args,
-	agentSource: v.optional(ai_chat_workspaces_source_validator),
-	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
-	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-	visibilityUserId: v.id("users"),
-	subject: access_control_subject_validator,
-	overlayUserId: v.optional(v.id("users")),
-	// Transfer discovery must refuse an incomplete folder instead of leaving rows out. Saved children
-	// it cannot open come back locked, so it decides about those itself.
-	requireComplete: v.optional(v.boolean()),
-});
-
 /**
  * Whether a private node is still preparing: it has no create intent yet, or it is a text file whose
  * content is not sealed yet.
@@ -160,14 +132,6 @@ const entry_validator = v.object({
 	locked: v.boolean(),
 });
 
-const listing_result = v_result({
-	_yay: v.object({
-		items: v.array(entry_validator),
-		continueCursor: v.union(v.string(), v.null()),
-		isDone: v.boolean(),
-	}),
-});
-
 export type files_visible_list_Result =
 	| {
 			_yay: {
@@ -182,148 +146,6 @@ export type files_visible_list_Result =
 			_nay?: undefined;
 	  }
 	| { _nay: { message: string; name?: string }; _yay?: undefined };
-
-async function db_list(ctx: QueryCtx, args: Infer<typeof internal_listing_args>): Promise<files_visible_list_Result> {
-	const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
-	if (authorized._nay) return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
-	const folderPath = server_path_normalize(args.folderPath);
-	const fileScope = files_db_resolve_scope(ctx, args.workspaceId);
-	const ownerScope =
-		args.overlayUserId === args.visibilityUserId &&
-		access_control_subject_reads_drafts(args.subject) &&
-		!organizations_is_global_organization_id(args.organizationId) &&
-		fileScope.kind === "workspace";
-	const reader =
-		ownerScope && !organizations_is_global_organization_id(args.organizationId)
-			? await files_visible_db_create_reader(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: fileScope.workspaceId,
-					userId: args.visibilityUserId,
-				})
-			: null;
-	if (reader && !reader.active) return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
-	const root =
-		folderPath === "/"
-			? null
-			: reader
-				? (await reader.findPath(folderPath))?.entry
-				: await files_db_get_visible_node_by_path(ctx, { ...args, path: folderPath });
-	if (reader?.exhausted) return Result({ _nay: { message: "Listing is too broad. Narrow the folder or filters." } });
-	if (folderPath !== "/" && (!root || ("node" in root ? root.node.kind : root.kind) !== "folder"))
-		return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
-
-	const view = reader?.view ?? (await files_saved_placement_db_get_view(ctx.db, args));
-	const order = args.order ?? (args.orderBy === "updatedAt" ? "desc" : "asc");
-	const scope = JSON.stringify([
-		args.organizationId,
-		args.workspaceId,
-		args.visibilityUserId,
-		args.subject,
-		args.overlayUserId,
-		folderPath,
-		args.mode,
-		order,
-		args.orderBy,
-		args.kind,
-		args.lowercaseExtension,
-		args.minDepth,
-		args.maxDepth,
-		args.pathQuery,
-		args.requireComplete,
-		view.cohortId,
-		view.view,
-		view.generation,
-		view.migrationDirection,
-	]);
-	const cursorSchema = z.object({
-		scope: z.literal(scope),
-		frames: z
-			.array(z.object({ path: z.string(), cursor: z.string().nullable() }))
-			.min(1)
-			.max(256),
-	});
-	let frames: z.infer<typeof cursorSchema>["frames"];
-	if (args.cursor === null) frames = [{ path: folderPath, cursor: null }];
-	else {
-		let raw: unknown;
-		try {
-			raw = JSON.parse(args.cursor);
-		} catch {
-			return Result({
-				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
-			});
-		}
-		const parsed = cursorSchema.safeParse(raw);
-		if (!parsed.success)
-			return Result({
-				_nay: {
-					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
-				},
-			});
-		frames = parsed.data.frames;
-	}
-	const depth = (path: string) => path.split("/").filter(Boolean).length;
-	const baseDepth = depth(folderPath);
-	const items: Infer<typeof entry_validator>[] = [];
-	const seen = new Set<string>();
-	const limit = Math.max(1, Math.min(50, Math.floor(args.numItems)));
-	let calls = 0;
-	while (frames.length > 0 && items.length < limit && calls < 100) {
-		if (calls > 0 && files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics())) break;
-		const frame = frames.at(-1)!;
-		const result = await files_pending_overlay_list(ctx, {
-			agentSource: args.agentSource,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			visibilityUserId: args.visibilityUserId,
-			subject: args.subject,
-			overlayUserId: args.overlayUserId,
-			requireComplete: args.requireComplete,
-			folderPath: frame.path,
-			mode: "children",
-			orderBy: args.orderBy ?? "name",
-			order,
-			...(args.mode === "children" ? { kind: args.kind, lowercaseExtension: args.lowercaseExtension } : {}),
-			numItems: args.mode === "subtree" || args.pathQuery !== undefined ? 1 : limit - items.length,
-			cursor: frame.cursor,
-		});
-		if (result._nay) return result;
-		calls++;
-		frame.cursor = result._yay.continueCursor;
-		if (result._yay.isDone) frames.pop();
-		for (const item of result._yay.items) {
-			const relativeDepth = depth(item.path) - baseDepth;
-			const inScope = folderPath === "/" || item.path.startsWith(folderPath + "/");
-			const matches =
-				inScope &&
-				(args.minDepth === undefined || relativeDepth >= args.minDepth) &&
-				(args.maxDepth === undefined || relativeDepth <= args.maxDepth) &&
-				(args.kind === undefined || item.kind === args.kind) &&
-				(args.lowercaseExtension === undefined ||
-					(item.kind === "file" && item.name.split(".").slice(1).at(-1)?.toLowerCase() === args.lowercaseExtension)) &&
-				(args.pathQuery === undefined || item.path.toLowerCase().includes(args.pathQuery.toLowerCase()));
-			if (matches && !seen.has(item.target.id)) {
-				seen.add(item.target.id);
-				items.push(item);
-			}
-			// A locked folder is listed but not entered: nothing under it is read.
-			if (
-				args.mode === "subtree" &&
-				item.kind === "folder" &&
-				!item.locked &&
-				(args.maxDepth === undefined || relativeDepth < args.maxDepth)
-			)
-				frames.push({ path: item.path, cursor: null });
-		}
-	}
-	return Result({
-		_yay: {
-			items,
-			continueCursor: frames.length === 0 ? null : JSON.stringify({ scope, frames }),
-			isDone: frames.length === 0,
-		},
-	});
-}
 
 export const internal_page = internalQuery({
 	args: {
@@ -535,21 +357,6 @@ export const internal_get_directory_path = internalQuery({
 			: null;
 	},
 });
-
-export const internal_list = internalQuery({
-	args: {
-		...internal_listing_args.fields,
-	},
-	returns: listing_result,
-	handler: async (ctx, args) => {
-		return await db_list(ctx, args);
-	},
-});
-
-export type files_visible_internal_list_Result =
-	typeof internal_list extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
 
 // Agent streams: each query reads one index stream of an agent listing. `files_pending_overlay_list`
 // merges them into one page.

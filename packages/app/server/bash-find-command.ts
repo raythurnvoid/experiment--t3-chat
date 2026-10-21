@@ -4,7 +4,7 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Id } from "../convex/_generated/dataModel.js";
 import type { files_nodes_list_subtree_Result, files_nodes_search_paths_Result } from "../convex/files_nodes.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import type { files_visible_internal_list_Result } from "../convex/files_visible.ts";
+import type { files_visible_list_Result } from "../convex/files_visible.ts";
 import type { files_type_queries_PageResult } from "../convex/files_type_queries.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_content_type_index_fields, files_parse_content_type_prefix } from "../shared/files.ts";
@@ -619,6 +619,39 @@ function map_find_depth(args: { minDepth: number | null; maxDepth: number | null
 			...(maxDepth === null ? {} : { maxDepth: maxDepth - shift }),
 		},
 	});
+}
+
+// The listing pages one path word scan reads before it returns a short page with a cursor.
+const PATH_SCAN_MAX_PAGES = 10;
+
+/**
+ * One page of the path word scan inside one plugin or mount: the rows of the listing whose path
+ * contains `query`, in any case.
+ *
+ * The pages are read here in the action, not in one query. Convex allows one paginated read per query,
+ * nested `ctx.runQuery` calls included, and each listing page runs several. So each page is its own
+ * queries.
+ */
+async function list_path_matches(
+	ctx: ActionCtx,
+	args: { list: Parameters<typeof files_pending_overlay_list>[1]; query: string },
+) {
+	const { list } = args;
+	const query = args.query.toLowerCase();
+	const items: NonNullable<files_visible_list_Result["_yay"]>["items"][number][] = [];
+	const denied: string[] = [];
+	let cursor = list.cursor;
+	for (let page = 0; page < PATH_SCAN_MAX_PAGES; page++) {
+		// Ask only for the rows the page still needs, so a page of matches never overfills it.
+		const listed = await files_pending_overlay_list(ctx, { ...list, numItems: list.numItems - items.length, cursor });
+		if (listed._nay) return listed;
+		items.push(...listed._yay.items.filter((item) => item.path.toLowerCase().includes(query)));
+		denied.push(...(listed._yay.denied ?? []));
+		if (listed._yay.isDone) return Result({ _yay: { items, denied, continueCursor: null, isDone: true } });
+		cursor = listed._yay.continueCursor;
+		if (items.length >= list.numItems) break;
+	}
+	return Result({ _yay: { items, denied, continueCursor: cursor, isDone: false } });
 }
 
 function build_continuation(args: {
@@ -1591,13 +1624,12 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		const result =
 			searched ??
 			(pathScan
-				? ((await ctx.runQuery(internal.files_visible.internal_list, {
-						...listArgs,
-						mode: parsed._yay.maxDepth === 1 ? "children" : "subtree",
-						...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
-						...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
-						pathQuery,
-					})) as files_visible_internal_list_Result)
+				? await list_path_matches(ctx, {
+						// The checks above allow only -maxdepth 1 and -mindepth 1 here. A listing never holds
+						// the folder itself, so -mindepth 1 changes nothing.
+						list: { ...listArgs, mode: parsed._yay.maxDepth === 1 ? "children" : "subtree", order: "asc" },
+						query: pathQuery!,
+					})
 				: !depth?._yay || depth._yay.maxDepth === 0
 					? Result({ _yay: { items: [], continueCursor: null, isDone: true } })
 					: await files_pending_overlay_list(ctx, {

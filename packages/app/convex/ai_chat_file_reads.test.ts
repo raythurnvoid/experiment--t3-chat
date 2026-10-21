@@ -4,8 +4,10 @@ import type { FunctionReturnType } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import type { ActionCtx } from "./_generated/server.js";
 import { test_convex, test_create_saved_text_file, test_meta_search, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
+import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 
 const text = "Private notebook\nSecond line\n";
 const path = "/notes/note.txt";
@@ -240,12 +242,13 @@ function read_cases(f: Awaited<ReturnType<typeof fixture>>, agentSource?: typeof
 			allowed: { items: [expect.objectContaining({ target, path })], isDone: true },
 			refused: { items: [], isDone: true },
 		},
-		internal_list: {
+		list_children: {
 			read: () =>
-				f.t.query(internal.files_visible.internal_list, {
+				files_pending_overlay_list({ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">, {
 					...visible,
 					folderPath: "/notes",
 					mode: "children",
+					order: "asc",
 					...page,
 				}),
 			allowed: { _yay: expect.objectContaining({ items: [expect.objectContaining({ path })] }) },
@@ -343,7 +346,7 @@ const doors = [
 	"match_text_file_lines",
 	"match_plain_text_file_lines",
 	"text_search_files",
-	"internal_list",
+	"list_children",
 	"internal_get_by_path",
 	"internal_get_by_target",
 	"internal_get_directory_path",
@@ -420,7 +423,7 @@ describe("agent file read source", () => {
 			else if (door === "search_paths" || door === "text_search_files" || door === "meta_search")
 				expect(result, door).toMatchObject({ items: [], isDone: true });
 			// A locked folder is not an empty folder.
-			else if (door === "internal_list")
+			else if (door === "list_children")
 				expect(result, door).toEqual({ _nay: { name: "permission_denied", message: "Permission denied" } });
 			else if (door === "get_path_by_id") expect(result, door).toEqual({ status: "locked" });
 			// The cwd may stay in a locked folder whose parent is open. Its reads still say Permission denied.

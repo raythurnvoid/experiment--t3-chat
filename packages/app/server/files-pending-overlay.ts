@@ -3381,7 +3381,8 @@ function moved_in_args(movedIn: { savedNodeId: string; ownerTreePath: string } |
  * Nested queries share the caller's transaction. When the caller is a query or a mutation, the merge
  * starts no stream call past the read budget and returns a short page with a cursor instead.
  * Do not call it from a query: the backend allows one paginated read per query, nested queries
- * included, and the merge runs several. Call it from an action.
+ * included, and the merge runs several. Call it from an action or a mutation. Mutations have no such
+ * limit.
  */
 export async function files_pending_overlay_list(
 	ctx: Pick<ActionCtx, "runQuery"> & { meta?: ActionCtx["meta"] | QueryCtx["meta"] },

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import type { ActionCtx } from "./_generated/server.js";
 import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -159,16 +161,20 @@ async function fixture() {
 		agentSource,
 		folderPath: "/",
 		mode: "children" as const,
+		order: "asc" as const,
 		numItems: 10,
 		cursor: null,
 	};
 	return { t, db, ...saved, readArgs, listArgs };
 }
 
-describe("internal_list volume reads", () => {
+describe("files_pending_overlay_list volume reads", () => {
 	test("forwards the original source to saved pages and ignores the owner overlay", async () => {
 		const f = await fixture();
-		const result = await f.t.query(internal.files_visible.internal_list, f.listArgs);
+		const result = await files_pending_overlay_list(
+			{ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">,
+			f.listArgs,
+		);
 		expect(result._yay?.items).toMatchObject([{ target: { kind: "saved", id: f.nodeId }, path: "/note.md" }]);
 		expect(result._yay?.isDone).toBe(true);
 		for (const kind of ["private", "moved"] as const) {
@@ -189,13 +195,22 @@ describe("internal_list volume reads", () => {
 	test("refuses a missing source and an installation disabled between pages", async () => {
 		const f = await fixture();
 		expect(
-			await f.t.query(internal.files_visible.internal_list, { ...f.listArgs, agentSource: undefined }),
+			await files_pending_overlay_list({ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">, {
+				...f.listArgs,
+				agentSource: undefined,
+			}),
 		).toEqual({ _yay: { items: [], continueCursor: null, isDone: true } });
-		const first = await f.t.query(internal.files_visible.internal_list, { ...f.listArgs, numItems: 1 });
+		const first = await files_pending_overlay_list({ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">, {
+			...f.listArgs,
+			numItems: 1,
+		});
 		expect(first._yay?.items).toHaveLength(1);
 		await f.t.run((ctx) => ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" }));
 		expect(
-			await f.t.query(internal.files_visible.internal_list, { ...f.listArgs, cursor: first._yay!.continueCursor }),
+			await files_pending_overlay_list({ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">, {
+				...f.listArgs,
+				cursor: first._yay!.continueCursor,
+			}),
 		).toEqual({ _yay: { items: [], continueCursor: null, isDone: true } });
 	});
 });
@@ -212,7 +227,9 @@ describe("get_index_values_by_path volume metadata", () => {
 				{ fieldPath: "metadata.volume-path", valueKind: "string", stringValue: "note.md" },
 			],
 		});
-		expect(await f.t.query(internal.files_metadata.get_index_values_by_path, { ...args, agentSource: undefined })).toBeNull();
+		expect(
+			await f.t.query(internal.files_metadata.get_index_values_by_path, { ...args, agentSource: undefined }),
+		).toBeNull();
 		expect(
 			await f.t.query(internal.files_metadata.get_index_values_by_path, {
 				...args,

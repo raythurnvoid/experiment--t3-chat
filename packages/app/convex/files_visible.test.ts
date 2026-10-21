@@ -3,7 +3,8 @@ import { api, internal } from "./_generated/api.js";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
-import { type files_visible_internal_list_Result } from "./files_visible.ts";
+import type { ActionCtx } from "./_generated/server.js";
+import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import type { files_visible_resolve_Store } from "../server/files-visible-resolve.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
@@ -125,7 +126,20 @@ async function move_draft(args: {
 	if (moved._nay) throw new Error(moved._nay.message);
 }
 
-describe("internal_list", () => {
+/**
+ * One page of an agent listing in path order. Each stream query runs on its own, like in the action.
+ */
+function list_agent(
+	t: ReturnType<typeof test_convex>,
+	args: Omit<Parameters<typeof files_pending_overlay_list>[1], "order">,
+) {
+	return files_pending_overlay_list({ runQuery: t.query } as unknown as Pick<ActionCtx, "runQuery">, {
+		...args,
+		order: "asc",
+	});
+}
+
+describe("files_pending_overlay_list", () => {
 	test("complete and ordinary lists return a locked child on a later page as a locked row", async () => {
 		const owner = await fixture();
 		const { t, db } = owner;
@@ -157,17 +171,17 @@ describe("internal_list", () => {
 			cursor: null,
 			requireComplete: true,
 		};
-		const first = await t.query(internal.files_visible.internal_list, args);
+		const first = await list_agent(t, args);
 		if (first._nay) throw new Error(first._nay.message);
 		expect(first._yay.items.map((item) => item.path)).toEqual(["/source/first"]);
 		expect(first._yay.isDone).toBe(false);
-		const second = await t.query(internal.files_visible.internal_list, { ...args, cursor: first._yay.continueCursor });
+		const second = await list_agent(t, { ...args, cursor: first._yay.continueCursor });
 		// Only the saved fields show: no author.
 		expect(second._yay?.items).toEqual([
 			expect.objectContaining({ path: "/source/secret-name", kind: "folder", locked: true }),
 		]);
 		expect(second._yay?.items[0]).not.toHaveProperty("updatedBy");
-		const ordinary = await t.query(internal.files_visible.internal_list, {
+		const ordinary = await list_agent(t, {
 			...args,
 			requireComplete: false,
 			numItems: 10,
@@ -177,7 +191,7 @@ describe("internal_list", () => {
 			["/source/secret-name", true],
 		]);
 		expect(ordinary._yay?.isDone).toBe(true);
-		const readable = await t.query(internal.files_visible.internal_list, {
+		const readable = await list_agent(t, {
 			...args,
 			visibilityUserId: db.userId,
 			subject: { kind: "user", userId: db.userId, plugin: null },
@@ -241,7 +255,7 @@ describe("internal_list", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		const result = await f.t.query(internal.files_visible.internal_list, {
+		const result = await list_agent(f.t, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			visibilityUserId: f.db.userId,
@@ -287,7 +301,7 @@ describe("internal_list", () => {
 			destName: "other-new",
 		});
 
-		const result = await f.t.query(internal.files_visible.internal_list, {
+		const result = await list_agent(f.t, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			visibilityUserId: f.db.userId,
@@ -302,44 +316,6 @@ describe("internal_list", () => {
 		expect(result._yay?.isDone).toBe(true);
 	});
 
-	test("continues after empty filtered pages without losing later matches", async () => {
-		const f = await fixture();
-		for (let index = 0; index < 110; index++) {
-			vi.setSystemTime(Date.now() + 2_000);
-			await create_saved(f, `folder-${String(index).padStart(3, "0")}`);
-		}
-		const last = await create_private({ f, path: "/zzz-match" });
-		let cursor: string | null = null;
-		const paths: string[] = [];
-		let done = false;
-		let emptyPages = 0;
-		for (let page = 0; page < 20 && !done; page++) {
-			const result: files_visible_internal_list_Result = await f.t.query(internal.files_visible.internal_list, {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				visibilityUserId: f.db.userId,
-				subject: { kind: "user", userId: f.db.userId, plugin: null },
-				overlayUserId: f.db.userId,
-				folderPath: "/",
-				mode: "children",
-				numItems: 50,
-				cursor,
-				pathQuery: "zzz",
-			});
-			if (result._nay) throw new Error(result._nay.message);
-			if (result._yay.items.length === 0 && !result._yay.isDone) emptyPages++;
-			paths.push(...result._yay.items.map((item) => item.path));
-			cursor = result._yay.continueCursor;
-			done = result._yay.isDone;
-		}
-		expect(done).toBe(true);
-		expect(emptyPages).toBeGreaterThan(0);
-		expect(paths).toEqual(["/zzz-match"]);
-		expect(
-			await f.asUser.query(api.files_visible.get_path, { membershipId: f.db.membershipId, target: last.target }),
-		).toBe("/zzz-match");
-	});
-
 	test("rejects a cursor from a different folder", async () => {
 		const f = await fixture();
 		await create_private({ f, path: "/a/first" });
@@ -351,7 +327,7 @@ describe("internal_list", () => {
 			subject: { kind: "user" as const, userId: f.db.userId, plugin: null },
 			overlayUserId: f.db.userId,
 		};
-		const first = await f.t.query(internal.files_visible.internal_list, {
+		const first = await list_agent(f.t, {
 			...scope,
 			folderPath: "/",
 			mode: "children",
@@ -359,7 +335,7 @@ describe("internal_list", () => {
 			cursor: null,
 		});
 		if (first._nay) throw new Error(first._nay.message);
-		const other = await f.t.query(internal.files_visible.internal_list, {
+		const other = await list_agent(f.t, {
 			...scope,
 			folderPath: "/a",
 			mode: "children",
@@ -508,7 +484,13 @@ describe("list_private_folder_children", () => {
 		const f = await fixture();
 		const box = private_id((await create_private({ f, path: "/box" })).target);
 		const saved = await create_saved(f, "plans");
-		await move_draft({ f, userId: f.db.userId, target: saved, destParent: { kind: "private", id: box }, destName: "moved" });
+		await move_draft({
+			f,
+			userId: f.db.userId,
+			target: saved,
+			destParent: { kind: "private", id: box },
+			destName: "moved",
+		});
 		const names = async () =>
 			(await list_pages({ as: f.asUser, membershipId: f.db.membershipId, folderId: box }))
 				.flatMap((page) => page.page)
@@ -728,7 +710,10 @@ describe("files_visible_db_create_reader", () => {
 					...f.db,
 					resume: { store, fence: "same-view" },
 				});
-				return await reader.resumeTraversal({ root, rootPath: "/open", target: created.target, path }, { stepLimit: 1 });
+				return await reader.resumeTraversal(
+					{ root, rootPath: "/open", target: created.target, path },
+					{ stepLimit: 1 },
+				);
 			});
 			if (result.status === "unfinished") continue;
 			expect(result.status).toBe("resolved");
@@ -877,11 +862,10 @@ describe("list_files_pending_updates", () => {
 		// folder never uses a slot.
 		let cursor: string | null = null;
 		do {
-			const page: FunctionReturnType<typeof api.files_pending_list.list_files_pending_updates> = await list(
-				f,
-				"all",
-				{ numItems: 1, cursor },
-			);
+			const page: FunctionReturnType<typeof api.files_pending_list.list_files_pending_updates> = await list(f, "all", {
+				numItems: 1,
+				cursor,
+			});
 			if (!page.isDone) expect(page.page).toHaveLength(1);
 			cursor = page.isDone ? null : page.continueCursor;
 		} while (cursor !== null);
@@ -981,7 +965,8 @@ describe("list_files_pending_updates", () => {
 									.eq("organizationId", f.db.organizationId)
 									.eq("workspaceId", f.db.workspaceId)
 									.eq("userId", f.db.userId)
-									.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)
+									.eq("moveView.cohortId", undefined)
+									.eq("moveView.view", undefined)
 									.eq("listKey", "all"),
 							)
 							.order("desc")

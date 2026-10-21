@@ -2,6 +2,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import type { ActionCtx } from "./_generated/server.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { owner_saved_folders } from "./files_move_pages.ts";
 import { run_to_end as finish_archive } from "./files_archive_runs.setup.test.ts";
@@ -301,17 +302,21 @@ test.each(["finish", "joined", "overlap", "stop-before", "stop-after", "archived
 			target: late._yay.target,
 		});
 		expect(visible?.path).toBe(`${path}/owner/deep/late`);
-		const listing = await t.query(internal.files_visible.internal_list, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			subject: { kind: "user", userId: ownerId, plugin: null },
-			visibilityUserId: ownerId,
-			overlayUserId: ownerId,
-			folderPath: path,
-			mode: "subtree",
-			numItems: 100,
-			cursor: null,
-		});
+		const listing = await overlay.files_pending_overlay_list(
+			{ runQuery: t.query } as unknown as Pick<ActionCtx, "runQuery">,
+			{
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				subject: { kind: "user", userId: ownerId, plugin: null },
+				visibilityUserId: ownerId,
+				overlayUserId: ownerId,
+				folderPath: path,
+				mode: "subtree",
+				order: "asc",
+				numItems: 100,
+				cursor: null,
+			},
+		);
 		expect(JSON.stringify(listing), "the accepted late draft appears in the After subtree listing").toContain(
 			late._yay.target.id,
 		);
