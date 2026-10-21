@@ -38,6 +38,21 @@ accounts, and a "what do you need" table that points to real files.
 8. **Ask before a big fixture.** Hundreds of files or drafts cost many writes. Ask the user first,
    and say which catalog entry was not enough.
 
+# Pick An Account
+
+| The check needs | Use |
+| --- | --- |
+| An owner and a member: permissions, refusals, shares. No uploads. | `qa.perm.owner` and `qa.perm.viewer` in `qa-browser/home`, each in its own scratch browser. This workspace has no file uploads and no credits. |
+| A paid plan: uploads, images, videos, public pages with media, Save with credits. | `qa.paid.owner` in `f5-repro-org/home`, in a scratch browser. Pro plan. |
+| Lots of existing data: big folders, many file types, existing images. | The QA Edge profile and its `chitchat-qa` workspaces. Use the account that is already signed in there; never sign in or out in that profile. |
+| An anonymous visitor (public link pages). | A new headless session with no sign-in. Open the share URL first, not `/`. |
+
+Sign-in steps and the account list are in
+[clerk-test-accounts.md](../app-playwriter-harness/references/clerk-test-accounts.md). Before you
+build on an account, read its membership and `billing.get_usage_snapshot`; plans and members
+change. Write only test fixture facts in these docs (test emails, ids, paths). Do not write a real
+person's name, email, or browser profile name.
+
 # What Costs Money
 
 | Action | What you pay for |
