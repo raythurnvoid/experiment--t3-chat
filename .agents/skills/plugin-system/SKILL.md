@@ -1057,6 +1057,23 @@ review stopped with "could not finish its assessment" and called the 26,798-line
 minified line"; the retry of the same commit passed. Before a Council upgrade, check that no meeting
 is `processing` or `deleting` (`packages/council/README.md`, release gate).
 
+Later on 2026-10-21 every first-party plugin repo moved to pnpm 12 and to one exact version string for
+each shared dependency (vitest 5, TypeScript 7, preact 11, happy-dom 21, react 19.3.1, SDK
+`ea875be3`). The six plugins whose `dist` changed got new patch versions and were published from the
+CLI with the owner's `--identity`: Council 0.2.16 (`1b38092a`), Data Probe 0.4.4 (`363adbe7`),
+Gallery 0.1.25 (`cd9451ef`), Video Player 0.1.13 (`6c39a40d`), and GitHub Sources 0.1.2 (`e2874343`,
+now linted with oxlint, because typescript-eslint does not support TypeScript 7). Image, PDF and Video
+kept the same `dist`, so they got no release. Every owner installation on the previous version was
+updated, and no consent changed. A publish can answer "Plugin AI review rate limit exceeded; try again
+in Ns". Wait that long and publish the same SHA again.
+
+Chitchat 0.8.11 (`3b26f018`) is pushed, but it is NOT published. Its bundle grew from 762,536 to
+889,542 bytes (Ariakit 0.4.42 and react-dom 19.3.1), and the AI review failed three times with "could
+not finish its assessment". The review said the bundle is "a single very long line". That is wrong:
+the file has 31,438 lines, and the longest has 948 characters. The review's scan budget is what runs
+out. Retrying does not fix this. Shrink the bundle or raise the review's budget before the next
+Chitchat publish. The Chitchat backend was deployed from `3b26f018`, and installations stay on 0.8.10.
+
 Gmail 0.2.4 was published and installed in `personal/home` on 2026-10-11 the same way (plugin commit
 `4a756dbff2b042eeb6711ad37bf9f74fa45c72ba`, version doc `hn7qf8eb759fkf1s6ennhc5pah8g2yh7`). Its page
 files are byte-identical to 0.2.3; the bump only lets the gitlink move past 71 backend, parser and
