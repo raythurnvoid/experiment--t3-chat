@@ -961,6 +961,14 @@ hour (0.2.3 used about 1,177) and 1 token refresh an hour; the two minute crons 
 left. An email from `lemmino4555@gmail.com` sent at 05:35:24 UTC was saved at 05:46:36, and the
 next slice ran 1 minute later. 462 tests.
 
+The Gmail 0.3.6 backend was updated on dev on 2026-10-21 with no new version (plugin commit
+`807ac69`), because a new version would end the Press grant. Each write that leaves an account free
+with a due time now schedules `gmail_accounts.dispatch` for that time, and each grant due time
+schedules `gmail_grants.sweep`. The two crons run every 15 minutes and only catch a lost schedule.
+Live check: with no plugin page open, 2 idle hours used about 156 calls an hour (dispatch 8, sweep 4).
+Most of what is left is the Workpool loop, about 25 calls per slice. An email sent at 12:48:00 UTC was
+saved at 12:58:51, and the next slice ran 1 minute later. 465 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `raythurnvoid/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
