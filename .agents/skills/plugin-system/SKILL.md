@@ -949,6 +949,18 @@ more read one page of each older month; all 60 rows were in time order. An email
 `lemmino4555@gmail.com` sent at 20:27:38 UTC showed at the top of the open page at 20:30:37, with no
 reload. 452 tests.
 
+Gmail 0.3.6 was published and installed in `personal/home` on 2026-10-21 (plugin commit
+`64eac0a525da72eb97ae7779c2322ac2327773a8`, version doc `hn7ghrjxwsf2qfn1te122ky4dd8gpgbp`). An
+idle account now waits 2, 4, 8, then at most 15 minutes between slices (`idleSlices`), and goes back
+to 1 minute after new mail or during backfill. An open page does not shorten the wait. The worker
+keeps the Google access token between slices (`googleAccessToken`, encrypted), skips the retry pass
+when nothing is pending, and skips the history save when the last page did not change. The page says
+"Sync is delayed" after 20 minutes. Old account docs were filled in by a two-deploy migration. Live
+check: the waits grew 2, 4, 8, 15 minutes. With no plugin page open, 2 idle hours used 249 calls an
+hour (0.2.3 used about 1,177) and 1 token refresh an hour; the two minute crons are most of what is
+left. An email from `lemmino4555@gmail.com` sent at 05:35:24 UTC was saved at 05:46:36, and the
+next slice ran 1 minute later. 462 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `raythurnvoid/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
