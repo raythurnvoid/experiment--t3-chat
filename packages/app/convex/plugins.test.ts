@@ -979,7 +979,7 @@ describe("plugins Phase 0", () => {
 			throw new Error(installed._nay.message);
 		}
 
-		const saved = await asOwner.mutation(api.plugins.upsert_installation_secrets, {
+		const saved = await asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
 			secrets: [
@@ -987,6 +987,7 @@ describe("plugins Phase 0", () => {
 				{ name: "CLOUDFLARE_MEDIA_TRANSFORMER_SECRET", value: "media-secret" },
 				{ name: "OPENAI_API_KEY", value: "sk-batch-secret" },
 			],
+			deleteNames: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -1005,6 +1006,51 @@ describe("plugins Phase 0", () => {
 		expect(JSON.stringify(listed)).not.toContain("sk-batch-secret");
 	});
 
+	test("one save writes and deletes installation secrets together", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin({ t, userId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const target = { membershipId: membership.membershipId, installationId: installed._yay.installationId };
+		// Insert the existing secrets directly, so the test spends one plugins_manage rate-limit token on the save.
+		await t.run(async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!;
+			for (const name of ["OLD_KEY", "KEPT_KEY"]) {
+				await ctx.db.insert("plugins_workspace_installation_secrets", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installation._id,
+					pluginName: installation.pluginName,
+					name,
+					ciphertext: new ArrayBuffer(1),
+					nonce: new ArrayBuffer(12),
+					valuePreview: "configured",
+					createdBy: membership.userId,
+					updatedBy: membership.userId,
+					updatedAt: Date.now(),
+				});
+			}
+		});
+
+		const saved = await asOwner.mutation(api.plugins.save_installation_secrets, {
+			...target,
+			secrets: [{ name: "NEW_KEY", value: "new" }],
+			deleteNames: ["OLD_KEY"],
+		});
+		expect(saved).toEqual({ _yay: { count: 1 } });
+
+		const listed = await asOwner.query(api.plugins.list_installation_secrets, target);
+		expect(listed.map((secret: { name: string }) => secret.name)).toEqual(["KEPT_KEY", "NEW_KEY"]);
+	});
+
 	test("refuses an oversized value in a .env secret batch and writes none of the batch", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -1019,13 +1065,14 @@ describe("plugins Phase 0", () => {
 			throw new Error(installed._nay.message);
 		}
 
-		const rejected = await asOwner.mutation(api.plugins.upsert_installation_secrets, {
+		const rejected = await asOwner.mutation(api.plugins.save_installation_secrets, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
 			secrets: [
 				{ name: "QA_SMALL", value: "small-ok" },
 				{ name: "QA_BIG", value: "x".repeat(16 * 1024 + 1) },
 			],
+			deleteNames: [],
 		});
 
 		// The whole batch shares one transaction, so a refused batch must leave no sibling behind.
@@ -5430,16 +5477,10 @@ describe("plugins publisher secrets", () => {
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
 		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
+			await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 				repositoryId: foreignRepositoryId,
 				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
-			}),
-		).toEqual({ _nay: { message: "Unauthorized" } });
-		refill_manage_rate_limit();
-		expect(
-			await asOwner.mutation(api.plugins.delete_publisher_repository_secret, {
-				repositoryId: foreignRepositoryId,
-				name: "OPENAI_API_KEY",
+				deleteNames: [],
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
 		expect(
@@ -5479,19 +5520,12 @@ describe("plugins publisher secrets", () => {
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
-			await asAnonymous.mutation(api.plugins.upsert_publisher_repository_secrets, {
+			await asAnonymous.mutation(api.plugins.save_publisher_repository_secrets, {
 				repositoryId,
 				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+				deleteNames: [],
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
-		expect(
-			await asAnonymous.mutation(api.plugins.delete_publisher_repository_secret, {
-				repositoryId,
-				name: "OPENAI_API_KEY",
-			}),
-		).toEqual({
-			_nay: { message: "Sign in to publish plugins" },
-		});
 
 		const secrets = await t.run((ctx) =>
 			ctx.db
@@ -5517,12 +5551,13 @@ describe("plugins publisher secrets", () => {
 			throw new Error(saved._nay.message);
 		}
 
-		const batch = await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
+		const batch = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
 			secrets: [
 				{ name: "OPENAI_API_KEY", value: "sk-new-secret" },
 				{ name: "MODAL_TOKEN", value: "modal-secret" },
 			],
+			deleteNames: [],
 		});
 		if (batch._nay) {
 			throw new Error(batch._nay.message);
@@ -5545,12 +5580,13 @@ describe("plugins publisher secrets", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const rejected = await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
+		const rejected = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
 			secrets: [
 				{ name: "QA_SMALL", value: "small-ok" },
 				{ name: "QA_BIG", value: "x".repeat(16 * 1024 + 1) },
 			],
+			deleteNames: [],
 		});
 
 		// The whole batch shares one transaction, so a refused batch must leave no sibling behind.
@@ -5594,18 +5630,20 @@ describe("plugins publisher secrets", () => {
 			}
 		});
 
-		const atLimit = await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
+		const atLimit = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
 			secrets: [{ name: "SECRET_63", value: "at-limit" }],
+			deleteNames: [],
 		});
 		expect(atLimit).toEqual({ _yay: { count: 1 } });
 		const before = await get_publisher_repository_secret_doc({ t, repositoryId, name: "SECRET_0" });
-		const overLimit = await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
+		const overLimit = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
 			secrets: [
 				{ name: "SECRET_0", value: "must-not-update" },
 				{ name: "SECRET_64", value: "over-limit" },
 			],
+			deleteNames: [],
 		});
 		expect(overLimit).toEqual({
 			_nay: { message: "Publisher repositories can store at most 64 secrets" },
@@ -5881,27 +5919,39 @@ describe("plugins publisher secrets", () => {
 		expect(resolved).toBeNull();
 	});
 
-	test("deletes publisher secrets for the owner", async () => {
+	test("one save deletes publisher secrets, and the freed slots count toward the cap", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
-
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
-			repositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-publisher-secret",
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 64; index++) {
+				await ctx.db.insert("plugins_publisher_repository_secrets", {
+					ownerUserId,
+					repositoryId,
+					name: `SECRET_${index}`,
+					ciphertext: new ArrayBuffer(1),
+					nonce: new ArrayBuffer(12),
+					valuePreview: "configured",
+					updatedAt: Date.now(),
+				});
+			}
 		});
-		if (saved._nay) {
-			throw new Error(saved._nay.message);
-		}
 
-		const deleted = await asOwner.mutation(api.plugins.delete_publisher_repository_secret, {
+		// The repository is full, so the new secret fits only because the same save deletes one.
+		const saved = await asOwner.mutation(api.plugins.save_publisher_repository_secrets, {
 			repositoryId,
-			name: "OPENAI_API_KEY",
+			secrets: [{ name: "NEW_SECRET", value: "new" }],
+			deleteNames: ["SECRET_0"],
 		});
-		expect(deleted).toEqual({ _yay: null });
-		expect(await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId })).toEqual([]);
+		expect(saved).toEqual({ _yay: { count: 1 } });
+
+		const names = (await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId })).map(
+			(secret) => secret.name,
+		);
+		expect(names).toHaveLength(64);
+		expect(names).toContain("NEW_SECRET");
+		expect(names).not.toContain("SECRET_0");
 	});
 
 	test("removing a repository claim deletes its secrets", async () => {

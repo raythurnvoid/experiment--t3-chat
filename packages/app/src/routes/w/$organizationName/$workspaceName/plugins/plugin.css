@@ -461,6 +461,19 @@
 		color: var(--color-fg-07);
 	}
 
+	.RoutePluginsPluginSecretsModalPanel-footer {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.RoutePluginsPluginSecretsModalPanel-status {
+		flex: 1;
+
+		font-size: 13px;
+		color: var(--color-fg-08);
+	}
+
 	.RoutePluginsPluginSecretItem {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
@@ -495,6 +508,12 @@
 	/* A same-name workspace secret wins at runtime, so the shadowed plugin value reads dimmer. */
 	.RoutePluginsPluginSecretItem-name-overridden {
 		color: var(--color-fg-08);
+	}
+
+	/* A secret staged for delete stays in the list until Save, so the member can undo it. */
+	.RoutePluginsPluginSecretItem-name-deleted {
+		color: var(--color-fg-08);
+		text-decoration: line-through;
 	}
 
 	.RoutePluginsPluginSecretItem-meta {

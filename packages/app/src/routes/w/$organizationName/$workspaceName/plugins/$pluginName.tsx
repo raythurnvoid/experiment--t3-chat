@@ -14,6 +14,7 @@ import {
 	History,
 	Info,
 	KeyRound,
+	Plus,
 	Puzzle,
 	Save,
 	ServerCog,
@@ -21,6 +22,7 @@ import {
 	ShieldCheck,
 	Trash2,
 	TriangleAlert,
+	Undo2,
 	Unplug,
 } from "lucide-react";
 import { editor as monaco_editor } from "monaco-editor";
@@ -99,6 +101,7 @@ import {
 	plugins_parse_installation_configuration_yaml,
 	plugins_parse_env_text,
 	plugins_validate_secret_name,
+	plugins_validate_secret_value,
 	type plugins_McpServer,
 } from "../../../../../../shared/plugins.ts";
 import {
@@ -290,10 +293,13 @@ type RoutePluginsPluginSecretsModalPanel_ClassNames =
 	| "RoutePluginsPluginSecretsModalPanel-list"
 	| "RoutePluginsPluginSecretsModalPanel-form"
 	| "RoutePluginsPluginSecretsModalPanel-hint"
+	| "RoutePluginsPluginSecretsModalPanel-footer"
+	| "RoutePluginsPluginSecretsModalPanel-status"
 	| "RoutePluginsPluginSecretItem"
 	| "RoutePluginsPluginSecretItem-identity"
 	| "RoutePluginsPluginSecretItem-name"
 	| "RoutePluginsPluginSecretItem-name-overridden"
+	| "RoutePluginsPluginSecretItem-name-deleted"
 	| "RoutePluginsPluginSecretItem-meta";
 
 type RoutePluginsPluginSecretsModalPanel_Props = {
@@ -330,78 +336,169 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 	const { target, secrets, autoFocusName } = props;
 	const [name, setName] = useState("");
 	const [value, setValue] = useState("");
-	// Run one secret action at a time. The buttons stay enabled while work is in flight and report
-	// the wait with `aria-busy`, because a browser blurs a focused control the moment it becomes
-	// disabled and nothing puts that focus back. The guards in the handlers, not disabled buttons,
-	// stop a second press from starting the same action twice.
+	// Keep every change in this panel until the member presses Save, like the environment variables
+	// page of the Convex dashboard. Staged secrets are new or replaced values. Staged delete names
+	// are existing secrets to delete. Save sends both in one mutation, so it saves all or nothing.
+	const [stagedSecrets, setStagedSecrets] = useState<Array<{ name: string; value: string }>>([]);
+	const [stagedDeleteNames, setStagedDeleteNames] = useState<Array<string>>([]);
+	// The Save button stays enabled while the save is in flight and reports the wait with
+	// `aria-busy`, because a browser blurs a focused control the moment it becomes disabled and
+	// nothing puts that focus back. The guard in the handler stops a second save.
 	const [saving, setSaving] = useState(false);
-	// The name of the secret whose delete is in flight, so only that row reports busy.
-	const [deleting, setDeleting] = useState<string | null>(null);
 	const panelRef = useRef<HTMLDivElement | null>(null);
 	const nameInputRef = useRef<HTMLInputElement | null>(null);
+	const addButtonRef = useRef<HTMLButtonElement | null>(null);
 	const saveButtonRef = useRef<HTMLButtonElement | null>(null);
 
 	const scopeLabel = target.scope === "workspace" ? "Workspace" : "Plugin";
 	const canAdd = target.scope === "plugin" || target.canAdd;
+	const existingNames = new Set((secrets ?? []).map((secret) => secret.name));
+	const newSecrets = stagedSecrets.filter((secret) => !existingNames.has(secret.name));
+	const changeCount = stagedSecrets.length + stagedDeleteNames.length;
+	const hasDraft = name.trim() !== "" && value !== "";
 
-	const handleSaveSecret = useFn((event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		if (saving || deleting !== null || !name.trim() || !value) {
-			return;
-		}
-
-		// Validating locally spares a doomed round-trip and a plugins_manage rate-limit token.
+	// Validate the Name and Value fields. Validating here names the bad secret, and it spares a
+	// save that the backend would refuse as a whole.
+	const getDraftSecret = () => {
 		const validName = plugins_validate_secret_name(name);
 		if (validName._nay) {
 			toast.error(validName._nay.message);
+			return null;
+		}
+
+		const validValue = plugins_validate_secret_value(value);
+		if (validValue._nay) {
+			toast.error(`${validName._yay}: ${validValue._nay.message}`);
+			return null;
+		}
+
+		return { name: validName._yay, value: validValue._yay };
+	};
+
+	const stageSecrets = (newValues: Array<{ name: string; value: string }>) => {
+		const names = new Set(newValues.map((secret) => secret.name));
+		setStagedSecrets((current) => [...current.filter((secret) => !names.has(secret.name)), ...newValues]);
+		// A new value for a secret staged for delete replaces that secret instead.
+		setStagedDeleteNames((current) => current.filter((secretName) => !names.has(secretName)));
+	};
+
+	const handleAddSecret = useFn((event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		if (!hasDraft) {
+			return;
+		}
+
+		const draft = getDraftSecret();
+		if (!draft) {
+			return;
+		}
+
+		stageSecrets([draft]);
+		setName("");
+		setValue("");
+		// Clearing the fields disables the Add button, and a browser blurs a focused control the
+		// moment it becomes disabled. Send the focus to the Name input, where the next secret starts.
+		if (document.activeElement === addButtonRef.current) {
+			nameInputRef.current?.focus();
+		}
+	});
+
+	const handleSave = useFn(() => {
+		if (saving) {
+			return;
+		}
+
+		// Include filled Name and Value fields, so a typed secret the member did not add is not lost.
+		let secretsToSave = stagedSecrets;
+		let namesToDelete = stagedDeleteNames;
+		if (hasDraft) {
+			const draft = getDraftSecret();
+			if (!draft) {
+				return;
+			}
+
+			secretsToSave = [...secretsToSave.filter((secret) => secret.name !== draft.name), draft];
+			namesToDelete = namesToDelete.filter((secretName) => secretName !== draft.name);
+		}
+		if (secretsToSave.length === 0 && namesToDelete.length === 0) {
 			return;
 		}
 
 		setSaving(true);
-		const upsert: Promise<
-			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_installation_secret>
-			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_publisher_repository_secret>
+		const save: Promise<
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.save_installation_secrets>
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.save_publisher_repository_secrets>
 		> =
 			target.scope === "workspace"
-				? app_convex.mutation(app_convex_api.plugins.upsert_installation_secret, {
+				? app_convex.mutation(app_convex_api.plugins.save_installation_secrets, {
 						membershipId: target.membershipId,
 						installationId: target.installationId,
-						name: validName._yay,
-						value,
+						secrets: secretsToSave,
+						deleteNames: namesToDelete,
 					})
-				: app_convex.mutation(app_convex_api.plugins.upsert_publisher_repository_secret, {
+				: app_convex.mutation(app_convex_api.plugins.save_publisher_repository_secrets, {
 						repositoryId: target.repositoryId,
-						name: validName._yay,
-						value,
+						secrets: secretsToSave,
+						deleteNames: namesToDelete,
 					});
-		upsert
+		save
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
 					return;
 				}
 
-				toast.success(`${scopeLabel} secret ${validName._yay} saved`);
-				// The inputs stay enabled during the save, so only clear what the user has not retyped since.
-				setName((current) => (current === name ? "" : current));
-				setValue((current) => (current === value ? "" : current));
-				// Clearing the fields disables the Save button again, and a browser blurs a focused
-				// control the moment it becomes disabled. Send the focus to the Name input, where the
-				// next secret starts, but only when the button was still holding it.
-				if (document.activeElement === saveButtonRef.current) {
-					nameInputRef.current?.focus();
+				toast.success(`${scopeLabel} secrets saved`);
+				// The panel stays editable during the save, so only clear the changes that were sent.
+				setStagedSecrets((current) => current.filter((secret) => !secretsToSave.includes(secret)));
+				setStagedDeleteNames((current) => current.filter((secretName) => !namesToDelete.includes(secretName)));
+				if (hasDraft) {
+					setName((current) => (current === name ? "" : current));
+					setValue((current) => (current === value ? "" : current));
+				}
+				// Save usually has no changes left now, so it becomes disabled and the browser blurs it.
+				// Send the focus to the panel, but only when the button was still holding it or the
+				// focus already fell.
+				if (document.activeElement === saveButtonRef.current || document.activeElement === document.body) {
+					panelRef.current?.focus();
 				}
 			})
 			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handleSaveSecret] Failed to save secret:", { error, scope: target.scope });
-				toast.error("Failed to save secret");
+				console.error("[RoutePluginsPlugin.handleSave] Failed to save secrets:", { error, scope: target.scope });
+				toast.error("Failed to save secrets");
 			})
 			.finally(() => {
 				setSaving(false);
 			});
 	});
 
-	// Pasting .env-style text into either field saves every KEY=value line into this panel's scope.
+	const handleDiscard = useFn(() => {
+		setStagedSecrets([]);
+		setStagedDeleteNames([]);
+		setName("");
+		setValue("");
+		// Discard disables both footer buttons, so move the focus before the browser drops it.
+		panelRef.current?.focus();
+	});
+
+	const handleToggleDelete = useFn((secretName: string) => {
+		setStagedDeleteNames((current) =>
+			current.includes(secretName)
+				? current.filter((stagedName) => stagedName !== secretName)
+				: [...current, secretName],
+		);
+	});
+
+	const handleUnstageSecret = useFn((secretName: string) => {
+		setStagedSecrets((current) => current.filter((secret) => secret.name !== secretName));
+		// A new secret's row goes away with its staged value, and the focus of a removed element
+		// falls to the page body. Send it to the panel instead.
+		if (!existingNames.has(secretName)) {
+			panelRef.current?.focus();
+		}
+	});
+
+	// Pasting .env-style text into either field stages every KEY=value line in this panel's scope.
 	// A single KEY=value line only auto-fills the two fields from the Name input, so one-line values
 	// that happen to contain "=" (base64, connection strings) paste normally into Value.
 	const handleEnvPaste = useFn((event: ClipboardEvent<HTMLInputElement>, field: "name" | "value") => {
@@ -431,105 +528,22 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 		}
 
 		event.preventDefault();
-		if (saving || deleting !== null) {
-			toast.error("Cannot import secrets while a save or delete is in progress");
-			return;
+		for (const secret of parsed._yay) {
+			const validValue = plugins_validate_secret_value(secret.value);
+			if (validValue._nay) {
+				toast.error(`${secret.name}: ${validValue._nay.message}`);
+				return;
+			}
 		}
 
-		setSaving(true);
-		const upsert: Promise<
-			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_installation_secrets>
-			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_publisher_repository_secrets>
-		> =
-			target.scope === "workspace"
-				? app_convex.mutation(app_convex_api.plugins.upsert_installation_secrets, {
-						membershipId: target.membershipId,
-						installationId: target.installationId,
-						secrets: parsed._yay,
-					})
-				: app_convex.mutation(app_convex_api.plugins.upsert_publisher_repository_secrets, {
-						repositoryId: target.repositoryId,
-						secrets: parsed._yay,
-					});
-		upsert
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Saved ${result._yay.count} ${target.scope} secret${result._yay.count === 1 ? "" : "s"}`);
-				// The inputs stay enabled during the import, so only clear what the user has not retyped since.
-				setName((current) => (current === name ? "" : current));
-				setValue((current) => (current === value ? "" : current));
-				// Clearing the fields disables the Save button again, and a browser blurs a focused
-				// control the moment it becomes disabled. Send the focus to the Name input, where the
-				// next secret starts, but only when the button was still holding it.
-				if (document.activeElement === saveButtonRef.current) {
-					nameInputRef.current?.focus();
-				}
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handleEnvPaste] Failed to import secrets:", { error, scope: target.scope });
-				toast.error("Failed to import secrets");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	const handleDeleteSecret = useFn((secretName: string, button: HTMLButtonElement) => {
-		if (saving || deleting !== null) {
-			return;
-		}
-
-		setDeleting(secretName);
-		const remove: Promise<
-			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.delete_installation_secret>
-			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.delete_publisher_repository_secret>
-		> =
-			target.scope === "workspace"
-				? app_convex.mutation(app_convex_api.plugins.delete_installation_secret, {
-						membershipId: target.membershipId,
-						installationId: target.installationId,
-						name: secretName,
-					})
-				: app_convex.mutation(app_convex_api.plugins.delete_publisher_repository_secret, {
-						repositoryId: target.repositoryId,
-						name: secretName,
-					});
-		remove
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`${scopeLabel} secret ${secretName} deleted`);
-				// The deleted row unmounts when the list updates, and the focus a removed element held
-				// falls to the page body. Send it to the panel instead, but only when the pressed button
-				// was still holding it or the focus already fell.
-				if (document.activeElement === button || document.activeElement === document.body) {
-					panelRef.current?.focus();
-				}
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handleDeleteSecret] Failed to delete secret:", {
-					error,
-					scope: target.scope,
-				});
-				toast.error("Failed to delete secret");
-			})
-			.finally(() => {
-				setDeleting(null);
-			});
+		stageSecrets(parsed._yay);
 	});
 
 	return (
 		<div
 			ref={panelRef}
 			className={"RoutePluginsPluginSecretsModalPanel" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
-			// A focus target for a finished delete, so the focus of the removed row does not fall to the body.
+			// A focus target for when a focused row or button goes away, so the focus does not fall to the body.
 			tabIndex={-1}
 		>
 			<p
@@ -549,7 +563,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 				>
 					Loading secrets...
 				</div>
-			) : secrets.length === 0 ? (
+			) : secrets.length === 0 && newSecrets.length === 0 ? (
 				<div
 					className={
 						"RoutePluginsPluginSecretsModalPanel-empty" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
@@ -566,6 +580,8 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 					{secrets.map((secret) => {
 						const overridden = target.scope === "plugin" && target.workspaceSecretNames.has(secret.name);
 						const overrides = target.scope === "workspace" && target.pluginSecretNames.has(secret.name);
+						const deleted = stagedDeleteNames.includes(secret.name);
+						const replaced = stagedSecrets.some((staged) => staged.name === secret.name);
 						return (
 							<div
 								key={secret._id}
@@ -581,6 +597,8 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 											"RoutePluginsPluginSecretItem-name" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames,
 											overridden &&
 												("RoutePluginsPluginSecretItem-name-overridden" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames),
+											deleted &&
+												("RoutePluginsPluginSecretItem-name-deleted" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames),
 										)}
 									>
 										{secret.name}
@@ -590,26 +608,77 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 											"RoutePluginsPluginSecretItem-meta" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
 										}
 									>
-										{`Updated ${format_datetime(secret.updatedAt)}${
-											"lastUsedAt" in secret && secret.lastUsedAt !== null
-												? ` · last used ${format_datetime(secret.lastUsedAt)}`
-												: ""
-										}${overridden ? " · overridden in this workspace" : ""}${
-											overrides ? " · overrides the plugin default" : ""
-										}`}
+										{deleted
+											? "Will be deleted when you save"
+											: replaced
+												? "New value will be saved when you save"
+												: `Updated ${format_datetime(secret.updatedAt)}${
+														"lastUsedAt" in secret && secret.lastUsedAt !== null
+															? ` · last used ${format_datetime(secret.lastUsedAt)}`
+															: ""
+													}${overridden ? " · overridden in this workspace" : ""}${
+														overrides ? " · overrides the plugin default" : ""
+													}`}
 									</span>
 								</div>
-								<MyButton
-									variant="ghost_destructive"
-									tooltip={`Delete ${target.scope} secret ${secret.name}`}
-									aria-busy={deleting === secret.name}
-									onClick={(event) => handleDeleteSecret(secret.name, event.currentTarget)}
-								>
-									<Trash2 aria-hidden />
-								</MyButton>
+								{deleted ? (
+									<MyButton
+										variant="ghost"
+										tooltip={`Keep ${target.scope} secret ${secret.name}`}
+										onClick={() => handleToggleDelete(secret.name)}
+									>
+										<Undo2 aria-hidden />
+									</MyButton>
+								) : replaced ? (
+									<MyButton
+										variant="ghost"
+										tooltip={`Keep the current value of ${secret.name}`}
+										onClick={() => handleUnstageSecret(secret.name)}
+									>
+										<Undo2 aria-hidden />
+									</MyButton>
+								) : (
+									<MyButton
+										variant="ghost_destructive"
+										tooltip={`Delete ${target.scope} secret ${secret.name}`}
+										onClick={() => handleToggleDelete(secret.name)}
+									>
+										<Trash2 aria-hidden />
+									</MyButton>
+								)}
 							</div>
 						);
 					})}
+					{newSecrets.map((secret) => (
+						<div
+							key={`new:${secret.name}`}
+							className={"RoutePluginsPluginSecretItem" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+						>
+							<div
+								className={
+									"RoutePluginsPluginSecretItem-identity" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+								}
+							>
+								<span
+									className={"RoutePluginsPluginSecretItem-name" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+								>
+									{secret.name}
+								</span>
+								<span
+									className={"RoutePluginsPluginSecretItem-meta" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+								>
+									Will be added when you save
+								</span>
+							</div>
+							<MyButton
+								variant="ghost"
+								tooltip={`Do not add ${secret.name}`}
+								onClick={() => handleUnstageSecret(secret.name)}
+							>
+								<Undo2 aria-hidden />
+							</MyButton>
+						</div>
+					))}
 				</div>
 			)}
 
@@ -619,7 +688,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 						className={
 							"RoutePluginsPluginSecretsModalPanel-form" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
 						}
-						onSubmit={handleSaveSecret}
+						onSubmit={handleAddSecret}
 					>
 						<MyInput layout="stacked">
 							<MyInputLabel>Name</MyInputLabel>
@@ -652,9 +721,9 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 							</MyInputArea>
 							<MyInputBox />
 						</MyInput>
-						<MyButton ref={saveButtonRef} type="submit" aria-busy={saving} disabled={!name.trim() || !value}>
-							<Save aria-hidden />
-							{saving ? "Saving..." : "Save"}
+						<MyButton ref={addButtonRef} type="submit" variant="outline" disabled={!hasDraft}>
+							<Plus aria-hidden />
+							Add
 						</MyButton>
 					</form>
 					<p
@@ -662,7 +731,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 							"RoutePluginsPluginSecretsModalPanel-hint" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
 						}
 					>
-						Paste .env-style text into Name to import several secrets at once.
+						Nothing is stored until you press Save. Paste .env-style text into Name to add several secrets at once.
 					</p>
 				</>
 			) : (
@@ -674,6 +743,29 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 					The installed version does not request secret access, so new secrets cannot be added.
 				</p>
 			)}
+
+			<div
+				className={"RoutePluginsPluginSecretsModalPanel-footer" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+			>
+				<span
+					className={"RoutePluginsPluginSecretsModalPanel-status" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+					role="status"
+				>
+					{changeCount > 0 ? `${changeCount} unsaved change${changeCount === 1 ? "" : "s"}` : null}
+				</span>
+				<MyButton variant="ghost" disabled={changeCount === 0 && !hasDraft} onClick={handleDiscard}>
+					Discard
+				</MyButton>
+				<MyButton
+					ref={saveButtonRef}
+					aria-busy={saving}
+					disabled={changeCount === 0 && !hasDraft}
+					onClick={handleSave}
+				>
+					<Save aria-hidden />
+					{saving ? "Saving..." : "Save"}
+				</MyButton>
+			</div>
 		</div>
 	);
 });

@@ -173,7 +173,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			run_schedule_now: "plugins.run_schedule_now",
 			list_installation_secrets: "plugins.list_installation_secrets",
 			list_publisher_repository_secrets: "plugins.list_publisher_repository_secrets",
-			upsert_publisher_repository_secrets: "plugins.upsert_publisher_repository_secrets",
+			save_publisher_repository_secrets: "plugins.save_publisher_repository_secrets",
 			update_installation_configuration: "plugins.update_installation_configuration",
 			install_version: "plugins.install_version",
 			set_installation_service_account: "plugins.set_installation_service_account",
@@ -229,9 +229,10 @@ vi.mock("@/components/plugins-header-breadcrumb.tsx", () => ({
 }));
 
 vi.mock("@/components/my-button.tsx", () => ({
-	MyButton: function MyButton(props: ComponentProps<"button"> & { ref?: Ref<HTMLButtonElement> }) {
-		const { ref, ...rest } = props;
-		return <button type="button" ref={ref} {...rest} />;
+	MyButton: function MyButton(props: ComponentProps<"button"> & { ref?: Ref<HTMLButtonElement>; tooltip?: string }) {
+		// Like the real button, the tooltip text is the accessible name.
+		const { ref, tooltip, ...rest } = props;
+		return <button type="button" ref={ref} aria-label={tooltip} {...rest} />;
 	},
 }));
 
@@ -1632,90 +1633,40 @@ describe("RoutePluginsPluginSecretsModalPanel", () => {
 		vi.clearAllMocks();
 	});
 
-	// The publisher scope mounts the panel with the fewest moving parts: no installation, so no
-	// health or configuration sections, and the modal holds a single untabbed panel.
-	function open_publisher_secrets_form() {
+	test("an env paste and a delete are only staged, and Save sends them in one mutation", async () => {
+		mutationMock.mockResolvedValue({ _yay: { count: 2 } });
+		// The publisher scope mounts the panel with the fewest moving parts: no installation, so no
+		// health or configuration sections, and the modal holds a single untabbed panel.
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		setQueries({ plugin, installations: [], publisherPlugin: publisher_plugin_fixture() });
+		const baseQuery = useQueryMock.getMockImplementation()!;
+		useQueryMock.mockImplementation((query: string, ...args: unknown[]) =>
+			query === "plugins.list_publisher_repository_secrets"
+				? [{ _id: "secret_1", name: "OLD_KEY", valuePreview: "configured", updatedAt: 0, lastUsedAt: null }]
+				: baseQuery(query, ...args),
+		);
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Manage secrets" }));
 
-		return {
-			nameInput: screen.getByLabelText("Name"),
-			valueInput: screen.getByLabelText("Value"),
-			saveButton: screen.getByRole("button", { name: "Save" }) as HTMLButtonElement,
-		};
-	}
-
-	test("a multi-line env paste that saves lands the fallen focus on the Name input", async () => {
-		let resolveImport!: (value: unknown) => void;
-		mutationMock.mockReturnValue(
-			new Promise((resolve) => {
-				resolveImport = resolve;
-			}),
-		);
-		const { nameInput, valueInput, saveButton } = open_publisher_secrets_form();
-
-		// Half-typed fields keep the Save button enabled, so the member can move onto it mid-import.
-		fireEvent.change(nameInput, { target: { value: "HALF_TYPED" } });
-		fireEvent.change(valueInput, { target: { value: "half value" } });
-		fireEvent.paste(nameInput, { clipboardData: { getData: () => "API_KEY=one\nAPI_URL=two\n" } });
-		// Assert the paste really started the import before trusting the landing below.
-		expect(mutationMock).toHaveBeenCalledTimes(1);
-		act(() => saveButton.focus());
+		fireEvent.paste(screen.getByLabelText("Name"), {
+			clipboardData: { getData: () => "API_KEY=one\nAPI_URL=two\n" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Delete plugin secret OLD_KEY" }));
+		expect(mutationMock).not.toHaveBeenCalled();
 
 		await act(async () => {
-			resolveImport({ _yay: { count: 2 } });
+			fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		});
 
-		// The finished import cleared both fields, which disables Save, and a browser blurs a
-		// focused control the moment it becomes disabled. The deliberate landing is the Name input,
-		// where the next secret starts.
-		expect(saveButton.disabled).toBe(true);
-		expect(document.activeElement).toBe(nameInput);
-	});
-
-	test("an env paste that settles after the member moved on leaves focus where it is", async () => {
-		let resolveImport!: (value: unknown) => void;
-		mutationMock.mockReturnValue(
-			new Promise((resolve) => {
-				resolveImport = resolve;
-			}),
-		);
-		const { nameInput, valueInput } = open_publisher_secrets_form();
-
-		fireEvent.change(nameInput, { target: { value: "HALF_TYPED" } });
-		fireEvent.change(valueInput, { target: { value: "half value" } });
-		fireEvent.paste(nameInput, { clipboardData: { getData: () => "API_KEY=one\nAPI_URL=two\n" } });
 		expect(mutationMock).toHaveBeenCalledTimes(1);
-		act(() => valueInput.focus());
-
-		await act(async () => {
-			resolveImport({ _yay: { count: 2 } });
-		});
-
-		expect(document.activeElement).toBe(valueInput);
-	});
-
-	test("a second env paste while an import is in flight is refused with a toast and does not start another mutation", async () => {
-		let resolveImport!: (value: unknown) => void;
-		mutationMock.mockReturnValue(
-			new Promise((resolve) => {
-				resolveImport = resolve;
-			}),
-		);
-		const { nameInput } = open_publisher_secrets_form();
-
-		fireEvent.paste(nameInput, { clipboardData: { getData: () => "API_KEY=one\nAPI_URL=two\n" } });
-		expect(mutationMock).toHaveBeenCalledTimes(1);
-
-		fireEvent.paste(nameInput, { clipboardData: { getData: () => "OTHER_KEY=three\nOTHER_URL=four\n" } });
-		expect(mutationMock).toHaveBeenCalledTimes(1);
-		expect(toastErrorMock).toHaveBeenCalledWith("Cannot import secrets while a save or delete is in progress");
-
-		await act(async () => {
-			resolveImport({ _yay: { count: 2 } });
+		expect(mutationMock).toHaveBeenCalledWith("plugins.save_publisher_repository_secrets", {
+			repositoryId: "repository_1",
+			secrets: [
+				{ name: "API_KEY", value: "one" },
+				{ name: "API_URL", value: "two" },
+			],
+			deleteNames: ["OLD_KEY"],
 		});
 	});
 });

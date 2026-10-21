@@ -147,6 +147,7 @@ import type * as public_api from "../public_api.js";
 import type * as public_api_ai_chat from "../public_api_ai_chat.js";
 import type * as public_api_ai_chat_http_routes from "../public_api_ai_chat_http_routes.js";
 import type * as public_api_credential_usage from "../public_api_credential_usage.js";
+import type * as public_api_credentials_db from "../public_api_credentials_db.js";
 import type * as public_api_files_list_http from "../public_api_files_list_http.js";
 import type * as public_api_files_organize from "../public_api_files_organize.js";
 import type * as public_api_files_organize_http_routes from "../public_api_files_organize_http_routes.js";
@@ -316,6 +317,7 @@ declare const fullApi: ApiFromModules<{
   public_api_ai_chat: typeof public_api_ai_chat;
   public_api_ai_chat_http_routes: typeof public_api_ai_chat_http_routes;
   public_api_credential_usage: typeof public_api_credential_usage;
+  public_api_credentials_db: typeof public_api_credentials_db;
   public_api_files_list_http: typeof public_api_files_list_http;
   public_api_files_organize: typeof public_api_files_organize;
   public_api_files_organize_http_routes: typeof public_api_files_organize_http_routes;

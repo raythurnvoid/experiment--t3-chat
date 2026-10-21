@@ -3342,10 +3342,15 @@ export const upsert_publisher_repository_secret = mutation({
 	},
 });
 
-export const upsert_publisher_repository_secrets = mutation({
+/**
+ * Save the changes staged in the secrets dialog in one transaction: write `secrets` and delete
+ * `deleteNames`. A refused save writes nothing.
+ */
+export const save_publisher_repository_secrets = mutation({
 	args: {
 		repositoryId: v.id("plugins_publisher_repositories"),
 		secrets: v.array(v.object({ name: v.string(), value: v.string() })),
+		deleteNames: v.array(v.string()),
 	},
 	returns: v_result({ _yay: v.object({ count: v.number() }) }),
 	handler: async (ctx, args) => {
@@ -3359,7 +3364,11 @@ export const upsert_publisher_repository_secrets = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		if (args.secrets.length === 0 || args.secrets.length > PLUGIN_SECRETS_MAX_BATCH_SIZE) {
+		if (
+			args.secrets.length + args.deleteNames.length === 0 ||
+			args.secrets.length > PLUGIN_SECRETS_MAX_BATCH_SIZE ||
+			args.deleteNames.length > PLUGIN_SECRETS_MAX_BATCH_SIZE
+		) {
 			return Result({ _nay: { message: "Secret batch size is invalid" } });
 		}
 
@@ -3388,6 +3397,16 @@ export const upsert_publisher_repository_secrets = mutation({
 
 			secrets.set(name._yay, value._yay);
 		}
+
+		// The writes and deletes below run together, so one name must not be in both lists.
+		const deleteNames = new Set(args.deleteNames);
+		for (const name of deleteNames) {
+			if (secrets.has(name)) {
+				return Result({ _nay: { message: `Cannot both save and delete secret ${name}` } });
+			}
+		}
+
+		// The count limit is enforced on write, so this read is bounded by PUBLISHER_SECRETS_MAX_COUNT.
 		const existingSecrets = await ctx.db
 			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_repository_name", (q) => q.eq("repositoryId", repository._id))
@@ -3395,6 +3414,9 @@ export const upsert_publisher_repository_secrets = mutation({
 		const resultingNames = new Set(existingSecrets.map((secret) => secret.name));
 		for (const name of secrets.keys()) {
 			resultingNames.add(name);
+		}
+		for (const name of deleteNames) {
+			resultingNames.delete(name);
 		}
 		if (resultingNames.size > PUBLISHER_SECRETS_MAX_COUNT) {
 			return Result({
@@ -3405,8 +3427,8 @@ export const upsert_publisher_repository_secrets = mutation({
 		// Let an unexpected write failure throw. A mutation that returns a value commits, so catching
 		// here and returning `_nay` would keep whichever secrets had already been written.
 		const now = Date.now();
-		await Promise.all(
-			[...secrets].map(([name, value]) =>
+		await Promise.all([
+			...[...secrets].map(([name, value]) =>
 				db_upsert_publisher_repository_secret(ctx, {
 					repository,
 					name,
@@ -3414,44 +3436,12 @@ export const upsert_publisher_repository_secrets = mutation({
 					now,
 				}),
 			),
-		);
+			...existingSecrets
+				.filter((secret) => deleteNames.has(secret.name))
+				.map((secret) => ctx.db.delete("plugins_publisher_repository_secrets", secret._id)),
+		]);
 
 		return Result({ _yay: { count: secrets.size } });
-	},
-});
-
-export const delete_publisher_repository_secret = mutation({
-	args: {
-		repositoryId: v.id("plugins_publisher_repositories"),
-		name: v.string(),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth || userAuth.kind !== "signed_in") {
-			return Result({ _nay: { message: "Sign in to publish plugins" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
-		if (!repository) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (repository.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		const existing = await ctx.db
-			.query("plugins_publisher_repository_secrets")
-			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId).eq("name", args.name))
-			.first();
-		if (existing) {
-			await ctx.db.delete("plugins_publisher_repository_secrets", existing._id);
-		}
-		return Result({ _yay: null });
 	},
 });
 
@@ -5170,11 +5160,16 @@ export const upsert_installation_secret = mutation({
 	},
 });
 
-export const upsert_installation_secrets = mutation({
+/**
+ * Save the changes staged in the secrets dialog in one transaction: write `secrets` and delete
+ * `deleteNames`. A refused save writes nothing.
+ */
+export const save_installation_secrets = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		installationId: v.id("plugins_workspace_installations"),
 		secrets: v.array(v.object({ name: v.string(), value: v.string() })),
+		deleteNames: v.array(v.string()),
 	},
 	returns: v_result({ _yay: v.object({ count: v.number() }) }),
 	handler: async (ctx, args) => {
@@ -5187,7 +5182,11 @@ export const upsert_installation_secrets = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		if (args.secrets.length === 0 || args.secrets.length > PLUGIN_SECRETS_MAX_BATCH_SIZE) {
+		if (
+			args.secrets.length + args.deleteNames.length === 0 ||
+			args.secrets.length > PLUGIN_SECRETS_MAX_BATCH_SIZE ||
+			args.deleteNames.length > PLUGIN_SECRETS_MAX_BATCH_SIZE
+		) {
 			return Result({ _nay: { message: "Secret batch size is invalid" } });
 		}
 
@@ -5208,7 +5207,9 @@ export const upsert_installation_secrets = mutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (!installation.acceptedCapabilities.includes("plugin.secrets.read")) {
+		// Only writes need plugin.secrets.read. Deletes do not, so leftover secrets stay removable
+		// after an upgrade drops the capability.
+		if (args.secrets.length > 0 && !installation.acceptedCapabilities.includes("plugin.secrets.read")) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
@@ -5230,11 +5231,19 @@ export const upsert_installation_secrets = mutation({
 			secrets.set(name._yay, value._yay);
 		}
 
+		// The writes and deletes below run together, so one name must not be in both lists.
+		const deleteNames = new Set(args.deleteNames);
+		for (const name of deleteNames) {
+			if (secrets.has(name)) {
+				return Result({ _nay: { message: `Cannot both save and delete secret ${name}` } });
+			}
+		}
+
 		// Let an unexpected write failure throw. A mutation that returns a value commits, so catching
 		// here and returning `_nay` would keep whichever secrets had already been written.
 		const now = Date.now();
-		await Promise.all(
-			[...secrets].map(([name, value]) =>
+		await Promise.all([
+			...[...secrets].map(([name, value]) =>
 				db_upsert_installation_secret(ctx, {
 					installation,
 					name,
@@ -5243,57 +5252,18 @@ export const upsert_installation_secrets = mutation({
 					now,
 				}),
 			),
-		);
+			...[...deleteNames].map(async (name) => {
+				const existing = await ctx.db
+					.query("plugins_workspace_installation_secrets")
+					.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id).eq("name", name))
+					.first();
+				if (existing) {
+					await ctx.db.delete("plugins_workspace_installation_secrets", existing._id);
+				}
+			}),
+		]);
 
 		return Result({ _yay: { count: secrets.size } });
-	},
-});
-
-export const delete_installation_secret = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		installationId: v.id("plugins_workspace_installations"),
-		name: v.string(),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-		const authorization = await plugins_access_db_authorize_management(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-			installationId: args.installationId,
-		});
-		if (authorization._nay) {
-			return authorization;
-		}
-
-		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
-		if (
-			!installation ||
-			installation.organizationId !== authorization._yay.membership.organizationId ||
-			installation.workspaceId !== authorization._yay.membership.workspaceId
-		) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		// No plugin.secrets.read gate here: even when an upgrade drops the capability,
-		// leftover secrets must stay listable and removable.
-		const existing = await ctx.db
-			.query("plugins_workspace_installation_secrets")
-			.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id).eq("name", args.name))
-			.first();
-		if (existing) {
-			await ctx.db.delete("plugins_workspace_installation_secrets", existing._id);
-		}
-		return Result({ _yay: null });
 	},
 });
 

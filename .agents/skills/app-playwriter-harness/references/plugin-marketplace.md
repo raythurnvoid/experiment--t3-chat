@@ -175,24 +175,31 @@ both apply the dialog grows a `Secret scope` tab list, and the per-row delete re
 the dialog with the `Manage secrets` button.
 
 Inside the dialog the Name field is `input[placeholder=OPENAI_API_KEY]` — the placeholder is a
-literal example, not the stored secret. Buttons are `Save`, `Close`, and one
-`Delete workspace secret <NAME>` per stored secret. Scope with
-`locator("[role=dialog]").filter({ hasText: "Manage secrets" })`; many dialogs stay mounted while
-closed on this route.
+literal example, not the stored secret. Scope with `locator(".RoutePluginsPluginSecretsModal")`, then
+`getByRole("tabpanel", { name: "Workspace secrets" })` when both scopes show; many dialogs stay
+mounted while closed on this route.
 
-To drive the **batch** (`.env`) import path, write the KEY=value text to the clipboard and paste into
-the **Name** field. A paste into **Value** runs the same batch import when the text parses as `.env`
-— including the `A=1\nB=2` fixture below. Value only refuses multi-line text (`Multi-line values are
-not supported`) when the parse fails, so use text that is not `KEY=value` to drive that refusal:
+Every change is staged until **Save** (like the Convex dashboard's environment variables page). `Add`
+and a `.env` paste add rows that read `Will be added when you save`. `Delete workspace secret <NAME>`
+only marks the row (`Will be deleted when you save`, name struck through), and its button becomes
+`Keep workspace secret <NAME>`. The footer shows `N unsaved changes`, `Discard`, and `Save`. Closing
+the dialog drops staged changes, so close and reopen to prove nothing was stored. Real secrets live in
+`personal/home` (PDF plugin): stage a delete of one only to undo it, and save only `QA_*` names.
+
+To drive the `.env` paste, dispatch a synthetic paste on the Name field. It reaches the app's own
+`onPaste` handler, and it avoids the clipboard, which `page.evaluate` cannot write (see
+known-hazards):
 
 ```js
-await state.page.evaluate(() => navigator.clipboard.writeText("A=1\nB=2"));
-await dialog.locator("input[placeholder=OPENAI_API_KEY]").click();
-await state.page.keyboard.press("Control+v");
+await panel.getByRole("textbox", { name: "Name" }).evaluate((input) => {
+	const data = new DataTransfer();
+	data.setData("text", "QA_STAGED_A=one\nQA_STAGED_B=two\n");
+	input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+});
 ```
 
-Read `[data-sonner-toast]` in the **same** execute call as the paste; the batch result is reported
-only as a toast, and sonner auto-dismisses it.
+Save reports `Workspace secrets saved` only as a toast. Read `[data-sonner-toast]` in the **same**
+execute call as the click, and keep that call's waits well under the 5 s timeout.
 
 ## Minting a plugin_ui token for API checks
 
