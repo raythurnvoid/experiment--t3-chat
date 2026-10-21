@@ -264,6 +264,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 	>();
 	const [pending, setPending] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const listRef = useRef<HTMLUListElement>(null);
 
 	const handleReview = useFn(async () => {
 		if (busy || pending) return;
@@ -303,6 +304,9 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 				const nextItem = next?.media.find((m) => m.available && m.nodeId === item.nodeId);
 				if (nextItem?.available && !nextItem.isPublic) {
 					setError("This file is public, but this page cannot show it yet. It may still be uploading.");
+				} else {
+					// The row's button is gone now, so keep focus in the dialog.
+					listRef.current?.focus();
 				}
 			}
 		} catch (error) {
@@ -339,6 +343,9 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 			) : null}
 			{review && review.media.length > 0 ? (
 				<ul
+					ref={listRef}
+					// Not reachable by Tab. `handleMakePublic` focuses it when the row's button goes away.
+					tabIndex={-1}
 					className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
 					aria-label="Images and videos in the public link"
 				>

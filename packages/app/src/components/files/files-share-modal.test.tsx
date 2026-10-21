@@ -525,6 +525,8 @@ describe("FilesShareModal", () => {
 
 		await waitFor(() => expect(document.querySelector('[data-share-media="public"]')).toBeTruthy());
 		expect(screen.queryByRole("alert")).toBeNull();
+		// The clicked button is gone, so focus must not fall out of the dialog.
+		expect(document.activeElement).toBe(screen.getByRole("list", { name: "Images and videos in the public link" }));
 		expect(mutationMock).toHaveBeenCalledWith("set_public", {
 			membershipId: "membership_1",
 			nodeId: "image_1",
