@@ -2,7 +2,6 @@ import "./file-editor-plain-text.css";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import {
 	files_u8_to_array_buffer,
-	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
 	files_fetch_file_yjs_state_and_text,
 	files_fetch_private_file_pending_text,
@@ -13,6 +12,7 @@ import {
 	type files_YjsRootKind,
 	type files_PendingTarget,
 } from "@/lib/files.ts";
+import { files_monaco_create_editor_model } from "@/lib/files-monaco.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../../../../../shared/files-yjs.ts";
 import { files_text_diff_TOO_LARGE_MESSAGE } from "../../../../../shared/files-text-diff.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../../../../shared/files-tiptap.ts";

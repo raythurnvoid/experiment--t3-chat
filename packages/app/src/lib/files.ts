@@ -26,7 +26,9 @@ import { should_never_happen, XCustomEvent } from "./utils.ts";
 import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } from "../hooks/presence-hooks.ts";
 import { objects_equal_deep } from "./object.ts";
 import { files_yjs_fetch_snapshot } from "./files-yjs-snapshot.ts";
-import { editor as monaco_editor } from "monaco-editor";
+// Keep this a type-only import. The app entry loads this module, so a Monaco value import here
+// would make every page download the whole editor. Runtime Monaco helpers live in `files-monaco.ts`.
+import type { editor as monaco_editor } from "monaco-editor";
 import {
 	app_convex,
 	type app_convex_Doc,
@@ -1020,14 +1022,6 @@ export class files_PresenceStore extends TypedEventTarget<files_PresenceStore_Ev
 // #endregion presence store
 
 // #region monaco
-export function files_monaco_create_editor_model(text: string, languageId: string) {
-	const model = monaco_editor.createModel(text, languageId);
-	// Keep this pin: Monaco is a second normalizer. Without it a CRLF string reaching a mounted
-	// model would flip the whole buffer's line endings and mark the file dirty with no user edit.
-	model.setEOL(monaco_editor.EndOfLineSequence.LF);
-	return model;
-}
-
 /**
  * Apply a programmatic edit through the editor so undo/redo behaves like normal typing.
  * Monaco refuses editor-level `executeEdits` while the editor is read-only, which happens when

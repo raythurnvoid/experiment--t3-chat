@@ -100,8 +100,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	},
 }));
 
-// Keep the real module. The model factory wrapper records each created model, which is how a test
-// reads the two panes and edits the modified one.
+// Keep the real module.
 vi.mock("@/lib/files.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@/lib/files.ts")>();
 	return {
@@ -109,6 +108,14 @@ vi.mock("@/lib/files.ts", async (importOriginal) => {
 		files_fetch_file_yjs_state_and_text: vi.fn().mockResolvedValue(null),
 		files_yjs_rebase_branch_with_local_text: vi.fn(original.files_yjs_rebase_branch_with_local_text),
 		files_persist_file_pending_update_rebased_state: vi.fn(original.files_persist_file_pending_update_rebased_state),
+	};
+});
+
+// The model factory wrapper records each created model, which is how a test reads the two panes
+// and edits the modified one.
+vi.mock("@/lib/files-monaco.ts", async (importOriginal) => {
+	const original = await importOriginal<typeof import("@/lib/files-monaco.ts")>();
+	return {
 		files_monaco_create_editor_model: (text: string, languageId: string) => {
 			const model = original.files_monaco_create_editor_model(text, languageId);
 			monacoHarness.createdModels.push(model as never);

@@ -80,8 +80,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 }));
 
 // Keep the real module. Fake only the network read; the Save path below runs the REAL
-// text -> Y.Doc -> diff-update pipeline on real documents. The model factory wrapper records
-// each created model so tests can drive edits and assert the Monaco language it was given.
+// text -> Y.Doc -> diff-update pipeline on real documents.
 vi.mock("@/lib/files.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@/lib/files.ts")>();
 	return {
@@ -89,6 +88,14 @@ vi.mock("@/lib/files.ts", async (importOriginal) => {
 		files_fetch_file_yjs_state_and_text: (...args: unknown[]) => fetchFileYjsStateAndTextMock(...args),
 		files_fetch_private_file_pending_text: (...args: unknown[]) => fetchPrivateFilePendingTextMock(...args),
 		files_save_private_file_pending_text: (...args: unknown[]) => savePrivateFilePendingTextMock(...args),
+	};
+});
+
+// The model factory wrapper records each created model so tests can drive edits and assert the
+// Monaco language it was given.
+vi.mock("@/lib/files-monaco.ts", async (importOriginal) => {
+	const original = await importOriginal<typeof import("@/lib/files-monaco.ts")>();
+	return {
 		files_monaco_create_editor_model: (text: string, languageId: string) => {
 			const model = original.files_monaco_create_editor_model(text, languageId);
 			monacoHarness.createdModels.push({ model: model as never, languageId });

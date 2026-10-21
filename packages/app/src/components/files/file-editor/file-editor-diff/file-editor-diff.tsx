@@ -42,7 +42,6 @@ import {
 	files_fetch_file_yjs_state_and_text,
 	files_get_comment_thread_ids_from_markdown,
 	files_get_utf8_byte_size,
-	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
 	files_pending_update_content_is_stale,
 	files_pending_update_has_content,
@@ -54,6 +53,7 @@ import {
 	type files_PendingTarget,
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
+import { files_monaco_create_editor_model } from "@/lib/files-monaco.ts";
 import { files_yjs_doc_clone, files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
