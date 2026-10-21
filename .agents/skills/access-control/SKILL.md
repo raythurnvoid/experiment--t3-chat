@@ -1058,7 +1058,8 @@ The model:
   keeps its own scope. The first step runs inside the request, so a small folder is done at once,
   unless a Move holds the workspace: then every step, the first one too, waits for the Move. A
   bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so the recover
-  cron finds the op. A move job rewrites scope the same way.
+  cron finds the op. A Move does not use this walk: it publishes its items with their new scope (see
+  below).
 - Until a scope job writes a child, the child keeps its stored scope. Every permission check, for
   reads and writes, trusts that stored scope. So a child of a newly restricted folder keeps its old
   access until the job rewrites it. This per-file timing is the chosen design: each file follows its
