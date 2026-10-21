@@ -264,6 +264,8 @@ describe("RouteApiKeys", () => {
 		renderRoute();
 		expect(screen.getByRole("combobox", { name: "Identity" }).textContent).toContain("Publisher");
 		expect(screen.queryByRole("checkbox", { name: /plugin data/i })).toBeNull();
+		// A key bound to a service account cannot hold "files:publish".
+		expect(screen.queryByRole("checkbox", { name: /Make files public/ })).toBeNull();
 		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Deploy key" } });
 		fireEvent.click(screen.getByRole("checkbox", { name: /Manage file policies/ }));
 		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);
@@ -273,6 +275,26 @@ describe("RouteApiKeys", () => {
 				name: "Deploy key",
 				serviceAccountId: "account_1",
 				scopes: ["files:list", "files:read", "files:permissions"],
+			}),
+		);
+	});
+
+	test("lets a personal key make files public", async () => {
+		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
+		renderRoute();
+		fireEvent.click(screen.getAllByRole("button", { name: "Create API key" })[0]!);
+		const publish = screen.getByRole("checkbox", { name: /Make files public/ }) as HTMLInputElement;
+		expect(publish.checked).toBe(false);
+		fireEvent.click(publish);
+		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Publisher" } });
+		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);
+
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+				serviceAccountId: null,
+				membershipId: "membership_1",
+				name: "Publisher",
+				scopes: ["files:list", "files:read", "files:publish"],
 			}),
 		);
 	});

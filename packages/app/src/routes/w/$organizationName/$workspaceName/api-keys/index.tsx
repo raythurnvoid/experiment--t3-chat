@@ -68,6 +68,7 @@ const API_KEY_SCOPE_LABELS = {
 	"files:download": "Download files",
 	"files:write": "Write files",
 	"files:permissions": "Manage file policies",
+	"files:publish": "Make files public",
 	"plugin_data:read": "Read plugin data",
 	"plugin_data:write": "Write plugin data",
 } as const satisfies Record<RouteApiKeys_Scope, string>;
@@ -83,12 +84,22 @@ const API_KEY_SCOPE_ROWS = [
 	{ scope: "files:download", description: "Get temporary download links for files." },
 	{ scope: "files:write", description: "Create and update editable text files by path, and upload other files." },
 	{ scope: "files:permissions", description: "Change write policies on files and folders you can manage." },
+	{
+		scope: "files:publish",
+		description:
+			'Turn "Anyone on the web" on or off for files and folders you can manage. Public pages then show their images and videos.',
+	},
 	{ scope: "plugin_data:read", description: "Read the documents an installed plugin stores in this workspace." },
 	{ scope: "plugin_data:write", description: "Create, change, and delete those plugin documents." },
 ] as const satisfies ReadonlyArray<{ scope: RouteApiKeys_Scope; description: string }>;
 
 // Every scope that lets a key change stored data. They share one warning under the checkbox list.
-const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = ["files:write", "files:permissions", "plugin_data:write"];
+const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = [
+	"files:write",
+	"files:permissions",
+	"files:publish",
+	"plugin_data:write",
+];
 
 // File list and text reads start checked. Every other scope stays opt-in.
 const API_KEY_SCOPE_DEFAULTS = {
@@ -98,6 +109,7 @@ const API_KEY_SCOPE_DEFAULTS = {
 	"files:download": false,
 	"files:write": false,
 	"files:permissions": false,
+	"files:publish": false,
 	"plugin_data:read": false,
 	"plugin_data:write": false,
 } as const satisfies Record<RouteApiKeys_Scope, boolean>;

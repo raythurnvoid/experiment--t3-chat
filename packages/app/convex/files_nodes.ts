@@ -689,6 +689,19 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		isRestrictedScopeRoot
 			? { extendedScopeNodeId: null, parentExtendedScopeNodeId: undefined }
 			: { extendedScopeNodeId: parentExtendedScopeNodeId };
+	// A public root keeps "Anyone on the web" only while its restricted area stays the same. A new
+	// restricted root starts not public. Any other item takes its parent's value.
+	const publicScope = (
+		target: Pick<Doc<"files_nodes">, "publicScopeNodeId" | "restrictedScopeNodeId">,
+		parentPublicScopeNodeId: Id<"files_nodes"> | undefined,
+	) => ({
+		publicScopeNodeId:
+			target.publicScopeNodeId === args.nodeId && target.restrictedScopeNodeId === args.restrictedScopeNodeId
+				? args.nodeId
+				: isRestrictedScopeRoot
+					? undefined
+					: parentPublicScopeNodeId,
+	});
 	if (
 		node &&
 		(node.moveCohortId ||
@@ -708,11 +721,15 @@ export async function files_nodes_db_set_restricted_scope(args: {
 			if (!place) continue;
 			let parentScopeNodeId: Id<"files_nodes"> | null = null;
 			let parentExtendedScopeNodeId: Id<"files_nodes"> | null = null;
+			let parentPublicScopeNodeId: Id<"files_nodes"> | undefined;
 			let parentId = place.parentId;
 			while (!parentScopeNodeId && parentId !== files_ROOT_ID) {
 				const parent = await files_saved_placement_db_get_node(ctx.db, parentId, fixedView);
 				if (!parent) break;
-				if (parent._id === place.parentId) parentExtendedScopeNodeId = parent.extendedScopeNodeId;
+				if (parent._id === place.parentId) {
+					parentExtendedScopeNodeId = parent.extendedScopeNodeId;
+					parentPublicScopeNodeId = parent.publicScopeNodeId;
+				}
 				if (parent.isRestrictedScopeRoot) parentScopeNodeId = parent._id;
 				parentId = parent.parentId;
 			}
@@ -722,6 +739,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 				isRestrictedScopeRoot,
 				...boundary(parentScopeNodeId),
 				...extended(parentExtendedScopeNodeId),
+				...publicScope(place, parentPublicScopeNodeId),
 			});
 			await files_metadata_db_patch_file_scope(ctx, {
 				...args,
@@ -739,6 +757,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		isRestrictedScopeRoot,
 		...boundary(physicalParent?.restrictedScopeNodeId ?? null),
 		...extended(physicalParent?.extendedScopeNodeId ?? null),
+		...(physical ? publicScope(physical, physicalParent?.publicScopeNodeId) : {}),
 	});
 	await files_metadata_db_patch_file_scope(ctx, {
 		organizationId: args.organizationId,
@@ -797,6 +816,54 @@ export async function files_nodes_db_set_extended_scope(
 	const physicalParent =
 		physical && physical.parentId !== files_ROOT_ID ? await ctx.db.get("files_nodes", physical.parentId) : null;
 	await ctx.db.patch("files_nodes", args.nodeId, fields(physicalParent));
+}
+
+/**
+ * Turn "Anyone on the web" on or off for one item. Start a scope op with
+ * `files_subtree_ops_db_start_rebuild` after this for the items inside a folder. The caller checks
+ * who may do it.
+ *
+ * Off works while a Move holds the item: both Move views change now, so the Move end does not write
+ * the old value back.
+ */
+export async function files_nodes_db_set_public_scope(
+	ctx: MutationCtx,
+	args: { nodeId: Id<"files_nodes">; public: boolean },
+) {
+	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+	if (!node) return;
+	// An item that stops being public takes its parent's value. A restricted root starts a new area,
+	// so it takes nothing from above.
+	const fields = (target: Pick<Doc<"files_nodes">, "isRestrictedScopeRoot">, parent: Doc<"files_nodes"> | null) => ({
+		publicScopeNodeId: args.public ? node._id : target.isRestrictedScopeRoot ? undefined : parent?.publicScopeNodeId,
+	});
+	if (
+		node.moveCohortId ||
+		(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } }))
+	)
+		files_move_reservations_db_enter_security(ctx, { nodeId: node._id });
+	if (node.moveCohortId) {
+		for (const view of ["before", "after"] as const) {
+			const fixedView = { cohortId: node.moveCohortId, view };
+			const place = await ctx.db
+				.query("files_saved_places")
+				.withIndex("by_cohort_view_node", (q) =>
+					q.eq("cohortId", fixedView.cohortId).eq("view", view).eq("nodeId", node._id),
+				)
+				.unique();
+			if (!place) continue;
+			const parent =
+				place.parentId === files_ROOT_ID
+					? null
+					: await files_saved_placement_db_get_node(ctx.db, place.parentId, fixedView);
+			await ctx.db.patch("files_saved_places", place._id, fields(place, parent));
+		}
+	}
+	const physical = await ctx.db.get("files_nodes", args.nodeId);
+	if (!physical) return;
+	const physicalParent =
+		physical.parentId !== files_ROOT_ID ? await ctx.db.get("files_nodes", physical.parentId) : null;
+	await ctx.db.patch("files_nodes", args.nodeId, fields(physical, physicalParent));
 }
 
 // #region write-policy
@@ -3658,6 +3725,14 @@ export async function files_nodes_db_rebuild_node(
 		extendedScopeNodeId:
 			restrictedScopeNodeId === node._id ? null : isExtendedRoot ? node._id : parent.extendedScopeNodeId,
 		...(isExtendedRoot ? { parentExtendedScopeNodeId: parent.extendedScopeNodeId } : {}),
+		// A public root keeps "Anyone on the web" only in its own area. A restricted root starts not
+		// public. Any other child takes its parent's value.
+		publicScopeNodeId:
+			node.publicScopeNodeId === node._id && node.restrictedScopeNodeId === restrictedScopeNodeId
+				? node._id
+				: restrictedScopeNodeId === node._id
+					? undefined
+					: parent.publicScopeNodeId,
 	};
 	if (
 		node.path === fields.path &&
@@ -3666,7 +3741,8 @@ export async function files_nodes_db_rebuild_node(
 		node.restrictedScopeNodeId === fields.restrictedScopeNodeId &&
 		(!isBoundary || node.parentScopeNodeId === parent.restrictedScopeNodeId) &&
 		node.extendedScopeNodeId === fields.extendedScopeNodeId &&
-		(!isExtendedRoot || node.parentExtendedScopeNodeId === parent.extendedScopeNodeId)
+		(!isExtendedRoot || node.parentExtendedScopeNodeId === parent.extendedScopeNodeId) &&
+		node.publicScopeNodeId === fields.publicScopeNodeId
 	) {
 		return false;
 	}
@@ -3794,6 +3870,13 @@ export async function files_nodes_db_restore_node(
 		...(args.node.parentExtendedScopeNodeId !== undefined
 			? { parentExtendedScopeNodeId: args.parent?.extendedScopeNodeId ?? null }
 			: {}),
+		// Like the scope op: a public root stays public only in its own area.
+		publicScopeNodeId:
+			args.node.publicScopeNodeId === args.node._id && args.node.restrictedScopeNodeId === restrictedScopeNodeId
+				? args.node._id
+				: restrictedScopeNodeId === args.node._id
+					? undefined
+					: args.parent?.publicScopeNodeId,
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});

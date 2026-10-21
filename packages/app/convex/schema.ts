@@ -562,6 +562,7 @@ const files_saved_placement_fields = {
 	parentScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 	extendedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	parentExtendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+	publicScopeNodeId: v.optional(v.id("files_nodes")),
 	updatedAt: v.number(),
 	updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 	ancestor1: v.optional(v.id("files_nodes")),
@@ -2129,6 +2130,7 @@ const app_convex_schema = defineSchema({
 				v.literal("files:read"),
 				v.literal("files:write"),
 				v.literal("files:permissions"),
+				v.literal("files:publish"),
 				v.literal("files:download"),
 				v.literal("ai_chat:read"),
 				v.literal("plugin_data:read"),
@@ -4998,6 +5000,15 @@ const app_convex_schema = defineSchema({
 		 * follow the chain of extended roots up. Missing means the node is not an extended root.
 		 */
 		parentExtendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+		/**
+		 * The public root at or above this node, in the same restricted area. A public root ("Anyone on
+		 * the web") points at itself. Missing means not public. Public pages show an embedded file only
+		 * when this points at a live public root; it never opens a file by id.
+		 *
+		 * A new node copies it from its parent. A folder change reaches the items inside through the scope op,
+		 * which stops at restricted folders. A root loses its own flag when its restricted area changes.
+		 */
+		publicScopeNodeId: v.optional(v.id("files_nodes")),
 		writePolicy: files_nodes_write_policy_validator,
 		/**
 		 * Starting protection copied once to brand-new files and subfolders.
@@ -5443,7 +5454,8 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_scope", ["organizationId", "workspaceId", "restrictedScopeNodeId"]),
 
 	/**
-	 * One deliberate media publication, for the exact bytes this link may show.
+	 * Old media approval docs. Unused: public pages now show only public media
+	 * (`files_nodes.publicScopeNodeId`). A deleted link and a tenant purge still remove them.
 	 */
 	files_share_link_media: defineTable({
 		organizationId: v.id("organizations"),

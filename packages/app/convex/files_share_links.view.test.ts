@@ -16,7 +16,7 @@ import {
 	seed_big_folder,
 	read_links,
 	link_on,
-	share_saved_media,
+	set_public,
 	insert_media_file,
 	insert_restricted_folder,
 	view_of,
@@ -177,10 +177,15 @@ describe("get_share_link_view", () => {
 		expect(await view_of(f, link.token)).not.toBeNull();
 	});
 
-	test("shows an image with the same audience and hides every other image", async () => {
+	test("shows a public image and hides every other image", async () => {
 		const f = await fixture();
 		const privateFolderId = await insert_restricted_folder(f, "private");
-		const openImageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const openImageId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/photo.png",
+			contentType: "image/png",
+			public: true,
+		});
 		const privateImageId = await insert_media_file(f, {
 			parentId: privateFolderId,
 			path: "/private/secret.png",
@@ -191,6 +196,7 @@ describe("get_share_link_view", () => {
 			parentId: "root",
 			path: "/logo.svg",
 			contentType: "image/svg+xml",
+			public: true,
 		});
 		// An image restricted by itself, with no restricted folder above it.
 		const selfRestrictedImageId = await insert_media_file(f, {
@@ -204,8 +210,13 @@ describe("get_share_link_view", () => {
 				restrictedScopeNodeId: selfRestrictedImageId,
 			});
 		});
-		// An image at the root of another workspace. Only the tenant check can refuse it.
-		const otherImageId = await insert_media_file(f, { parentId: "root", path: "/other.png", contentType: "image/png" });
+		// A public image at the root of another workspace. Only the tenant check can refuse it.
+		const otherImageId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/other.png",
+			contentType: "image/png",
+			public: true,
+		});
 		await f.t.run(async (ctx) => {
 			const other = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other" });
 			const image = await ctx.db.get("files_nodes", otherImageId);
@@ -256,7 +267,7 @@ describe("get_share_link_view", () => {
 		}
 	});
 
-	test("shows an image of a restricted file's own scope and hides open and deeper restricted images", async () => {
+	test("shows public images of any restricted area and hides an image that is not public", async () => {
 		const f = await fixture();
 		const teamId = await insert_restricted_folder(f, "team");
 		// `/team/assets` belongs to the team scope. `/team/private` is its own restricted scope.
@@ -292,9 +303,14 @@ describe("get_share_link_view", () => {
 			path: "/team/private/b.png",
 			contentType: "image/png",
 		});
+		// `/team/assets` is public, so its image points at it. The private image is public by itself.
 		await f.t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", teamImageId, { restrictedScopeNodeId: teamId });
-			await ctx.db.patch("files_nodes", privateImageId, { restrictedScopeNodeId: privateId });
+			await ctx.db.patch("files_nodes", assetsId, { publicScopeNodeId: assetsId });
+			await ctx.db.patch("files_nodes", teamImageId, { restrictedScopeNodeId: teamId, publicScopeNodeId: assetsId });
+			await ctx.db.patch("files_nodes", privateImageId, {
+				restrictedScopeNodeId: privateId,
+				publicScopeNodeId: privateImageId,
+			});
 		});
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
@@ -303,11 +319,11 @@ describe("get_share_link_view", () => {
 		});
 		const link = await link_on(f, nodeId);
 
-		// Only the team image stores the same scope as the file.
+		// The private image is in another area than the page, and still shows. The open image is not public.
 		expect((await view_of(f, link.token))?.media).toEqual([
 			{ index: 0, available: true, kind: "image" },
 			{ index: 1, available: false },
-			{ index: 2, available: false },
+			{ index: 2, available: true, kind: "image" },
 		]);
 	});
 
@@ -321,9 +337,14 @@ describe("get_share_link_view", () => {
 		expect(await view_of(f, link.token)).not.toBeNull();
 	});
 
-	test("keeps deliberately published bytes when another writer cannot read them", async () => {
+	test("shows a public image whatever another writer can read", async () => {
 		const f = await fixture();
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const imageId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/photo.png",
+			contentType: "image/png",
+			public: true,
+		});
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
 			path: "/page.md",
@@ -373,7 +394,7 @@ describe("get_share_link_view", () => {
 
 		await set_grant({ kind: "workspace" }, null);
 		await set_grant({ kind: "file", nodeId: imageId }, "read");
-		// Another writer's revocation does not undo the owner's deliberate publication.
+		// Another writer's revocation does not undo the owner's choice to make the image public.
 		await f.t.run((ctx) =>
 			ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: Date.now() }),
 		);
@@ -382,7 +403,12 @@ describe("get_share_link_view", () => {
 
 	test("shows a draft image only through the saved file it became", async () => {
 		const f = await fixture();
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const imageId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/photo.png",
+			contentType: "image/png",
+			public: true,
+		});
 		const privateNodeId = await f.t.run((ctx) =>
 			ctx.db.insert("files_pending_nodes", {
 				organizationId: f.db.organizationId,
@@ -408,11 +434,10 @@ describe("get_share_link_view", () => {
 		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: false }]);
 
 		await f.t.run((ctx) => ctx.db.patch("files_nodes", imageId, { publishedFromPrivateNodeId: privateNodeId }));
-		await share_saved_media(f, nodeId);
 		expect((await view_of(f, link.token))?.media).toEqual([{ index: 0, available: true, kind: "image" }]);
 	});
 
-	// No test spends the read budget through media: 50 media need only exact node, approval and asset reads,
+	// No test spends the read budget through media: 50 media need only exact node, scope and asset reads,
 	// far below 1,500 calls and 16,000 docs. A test that seeds enough chunks to pass the doc budget would
 	// likely hit the byte limit first, and all limits throw into the same catch, so it could not tell them apart.
 	test("hides media past the first 50", async () => {
@@ -420,7 +445,12 @@ describe("get_share_link_view", () => {
 		const imageIds: Id<"files_nodes">[] = [];
 		for (let index = 0; index < 51; index++) {
 			imageIds.push(
-				await insert_media_file(f, { parentId: "root", path: `/photo-${index}.png`, contentType: "image/png" }),
+				await insert_media_file(f, {
+					parentId: "root",
+					path: `/photo-${index}.png`,
+					contentType: "image/png",
+					public: true,
+				}),
 			);
 		}
 		const nodeId = await test_create_saved_text_file(f.t, {
@@ -470,8 +500,14 @@ describe("create_share_link_download_urls", () => {
 			parentId: "root",
 			path: "/Secret plan.png",
 			contentType: "image/png",
+			public: true,
 		});
-		const clipId = await insert_media_file(f, { parentId: "root", path: "/clip.mp4", contentType: "video/mp4" });
+		const clipId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/clip.mp4",
+			contentType: "video/mp4",
+			public: true,
+		});
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
 			path: "/page.md",
@@ -523,7 +559,12 @@ describe("create_share_link_download_urls", () => {
 	test("answers stale for an old revision, and refuses media that the page no longer shows", async () => {
 		const f = await fixture();
 		mock_signed_urls();
-		const photoId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const photoId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/photo.png",
+			contentType: "image/png",
+			public: true,
+		});
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
 			path: "/page.md",
@@ -555,7 +596,12 @@ describe("create_share_link_download_urls", () => {
 	test("answers stale after the file or one of its images gets new bytes", async () => {
 		const f = await fixture();
 		mock_signed_urls();
-		const photoId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const photoId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/photo.png",
+			contentType: "image/png",
+			public: true,
+		});
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
 			path: "/page.md",
@@ -583,7 +629,12 @@ describe("create_share_link_download_urls", () => {
 	test("refuses the media of a page that shows as plain text", async () => {
 		const f = await fixture();
 		const signUrl = mock_signed_urls();
-		const photoId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		const photoId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/photo.png",
+			contentType: "image/png",
+			public: true,
+		});
 		// Each control character becomes a 6-byte `\u0001` escape in the rich JSON. So 1,000 more than a sixth
 		// of the cap make the JSON too large, and the page shows its text only. 1,000 fewer stay rich. This
 		// happens after the image is loaded, so only the page's media list can refuse it. Each Save step of a
@@ -684,7 +735,7 @@ describe("create_share_link_download_urls", () => {
 		});
 	});
 
-	test("keeps raw API edits private until a manager reviews their images", async () => {
+	test("shows the images of a raw API edit only once they are public", async () => {
 		const f = await fixture();
 		mock_signed_urls();
 		// Keep uploaded objects in memory, so a second write can read back the first write's saved state.
@@ -767,7 +818,7 @@ describe("create_share_link_download_urls", () => {
 		const headers = { Authorization: `Bearer ${key._yay.credential}`, "Content-Type": "application/json" };
 		const link = await link_on(f, pageId);
 
-		// An in-place API edit keeps the link and text. It does not prove a publication decision.
+		// An in-place API edit keeps the link and text. It does not make its images public.
 		const written = await f.t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -779,22 +830,7 @@ describe("create_share_link_download_urls", () => {
 		expect(written.status).toBe(200);
 		expect(await read_links(f.t, pageId)).toEqual([link]);
 		expect((await view_of(f, link.token))?.media.every((item) => !item.available)).toBe(true);
-		const review = await f.asOwner.query(api.files_share_links.get_media_to_share, {
-			membershipId: f.db.membershipId,
-			nodeId: pageId,
-		});
-		const item = review!.media[0]!;
-		expect(item.available).toBe(true);
-		if (!item.available) throw new Error("Expected the readable image");
-		expect(
-			await f.asOwner.mutation(api.files_share_links.approve_reviewed_media, {
-				membershipId: f.db.membershipId,
-				nodeId: pageId,
-				src: item.src,
-				expectedLinkId: review!.linkId,
-				expectedAssetId: item.assetId,
-			}),
-		).toEqual({ _yay: { shared: true } });
+		expect(await set_public(f, readableId)).toEqual({ public: "on" });
 
 		const view = await view_of(f, link.token);
 		expect(view?.media).toEqual([

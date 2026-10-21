@@ -151,9 +151,6 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 200,
 	},
-	// Approving media for a public link. Each editor upload into a linked document approves its file,
-	// so this has its own bucket: a batch of uploads would otherwise spend the tree bucket twice.
-	files_share_link_media_write: BULK_FILES_WRITE,
 	// Sharing is bursty in the same way as `roles_write`: somebody restricts a folder and then adds
 	// three people to it in a few seconds. It gets its own bucket so that sharing several files does
 	// not eat the budget for managing organization roles, and the other way round.

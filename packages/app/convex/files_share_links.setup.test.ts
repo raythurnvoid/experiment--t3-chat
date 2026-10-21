@@ -83,7 +83,7 @@ export async function fixture(args: { memberRole?: "member" | "admin" } = {}) {
 export async function reset_rate_limits(t: TestConvex, userIds: Id<"users">[]) {
 	await t.run(async (ctx) => {
 		for (const userId of userIds) {
-			for (const name of ["files_share_link_media_write", "files_sharing_write", "files_tree_write", "roles_write"]) {
+			for (const name of ["files_sharing_write", "files_tree_write", "roles_write"]) {
 				await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, { name, key: userId });
 			}
 		}
@@ -288,30 +288,26 @@ export async function link_on(f: Fixture, nodeId: Id<"files_nodes">) {
 		}),
 	).toEqual({ _yay: null });
 	const [link] = await read_links(f.t, nodeId);
-	await share_saved_media(f, nodeId);
 	return link!;
 }
 
 /**
- * Simulate the manager's explicit review, separate from turning the link on.
+ * Turn "Anyone on the web" on or off as the owner, and let the scope job of a folder end.
  */
-export async function share_saved_media(f: Fixture, nodeId: Id<"files_nodes">) {
-	const review = await f.asOwner.query(api.files_share_links.get_media_to_share, {
+export async function set_public(f: Fixture, nodeId: Id<"files_nodes">, enabled = true) {
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const result = await f.asOwner.mutation(api.files_sharing.set_node_public, {
 		membershipId: f.db.membershipId,
 		nodeId,
+		enabled,
 	});
-	for (const item of review?.media ?? []) {
-		if (!item.available || item.shared) continue;
-		expect(
-			await f.asOwner.mutation(api.files_share_links.approve_reviewed_media, {
-				membershipId: f.db.membershipId,
-				nodeId,
-				src: item.src,
-				expectedLinkId: review!.linkId,
-				expectedAssetId: item.assetId,
-			}),
-		).toEqual({ _yay: { shared: true } });
+	expect(result._nay).toBeUndefined();
+	// Only a folder starts a scope job. A file schedules nothing, so the jobs of other writes keep waiting.
+	const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+	if (node?.kind === "folder") {
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 	}
+	return result._yay!;
 }
 
 /**
@@ -319,7 +315,13 @@ export async function share_saved_media(f: Fixture, nodeId: Id<"files_nodes">) {
  */
 export function insert_media_file(
 	f: Fixture,
-	args: { parentId: Id<"files_nodes"> | "root"; path: string; contentType: string },
+	args: {
+		parentId: Id<"files_nodes"> | "root";
+		path: string;
+		contentType: string;
+		/** Make it a public root itself, like "Anyone on the web" on the file. */
+		public?: true;
+	},
 ) {
 	return f.t.run(async (ctx) => {
 		const name = args.path.split("/").at(-1)!;
@@ -333,7 +335,7 @@ export function insert_media_file(
 			createdBy: f.db.userId,
 			updatedAt: Date.now(),
 		});
-		return await ctx.db.insert("files_nodes", {
+		const nodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -351,6 +353,10 @@ export function insert_media_file(
 			assetId,
 			contentByteSize: 4,
 		});
+		if (args.public) {
+			await ctx.db.patch("files_nodes", nodeId, { publicScopeNodeId: nodeId });
+		}
+		return nodeId;
 	});
 }
 

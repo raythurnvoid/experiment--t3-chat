@@ -75,6 +75,8 @@ describe("http routes", () => {
 				"OPTIONS /api/v1/files/write-policy/get",
 				"POST /api/v1/files/write-policy/set",
 				"OPTIONS /api/v1/files/write-policy/set",
+				"POST /api/v1/files/public/set",
+				"OPTIONS /api/v1/files/public/set",
 				"POST /api/v1/volumes/list",
 				"OPTIONS /api/v1/volumes/list",
 				"POST /api/v1/volumes/stage",

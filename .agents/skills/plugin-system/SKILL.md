@@ -620,12 +620,11 @@ authority, file policies, and content/reader revisions. Its receipt commits with
 A plugin write in place keeps the file's public link ("Anyone with the link can view"). A text update
 or fill keeps the node, so the link and its token stay, and the page shows the new committed text.
 A write that archives the old file and creates a new node ends the old link, and the new node has no
-link. A plugin archive or delete ends the link too. Images and videos that an in-place write adds to
-a linked document show on its page when the embed rules in `../files-rich-text-embeds/SKILL.md`
-("Public Link Page") allow them. This holds for plugin runs and plugin service grants without
-`files:download`, and for runs whose direct downloads are limited to their source file. This is an
-approved rule: the link token is a separate authority. Media inside a plugin-bound folder never show,
-because the page refuses every node on or under a binding.
+link. A plugin archive or delete ends the link too. A plugin write never makes an image or video
+public. An image it adds shows on the page only when a person made that image public ("Anyone on the
+web", see `../files-rich-text-embeds/SKILL.md`). A plugin cannot turn that on: the API scope
+`files:publish` is for a person's own key only. Media inside a plugin-bound folder never show, because
+the page refuses every node on or under a binding.
 
 These file updates are one-way. Chitchat's native database is the source of chat. A message and its
 transcript job commit together; a later Files refusal does not undo the message. Transcript status

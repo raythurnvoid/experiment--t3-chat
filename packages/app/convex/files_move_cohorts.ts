@@ -148,6 +148,7 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		parentScopeNodeId: place.parentScopeNodeId,
 		extendedScopeNodeId: place.extendedScopeNodeId,
 		parentExtendedScopeNodeId: place.parentExtendedScopeNodeId,
+		publicScopeNodeId: place.publicScopeNodeId,
 		...files_ancestor_fields(files_ancestor_ids(place)),
 	};
 }
@@ -1043,6 +1044,7 @@ async function db_rename_parents(
 			restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
 			isRestrictedScopeRoot: false,
 			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
+			publicScopeNodeId: parent?.publicScopeNodeId,
 			archiveOperationId: cursor.parentArchiveOperationId,
 			writePolicy: parent?.newChildWritePolicy ?? null,
 			newChildWritePolicy: parent?.newChildWritePolicy ?? null,
@@ -1561,6 +1563,14 @@ async function db_headers(
 			scope !== physical._id && physical.parentExtendedScopeNodeId !== undefined
 				? (parent?.extendedScopeNodeId ?? null)
 				: undefined,
+		// A public root stays public only inside its own restricted area. A Move into a restricted folder
+		// needs no manage there, so it must not bring the item's "Anyone on the web" along.
+		publicScopeNodeId:
+			(old ?? physical).publicScopeNodeId === physical._id && (old ?? physical).restrictedScopeNodeId === scope
+				? physical._id
+				: scope === physical._id
+					? undefined
+					: parent?.publicScopeNodeId,
 		archiveOperationId: afterArchive,
 		// Already archived nodes keep their allowance even if the path changes.
 		archivedPathLength:

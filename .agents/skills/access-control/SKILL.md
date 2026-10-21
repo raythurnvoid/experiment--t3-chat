@@ -1038,14 +1038,15 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
 
 ## File sharing
 
-`convex/files_sharing.ts` owns member sharing. Five mutations plus one query:
+`convex/files_sharing.ts` owns member sharing. Six mutations plus one query:
 `get_node_share_state`, `restrict_node`, `unrestrict_node`, `set_node_share_grant`,
-`remove_node_share_grant`, `set_node_share_link`. The five writes take `content.permissions.manage`
-**on the node**, and the `files_sharing_write` bucket first. `get_node_share_state` only takes
+`remove_node_share_grant`, `set_node_share_link`, `set_node_public`. The six writes take
+`content.permissions.manage` **on the node**, and the `files_sharing_write` bucket first. `get_node_share_state` only takes
 `content.read` on the node: the dialog opens for anybody who can see the file, and `canManage` in its
 answer is what hides the controls from a reader.
 `set_node_share_link` turns a file's public link on and off. The public doors that serve the link
-live in `convex/files_share_links.ts`. See "Public file links" below.
+live in `convex/files_share_links.ts`. `set_node_public` turns "Anyone on the web" on and off for a
+file or folder. See "Public file links" below.
 
 The model:
 
@@ -1343,8 +1344,8 @@ while Moves hold the workspace, because scope and archive jobs wait at every ste
 runs. An image URL signed before the end keeps working for its 15 minutes. The one exception is the
 scope node itself: a change to it ends every link of its area in the same transaction.
 
-The query is reactive. A change to the doc, the file, its scope node, or an embed runs it again, and
-an open page clears when the answer turns `null`.
+The query is reactive. A change to the doc, the file, its scope node, an embed, or an embed's public
+root runs it again, and an open page clears when the answer turns `null`.
 
 ### What the visitor sees
 
@@ -1407,49 +1408,104 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
 3. E's content type is an inline-safe image or video type (`files_is_inline_media_content_type`),
    and it matches the node: an image node needs an image file, a video node needs a video file.
 4. E is not archived and has a finished asset.
-5. E's stored restricted scope equals D's stored restricted scope. This is a scope boundary, not
-   proof that D's editor can read E. Add people may give the editor access to D alone.
-6. `files_share_link_media` holds an approval for this exact link, media node and asset. The
-   approval action checks the authenticated person's write access to D (manage access for a
-   review in Sharing) and read access to E.
-   It uses the existing per-node access checks. It adds no parent walk or writer-list scan.
+5. E is public ("Anyone on the web", below). `E.publicScopeNodeId` is set and names a root R: E
+   itself, or a folder whose `treePath` starts E's `treePath` (a folder path ends with `/`, so a
+   sibling whose name only starts the same way never matches). R is in the same tenant, is not
+   archived, is still public (`R.publicScopeNodeId === R._id`), and is in E's restricted area
+   (`R.restrictedScopeNodeId === E.restrictedScopeNodeId`). A stale pointer fails this check.
+6. `db_check_scope` on E's **own** restricted area answers `ok`: not dead and not plugin-bound.
 
-A document inside a restricted folder that embeds an image from an open folder still shows a gray
-box. Move or copy the image next to the document. E having its own public link does not help.
+E may sit in any restricted area. D's area does not matter. Code: `db_check_media_node` in
+`files_share_links.ts`. Every read is reserved in the view budget.
 
-**Keep saving; approve publication separately.** A successful in-place edit keeps D's link and
-token. Human saves and ordinary API writes keep every media reference as text. An unapproved
-reference stays gray on the public page. It never blocks Save. Opening a document, rendering it,
-or rebuilding its Yjs text must not approve media.
+**Edits publish nothing.** A successful in-place edit keeps D's link and token. Human saves, API
+writes, and plugin writes keep every media reference as text. A reference to an image that is not
+public stays gray on the public page. It never blocks Save. Credential download scopes do not
+change this: a key without `files:download` can add a reference, and visitors see the image only if
+it is public.
 
-The editor's file picker and upload completion approve the deliberately inserted image or video
-for the current link. With no link they create no approval. A read-only document refuses this
-approval. Approvals charge their own `files_share_link_media_write` bucket. A manager can also
-review saved media in Sharing and approve each listed item. Review pins the link and asset; a
-replacement needs a fresh review. Existing links keep their text and URLs, but old images need
-this review once.
-No old content is treated as proof of an author's read access. New links start with no approvals.
-
-Checked plugin additions record approvals in the final write. A plugin write that adds a new
-`bonobo-file://` ref to a file the plugin cannot read itself (its member inside its sandbox roots) is
-refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
+A plugin write that adds a new `bonobo-file://` ref to a file the plugin cannot read itself (its
+member inside its sandbox roots) is refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
 `file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs the file already had stay,
 and an upload run may embed the file it was started for. A write that keeps old refs is refused
 with 409 when the file changed after the route read them. A plugin service upload of Markdown with
 such a ref stays a stored file. The check reads the plugin's text
 and that text after one rebuild from the document, because the rebuild is not always the same text
 (a code block that held a fence once broke open). Later rebuilds, such as a person saving the file, can
-still change it. A newly exposed reference has no approval and cannot publish. The upload source
-exception must prove the exact run source and asset before recording an approval.
+still change it. A newly exposed reference still shows only a public image.
 
-An approval grants those exact bytes through D's link. It does not depend on the approver keeping
-their account or membership. Replacing E's asset needs a fresh approval. Archive and scope checks
-still apply; restoring the same approved bytes may show them again. Ending D's link ends every
-approval, even before indexed cleanup removes the docs. The public view and signer share this check.
+Private API download scopes do not change. A file id alone never opens a file, and a public image
+gets no link of its own. See the
+[media embed spec](../files-rich-text-embeds/SKILL.md#anyone-on-the-web) for the UI rules.
 
-Private API download scopes do not change. They also do not cancel a deliberate public approval.
-A file id alone never opens a file, and approval creates no public link on E. See the
-[media embed spec](../files-rich-text-embeds/SKILL.md#approving-media-for-a-public-link) for the UI rules.
+### Anyone on the web
+
+"Anyone on the web" lets public pages show a file, or the files inside a folder, as embeds. Like
+Notion, an image shows on a public page only when the image itself is public. It never opens a
+file by id: a visitor still needs a link token, and the file is then only an embed of that page.
+
+- The field is `files_nodes.publicScopeNodeId` (also in `files_saved_placement_fields` for Move
+  places). Missing means not public. A public root points at itself. An item inside a public
+  folder points at that folder, down to the nearest restricted folder. The field never leaves the
+  server: tree rows strip it (`files_tree_db_get_public_node_fields`). It is not a public grant.
+- `files_sharing.set_node_public({ membershipId, nodeId, enabled })` turns it on or off. The app
+  and the public API (`POST /api/v1/files/public/set`, see `../public-api/SKILL.md`) share
+  `files_sharing_db_set_node_public`. It works for files and folders.
+- It charges `files_sharing_write` first. On and Off both need `content.permissions.manage` on the
+  node's stored scope.
+- On also needs: a signed-in user, not an anonymous one ("Sign in to make files public");
+  `content.read` on the node; a node that is not archived and a live workspace; no Move mark on the
+  node and no Move reservation for it (`move_busy`); no running subtree op on the node or a folder
+  above it (`not_ready`; an op below the node does not count); and `db_check_scope` `ok` (not dead, not bound).
+- Off needs only manage. It works during a Move: `files_nodes_db_set_public_scope` patches both
+  Move views too, so the Move end does not write the old value back.
+- Off on an item that is public only through a folder above is refused: "This item is public
+  because a folder above it is public. Turn it off on that folder." Repeating On or Off writes
+  nothing.
+- A folder change reaches the items inside through a scope job (`files_subtree_ops_db_start_rebuild`,
+  kind `scope`), which stops at restricted folders. Off hides the folder's images at once, because
+  the view checks that the root is still public. On shows each item when the job writes it.
+- `get_node_share_state` returns `public: "on" | "inherited" | "off"`. `inherited` means a public
+  folder above makes the node public. It uses the same root checks as the view.
+- `files_share_links.get_media_to_share` feeds Sharing → "Check images and videos" on a file with a
+  live link (manage and read needed). Each item has `isPublic`, from the same check as the public
+  page. Only items the caller can read get `nodeId`, `name`, and `canManage`. The rest stay
+  unnamed, because the file can embed any file id.
+
+**Writers.** Every writer uses one rule. A node that was its own public root stays its own root
+when its restricted area does not change. Otherwise a restricted root gets nothing, and any other
+node gets its parent's value. Writers: `db_insert_node` (a new node copies
+its parent's value, never a copy source's), `files_nodes_db_set_restricted_scope`,
+`files_nodes_db_rebuild_node`, the Move `db_headers` and `db_rename_parents`, and
+`files_nodes_db_restore_node`. So:
+
+- Restrict or unrestrict the public root, or a folder above it, clears its own flag (a folder above
+  clears it when its job writes the root). A new restricted root starts not public.
+- A Move keeps the flag only when the area stays the same. A Move into another area clears it on
+  the moved root and on every public root inside. Other items take the new parent's value.
+- Restore uses the same rule. Restore to the same place, or into the same area, keeps the flag.
+- A copy is a new item. It is public only when its new parent folder is public.
+- A plugin bind of a restricted folder (`plugins_data_db_apply_file_access_binding`) clears that
+  folder's own flag. Flags deeper inside stay, but the view hides them while the area is bound. A
+  detach does not bring the cleared flag back.
+- Ending a link changes no public flag. The flag belongs to the file, not to a link, so other linked
+  pages still show the image.
+- Old embeds start not public. There is no migration. A URL signed before Off still works for up to
+  15 minutes.
+
+**Accepted limits.**
+
+- Unrestricting a folder inside a public folder makes its items public by inheritance, after the job.
+- A version restore of a public image changes the bytes visitors see.
+- Restore to the same place keeps an item public.
+- Losing an exact service-account `content.write` grant still ends the document's link (see the
+  table below), although media no longer depend on it.
+- If a folder is unrestricted and then restricted again before the unrestrict job reaches an item
+  inside, that item keeps its own public flag. Its stored area never changed, the same as before the
+  unrestrict.
+
+The old media approval table `files_share_link_media` is unused. Nothing reads or writes it for
+access. A deleted link and a tenant purge still remove its docs; see `../data-deletion/SKILL.md`.
 
 ### Lifecycle: what ends a link
 
@@ -1496,7 +1552,7 @@ What keeps a link:
 - Human or role share grant changes that do not restrict or unrestrict anything, and role or
   membership changes. These change who can read the file in Files, not the public link.
 - Service-account grant changes other than losing an exact `content.write` grant on the file.
-  Revoking an account keeps its grants, the link and approvals of already checked bytes.
+  Revoking an account keeps its grants and the link.
 - The creator leaving, losing rights, or deleting their account.
 - Copies. A copy is a new file with no link.
 
@@ -1708,6 +1764,8 @@ Public grant docs are capability-like access, not membership.
 - For an anonymous user, prefer `principalKind: "user"` with their Convex `users` id over `public`.
 - "Anyone with the link can view" does not use public grants. It uses a token doc in
   `files_share_links`; see "Public file links".
+- "Anyone on the web" does not use public grants either. It uses `files_nodes.publicScopeNodeId`;
+  see "Anyone on the web" under "Public file links".
 
 Anonymous upgrade semantics live in `../auth-system/SKILL.md`.
 

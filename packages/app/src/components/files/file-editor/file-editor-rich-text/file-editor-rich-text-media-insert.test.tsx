@@ -5,7 +5,7 @@ import { getFunctionName } from "convex/server";
 import { convexToJson } from "convex/values";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_tree_stream_args } from "@/lib/files-tree-context.tsx";
 import { files_media_build_file_src } from "../../../../../shared/files-media.ts";
@@ -96,11 +96,8 @@ function set_root_files() {
 
 const insertContent = vi.fn();
 const onClose = vi.fn();
-const mutationMock = vi.fn();
 
-function render_picker(
-	documentNodeId: app_convex_Id<"files_nodes"> | null = "document_1" as app_convex_Id<"files_nodes">,
-) {
+function render_picker() {
 	// The picker only uses the editor to insert the picked file.
 	const chain = {
 		focus: () => chain,
@@ -121,7 +118,6 @@ function render_picker(
 			>
 				<FileEditorRichTextMediaEmbedPicker
 					editor={editor}
-					documentNodeId={documentNodeId}
 					anchorRect={{ x: 0, y: 0, width: 0, height: 0 }}
 					onClose={onClose}
 				/>
@@ -138,8 +134,6 @@ beforeEach(() => {
 	);
 	insertContent.mockReset();
 	onClose.mockReset();
-	mutationMock.mockReset().mockResolvedValue({ _yay: { shared: true } });
-	vi.spyOn(app_convex, "mutation").mockImplementation(mutationMock);
 	// The saved streams wait for the workspace view. No Move is running.
 	results.set(
 		watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
@@ -170,14 +164,6 @@ afterEach(async () => {
 });
 
 describe("FileEditorRichTextMediaEmbedPicker", () => {
-	test("inserts into a private draft without approving a public link", async () => {
-		set_root_files();
-		render_picker(null);
-		fireEvent.click(await screen.findByRole("option", { name: /cover\.png/ }));
-		expect(insertContent).toHaveBeenCalled();
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
 	test("shows a file that is not an image or video as disabled, with its reason", async () => {
 		set_root_files();
 		render_picker();
@@ -195,7 +181,6 @@ describe("FileEditorRichTextMediaEmbedPicker", () => {
 		fireEvent.keyDown(search, { key: "Enter" });
 		expect(insertContent, "a disabled row inserts nothing").not.toHaveBeenCalled();
 		expect(screen.getByRole("status").textContent).toBe("This file is not an image or video");
-		expect(mutationMock, "opening the picker and choosing a disabled row approve nothing").not.toHaveBeenCalled();
 
 		const imageOption = screen.getByRole("option", { name: /cover\.png/ });
 		expect(imageOption.getAttribute("aria-disabled")).toBeNull();
@@ -205,10 +190,5 @@ describe("FileEditorRichTextMediaEmbedPicker", () => {
 			attrs: { src: files_media_build_file_src("cover.png"), alt: "cover.png" },
 		});
 		expect(onClose).toHaveBeenCalled();
-		expect(mutationMock).toHaveBeenCalledWith(app_convex_api.files_share_links.approve_inserted_media, {
-			membershipId: MEMBERSHIP_ID,
-			nodeId: "document_1",
-			src: files_media_build_file_src("cover.png"),
-		});
 	});
 });

@@ -56,4 +56,12 @@ Names have at most 255 characters; new paths have at most 1,024. One action can 
 
 `write-policy/get` takes `{ nodeId }`. `write-policy/set` takes `{ nodeId, writePolicy }`. Policies are `null`, `{ mode: "read_only" }`, or `{ mode: "writer", writers: [...] }`. A writer is `{ kind: "user", userId }` or `{ kind: "service_account", serviceAccountId }`. A writer list must contain one or more different active writers. Setting policy requires management permission on that target; a scope alone is insufficient.
 
+## Anyone on the web
+
+`public/set` takes `{ nodeId, public }`, where `public` is a boolean. Success is `{ nodeId, public: "on" | "inherited" | "off" }`. It needs `files:publish` and a personal key. A public file, or a file inside a public folder, can show as an image or video on public link pages. It never opens the file by ID. Turning it on needs management and read permission on the target; turning it off needs management. A scope alone is insufficient.
+
+- `inherited` means a public folder above makes the item public. Turning such an item off returns 403; turn it off on that folder.
+- Repeating the current value changes nothing.
+- 400: bad body. 401: the key or its membership is unavailable. 404: missing, archived, or not managed by the key's user, or not readable for On. 409: the item is being moved, or an access change of the item or a folder above is still running; retry later. 429: too many Sharing changes; wait `retryAfterMs`. 403: other refusals, such as a plugin-bound folder.
+
 Plugin conditional writes, folder access, and sealed uploads have extra fields and retry rules. Read [plugin runtime](references/plugin-runtime.md) before using them. There is no public API to turn public file links on or off or retrieve their link tokens.

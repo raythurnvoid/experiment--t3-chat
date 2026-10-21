@@ -147,6 +147,7 @@
 		gap: 10px;
 	}
 
+	/* The file name grows. The state or the button stays at its own width. */
 	.FilesShareModalMedia-row {
 		display: flex;
 		flex-wrap: wrap;
@@ -155,9 +156,13 @@
 		padding: 8px 0;
 
 		> span {
+			font-size: 16px;
+			color: var(--color-fg-08);
+		}
+
+		> span:first-child {
 			flex: 1;
 			min-width: 0;
-			font-size: 16px;
 			color: var(--color-fg-11);
 			overflow-wrap: anywhere;
 		}

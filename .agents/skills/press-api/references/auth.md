@@ -21,7 +21,7 @@ These short names are used in the [route index](references/route-index.md).
 
 Files scopes describe the operation: `files:list`, `files:read`, `files:write`, `files:download`, and `files:permissions`. Each target still has an access check. A guest without workspace-wide Files read can open an exact shared path. Listing `/` can return 403 while that path works. A service key uses the account's grants, not the sponsor's file access.
 
-Personal keys may also have `plugin_data:read`, `plugin_data:write`, and `ai_chat:read`. These start unchecked. `ai_chat:read` reads only the key user's own AI conversations in that workspace, including when that user is a guest. No service key, plugin token, or short grant receives it. Existing keys do not gain new scopes automatically.
+Personal keys may also have `files:publish`, `plugin_data:read`, `plugin_data:write`, and `ai_chat:read`. These start unchecked. `files:publish` turns "Anyone on the web" on or off. `ai_chat:read` reads only the key user's own AI conversations in that workspace, including when that user is a guest. No service key, plugin token, or short grant receives either scope. Existing keys do not gain new scopes automatically.
 
 Plugin file calls use the actor inside the installation's allowed folders. Plugin-owned output folders have their own account and writer rules. A token's scopes alone never give access outside those bounds. Store scopes and accepted plugin capabilities also remain separate from Files permissions.
 

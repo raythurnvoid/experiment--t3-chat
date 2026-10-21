@@ -21,7 +21,7 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 export const files_share_links_MAX_PER_WORKSPACE = 500;
 
 /**
- * End the link now, then remove its publication records in background pages.
+ * End the link now, then remove its old media approvals in background pages. Nothing reads them now.
  */
 export async function files_share_links_db_delete(ctx: MutationCtx, linkId: Id<"files_share_links">) {
 	await ctx.db.delete("files_share_links", linkId);

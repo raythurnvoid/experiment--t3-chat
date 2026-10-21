@@ -13,6 +13,7 @@ All client rows below use POST. Caller names are defined in [auth](references/au
 | `/api/v1/files/read-bytes` | POST | client | Key, Short grant | `files:download` | none | [Files](references/files.md) |
 | `/api/v1/files/write-policy/get` | POST | client | Key | `files:read` | none | [Files](references/files.md) |
 | `/api/v1/files/write-policy/set` | POST | client | Key | `files:permissions` | none | [Files](references/files.md) |
+| `/api/v1/files/public/set` | POST | client | Personal key | `files:publish` | none | [Files](references/files.md) |
 | `/api/v1/files/write` | POST | client | Key, Run, sealed Service grant | `files:write` | Service secret in writer mode | [Files](references/files.md) |
 | `/api/v1/files/write-many` | POST | client | Key | `files:write` | none | [Files](references/files.md) |
 | `/api/v1/files/touch` | POST | client | Key, Run | `files:write` | none | [Files](references/files.md) |

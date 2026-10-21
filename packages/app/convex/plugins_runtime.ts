@@ -1805,6 +1805,7 @@ export const consume_run_api_call = internalMutation({
 				v.literal("files:write" satisfies public_api_Scope),
 				v.literal("files:download" satisfies public_api_Scope),
 				v.literal("files:permissions" satisfies public_api_Scope),
+				v.literal("files:publish" satisfies public_api_Scope),
 				v.literal("ai_chat:read" satisfies public_api_Scope),
 				v.literal("volumes:write" satisfies public_api_Scope),
 				v.literal("runs:follow_up" satisfies public_api_Scope),

@@ -72,7 +72,6 @@ import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequenc
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_media_refs_added, files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
-import { files_share_link_media_db_approve } from "./files_share_link_media_db.ts";
 import { encodeStateVector } from "yjs";
 import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import {
@@ -80,6 +79,7 @@ import {
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
+import { files_sharing_db_set_node_public, files_sharing_public_state_validator } from "./files_sharing.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
@@ -245,6 +245,7 @@ const user_credential_scopes_validator = v.array(
 		v.literal("files:write" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
 		v.literal("files:permissions" satisfies public_api_Scope),
+		v.literal("files:publish" satisfies public_api_Scope),
 		v.literal("ai_chat:read" satisfies public_api_Scope),
 		v.literal("plugin_data:read" satisfies public_api_Scope),
 		v.literal("plugin_data:write" satisfies public_api_Scope),
@@ -2207,7 +2208,7 @@ async function db_authorize_file_policy_request(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		nodeId: string;
-		requiredScope: "files:read" | "files:permissions";
+		requiredScope: "files:read" | "files:permissions" | "files:publish";
 	},
 ) {
 	const liveCredential = await db_revalidate_user_credential(ctx, args);
@@ -2234,7 +2235,7 @@ async function db_authorize_file_policy_request(
 			workspaceId: args.workspaceId,
 			subject,
 			fileNode: node,
-			permission: args.requiredScope === "files:permissions" ? "content.permissions.manage" : "content.read",
+			permission: args.requiredScope === "files:read" ? "content.read" : "content.permissions.manage",
 		}))
 	) {
 		return Result({ _nay: { message: "Not found" } });
@@ -2335,6 +2336,57 @@ export const set_file_write_policy = internalMutation({
 
 type set_file_write_policy_Result =
 	typeof set_file_write_policy extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Turn "Anyone on the web" on or off with the same checks as the app's `set_node_public`. Only a
+ * person's own key may: a key bound to a service account cannot hold `files:publish`.
+ */
+export const set_file_public = internalMutation({
+	args: {
+		credentialId: v.id("api_credentials"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.string(),
+		public: v.boolean(),
+	},
+	returns: v_result({ _yay: v.object({ public: files_sharing_public_state_validator }) }),
+	handler: async (ctx, args) => {
+		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:publish" });
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { node, writeContext } = authorized._yay;
+
+		// Nobody publishes content they cannot read themselves.
+		if (
+			args.public &&
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				subject: writeContext.subject,
+				fileNode: node,
+				permission: "content.read",
+			}))
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		return await files_sharing_db_set_node_public(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			node,
+			enabled: args.public,
+			userId: args.userId,
+			membership: null,
+		});
+	},
+});
+
+type set_file_public_Result =
+	typeof set_file_public extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -2941,7 +2993,7 @@ async function db_check_plugin_added_file_refs(
 		userId: args.stage.userId,
 		// Upload runs write beside the file they were started for, and may embed it.
 		...(args.facts.pluginRun && args.facts.pluginRun.event !== "ui.invoke.requested" && args.facts.pluginRun.fileNodeId
-			? { sourceNodeId: args.facts.pluginRun.fileNodeId, sourceAssetId: args.facts.pluginRun.assetId }
+			? { sourceNodeId: args.facts.pluginRun.fileNodeId }
 			: {}),
 		addedFileRefs: args.addedFileRefs,
 	});
@@ -3898,20 +3950,6 @@ export const publish_file_fill = internalMutation({
 			// Throw so Convex rolls back the snapshot and node writes done above.
 			throw convex_error({ message: "Failed to write file", cause: filled._nay });
 		}
-		if (refsChecked._yay?.length) {
-			const link = await ctx.db
-				.query("files_share_links")
-				.withIndex("by_organization_workspace_node", (q) =>
-					q.eq("organizationId", stage.organizationId).eq("workspaceId", stage.workspaceId).eq("nodeId", fileNode._id),
-				)
-				.first();
-			if (link && link.restrictedScopeNodeId === fileNode.restrictedScopeNodeId) {
-				for (const mediaNode of refsChecked._yay) {
-					await files_share_link_media_db_approve(ctx, { link, mediaNode, userId: stage.userId });
-				}
-			}
-		}
-
 		// Atomic with the fill: the run's output count, the settled call, and the consumed
 		// stage all commit with the replaced content or not at all.
 		const pluginRun = revalidated._yay.pluginRun;
@@ -6316,6 +6354,72 @@ export async function public_api_http_set_file_write_policy(args: {
 	}
 
 	return { status: 200, body: { nodeId: body._yay.nodeId }, headers: { "Cache-Control": "no-store" } } as const;
+}
+
+const set_file_public_body_validator = z.object({
+	nodeId: z.string(),
+	public: z.boolean(),
+});
+
+export type public_api_http_set_file_public_Body = z.infer<typeof set_file_public_body_validator>;
+
+export async function public_api_http_set_file_public(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/public/set";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
+		requiredScope: "files:publish",
+		allowedKinds: ["user_api_key"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+
+	const body = await server_request_json_parse_and_validate(request, set_file_public_body_validator);
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+
+	const principal = auth._yay.principal;
+	// The same bucket as the app's Sharing writes.
+	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: principal.userId });
+	if (rateLimit) {
+		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+	}
+
+	const result = (await ctx.runMutation(internal.public_api.set_file_public, {
+		credentialId: principal.credentialId,
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: principal.userId,
+		...body._yay,
+	})) as set_file_public_Result;
+	if (result._nay) {
+		return {
+			status:
+				result._nay.message === "Unauthenticated"
+					? 401
+					: result._nay.message === "Not found"
+						? 404
+						: // A Move or an access change that is still running. Retry later.
+							result._nay.name === "move_busy" || result._nay.name === "not_ready"
+							? 409
+							: 403,
+			body: { message: result._nay.message },
+		} as const;
+	}
+
+	return {
+		status: 200,
+		body: { nodeId: body._yay.nodeId, public: result._yay.public },
+		headers: { "Cache-Control": "no-store" },
+	} as const;
 }
 
 const write_file_body_validator = z.object({

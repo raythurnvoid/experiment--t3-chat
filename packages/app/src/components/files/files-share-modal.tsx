@@ -248,6 +248,14 @@ type FilesShareModalMedia_Props = {
 	busy: boolean;
 };
 
+type FilesShareModalMedia_CustomAttributes = {
+	"data-share-media": "public" | "not_public";
+};
+
+/**
+ * The images and videos of a linked file, and whether the public page shows them. Loaded on request,
+ * because the check reads the whole file.
+ */
 const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShareModalMedia_Props) {
 	const { nodeId, busy } = props;
 	const { membershipId } = AppTenantProvider.useContext();
@@ -264,40 +272,42 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 		try {
 			setReview(await app_convex.query(app_convex_api.files_share_links.get_media_to_share, { membershipId, nodeId }));
 		} catch (error) {
-			console.error("[FilesShareModalMedia.handleReview] Failed to read shared media", { error });
+			console.error("[FilesShareModalMedia.handleReview] Failed to read media", { error });
 			setError("Could not load the images and videos. Try again.");
 		}
 		setPending(null);
 	});
 
-	const handleShare = useFn(async (index: number) => {
+	const handleMakePublic = useFn(async (index: number) => {
 		const item = review?.media[index];
-		if (busy || pending || !review || !item?.available) return;
+		if (busy || pending || !item?.available) return;
 		setPending(String(index));
 		setError(null);
 		try {
-			// Keep the exact image the person reviewed. Never approve a replacement or a new link on retry.
-			const result = await app_convex.mutation(app_convex_api.files_share_links.approve_reviewed_media, {
+			const result = await app_convex.mutation(app_convex_api.files_sharing.set_node_public, {
 				membershipId,
-				nodeId,
-				src: item.src,
-				expectedLinkId: review.linkId,
-				expectedAssetId: item.assetId,
+				nodeId: item.nodeId,
+				enabled: true,
 			});
 			if (result._nay) {
 				setError(result._nay.message);
-			} else if (result._yay.shared) {
-				setReview({
-					...review,
-					media: review.media.map((entry, entryIndex) => (entryIndex === index ? { ...item, shared: true } : entry)),
-				});
 			} else {
-				// The link ended or is being changed, for example by a Move, since the list loaded.
-				setError("This public link changed or stopped working. Select Refresh list.");
+				const next = await app_convex.query(app_convex_api.files_share_links.get_media_to_share, {
+					membershipId,
+					nodeId,
+				});
+				setReview(next);
+				// The file is public now, but the page checks more: a finished upload, and no plugin deciding
+				// who reads its folder.
+				// Find the row by id: the list can change order while the page is open.
+				const nextItem = next?.media.find((m) => m.available && m.nodeId === item.nodeId);
+				if (nextItem?.available && !nextItem.isPublic) {
+					setError("This file is public, but this page cannot show it yet. It may still be uploading.");
+				}
 			}
 		} catch (error) {
-			console.error("[FilesShareModalMedia.handleShare] Failed to share media", { error });
-			setError("Could not share this file. Try again.");
+			console.error("[FilesShareModalMedia.handleMakePublic] Failed to make media public", { error });
+			setError("Could not make this file public. Try again.");
 		}
 		setPending(null);
 	});
@@ -305,7 +315,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 	return (
 		<div className={"FilesShareModalMedia" satisfies FilesShareModalLink_ClassNames}>
 			<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-				Images and videos need approval before they appear through this link. Replaced files need approval again.
+				Images and videos show through this link only when they are public (Anyone on the web).
 			</p>
 			<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
 				<MyButton
@@ -314,7 +324,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 					aria-busy={pending === "review" || undefined}
 					onClick={handleReview}
 				>
-					{pending === "review" ? "Loading..." : review === undefined ? "Review images and videos" : "Refresh list"}
+					{pending === "review" ? "Loading..." : review === undefined ? "Check images and videos" : "Refresh list"}
 				</MyButton>
 			</div>
 			{review === null ? (
@@ -324,7 +334,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 			) : null}
 			{review?.media.length === 0 ? (
 				<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-					No saved images or videos to share.
+					This file has no saved images or videos.
 				</p>
 			) : null}
 			{review && review.media.length > 0 ? (
@@ -336,20 +346,31 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 						<li
 							key={index}
 							className={"FilesShareModalMedia-row" satisfies FilesShareModalLink_ClassNames}
-							data-share-media={item.available && item.shared ? "shared" : "unshared"}
+							{...({
+								"data-share-media": item.isPublic ? "public" : "not_public",
+							} satisfies FilesShareModalMedia_CustomAttributes)}
 						>
-							<span>{item.available ? item.name : `This ${item.kind} is not available for sharing.`}</span>
-							{item.available ? (
+							{/* The file can embed any file id, so a file the caller cannot open stays unnamed. */}
+							<span>
+								{item.available
+									? item.name
+									: item.isPublic
+										? `This ${item.kind} is public.`
+										: `This ${item.kind} is not public, and you cannot open it.`}
+							</span>
+							{item.available && item.isPublic ? <span>Public</span> : null}
+							{item.available && !item.isPublic && item.canManage ? (
 								<MyButton
 									variant="outline"
-									disabled={busy || item.shared || (pending !== null && pending !== String(index))}
-									aria-label={`Share ${item.name} through this link`}
+									disabled={busy || (pending !== null && pending !== String(index))}
+									aria-label={`Make ${item.name} public`}
 									aria-busy={pending === String(index) || undefined}
-									onClick={() => handleShare(index)}
+									onClick={() => handleMakePublic(index)}
 								>
-									{pending === String(index) ? "Sharing..." : item.shared ? "Shared" : `Share ${item.kind}`}
+									{pending === String(index) ? "Saving..." : "Make public"}
 								</MyButton>
 							) : null}
+							{item.available && !item.isPublic && !item.canManage ? <span>Not public</span> : null}
 						</li>
 					))}
 				</ul>
@@ -473,6 +494,102 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 });
 // #endregion link
 
+// #region public
+type FilesShareModalPublic_CustomAttributes = {
+	"data-share-public": "on" | "inherited" | "off";
+};
+
+type FilesShareModalPublic_Props = {
+	state: "on" | "inherited" | "off";
+	nodeKindText: "file" | "folder";
+	/** The public write is the one being saved. */
+	pending: boolean;
+	/** A write is running somewhere in the dialog, so this control may not start a second one. */
+	busy: boolean;
+	/** Why the last write was refused. Shown here, beside the control, instead of in a toast. */
+	error: string | null;
+	onEnabledChange: (enabled: boolean) => void;
+};
+
+/**
+ * "Anyone on the web" for one file or folder. Public pages show only public images and videos. It
+ * never opens the item by itself: that needs a public link.
+ */
+const FilesShareModalPublic = memo(function FilesShareModalPublic(props: FilesShareModalPublic_Props) {
+	const { state, nodeKindText, pending, busy, error, onEnabledChange } = props;
+
+	return (
+		<section
+			aria-label="Anyone on the web"
+			className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
+			{...({ "data-share-public": state } satisfies FilesShareModalPublic_CustomAttributes)}
+		>
+			<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
+				<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
+					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Anyone on the web</h3>
+					<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+						{state === "inherited"
+							? `A public folder above makes this ${nodeKindText} public. Turn it off on that folder.`
+							: state === "on"
+								? nodeKindText === "folder"
+									? "Public pages can show the images and videos in this folder, down to any restricted folder. It does not open them by themselves."
+									: "Public pages can show this file if it is an image or video. It does not open the file by itself."
+								: `Public pages do not show ${nodeKindText === "folder" ? "the images and videos in this folder" : "this file"}.`}
+					</p>
+				</div>
+
+				{state === "inherited" ? null : (
+					<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+						<MySelect
+							value={state}
+							setValue={(value) => {
+								const enabled = value === "on";
+								// Choosing the value it already has changes nothing, so it sends nothing.
+								if (enabled !== (state === "on")) {
+									onEnabledChange(enabled);
+								}
+							}}
+						>
+							{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
+							<MySelectTrigger disabled={busy && !pending}>
+								<MyButton
+									type="button"
+									variant="outline"
+									className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
+									aria-label="Anyone on the web"
+									aria-busy={pending || undefined}
+								>
+									<span>{pending ? "Saving..." : state === "on" ? "Public" : "Not public"}</span>
+									<MySelectOpenIndicator />
+								</MyButton>
+							</MySelectTrigger>
+							<MySelectPopover unmountOnHide>
+								<MySelectPopoverContent>
+									<MySelectItem value="off">
+										Not public
+										{state === "off" ? <MySelectItemIndicator /> : null}
+									</MySelectItem>
+									<MySelectItem value="on">
+										Public
+										{state === "on" ? <MySelectItemIndicator /> : null}
+									</MySelectItem>
+								</MySelectPopoverContent>
+							</MySelectPopover>
+						</MySelect>
+					</div>
+				)}
+			</div>
+
+			{error ? (
+				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
+					{error}
+				</p>
+			) : null}
+		</section>
+	);
+});
+// #endregion public
+
 // #region root
 type FilesShareModal_ClassNames =
 	| "FilesShareModal"
@@ -526,6 +643,10 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const [pendingKey, setPendingKey] = useState<string | null>(null);
 	/** Why the last public link write was refused, kept with the node it was about. */
 	const [linkError, setLinkError] = useState<{ nodeId: app_convex_Id<"files_nodes">; message: string } | null>(null);
+	/** Why the last "Anyone on the web" write was refused. Keyed by node, like `linkError`. */
+	const [publicError, setPublicError] = useState<{ nodeId: app_convex_Id<"files_nodes">; message: string } | null>(
+		null,
+	);
 	/** The node whose restrict is waiting for a yes. Keyed by node, like `linkError`. */
 	const [restrictConfirmNodeId, setRestrictConfirmNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const listRef = useRef<HTMLUListElement>(null);
@@ -616,6 +737,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		setAddPrincipalValue("");
 		setAddLevel("read");
 		setLinkError(null);
+		setPublicError(null);
 		setRestrictConfirmNodeId(null);
 		onClose();
 	});
@@ -624,8 +746,9 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const runShareWrite = useFn(
 		(args: {
 			key: string;
-			request: Promise<{ _nay?: { message: string } }>;
-			successMessage: string;
+			request: Promise<{ _nay?: { message: string }; _yay?: { public: "on" | "inherited" | "off" } | null }>;
+			/** A function picks the message from the answer, when the answer can differ from the request. */
+			successMessage: string | ((result: { _yay?: { public: "on" | "inherited" | "off" } | null }) => string);
 			/** Runs only when the server said yes, so a refusal leaves the form as the user left it. */
 			onDone?: () => void;
 			/** Shows a refusal beside its control instead of in a toast. */
@@ -650,7 +773,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						return;
 					}
 
-					toast.success(args.successMessage);
+					toast.success(typeof args.successMessage === "string" ? args.successMessage : args.successMessage(result));
 					args.onDone?.();
 				})
 				.catch((error) => {
@@ -776,6 +899,30 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			// Turning a link on can be refused for this file only (a running job, or the workspace cap). Keep
 			// that reason next to the select, so the user sees why it stayed off.
 			onRefused: (message) => setLinkError({ nodeId: viewNodeId, message }),
+		});
+	});
+
+	const handlePublicEnabledChange = useFn((enabled: boolean) => {
+		if (!viewNodeId || pendingKey) {
+			return;
+		}
+
+		setPublicError(null);
+		runShareWrite({
+			key: "public",
+			request: app_convex.mutation(app_convex_api.files_sharing.set_node_public, {
+				membershipId,
+				nodeId: viewNodeId,
+				enabled,
+			}),
+			// Off on an item inside a public folder clears only its own setting, so it stays public.
+			successMessage: (result) =>
+				enabled
+					? "Made public"
+					: result._yay?.public === "inherited"
+						? "Still public through a folder above"
+						: "No longer public",
+			onRefused: (message) => setPublicError({ nodeId: viewNodeId, message }),
 		});
 	});
 
@@ -1025,6 +1172,17 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									busy={busy}
 									error={linkError?.nodeId === viewNodeId ? linkError.message : null}
 									onEnabledChange={handleLinkEnabledChange}
+								/>
+							) : null}
+
+							{shareState.canManage ? (
+								<FilesShareModalPublic
+									state={shareState.public}
+									nodeKindText={nodeKindText}
+									pending={pendingKey === "public"}
+									busy={busy}
+									error={publicError?.nodeId === viewNodeId ? publicError.message : null}
+									onEnabledChange={handlePublicEnabledChange}
 								/>
 							) : null}
 
