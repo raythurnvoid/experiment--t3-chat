@@ -1487,17 +1487,6 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: assets.length };
 	}
 
-	const shareMedia = await ctx.db
-		.query("files_share_link_media")
-		.withIndex("by_organization_workspace", (q) =>
-			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
-		)
-		.take(batchSize);
-	if (shareMedia.length > 0) {
-		await Promise.all(shareMedia.map((row) => ctx.db.delete("files_share_link_media", row._id)));
-		return { done: false, deletedCount: shareMedia.length };
-	}
-
 	// Public links point at file nodes by id. Delete them before the file-node pass too. The purge
 	// fence above already hides them from visitors.
 	const shareLinks = await ctx.db

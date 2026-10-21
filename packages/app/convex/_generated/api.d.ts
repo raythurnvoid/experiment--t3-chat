@@ -79,7 +79,6 @@ import type * as files_pending_updates_db from "../files_pending_updates_db.js";
 import type * as files_private_storage from "../files_private_storage.js";
 import type * as files_scopes from "../files_scopes.js";
 import type * as files_search from "../files_search.js";
-import type * as files_share_link_media_db from "../files_share_link_media_db.js";
 import type * as files_share_links from "../files_share_links.js";
 import type * as files_share_links_db from "../files_share_links_db.js";
 import type * as files_sharing from "../files_sharing.js";
@@ -249,7 +248,6 @@ declare const fullApi: ApiFromModules<{
   files_private_storage: typeof files_private_storage;
   files_scopes: typeof files_scopes;
   files_search: typeof files_search;
-  files_share_link_media_db: typeof files_share_link_media_db;
   files_share_links: typeof files_share_links;
   files_share_links_db: typeof files_share_links_db;
   files_sharing: typeof files_sharing;

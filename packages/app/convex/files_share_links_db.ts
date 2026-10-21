@@ -7,7 +7,6 @@
 
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { internal } from "./_generated/api.js";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -20,17 +19,9 @@ import { should_never_happen } from "../shared/shared-utils.ts";
  */
 export const files_share_links_MAX_PER_WORKSPACE = 500;
 
-/**
- * End the link now, then remove its old media approvals in background pages. Nothing reads them now.
- */
+/** End the link now. */
 export async function files_share_links_db_delete(ctx: MutationCtx, linkId: Id<"files_share_links">) {
 	await ctx.db.delete("files_share_links", linkId);
-	const media = await ctx.db
-		.query("files_share_link_media")
-		.withIndex("by_link_mediaNode", (q) => q.eq("linkId", linkId))
-		.first();
-	if (media)
-		await ctx.scheduler.runAfter(0, internal.files_share_link_media_db.cleanup_link_media, { linkId, cursor: null });
 }
 
 /**

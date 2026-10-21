@@ -336,29 +336,6 @@ describe("view", () => {
 		});
 	});
 
-	test("an old media approval doc does not show an image that is not public", async () => {
-		const f = await fixture();
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-		const { link } = await linked_page(f, "/page.md", [imageId]);
-		await f.t.run(async (ctx) => {
-			const image = await ctx.db.get("files_nodes", imageId);
-			await ctx.db.insert("files_share_link_media", {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				linkId: link._id,
-				mediaNodeId: imageId,
-				assetId: image!.assetId!,
-				approvedBy: f.db.userId,
-				approvedAt: Date.now(),
-			});
-		});
-
-		expect(await shown(f, link.token)).toEqual([false]);
-		// Control: the same page shows the image once it is public.
-		await set_public(f, imageId);
-		expect(await shown(f, link.token)).toEqual([true]);
-	});
-
 	test("shows an image inside a public folder, and one uploaded or saved there later", async () => {
 		const f = await fixture();
 		const { folderId, imageId } = await public_folder_with_image(f, "pub");

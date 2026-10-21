@@ -1504,8 +1504,7 @@ its parent's value, never a copy source's), `files_nodes_db_set_restricted_scope
   inside, that item keeps its own public flag. Its stored area never changed, the same as before the
   unrestrict.
 
-The old media approval table `files_share_link_media` is unused. Nothing reads or writes it for
-access. A deleted link and a tenant purge still remove its docs; see `../data-deletion/SKILL.md`.
+The old media approval table `files_share_link_media` was removed on 2026-10-21. It was empty.
 
 ### Lifecycle: what ends a link
 
