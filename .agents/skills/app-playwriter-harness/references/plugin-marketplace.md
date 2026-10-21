@@ -184,7 +184,8 @@ and a `.env` paste add rows that read `Will be added when you save`. `Delete wor
 only marks the row (`Will be deleted when you save`, name struck through), and its button becomes
 `Keep workspace secret <NAME>`. `Change the value of <NAME>` fills Name and focuses the Value field;
 type a value and press `Add` to stage a replacement (`Keep the current value of <NAME>` undoes it).
-The footer shows `N unsaved changes`, `Discard`, and `Save`. Closing
+The footer shows `N unsaved changes`, `Discard`, and `Save`; match those two with `exact: true`,
+because a plain `name: "Discard"` matched 3 buttons. Discard moves focus to the panel. Closing
 the dialog drops staged changes, so close and reopen to prove nothing was stored. Real secrets live in
 `personal/home` (PDF plugin): stage a delete of one only to undo it, and save only `QA_*` names.
 
