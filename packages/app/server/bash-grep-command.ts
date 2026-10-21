@@ -32,8 +32,8 @@ import { bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 const GREP_ATTACHED_CONTEXT_REGEX = /^-([ABC])(\d+)$/u;
 const GREP_LONG_CONTEXT_REGEX = /^--(after-context|before-context|context)=(\d+)$/u;
 const GREP_COMBINED_SHORT_FLAGS_REGEX = /^-[a-zA-Z]{2,}$/u;
-const GREP_DEFAULT_MAX_LINES = 200;
-const GREP_DEFAULT_MAX_CHARS = 16 * 1024;
+// Same as the per-call scan cap `files_GREP_MAX_SCAN_BYTES` in convex/files_nodes.ts.
+const GREP_MAX_CHARS = 1_000_000;
 const GREP_VALUE_OPTIONS = new Set(["-m", "--max-count", "-f", "--file"]);
 const GREP_NOOP_FLAGS = new Set([
 	"-H",
@@ -160,14 +160,14 @@ function parse_args(args: string[]) {
 			if (value._nay) return value;
 			const parsed = parse_window_value({ option: "--max-lines", raw: value._yay.value, min: 1 });
 			if (parsed._nay) return parsed;
-			maxLines = Math.min(parsed._yay, GREP_DEFAULT_MAX_LINES);
+			maxLines = parsed._yay;
 			index++;
 			continue;
 		}
 		if (arg.startsWith("--max-lines=")) {
 			const parsed = parse_window_value({ option: "--max-lines", raw: arg.slice("--max-lines=".length), min: 1 });
 			if (parsed._nay) return parsed;
-			maxLines = Math.min(parsed._yay, GREP_DEFAULT_MAX_LINES);
+			maxLines = parsed._yay;
 			continue;
 		}
 		if (arg === "--start-index") {
@@ -190,14 +190,14 @@ function parse_args(args: string[]) {
 			if (value._nay) return value;
 			const parsed = parse_window_value({ option: "--max-chars", raw: value._yay.value, min: 1 });
 			if (parsed._nay) return parsed;
-			maxChars = Math.min(parsed._yay, GREP_DEFAULT_MAX_CHARS);
+			maxChars = Math.min(parsed._yay, GREP_MAX_CHARS);
 			index++;
 			continue;
 		}
 		if (arg.startsWith("--max-chars=")) {
 			const parsed = parse_window_value({ option: "--max-chars", raw: arg.slice("--max-chars=".length), min: 1 });
 			if (parsed._nay) return parsed;
-			maxChars = Math.min(parsed._yay, GREP_DEFAULT_MAX_CHARS);
+			maxChars = Math.min(parsed._yay, GREP_MAX_CHARS);
 			continue;
 		}
 		if (arg === "-c" || arg === "--count") {
@@ -304,13 +304,13 @@ function parse_args(args: string[]) {
 				? ({
 						kind: "slice",
 						startIndex: startIndex ?? 0,
-						maxChars: maxChars ?? GREP_DEFAULT_MAX_CHARS,
+						maxChars: maxChars ?? GREP_MAX_CHARS,
 					} as const)
 				: hasLineWindow
 					? ({
 							kind: "lines",
 							startLine: startLine ?? 1,
-							maxLines: maxLines ?? GREP_DEFAULT_MAX_LINES,
+							maxLines: maxLines ?? undefined,
 						} as const)
 					: undefined,
 		} as const,
@@ -322,7 +322,11 @@ function build_window_args(window: NonNullable<ReturnType<typeof parse_args>["_y
 		return ["--start-index", String(window.startIndex), "--max-chars", String(window.maxChars)];
 	}
 	if (window?.kind === "lines") {
-		return ["--start-line", String(window.startLine), "--max-lines", String(window.maxLines)];
+		return [
+			"--start-line",
+			String(window.startLine),
+			...(window.maxLines === undefined ? [] : ["--max-lines", String(window.maxLines)]),
+		];
 	}
 	return [];
 }
@@ -333,7 +337,7 @@ function build_continuation(args: {
 	inputPath: string;
 }) {
 	if (args.result.nextStartIndex != null) {
-		const maxChars = args.parsed.window?.kind === "slice" ? args.parsed.window.maxChars : GREP_DEFAULT_MAX_CHARS;
+		const maxChars = args.parsed.window?.kind === "slice" ? args.parsed.window.maxChars : GREP_MAX_CHARS;
 		return build_command({
 			parsed: args.parsed,
 			window: { kind: "slice", startIndex: args.result.nextStartIndex, maxChars },
@@ -341,7 +345,7 @@ function build_continuation(args: {
 		});
 	}
 	if (args.result.nextStartLine != null) {
-		const maxLines = args.parsed.window?.kind === "lines" ? args.parsed.window.maxLines : GREP_DEFAULT_MAX_LINES;
+		const maxLines = args.parsed.window?.kind === "lines" ? args.parsed.window.maxLines : undefined;
 		return build_command({
 			parsed: args.parsed,
 			window: { kind: "lines", startLine: args.result.nextStartLine, maxLines },
@@ -390,15 +394,17 @@ function build_truncation_stderr(args: {
 	const reason =
 		args.result.truncatedReason === "scan_byte_limit_reached"
 			? "byte scan cap reached"
-			: args.result.truncatedReason === "scan_line_limit_reached"
-				? "line scan cap reached"
-				: args.result.truncatedReason === "slice_window_ended"
-					? "slice window ended"
-					: args.result.truncatedReason === "selected_match_limit_reached"
-						? "match cap reached"
-						: args.result.truncatedReason === "output_line_limit_reached"
-							? "output cap reached"
-							: "scan cap reached";
+			: args.result.truncatedReason === "scan_chunk_limit_reached"
+				? "chunk scan cap reached"
+				: args.result.truncatedReason === "line_window_ended"
+					? "line window ended"
+					: args.result.truncatedReason === "slice_window_ended"
+						? "slice window ended"
+						: args.result.truncatedReason === "selected_match_limit_reached"
+							? "match cap reached"
+							: args.result.truncatedReason === "output_line_limit_reached"
+								? "output cap reached"
+								: "scan cap reached";
 	const countSuffix = args.mode === "count" ? "; count is a lower bound" : "";
 	const existenceSuffix =
 		args.mode === "matches" || args.mode === "list" ? "; matches may exist beyond it" : "; more may exist";

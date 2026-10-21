@@ -1564,7 +1564,8 @@ describe("bash_run_command", () => {
 	test("supports app grep line and slice continuation windows", async () => {
 		const latePath = "/docs/late-grep.md";
 		const longPath = "/docs/long-line-grep.md";
-		const longPrefix = "x".repeat(256 * 1024);
+		// Longer than the 1,000,000-byte grep scan cap, so a whole-line scan must stop.
+		const longPrefix = "x".repeat(1_000_100);
 		const { run } = await create_bash_runner({
 			extraFiles: [
 				{
@@ -1589,7 +1590,7 @@ describe("bash_run_command", () => {
 		});
 		expect(capped.metadata.exitCode).toBe(1);
 		expect(capped.stdout).toBe("");
-		expect(capped.stderr).toContain("line scan cap reached");
+		expect(capped.stderr).toContain("line window ended");
 		expect(capped.stderr).toContain(
 			`Next scan: grep --start-line 2 --max-lines 1 late-window-token ${test_db_files_mount}${latePath}`,
 		);

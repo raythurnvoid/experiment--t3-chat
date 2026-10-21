@@ -953,7 +953,7 @@ const REVIEW_BASH_SCHEMA = z.object({ command: z.string().min(1).max(16_000) });
 const REVIEW_BASH_JSON_SCHEMA = zodSchema(REVIEW_BASH_SCHEMA).jsonSchema;
 const REVIEW_BASH_DESCRIPTION =
 	"Read and search the pinned plugin at /.plugins/review with Bash. Use ls, find, search, grep, cat, head, tail, and sed. " +
-	"For long minified files, use grep --start-index N --max-chars N PATTERN FILE. Follow continuation hints. " +
+	"grep PATTERN FILE scans a whole plugin file in one call and prints matches in pages. Run its Next scan hint to see more. " +
 	"Only /tmp is writable; it keeps up to 10 paths, 4000 bytes total, and 2000 bytes per file between calls. " +
 	"No workspace, installed plugins, host files, credentials, or network access is available. Do not execute plugin source.";
 const REVIEW_SUBMIT_DESCRIPTION =
@@ -7153,6 +7153,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"16": "10a8963906c78c0f8d7c02b238695841e4e16998f9222d82e9b1d9303eb99051",
 				"17": "47bd1102c7eca10fb5ecc6ec22738e9ea6a2d8c4b23172dab8434b7f1d3b6f4d",
 				"18": "47bd1102c7eca10fb5ecc6ec22738e9ea6a2d8c4b23172dab8434b7f1d3b6f4d",
+				"19": "b69fa98b73a121d1800d9f3a4e3dae7c536e7bfb86f6b01967d17c198ba5907d",
 			};
 			expect(digest).toBe(reviewedHashes[plugins_REVIEW_POLICY_VERSION]);
 		});

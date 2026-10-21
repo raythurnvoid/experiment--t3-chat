@@ -5945,19 +5945,37 @@ export type files_nodes_read_committed_file_chunk_stats_Result =
 // #region match
 
 // Per-file `grep` scans chunks streaming-style and bounds only the retained output state.
-// DEV-PHASE AGGRESSIVE: keep these small while we exercise pagination/truncation behavior.
+// Matches come back in pages. Each page ends with a continuation when more text is left.
 const files_GREP_MAX_MATCHES = 100;
 const files_GREP_MAX_CONTEXT_LINES = 20;
 const files_GREP_MAX_OUTPUT_LINES = 200;
-const files_GREP_MAX_SCAN_LINES = 200;
-const files_GREP_MAX_SCAN_BYTES = 16 * 1024;
-const files_GREP_MAX_SLICE_CHARS = 16 * 1024;
+/**
+ * How many bytes of text one call may scan. It equals the plugin file limit (`plugins_MAX_FILE_BYTES`
+ * in `shared/plugins.ts`), so the plugin review can search any plugin file to its end in one call. A
+ * bigger workspace file gets a continuation. The value is copied, not imported, because
+ * `shared/plugins.ts` loads YAML and this hot module does not need it.
+ */
+const files_GREP_MAX_SCAN_BYTES = 1_000_000;
+/**
+ * How many chunk docs one call may read. Convex lets one query scan 32,000 docs. A plain-text chunk
+ * holds up to 1,200 characters, and two neighbor chunks always hold more than 1,200 together, so
+ * 1,000,000 bytes is at most about 1,700 plain-text chunks. Markdown chunks have no lower size bound,
+ * so this cap keeps tiny chunks inside the limit and leaves room for the access reads.
+ */
+const files_GREP_MAX_SCAN_CHUNKS = 10_000;
+/**
+ * How many characters of lines one page may return. Bash cuts stdout at 128 KiB (`OUTPUT_LIMIT` in
+ * `server/bash.ts`). A cut would hide matches that the continuation then skips. So end the page well
+ * below that, and leave room for `-n` prefixes and `--` separators.
+ */
+const files_GREP_MAX_OUTPUT_CHARS = 64 * 1024;
 
 type MatchChunksListTruncatedReason =
 	| "selected_match_limit_reached"
 	| "output_line_limit_reached"
-	| "scan_line_limit_reached"
+	| "line_window_ended"
 	| "scan_byte_limit_reached"
+	| "scan_chunk_limit_reached"
 	| "slice_window_ended";
 
 /**
@@ -5984,7 +6002,7 @@ async function match_text_chunks_list(
 		after: number;
 		match: { kind: "substring"; needle: string; ignoreCase: boolean } | { kind: "regex"; regex: RegExp };
 		window?:
-			| { kind: "lines"; startLine: number; maxLines: number }
+			| { kind: "lines"; startLine: number; maxLines?: number }
 			| { kind: "slice"; startIndex: number; maxChars: number };
 	},
 ) {
@@ -5994,19 +6012,17 @@ async function match_text_chunks_list(
 	const requestedAfter = Math.max(0, args.after);
 	const before = Math.min(requestedBefore, files_GREP_MAX_CONTEXT_LINES);
 	const after = Math.min(requestedAfter, files_GREP_MAX_CONTEXT_LINES);
-	const lineWindow =
-		args.window?.kind === "lines"
-			? {
-					startLine: Math.max(1, Math.trunc(args.window.startLine)),
-					maxLines: Math.max(1, Math.min(files_GREP_MAX_SCAN_LINES, Math.trunc(args.window.maxLines))),
-				}
-			: { startLine: 1, maxLines: files_GREP_MAX_SCAN_LINES };
-	const lineWindowEnd = lineWindow.startLine + lineWindow.maxLines - 1;
+	const lineWindowStart = args.window?.kind === "lines" ? Math.max(1, Math.trunc(args.window.startLine)) : 1;
+	// Without `maxLines`, only the scan caps end the scan.
+	const lineWindowEnd =
+		args.window?.kind === "lines" && args.window.maxLines !== undefined
+			? lineWindowStart + Math.max(1, Math.trunc(args.window.maxLines)) - 1
+			: Number.POSITIVE_INFINITY;
 	const sliceWindow =
 		args.window?.kind === "slice"
 			? {
 					startIndex: Math.max(0, Math.trunc(args.window.startIndex)),
-					maxChars: Math.max(1, Math.min(files_GREP_MAX_SLICE_CHARS, Math.trunc(args.window.maxChars))),
+					maxChars: Math.max(1, Math.min(files_GREP_MAX_SCAN_BYTES, Math.trunc(args.window.maxChars))),
 				}
 			: null;
 	const sliceWindowEnd = sliceWindow == null ? null : sliceWindow.startIndex + sliceWindow.maxChars;
@@ -6031,6 +6047,8 @@ async function match_text_chunks_list(
 	let lastScannedLine: number | null = null;
 	let lastScannedIndex: number | null = null;
 	let scannedBytes = 0;
+	let scannedChunks = 0;
+	let outputChars = 0;
 
 	const setTruncated = (args: {
 		reason: MatchChunksListTruncatedReason;
@@ -6056,12 +6074,17 @@ async function match_text_chunks_list(
 			}
 			return true;
 		}
-		if (linesByNumber.size >= files_GREP_MAX_OUTPUT_LINES) {
+		// End the page before this line, so the continuation starts at the first line not shown.
+		if (
+			linesByNumber.size >= files_GREP_MAX_OUTPUT_LINES ||
+			outputChars + line.line.length + 1 > files_GREP_MAX_OUTPUT_CHARS
+		) {
 			outputTruncated = true;
 			setTruncated({ reason: "output_line_limit_reached", nextLine: line.lineNumber, nextIndex: null });
 			return false;
 		}
 		linesByNumber.set(line.lineNumber, { ...line, matched });
+		outputChars += line.line.length + 1;
 		return true;
 	};
 
@@ -6077,15 +6100,16 @@ async function match_text_chunks_list(
 
 	const processLine = (line: string, lineStartIndex: number | null, lineEndIndex: number | null) => {
 		lineNumber = (lineNumber ?? 0) + 1;
-		if (lineNumber < lineWindow.startLine) {
+		if (lineNumber < lineWindowStart) {
 			return true;
 		}
 		if (lineNumber > lineWindowEnd) {
-			setTruncated({ reason: "scan_line_limit_reached", nextLine: lineNumber, nextIndex: null });
+			setTruncated({ reason: "line_window_ended", nextLine: lineNumber, nextIndex: null });
 			return false;
 		}
 
-		const lineBytes = files_get_utf8_byte_size(line) + 1;
+		// Count the newline after the check, so a file of exactly the cap still fits when it has no final newline.
+		const lineBytes = files_get_utf8_byte_size(line);
 		if (scannedBytes + lineBytes > files_GREP_MAX_SCAN_BYTES) {
 			const lineExceedsByteCap = lineBytes > files_GREP_MAX_SCAN_BYTES;
 			setTruncated({
@@ -6095,7 +6119,7 @@ async function match_text_chunks_list(
 			});
 			return false;
 		}
-		scannedBytes += lineBytes;
+		scannedBytes += lineBytes + 1;
 		lastScannedLine = lineNumber;
 		lastScannedIndex = lineEndIndex;
 
@@ -6149,6 +6173,18 @@ async function match_text_chunks_list(
 	};
 
 	for await (const chunk of chunks) {
+		// Stop at the chunk cap. The next call starts at the line this call did not finish. In slice mode it
+		// starts at that line's first character.
+		if (scannedChunks >= files_GREP_MAX_SCAN_CHUNKS) {
+			setTruncated({
+				reason: "scan_chunk_limit_reached",
+				nextLine: sliceWindow == null ? Math.max(lineWindowStart, (lineNumber ?? 0) + 1) : null,
+				nextIndex: sliceWindow == null ? null : carryStartIndex,
+			});
+			break;
+		}
+		scannedChunks++;
+
 		if (previousChunkIndex !== null && chunk.chunkIndex !== previousChunkIndex + 1) {
 			return null;
 		}
@@ -6222,6 +6258,11 @@ async function match_text_chunks_list(
 				break;
 			}
 			newlineIndex = carry.indexOf("\n");
+		}
+		// A line longer than the scan cap can never be scanned whole. Stop before buffering more of it,
+		// and continue in slice mode from its start. One character is at least one UTF-8 byte.
+		if (!stopScanning && carry.length > files_GREP_MAX_SCAN_BYTES) {
+			setTruncated({ reason: "scan_byte_limit_reached", nextLine: null, nextIndex: carryStartIndex });
 		}
 		if (stopScanning || (scanTruncated && afterRemaining <= 0)) {
 			break;
@@ -6297,6 +6338,8 @@ async function match_plain_text_chunks_list(
 	};
 	let lastScannedLine: number | null = null;
 	let scannedBytes = 0;
+	let scannedChunks = 0;
+	let outputChars = 0;
 
 	const setTruncated = (reason: MatchChunksListTruncatedReason, nextLine: number | null) => {
 		scanTruncated = true;
@@ -6311,28 +6354,28 @@ async function match_plain_text_chunks_list(
 		if (linesByNumber.has(line.lineNumber)) {
 			return true;
 		}
-		if (linesByNumber.size >= files_GREP_MAX_OUTPUT_LINES) {
+		if (
+			linesByNumber.size >= files_GREP_MAX_OUTPUT_LINES ||
+			outputChars + line.line.length + 1 > files_GREP_MAX_OUTPUT_CHARS
+		) {
 			outputTruncated = true;
 			setTruncated("output_line_limit_reached", line.lineNumber);
 			return false;
 		}
 		linesByNumber.set(line.lineNumber, { ...line, matched: true });
+		outputChars += line.line.length + 1;
 		return true;
 	};
 
 	const processLine = (line: string) => {
 		lineNumber = (lineNumber ?? 0) + 1;
-		if (lineNumber > files_GREP_MAX_SCAN_LINES) {
-			setTruncated("scan_line_limit_reached", lineNumber);
-			return false;
-		}
 
-		const lineBytes = files_get_utf8_byte_size(line) + 1;
+		const lineBytes = files_get_utf8_byte_size(line);
 		if (scannedBytes + lineBytes > files_GREP_MAX_SCAN_BYTES) {
 			setTruncated("scan_byte_limit_reached", lineBytes > files_GREP_MAX_SCAN_BYTES ? null : lineNumber);
 			return false;
 		}
-		scannedBytes += lineBytes;
+		scannedBytes += lineBytes + 1;
 		lastScannedLine = lineNumber;
 
 		const isMatch =
@@ -6359,6 +6402,12 @@ async function match_plain_text_chunks_list(
 	};
 
 	for await (const chunk of chunks) {
+		if (scannedChunks >= files_GREP_MAX_SCAN_CHUNKS) {
+			setTruncated("scan_chunk_limit_reached", (lineNumber ?? 0) + 1);
+			break;
+		}
+		scannedChunks++;
+
 		if (previousChunkIndex !== null && chunk.chunkIndex !== previousChunkIndex + 1) {
 			return null;
 		}
@@ -6381,6 +6430,10 @@ async function match_plain_text_chunks_list(
 				break;
 			}
 			newlineIndex = carry.indexOf("\n");
+		}
+		// Do not buffer a line that is already longer than the scan cap.
+		if (!stopScanning && carry.length > files_GREP_MAX_SCAN_BYTES) {
+			setTruncated("scan_byte_limit_reached", null);
 		}
 		if (stopScanning) {
 			break;
@@ -6522,7 +6575,7 @@ export const match_text_file_lines = internalQuery({
 				v.object({
 					kind: v.literal("lines"),
 					startLine: v.number(),
-					maxLines: v.number(),
+					maxLines: v.optional(v.number()),
 				}),
 				v.object({
 					kind: v.literal("slice"),
@@ -6548,8 +6601,9 @@ export const match_text_file_lines = internalQuery({
 			truncatedReason: v.union(
 				v.literal("selected_match_limit_reached"),
 				v.literal("output_line_limit_reached"),
-				v.literal("scan_line_limit_reached"),
+				v.literal("line_window_ended"),
 				v.literal("scan_byte_limit_reached"),
+				v.literal("scan_chunk_limit_reached"),
 				v.literal("slice_window_ended"),
 				v.null(),
 			),
@@ -6685,8 +6739,9 @@ export const match_plain_text_file_lines = internalQuery({
 			truncatedReason: v.union(
 				v.literal("selected_match_limit_reached"),
 				v.literal("output_line_limit_reached"),
-				v.literal("scan_line_limit_reached"),
+				v.literal("line_window_ended"),
 				v.literal("scan_byte_limit_reached"),
+				v.literal("scan_chunk_limit_reached"),
 				v.literal("slice_window_ended"),
 				v.null(),
 			),
@@ -8814,23 +8869,24 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.lines).toEqual([{ lineNumber: 4, line: "needle four", matched: true }]);
 			expect(result.selectedCount).toBe(1);
 			expect(result.scanTruncated).toBe(true);
-			expect(result.truncatedReason).toBe("scan_line_limit_reached");
+			expect(result.truncatedReason).toBe("line_window_ended");
 			expect(result.nextStartLine).toBe(5);
 		});
 
-		test("stops at the line scan cap and returns a continuation line", async () => {
-			const content = Array.from({ length: files_GREP_MAX_SCAN_LINES + 5 }, (_, index) =>
-				index === files_GREP_MAX_SCAN_LINES + 2 ? "late needle" : `line ${index + 1}`,
-			).join("\n");
+		test("ends a page before its lines outgrow the output cap and continues at the first line not shown", async () => {
+			// Bash cuts longer stdout, so a page past this cap would hide matches the next page skips.
+			const lineText = `needle ${"x".repeat(1000)}`;
+			const content = Array.from({ length: 90 }, () => lineText).join("\n");
 			const result = await grepTestScan(content, { pattern: "needle" });
 
 			expect(result).not.toBeNull();
 			if (!result) throw new Error("expected grep scan result");
-			expect(result.lines).toEqual([]);
-			expect(result.selectedCount).toBe(0);
-			expect(result.scanTruncated).toBe(true);
-			expect(result.truncatedReason).toBe("scan_line_limit_reached");
-			expect(result.nextStartLine).toBe(files_GREP_MAX_SCAN_LINES + 1);
+			const shown = Math.floor(files_GREP_MAX_OUTPUT_CHARS / (lineText.length + 1));
+			expect(result.lines.map((line) => line.lineNumber)).toEqual(
+				Array.from({ length: shown }, (_, index) => index + 1),
+			);
+			expect(result.truncatedReason).toBe("output_line_limit_reached");
+			expect(result.nextStartLine).toBe(shown + 1);
 		});
 
 		test("stops before an oversized line and returns a slice continuation index", async () => {

