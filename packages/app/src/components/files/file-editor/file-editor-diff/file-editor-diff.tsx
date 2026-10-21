@@ -2341,6 +2341,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			}
 			setContentWidgets([]);
 
+			// Dispose the editor before its models. React runs this cleanup before the wrapper's own
+			// cleanup, and Monaco throws if a model goes away while the diff editor still shows it.
+			// The wrapper disposes the editor again later, which Monaco ignores.
 			editorRef.current?.dispose();
 			editorRef.current = null;
 
@@ -2439,8 +2442,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 						height="100%"
 						theme={app_monaco_THEME_NAME_DARK}
 						onMount={handleOnMount}
-						original={initialOriginalMarkdown}
-						modified={initialUnstagedMarkdown}
+						// `onMount` swaps in our own models, so keep the wrapper's first models empty.
+						original=""
+						modified=""
 						originalLanguage={monacoLanguageId}
 						modifiedLanguage={monacoLanguageId}
 						// We dispose the models ourselves, so they must outlive the editor.
@@ -3903,6 +3907,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			clearTimeout(dirtyCheckTimeoutRef.current);
 			dirtyCheckTimeoutRef.current = undefined;
 
+			// Dispose the editor before its models, like `FileEditorDiff` does.
 			editorRef.current?.dispose();
 			editorRef.current = null;
 
@@ -3941,8 +3946,9 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 						height="100%"
 						theme={app_monaco_THEME_NAME_DARK}
 						onMount={handleOnMount}
-						original={initialData.text}
-						modified={initialData.text}
+						// `onMount` swaps in our own models, so keep the wrapper's first models empty.
+						original=""
+						modified=""
 						originalLanguage={monacoLanguageId}
 						modifiedLanguage={monacoLanguageId}
 						// We dispose the models ourselves, so they must outlive the editor.

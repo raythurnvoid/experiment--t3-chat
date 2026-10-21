@@ -330,11 +330,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 	const pushYjsUpdateMutation = useMutation(api.files_nodes.yjs_push_update);
 
-	const [initialEditorModel] = useState(() => files_monaco_create_editor_model(initialData.text, monacoLanguageId));
-
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const [mountedEditor, setMountedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
-	const modelRef = useRef<monaco_editor.ITextModel | null>(initialEditorModel);
+	const modelRef = useRef<monaco_editor.ITextModel | null>(null);
 	// A file with collaboration off has no shared document to sync.
 	const baselineYjsDocRef = useRef<YDoc | null>(initialData.kind === "collaborative" ? initialData.mut_yjsDoc : null);
 	const yjsLastSequenceIdRef = useRef<app_convex_Id<"files_yjs_docs_last_sequences"> | null>(
@@ -898,10 +896,13 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		editorRef.current = editor;
 		editor.updateOptions({ readOnly: !editable });
 		setMountedEditor(editor);
+		// Create the model here, not during render. A model made during render leaks when the user
+		// leaves before Monaco mounts. After this point the editor wrapper disposes it on unmount.
 		const prevModel = editor.getModel();
-		editor.setModel(initialEditorModel);
+		const model = files_monaco_create_editor_model(initialData.text, monacoLanguageId);
+		editor.setModel(model);
 		prevModel?.dispose();
-		modelRef.current = initialEditorModel;
+		modelRef.current = model;
 		updateDirtyBaseline(initialData.text);
 		updateThreadIds(initialData.text);
 		qaMonacoCleanupRef.current?.();

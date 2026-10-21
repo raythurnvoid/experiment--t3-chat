@@ -249,6 +249,16 @@ The wait runner reads the message before and after `waitForSelector`, and logs `
 
 Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conversion, the rich editor stays editable and `.FileNodeViewTopFloating-frontmatter-too-large` appears in the shared top status. Its full message is in the nested span's `title`; assert it reports 129 fields and 258 index entries, with limits of 128 and 512. The node must not show the stored-file card or enter a conversion retry loop. Archive the fixture after the check.
 
+### Monaco Model Leak QA
+
+Use this to check that the plain-text and diff editors leave no Monaco models behind (verified 2026-10-21).
+
+- Count models from page context: `const m = await import("/@id/monaco-editor"); m.editor.getModels()`. Each model has `getValueLength()`; `m.editor.getEditors()` and `getDiffEditors()` count the live editors. After leaving every editor, the count must be 0.
+- To see what an open creates, call `m.editor.onDidCreateModel(...)` before you navigate and record each model's length. Since 2026-10-21 a diff open creates `[0, 0, len, len]`: the `@monaco-editor/react` wrapper first makes two empty models, then `onMount` swaps in ours. A plain-text open creates `[0, len]`.
+- To leave before Monaco mounts, start the navigation with `app_router().navigate(...)` (see "move between files without a reload" above) and leave from a `MutationObserver` as soon as `.FileEditorPlainText` is in the DOM. React adds that node at commit, before the wrapper mounts the editor. Do not await the router `navigate` calls in one execute call: they can pass the 5 s timeout. Arm the run in one call and read `window` results in the next.
+- A page error `TextModel got disposed before DiffEditorWidget model got reset` on leaving a diff view means a model was disposed while the diff editor still showed it.
+- An editor stuck on its loading skeleton with `ERR_CONNECTION_TIMED_OUT` in the logs is usually the R2 content download (`*.r2.cloudflarestorage.com`, check `page.on("requestfailed")`), not an editor bug. A collaboration-off file reads its text through Convex, so it still opens then.
+
 ## Non-Collaborative Editors (No Yjs)
 
 Since 2026-08-31 a file with collaboration turned off supports every view its document shape supports: the rich and diff views are backed by the stored string instead of a Yjs document. The view-switcher buttons are functional; asserting the mounted editor changed is the real check.
