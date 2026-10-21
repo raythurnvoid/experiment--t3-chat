@@ -8752,15 +8752,20 @@ describe("plugins metadata file doors", () => {
 				message: `This write adds a reference to a file this plugin cannot read: ${src.replace("\\", "")}`,
 			});
 		}
-		// A ref hidden in a code block that breaks open when the saved text is rebuilt from the document,
-		// and an `<image>` tag, which a browser reads as an image.
-		for (const hidden of [
-			`\`\`\`\`\n\`\`\`\n![b](bonobo-file://${locked})\n\`\`\`\n\`\`\`\`\n`,
-			`Hello <image src="bonobo-file://${locked}"> there\n`,
-		]) {
-			expect((await write(`${kept}\n${hidden}`)).status).toBe(403);
-		}
+		// An `<image>` tag, which a browser reads as an image.
+		expect((await write(`${kept}\nHello <image src="bonobo-file://${locked}"> there\n`)).status).toBe(403);
 		expect(await read_doc()).toBe(kept);
+		// A ref inside a code block stays code text, also after the saved text is rebuilt from the document.
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/write",
+					apiToken: run.apiToken,
+					body: { path: "/probe/code.md", content: `\`\`\`\`\n\`\`\`\n![b](bonobo-file://${locked})\n\`\`\`\n\`\`\`\`\n` },
+				})
+			).status,
+		).toBe(200);
 
 		// A ref the file already has stays, even after the plugin loses access to it. This file has no
 		// document, so its old text is the saved text. Tests store no R2 objects to rebuild a document from.
