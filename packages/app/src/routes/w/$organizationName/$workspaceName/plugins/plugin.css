@@ -524,6 +524,11 @@
 		font-size: 12px;
 		color: var(--color-fg-08);
 	}
+
+	.RoutePluginsPluginSecretItem-actions {
+		display: flex;
+		gap: 4px;
+	}
 	/* #endregion secrets modal panel */
 
 	/* #region service */

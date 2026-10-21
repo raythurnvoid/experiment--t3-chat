@@ -182,7 +182,9 @@ mounted while closed on this route.
 Every change is staged until **Save** (like the Convex dashboard's environment variables page). `Add`
 and a `.env` paste add rows that read `Will be added when you save`. `Delete workspace secret <NAME>`
 only marks the row (`Will be deleted when you save`, name struck through), and its button becomes
-`Keep workspace secret <NAME>`. The footer shows `N unsaved changes`, `Discard`, and `Save`. Closing
+`Keep workspace secret <NAME>`. `Change the value of <NAME>` fills Name and focuses the Value field;
+type a value and press `Add` to stage a replacement (`Keep the current value of <NAME>` undoes it).
+The footer shows `N unsaved changes`, `Discard`, and `Save`. Closing
 the dialog drops staged changes, so close and reopen to prove nothing was stored. Real secrets live in
 `personal/home` (PDF plugin): stage a delete of one only to undo it, and save only `QA_*` names.
 

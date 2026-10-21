@@ -14,6 +14,7 @@ import {
 	History,
 	Info,
 	KeyRound,
+	Pencil,
 	Plus,
 	Puzzle,
 	Save,
@@ -300,7 +301,8 @@ type RoutePluginsPluginSecretsModalPanel_ClassNames =
 	| "RoutePluginsPluginSecretItem-name"
 	| "RoutePluginsPluginSecretItem-name-overridden"
 	| "RoutePluginsPluginSecretItem-name-deleted"
-	| "RoutePluginsPluginSecretItem-meta";
+	| "RoutePluginsPluginSecretItem-meta"
+	| "RoutePluginsPluginSecretItem-actions";
 
 type RoutePluginsPluginSecretsModalPanel_Props = {
 	target:
@@ -347,6 +349,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 	const [saving, setSaving] = useState(false);
 	const panelRef = useRef<HTMLDivElement | null>(null);
 	const nameInputRef = useRef<HTMLInputElement | null>(null);
+	const valueInputRef = useRef<HTMLInputElement | null>(null);
 	const addButtonRef = useRef<HTMLButtonElement | null>(null);
 	const saveButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -489,6 +492,14 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 		);
 	});
 
+	// Fill the Name field with an existing secret, so the member only types the new value and presses
+	// Add. Values are write-only, so the old value cannot be shown here.
+	const handleEditSecret = useFn((secretName: string) => {
+		setName(secretName);
+		setValue("");
+		valueInputRef.current?.focus();
+	});
+
 	const handleUnstageSecret = useFn((secretName: string) => {
 		setStagedSecrets((current) => current.filter((secret) => secret.name !== secretName));
 		// A new secret's row goes away with its staged value, and the focus of a removed element
@@ -621,31 +632,46 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 													}`}
 									</span>
 								</div>
-								{deleted ? (
-									<MyButton
-										variant="ghost"
-										tooltip={`Keep ${target.scope} secret ${secret.name}`}
-										onClick={() => handleToggleDelete(secret.name)}
-									>
-										<Undo2 aria-hidden />
-									</MyButton>
-								) : replaced ? (
-									<MyButton
-										variant="ghost"
-										tooltip={`Keep the current value of ${secret.name}`}
-										onClick={() => handleUnstageSecret(secret.name)}
-									>
-										<Undo2 aria-hidden />
-									</MyButton>
-								) : (
-									<MyButton
-										variant="ghost_destructive"
-										tooltip={`Delete ${target.scope} secret ${secret.name}`}
-										onClick={() => handleToggleDelete(secret.name)}
-									>
-										<Trash2 aria-hidden />
-									</MyButton>
-								)}
+								<div
+									className={
+										"RoutePluginsPluginSecretItem-actions" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+									}
+								>
+									{canAdd && !deleted ? (
+										<MyButton
+											variant="ghost"
+											tooltip={`Change the value of ${secret.name}`}
+											onClick={() => handleEditSecret(secret.name)}
+										>
+											<Pencil aria-hidden />
+										</MyButton>
+									) : null}
+									{deleted ? (
+										<MyButton
+											variant="ghost"
+											tooltip={`Keep ${target.scope} secret ${secret.name}`}
+											onClick={() => handleToggleDelete(secret.name)}
+										>
+											<Undo2 aria-hidden />
+										</MyButton>
+									) : replaced ? (
+										<MyButton
+											variant="ghost"
+											tooltip={`Keep the current value of ${secret.name}`}
+											onClick={() => handleUnstageSecret(secret.name)}
+										>
+											<Undo2 aria-hidden />
+										</MyButton>
+									) : (
+										<MyButton
+											variant="ghost_destructive"
+											tooltip={`Delete ${target.scope} secret ${secret.name}`}
+											onClick={() => handleToggleDelete(secret.name)}
+										>
+											<Trash2 aria-hidden />
+										</MyButton>
+									)}
+								</div>
 							</div>
 						);
 					})}
@@ -711,6 +737,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 							<MyInputBackground />
 							<MyInputArea>
 								<MyInputControl
+									ref={valueInputRef}
 									value={value}
 									type="password"
 									autoComplete="off"
