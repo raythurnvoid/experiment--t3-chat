@@ -1422,7 +1422,13 @@ token. This holds for human saves, API writes, and plugin writes. Images and vid
 adds publish through D's link when rules 1 to 6 allow them. Credential download limits do not limit
 these embeds on the public page: a key or plugin run without `files:download`, or one whose direct
 downloads are source-only, can still add an eligible image that visitors of D then see. This is a
-deliberate wider access, not a bug. The public view has no credential-scope filter and tracks no
+deliberate wider access, not a bug. A plugin is narrower: a plugin write that adds a new
+`bonobo-file://` ref to a file the plugin cannot read itself (its member inside its sandbox roots) is
+refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
+`file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs the file already had stay,
+and an upload run may embed the file it was started for. A plugin service upload of Markdown with
+such a ref stays a stored file. People's writes are not checked. The public view has no
+credential-scope filter and tracks no
 per-embed writer history. Private API scope checks do not change: the same key still gets 403 from
 `/api/v1/files/download-urls`. No file becomes public just because somebody knows its id, and no
 link is created for E. Removing the reference, archiving E, turning D off, or an access change that

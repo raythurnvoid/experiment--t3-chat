@@ -1944,6 +1944,7 @@ describe("invoke file write preconditions", () => {
 					stageId: prepared._yay.stageId,
 					targetAnchor: prepared._yay.targetAnchor,
 					content: "# Original\n",
+					addedFileRefs: [],
 					nonCollaborative: true,
 				});
 				if (created._nay) throw new Error(created._nay.message);
@@ -2003,12 +2004,14 @@ describe("invoke file write preconditions", () => {
 							stageId: prepared._yay.stageId,
 							expectedNodeId: restrictedNodeId,
 							content: "# Changed\n",
+							addedFileRefs: [],
 							nonCollaborative: true,
 						})
 					: await t.mutation(internal.public_api.publish_file_write, {
 							stageId: prepared._yay.stageId,
 							targetAnchor: prepared._yay.targetAnchor,
 							content: "# Changed\n",
+							addedFileRefs: [],
 							nonCollaborative: true,
 						});
 			expect(published._nay).toBeUndefined();
@@ -2051,6 +2054,7 @@ describe("invoke file write preconditions", () => {
 						stageId: prepared._yay.stageId,
 						targetAnchor: prepared._yay.targetAnchor,
 						content: "# Original\n",
+						addedFileRefs: [],
 						nonCollaborative: mode !== "collaborative fill",
 					});
 					if (created._nay) throw new Error(created._nay.message);
@@ -2112,12 +2116,14 @@ describe("invoke file write preconditions", () => {
 								stageId: prepared._yay.stageId,
 								expectedNodeId: nodeId!,
 								content: "# Changed\n",
+								addedFileRefs: [],
 								nonCollaborative: mode !== "collaborative fill",
 							})
 						: await t.mutation(internal.public_api.publish_file_write, {
 								stageId: prepared._yay.stageId,
 								targetAnchor: prepared._yay.targetAnchor,
 								content: "# Changed\n",
+								addedFileRefs: [],
 								nonCollaborative: true,
 							});
 				expect([change, published._nay]).toEqual([
@@ -2178,6 +2184,7 @@ describe("invoke file write preconditions", () => {
 			stageId: prepared._yay.stageId,
 			targetAnchor: prepared._yay.targetAnchor,
 			content: "# Original\n",
+			addedFileRefs: [],
 			nonCollaborative: true,
 		});
 		if (created._nay) throw new Error(created._nay.message);
@@ -2203,6 +2210,7 @@ describe("invoke file write preconditions", () => {
 					stageId: fillStage._yay.stageId,
 					expectedNodeId: created._yay.nodeId,
 					content: "# Original\n",
+					addedFileRefs: [],
 					nonCollaborative: true,
 				})
 			)._nay,
@@ -2240,6 +2248,7 @@ describe("invoke file write preconditions", () => {
 				stageId: prepared._yay.stageId,
 				targetAnchor: prepared._yay.targetAnchor,
 				content: "# Original\n",
+				addedFileRefs: [],
 				nonCollaborative: true,
 			});
 			if (created._nay) throw new Error(created._nay.message);
@@ -2263,12 +2272,14 @@ describe("invoke file write preconditions", () => {
 						stageId: prepared._yay.stageId,
 						expectedNodeId: fileNodeId,
 						content: "# Changed\n",
+						addedFileRefs: [],
 						nonCollaborative: true,
 					})
 				: await t.mutation(internal.public_api.publish_file_write, {
 						stageId: prepared._yay.stageId,
 						targetAnchor: prepared._yay.targetAnchor,
 						content: "# Changed\n",
+						addedFileRefs: [],
 						nonCollaborative: true,
 					});
 		expect(published._nay?.message).toBe("Permission denied");

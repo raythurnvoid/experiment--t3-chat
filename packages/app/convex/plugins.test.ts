@@ -11,7 +11,7 @@ import * as activities from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_mcp_destination_fingerprint } from "./plugins_mcp.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	plugins_REVIEW_POLICY_VERSION,
 	plugins_validate_manifest,
@@ -2785,6 +2785,20 @@ describe("plugins Phase 0", () => {
 		expect(calls.every((call) => call.finishedAt !== undefined && call.elapsedMs !== undefined)).toBe(true);
 		expect(JSON.stringify(calls)).not.toContain("Hello from the transcript");
 		expect(JSON.stringify(calls)).not.toContain("The video is summarized here");
+
+		// The run may embed the file it was started for, even though this install reaches no folder.
+		// Any other file needs the plugin's own read access.
+		for (const [src, status] of [
+			[`bonobo-file://${upload._yay.nodeId}`, 200],
+			["bonobo-file://missing", 403],
+		] as const) {
+			const embedded = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ path: "/video.poster.md", content: `![poster](${src})`, overwrite: "replace" }),
+			});
+			expect(embedded.status, src).toBe(status);
+		}
 		// Every stage was published; none remain to reap.
 		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
@@ -8697,6 +8711,73 @@ describe("plugins metadata file doors", () => {
 				writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
 			},
 		});
+	});
+
+	test("an invoke write may add a file ref only to a file the plugin can read", async () => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
+		const run = await start_file_invoke_run({ t, fixture });
+		expect(
+			(await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } }))
+				.status,
+		).toBe(200);
+		const membershipId = fixture.membership.membershipId;
+		const shared = await test_create_saved_text_file(t, { membershipId, path: "/shared/a.md", textContent: "a" });
+		const sharedOther = await test_create_saved_text_file(t, { membershipId, path: "/shared/b.md", textContent: "b" });
+		// The member can read this file. The plugin reaches the open workspace, not a restricted folder.
+		const locked = await test_create_saved_text_file(t, { membershipId, path: "/locked/secret.md", textContent: "s" });
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId,
+				nodeId: (await find_active_node({ t, fixture, path: "/locked" }))!._id,
+			}),
+		).toEqual({ _yay: null });
+		const write = (content: string) =>
+			door_call({ t, path: "/api/v1/files/write", apiToken: run.apiToken, body: { path: "/probe/doc.md", content } });
+		const read_doc = async () =>
+			(
+				(await (
+					await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/doc.md" } })
+				).json()) as { content: string }
+			).content;
+
+		const kept = `![a](bonobo-file://${shared})\n`;
+		expect((await write(kept)).status).toBe(200);
+
+		// A locked file, a missing one, and an escaped ref all get the same refusal, and nothing is written.
+		for (const src of [`bonobo-file://${locked}`, "bonobo-file://missing", `bonobo\\-file://${locked}`]) {
+			const refused = await write(`${kept}\n![b](${src})\n`);
+			expect(refused.status).toBe(403);
+			expect(await refused.json()).toEqual({
+				message: `This write adds a reference to a file this plugin cannot read: ${src.replace("\\", "")}`,
+			});
+		}
+		expect(await read_doc()).toBe(kept);
+
+		// A ref the file already has stays, even after the plugin loses access to it. This file has no
+		// document, so its old text is the saved text. Tests store no R2 objects to rebuild a document from.
+		const write_plain = (content: string) =>
+			door_call({
+				t,
+				path: "/api/v1/files/write",
+				apiToken: run.apiToken,
+				body: { path: "/probe/plain.md", content, nonCollaborative: true },
+			});
+		expect((await write_plain(kept)).status).toBe(200);
+		expect(
+			await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId,
+				nodeId: (await find_active_node({ t, fixture, path: "/shared" }))!._id,
+			}),
+		).toEqual({ _yay: null });
+		expect((await write_plain(`${kept}\nMore text.\n`)).status).toBe(200);
+		expect((await write_plain(`${kept}\n![b](bonobo-file://${sharedOther})\n`)).status).toBe(403);
+
+		// A write with too many new refs is refused before any check.
+		const many = Array.from({ length: 51 }, (_, index) => `![x](bonobo-file://many${index})`).join("\n\n");
+		const tooMany = await write(many);
+		expect(tooMany.status).toBe(400);
+		expect(await tooMany.json()).toEqual({ message: "This write adds more than 50 new file references" });
 	});
 
 	test("the archive door takes only the plugin's own subtree and releases its own locks", async () => {

@@ -37,6 +37,7 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
+import { files_media_refs_added, files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	access_control_db_authorize_membership,
@@ -751,6 +752,32 @@ export const get_service_upload_target_by_asset_id = internalQuery({
 	},
 });
 
+/**
+ * Whether a plugin service upload may add these app file refs: the plugin's own write rule
+ * (`files_media_refs_db_check_plugin_added`). The upload's author is the grant's member.
+ */
+export const check_service_upload_file_refs = internalQuery({
+	args: {
+		targetId: v.id("plugin_service_storage_targets"),
+		userId: v.id("users"),
+		addedFileRefs: v.array(v.string()),
+	},
+	returns: v.union(v.null(), v.string()),
+	handler: async (ctx, args) => {
+		const target = await ctx.db.get("plugin_service_storage_targets", args.targetId);
+		const installation = target ? await ctx.db.get("plugins_workspace_installations", target.installationId) : null;
+		if (!target || !installation) return "The plugin installation is gone";
+		const checked = await files_media_refs_db_check_plugin_added(ctx, {
+			organizationId: target.organizationId,
+			workspaceId: target.workspaceId,
+			installation,
+			userId: args.userId,
+			addedFileRefs: args.addedFileRefs,
+		});
+		return checked._nay ? checked._nay.message : null;
+	},
+});
+
 type get_service_upload_target_by_asset_id_Result =
 	typeof get_service_upload_target_by_asset_id extends RegisteredQuery<
 		infer _Visibility,
@@ -1209,6 +1236,29 @@ export const finalize_uploaded_text_file = internalAction({
 		}
 		const { text } = content;
 		const snapshotUpdate = content.snapshotUpdate;
+
+		// A plugin may add refs only to files it can read. Otherwise the upload stays a stored file, like
+		// an upload too large to convert: retrying cannot change the text.
+		if (serviceTarget) {
+			const addedFileRefs = files_media_refs_added({ content: text, previousContent: null, rootKind });
+			const refusal = addedFileRefs._nay
+				? addedFileRefs._nay.message
+				: addedFileRefs._yay.length === 0
+					? null
+					: ((await ctx.runQuery(internal.r2.check_service_upload_file_refs, {
+							targetId: serviceTarget._id,
+							userId: r2_require_real_author(fileNode.createdBy),
+							addedFileRefs: addedFileRefs._yay,
+						})) as string | null);
+			if (refusal !== null) {
+				console.warn("Service upload kept as a stored file", { assetId: asset._id, refusal });
+				await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
+					assetId: asset._id,
+					eventId: args.eventId,
+				});
+				return null;
+			}
+		}
 
 		// A service target may request a non-collaborative text file. Build the Yjs update above as
 		// validation, but create no Yjs asset or docs after that validation succeeds.

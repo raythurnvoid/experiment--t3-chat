@@ -71,6 +71,7 @@ import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
+import { files_media_refs_added, files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
 import { encodeStateVector } from "yjs";
 import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import {
@@ -2916,6 +2917,36 @@ async function db_service_matches_file_label(
 }
 
 /**
+ * People's writes are not checked. A plugin's added refs come from the action. See
+ * `files_media_refs_db_check_plugin_added`.
+ */
+async function db_check_plugin_added_file_refs(
+	ctx: MutationCtx,
+	args: {
+		stage: Doc<"public_api_file_write_stages">;
+		facts: FileWritePluginFacts;
+		addedFileRefs: string[] | undefined;
+	},
+) {
+	const installation = args.facts.installation;
+	if (!installation) return Result({ _yay: null });
+	if (!args.addedFileRefs) {
+		throw should_never_happen("Plugin file write without its added file refs", { stageId: args.stage._id });
+	}
+	return await files_media_refs_db_check_plugin_added(ctx, {
+		organizationId: args.stage.organizationId,
+		workspaceId: args.stage.workspaceId,
+		installation,
+		userId: args.stage.userId,
+		// Upload runs write beside the file they were started for, and may embed it.
+		...(args.facts.pluginRun && args.facts.pluginRun.event !== "ui.invoke.requested" && args.facts.pluginRun.fileNodeId
+			? { sourceNodeId: args.facts.pluginRun.fileNodeId }
+			: {}),
+		addedFileRefs: args.addedFileRefs,
+	});
+}
+
+/**
  * Remember the target at prepare time. Publish uses this to avoid changing a different file.
  */
 const file_write_target_anchor_validator = v.union(
@@ -3257,6 +3288,8 @@ export const publish_file_write = internalMutation({
 		 * consent is checked below before anything is written.
 		 */
 		requestReadOnly: v.optional(v.boolean()),
+		/** Plugin principals only: the app file refs this content adds. See `db_check_plugin_added_file_refs`. */
+		addedFileRefs: v.optional(v.array(v.string())),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -3493,6 +3526,14 @@ export const publish_file_write = internalMutation({
 				return managed;
 			}
 		}
+		const refsChecked = await db_check_plugin_added_file_refs(ctx, {
+			stage,
+			facts: revalidated._yay,
+			addedFileRefs: args.addedFileRefs,
+		});
+		if (refsChecked._nay) {
+			return refsChecked;
+		}
 
 		if (activeNode) {
 			await files_nodes_db_archive_nodes({
@@ -3667,6 +3708,8 @@ export const publish_file_fill = internalMutation({
 		 * document, so its fill is a plain content swap and carries no `fillUpdateStageId`.
 		 */
 		nonCollaborative: v.optional(v.boolean()),
+		/** Plugin principals only: the app file refs this content adds. See `db_check_plugin_added_file_refs`. */
+		addedFileRefs: v.optional(v.array(v.string())),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -3799,6 +3842,14 @@ export const publish_file_fill = internalMutation({
 			(fileNode.collaborationEnabled !== false && fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
 		) {
 			return Result({ _nay: { message: "The file changed during the write" } });
+		}
+		const refsChecked = await db_check_plugin_added_file_refs(ctx, {
+			stage,
+			facts: revalidated._yay,
+			addedFileRefs: args.addedFileRefs,
+		});
+		if (refsChecked._nay) {
+			return refsChecked;
 		}
 
 		const contentSnapshotAsset = await ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId);
@@ -4887,12 +4938,19 @@ export const cleanup_expired_file_write_stages = internalMutation({
 	},
 });
 
+/** The answer for a refusal of `db_check_plugin_added_file_refs`, or null for any other refusal. */
+function file_reference_failure(name: string | undefined) {
+	if (name === "file_reference_denied") return { status: 403 as const, errorCode: "file_reference_denied" as const };
+	if (name === "file_reference_limit") return { status: 400 as const, errorCode: "file_reference_limit" as const };
+	return null;
+}
+
 /**
  * Write one Markdown file: decide create-vs-fill, stage, PUT the staged objects, publish, and
- * clean the stage up on failure. Shared by the single write route and write-many. The helper
- * knows nothing about plugins: the single route maps `_nay` through its own `fail()` closure
- * (which settles the plugin call), and success-path plugin settlement lives inside the publish
- * mutations.
+ * clean the stage up on failure. Shared by the single write route and write-many. For plugin
+ * principals it also finds the file refs the text adds, for the publish mutation to check. The
+ * single route maps `_nay` through its own `fail()` closure (which settles the plugin call), and
+ * success-path plugin settlement lives inside the publish mutations.
  */
 export async function public_api_write_one_text_file(
 	ctx: ActionCtx,
@@ -4932,6 +4990,19 @@ export async function public_api_write_one_text_file(
 		requestReadOnly: boolean;
 	},
 ) {
+	// Plugin writes only: the app file refs the new text adds, for the publish mutation to check.
+	const find_added_file_refs = (previousContent: string | null, rootKind: files_YjsRootKind) => {
+		if (args.principalRef.kind === "user_api_key") return Result({ _yay: undefined });
+		const added = files_media_refs_added({ content: args.content, previousContent, rootKind });
+		if (added._nay) {
+			console.error("Failed to read the file refs of a plugin file write", { nay: added._nay, path: args.path });
+			return Result({
+				_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
+			});
+		}
+		return added;
+	};
+
 	// Decide create-vs-fill before staging. Writing over an existing editable text file
 	// replaces its content in place so the nodeId stays stable for open editors and links;
 	// only non-editable targets (e.g. stored uploads) keep the archive-and-recreate path in
@@ -5049,6 +5120,22 @@ export async function public_api_write_one_text_file(
 			}
 		}
 
+		// The saved text is the whole file here: it has no document.
+		const previous =
+			args.principalRef.kind === "user_api_key"
+				? null
+				: ((await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.visibilityUserId,
+						subject: args.subject,
+						path: args.path,
+						committedOnly: true,
+						mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
+					})) as files_nodes_read_file_content_from_chunks_Result);
+		const addedFileRefs = find_added_file_refs(previous?.content ?? null, activeNode.textKind);
+		if (addedFileRefs._nay) return addedFileRefs;
+
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -5138,18 +5225,20 @@ export async function public_api_write_one_text_file(
 			content: args.content,
 			expectedNodeId: activeNode._id,
 			nonCollaborative: true,
+			...(addedFileRefs._yay ? { addedFileRefs: addedFileRefs._yay } : {}),
 		});
 		if (published._nay) {
 			// Conflict is the fallback: structural 409s pass their specific message through,
 			// while the auth and storage failures use fixed literals.
 			const failure =
-				published._nay.message === "Unauthenticated"
+				file_reference_failure(published._nay.name) ??
+				(published._nay.message === "Unauthenticated"
 					? { status: 401 as const, errorCode: "unauthenticated" as const }
 					: published._nay.message === "Permission denied"
 						? { status: 403 as const, errorCode: "permission_denied" as const }
 						: published._nay.message === "Write was not published"
 							? { status: 500 as const, errorCode: "storage_failure" as const }
-							: { status: 409 as const, errorCode: "conflict" as const };
+							: { status: 409 as const, errorCode: "conflict" as const });
 			// A read-only refusal already cleaned up the stage during publish. Running cleanup again
 			// would change the plugin call to the wrong unpublished_write/500 error.
 			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -5195,6 +5284,10 @@ export async function public_api_write_one_text_file(
 					_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
 				});
 			}
+
+			// The publish pins this document version, so these old refs are the ones it replaces.
+			const addedFileRefs = find_added_file_refs(currentContent._yay.text, activeNode.textKind);
+			if (addedFileRefs._nay) return addedFileRefs;
 
 			// Mirror the snapshot-restore recipe: project the new text into the current
 			// doc and diff against the pre-projection state vector, so open editor sessions
@@ -5386,6 +5479,7 @@ export async function public_api_write_one_text_file(
 					expectedNodeId: activeNode._id,
 					expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
 					...(fillUpdateStageId ? { fillUpdateStageId } : {}),
+					...(addedFileRefs._yay ? { addedFileRefs: addedFileRefs._yay } : {}),
 				});
 			} catch (error) {
 				await retire_fill_update_stage();
@@ -5396,13 +5490,14 @@ export async function public_api_write_one_text_file(
 				// Conflict is the fallback: structural 409s pass their specific message through,
 				// while the auth and storage failures use fixed literals.
 				const failure =
-					published._nay.message === "Unauthenticated"
+					file_reference_failure(published._nay.name) ??
+					(published._nay.message === "Unauthenticated"
 						? { status: 401 as const, errorCode: "unauthenticated" as const }
 						: published._nay.message === "Permission denied"
 							? { status: 403 as const, errorCode: "permission_denied" as const }
 							: published._nay.message === "Write was not published"
 								? { status: 500 as const, errorCode: "storage_failure" as const }
-								: { status: 409 as const, errorCode: "conflict" as const };
+								: { status: 409 as const, errorCode: "conflict" as const });
 				// A read-only refusal already cleaned up the stage during publish. Running cleanup again
 				// would change the plugin call to the wrong unpublished_write/500 error.
 				if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -5430,6 +5525,9 @@ export async function public_api_write_one_text_file(
 
 	// The created file's type: the caller's, else the name's hint, else plain text.
 	const createShape = args.shape ?? files_default_text_shape_for_name(path_name_of(args.path));
+	// A replaced file here is not editable text, so it has no refs to keep.
+	const addedFileRefs = find_added_file_refs(null, createShape.rootKind);
+	if (addedFileRefs._nay) return addedFileRefs;
 
 	// A non-collaborative file is created with committed content only, so there is no document to
 	// build and nothing to upload to the Yjs snapshot key.
@@ -5537,12 +5635,14 @@ export async function public_api_write_one_text_file(
 		targetAnchor: prepared._yay.targetAnchor,
 		nonCollaborative: args.nonCollaborative,
 		...(args.requestReadOnly ? { requestReadOnly: true } : {}),
+		...(addedFileRefs._yay ? { addedFileRefs: addedFileRefs._yay } : {}),
 	});
 	if (published._nay) {
 		// Conflict is the fallback: structural 409s pass their specific message through,
 		// while the auth and storage failures use fixed literals.
 		const failure =
-			published._nay.message === "Unauthenticated"
+			file_reference_failure(published._nay.name) ??
+			(published._nay.message === "Unauthenticated"
 				? { status: 401 as const, errorCode: "unauthenticated" as const }
 				: published._nay.message === "Permission denied"
 					? { status: 403 as const, errorCode: "permission_denied" as const }
@@ -5550,7 +5650,7 @@ export async function public_api_write_one_text_file(
 						? { status: 500 as const, errorCode: "storage_failure" as const }
 						: published._nay.name === "too_many_folders"
 							? { status: 400 as const, errorCode: "invalid_input" as const }
-							: { status: 409 as const, errorCode: "conflict" as const };
+							: { status: 409 as const, errorCode: "conflict" as const });
 		// A read-only refusal already cleaned up the stage during publish. Running cleanup again
 		// would change the plugin call to the wrong unpublished_write/500 error.
 		if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -6949,6 +7049,13 @@ export async function public_api_http_write_many(args: {
 			}
 			if (result._nay.data.errorCode === "invalid_input") {
 				return { status: 400, body: { message: result._nay.message } } as const;
+			}
+			// Only plugin writes check file refs, and this route takes only people's keys.
+			if (
+				result._nay.data.errorCode === "file_reference_denied" ||
+				result._nay.data.errorCode === "file_reference_limit"
+			) {
+				throw should_never_happen("File ref refusal in a batch write", { path: file.path });
 			}
 			errors.push({
 				path: file.path,

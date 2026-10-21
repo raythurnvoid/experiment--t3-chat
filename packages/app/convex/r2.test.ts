@@ -4360,6 +4360,41 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(changeApplied).toBe(true);
 	}
 
+	test("keeps a service upload stored when it adds a file ref the plugin cannot read", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture({
+			t,
+			db,
+			filename: "service-transcript.md",
+			contentType: "text/markdown;charset=utf-8",
+		});
+		await seed_non_collaborative_service_target({ t, db, upload });
+		await confirm_upload_put({
+			t,
+			upload,
+			content: "# Service transcript\n\n![x](bonobo-file://missing)",
+			messageId: "message_service_file_ref",
+		});
+
+		await t.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+			eventId: "event_service_file_ref",
+		});
+
+		const kept = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload.nodeId),
+			asset: await ctx.db.get("files_r2_assets", upload.assetId),
+			chunks: (await ctx.db.query("files_text_chunks").collect()).filter((chunk) => "fileNodeId" in chunk && chunk.fileNodeId === upload.nodeId),
+		}));
+		// Retrying cannot change the text, so the upload settles as a stored file with no text.
+		expect(kept.node).toMatchObject({ assetId: upload.assetId, textKind: null });
+		expect(kept.asset?.processingWorkId).toBeNull();
+		expect(kept.chunks).toHaveLength(0);
+	});
+
 	test("converts an accepted text upload after the node becomes read-only", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
