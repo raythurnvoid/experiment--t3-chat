@@ -726,9 +726,11 @@ describe("volumes stage, write, and publish", () => {
 	test("a failed PUT cleans its asset and preserves successful items", async () => {
 		const f = await fixture();
 		const staged = await stage({ f });
-		let count = 0;
-		onPut = async () => {
-			if (count++ === 0) throw new Error("Provider detail must stay private");
+		// Every try of the first key fails, so the PUT retry cannot save it.
+		let failedKey: string | undefined;
+		onPut = async (key) => {
+			failedKey ??= key;
+			if (key === failedKey) throw new Error("Provider detail must stay private");
 		};
 		const result = await write({
 			f,
