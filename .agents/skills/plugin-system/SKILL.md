@@ -924,7 +924,7 @@ Gmail 0.3.3 was published and installed in `personal/home` on 2026-10-20 (plugin
 sync notices a refused grant only at its next Press write, which can be minutes after the update. So
 the Mail page now also renews the grant from its 15-second status check, once per account connection,
 like the Gmail page does every 5 seconds. Live check: with the Mail page opened right after the update
-and sync still `live`, an email from `lemmino4555@gmail.com` blocked sync at 00:33:43 UTC; the open
+and sync still `live`, an email from the second Gmail account blocked sync at 00:33:43 UTC; the open
 page renewed the grant and sync was `live` again 8 seconds later. A second email showed at the top of
 the open page 83 seconds after it was sent, with no reload. 448 tests.
 
@@ -935,7 +935,7 @@ status returns it as `newestEmailAt`, read with the new ledger index
 `by_account_emailWritten_internalDate`. Before, any growth of `messagesSynced` re-read the list, and
 backfill of older mail grows it too. The page also shows locked emails as `Locked` rows it does not
 read, and names the folders it skipped because the member cannot open them. Live check: an email from
-`lemmino4555@gmail.com` was saved at 19:36:33 UTC and showed at the top of the open page at 19:37:51,
+the second Gmail account was saved at 19:36:33 UTC and showed at the top of the open page at 19:37:51,
 with no reload. The locked messages were checked only in tests, because the owner can open every
 folder. 451 tests.
 
@@ -945,7 +945,7 @@ The Mail page reads each month folder with `order: "desc"` and `kind: "file"`, 1
 and returns one whole day at a time sorted by Gmail id. It no longer reads a whole month to show 30
 rows. Live check: the first 30 rows took three list calls (account, year, one month page), and Show
 more read one page of each older month; all 60 rows were in time order. An email from
-`lemmino4555@gmail.com` sent at 20:27:38 UTC showed at the top of the open page at 20:30:37, with no
+the second Gmail account sent at 20:27:38 UTC showed at the top of the open page at 20:30:37, with no
 reload. 452 tests.
 
 Gmail 0.3.6 was published and installed in `personal/home` on 2026-10-21 (plugin commit
@@ -957,7 +957,7 @@ when nothing is pending, and skips the history save when the last page did not c
 "Sync is delayed" after 20 minutes. Old account docs were filled in by a two-deploy migration. Live
 check: the waits grew 2, 4, 8, 15 minutes. With no plugin page open, 2 idle hours used 249 calls an
 hour (0.2.3 used about 1,177) and 1 token refresh an hour; the two minute crons are most of what is
-left. An email from `lemmino4555@gmail.com` sent at 05:35:24 UTC was saved at 05:46:36, and the
+left. An email from the second Gmail account sent at 05:35:24 UTC was saved at 05:46:36, and the
 next slice ran 1 minute later. 462 tests.
 
 The Gmail 0.3.6 backend was updated on dev on 2026-10-21 with no new version (plugin commit

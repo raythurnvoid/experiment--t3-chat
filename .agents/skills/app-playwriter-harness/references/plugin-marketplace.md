@@ -450,13 +450,13 @@ Where it lives (verified 2026-10-20): `gmail@0.3.5` is installed in `personal/ho
   "performing click action". Click from page context instead:
   `frame.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.innerText.trim() === "Send").click())`.
   `locator.fill()` on the editor inputs works.
-- **Send only to the user's own addresses**: `ray.thurne.void@gmail.com` (the synced account) and
-  `lemmino4555@gmail.com` (the user's second account, also signed in to Gmail in this Edge profile;
-  the user allowed it on 2026-10-20). Ask the agent for a reply with exactly that `to`. Check Gmail in
-  a new tab: `https://mail.google.com/mail/u/?authuser=ray.thurne.void@gmail.com#drafts` (and
+- **Send only to the user's own addresses**: `<synced account>` (the account the plugin syncs) and
+  `<second account>` (the user's second account, also signed in to Gmail in this Edge profile;
+  the user allowed it on 2026-10-20). The real addresses are not written in this repo; ask the user. Ask the agent for a reply with exactly that `to`. Check Gmail in
+  a new tab: `https://mail.google.com/mail/u/?authuser=<synced account>#drafts` (and
   `#sent`). A reply draft shows in the same conversation.
 - **Mail from another sender**: open
-  `https://mail.google.com/mail/?authuser=lemmino4555@gmail.com&view=cm&fs=1&to=ray.thurne.void@gmail.com&su=<subject>&body=<text>`
+  `https://mail.google.com/mail/?authuser=<second account>&view=cm&fs=1&to=<synced account>&su=<subject>&body=<text>`
   and click Send from page context. To leave that compose page, set `location.href` in the page;
   `page.goto` to a `#search/...` URL stayed on the compose view.
 - **New mail shows without a reload (0.3.2+).** The Mail page reads the sync status every 15 seconds.
@@ -480,7 +480,7 @@ Where it lives (verified 2026-10-20): `gmail@0.3.5` is installed in `personal/ho
   `press_reconnect_needed` (`next null`) until an open page renews the grant. Both pages check status
   while open (Gmail every 5 seconds, Mail every 15) and renew once per connection. To test the late
   case (0.3.3), open the page right after Update while sync is still `live`, then send an email from
-  lemmino4555: `gmail_accounts` goes `blocked` and back to `live` within about 20 seconds.
+  the second account: `gmail_accounts` goes `blocked` and back to `live` within about 20 seconds.
 - **Something closes `localhost:5173` QA tabs in this Edge profile** (seen twice on 2026-10-20, not
   the Gmail tabs). A watch loop then reads a closed page and never finds its row. Check
   `context.pages()` when a watch ends without a result, and open a new tab.
