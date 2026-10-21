@@ -536,6 +536,22 @@ describe("FilesShareModal", () => {
 		expect(mediaQueryMock).toHaveBeenCalledWith("media_to_share", { membershipId: "membership_1", nodeId: "node_1" });
 	});
 
+	test("keeps focus in the media box when the new answer has no media", async () => {
+		mockShareState({ ...FILE_SHARE, link: LINK });
+		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canManage: true };
+		// The file changed while the dialog was open, so the new answer lists nothing.
+		mediaQueryMock.mockResolvedValueOnce({ media: [{ ...photo, isPublic: false }] }).mockResolvedValueOnce({ media: [] });
+		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Make Photo.png public" }));
+
+		expect(await screen.findByText("This file has no saved images or videos.")).toBeTruthy();
+		// The list and its button are gone, so focus must not fall out of the dialog.
+		expect(document.activeElement).toBe(document.querySelector(".FilesShareModalMedia"));
+	});
+
 	test("says when a public image still cannot show, and shows rows the caller cannot change", async () => {
 		mockShareState({ ...FILE_SHARE, link: LINK });
 		const photo = {

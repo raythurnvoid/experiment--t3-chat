@@ -151,6 +151,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+
+		/* Gets focus when making a file public leaves no list. Same outline as the other focused lists. */
+		&:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: 2px;
+		}
 	}
 
 	/* The file name grows. The state or the button stays at its own width. */

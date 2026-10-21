@@ -264,6 +264,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 	>();
 	const [pending, setPending] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const rootRef = useRef<HTMLDivElement>(null);
 	const listRef = useRef<HTMLUListElement>(null);
 
 	const handleReview = useFn(async () => {
@@ -305,8 +306,8 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 				if (nextItem?.available && !nextItem.isPublic) {
 					setError("This file is public, but this page cannot show it yet. It may still be uploading.");
 				} else {
-					// The row's button is gone now, so keep focus in the dialog.
-					listRef.current?.focus();
+					// The row's button is gone now, so keep focus in the dialog. An empty answer removes the list too.
+					(next && next.media.length > 0 ? listRef : rootRef).current?.focus();
 				}
 			}
 		} catch (error) {
@@ -317,7 +318,12 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 	});
 
 	return (
-		<div className={"FilesShareModalMedia" satisfies FilesShareModalLink_ClassNames}>
+		<div
+			ref={rootRef}
+			// Not reachable by Tab. `handleMakePublic` focuses it when the new answer has no list.
+			tabIndex={-1}
+			className={"FilesShareModalMedia" satisfies FilesShareModalLink_ClassNames}
+		>
 			<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
 				Images and videos show through this link only when they are public (Anyone on the web).
 			</p>
