@@ -218,6 +218,9 @@ Use a QA folder in `chitchat-qa`, where uploads do not start the user's upload p
 Drive `.FilesSidebar input[type=file]:not([webkitdirectory])` with one absolute file path per call.
 Keep fixtures in the personal task folder. A large `setInputFiles` can exceed five seconds after it
 has started the upload. After a timeout, inspect the folder and backend before retrying.
+A name that already exists in the folder uploads nothing until you choose: it opens the
+`File already exists` dialog (`.FilesSidebarUploadConflictModal`, Rename or Replace), not a toast.
+Look for that dialog before you report that an upload did nothing (seen 2026-10-21).
 
 Read the published asset and counter, then use the bounded `billing.inspect_polar_billing_page`
 operator door to check sandbox `file_upload` events and their amount and bytes. Follow the billing
