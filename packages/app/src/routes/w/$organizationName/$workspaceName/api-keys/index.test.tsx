@@ -264,6 +264,8 @@ describe("RouteApiKeys", () => {
 		renderRoute();
 		expect(screen.getByRole("combobox", { name: "Identity" }).textContent).toContain("Publisher");
 		expect(screen.queryByRole("checkbox", { name: /plugin data/i })).toBeNull();
+		// A key bound to a service account cannot hold "files:publish".
+		expect(screen.queryByRole("checkbox", { name: /Make files public/ })).toBeNull();
 		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Deploy key" } });
 		fireEvent.click(screen.getByRole("checkbox", { name: /Manage file policies/ }));
 		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);

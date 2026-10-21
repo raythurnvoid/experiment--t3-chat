@@ -18,6 +18,8 @@ description: Spec for image and video embeds in rich text documents — the bono
 - `../../../packages/app/convex/files_share_links.ts` (public link page: media checks and signed URLs)
 - `../../../packages/app/shared/files-share-rich-text.ts` (public schema, media map, alt rules)
 - `../../../packages/app/src/components/files/files-share-page.tsx` (public media node views)
+- `../../../packages/app/convex/files_sharing.ts` (`set_node_public`, "Anyone on the web")
+- `../../../packages/app/src/components/files/files-share-modal.tsx` ("Anyone on the web" select, media check list)
 
 # Reference Format
 
@@ -186,11 +188,9 @@ An embed shows only when all of these hold (`db_read_media_node`, `db_check_medi
    (`files_is_inline_media_content_type`) and matches the node: an image node needs `image/*`, and a
    video node needs `video/*`. SVG and other types are unavailable.
 3. It has a finished asset.
-4. Its stored restricted scope equals the document's stored restricted scope. This alone does
-   not prove the editor can read it: Add people can give access to just the document.
-5. `files_share_link_media` has an approval for this exact public link, media node and asset.
-   The authenticated approval checks write access to the document and read access to the media.
-   Public viewing and signing use the same approval check.
+4. It is public ("Anyone on the web", below). Its `publicScopeNodeId` names a live public root in
+   its own restricted area and tenant: the file itself, or a folder above it.
+5. Its own restricted area is live and not plugin-bound (`db_check_scope` answers `ok`).
 
 Otherwise the view returns `{ index, available: false }`, with no type, name, ID, or reason. The page
 shows a gray box, "This image is not shared" or "This video is not shared", from the node's own kind.
@@ -198,40 +198,34 @@ The editor often fills alt with the real file name, so only an available media k
 reference redaction. Every other media node has `alt: null`. When the document falls back to plain
 text, the page has fixed `[image]` and `[video]` labels and no media at all.
 
-The normal case works: uploads land in the `assets` folder next to the document (Upload Flow, step 4),
-so they share its scope. An image from a more private or a differently restricted folder is
-unavailable. A document inside a restricted folder that embeds an image from an open folder is also
-unavailable, because people with only the folder grant may not read the whole workspace. This is
-expected, not a bug. The fix is to move or copy the image next to the document.
+The document's own restricted area does not matter. A public image from any area of the same
+workspace shows. An image that is not public shows the gray box, even when it sits next to the
+document.
 
-## Approving media for a public link
+## Anyone on the web
 
-Publication is a deliberate action. Never approve media while opening a document, rendering it,
-rebuilding Yjs text, or saving unrelated text. A known file ID grants no access.
+Like Notion, an image or video shows on a public page only when it is public itself. The full
+rules (who can turn it on, inheritance, Move, restore, copy, plugin bind, accepted limits) live in
+the [access-control spec](../access-control/SKILL.md) ("Anyone on the web"). A known file ID grants
+no access, and a public file never opens by itself: it only shows as an embed of a linked page.
 
-- Picking an existing image or finishing an editor upload approves that exact file for the current
-  link after the access check. A read-only document refuses it. With no public link, insertion works
-  normally and creates no approval. Approvals charge their own `files_share_link_media_write` bucket
-  (50/min), so an upload batch does not spend `files_tree_write` twice.
-- A manager can use **Sharing → Review images and videos**, then share a listed item. The request
-  pins the reviewed link and asset. A replaced image or changed link needs a fresh review.
-- Raw Markdown and ordinary API edits keep their references and text. New references remain gray
-  on the public page until a manager reviews them. They do not block Save.
-- Checked plugin-added references record approvals when the write commits. Existing plugin read
-  checks stay in place. An upload source exception must prove the exact run source and asset.
-- Existing links keep their URLs and text. No approval is guessed from old content. Their images
-  need review once. A new link also starts with no approvals.
-- Replacing a media asset needs approval again. An approval grants the exact bytes through this
-  document's link; it does not depend on the approver keeping their membership. Archive and scope
-  checks still apply. Restoring the same approved bytes may make them visible again.
-- Ending the document's link ends all its approvals. Indexed background cleanup removes the docs.
-
-This follows the distinction in familiar apps between a reference and a deliberate publication.
-[Drive shortcuts](https://support.google.com/drive/answer/9700156) and
-[Notion synced blocks](https://www.notion.com/help/synced-blocks) keep source access checks.
-[Google Docs image insertion](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request#InsertInlineImageRequest)
-fetches and stores an image copy. Here, approval records permission for exact bytes without copying
-them. Comparing every document reader or walking parent folders is not part of this rule.
+- Sharing has an "Anyone on the web" select for files and folders (`Not public` / `Public`). Only a
+  manager sees it. It is hidden when a public folder above makes the item public; turn it off on
+  that folder. Code: `FilesShareModalPublic` in `files-share-modal.tsx`, door
+  `files_sharing.set_node_public`.
+- A public folder makes the files inside it public, down to the nearest restricted folder. New
+  files copy their parent's value. So uploads into a public `assets` folder (Upload Flow, step 4)
+  are public at once.
+- Saving, inserting, or uploading never makes media public. Human, API, and plugin writes keep the
+  reference as text. A reference to a file that is not public stays gray. It never blocks Save.
+- On a file with a public link, **Sharing → Check images and videos** lists the document's images
+  and videos (`files_share_links.get_media_to_share`), each marked public or not public with the
+  same check as the public page. A readable item shows its name. A manager of that item gets a
+  `Make <name> public` button. An item the caller cannot read stays unnamed.
+- Old embeds start not public. There is no migration. The page gray box text is still "This image
+  is not shared" / "This video is not shared".
+- Off hides the images of a public folder at once. A URL signed before Off still works for up to 15
+  minutes.
 
 `create_share_link_download_urls({ token, revision, targets })` signs 1 to 50 unique targets. It
 charges the `files_share_link_download` bucket (200 targets per minute, keyed by the link doc, shared

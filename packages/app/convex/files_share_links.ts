@@ -15,31 +15,23 @@ import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { action, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { access_control_create_file_checker, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
-import { mutation } from "./functions.ts";
-import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
+import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
 import { files_merge_contiguous_chunks } from "./files_nodes.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_nodes_db_get_tree_reader } from "./files_tree_db.ts";
 import { files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
-import {
-	files_share_link_media_db_approve,
-	files_share_link_media_db_resolve_node,
-} from "./files_share_link_media_db.ts";
 import { r2 } from "./r2_client.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_resolve_read_target,
 } from "../server/files-saved-placement.ts";
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
-import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
 	files_editable_text_shape_of,
 	files_get_signed_download_serving,
@@ -243,6 +235,41 @@ export async function files_share_links_db_check_live_file(
 }
 
 /**
+ * Check that a file or folder may become public ("Anyone on the web") right now. The same live checks
+ * as a link, but any item may be public: public pages show only its images and videos.
+ */
+export async function files_share_links_db_check_live_node(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		node: Doc<"files_nodes">;
+	},
+) {
+	if (args.node.archiveOperationId !== null) {
+		return Result({ _nay: { message: "This item is archived" } });
+	}
+
+	if (!(await db_is_workspace_live(ctx, args))) {
+		return Result({ _nay: { message: "This workspace is being deleted" } });
+	}
+
+	const scope = await db_check_scope(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		restrictedScopeNodeId: args.node.restrictedScopeNodeId,
+	});
+	if (scope === "dead") {
+		return Result({ _nay: { message: "Wait until the access change of a folder above finishes" } });
+	}
+	if (scope === "bound") {
+		return Result({ _nay: { message: "A plugin decides who can read this item, so it cannot be public" } });
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
  * The public view spent its read limits. The view must stop from deep inside nested read helpers, so it
  * throws. This module always catches it and answers "unavailable". It never leaves this module.
  */
@@ -374,37 +401,51 @@ async function db_read_media_node(args: {
 /**
  * The finished asset of a media file that the shared file's visitors may see, or null.
  *
- * Knowing a file id grants nothing. A checked publication must name this link and these exact bytes.
+ * A visitor is anonymous, so a media file shows only when it is public ("Anyone on the web"): its
+ * `publicScopeNodeId` names a live public root in its own restricted area, the file itself or a folder
+ * above it. Knowing a file id grants nothing. Reads at most 9 docs.
  */
-async function db_check_media_node(args: {
-	ctx: QueryCtx;
-	reads: ViewReads;
-	mediaNode: Doc<"files_nodes">;
-	linkId: Id<"files_share_links">;
-	restrictedScopeNodeId: Id<"files_nodes"> | null;
-}) {
-	const { ctx, reads } = args;
+async function db_check_media_node(args: { ctx: QueryCtx; reads: ViewReads; mediaNode: Doc<"files_nodes"> }) {
+	const { ctx, reads, mediaNode } = args;
 
-	if (args.mediaNode.restrictedScopeNodeId !== args.restrictedScopeNodeId) {
+	if (mediaNode.publicScopeNodeId === undefined) {
+		return null;
+	}
+
+	const root =
+		mediaNode.publicScopeNodeId === mediaNode._id
+			? mediaNode
+			: await reads_get_node({ ctx, reads, id: mediaNode.publicScopeNodeId });
+	// A pointer can be stale while a scope op runs, so check that the root is still public, in the same
+	// area, and above the file. A folder's tree path ends with "/", so the prefix test cannot match a
+	// sibling whose name only starts the same way.
+	if (
+		!root ||
+		root.organizationId !== reads.organizationId ||
+		root.workspaceId !== reads.workspaceId ||
+		root.archiveOperationId !== null ||
+		root.publicScopeNodeId !== root._id ||
+		root.restrictedScopeNodeId !== mediaNode.restrictedScopeNodeId ||
+		(root._id !== mediaNode._id && (root.kind !== "folder" || !mediaNode.treePath.startsWith(root.treePath)))
+	) {
+		return null;
+	}
+
+	// The media file's area can differ from the shared file's area. A plugin decides who reads a bound
+	// area, and a dead area waits for its scope op, so neither shows.
+	reads_reserve({ reads, calls: 5, docs: 5 });
+	if (
+		(await db_check_scope(ctx, {
+			organizationId: reads.organizationId,
+			workspaceId: reads.workspaceId,
+			restrictedScopeNodeId: mediaNode.restrictedScopeNodeId,
+		})) !== "ok"
+	) {
 		return null;
 	}
 
 	reads_reserve({ reads, calls: 1, docs: 1 });
-	const approval = await ctx.db
-		.query("files_share_link_media")
-		.withIndex("by_link_mediaNode", (q) => q.eq("linkId", args.linkId).eq("mediaNodeId", args.mediaNode._id))
-		.first();
-	reads_count(reads, approval);
-	if (
-		!approval ||
-		approval.assetId !== args.mediaNode.assetId ||
-		approval.organizationId !== reads.organizationId ||
-		approval.workspaceId !== reads.workspaceId
-	)
-		return null;
-
-	reads_reserve({ reads, calls: 1, docs: 1 });
-	return await db_get_finished_asset(ctx, args.mediaNode);
+	return await db_get_finished_asset(ctx, mediaNode);
 }
 
 /**
@@ -508,19 +549,13 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	}
 	await reads_sync(ctx, reads);
 
-	// Each media file needs this link's publication record, matching scope and a finished asset.
+	// Each media file must be public and have a finished asset.
 	const mediaAssets: Array<Awaited<ReturnType<typeof db_get_finished_asset>>> = [];
 	for (const mediaNode of mediaNodes) {
 		let mediaAsset: Awaited<ReturnType<typeof db_get_finished_asset>> = null;
 		if (mediaNode && !mediaBudgetSpent) {
 			try {
-				mediaAsset = await db_check_media_node({
-					ctx,
-					reads,
-					mediaNode,
-					linkId: link._id,
-					restrictedScopeNodeId,
-				});
+				mediaAsset = await db_check_media_node({ ctx, reads, mediaNode });
 				await reads_sync(ctx, reads);
 			} catch (error) {
 				if (!(error instanceof ShareViewBudgetError)) {
@@ -841,24 +876,28 @@ export const create_share_link_download_urls = action({
 });
 
 /**
- * Show only readable saved media. Each approval must pin the link and asset shown here.
+ * The images and videos of a file with a live public link, and whether each one shows there. Names and
+ * ids only for files the caller can read: a manager can point the file at any id.
  */
 export const get_media_to_share = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
 	returns: v.union(
 		v.null(),
 		v.object({
-			linkId: v.id("files_share_links"),
 			media: v.array(
 				v.union(
-					v.object({ available: v.literal(false), kind: v.union(v.literal("image"), v.literal("video")) }),
+					v.object({
+						available: v.literal(false),
+						kind: v.union(v.literal("image"), v.literal("video")),
+						public: v.boolean(),
+					}),
 					v.object({
 						available: v.literal(true),
-						src: v.string(),
 						kind: v.union(v.literal("image"), v.literal("video")),
+						public: v.boolean(),
+						nodeId: v.id("files_nodes"),
 						name: v.string(),
-						assetId: v.id("files_r2_assets"),
-						shared: v.boolean(),
+						canManage: v.boolean(),
 					}),
 				),
 			),
@@ -888,145 +927,26 @@ export const get_media_to_share = query({
 		if (!link || !(await files_share_links_db_is_selected(ctx.db, link))) return null;
 		const prepared = await db_prepare_share_link_view(ctx, link.token);
 		if (!prepared) return null;
+		// "Public" is the answer of the public page itself, so this list never disagrees with it.
 		const media = await Promise.all(
 			prepared.media.map(async (item, index) => {
 				const mediaNode = prepared.mediaNodes[index];
-				if (
-					!mediaNode ||
-					mediaNode.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
-					!mediaNode.assetId ||
-					!(await reader.checker.can(mediaNode, "content.read")) ||
-					!(await db_get_finished_asset(ctx, mediaNode))
-				) {
-					return { available: false as const, kind: item.kind };
+				const isPublic = prepared.mediaAssets[index] !== null;
+				if (!mediaNode || !(await reader.checker.can(mediaNode, "content.read"))) {
+					return { available: false as const, kind: item.kind, public: isPublic };
 				}
 				return {
 					available: true as const,
-					src: item.src,
 					kind: item.kind,
+					public: isPublic,
+					nodeId: mediaNode._id,
 					name: mediaNode.name,
-					assetId: mediaNode.assetId,
-					shared: prepared.mediaAssets[index] !== null,
+					canManage: await reader.checker.can(mediaNode, "content.permissions.manage"),
 				};
 			}),
 		);
-		return { linkId: link._id, media };
+		return { media };
 	},
-});
-
-async function db_approve_media(
-	ctx: MutationCtx,
-	args: {
-		membershipId: Id<"organizations_workspaces_users">;
-		nodeId: Id<"files_nodes">;
-		src: string;
-		review?: { linkId: Id<"files_share_links">; assetId: Id<"files_r2_assets"> };
-	},
-) {
-	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!userAuth || !(await ctx.db.get("users", userAuth.id))) return Result({ _nay: { message: "Unauthenticated" } });
-	if (userAuth.isAnonymous) return Result({ _nay: { message: "Sign in to share images and videos" } });
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: userAuth.id,
-		membershipId: args.membershipId,
-	});
-	if (!membership) return Result({ _nay: { message: "Unauthorized" } });
-	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-	if (
-		!node ||
-		node.organizationId !== membership.organizationId ||
-		node.workspaceId !== membership.workspaceId ||
-		node.archiveOperationId !== null
-	) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-	const checker = access_control_create_file_checker(ctx, {
-		organizationId: membership.organizationId,
-		workspaceId: membership.workspaceId,
-		subject: { kind: "user", userId: userAuth.id, plugin: null },
-	});
-	if (
-		!(await checker.can(node, args.review ? "content.permissions.manage" : "content.write")) ||
-		!(await checker.can(node, "content.read"))
-	) {
-		return Result({ _nay: { message: "Permission denied" } });
-	}
-	const link = await ctx.db
-		.query("files_share_links")
-		.withIndex("by_organization_workspace_node", (q) =>
-			q
-				.eq("organizationId", membership.organizationId)
-				.eq("workspaceId", membership.workspaceId)
-				.eq("nodeId", node._id),
-		)
-		.first();
-	if (args.review && link?._id !== args.review.linkId) {
-		return Result({ _nay: { message: "The public link changed. Review the images and videos again." } });
-	}
-	if (!link || !(await files_share_links_db_is_selected(ctx.db, link))) return Result({ _yay: { shared: false } });
-	if (
-		link.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
-		(await db_check_scope(ctx, link)) !== "ok" ||
-		!(await db_is_workspace_live(ctx, link))
-	)
-		return Result({ _yay: { shared: false } });
-	// Inserting media is an edit, so a read-only document with a live link refuses it. With no link
-	// nothing is approved, so the answer stays `shared: false`. A manager's review is not an edit.
-	if (!args.review) {
-		const writable = await files_nodes_db_require_user_writable(ctx, { node, userId: userAuth.id });
-		if (writable._nay) return writable;
-	}
-	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_share_link_media_write", key: userAuth.id });
-	if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
-	const mediaNode = await files_share_link_media_db_resolve_node(ctx, { ...membership, src: args.src });
-	if (!mediaNode || !(await checker.can(mediaNode, "content.read")))
-		return Result({ _nay: { message: "Permission denied" } });
-	if (mediaNode.restrictedScopeNodeId !== node.restrictedScopeNodeId) {
-		return Result({
-			_nay: {
-				message: `“${mediaNode.name}” is in a different restricted area. Copy it next to this document, then insert the copy to share it.`,
-			},
-		});
-	}
-	if (args.review && mediaNode.assetId !== args.review.assetId) {
-		return Result({ _nay: { message: "The image or video changed. Review it again." } });
-	}
-	if (args.review) {
-		const prepared = await db_prepare_share_link_view(ctx, link.token);
-		if (!prepared?.media.some((item) => item.src === args.src)) {
-			return Result({ _nay: { message: "The document changed. Review its images and videos again." } });
-		}
-	}
-	const shared = await files_share_link_media_db_approve(ctx, { link, mediaNode, userId: userAuth.id });
-	return Result({ _yay: { shared } });
-}
-
-/**
- * Called only when a person chooses to insert this one image or video. Save does not depend on it.
- */
-export const approve_inserted_media = mutation({
-	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes"), src: v.string() },
-	returns: v_result({ _yay: v.object({ shared: v.boolean() }) }),
-	handler: db_approve_media,
-});
-
-/**
- * The manager approves the exact item shown in Sharing, never a newly discovered replacement.
- */
-export const approve_reviewed_media = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-		src: v.string(),
-		expectedLinkId: v.id("files_share_links"),
-		expectedAssetId: v.id("files_r2_assets"),
-	},
-	returns: v_result({ _yay: v.object({ shared: v.boolean() }) }),
-	handler: async (ctx, args) =>
-		await db_approve_media(ctx, {
-			...args,
-			review: { linkId: args.expectedLinkId, assetId: args.expectedAssetId },
-		}),
 });
 
 /**

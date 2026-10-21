@@ -1156,7 +1156,6 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 				{editor && embedPickerAnchorRect && (
 					<FileEditorRichTextMediaEmbedPicker
 						editor={editor}
-						documentNodeId={nodeId}
 						anchorRect={embedPickerAnchorRect}
 						onClose={handleEmbedPickerClose}
 					/>
@@ -2038,7 +2037,6 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				{editor && embedPickerAnchorRect && (
 					<FileEditorRichTextMediaEmbedPicker
 						editor={editor}
-						documentNodeId={nodeId}
 						anchorRect={embedPickerAnchorRect}
 						onClose={handleEmbedPickerClose}
 					/>
