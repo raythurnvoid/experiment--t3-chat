@@ -25,6 +25,7 @@ import {
 	type MyComboboxInputControl_Props,
 } from "@/components/my-combobox.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -143,6 +144,30 @@ const FilesSearchInputSuggestionsMessage = memo(function FilesSearchInputSuggest
 });
 
 /**
+ * Placeholder rows while the first page of suggestions loads. They are not options, so they cannot
+ * be picked.
+ */
+const FilesSearchInputSuggestionsSkeleton = memo(function FilesSearchInputSuggestionsSkeleton() {
+	return (
+		<div
+			aria-hidden="true"
+			className={cn("FilesSearchInput-suggestions-skeleton" satisfies FilesSearchInput_ClassNames)}
+		>
+			{Array.from({ length: 3 }, (_, index) => (
+				<div
+					key={index}
+					className={cn("FilesSearchInput-suggestions-skeleton-row" satisfies FilesSearchInput_ClassNames)}
+				>
+					<MySkeleton
+						className={cn("FilesSearchInput-suggestions-skeleton-label" satisfies FilesSearchInput_ClassNames)}
+					/>
+				</div>
+			))}
+		</div>
+	);
+});
+
+/**
  * Show more for a paged list. It stays active while its page loads, and the caller ignores that
  * click.
  */
@@ -187,7 +212,7 @@ const FilesSearchInputSuggestionsError = memo(function FilesSearchInputSuggestio
 
 /**
  * Saved keys that start with the typed text, in pages. Rows from an older text stay, disabled,
- * until the new first page arrives.
+ * until the new first page arrives. With no rows to keep, skeleton rows show.
  */
 const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -273,7 +298,7 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 				);
 			})}
 			{isDisabled ? (
-				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+				keys.rows.length === 0 && <FilesSearchInputSuggestionsSkeleton />
 			) : hasWorkspaceRead === false && keys.rows.length === 0 ? (
 				// A member without workspace read gets keys only in a restricted folder they can open. Say why.
 				<FilesSearchInputSuggestionsMessage>
@@ -378,7 +403,7 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 				</MyComboboxItem>
 			))}
 			{isDisabled ? (
-				<FilesSearchInputSuggestionsMessage>Updating suggestions…</FilesSearchInputSuggestionsMessage>
+				rows.length === 0 && <FilesSearchInputSuggestionsSkeleton />
 			) : isNoAccess ? (
 				<FilesSearchInputSuggestionsMessage>
 					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
@@ -423,6 +448,9 @@ type FilesSearchInput_ClassNames =
 	| "FilesSearchInput-suggestion"
 	| "FilesSearchInput-suggestion-label"
 	| "FilesSearchInput-suggestion-hint"
+	| "FilesSearchInput-suggestions-skeleton"
+	| "FilesSearchInput-suggestions-skeleton-row"
+	| "FilesSearchInput-suggestions-skeleton-label"
 	| "FilesSearchInput-syntax";
 
 export type FilesSearchInput_Props = {

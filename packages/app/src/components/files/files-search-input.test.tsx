@@ -268,7 +268,7 @@ describe("FilesSearchInput", () => {
 		// The other key's first page keeps loading.
 		test_catalog.loading.add("");
 		fireEvent.change(input, { target: { value: "metadata.stage:" } });
-		expect(screen.getByRole("option", { name: "Updating suggestions…" })).toBeTruthy();
+		expect(screen.getByRole("option", { name: "* (any value)" }).getAttribute("aria-disabled")).toBe("true");
 		expect(screen.queryByRole("option", { name: "open" })).toBeNull();
 	});
 
@@ -395,7 +395,8 @@ describe("FilesSearchInput", () => {
 			expect(screen.getByRole("option", { name: "metadata.done boolean" }).getAttribute("aria-disabled")).toBe("true");
 			await waitFor(() => expect(test_catalog.requests.map((request) => request.prefix)).toContain("metadata.zz"));
 			expect(screen.getByRole("option", { name: "metadata.done boolean" }).getAttribute("aria-disabled")).toBe("true");
-			expect(screen.getByRole("option", { name: "Updating suggestions…" })).toBeTruthy();
+			// The held rows already show the list is busy, so no skeleton rows join them.
+			expect(document.querySelector(".FilesSearchInput-suggestions-skeleton")).toBeNull();
 			fireEvent.change(input, { target: { value: "STA" } });
 			await waitFor(() => expect(screen.queryByRole("option", { name: "metadata.done boolean" })).toBeNull());
 			expect(screen.getByRole("option", { name: "frontmatter.status text" })).toBeTruthy();

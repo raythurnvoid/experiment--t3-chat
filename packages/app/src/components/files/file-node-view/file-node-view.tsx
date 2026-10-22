@@ -4423,6 +4423,10 @@ type FileNodeViewFolderExplorerColumns_ClassNames =
 	| "FileNodeViewFolderExplorerColumns-group-title"
 	| "FileNodeViewFolderExplorerColumns-fields"
 	| "FileNodeViewFolderExplorerColumns-field"
+	| "FileNodeViewFolderExplorerColumns-skeleton"
+	| "FileNodeViewFolderExplorerColumns-skeleton-row"
+	| "FileNodeViewFolderExplorerColumns-skeleton-box"
+	| "FileNodeViewFolderExplorerColumns-skeleton-label"
 	| "FileNodeViewFolderExplorerColumns-actions";
 
 const FileNodeViewFolderExplorerColumnsGroup = memo(function FileNodeViewFolderExplorerColumnsGroup(props: {
@@ -4493,9 +4497,42 @@ const FileNodeViewFolderExplorerColumnsError = memo(function FileNodeViewFolderE
 });
 
 /**
+ * Placeholder rows while the first page of keys loads. They look like the column rows, so the real
+ * rows replace them without a jump.
+ */
+const FileNodeViewFolderExplorerColumnsSkeleton = memo(function FileNodeViewFolderExplorerColumnsSkeleton() {
+	return (
+		<div
+			aria-hidden="true"
+			className={"FileNodeViewFolderExplorerColumns-skeleton" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+		>
+			{Array.from({ length: 3 }, (_, index) => (
+				<div
+					key={index}
+					className={
+						"FileNodeViewFolderExplorerColumns-skeleton-row" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+					}
+				>
+					<MySkeleton
+						className={
+							"FileNodeViewFolderExplorerColumns-skeleton-box" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+						}
+					/>
+					<MySkeleton
+						className={
+							"FileNodeViewFolderExplorerColumns-skeleton-label" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+						}
+					/>
+				</div>
+			))}
+		</div>
+	);
+});
+
+/**
  * The Metadata group of the Columns menu: the keys on the folder's children that start with the
  * search text, in pages, then the chosen metadata columns that match it. Rows from an older text
- * stay, disabled, until the new first page arrives.
+ * stay, disabled, until the new first page arrives. With no rows to keep, skeleton rows show.
  */
 const FileNodeViewFolderExplorerColumnsKeys = memo(function FileNodeViewFolderExplorerColumnsKeys(props: {
 	name: string;
@@ -4534,7 +4571,7 @@ const FileNodeViewFolderExplorerColumnsKeys = memo(function FileNodeViewFolderEx
 				/>
 			)}
 			{isDisabled ? (
-				<p role="status">Updating suggestions…</p>
+				fields.length === 0 && <FileNodeViewFolderExplorerColumnsSkeleton />
 			) : fields.length === 0 && showNoMatch && keys.status === "Exhausted" ? (
 				<p role="status">{prefix === "" ? "No fields match" : `No fields start with ${prefix}`}</p>
 			) : null}

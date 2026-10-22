@@ -22,6 +22,7 @@ import {
 	type MyComboboxInputControl_Props,
 } from "@/components/my-combobox.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -129,6 +130,36 @@ const FileNodeViewFolderFilterBarSuggestionsMessage = memo(function FileNodeView
 });
 
 /**
+ * Placeholder rows while the first page of suggestions loads. They are not options, so they cannot
+ * be picked.
+ */
+const FileNodeViewFolderFilterBarSuggestionsSkeleton = memo(function FileNodeViewFolderFilterBarSuggestionsSkeleton() {
+	return (
+		<div
+			aria-hidden="true"
+			className={cn(
+				"FileNodeViewFolderFilterBar-suggestions-skeleton" satisfies FileNodeViewFolderFilterBar_ClassNames,
+			)}
+		>
+			{Array.from({ length: 3 }, (_, index) => (
+				<div
+					key={index}
+					className={cn(
+						"FileNodeViewFolderFilterBar-suggestions-skeleton-row" satisfies FileNodeViewFolderFilterBar_ClassNames,
+					)}
+				>
+					<MySkeleton
+						className={cn(
+							"FileNodeViewFolderFilterBar-suggestions-skeleton-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+						)}
+					/>
+				</div>
+			))}
+		</div>
+	);
+});
+
+/**
  * Show more for a paged list. It stays active while its page loads, and the caller ignores that
  * click.
  */
@@ -175,7 +206,8 @@ const FileNodeViewFolderFilterBarSuggestionsError = memo(function FileNodeViewFo
 
 /**
  * The keys on the folder's children that start with the typed text, in pages, inside a stage's
- * group. Rows from an older text stay, disabled, until the new first page arrives.
+ * group. Rows from an older text stay, disabled, until the new first page arrives. With no rows to
+ * keep, skeleton rows show.
  */
 const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilterBarKeyRows(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -228,7 +260,7 @@ const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilte
 				</MyComboboxItem>
 			))}
 			{isDisabled ? (
-				<FileNodeViewFolderFilterBarSuggestionsMessage>Updating suggestions…</FileNodeViewFolderFilterBarSuggestionsMessage>
+				rows.length === 0 && <FileNodeViewFolderFilterBarSuggestionsSkeleton />
 			) : showNoMatch && rows.length === 0 && keys.status === "Exhausted" ? (
 				<FileNodeViewFolderFilterBarSuggestionsMessage>
 					{prefix === "" ? "No folder keys yet" : `No keys start with ${prefix}`}
@@ -311,7 +343,7 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 				</MyComboboxItem>
 			))}
 			{isDisabled ? (
-				<FileNodeViewFolderFilterBarSuggestionsMessage>Updating suggestions…</FileNodeViewFolderFilterBarSuggestionsMessage>
+				rows.length === 0 && <FileNodeViewFolderFilterBarSuggestionsSkeleton />
 			) : isNoAccess ? (
 				<FileNodeViewFolderFilterBarSuggestionsMessage>
 					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
@@ -356,6 +388,9 @@ type FileNodeViewFolderFilterBar_ClassNames =
 	| "FileNodeViewFolderFilterBar-suggestion"
 	| "FileNodeViewFolderFilterBar-suggestion-label"
 	| "FileNodeViewFolderFilterBar-suggestion-hint"
+	| "FileNodeViewFolderFilterBar-suggestions-skeleton"
+	| "FileNodeViewFolderFilterBar-suggestions-skeleton-row"
+	| "FileNodeViewFolderFilterBar-suggestions-skeleton-label"
 	| "FileNodeViewFolderFilterBar-notes";
 
 export type FileNodeViewFolderFilterBar_Ref = {
