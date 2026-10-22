@@ -39,8 +39,8 @@
 
 		outline: none;
 
-		/* A dialog that holds a Monaco editor sets `contain: layout style` instead. Paint containment
-		   cuts off Monaco's right-click menu where it goes past the dialog edge. */
+		/* Paint containment cuts off anything that goes past the dialog edge. So a Monaco editor in a
+		   dialog must be a `MyModalMonacoEditor`, which moves its popups and menus to the top layer. */
 		contain: content;
 	}
 

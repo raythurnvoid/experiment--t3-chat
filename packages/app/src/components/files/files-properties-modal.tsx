@@ -1,6 +1,6 @@
 import "./files-properties-modal.css";
 
-import { Editor, type EditorProps } from "@monaco-editor/react";
+import type { EditorProps } from "@monaco-editor/react";
 import { Check, CircleHelp, Plug, User, X } from "lucide-react";
 import { useQuery } from "convex/react";
 import { editor as monaco_editor } from "monaco-editor";
@@ -27,6 +27,7 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
+import { MyModalMonacoEditor } from "@/components/my-modal-monaco-editor.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -210,7 +211,7 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 
 	return (
 		<div className={"FilesPropertiesModalFacts" satisfies FilesPropertiesModalFacts_ClassNames}>
-			<Editor
+			<MyModalMonacoEditor
 				height={facts_height(lines.length)}
 				loading={skeleton}
 				language="yaml"
@@ -248,7 +249,7 @@ const FilesPropertiesModalLockedFacts = memo(function FilesPropertiesModalLocked
 
 	return (
 		<div className={"FilesPropertiesModalFacts" satisfies FilesPropertiesModalFacts_ClassNames}>
-			<Editor
+			<MyModalMonacoEditor
 				height={facts_height(lines.length)}
 				language="yaml"
 				theme={app_monaco_THEME_NAME_DARK}
@@ -1218,18 +1219,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 				: "You don't have permission to change this item's metadata."
 			: null;
 
-	// Keep these options in one state slot that never changes. @monaco-editor/react deep-clones the
-	// options object whenever it changes, and some values in here point back at DOM nodes, so the
-	// clone would run into a cycle.
-	//
-	// The file editors move Monaco's suggest and hover popups into one app-wide container, so those
-	// popups can paint past the editor's edge. This editor cannot do that. The app-wide container
-	// sits outside the modal, and Ariakit marks everything outside an open dialog as inert, so the
-	// popups would paint behind the dialog. A container inside the modal does not work either. The
-	// modal sets layout containment, which makes the modal the reference box for `position: fixed`,
-	// and `fixedOverflowWidgets` writes screen coordinates that would then land in the wrong place.
-	// So the popups stay inside the editor box and clip at its edge. This field is small, so that is
-	// acceptable.
+	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones option updates.
 	const [editorOptions] = useState(() => {
 		return {
 			ariaLabel: "Metadata YAML",
@@ -1438,7 +1428,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 
 			<div className={"FilesPropertiesModalMetadata-editor" satisfies FilesPropertiesModalMetadata_ClassNames}>
 				{metadata.loaded ? (
-					<Editor
+					<MyModalMonacoEditor
 						height="160px"
 						// Monaco needs a moment after mount to create the editor. Show the same skeleton in
 						// that gap, so the default "Loading..." text never flashes.

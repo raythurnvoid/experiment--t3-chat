@@ -174,7 +174,7 @@ Check the thread list, document marks, scroll container, and CSS transform toget
 
 Diff hunk controls are Monaco content widgets. The editor CSS sets `anchor-name` from `--FileEditorDiff-anchor-name`; each widget sets `position-anchor` and uses `anchor(left)`. Monaco's EXACT overflow position is relative to the editor, so `afterRender` adds `anchor(top)` to `coordinate.top`. This follows the toolbar and status rows above the editor without a fixed header offset. Hidden editors remove the portalled hunk buttons through `isActive`. For misplaced controls, check both ends of that anchor link, the widget's current hunk position, and browser support before changing offsets.
 
-`packages/app/src/routes/__root.tsx` owns `app_tiptap_hoisting_container` and `app_monaco_hoisting_container`. Editors use these DOM containers for menus and overflow widgets. For focus or outside-click bugs, trace the portal target and event handling as well as the visible editor.
+`packages/app/src/routes/__root.tsx` owns `app_tiptap_hoisting_container` and `app_monaco_hoisting_container`. Editors use these DOM containers for menus and overflow widgets. A Monaco editor inside a dialog cannot use them, because the open dialog makes them inert and paints over them. Use `MyModalMonacoEditor` there: it keeps the popups in a top-layer box inside the dialog. For focus or outside-click bugs, trace the portal target and event handling as well as the visible editor.
 
 Keep the drag-handle menu in `app_tiptap_hoisting_container`. `EditorContent` moves its children on unmount, so using the editor's parent as a portal target can break React's menu cleanup.
 

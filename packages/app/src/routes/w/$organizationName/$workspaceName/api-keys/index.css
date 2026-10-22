@@ -509,9 +509,9 @@
 			border-radius: 7px;
 		}
 
-		/* Hide Monaco's "Cannot edit in read-only editor" bubble. The editor is read-only only while the
-		   key is being created, and the editor box clips the bubble. Monaco sets `display` inline on the
-		   bubble, so only `!important` wins. */
+		/* Hide Monaco's "Cannot edit in read-only editor" bubble. The editor is read-only only for the
+		   moment the key is being created. Monaco sets `display` inline on the bubble, so only
+		   `!important` wins. */
 		.monaco-editor-overlaymessage {
 			display: none !important;
 		}
@@ -529,11 +529,6 @@
 	/* Keep the editor wide enough for Monaco's suggest list, which is 430px wide. */
 	.RouteApiKeysCreateModal {
 		width: min(92vw, 600px);
-
-		/* Drop the paint containment of the shared modal here. Monaco draws its right-click menu
-		   with position: fixed inside the editor, and paint containment cut off the part of the
-		   menu that goes past the dialog edge. */
-		contain: layout style;
 	}
 
 	.RouteApiKeysCreateModal-form {

@@ -1478,9 +1478,10 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   Open Properties first. If resource timing lost the module URL, install the larger timing buffer
   from the profiling skill before loading a fresh owned tab. Do not guess the asset name.
   This checks the editor model and Save. It does not prove normal keyboard typing.
-- Monaco inside this dialog hoists nothing, unlike the file editors. Its suggest and hover widgets
-  clip at the editor box on purpose — see the layering note in `known-hazards.md`. Do not "fix" a
-  clipped widget by pointing `overflowWidgetsDomNode` at `#app_monaco_hoisting_container`.
+- The editors in this dialog are `MyModalMonacoEditor`s. Their popups live in a top-layer box inside
+  the dialog, not in `#app_monaco_hoisting_container` — see "A Monaco editor inside a dialog must be
+  a `MyModalMonacoEditor`" in `known-hazards.md`. Pick an editor with `.monaco-editor[role="code"]`;
+  a bare `.monaco-editor` also matches each editor's empty popup node.
 - The Properties footer `Save` uses the native `disabled` property. Read that property or use
   `isEnabled()` before pressing it. The status line explains a refused metadata write.
 - The footer `Save` stays disabled until a section differs from its saved state, so a `setValue` with

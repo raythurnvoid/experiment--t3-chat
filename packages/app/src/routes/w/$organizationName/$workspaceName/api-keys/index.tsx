@@ -1,6 +1,6 @@
 import "./index.css";
 
-import { Editor, type EditorProps } from "@monaco-editor/react";
+import type { EditorProps } from "@monaco-editor/react";
 import { createFileRoute } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
 import { z } from "zod";
@@ -54,6 +54,7 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
+import { MyModalMonacoEditor } from "@/components/my-modal-monaco-editor.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -661,10 +662,6 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 	// Keep the editor in state, so the effects below run again once the editor mounts.
 	const [editor, setEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones option updates.
-	//
-	// Do not move the suggest and hover popups to the app-wide container, like the MCP page does. Ariakit
-	// marks everything outside an open dialog as inert, so the popups would paint behind this dialog. They
-	// stay inside the editor box instead. See the same note in `files-properties-modal.tsx`.
 	const [editorOptions] = useState(() => {
 		return {
 			ariaLabel: "API key setup JSON",
@@ -914,7 +911,7 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 
 	return (
 		<div className={"RouteApiKeysCreateModalEditor" satisfies RouteApiKeysCreateModalEditor_ClassNames}>
-			<Editor
+			<MyModalMonacoEditor
 				height="200px"
 				// Monaco needs a moment after mount to create the editor. Show a skeleton of the same size in
 				// that gap, so the default "Loading..." text never flashes.

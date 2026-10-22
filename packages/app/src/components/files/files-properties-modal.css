@@ -5,11 +5,6 @@
 	.FilesPropertiesModal {
 		width: min(46rem, calc(100vw - 2rem));
 		max-width: none;
-
-		/* Drop the paint containment of the shared modal here. Monaco draws its right-click menu
-		   with position: fixed inside the editor, and paint containment cut off the part of the
-		   menu that goes past the dialog edge. */
-		contain: layout style;
 	}
 
 	/* Use a fixed height, so the modal does not resize when the content replaces the skeleton. The
@@ -377,9 +372,9 @@
 
 		background: var(--color-base-1-01);
 
-		/* Hide Monaco's "Cannot edit in read-only editor" bubble. It opens above the first line, and the
-		   editor box clips it. The reason for the lock is written under the editor. Monaco sets `display`
-		   inline on the bubble, so only `!important` wins. Screen readers still hear the message. */
+		/* Hide Monaco's "Cannot edit in read-only editor" bubble. The reason for the lock is written under
+		   the editor. Monaco sets `display` inline on the bubble, so only `!important` wins. Screen readers
+		   still hear the message. */
 		.monaco-editor-overlaymessage {
 			display: none !important;
 		}

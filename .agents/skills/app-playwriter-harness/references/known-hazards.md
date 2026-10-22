@@ -537,7 +537,7 @@ Poll it: the editor mounts a few seconds after `domcontentloaded`, and until the
 
 ## Monaco (plain text and diff editors)
 
-- **Never wait on a bare `.monaco-editor`.** The app always mounts `div.monaco-editor#app_monaco_hoisting_container`, and it is hidden. `waitForSelector` keeps resolving to that hidden node and then times out, even on a route that has no Monaco at all. This bites hardest in an `a, b` selector: the hidden container matches `.monaco-editor` while the editor you actually wanted is still mounting, so the wait fails for the wrong reason. Wait on the concrete editor class instead, such as `.FileEditorRichTextNonCollab-editor-content` for the Rich view.
+- **Never wait on a bare `.monaco-editor`.** The app always mounts `div.monaco-editor#app_monaco_hoisting_container`, and it is hidden. `waitForSelector` keeps resolving to that hidden node and then times out, even on a route that has no Monaco at all. This bites hardest in an `a, b` selector: the hidden container matches `.monaco-editor` while the editor you actually wanted is still mounting, so the wait fails for the wrong reason. Wait on the concrete editor class instead, such as `.FileEditorRichTextNonCollab-editor-content` for the Rich view. An editor inside a dialog also owns a second, empty `.monaco-editor` node for its popups (see "A Monaco editor inside a dialog must be a `MyModalMonacoEditor`"), so pick the editor itself with `.monaco-editor[role="code"]`.
 - **Native input reaches Monaco, but typed text gets changed. Paste is exact.** Verified 2026-10-21 on `monaco-editor` 0.57 in Edge 155 extension mode and headless Chrome, on the dev server and the GitHub Pages build, with Monaco's `editContext` option on (the default) and off. A click on `.view-lines` focuses the editor (the input target is `div.native-edit-context`, `role="textbox"`), and `keyboard.insertText`, `keyboard.type`, `Control+A` and `Control+V` all reach the model.
   - Keyboard input goes through Monaco's auto-close, auto-indent and auto-surround one character at a time, even for one `insertText` call. Multi-line text gets extra indentation and an extra `}`. Typing `{` or `"` over a selection wraps the selection, so `Control+A` then `insertText('{"a": 1}')` leaves `{"a": 1}"}`.
   - Paste skips those features (`autoIndentOnPaste` is off by default), so it lands exactly.
@@ -1276,21 +1276,28 @@ saved and the editor shows the same text. Measured 2026-09-06. For an unsaved-ed
 wait about 3 s, accept, all inside 30 s. For a saved-file check: let the editor go quiet for more than
 30 s BEFORE the `cp`, then accept whenever.
 
-## A modal popover is the wrong home for hoisted Monaco widgets
+## A Monaco editor inside a dialog must be a `MyModalMonacoEditor`
 
-`MyModalPopover` is an Ariakit dialog with `modal` and `portal`, and it sets `contain: content`. Two
-things follow, and both bite a Monaco editor placed inside it.
+`MyModalPopover` is an Ariakit dialog with `modal` and `portal`, and it sets `contain: content`. Paint
+containment cuts off anything past the dialog edge, so a plain Monaco editor there loses the far part of
+its suggest list, hover, and right-click menu.
 
-The app-wide `#app_monaco_hoisting_container` is outside the dialog, so Ariakit marks it inert and
-aria-hidden while the dialog is open. Widgets hoisted there paint behind the dialog and refuse the
-keyboard. Moving the container inside the dialog does not fix it either: `contain: paint` makes the
-popover the containing block for `position: fixed`, and `fixedOverflowWidgets` writes viewport
-coordinates, so the widget lands at the wrong place by the popover's own offset.
+The app-wide `#app_monaco_hoisting_container` cannot hold them either. It is outside the dialog, so
+Ariakit marks it inert while the dialog is open, and it paints below the dialog (proven live
+2026-10-22).
 
-So an editor inside a modal hoists nothing. `files-properties-modal.tsx` omits both
-`overflowWidgetsDomNode` and `fixedOverflowWidgets` on purpose, and its suggest and hover widgets
-clip at the editor box. Do not "fix" a clipped widget there by pointing it at the app container.
-Verified by reading the layering 2026-08-18; the file editors outside modals still hoist normally.
+`MyModalMonacoEditor` (`packages/app/src/components/my-modal-monaco-editor.tsx`) solves both. It puts an
+empty `popover="manual"` box inside the dialog, shows it in the browser's top layer, and pins it to the
+editor's top-left corner with CSS anchor positioning. Monaco's `overflowWidgetsDomNode` is an inner
+`.monaco-editor` node in that box, with `fixedOverflowWidgets: false`. The top layer paints above the
+dialog and ignores its containment, and the box is still inside the dialog, so its menus take clicks.
+Do not turn on `fixedOverflowWidgets` there: Monaco then puts the right-click menu back inside the
+editor. Do not turn off the dialog's containment per route either.
+
+To check it, right-click near the editor's right edge, read the menu box from the
+`.MyModalMonacoEditor-overflow .shadow-root-host` shadow root, and hit-test its far right point with
+`document.elementFromPoint`. It must hit the `.shadow-root-host`, not `MyModalBackdrop`. With
+`overflowWidgetsDomNode` removed, the same check hits `MyModalBackdrop` (proven 2026-10-22).
 
 ## chatgpt.com composer: the image-mode selectors in the skill are stale
 

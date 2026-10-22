@@ -1,0 +1,24 @@
+@layer common_components {
+	.MyModalMonacoEditor {
+		anchor-name: var(--MyModalMonacoEditor-anchor);
+	}
+
+	/* An empty box in the top layer, on the editor's top-left corner. Monaco places its popups from that
+	   corner, and they overflow the box. Reset the browser's popover box and color styles. */
+	.MyModalMonacoEditor-overflow {
+		position: fixed;
+		inset: auto;
+		top: anchor(top);
+		left: anchor(left);
+		position-anchor: var(--MyModalMonacoEditor-anchor);
+
+		width: 0;
+		height: 0;
+		margin: 0;
+		padding: 0;
+		border: 0;
+		overflow: visible;
+
+		background: transparent;
+	}
+}
