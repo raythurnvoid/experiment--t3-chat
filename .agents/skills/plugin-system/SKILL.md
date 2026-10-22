@@ -1048,6 +1048,22 @@ minutes per page, page calls with their child calls:
 
 No call failed. The Mail page read drafts once, at load, and not again in the window. 494 tests.
 
+Gmail 0.3.11 was published and installed in `personal/home` on 2026-10-22 (plugin commit
+`ef40faa3d31a64e17ff0b324b182e66b6fcdd81d`, version doc `hn7tdzskt2tpmanc0d9r7a0s2s8gs1ms`). Draft
+churn no longer counts as sync work: Gmail web adds a new draft id and deletes the old one on each
+draft save, and `ingest_history` now returns `{ work }`, false when every event only touched a skipped
+draft row, so the idle wait keeps growing. `open_email` returns the thread id. A new page tool,
+`read_draft`, reads one draft and is refused while the member has unsaved text in it. The sync saves
+Gmail's DMARC result as a `dmarc` frontmatter line on received mail. It reads the first
+`Authentication-Results` header from `mx.google.com` and the last `dmarc=` inside it. The Mail page
+and `open_email` warn when the result is `fail`. User text says "Bonobo Senate" instead of "Press".
+The backend was deployed from the same commit while no slice ran. The first publish passed, and the
+consent marked nothing new: page tools are one capability, not one item per tool. Live check: an
+email sent at 12:29:27 UTC was saved at 12:43:08 with `dmarc: "pass"` and a `gmail-thread-id` line,
+and the Mail page showed no sender warning. The first slice that wrote a file after the update
+replaced the old grant (`press_reconnect_needed`) and saved with the new one, with no error left.
+496 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.

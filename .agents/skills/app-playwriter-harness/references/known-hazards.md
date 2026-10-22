@@ -920,12 +920,13 @@ What works is the internal query, run through the Convex CLI with the ids read o
 `workspaceId` and `userId`):
 
 ```powershell
-$j = '{"organizationId":"...","workspaceId":"...","userId":"...","path":"/chitchat/delta.md"}'
+$j = '{"organizationId":"...","workspaceId":"...","userId":"...","subject":{"kind":"user","userId":"...","plugin":null},"path":"/chitchat/delta.md"}'
+# Windows PowerShell 5.1 strips inner double quotes when it calls a native program, so escape them.
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable `
-  files_nodes_content:get_file_text_content_db_state_by_path $j
+  files_nodes_content:get_file_text_content_db_state_by_path $j.Replace('"', '\"')
 ```
 
-Run it from `packages/app`. It returns the exact stored bytes in `content`, which is the only way to
+Run it from `packages/app`. Without the escape, the CLI gets broken JSON and fails to parse the args. It returns the exact stored bytes in `content`, which is the only way to
 assert on markers, trailing newlines, or anything else the editor does not paint.
 
 ## A stubbed plugin-backend invoke must carry the full envelope, or it reads as "the app shows no error"
