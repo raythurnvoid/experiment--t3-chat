@@ -1011,7 +1011,12 @@ units each). A sent draft gets a new message id, so this skips no mail. Only the
 args changed, so the backend was deployed while no slice ran and no check job was pending. Live
 check: the 23:45:56 UTC slice cancelled its check. A draft made on the Mail page left four ledger
 rows (each draft save is a new Gmail id), all created already skipped with 0 attempts. New history
-events still reset the idle wait to 1 minute, even when they are only drafts. 490 tests.
+events still reset the idle wait to 1 minute, even when they are only drafts. Idle cost, measured
+01:00–02:00 UTC on 2026-10-22 (served by 0.3.9, which has the same sync code): 28 background calls
+in the hour (0.3.7 used 32) with 0 failures: dispatch 8, `get_worker` 6, the slice 4,
+`finish_slice` 4, sweep 4, one token refresh, one OAuth cleanup. All 4 `check_slice` jobs were
+cancelled and none ran. Calls from open plugin pages are counted apart and are not in the 28. 490
+tests.
 
 Gmail 0.3.9 was published and installed in `personal/home` on 2026-10-22 (plugin commit
 `9a59f0503a3972a664cc119509421f1689a49ca7`, version doc `hn7rewz57hxeq7ew2jggwvqva58gsbx5`). It
