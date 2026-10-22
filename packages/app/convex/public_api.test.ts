@@ -5020,6 +5020,39 @@ describe("locked and missing paths", () => {
 		});
 	});
 
+	test("files delete keeps each path's own reason when the job's check refuses every folder", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		// A restricted folder inside, which the member cannot change, sends the delete to the job's check
+		// walk. Only that walk refuses each named folder.
+		for (const folder of ["/dir-a", "/dir-b"]) {
+			const keptId = await seed_markdown_file({ t, ...f.db, path: `${folder}/kept.md`, committedMarkdown: "# kept" });
+			const fileId = await seed_markdown_file({ t, ...f.db, path: `${folder}/locked/z.md`, committedMarkdown: "# z" });
+			await t.run(async (ctx) => {
+				const folderId = (await ctx.db.get("files_nodes", keptId))!.parentId;
+				const lockedId = (await ctx.db.get("files_nodes", fileId))!.parentId as Id<"files_nodes">;
+				await ctx.db.patch("files_nodes", fileId, { restrictedScopeNodeId: lockedId });
+				// The helper puts a new parent folder at the root, so move it under the named folder.
+				await ctx.db.patch("files_nodes", lockedId, {
+					parentId: folderId,
+					restrictedScopeNodeId: lockedId,
+					isRestrictedScopeRoot: true,
+					parentScopeNodeId: null,
+				});
+			});
+		}
+		const deleteRefused = async (paths: string[]) => {
+			const response = await post(t, "/api/v1/files/delete", f.memberCredential, { paths });
+			expect(response).toMatchObject({ status: 200, body: { jobId: null, isDone: true } });
+			return (response.body as { refused: Array<{ path: string; message: string }> }).refused;
+		};
+
+		// Each path alone gets its own reason. Nothing is archived, so the paths can be asked again together.
+		const alone = [...(await deleteRefused(["/dir-a"])), ...(await deleteRefused(["/dir-b"]))];
+		expect(alone[0]!.message).not.toContain("None of these items");
+		expect(await deleteRefused(["/dir-a", "/dir-b"])).toEqual(alone);
+	});
+
 	test("files delete archives what it can and refuses locked and missing paths alone", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);

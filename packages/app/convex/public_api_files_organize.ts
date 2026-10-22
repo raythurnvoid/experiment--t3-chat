@@ -101,7 +101,7 @@ type get_paths_Result =
 		: never;
 
 const stat_body_validator = z.object({
-	paths: z.array(z.string()).min(1).max(STAT_MAX_PATHS),
+	paths: z.array(z.string()).min(1),
 });
 
 export type public_api_files_organize_http_stat_Body = z.infer<typeof stat_body_validator>;
@@ -128,6 +128,13 @@ export async function public_api_files_organize_http_stat(args: {
 	const body = await server_request_json_parse_and_validate(request, stat_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	// Count the paths here, not in the schema, so the answer names the limit.
+	if (body._yay.paths.length > STAT_MAX_PATHS) {
+		return {
+			status: 400,
+			body: { message: `Check at most ${STAT_MAX_PATHS} paths at once. Split the list into several calls.` },
+		} as const;
 	}
 
 	const paths: string[] = [];
@@ -313,7 +320,7 @@ type create_folders_Result =
 		: never;
 
 const mkdir_body_validator = z.object({
-	paths: z.array(z.string()).min(1).max(MKDIR_MAX_PATHS),
+	paths: z.array(z.string()).min(1),
 });
 
 export type public_api_files_organize_http_mkdir_Body = z.infer<typeof mkdir_body_validator>;
@@ -340,6 +347,13 @@ export async function public_api_files_organize_http_mkdir(args: {
 	const body = await server_request_json_parse_and_validate(request, mkdir_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	// Count the paths here, not in the schema, so the answer names the limit.
+	if (body._yay.paths.length > MKDIR_MAX_PATHS) {
+		return {
+			status: 400,
+			body: { message: `Make at most ${MKDIR_MAX_PATHS} folders at once. Split the list into several calls.` },
+		} as const;
 	}
 
 	const paths: string[] = [];
@@ -526,7 +540,7 @@ type delete_paths_Result =
 		: never;
 
 const delete_body_validator = z.object({
-	paths: z.array(z.string()).min(1).max(DELETE_MAX_PATHS),
+	paths: z.array(z.string()).min(1),
 });
 
 export type public_api_files_organize_http_delete_Body = z.infer<typeof delete_body_validator>;
@@ -553,6 +567,13 @@ export async function public_api_files_organize_http_delete(args: {
 	const body = await server_request_json_parse_and_validate(request, delete_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	// Count the paths here, not in the schema, so the answer names the limit.
+	if (body._yay.paths.length > DELETE_MAX_PATHS) {
+		return {
+			status: 400,
+			body: { message: `Delete at most ${DELETE_MAX_PATHS} paths at once. Split the list into several calls.` },
+		} as const;
 	}
 
 	const paths: string[] = [];
@@ -826,7 +847,7 @@ type restore_paths_Result =
 		: never;
 
 const restore_body_validator = z.object({
-	paths: z.array(z.string()).min(1).max(RESTORE_MAX_PATHS),
+	paths: z.array(z.string()).min(1),
 	onConflict: z.union([z.literal("keep_both"), z.literal("skip")]).optional(),
 	/**
 	 * Send the same `requestId` and body again to retry safely. The answer then names the same jobs.
@@ -858,6 +879,13 @@ export async function public_api_files_organize_http_restore(args: {
 	const body = await server_request_json_parse_and_validate(request, restore_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	// Count the paths here, not in the schema, so the answer names the limit.
+	if (body._yay.paths.length > RESTORE_MAX_PATHS) {
+		return {
+			status: 400,
+			body: { message: `Restore at most ${RESTORE_MAX_PATHS} paths at once. Split the list into several calls.` },
+		} as const;
 	}
 
 	const paths: string[] = [];
@@ -1142,7 +1170,7 @@ type transfer_paths_Result =
 		: never;
 
 const transfer_body_validator = z.object({
-	from: z.array(z.string()).min(1).max(TRANSFER_MAX_PATHS),
+	from: z.array(z.string()).min(1),
 	to: z.string(),
 	onConflict: z.union([z.literal("error"), z.literal("replace"), z.literal("skip")]).optional(),
 	/**
@@ -1185,6 +1213,15 @@ export async function public_api_files_organize_http_transfer(args: {
 	const body = await server_request_json_parse_and_validate(request, transfer_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	// Count the paths here, not in the schema, so the answer names the limit.
+	if (body._yay.from.length > TRANSFER_MAX_PATHS) {
+		return {
+			status: 400,
+			body: {
+				message: `${kind === "move" ? "Move" : "Copy"} at most ${TRANSFER_MAX_PATHS} paths at once. Split the list into several calls.`,
+			},
+		} as const;
 	}
 
 	const from: string[] = [];

@@ -436,9 +436,10 @@ describe("files/restore", () => {
 			paths.push(`/${name}`);
 		}
 
-		expect(
-			await post(f, "/api/v1/files/restore", memberKey.credential, { paths, requestId: "too-many" }),
-		).toMatchObject({ status: 400 });
+		expect(await post(f, "/api/v1/files/restore", memberKey.credential, { paths, requestId: "too-many" })).toEqual({
+			status: 400,
+			body: { message: "Restore at most 100 paths at once. Split the list into several calls." },
+		});
 
 		let databaseQueries = 0;
 		test_spy_handler(restore_paths, async (handler, ctx, args) => {

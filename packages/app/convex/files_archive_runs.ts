@@ -202,7 +202,10 @@ type StepOutcome =
 	| { kind: "blocked" }
 	| { kind: "done" }
 	| { kind: "paused" }
-	| { kind: "failed"; nay: { name?: string; message: string } };
+	| {
+			kind: "failed";
+			nay: { name?: string; message: string; data?: { refusedItems: RunFields["refusedItems"] } };
+	  };
 
 const MEMBERSHIP_LOST = {
 	kind: "failed",
@@ -592,7 +595,12 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	if (progress.discovered === progress.blocked) {
 		// The job ends here without an apply, so set the total the apply would set.
 		progress.total = progress.discovered;
-		return { kind: "failed", nay: files_archive_runs_get_all_refused_nay(run.refusedItems) };
+		// The message is general when several items are refused. `data` keeps each item's own reason for
+		// the API, like the fast check's refusals in `files_nodes_db_archive_named_nodes`.
+		return {
+			kind: "failed",
+			nay: { ...files_archive_runs_get_all_refused_nay(run.refusedItems), data: { refusedItems: run.refusedItems } },
+		};
 	}
 
 	// The apply stamps only the named items that passed.
