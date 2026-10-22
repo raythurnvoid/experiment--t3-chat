@@ -20,7 +20,8 @@ Setup values (Google project id, topic, subscription, accounts) are private. Do 
 - Never print or log a token, key, or a raw `convex data gmail_accounts` row: rows hold encrypted tokens and private addresses. Write the rows to a file in the scratch folder and print only the fields you need with a small Node script.
 - `convex env list` prints every value. Write it to a file and print only the names.
 - Do not type a secret through Playwriter: it logs typed text (see "Playwriter logs every value you type" in `../app-playwriter-harness/references/known-hazards.md`).
-- The push token is in the Pub/Sub subscription URL and in `GMAIL_PUSH_TOKEN`. Never log `request.url` in the push route. To rotate it, follow "To change the token" in the README.
+- The push token is in the Pub/Sub subscription URL and in `GMAIL_PUSH_TOKEN`. Never log `request.url` in the push route. To rotate it, follow "To change the token" in the README. When an agent edits the subscription through Playwriter, use the clipboard and hash recipe in "Playwriter logs every value you type" in known-hazards, and scrub the log afterwards. Check the result with a script that posts to `/google/push` with each token file and prints only the status (old token 403, new token 204), then send one test email.
+- The token was rotated on 2026-10-22, after the first one leaked into the Playwriter log.
 
 ## Checks
 
