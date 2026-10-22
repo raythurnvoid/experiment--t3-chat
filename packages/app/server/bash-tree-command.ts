@@ -241,9 +241,10 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
 				lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
 			}
+			// The Next page command goes to stderr, so stdout holds only the tree.
+			const notes: string[] = [];
 			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
-				lines.push(
-					"",
+				notes.push(
 					build_continuation({
 						target: target.absoluteShellPath,
 						limit: parsed._yay.limit,
@@ -251,14 +252,14 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					}),
 				);
 				if (parsed._yay.cursor != null) {
-					lines.push(
+					notes.push(
 						"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
 					);
 				}
 			}
 			return {
 				stdout: `${lines.join("\n")}\n`,
-				stderr: "",
+				stderr: notes.map((note) => `${note}\n`).join(""),
 				exitCode: 0,
 			};
 		}
@@ -345,9 +346,10 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
 				lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
 			}
+			// The Next page command goes to stderr, so stdout holds only the tree.
+			const notes: string[] = [];
 			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
-				lines.push(
-					"",
+				notes.push(
 					build_continuation({
 						target: target.absoluteShellPath,
 						limit: parsed._yay.limit,
@@ -355,14 +357,14 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					}),
 				);
 				if (parsed._yay.cursor != null) {
-					lines.push(
+					notes.push(
 						"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
 					);
 				}
 			}
 			return {
 				stdout: `${lines.join("\n")}\n`,
-				stderr: "",
+				stderr: notes.map((note) => `${note}\n`).join(""),
 				exitCode: 0,
 			};
 		}
@@ -490,10 +492,11 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		}
 
 		// Emit a complete continuation command so the next page can be copied without
-		// reconstructing the path, limit, or cursor by hand.
+		// reconstructing the path, limit, or cursor by hand. It goes to stderr, so stdout holds only
+		// the tree.
+		const notes: string[] = [];
 		if (!result._yay.isDone && result._yay.continueCursor != null) {
-			lines.push(
-				"",
+			notes.push(
 				build_continuation({
 					target: target.absoluteShellPath,
 					limit: parsed._yay.limit,
@@ -501,7 +504,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				}),
 			);
 			if (parsed._yay.cursor != null) {
-				lines.push(
+				notes.push(
 					"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
 				);
 			}
@@ -509,7 +512,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 		return {
 			stdout: `${lines.join("\n")}\n`,
-			stderr: "",
+			stderr: notes.map((note) => `${note}\n`).join(""),
 			exitCode: 0,
 		};
 	});

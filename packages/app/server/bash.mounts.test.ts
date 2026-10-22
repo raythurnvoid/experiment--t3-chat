@@ -761,13 +761,14 @@ describe("bash_run_command", () => {
 				const build = (base: string) =>
 					command === "search" ? `search --path ${base} Mountneedle --limit 1` : `${command} ${base} --limit 1`;
 				const rootPage = await f.runner.run({ command: build("/.mounts") });
-				const rootNext = rootPage.stdout.split("Next page: ")[1]?.split("\n")[0].trim();
+				// find, ls and tree print Next page on stderr. search prints it on stdout.
+				const rootNext = `${rootPage.stdout}${rootPage.stderr}`.split("Next page: ")[1]?.split("\n")[0].trim();
 				expect(rootNext, rootPage.stdout).toBeTruthy();
 				const wrongGroup = await f.runner.run({ command: rootNext!.replace("/.mounts", "/.mounts/research") });
 				expect(wrongGroup.metadata.exitCode).not.toBe(0);
 				expect(wrongGroup.stderr).toContain("does not belong");
 				const groupPage = await f.runner.run({ command: build("/.mounts/research") });
-				const groupNext = groupPage.stdout.split("Next page: ")[1]?.split("\n")[0].trim();
+				const groupNext = `${groupPage.stdout}${groupPage.stderr}`.split("Next page: ")[1]?.split("\n")[0].trim();
 				expect(groupNext, groupPage.stdout).toBeTruthy();
 				expect((await f.runner.run({ command: groupNext! })).metadata.exitCode).toBe(0);
 				const next = await seed_generation({
@@ -789,7 +790,7 @@ describe("bash_run_command", () => {
 		test("rejects renamed root cursors and climbs cwd after rename or deletion", async () => {
 			const f = await create_volume_runner();
 			const page = await f.runner.run({ command: "find /.mounts --limit 1" });
-			const next = page.stdout.split("Next page: ")[1]?.split("\n")[0].trim();
+			const next = page.stderr.split("Next page: ")[1]?.split("\n")[0].trim();
 			expect(next).toBeTruthy();
 			expect((await f.runner.run({ command: "cd /.mounts/research/repo/records/sample" })).metadata.exitCode).toBe(0);
 			await f.runner.t.run((ctx) => ctx.db.patch("plugins_mounts", f.claimId, { name: "renamed" }));
@@ -1215,11 +1216,11 @@ describe("bash_run_command", () => {
 
 			const paged = await runner.run({ command: "cd /.mounts/t3-chat && find --prefix docs --limit 1" });
 			expect(paged.metadata.exitCode).toBe(0);
-			expect(paged.stdout).toMatch(/Next page: find --prefix \/.mounts\/t3-chat\/docs --limit 1 --cursor \S+/u);
+			expect(paged.stderr).toMatch(/Next page: find --prefix \/.mounts\/t3-chat\/docs --limit 1 --cursor \S+/u);
 
 			const missing = await runner.run({ command: "find --prefix /.mounts/nope --limit 20" });
 			expect(missing.metadata.exitCode).toBe(0);
-			expect(missing.stdout).toContain("0 matches.");
+			expect(missing.stderr).toContain("0 matches.");
 		});
 
 		test("keeps mount content isolated from the tenant app file tree", async () => {
@@ -2026,7 +2027,7 @@ describe("bash_run_command", () => {
 			expect(firstPage.metadata.exitCode).toBe(0);
 			expect(firstPage.stdout).toContain("/.plugins/alpha-notes/README.md");
 			expect(firstPage.stdout).not.toContain("/.plugins/media/README.md");
-			const continuation = firstPage.stdout.match(/Next page: (find .+)/)?.[1];
+			const continuation = firstPage.stderr.match(/Next page: (find .+)/)?.[1];
 			expect(continuation).toBeTruthy();
 
 			// The composite cursor resumes into the next plugin in name order.
@@ -2036,7 +2037,7 @@ describe("bash_run_command", () => {
 
 			// Uninstalling between pages invalidates the pinned listing snapshot.
 			const restartPage = await runner.run({ command: "find /.plugins -type f --limit 1" });
-			const staleContinuation = restartPage.stdout.match(/Next page: (find .+)/)?.[1];
+			const staleContinuation = restartPage.stderr.match(/Next page: (find .+)/)?.[1];
 			expect(staleContinuation).toBeTruthy();
 			await runner.t.run(async (ctx) => {
 				if (installationId == null) {

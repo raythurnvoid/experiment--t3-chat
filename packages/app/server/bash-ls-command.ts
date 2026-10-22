@@ -453,17 +453,15 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 								long: parsed._yay.long,
 							}),
 				);
+				// The Next page command goes to stderr, so `ls ... | wc -l` counts only entries.
 				if (!fanOut._yay.isDone && fanOut._yay.continueCursor)
-					lines.push(
-						"",
-						build_continuation({
-							parsed: parsed._yay,
-							absoluteShellPath: target.absoluteShellPath,
-							cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
-						}),
-					);
+					stderr += `${build_continuation({
+						parsed: parsed._yay,
+						absoluteShellPath: target.absoluteShellPath,
+						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
+					})}\n`;
 				if (targets.length > 1) lines.unshift(`${target.absoluteShellPath}:`);
-				sections.push(lines.join("\n"));
+				if (lines.length > 0) sections.push(lines.join("\n"));
 				continue;
 			}
 
@@ -541,6 +539,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			}
 
 			const lines: string[] = [];
+			let hasNextPage = false;
 
 			if (parsed._yay.directory || dbFilesDoc.kind === "file") {
 				// `-d` means "print the target itself"; files are also printed as a
@@ -610,25 +609,25 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					),
 				);
 
+				// The Next page command goes to stderr, so `ls ... | wc -l` counts only entries.
 				if (!result._yay.isDone && result._yay.continueCursor !== null) {
-					lines.push(
-						"",
-						build_continuation({
-							parsed: parsed._yay,
-							absoluteShellPath: target.absoluteShellPath,
-							cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result._yay.continueCursor),
-						}),
-					);
+					hasNextPage = true;
+					stderr += `${build_continuation({
+						parsed: parsed._yay,
+						absoluteShellPath: target.absoluteShellPath,
+						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result._yay.continueCursor),
+					})}\n`;
 				}
 			}
 
-			if (lines.length === 0) {
-				lines.push("(empty directory)");
+			// Real ls prints nothing for an empty folder. Say it on stderr, so the agent still sees it.
+			if (lines.length === 0 && !hasNextPage) {
+				stderr += targets.length > 1 ? `${target.absoluteShellPath}: (empty directory)\n` : "(empty directory)\n";
 			}
 			if (targets.length > 1 && dbFilesDoc.kind === "folder" && !parsed._yay.directory) {
 				lines.unshift(`${target.absoluteShellPath}:`);
 			}
-			sections.push(lines.join("\n"));
+			if (lines.length > 0) sections.push(lines.join("\n"));
 		}
 
 		return {

@@ -42,7 +42,7 @@ describe("bash_run_command", () => {
 		// name and fails the re-check.
 		const byOldName = await runner.run({ command: "find -name lesson --limit 10" });
 		expect(byOldName.metadata.exitCode).toBe(0);
-		expect(byOldName.stdout.trim()).toBe("0 matches.");
+		expect(byOldName.stderr.trim()).toBe("0 matches.");
 	});
 
 	test("find -name refuses a folder deeper than the saved ancestor fields", async () => {
@@ -142,7 +142,7 @@ describe("bash_run_command", () => {
 
 		const inReports = await runner.run({ command: `find ${test_db_files_mount}/reports -name draftnote` });
 		expect(inReports.metadata.exitCode).toBe(0);
-		expect(inReports.stdout.trim()).toBe("0 matches.");
+		expect(inReports.stderr.trim()).toBe("0 matches.");
 	});
 
 	test("reports visible paths for search and recursive grep over pending moves", async () => {

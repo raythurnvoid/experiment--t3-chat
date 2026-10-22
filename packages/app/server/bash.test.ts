@@ -864,8 +864,10 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toContain("nested/");
-		expect(result.stdout).toContain("Next page:");
-		expect(result.stdout).toMatch(new RegExp(`ls --limit 1 --cursor \\S+ ${test_db_files_mount}/docs`, "u"));
+		// The Next page command is on stderr, so `ls ... | wc -l` counts only entries.
+		expect(result.stdout).toBe("nested/\n");
+		expect(result.stderr).toContain("Next page:");
+		expect(result.stderr).toMatch(new RegExp(`ls --limit 1 --cursor \\S+ ${test_db_files_mount}/docs`, "u"));
 		expect(result.stderr).not.toContain("directory listing truncated");
 		const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 		expect(paginatedCalls).toEqual(
@@ -949,9 +951,9 @@ describe("bash_run_command", () => {
 		const { run, runQuery, runMutation, seeded } = await create_bash_runner();
 
 		const firstPage = await run({ command: `ls --limit 1 ${test_db_files_mount}/docs` });
-		const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
+		const cursorId = firstPage.stderr.match(/--cursor '?([^' ]+)'?/u)?.[1];
 		if (cursorId == null) {
-			throw new Error("expected a cursor id in the first page stdout");
+			throw new Error("expected a cursor id in the first page stderr");
 		}
 		const rawCursor = runMutation.mock.calls
 			.map(([ref, mutationArgs]) => (function_name_of(ref) === "value_store:put" ? mutationArgs.value : null))
@@ -985,9 +987,9 @@ describe("bash_run_command", () => {
 		const { run, runQuery, t } = await create_bash_runner();
 
 		const firstPage = await run({ command: `ls --limit 1 ${test_db_files_mount}/docs` });
-		const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
+		const cursorId = firstPage.stderr.match(/--cursor '?([^' ]+)'?/u)?.[1];
 		if (cursorId == null) {
-			throw new Error("expected a cursor id in the first page stdout");
+			throw new Error("expected a cursor id in the first page stderr");
 		}
 		const secondPage = await run({ command: `ls --limit 1 --cursor '${cursorId}' ${test_db_files_mount}/docs` });
 		expect(secondPage.metadata.exitCode).toBe(0);
@@ -1006,9 +1008,9 @@ describe("bash_run_command", () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
 		try {
 			const firstPage = await run({ command: `ls --limit 1 ${test_db_files_mount}/docs` });
-			const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
+			const cursorId = firstPage.stderr.match(/--cursor '?([^' ]+)'?/u)?.[1];
 			if (cursorId == null) {
-				throw new Error("expected a cursor id in the first page stdout");
+				throw new Error("expected a cursor id in the first page stderr");
 			}
 			dateNow.mockReturnValue(now + 24 * 60 * 60 * 1000);
 			const expiredPage = await run({ command: `ls --limit 1 --cursor '${cursorId}' ${test_db_files_mount}/docs` });
@@ -1041,8 +1043,8 @@ describe("bash_run_command", () => {
 		expect(result.stdout).toContain(`${test_db_files_mount}/docs:\nnested/`);
 		expect(result.stdout).toContain(`${test_db_files_mount}:\ndocs/`);
 		expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
-		expect(result.stdout.match(/Next page:/gu)).toHaveLength(2);
-		const continuations = [...result.stdout.matchAll(/Next page: ls --limit 1 --cursor (\S+) (\S+)/gu)];
+		expect(result.stderr.match(/Next page:/gu)).toHaveLength(2);
+		const continuations = [...result.stderr.matchAll(/Next page: ls --limit 1 --cursor (\S+) (\S+)/gu)];
 		expect(continuations.map((m) => m[2])).toEqual([`${test_db_files_mount}/docs`, test_db_files_mount]);
 		expect(continuations[0][1]).not.toBe(continuations[1][1]);
 	});
@@ -1198,7 +1200,7 @@ describe("bash_run_command", () => {
 
 		const paged = await run({ command: `cd ${test_db_files_mount}/docs && ls -t --limit 1` });
 
-		expect(paged.stdout).toMatch(
+		expect(paged.stderr).toMatch(
 			new RegExp(`Next page: ls -t --limit 1 --cursor \\S+ ${test_db_files_mount}/docs`, "u"),
 		);
 	});
@@ -1216,7 +1218,7 @@ describe("bash_run_command", () => {
 		expect(scopedNewest.stdout.trim().split("\n").at(0)).toBe("zzz-new.md");
 		expect(scopedOldest.metadata.exitCode).toBe(0);
 		expect(scopedOldest.stdout.trim().split("\n").at(0)).toBe("aaa-old.md");
-		expect(scopedPaged.stdout).toMatch(
+		expect(scopedPaged.stderr).toMatch(
 			new RegExp(`Next page: ls -t --limit 1 --cursor \\S+ ${test_db_files_mount}/docs`, "u"),
 		);
 		expect(recursiveScoped.metadata.exitCode).toBe(2);

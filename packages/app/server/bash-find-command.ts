@@ -598,6 +598,19 @@ function denied_lines(denied: readonly string[] | undefined, render: (path: stri
 	return (denied ?? []).map((path) => `find: '${render(path)}': Permission denied\n`).join("");
 }
 
+/**
+ * Print the found paths on stdout. Print notes, the `Next page:` command and Permission denied
+ * lines on stderr. Then a pipe such as `find ... | wc -l` reads only paths, like real find. The
+ * agent still sees the stderr lines, because the shell keeps the stderr of every pipeline stage.
+ */
+function find_output(args: { paths: string[]; notes: string[]; denied: string }) {
+	return {
+		stdout: args.paths.length > 0 ? `${args.paths.join("\n")}\n` : "",
+		stderr: `${args.notes.map((note) => `${note}\n`).join("")}${args.denied}`,
+		exitCode: args.denied ? bash_COMMAND_EXIT_FAILURE : 0,
+	};
+}
+
 function map_find_depth(args: { minDepth: number | null; maxDepth: number | null; shift: number }) {
 	const { minDepth, maxDepth, shift } = args;
 	if ((maxDepth !== null && maxDepth > shift + 1) || (minDepth !== null && minDepth > shift + 1)) {
@@ -787,23 +800,23 @@ export async function bash_find_type_render(args: {
 			stderr: `find: file search is preparing. Check and continue with:\n${await next()}\n`,
 			exitCode: 3,
 		};
-	const lines = page.items.map(
+	const paths = page.items.map(
 		(item) =>
 			args.shellPrefix.replace(/\/$/u, "") +
 			(args.dbPrefix === "/" ? item.path : item.path.slice(args.dbPrefix.length)),
 	);
+	const notes: string[] = [];
 	if (!page.isDone)
-		lines.push(
-			...(lines.length === 0 ? ["No matches in this page; search continues."] : []),
-			"",
+		notes.push(
+			...(paths.length === 0 ? ["No matches in this page; search continues."] : []),
 			`Next page: ${await next()}`,
 		);
-	else if (lines.length === 0) lines.push("0 matches.");
+	else if (paths.length === 0) notes.push("0 matches.");
 	const denied = denied_lines(
 		page.denied,
 		(path) => args.shellPrefix.replace(/\/$/u, "") + (args.dbPrefix === "/" ? path : path.slice(args.dbPrefix.length)),
 	);
-	return { stdout: `${lines.join("\n")}\n`, stderr: denied, exitCode: denied ? bash_COMMAND_EXIT_FAILURE : 0 };
+	return find_output({ paths, notes, denied });
 }
 
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
@@ -928,8 +941,8 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			// Extensions only match files. Synthetic roots have no stored node at depth zero.
 			if ((parsed._yay.extension != null && parsed._yay.type === "d") || parsed._yay.maxDepth === 0) {
 				return {
-					stdout: "0 matches.\n",
-					stderr: "",
+					stdout: "",
+					stderr: "0 matches.\n",
 					exitCode: 0,
 				};
 			}
@@ -962,7 +975,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 			if (perPluginDepth._yay === null) {
-				return { stdout: "0 matches.\n", stderr: "", exitCode: 0 };
+				return { stdout: "", stderr: "0 matches.\n", exitCode: 0 };
 			}
 			const depth = perPluginDepth._yay;
 
@@ -1034,12 +1047,12 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 
-			const lines = fanOut._yay.items.map(
+			const paths = fanOut._yay.items.map(
 				(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
+			const notes: string[] = [];
 			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
-				lines.push(
-					"",
+				notes.push(
 					build_continuation({
 						parsed: parsed._yay,
 						target: target.absoluteShellPath,
@@ -1047,15 +1060,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
-			} else if (lines.length === 0) {
-				lines.push("0 matches.");
+			} else if (paths.length === 0) {
+				notes.push("0 matches.");
 			}
 
-			return {
-				stdout: `${lines.join("\n")}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			return find_output({ paths, notes, denied: "" });
 		}
 
 		// Root and group listings share a cursor over their pinned leaves.
@@ -1108,8 +1117,8 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			// Extensions only match files. Synthetic roots have no stored node at depth zero.
 			if ((parsed._yay.extension != null && parsed._yay.type === "d") || parsed._yay.maxDepth === 0) {
 				return {
-					stdout: "0 matches.\n",
-					stderr: "",
+					stdout: "",
+					stderr: "0 matches.\n",
 					exitCode: 0,
 				};
 			}
@@ -1234,12 +1243,12 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				};
 			}
 
-			const lines = fanOut._yay.items.map(
+			const paths = fanOut._yay.items.map(
 				(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
+			const notes: string[] = [];
 			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
-				lines.push(
-					"",
+				notes.push(
 					build_continuation({
 						parsed: parsed._yay,
 						target: target.absoluteShellPath,
@@ -1247,15 +1256,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
-			} else if (lines.length === 0) {
-				lines.push("0 matches.");
+			} else if (paths.length === 0) {
+				notes.push("0 matches.");
 			}
 
-			return {
-				stdout: `${lines.join("\n")}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
+			return find_output({ paths, notes, denied: "" });
 		}
 
 		// Non-app targets belong to Just Bash's built-in find unless the caller requested app-file prefix search.
@@ -1402,12 +1407,12 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 			if (result._nay)
 				return { stdout: "", stderr: `find: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
-			const lines = result._yay.items.map(
+			const paths = result._yay.items.map(
 				(item) => `${prefixResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
+			const notes: string[] = [];
 			if (!result._yay.isDone && result._yay.continueCursor != null) {
-				lines.push(
-					"",
+				notes.push(
 					build_continuation({
 						parsed: parsed._yay,
 						target: null,
@@ -1415,16 +1420,12 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result._yay.continueCursor),
 					}),
 				);
-			} else if (lines.length === 0) {
-				lines.push("0 matches.");
+			} else if (paths.length === 0) {
+				notes.push("0 matches.");
 			}
 
 			const denied = denied_lines(result._yay.denied, prefixResolution.renderShellPath);
-			return {
-				stdout: `${lines.join("\n")}\n`,
-				stderr: denied,
-				exitCode: denied ? bash_COMMAND_EXIT_FAILURE : 0,
-			};
+			return find_output({ paths, notes, denied });
 		}
 
 		// App-file find does not expand shell globs; path search flags handle search.
@@ -1498,7 +1499,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			!window || ((window.from === null || updatedAt >= window.from) && (window.to === null || updatedAt <= window.to));
 		// Tests that cannot all match, like -mmin -10 -mmin +20, match nothing: read nothing.
 		if (window && window.from !== null && window.to !== null && window.from > window.to)
-			return { stdout: "0 matches.\n", stderr: "", exitCode: 0 };
+			return { stdout: "", stderr: "0 matches.\n", exitCode: 0 };
 		// With only `+N` the walk reads the whole folder, so a name or type check after it would be a scan.
 		if (window?.from === null && (pathQuery !== undefined || parsed._yay.contentType !== undefined))
 			return {
@@ -1569,7 +1570,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		}
 
 		if (parsed._yay.extension != null && parsed._yay.type === "d")
-			return { stdout: "0 matches.\n", stderr: "", exitCode: 0 };
+			return { stdout: "", stderr: "0 matches.\n", exitCode: 0 };
 
 		if (entry?.kind === "file") {
 			const matches =
@@ -1579,11 +1580,11 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				in_window(entry.updatedAt) &&
 				(!typePrefix ||
 					files_content_type_index_fields(entry.contentType ?? null)[typePrefix.field] === typePrefix.value);
-			return {
-				stdout: cursor == null && matches ? `${pathResolution.renderShellPath(target.dbFilesPath)}\n` : "0 matches.\n",
-				stderr: "",
-				exitCode: 0,
-			};
+			return find_output({
+				paths: cursor == null && matches ? [pathResolution.renderShellPath(target.dbFilesPath)] : [],
+				notes: cursor == null && matches ? [] : ["0 matches."],
+				denied: "",
+			});
 		}
 
 		// Name search keeps its own depth rules above. Other app reads take the depth shapes of
@@ -1682,11 +1683,9 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			lines.unshift(`${pathResolution.renderShellPath(entry.path)}/`);
 		}
 		// Name search gaps: moved-in folders too deep to search, or a search that hit 1,024 rows.
-		const notes = searched?._yay?.notes ?? [];
+		const notes = [...(searched?._yay?.notes ?? [])];
 		if (!result._yay.isDone && result._yay.continueCursor != null) {
-			lines.push(
-				...notes,
-				"",
+			notes.push(
 				build_continuation({
 					parsed: parsed._yay,
 					target: target.absoluteShellPath,
@@ -1698,10 +1697,9 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					),
 				}),
 			);
-		} else {
-			if (lines.length === 0) lines.push("0 matches.");
-			lines.push(...notes);
+		} else if (lines.length === 0) {
+			notes.unshift("0 matches.");
 		}
-		return { stdout: `${lines.join("\n")}\n`, stderr: denied, exitCode: denied ? bash_COMMAND_EXIT_FAILURE : 0 };
+		return find_output({ paths: lines, notes, denied });
 	});
 }

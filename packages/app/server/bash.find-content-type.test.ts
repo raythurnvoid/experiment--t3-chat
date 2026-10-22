@@ -86,7 +86,8 @@ describe("bash_run_command", () => {
 			const result = await runner.run({ command: `find ${root} --content-type text/` });
 			expect(result.stdout).not.toContain("draft.txt");
 			expect(result.stderr).toBe(
-				["a-locked", "b-locked"].map((name) => `find: '${root}/${name}': Permission denied\n`).join(""),
+				"0 matches.\n" +
+					["a-locked", "b-locked"].map((name) => `find: '${root}/${name}': Permission denied\n`).join(""),
 			);
 			expect(result.metadata.exitCode).toBe(1);
 		});
@@ -113,20 +114,20 @@ describe("bash_run_command", () => {
 			for (let page = 0; command && page < 10; page++) {
 				const result = await runner.run({ command });
 				const paths = result.stdout.split("\n").filter((line) => line.startsWith(restricted_mount));
-				const errors = result.stderr.split("\n").filter(Boolean);
+				const errors = result.stderr.split("\n").filter((line) => line.startsWith("find: "));
 				expect(paths).toEqual([]);
 				expect(errors.length).toBeLessThanOrEqual(1);
 				expect(result.metadata.exitCode).toBe(errors.length ? 1 : 0);
 				denied.push(...errors);
 				if (command.includes("--cursor")) {
 					const replay = await runner.run({ command });
-					expect(replay.stderr).toBe(result.stderr);
+					expect(replay.stdout).toBe(result.stdout);
 					expect(replay.metadata.exitCode).toBe(result.metadata.exitCode);
-					expect(replay.stdout.replace(/Next page: .+/u, "Next page")).toBe(
-						result.stdout.replace(/Next page: .+/u, "Next page"),
+					expect(replay.stderr.replace(/Next page: .+/u, "Next page")).toBe(
+						result.stderr.replace(/Next page: .+/u, "Next page"),
 					);
 				}
-				command = result.stdout.match(/Next page: (.+)/u)?.[1] ?? "";
+				command = result.stderr.match(/Next page: (.+)/u)?.[1] ?? "";
 			}
 			expect(command).toBe("");
 			expect(denied).toEqual(
@@ -153,7 +154,7 @@ describe("bash_run_command", () => {
 				const result = await runner.run({ command });
 				expect(result.metadata.exitCode, result.stderr).toBe(0);
 				paths.push(...result.stdout.split("\n").filter((line) => line.startsWith(test_db_files_mount)));
-				command = result.stdout.match(/Next page: (.+)/u)?.[1] ?? "";
+				command = result.stderr.match(/Next page: (.+)/u)?.[1] ?? "";
 			}
 			expect(command).toBe("");
 			expect(paths).toEqual(
@@ -184,7 +185,7 @@ describe("bash_run_command", () => {
 				const result = await runner.run({ command });
 				expect(result.metadata.exitCode, result.stderr).toBe(0);
 				paths.push(...result.stdout.split("\n").filter((line) => line.startsWith(test_db_files_mount)));
-				command = result.stdout.match(/Next page: (.+)/u)?.[1] ?? "";
+				command = result.stderr.match(/Next page: (.+)/u)?.[1] ?? "";
 			}
 			expect(command).toBe("");
 			expect(paths).toEqual(files.map((file) => `${test_db_files_mount}${file.path}`));
@@ -202,7 +203,7 @@ describe("bash_run_command", () => {
 			]) {
 				const result = await runner.run({ command });
 				expect(result.metadata.exitCode, result.stderr).toBe(0);
-				expect(result.stdout).toBe("0 matches.\n");
+				expect(result.stderr).toBe("0 matches.\n");
 			}
 		});
 

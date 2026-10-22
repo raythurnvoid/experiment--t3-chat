@@ -55,8 +55,8 @@ describe("bash_run_command", () => {
 		expect(plain.stdout.trim()).toBe(`${test_db_files_mount}/docs/readme.md`);
 		expect(extension.metadata.exitCode).toBe(0);
 		expect(extension.stdout.trim()).toBe(`${test_db_files_mount}/docs/readme.md`);
-		expect(typeFolder.stdout.trim()).toBe("0 matches.");
-		expect(tooDeep.stdout.trim()).toBe("0 matches.");
+		expect(typeFolder.stderr.trim()).toBe("0 matches.");
+		expect(tooDeep.stderr.trim()).toBe("0 matches.");
 		expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(false);
 	});
 
@@ -121,7 +121,7 @@ describe("bash_run_command", () => {
 		}
 		// Like GNU find, the start folder prints when its own name matches, unless -mindepth 1.
 		expect(scopedRootResult.stdout).toBe(`${test_db_files_mount}/docs/scope word/\n`);
-		expect(scopedRootMindepthResult.stdout).toBe("0 matches.\n");
+		expect(scopedRootMindepthResult.stderr).toBe("0 matches.\n");
 		expect(runQuery).toHaveBeenCalledWith(
 			internal.files_visible.internal_search_name_saved,
 			expect.objectContaining({ query: "readme", folderPath: "/" }),
@@ -170,8 +170,8 @@ describe("bash_run_command", () => {
 		expect(invalid.metadata.exitCode).toBe(2);
 		expect(invalid.stderr).toContain("-mindepth must be a non-negative integer");
 		expect(paged.metadata.exitCode).toBe(0);
-		expect(paged.stdout).toContain("Next page: find");
-		expect(paged.stdout).toContain("-mindepth 1");
+		expect(paged.stderr).toContain("Next page: find");
+		expect(paged.stderr).toContain("-mindepth 1");
 	});
 
 	test("rejects find --prefix combined with depth flags", async () => {
@@ -201,7 +201,7 @@ describe("bash_run_command", () => {
 		expect(extension.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		expect(pathGlob.metadata.exitCode).toBe(0);
 		expect(pathGlob.stdout).toContain(`${test_db_files_mount}/docs/nested/deep.md`);
-		expect(pathGlob.stdout).toMatch(
+		expect(pathGlob.stderr).toMatch(
 			new RegExp(`Next page: find ${test_db_files_mount}/docs --extension md --limit 1 --cursor \\S+`, "u"),
 		);
 		expect(runQuery).toHaveBeenCalledWith(
@@ -266,8 +266,10 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
-		expect(result.stdout).not.toContain("No matches in this page; more pages exist.");
-		expect(result.stdout).toContain("Next page:");
+		// The Next page command is on stderr, so `find ... | wc -l` counts only paths.
+		expect(result.stdout).not.toContain("Next page:");
+		expect(result.stderr).not.toContain("No matches in this page; more pages exist.");
+		expect(result.stderr).toContain("Next page:");
 	});
 
 	test("rejects unsupported find predicates when pagination is requested", async () => {
@@ -1694,14 +1696,14 @@ describe("bash_run_command", () => {
 		expect(prefixResult.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		expect(prefixResult.stdout).toContain(`${test_db_files_mount}/docs/tutorial.md`);
 		expect(relativePrefixResult.metadata.exitCode).toBe(0);
-		expect(relativePrefixResult.stdout).toMatch(
+		expect(relativePrefixResult.stderr).toMatch(
 			new RegExp(`Next page: find --prefix ${test_db_files_mount}/docs/nested --limit 1 --cursor \\S+`, "u"),
 		);
 		expect(treeResult.metadata.exitCode).toBe(0);
 		expect(treeResult.stdout).toContain(test_db_files_mount + "/docs");
 		expect(treeResult.stdout).toContain("|-- nested/");
 		expect(treeResult.stdout).toContain("|   |-- deep.md");
-		expect(treeResult.stdout).toMatch(
+		expect(treeResult.stderr).toMatch(
 			new RegExp(`Next page: tree ${test_db_files_mount}/docs --limit 2 --cursor \\S+`, "u"),
 		);
 	});
@@ -1716,16 +1718,16 @@ describe("bash_run_command", () => {
 		});
 
 		const firstPage = await run({ command: `tree ${test_db_files_mount}/tree-stop --limit 1` });
-		const continuation = firstPage.stdout.match(/Next page: (tree .+)/u)?.[1];
+		const continuation = firstPage.stderr.match(/Next page: (tree .+)/u)?.[1];
 		if (continuation == null) {
-			throw new Error("expected a tree continuation in the first page stdout");
+			throw new Error("expected a tree continuation in the first page stderr");
 		}
 
 		const secondPage = await run({ command: continuation });
 
 		expect(secondPage.metadata.exitCode).toBe(0);
-		expect(secondPage.stdout).toContain("Next page: tree");
-		expect(secondPage.stdout).toContain("if the user asked for exactly one continuation, stop here");
+		expect(secondPage.stderr).toContain("Next page: tree");
+		expect(secondPage.stderr).toContain("if the user asked for exactly one continuation, stop here");
 	});
 
 	test("renders exact file tree targets without subtree pagination", async () => {
@@ -2188,7 +2190,7 @@ describe("recursive reads stop at a locked folder", () => {
 		for (let page = 0; page < 10; page++) {
 			const result = await runner.run({ command });
 			listed.push(...result.stdout.split("\n").filter((line) => line.endsWith(".md")));
-			const next = result.stdout.match(/Next page: (find .*)/u)?.[1];
+			const next = result.stderr.match(/Next page: (find .*)/u)?.[1];
 			if (!next) break;
 			command = next;
 		}
@@ -2196,7 +2198,7 @@ describe("recursive reads stop at a locked folder", () => {
 		expect(listed).toEqual(Array.from({ length: 12 }, (_, index) => `${mount}/new/n-${index}.md`));
 		// A changed command cannot reuse the cursor.
 		const first = await runner.run({ command: `find ${mount}/new -mmin -60 -type f --limit 5` });
-		const cursor = first.stdout.match(/--cursor (\S+)/u)![1];
+		const cursor = first.stderr.match(/--cursor (\S+)/u)![1];
 		const wrong = await runner.run({ command: `find ${mount}/new -type f --limit 5 --cursor ${cursor}` });
 		expect(wrong.metadata.exitCode).toBe(1);
 	});
@@ -2386,7 +2388,7 @@ describe("recursive reads stop at a locked folder", () => {
 		const result = await runner.run({ command: `find ${test_db_files_mount} -mmin -10 -mmin +20` });
 
 		expect(reads["files_visible:internal_get_move_view"], "no listing runs").toBeUndefined();
-		expect(result.stdout).toBe("0 matches.\n");
+		expect(result.stderr).toBe("0 matches.\n");
 	});
 
 	test("find -mmin shows the agent's recent drafts", async () => {

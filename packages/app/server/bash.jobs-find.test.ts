@@ -129,7 +129,7 @@ describe("bash_run_command", () => {
 		test("a background cursor cannot change the searched folder", async () => {
 			const runner = await create_bash_runner();
 			const first = await runner.run({ command: "find docs --content-type text/ --limit 1" });
-			const next = first.stdout.split("Next page: ")[1]?.trim();
+			const next = first.stderr.split("Next page: ")[1]?.trim();
 			expect(next).toBeTruthy();
 			await runner.run({ command: `${next!.replace("/docs", "/reports")} &` });
 			const finished = await run_job(runner, 1);
