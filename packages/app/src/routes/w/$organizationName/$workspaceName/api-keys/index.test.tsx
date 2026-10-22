@@ -145,6 +145,7 @@ vi.mock("@monaco-editor/react", async () => {
 				revealPositionInCenterIfOutsideViewport: () => {},
 				focus: () => {},
 				pushUndoStop: () => {},
+				onDidPaste: () => ({ dispose: () => {} }),
 				executeEdits: (_source: string, edits: Array<{ text: string }>) => {
 					model.setValue(edits[0]!.text);
 					onChangeRef.current?.(edits[0]!.text);

@@ -71,10 +71,12 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { cn } from "@/lib/utils.ts";
 import {
+	api_key_setup_format_edits,
 	api_key_setup_hover_target,
 	api_key_setup_listed_scopes,
 	api_key_setup_parse,
 	api_key_setup_quick_fixes,
+	api_key_setup_scope_items,
 	api_key_setup_suggest,
 	api_key_setup_with_scopes,
 } from "../../../../../../shared/api-key-setup.ts";
@@ -643,6 +645,7 @@ type RouteApiKeysCreateModalEditor_Props = {
 	ref: Ref<RouteApiKeysCreateModalEditor_Ref>;
 	text: string;
 	errors: RouteApiKeys_SetupParse["errors"];
+	warnings: RouteApiKeys_SetupParse["warnings"];
 	/**
 	 * The scope ids the editor suggests. Pass a module constant: a new array registers the suggestions again.
 	 */
@@ -665,7 +668,7 @@ function to_monaco_range(model: monaco_editor.ITextModel, offset: number, length
 const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEditor(
 	props: RouteApiKeysCreateModalEditor_Props,
 ) {
-	const { ref, text, errors, allowedScopes, readOnly, onTextChange } = props;
+	const { ref, text, errors, warnings, allowedScopes, readOnly, onTextChange } = props;
 	// Keep the editor in state, so the effects below run again once the editor mounts.
 	const [editor, setEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones option updates.
@@ -750,23 +753,24 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 		editor?.updateOptions({ readOnly });
 	}, [editor, readOnly]);
 
-	// The app turns Monaco's own JSON checks off, so show the shared parser's errors as markers, and offer
-	// their quick fixes on Ctrl+. and the light bulb. Register the fixes again for each new error list, so
-	// they always match the markers. Answer only for this editor's model, like the providers below.
+	// The app turns Monaco's own JSON checks off, so show the shared parser's errors and warnings as markers,
+	// and offer their quick fixes on Ctrl+. and the light bulb. Register the fixes again for each new problem
+	// list, so they always match the markers. Answer only for this editor's model, like the providers below.
 	useEffect(() => {
 		const model = editor?.getModel();
 		if (!model) {
 			return;
 		}
 
+		const problems = [...errors, ...warnings];
 		monaco_editor.setModelMarkers(
 			model,
 			MONACO_MARKER_OWNER,
-			// A zero-length error still needs one character, or Monaco draws nothing.
-			errors.map((error) => ({
-				severity: monaco_MarkerSeverity.Error,
-				message: error.message,
-				...to_monaco_range(model, error.offset, Math.max(error.length, 1)),
+			// A zero-length problem still needs one character, or Monaco draws nothing.
+			problems.map((problem, index) => ({
+				severity: index < errors.length ? monaco_MarkerSeverity.Error : monaco_MarkerSeverity.Warning,
+				message: problem.message,
+				...to_monaco_range(model, problem.offset, Math.max(problem.length, 1)),
 			})),
 		);
 
@@ -780,8 +784,8 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 
 					const text = model.getValue();
 					const actions = context.markers.flatMap((marker) => {
-						// Find the error the marker was made from: same message, same start.
-						const error = errors.find((item) => {
+						// Find the problem the marker was made from: same message, same start.
+						const problem = problems.find((item) => {
 							const start = model.getPositionAt(item.offset);
 							return (
 								item.message === marker.message &&
@@ -789,11 +793,11 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 								start.column === marker.startColumn
 							);
 						});
-						if (!error) {
+						if (!problem) {
 							return [];
 						}
 
-						return api_key_setup_quick_fixes(text, error, allowedScopes).map((fix, index) => ({
+						return api_key_setup_quick_fixes(text, problem, allowedScopes).map((fix, index) => ({
 							title: fix.title,
 							kind: "quickfix",
 							diagnostics: [marker],
@@ -818,11 +822,11 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 		return () => {
 			codeActionProvider.dispose();
 		};
-	}, [editor, errors, allowedScopes]);
+	}, [editor, errors, warnings, allowedScopes]);
 
-	// Suggest field names and scope ids, and show their docs on hover. Monaco keeps one list of these
-	// providers per language, shared by every editor, so answer only for this editor's model. Remove them
-	// when the editor unmounts, or each new dialog would add another copy of every suggestion.
+	// Suggest field names and scope ids, show their docs on hover, and label the scope ids. Monaco keeps one list
+	// of these providers per language, shared by every editor, so answer only for this editor's model. Remove
+	// them when the editor unmounts, or each new dialog would add another copy of every suggestion.
 	useEffect(() => {
 		if (!editor) {
 			return;
@@ -910,11 +914,66 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 			},
 		});
 
+		// Show each known scope's short label as grey text after its id, like `"files:list"  List files`.
+		// The hints are not part of the text, so copy and paste stay clean.
+		const inlayHintsProvider = monaco_languages.registerInlayHintsProvider("json", {
+			provideInlayHints: (model) => {
+				if (model !== editor.getModel()) {
+					return undefined;
+				}
+
+				const hints = api_key_setup_scope_items(model.getValue()).flatMap((item) => {
+					const row = API_KEY_SCOPE_ROWS.find((scopeRow) => scopeRow.scope === item.value);
+					return row
+						? [
+								{
+									label: API_KEY_SCOPE_LABELS[row.scope],
+									position: model.getPositionAt(item.offset + item.length),
+									paddingLeft: true,
+								},
+							]
+						: [];
+				});
+				return { hints, dispose: () => {} };
+			},
+		});
+
 		return () => {
 			completionProvider.dispose();
 			hoverProvider.dispose();
+			inlayHintsProvider.dispose();
 		};
 	}, [editor, allowedScopes]);
+
+	// Lay out a pasted setup like the default one: two spaces, one scope per line. Do not use Monaco's
+	// `formatOnPaste` option. Monaco creates that feature only before the first click or key, and it does not
+	// look for a formatter registered before that, so it never runs here.
+	useEffect(() => {
+		if (!editor) {
+			return;
+		}
+
+		const pasteListener = editor.onDidPaste(({ range }) => {
+			const model = editor.getModel();
+			if (!model) {
+				return;
+			}
+
+			const offset = model.getOffsetAt({ lineNumber: range.startLineNumber, column: range.startColumn });
+			const endOffset = model.getOffsetAt({ lineNumber: range.endLineNumber, column: range.endColumn });
+			const edits = api_key_setup_format_edits(model.getValue(), { offset, length: endOffset - offset });
+			if (edits.length > 0) {
+				editor.executeEdits(
+					"api-keys-setup-format",
+					edits.map((edit) => ({ range: to_monaco_range(model, edit.offset, edit.length), text: edit.content })),
+				);
+			}
+		});
+
+		return () => {
+			pasteListener.dispose();
+		};
+	}, [editor]);
 
 	return (
 		<div className={"RouteApiKeysCreateModalEditor" satisfies RouteApiKeysCreateModalEditor_ClassNames}>
@@ -949,6 +1008,8 @@ type RouteApiKeysCreateModal_ClassNames =
 	| "RouteApiKeysCreateModal-setupHint"
 	| "RouteApiKeysCreateModal-presets"
 	| "RouteApiKeysCreateModal-errors"
+	| "RouteApiKeysCreateModal-warnings"
+	| "RouteApiKeysCreateModal-problem"
 	| "RouteApiKeysCreateModal-summary"
 	| "RouteApiKeysCreateModal-summaryTitle"
 	| "RouteApiKeysCreateModal-summaryList"
@@ -1023,6 +1084,10 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 					: "valid";
 	const shownErrors = setupState === "invalid" ? setupErrors.slice(0, API_KEY_SETUP_SHOWN_ERRORS_MAX) : [];
 	const hiddenErrorCount = setupState === "invalid" ? setupErrors.length - shownErrors.length : 0;
+	// Warnings do not stop the key, so show them right away, also next to errors.
+	const setupWarnings = setupParse?.warnings ?? [];
+	const shownWarnings = setupWarnings.slice(0, API_KEY_SETUP_SHOWN_ERRORS_MAX);
+	const hiddenWarningCount = setupWarnings.length - shownWarnings.length;
 	const hasWriteScope = setup?.scopes.some((scope) => API_KEY_WRITE_SCOPES.includes(scope)) ?? false;
 	const allowedScopes: readonly RouteApiKeys_Scope[] =
 		serviceAccountId === null ? API_KEY_SETUP_ALLOWED_SCOPES : API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES;
@@ -1053,15 +1118,19 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		}
 	};
 
+	// Put the caret on the text a problem is about. When that text is a JSON string, like an empty name `""`,
+	// put the caret before its closing quote, so the next keys the user types go inside the string.
+	const focusProblem = (problem: { offset: number; length: number }) => {
+		const markedText = setupText.slice(problem.offset, problem.offset + problem.length);
+		const isString = markedText.length >= 2 && markedText.startsWith('"') && markedText.endsWith('"');
+		editorRef.current?.focusAt(isString ? problem.offset + problem.length - 1 : problem.offset);
+	};
+
 	const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
 		// A setup with problems creates nothing. Put the caret on the first problem, so it is quick to fix.
-		// When the problem is a JSON string, like an empty name `""`, put the caret before its closing
-		// quote, so the next keys the user types go inside the string.
 		const firstError = setupErrors[0];
 		if (setup === null && firstError) {
-			const markedText = setupText.slice(firstError.offset, firstError.offset + firstError.length);
-			const isString = markedText.length >= 2 && markedText.startsWith('"') && markedText.endsWith('"');
-			editorRef.current?.focusAt(isString ? firstError.offset + firstError.length - 1 : firstError.offset);
+			focusProblem(firstError);
 		}
 		onSubmit(event);
 	};
@@ -1141,6 +1210,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 									ref={editorRef}
 									text={setupText}
 									errors={shownErrors}
+									warnings={shownWarnings}
 									allowedScopes={allowedScopes}
 									readOnly={pending}
 									onTextChange={onSetupTextChange}
@@ -1152,9 +1222,37 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 										aria-label="Problems in the setup"
 									>
 										{shownErrors.map((setupError, index) => (
-											<li key={index}>{setupError.message}</li>
+											<li key={index}>
+												<button
+													type="button"
+													className={"RouteApiKeysCreateModal-problem" satisfies RouteApiKeysCreateModal_ClassNames}
+													onClick={() => focusProblem(setupError)}
+												>
+													{setupError.message}
+												</button>
+											</li>
 										))}
 										{hiddenErrorCount > 0 ? <li>And {hiddenErrorCount} more problems.</li> : null}
+									</ul>
+								) : null}
+								{shownWarnings.length > 0 ? (
+									<ul
+										className={"RouteApiKeysCreateModal-warnings" satisfies RouteApiKeysCreateModal_ClassNames}
+										role="status"
+										aria-label="Warnings in the setup"
+									>
+										{shownWarnings.map((setupWarning, index) => (
+											<li key={index}>
+												<button
+													type="button"
+													className={"RouteApiKeysCreateModal-problem" satisfies RouteApiKeysCreateModal_ClassNames}
+													onClick={() => focusProblem(setupWarning)}
+												>
+													{setupWarning.message}
+												</button>
+											</li>
+										))}
+										{hiddenWarningCount > 0 ? <li>And {hiddenWarningCount} more warnings.</li> : null}
 									</ul>
 								) : null}
 								{setupState === "default" ? (
