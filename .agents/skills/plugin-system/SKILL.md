@@ -1012,6 +1012,18 @@ check: the 23:45:56 UTC slice cancelled its check. A draft made on the Mail page
 rows (each draft save is a new Gmail id), all created already skipped with 0 attempts. New history
 events still reset the idle wait to 1 minute, even when they are only drafts. 490 tests.
 
+Gmail 0.3.9 was published and installed in `personal/home` on 2026-10-22 (plugin commit
+`9a59f0503a3972a664cc119509421f1689a49ca7`, version doc `hn7rewz57hxeq7ew2jggwvqva58gsbx5`). It
+moves Gmail to pnpm 12 and the shared dependency versions below, and `he` to 2.0.0. `he` 2.0.0 has
+only named exports, so the codec uses `import * as he from "he"`. convex-test 0.0.62 passes
+`Date.now()` to `BigInt` on every commit, so the worker tests' mocked clock now returns whole
+milliseconds (the retry jitter makes `nextSyncAt` a fraction). The backend was deployed from the same
+commit with `convex dev --once --typecheck disable`, because TypeScript 7 has no JS API for the Convex
+typecheck. The first publish review failed with "could not finish its assessment" (it saw only the
+frontend files); the retry of the same commit passed. The update asked for no new consent. Live
+check: with the Gmail page open, the first slice after the update ran at 00:32:12 UTC with sync
+`live`, no error and no temporary failures. A new-mail save was not checked live. 490 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
@@ -1096,7 +1108,8 @@ Gallery 0.1.25 (`cd9451ef`), Video Player 0.1.13 (`6c39a40d`), and GitHub Source
 now linted with oxlint, because typescript-eslint does not support TypeScript 7). Image, PDF and Video
 kept the same `dist`, so they got no release. Every owner installation on the previous version was
 updated, and no consent changed. A publish can answer "Plugin AI review rate limit exceeded; try again
-in Ns". Wait that long and publish the same SHA again.
+in Ns". Wait that long and publish the same SHA again. Gmail moved last, as 0.3.9 (see its record
+above).
 
 Chitchat 0.8.11 (`3b26f018`) is published, and both owner installations on 0.8.10 were updated. Its
 bundle grew from 762,536 to 889,542 bytes (Ariakit 0.4.42 and react-dom 19.3.1). The AI review first
