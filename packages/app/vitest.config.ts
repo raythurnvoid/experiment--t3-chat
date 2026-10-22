@@ -71,6 +71,10 @@ export default defineConfig({
 		},
 	],
 	resolve: {
+		// Load the app's React for every file, like vite.config.ts does. `native-popovers` is a submodule
+		// with its own React dev dependency, so an install inside it can link a second React copy. Hooks
+		// then fail with "Cannot read properties of null (reading 'useMemoCache')".
+		dedupe: ["react", "react-dom"],
 		alias: {
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
 			"cloudflare:workers": fileURLToPath(new URL("../plugin-runner/src/test-cloudflare-workers.ts", import.meta.url)),
