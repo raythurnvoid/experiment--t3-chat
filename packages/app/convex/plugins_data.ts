@@ -3939,7 +3939,7 @@ async function db_sync_file_access_bindings(args: {
 		.collect();
 
 	const now = Date.now();
-	let readersChanged = false;
+	let accessChanged = false;
 	for (const binding of bindings) {
 		const grants = await db_binding_file_grants(ctx, {
 			organizationId: binding.organizationId,
@@ -3955,8 +3955,12 @@ async function db_sync_file_access_bindings(args: {
 			if (remove) {
 				await ctx.db.delete("access_control_permission_grants", grant._id);
 				if (grant.principalKind !== "service_account") {
-					readersChanged = true;
+					accessChanged = true;
 				} else if (grant.serviceAccountId) {
+					// A Move that an API key bound to this account started pins the workspace clock until it
+					// saves, so the lost grant must advance it. A revoked account has no live key.
+					const account = await ctx.db.get("access_control_service_accounts", grant.serviceAccountId);
+					if (account?.revokedAt === null) accessChanged = true;
 					await plugins_db_sync_sandbox_root(ctx, {
 						organizationId: binding.organizationId,
 						workspaceId: binding.workspaceId,
@@ -3992,10 +3996,10 @@ async function db_sync_file_access_bindings(args: {
 				updatedAt: now,
 			});
 			holders.add(userId);
-			readersChanged = true;
+			accessChanged = true;
 		}
 	}
-	if (readersChanged) await files_media_validation_db_advance_version(ctx, args.installation);
+	if (accessChanged) await files_media_validation_db_advance_version(ctx, args.installation);
 }
 
 /**

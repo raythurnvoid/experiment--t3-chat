@@ -8920,6 +8920,83 @@ describe("file sharing", () => {
 		expect(folderState?.scope?.isSelf).toBe(true);
 	});
 
+	test("people added to a folder can archive an item that a saved Move put there before its cleanup", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "added-move-org",
+			suffix: "added-move",
+		});
+		const { folderId, childId } = await seed_restricted_folder({ t, fixture, name: "added-move-space" });
+		const item = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: folderId,
+			path: "item",
+		});
+		expect(item._nay).toBeUndefined();
+		const itemId = item._yay!.nodeId;
+		// The member may change only what is inside `inside`.
+		const granted = await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.ownerMembershipId,
+			nodeId: childId,
+			principal: { kind: "user", userId: fixture.memberId },
+			level: "write",
+		});
+		expect(granted._nay).toBeUndefined();
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+
+		// Step the owner's Move of `item` into `inside` until it is saved. Its cleanup step has not run.
+		const started = await fixture.asOwner.mutation(api.files_transfer.accept_input, {
+			membershipId: fixture.ownerMembershipId,
+			requestId: "added-move",
+			kind: "move",
+			sourceIds: [itemId],
+			expectedSourceCount: 1,
+			targetParentId: childId,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await fixture.asOwner.mutation(api.files_transfer.seal, {
+				membershipId: fixture.ownerMembershipId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		const get_cohort = () =>
+			t.run(async (ctx) => {
+				const slot = await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) =>
+						q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.defaultWorkspaceId),
+					)
+					.unique();
+				return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+			});
+		for (let pass = 0; pass < 10 && !(await get_cohort()); pass++)
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+		for (let pass = 0; ; pass++) {
+			const cohort = await get_cohort();
+			if (!cohort) throw new Error("The Move did not start a group");
+			if (cohort.publishedAt !== null) break;
+			if (pass === 100) throw new Error("The Move was not saved");
+			await t.mutation(internal.files_move_cohorts.advance, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				join: false,
+			});
+		}
+		const raw = await t.run((ctx) => ctx.db.get("files_nodes", itemId));
+		expect(raw?.moveCohortId, "the Move's cleanup step has not run").toBeDefined();
+		expect(raw?.extendedScopeNodeId, "the node doc still has its old place").not.toBe(childId);
+
+		// The check must read the item where the saved Move shows it, inside the folder with added people.
+		const archived = await fixture.asMember.mutation(api.files_nodes.archive_nodes, {
+			membershipId: fixture.memberMembershipId,
+			nodeIds: [String(itemId)],
+		});
+		expect(archived._nay).toBeUndefined();
+		expect(archived._yay?.refusedItems).toEqual([]);
+	});
+
 	test("unrestricting gives the node back and drops the grants", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {

@@ -431,6 +431,29 @@ describe("plugin file media validation clocks", () => {
 		},
 	);
 
+	// A Move that an API key bound to the account started pins this clock, so a lost account grant must move it.
+	test("advances the workspace clock when a scope teardown removes only an account grant", async () => {
+		const f = await store_fixture();
+		expect((await set_binding(f, "private")).status).toBe(200);
+		// Member removal deletes the member's own file grants. Then only the account's grant is left.
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false });
+			for (const grant of await ctx.db.query("access_control_permission_grants").collect())
+				if (grant.principalKind === "user" && grant.resourceId === String(f.nodeId))
+					await ctx.db.delete("access_control_permission_grants", grant._id);
+		});
+		const before = await snapshot(f);
+		const accountGrants = file_grants(before, f.nodeId);
+		expect(accountGrants.length).toBeGreaterThan(0);
+		expect(accountGrants.every((grant) => grant.principalKind === "service_account")).toBe(true);
+
+		await f.t.mutation(internal.plugins_data.cleanup_stranded_scopes, {
+			scopes: [{ installationId: f.db.installationId, scopeId: "private" }],
+		});
+		expect(file_grants(await snapshot(f), f.nodeId)).toEqual([]);
+		await expect_clock({ f, before, changed: true });
+	});
+
 	test.each(["level", "absent-reader", "unbound", "denied"])(
 		"keeps the workspace clock for a %s scope edit",
 		async (change) => {

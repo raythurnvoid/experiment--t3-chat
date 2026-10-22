@@ -99,7 +99,8 @@ not permission caches. Final publication still checks current access.
   before, advance the workspace version. A Move that a key bound to the account started pins this
   workspace version, so the change makes the Move ask for review.
   A new or raised account grant, a first role, and revoke do not. Each Move step checks that the
-  account is still active.
+  account is still active. A plugin scope teardown that removes a live account's grant advances it
+  too; a revoked account's grant does not, because it has no live key.
 - Replaced content advances a separate content version (`files_content_versions`), not the
   workspace version. Copy and Save pin it too. A Move group pins only the organization, workspace
   and review versions. Data deletion removes it with the workspace.

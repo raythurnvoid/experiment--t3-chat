@@ -128,7 +128,13 @@ export async function files_write_policy_db_has_write_context_permission(
 		organizationId,
 		workspaceId,
 		subject,
-		fileNode: args.node,
+		// Leave out the "Add people" pointer, so the checker reads it where a saved Move shows the node.
+		// The node doc keeps its old place until the Move's cleanup step runs.
+		fileNode: args.node && {
+			_id: args.node._id,
+			restrictedScopeNodeId: args.node.restrictedScopeNodeId ?? null,
+			treePath: args.node.treePath,
+		},
 		permission: args.permission,
 	});
 }
