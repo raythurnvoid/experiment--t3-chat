@@ -1,7 +1,7 @@
 import "./route.css";
 
 import { useClerk } from "@clerk/clerk-react";
-import { createFileRoute, Navigate, Outlet, useMatch } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useMatch } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { LogIn } from "lucide-react";
 import { memo, useLayoutEffect, useRef, type Ref } from "react";
@@ -96,6 +96,7 @@ function RouteTenantOrganizationWorkspaceLayout() {
 			shouldThrow: false,
 			select: () => true,
 		}) ?? false;
+	const isPhoneChat = isMobile && isChatRoute;
 	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const focusTargetRef = useRef<HTMLElement>(null);
 	const focusScopeRef = useRef<HTMLElement>(null);
@@ -188,37 +189,29 @@ function RouteTenantOrganizationWorkspaceLayout() {
 			workspaceId={workspaceId}
 			workspaceName={workspaceName}
 		>
-			{/* A phone shows only the agent chat, without the app header and sidebar. Every other
-			    workspace page sends a phone user to the chat. */}
-			{isMobile && !isChatRoute ? (
-				<Navigate
-					to="/w/$organizationName/$workspaceName/chat"
-					params={{ organizationName, workspaceName }}
-					search={{}}
-					replace
-				/>
-			) : (
+			{/* On a phone the agent chat shows alone, without the app header and sidebar. Other
+			    workspace pages keep the desktop layout. A phone user can still open them, even
+			    when that layout does not fit the screen. */}
+			<div
+				ref={handleFocusScopeRef}
+				className={cn(
+					"RootLayout" satisfies RootLayout_ClassNames,
+					isPhoneChat && ("RootLayout-variant-phone" satisfies RootLayout_ClassNames),
+				)}
+				onFocusCapture={handleWorkspaceFocusCapture}
+			>
+				{!isPhoneChat && <MainAppHeader />}
+				{!isPhoneChat && <MainAppSidebar />}
 				<div
-					ref={handleFocusScopeRef}
-					className={cn(
-						"RootLayout" satisfies RootLayout_ClassNames,
-						isMobile && ("RootLayout-variant-phone" satisfies RootLayout_ClassNames),
-					)}
-					onFocusCapture={handleWorkspaceFocusCapture}
+					ref={handleFocusTargetRef}
+					className={"RootLayout-content" satisfies RootLayout_ClassNames}
+					role="region"
+					aria-label={`${organizationName}/${workspaceName} workspace content`}
+					tabIndex={-1}
 				>
-					{!isMobile && <MainAppHeader />}
-					{!isMobile && <MainAppSidebar />}
-					<div
-						ref={handleFocusTargetRef}
-						className={"RootLayout-content" satisfies RootLayout_ClassNames}
-						role="region"
-						aria-label={`${organizationName}/${workspaceName} workspace content`}
-						tabIndex={-1}
-					>
-						<Outlet />
-					</div>
+					<Outlet />
 				</div>
-			)}
+			</div>
 		</AppTenantProvider>
 	);
 }

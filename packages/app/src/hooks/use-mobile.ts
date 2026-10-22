@@ -27,7 +27,7 @@ export function is_mobile_layout() {
 }
 
 /**
- * Tell whether the window shows the phone layout. On a phone the app shows only the agent chat.
+ * Tell whether the window shows the phone layout. On a phone the agent chat shows alone.
  *
  * The first render already reads the real size, so a phone never flashes the desktop shell.
  */

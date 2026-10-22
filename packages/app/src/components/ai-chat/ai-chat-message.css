@@ -26,6 +26,16 @@
 		flex-direction: column;
 		/* The gap must match the composer's gap to ensure proper measurements */
 		gap: 8px;
+
+		/* On a phone a long press opens the message menu. Stop the browser from also selecting text or
+		   showing its own link and image menu. Older iOS Safari reads only the prefixed property. */
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			&:not(.AiChatMessageUser-bubble-state-editing) {
+				-webkit-touch-callout: none;
+				-webkit-user-select: none;
+				user-select: none;
+			}
+		}
 	}
 	/* #endregion bubble */
 
@@ -129,6 +139,11 @@
 		grid-row: 1;
 
 		padding: 10px 0 0 0;
+
+		/* A phone has no action row under the text. Keep the same space below the text as above it. */
+		@media (pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px) {
+			padding-bottom: 10px;
+		}
 
 		.AiChatMessageBubble.AiChatMessageUser-bubble-state-editing > & {
 			padding: 0;

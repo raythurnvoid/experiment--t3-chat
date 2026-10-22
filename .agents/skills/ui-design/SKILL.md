@@ -48,7 +48,7 @@ Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a descri
 
 ## Phone layout
 
-A phone shows only the agent chat (see "Phone Layout" in the `ai-chat-agent` skill).
+Only the agent chat has a phone layout. Other pages keep the desktop layout on a phone (see "Phone Layout" in the `ai-chat-agent` skill).
 
 - Use the phone query from `src/hooks/use-mobile.ts`: `(pointer: coarse) and (max-width: 640px), (pointer: coarse) and (max-height: 500px)`. Do not use width alone, because a narrow desktop window must keep the desktop layout.
 - Make touch targets at least 44px tall.

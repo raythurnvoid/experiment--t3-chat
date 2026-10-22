@@ -462,7 +462,7 @@ state.page = await context.newPage();
 state.cdp = await getCDPSession({ page: state.page });
 await state.cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
 await state.cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-state.page.goto("http://localhost:5173/w/personal/home/files").catch(() => {}); // must land on /chat
+state.page.goto("http://localhost:5173/").catch(() => {}); // `/` lands on /chat; /files stays on /files with the desktop layout
 // Later: Emulation.setTouchEmulationEnabled { enabled: false }, clearDeviceMetricsOverride, resetPageScaleFactor.
 ```
 
@@ -480,6 +480,7 @@ state.page.goto("http://localhost:5173/w/personal/home/files").catch(() => {}); 
 - `screenshot()` times out until you call `bringToFront()` on the owned tab.
 - Selectors: `.RootLayout-variant-phone` (phone layout on), `.AiChatHeader` with buttons `Open chats` and `New chat` and title `.AiChatHeader-title`, the drawer `.AiChat-threads` (`display: none` when closed), `.AiChat-drawer-backdrop`, the drawer footer `.AiChat-threads-footer`, and `.AiChat-main` (its `inert` is true while the drawer is open).
 - Check: the drawer opens with focus on `Close`, and Escape, Close, or a thread tap puts focus back on `Open chats`. Enter in the composer adds a second `<p>` and sends nothing.
+- Message menu: a long press is `touchStart`, a wait of about 700ms, then `touchEnd` (add a `touchMove` of 40px to check that a scroll does not open it). The open menu is `.np-MenuPositioner:popover-open`, not `.MyMenuPopover`; read its `[role=menuitem]` texts. A short tap on your own bubble must not add `.AiChatMessageUser-bubble-state-editing`, and a phone renders no `.AiChatMessageUser-edit-button`, `.AiChatMessageUser-actions-main`, or `.AiChatMessageAgent-actions`. CDP touch emulation sends no native `contextmenu` on a long press, so it tests the iOS timer path. To mimic Android's late event, dispatch a `contextmenu` MouseEvent on the bubble while the finger is still down; the menu must stay open.
 - The pending modal needs a chat with pending changes from this chat. Ask the agent in the chat to create one small file. The whole strip is the Review button (`button.FileEditorSidebarPendingStrip`). The modal is `.AiChatPendingReview`. A tap on the row center must land on the row's `<summary>` and open the inline diff, not on the `<a>` to Files. Check that with `document.elementFromPoint`. Discard the row to clean up: the modal closes at 0 changes, and a "Discard reviewed changes" result dialog opens with focus on Close.
 - An HMR update to a component under the tenant provider can crash the page with "AppTenantProvider.useContext must be used within AppTenantProvider". Start `page.reload()` without awaiting it and poll for the composer. An awaited reload with other steps in one call times out before it runs.
 

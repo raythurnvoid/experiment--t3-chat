@@ -9,11 +9,24 @@ import {
 	useRef,
 	useState,
 	type ComponentPropsWithRef,
+	type ReactElement,
 	type ReactNode,
 	type Ref,
+	type TouchEvent,
 } from "react";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { ArrowUpRight, ChevronLeft, ChevronRight, GitBranch, Info, RefreshCw, ShieldQuestion } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile.ts";
+import {
+	ArrowUpRight,
+	ChevronLeft,
+	ChevronRight,
+	Copy,
+	GitBranch,
+	Info,
+	Pencil,
+	RefreshCw,
+	ShieldQuestion,
+} from "lucide-react";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import {
 	isDataUIPart,
@@ -38,6 +51,14 @@ import {
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { FileQuote } from "@/components/file-quotes/file-quote.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
+import {
+	MyMenuItem,
+	MyMenuItemContent,
+	MyMenuItemContentIcon,
+	MyMenuItemContentPrimary,
+	MyMenuPopoverContent,
+} from "@/components/my-menu.tsx";
 import { AiChatController, type AiChatRuntimeActions, type AiChatThreadRuntime } from "@/hooks/ai-chat-controller.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
@@ -54,7 +75,7 @@ import {
 	MyModalScrollableArea,
 	MyModalTrigger,
 } from "@/components/my-modal.tsx";
-import { cn, json_strigify_ensured, sx } from "@/lib/utils.ts";
+import { cn, copy_to_clipboard, json_strigify_ensured, sx } from "@/lib/utils.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -1839,6 +1860,163 @@ const AiChatMessageBubble = memo(function AiChatMessageBubble(props: AiChatMessa
 });
 // #endregion bubble
 
+// #region phone menu
+const LONG_PRESS_DELAY_MS = 500;
+const LONG_PRESS_MOVE_TOLERANCE_PX = 10;
+
+type AiChatMessagePhoneMenu_Props = {
+	copyText: string | null;
+	items: Array<{
+		label: string;
+		icon: ReactNode;
+		disabled: boolean;
+		onSelect: () => void;
+	}>;
+	children: ReactElement;
+};
+
+/**
+ * Wrap a message bubble on a phone. A long press on the bubble opens a menu with the message
+ * actions, because a phone hides the action buttons under each message.
+ *
+ * Android sends a `contextmenu` event on a long press, but iOS Safari does not. So a timer opens the
+ * menu on both, by sending its own `contextmenu` event to the trigger. When Android's event comes
+ * after the timer, the menu reads it as a press on its own trigger and only opens again at the same
+ * point.
+ */
+const AiChatMessagePhoneMenu = memo(function AiChatMessagePhoneMenu(props: AiChatMessagePhoneMenu_Props) {
+	const { copyText, items, children } = props;
+
+	const longPressRef = useRef<{
+		x: number;
+		y: number;
+		timeoutId: number | undefined;
+		opened: boolean;
+	} | null>(null);
+
+	const endLongPress = useFn(() => {
+		const longPress = longPressRef.current;
+		longPressRef.current = null;
+		window.clearTimeout(longPress?.timeoutId);
+		return longPress;
+	});
+
+	const handleTouchStart = (event: TouchEvent<HTMLElement>) => {
+		endLongPress();
+
+		const touch = event.touches[0];
+		// Two fingers are a pinch, not a long press.
+		if (event.touches.length !== 1 || !touch) {
+			return;
+		}
+
+		const trigger = event.currentTarget;
+		const longPress: NonNullable<typeof longPressRef.current> = {
+			x: touch.clientX,
+			y: touch.clientY,
+			timeoutId: undefined,
+			opened: false,
+		};
+		longPress.timeoutId = window.setTimeout(() => {
+			longPress.timeoutId = undefined;
+			longPress.opened = true;
+			trigger.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: longPress.x, clientY: longPress.y }),
+			);
+		}, LONG_PRESS_DELAY_MS);
+		longPressRef.current = longPress;
+	};
+
+	const handleTouchMove = (event: TouchEvent<HTMLElement>) => {
+		const longPress = longPressRef.current;
+		const touch = event.touches[0];
+		if (!longPress || longPress.opened || !touch) {
+			return;
+		}
+
+		// A finger that moves is scrolling the chat.
+		if (Math.hypot(touch.clientX - longPress.x, touch.clientY - longPress.y) > LONG_PRESS_MOVE_TOLERANCE_PX) {
+			endLongPress();
+		}
+	};
+
+	const handleTouchEnd = (event: TouchEvent<HTMLElement>) => {
+		const longPress = endLongPress();
+		// After a long press the finger lifts over the open menu. Cancel the touch end, so the browser
+		// does not also send a click there.
+		if (longPress?.opened) {
+			event.preventDefault();
+		}
+	};
+
+	const handleCopy = () => {
+		if (!copyText) {
+			return;
+		}
+
+		copy_to_clipboard({ text: copyText })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[AiChatMessagePhoneMenu.handleCopy] Failed to copy message", { error: result._nay });
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[AiChatMessagePhoneMenu.handleCopy] Unexpected async error", { error });
+			});
+	};
+
+	const handleContextMenu = () => {
+		const longPress = longPressRef.current;
+		// Android's own long-press event came before the timer. Let it open the menu and stop the timer.
+		if (longPress && !longPress.opened) {
+			window.clearTimeout(longPress.timeoutId);
+			longPress.timeoutId = undefined;
+			longPress.opened = true;
+		}
+	};
+
+	useEffect(() => {
+		return () => {
+			endLongPress();
+		};
+	}, [endLongPress]);
+
+	return (
+		<MyContextMenu>
+			<MyContextMenuTrigger
+				onTouchStart={handleTouchStart}
+				onTouchMove={handleTouchMove}
+				onTouchEnd={handleTouchEnd}
+				onTouchCancel={endLongPress}
+				onContextMenu={handleContextMenu}
+			>
+				{children}
+			</MyContextMenuTrigger>
+			<MyContextMenuPopover>
+				<MyMenuPopoverContent>
+					<MyMenuItem disabled={!copyText} onClick={handleCopy}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Copy />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy message</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					{items.map((item) => (
+						<MyMenuItem key={item.label} disabled={item.disabled} onClick={item.onSelect}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>{item.icon}</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>{item.label}</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					))}
+				</MyMenuPopoverContent>
+			</MyContextMenuPopover>
+		</MyContextMenu>
+	);
+});
+// #endregion phone menu
+
 // #region user message send error
 type AiChatMessageUserSendError_ClassNames =
 	| "AiChatMessageUserSendError"
@@ -1980,7 +2158,9 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 	 */
 	const contentKey = message.metadata?.clientGeneratedId;
 
-	const showEditButton = !isEditing && Boolean(selectedThreadId) && canEdit;
+	const isMobile = useIsMobile();
+	// A phone has no hover, so a tap must not start an edit. Its long-press menu has an Edit item.
+	const showEditButton = !isMobile && !isEditing && Boolean(selectedThreadId) && canEdit;
 	const bubbleRef = useRef<HTMLDivElement>(null);
 	const editBubbleLayoutCapturedOnPointerDownRef = useRef(false);
 	const [editBubbleLayout, setEditBubbleLayout] = useState(
@@ -2107,6 +2287,116 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		handleBranchSwitch("next");
 	});
 
+	const bubble = (
+		<AiChatMessageBubble
+			ref={bubbleRef}
+			className={cn(
+				"AiChatMessageUser-bubble" satisfies AiChatMessageUser_ClassNames,
+				isEditing && ("AiChatMessageUser-bubble-state-editing" satisfies AiChatMessageUser_ClassNames),
+			)}
+			style={
+				isEditing && editBubbleLayout
+					? sx({
+							width: `${editBubbleLayout.width}px`,
+							// A min height, not a fixed one: the bubble keeps its size on edit start,
+							// then grows with the text so the text never goes under the actions.
+							minHeight: `${editBubbleLayout.height}px`,
+						})
+					: undefined
+			}
+		>
+			<div className={"AiChatMessageUser-content-container" satisfies AiChatMessageUser_ClassNames}>
+				<AiChatMessageContent
+					key={contentKey}
+					message={message}
+					isChatRunning={isRunning}
+					liveJobs={liveJobs}
+					threadId={selectedThreadId}
+					onToolOutput={onToolOutput}
+					onToolResumeStream={onToolResumeStream}
+					onToolStop={onToolStop}
+				>
+					{isEditing ? (
+						<AiChatComposer
+							key={contentKey}
+							className={"AiChatMessageUser-content-composer" satisfies AiChatMessageUser_ClassNames}
+							autoFocus
+							canCancel={false}
+							canQueue={false}
+							canSend={true}
+							isQueueing={false}
+							isRunning={false}
+							initialValue={draft}
+							initialAttachments={messageFileParts}
+							selectedModelId={selectedModelId}
+							selectedModeId={selectedModeId}
+							onValueChange={handleEditValueChange}
+							onSelectedModelIdChange={onSelectedModelIdChange}
+							onSelectedModeIdChange={onSelectedModeIdChange}
+							onSubmit={handleEditSubmit}
+							onInteractedOutside={handleEditCancel}
+							onClose={handleEditCancel}
+						/>
+					) : null}
+				</AiChatMessageContent>
+			</div>
+			{showEditButton && (
+				<button
+					className={"AiChatMessageUser-edit-button" satisfies AiChatMessageUser_ClassNames}
+					type="button"
+					{...({ "data-ai-chat-message-id": message.id } satisfies Partial<AiChatMessage_CustomAttributes>)}
+					aria-label="Edit message"
+					onMouseDown={handleEditMouseDown}
+					onClick={handleStartEdit}
+				>
+					<div className={"AiChatMessageUser-edit-button-box" satisfies AiChatMessageUser_ClassNames}></div>
+				</button>
+			)}
+			{/* A phone shows the action buttons in the long-press menu instead. The send error stays. */}
+			{(!isMobile || sendErrorText) && (
+				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
+					{sendErrorText && (
+						<AiChatMessageUserSendError message={sendErrorText} details={sendErrorDetails} onRetry={handleRetrySend} />
+					)}
+					{!isMobile && (
+						<div className={"AiChatMessageUser-actions-main" satisfies AiChatMessageUser_ClassNames}>
+							<CopyIconButton
+								className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+								iconClassName={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames}
+								variant="ghost-highlightable"
+								tooltipCopy="Copy message"
+								text={text ?? undefined}
+							/>
+							{branchAnchorIds.length > 1 && (
+								<div className={"AiChatMessageUser-branch-controls" satisfies AiChatMessageUser_ClassNames}>
+									<MyIconButton
+										className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+										variant="ghost-highlightable"
+										tooltip="Previous branch"
+										onClick={handleBranchPrev}
+									>
+										<ChevronLeft className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
+									</MyIconButton>
+									<span className={"AiChatMessageUser-branch-label" satisfies AiChatMessageUser_ClassNames}>
+										{`${branchIndex + 1}/${branchAnchorIds.length}`}
+									</span>
+									<MyIconButton
+										className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+										variant="ghost-highlightable"
+										tooltip="Next branch"
+										onClick={handleBranchNext}
+									>
+										<ChevronRight className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
+									</MyIconButton>
+								</div>
+							)}
+						</div>
+					)}
+				</div>
+			)}
+		</AiChatMessageBubble>
+	);
+
 	return (
 		<AiChatMessageContainer
 			ref={ref}
@@ -2114,108 +2404,40 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 			className={cn("AiChatMessageUser" satisfies AiChatMessageUser_ClassNames, className)}
 			{...rest}
 		>
-			<AiChatMessageBubble
-				ref={bubbleRef}
-				className={cn(
-					"AiChatMessageUser-bubble" satisfies AiChatMessageUser_ClassNames,
-					isEditing && ("AiChatMessageUser-bubble-state-editing" satisfies AiChatMessageUser_ClassNames),
-				)}
-				style={
-					isEditing && editBubbleLayout
-						? sx({
-								width: `${editBubbleLayout.width}px`,
-								// A min height, not a fixed one: the bubble keeps its size on edit start,
-								// then grows with the text so the text never goes under the actions.
-								minHeight: `${editBubbleLayout.height}px`,
-							})
-						: undefined
-				}
-			>
-				<div className={"AiChatMessageUser-content-container" satisfies AiChatMessageUser_ClassNames}>
-					<AiChatMessageContent
-						key={contentKey}
-						message={message}
-						isChatRunning={isRunning}
-						liveJobs={liveJobs}
-						threadId={selectedThreadId}
-						onToolOutput={onToolOutput}
-						onToolResumeStream={onToolResumeStream}
-						onToolStop={onToolStop}
-					>
-						{isEditing ? (
-							<AiChatComposer
-								key={contentKey}
-								className={"AiChatMessageUser-content-composer" satisfies AiChatMessageUser_ClassNames}
-								autoFocus
-								canCancel={false}
-								canQueue={false}
-								canSend={true}
-								isQueueing={false}
-								isRunning={false}
-								initialValue={draft}
-								initialAttachments={messageFileParts}
-								selectedModelId={selectedModelId}
-								selectedModeId={selectedModeId}
-								onValueChange={handleEditValueChange}
-								onSelectedModelIdChange={onSelectedModelIdChange}
-								onSelectedModeIdChange={onSelectedModeIdChange}
-								onSubmit={handleEditSubmit}
-								onInteractedOutside={handleEditCancel}
-								onClose={handleEditCancel}
-							/>
-						) : null}
-					</AiChatMessageContent>
-				</div>
-				{showEditButton && (
-					<button
-						className={"AiChatMessageUser-edit-button" satisfies AiChatMessageUser_ClassNames}
-						type="button"
-						{...({ "data-ai-chat-message-id": message.id } satisfies Partial<AiChatMessage_CustomAttributes>)}
-						aria-label="Edit message"
-						onMouseDown={handleEditMouseDown}
-						onClick={handleStartEdit}
-					>
-						<div className={"AiChatMessageUser-edit-button-box" satisfies AiChatMessageUser_ClassNames}></div>
-					</button>
-				)}
-				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
-					{sendErrorText && (
-						<AiChatMessageUserSendError message={sendErrorText} details={sendErrorDetails} onRetry={handleRetrySend} />
-					)}
-					<div className={"AiChatMessageUser-actions-main" satisfies AiChatMessageUser_ClassNames}>
-						<CopyIconButton
-							className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
-							iconClassName={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames}
-							variant="ghost-highlightable"
-							tooltipCopy="Copy message"
-							text={text ?? undefined}
-						/>
-						{branchAnchorIds.length > 1 && (
-							<div className={"AiChatMessageUser-branch-controls" satisfies AiChatMessageUser_ClassNames}>
-								<MyIconButton
-									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
-									variant="ghost-highlightable"
-									tooltip="Previous branch"
-									onClick={handleBranchPrev}
-								>
-									<ChevronLeft className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
-								</MyIconButton>
-								<span className={"AiChatMessageUser-branch-label" satisfies AiChatMessageUser_ClassNames}>
-									{`${branchIndex + 1}/${branchAnchorIds.length}`}
-								</span>
-								<MyIconButton
-									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
-									variant="ghost-highlightable"
-									tooltip="Next branch"
-									onClick={handleBranchNext}
-								>
-									<ChevronRight className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
-								</MyIconButton>
-							</div>
-						)}
-					</div>
-				</div>
-			</AiChatMessageBubble>
+			{/* The edit composer replaces the menu, so a long press there selects text as usual. */}
+			{isMobile && !isEditing ? (
+				<AiChatMessagePhoneMenu
+					copyText={text}
+					items={[
+						{
+							label: "Edit message",
+							icon: <Pencil />,
+							disabled: !selectedThreadId || !canEdit,
+							onSelect: handleStartEdit,
+						},
+						...(branchAnchorIds.length > 1
+							? [
+									{
+										label: `Previous branch (${branchIndex + 1}/${branchAnchorIds.length})`,
+										icon: <ChevronLeft />,
+										disabled: false,
+										onSelect: handleBranchPrev,
+									},
+									{
+										label: `Next branch (${branchIndex + 1}/${branchAnchorIds.length})`,
+										icon: <ChevronRight />,
+										disabled: false,
+										onSelect: handleBranchNext,
+									},
+								]
+							: []),
+					]}
+				>
+					{bubble}
+				</AiChatMessagePhoneMenu>
+			) : (
+				bubble
+			)}
 		</AiChatMessageContainer>
 	);
 });
@@ -2275,6 +2497,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 	const text = ai_chat_get_message_text(message);
 	const streamErrorText = message.metadata?.status === "errored" ? "An error occurred during the generation" : null;
 	const branchIndex = branchAnchorIds.indexOf(message.id);
+	const isMobile = useIsMobile();
 
 	/**
 	 * The controller stamps the client-generated id on every rendered message. Keying by it
@@ -2324,27 +2547,23 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 		handleBranchSwitch("next");
 	});
 
-	return (
-		<AiChatMessageContainer
-			ref={ref}
-			id={id}
-			className={cn("AiChatMessageAgent" satisfies AiChatMessageAgent_ClassNames, className)}
-			{...rest}
-		>
-			<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
-				<AiChatMessageContent
-					key={contentKey}
-					message={message}
-					isChatRunning={isRunning}
-					liveJobs={liveJobs}
-					threadId={selectedThreadId}
-					onToolOutput={onToolOutput}
-					onToolResumeStream={onToolResumeStream}
-					onToolStop={onToolStop}
-				/>
-				{streamErrorText && (
-					<div className={"AiChatMessageAgent-error" satisfies AiChatMessageAgent_ClassNames}>{streamErrorText}</div>
-				)}
+	const bubble = (
+		<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
+			<AiChatMessageContent
+				key={contentKey}
+				message={message}
+				isChatRunning={isRunning}
+				liveJobs={liveJobs}
+				threadId={selectedThreadId}
+				onToolOutput={onToolOutput}
+				onToolResumeStream={onToolResumeStream}
+				onToolStop={onToolStop}
+			/>
+			{streamErrorText && (
+				<div className={"AiChatMessageAgent-error" satisfies AiChatMessageAgent_ClassNames}>{streamErrorText}</div>
+			)}
+			{/* A phone shows these actions in the long-press menu instead. */}
+			{!isMobile && (
 				<div className={"AiChatMessageAgent-actions" satisfies AiChatMessageAgent_ClassNames} hidden={isEditing}>
 					<CopyIconButton
 						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
@@ -2394,7 +2613,56 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 						<RefreshCw className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
 					</MyIconButton>
 				</div>
-			</AiChatMessageBubble>
+			)}
+		</AiChatMessageBubble>
+	);
+
+	return (
+		<AiChatMessageContainer
+			ref={ref}
+			id={id}
+			className={cn("AiChatMessageAgent" satisfies AiChatMessageAgent_ClassNames, className)}
+			{...rest}
+		>
+			{isMobile ? (
+				<AiChatMessagePhoneMenu
+					copyText={text}
+					items={[
+						{
+							label: "Branch chat here",
+							icon: <GitBranch />,
+							disabled: !selectedThreadId,
+							onSelect: handleBranchChat,
+						},
+						...(branchAnchorIds.length > 1
+							? [
+									{
+										label: `Previous branch (${branchIndex + 1}/${branchAnchorIds.length})`,
+										icon: <ChevronLeft />,
+										disabled: false,
+										onSelect: handleBranchPrev,
+									},
+									{
+										label: `Next branch (${branchIndex + 1}/${branchAnchorIds.length})`,
+										icon: <ChevronRight />,
+										disabled: false,
+										onSelect: handleBranchNext,
+									},
+								]
+							: []),
+						{
+							label: "Regenerate response",
+							icon: <RefreshCw />,
+							disabled: false,
+							onSelect: handleReload,
+						},
+					]}
+				>
+					{bubble}
+				</AiChatMessagePhoneMenu>
+			) : (
+				bubble
+			)}
 		</AiChatMessageContainer>
 	);
 });
