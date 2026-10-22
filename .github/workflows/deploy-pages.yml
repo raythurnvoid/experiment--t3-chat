@@ -30,9 +30,11 @@ jobs:
       # packages/native-popovers submodule.
       # Do not recurse the whole .gitmodules list. That also clones
       # references-submodules, which the frontend build does not use.
+      # Frozen installs need every locked workspace's package.json, including test packages.
       - name: Checkout app build submodules
         run: |
           git submodule update --init --depth 1 -- \
+            packages/app/vendor/convex-test \
             packages/app/vendor/headless-tree \
             packages/app/vendor/just-bash \
             packages/app/vendor/mastra \

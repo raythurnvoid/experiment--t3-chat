@@ -25,9 +25,11 @@ jobs:
           lfs: true
 
       # Same submodules as deploy-pages.yml. Keep both lists equal.
+      # Frozen installs need every locked workspace's package.json, including test packages.
       - name: Checkout app build submodules
         run: |
           git submodule update --init --depth 1 -- \
+            packages/app/vendor/convex-test \
             packages/app/vendor/headless-tree \
             packages/app/vendor/just-bash \
             packages/app/vendor/mastra \
