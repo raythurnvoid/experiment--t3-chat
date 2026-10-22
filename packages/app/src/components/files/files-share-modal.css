@@ -58,7 +58,8 @@
 			padding-bottom: 0;
 		}
 
-		/* "Anyone on the web" gets focus when its select goes away. Same outline as the people list. */
+		/* "Anyone on the web" gets focus when its select goes away, and "Anyone with the link" when its
+		   media box does. Same outline as the people list. */
 		&:focus-visible {
 			outline: 2px solid var(--color-fg-12);
 			outline-offset: 2px;

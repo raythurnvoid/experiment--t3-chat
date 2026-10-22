@@ -554,6 +554,28 @@ describe("FilesShareModal", () => {
 		expect(document.activeElement).toBe(screen.getByRole("group", { name: "Images and videos" }));
 	});
 
+	test("keeps focus in the dialog when another tab ends the link", async () => {
+		mockShareState({ ...FILE_SHARE, link: LINK });
+		mediaQueryMock.mockResolvedValue({
+			media: [
+				{ available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canManage: true, isPublic: false },
+			],
+		});
+		const { rerender } = renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
+		const makePublic = await screen.findByRole("button", { name: "Make Photo.png public" });
+		makePublic.focus();
+		expect(document.activeElement).toBe(makePublic);
+
+		// The live share state loses the link, so the media box and its focused button go away.
+		mockShareState(FILE_SHARE);
+		rerender(<FilesShareModal nodeId={"node_1" as app_convex_Id<"files_nodes">} onClose={() => {}} />);
+
+		expect(screen.queryByRole("group", { name: "Images and videos" })).toBeNull();
+		await waitFor(() => expect(document.activeElement).toBe(linkSection()));
+	});
+
 	test("says when a public image still cannot show, and shows rows the caller cannot change", async () => {
 		mockShareState({ ...FILE_SHARE, link: LINK });
 		const photo = {
