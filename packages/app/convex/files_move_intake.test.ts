@@ -98,13 +98,13 @@ describe("paged Move input scale", () => {
 		const { runId } = await upload_repeated_source(fixture, 1_001);
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }),
 			"duplicate input completes one root",
 		).toMatchObject({
 			activity: { status: "succeeded", progress: { discovered: 1, total: 1, completed: 1, failed: 0, canceled: 0 } },
 		});
 		expect(
-			await asUser.query(api.files_transfer_queries.list_items, {
+			await asUser.query(api.files_transfer_status.list_items, {
 				membershipId: db.membershipId,
 				runId,
 				state: "completed",
@@ -253,7 +253,7 @@ describe("paged Move input scale", () => {
 			expect(page.length, "each query returns at most its requested input positions").toBeLessThanOrEqual(page.limit);
 		}
 		await test_finish_transfer_run(asUser, runId);
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "succeeded", progress: { discovered: 1, total: 1, completed: 1, failed: 0, canceled: 0 } },
 		});
 		await t.run(async (ctx) => {

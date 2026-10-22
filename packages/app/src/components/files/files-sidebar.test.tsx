@@ -116,7 +116,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		...original,
 		useConvex: () => ({
 			query: async (query: FunctionReference<"query">, args: unknown) =>
-				getFunctionName(query) === "files_transfer_queries:get_move_acceptance" ? null : creationPolicy(query, args),
+				getFunctionName(query) === "files_transfer_status:get_move_acceptance" ? null : creationPolicy(query, args),
 			mutation: createNode,
 			action: createNode,
 		}),
@@ -130,7 +130,7 @@ vi.mock("convex/react", async (importOriginal) => {
 				getFunctionName(query) === "files_tree:get_file_node_for_membership"
 			)
 				return undefined;
-			if (getFunctionName(query) === "files_transfer_queries:get") return null;
+			if (getFunctionName(query) === "files_transfer_status:get") return null;
 			if (getFunctionName(query) === "files_tree:get_workspace_move_view")
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
@@ -524,7 +524,7 @@ describe("FilesSidebar", () => {
 		expect(view.getByRole("treeitem", { name: "bravo" })).toBeTruthy();
 		expect(view.queryByRole("treeitem", { name: "renamed" })).toBeNull();
 		await waitFor(() =>
-			expect(queryCalls).toContainEqual(["files_transfer_queries:get", { membershipId: "membership", runId: "rename-run" }]),
+			expect(queryCalls).toContainEqual(["files_transfer_status:get", { membershipId: "membership", runId: "rename-run" }]),
 		);
 	});
 

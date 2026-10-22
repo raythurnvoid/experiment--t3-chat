@@ -148,8 +148,8 @@ export async function test_move_nodes(
 		if (sealed._nay) return Result({ _nay: sealed._nay });
 		await test_finish_transfer_run(asUser, runId, args.onStep);
 		if (args.replaceNodeId) {
-			const view = await asUser.query(api.files_transfer_queries.get, { membershipId: args.membershipId, runId });
-			const items = await asUser.query(api.files_transfer_queries.list_items, {
+			const view = await asUser.query(api.files_transfer_status.get, { membershipId: args.membershipId, runId });
+			const items = await asUser.query(api.files_transfer_status.list_items, {
 				membershipId: args.membershipId, runId, state: "conflict", paginationOpts: { numItems: 1, cursor: null },
 			});
 			const conflict = items?.page[0];
@@ -167,7 +167,7 @@ export async function test_move_nodes(
 		if (activity?.status === "succeeded") return Result({ _yay: null });
 		const cohort = await t.run(ctx => ctx.db.query("files_move_cohorts")
 			.withIndex("by_origin_run", q => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).order("desc").first());
-		const conflicts = activity?.status === "awaiting_input" ? await asUser.query(api.files_transfer_queries.list_items, {
+		const conflicts = activity?.status === "awaiting_input" ? await asUser.query(api.files_transfer_status.list_items, {
 			membershipId: args.membershipId, runId, state: "conflict", paginationOpts: { numItems: 1, cursor: null },
 		}) : null;
 		const conflict = conflicts?.page[0];

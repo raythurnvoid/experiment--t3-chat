@@ -50,7 +50,7 @@ type FilesClipboard = {
 	revision: string;
 };
 
-type FilesTransferRun = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_queries.get>>;
+type FilesTransferRun = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_status.get>>;
 
 const FilesClipboardContext = createContext<{
 	clipboard: FilesClipboard | null;
@@ -72,7 +72,7 @@ const FilesClipboardProvider = Object.assign(
 		const { userId, membershipId, children } = props;
 		const convex = useConvex();
 		const { pendingStopSourceIds } = AppActivitiesProvider.useContext();
-		const currentRuns = useQuery(app_convex_api.files_transfer_queries.list_current, { membershipId });
+		const currentRuns = useQuery(app_convex_api.files_transfer_status.list_current, { membershipId });
 		const [clipboard, setClipboardValue] = useState<FilesClipboard | null>(null);
 		const [runId, setRunId] = useState<app_convex_Id<"files_transfer_runs"> | null>(null);
 		const [isRunOpen, setIsRunOpen] = useState(false);
@@ -84,7 +84,7 @@ const FilesClipboardProvider = Object.assign(
 			resumeRequired?: boolean;
 			canForgetSelection?: boolean;
 		} | null>(null);
-		const run = useQuery(app_convex_api.files_transfer_queries.get, runId ? { membershipId, runId } : "skip");
+		const run = useQuery(app_convex_api.files_transfer_status.get, runId ? { membershipId, runId } : "skip");
 		const [cutRuns, setCutRuns] = useState<
 			{
 				runId: app_convex_Id<"files_transfer_runs">;
@@ -154,7 +154,7 @@ const FilesClipboardProvider = Object.assign(
 		const retireAcceptedMove = useFn(async (request: NonNullable<typeof startRequestRef.current>) => {
 			if (!request.storedMove || (request.runId && request.stopRequested)) return false;
 			// Another tab may have accepted the selection and removed its saved pages.
-			const accepted = await convex.query(app_convex_api.files_transfer_queries.get_move_acceptance, {
+			const accepted = await convex.query(app_convex_api.files_transfer_status.get_move_acceptance, {
 				membershipId,
 				requestId: request.requestId,
 			});
@@ -560,7 +560,7 @@ const FilesCutReceipt = memo(function FilesCutReceipt(props: {
 }) {
 	const { membershipId, runId, revision, onFinish } = props;
 	const convex = useConvex();
-	const run = useQuery(app_convex_api.files_transfer_queries.get, {
+	const run = useQuery(app_convex_api.files_transfer_status.get, {
 		membershipId,
 		runId,
 	});
@@ -579,7 +579,7 @@ const FilesCutReceipt = memo(function FilesCutReceipt(props: {
 		(async (/* iife */) => {
 			const receipt = receiptRef.current;
 			while (active) {
-				const page = await convex.query(app_convex_api.files_transfer_queries.list_items, {
+				const page = await convex.query(app_convex_api.files_transfer_status.list_items, {
 					membershipId,
 					runId,
 					state: "completed",
@@ -749,7 +749,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 		setCursors([null]);
 	}
 	const itemPage = useQuery(
-		app_convex_api.files_transfer_queries.list_items,
+		app_convex_api.files_transfer_status.list_items,
 		run
 			? {
 					membershipId,

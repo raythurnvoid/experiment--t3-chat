@@ -675,9 +675,9 @@ beforeEach(() => {
 				return hasDrafts;
 			case "organizations:list":
 				return { workspaceIdsPermissionsDict: { workspace_1: workspacePermissions } };
-			case "files_transfer_queries:list_current":
+			case "files_transfer_status:list_current":
 				return [];
-			case "files_transfer_queries:get":
+			case "files_transfer_status:get":
 			case "files_pending_update_runs:get":
 				return null;
 			case "users:get_anagraphic":

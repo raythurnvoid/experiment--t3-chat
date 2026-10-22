@@ -337,7 +337,7 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   nodeIds }` from the same page context. The ids of archived roots stay the same. Archive only. Never delete catalog folders.
 - A copy that overlaps a running job waits. `convex data files_subtree_ops` shows it `queued` with
   `blockedByOpId` set. When the blocker ends, it becomes `running` and its card shows Stop.
-- For Move and Copy, use `files_transfer_queries.get` and `list_items`. For repair, Archive, Restore and
+- For Move and Copy, use `files_transfer_status.get` and `list_items`. For repair, Archive, Restore and
   Restrict work, read `files_subtree_ops`, `files_subtree_op_walks` (the step
   number), and `files_subtree_op_nodes` (the folder queue). All three are empty when no job runs. Read
   each step's result with `convex data _scheduled_functions --limit 60` and look for
@@ -691,7 +691,7 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 - Check Activity with enough history to scroll. Each card must keep its full height, with readable
   status and clickable progress/Stop controls. Flex shrinking previously clipped cards to a few
   pixels; `.AppNotificationsActivityItem` now keeps its size while the list scrolls.
-- Read progress through `files_transfer_queries.get({ membershipId, runId })` and enumerate all tree pages
+- Read progress through `files_transfer_status.get({ membershipId, runId })` and enumerate all tree pages
   after completion. Assert ids and parent ids for moves; new ids, names, and saved content for
   copies. Clipboard readiness alone does not prove a successful paste.
 - For folder Cut permissions, use a [second member](second-user-fixtures.md). As owner, restrict a
@@ -1712,7 +1712,7 @@ copy fails with `The source file is still saving. Try again.` while its siblings
 That is the cheap way to stage a partial run and then press `Retry remaining files`.
 
 Read the result back from the server, not from the modal text alone:
-`files_transfer_queries:list_items` with `{ membershipId, runId, paginationOpts }` gives each item's
+`files_transfer_status:list_items` with `{ membershipId, runId, paginationOpts }` gives each item's
 `state`, `outcome`, resolved `source` and `output` paths, and `conflictKind`. List the destination
 folder with `files_tree:list_tree_children` (`parentId` set to the folder id, once with
 `kind: "folder"` and once with `kind: "file"`, `archived: false`, `restricted: false`).

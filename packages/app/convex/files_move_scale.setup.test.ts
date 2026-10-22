@@ -204,7 +204,7 @@ export async function finish_move(fixture: Fixture, run: Awaited<ReturnType<type
 		await t.finishInProgressScheduledFunctions();
 		if ((await t.run((ctx) => ctx.db.get("activities", run.activityId)))?.finishedAt !== undefined) {
 			expect(
-				await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: run.runId }),
+				await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: run.runId }),
 				`all ${total} selected roots complete`,
 			).toMatchObject({
 				activity: { status: "succeeded", progress: { total, completed: total, canceled: 0, failed: 0 } },
@@ -316,7 +316,7 @@ export function metadata_payload(doc: Metadata) {
 
 /**
  * Upload `total` files at the root and Move them all in one public Move. The test files pick a count past
- * the view's moved roots (`files_transfer_queries_MAX_SELECTED_NODES`).
+ * the view's moved roots (`files_transfer_status_MAX_SELECTED_NODES`).
  */
 export async function move_selected_files(total: number) {
 	const fixture = await create_fixture();
@@ -358,7 +358,7 @@ export async function move_selected_files(total: number) {
 	const peaks = measure_move();
 	const run = await start_move(fixture, sourceIds, target._id);
 	await finish_move(fixture, run, total);
-	const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: run.runId });
+	const view = await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: run.runId });
 	expect(view?.movedNodeIds.length, "the selection is bigger than the view's moved roots").toBeLessThan(total);
 	await expect_moved_markers(fixture, sourceIds, (node) => `/target/${node.name}`);
 	console.info("Move scale selected files", JSON.stringify(Object.fromEntries(peaks)));

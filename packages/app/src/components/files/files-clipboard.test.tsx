@@ -12,8 +12,8 @@ import {
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { FilesMoveIntake } from "@/lib/files-move-intake.ts";
 
-type TransferRun = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_queries.get>>;
-type TransferItemPage = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_queries.list_items>>;
+type TransferRun = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_status.get>>;
+type TransferItemPage = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_status.list_items>>;
 
 const {
 	mutationMock,
@@ -66,7 +66,7 @@ vi.mock("convex/react", async (importOriginal) => {
 	const convex = {
 		mutation: mutationMock,
 		query: (reference: FunctionReference<"query">, args: { runId?: string; requestId?: string }) =>
-			getFunctionName(reference) === "files_transfer_queries:get_move_acceptance"
+			getFunctionName(reference) === "files_transfer_status:get_move_acceptance"
 				? intakeQueryMock(reference, args)
 				: receiptQueryMock(reference, args),
 	};
@@ -87,10 +87,10 @@ vi.mock("convex/react", async (importOriginal) => {
 				() => queryState.revision,
 			);
 			if (args === "skip") return undefined;
-			if (getFunctionName(reference) === "files_transfer_queries:list_current") {
+			if (getFunctionName(reference) === "files_transfer_status:list_current") {
 				return revision < 0 ? undefined : queryState.runs;
 			}
-			if (getFunctionName(reference) === "files_transfer_queries:list_items") {
+			if (getFunctionName(reference) === "files_transfer_status:list_items") {
 				itemQueryMock(args);
 				const cursor = args.paginationOpts?.cursor ?? "first";
 				const itemPage = queryState.itemPages[`${args.state ?? "all"}:${cursor}`] ?? queryState.itemPages[cursor];

@@ -160,7 +160,7 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		});
 		// No step callback: use the same chain mode as the real Move worker.
 		await test_finish_transfer_run(asOwner, runId);
-		expect((await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+		expect((await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
 			"succeeded",
 		);
 	};

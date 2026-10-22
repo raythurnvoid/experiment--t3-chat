@@ -78,7 +78,7 @@ describe("paged Move runs", () => {
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 50_000);
 
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }),
 			"all 201 selected roots complete",
 		).toMatchObject({
 			activity: { status: "succeeded", progress: { total: 201, completed: 201, canceled: 0, failed: 0 } },

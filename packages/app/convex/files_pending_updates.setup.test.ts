@@ -1567,7 +1567,7 @@ export async function run_agent_move_for_test(
 		}),
 	).toEqual({ _yay: null });
 	await test_finish_transfer_run(draft.asUser, runId);
-	const view = await draft.asUser.query(api.files_transfer_queries.get, { membershipId: draft.membershipId, runId });
+	const view = await draft.asUser.query(api.files_transfer_status.get, { membershipId: draft.membershipId, runId });
 	if (!view) throw new Error("Expected the transfer");
 	return view;
 }

@@ -131,7 +131,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		...original,
 		useConvex: () => ({
 			query: async (query: FunctionReference<"query">, args: unknown) =>
-				getFunctionName(query) === "files_transfer_queries:get_move_acceptance" ? null : creationPolicy(query, args),
+				getFunctionName(query) === "files_transfer_status:get_move_acceptance" ? null : creationPolicy(query, args),
 			mutation: createNode,
 			// The custom-field search answers by its metadata clause, with all its rows at once.
 			action: async (action: FunctionReference<"action">, args: { plan?: unknown }) => {
@@ -150,7 +150,7 @@ vi.mock("convex/react", async (importOriginal) => {
 				getFunctionName(query) === "files_tree:get_file_node_for_membership"
 			)
 				return undefined;
-			if (getFunctionName(query) === "files_transfer_queries:get") return null;
+			if (getFunctionName(query) === "files_transfer_status:get") return null;
 			if (getFunctionName(query) === "files_tree:get_workspace_move_view")
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;

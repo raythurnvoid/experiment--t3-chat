@@ -164,7 +164,7 @@ describe.each(["saved", "private"] as const)("%s Copy action replies", (kind) =>
 							result: { kind: "success", returnValue: null },
 						});
 					}
-					const run = await asUser.query(api.files_transfer_queries.get, { membershipId: source.membershipId, runId });
+					const run = await asUser.query(api.files_transfer_status.get, { membershipId: source.membershipId, runId });
 					if (run?.activity.status === "succeeded") break;
 				}
 				const item = await t.run((ctx) =>

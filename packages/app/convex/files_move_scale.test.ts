@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("public Move scale", () => {
-	// The Move view reads at most 200 moved roots (`files_transfer_queries_MAX_SELECTED_NODES`). 201 roots
+	// The Move view reads at most 200 moved roots (`files_transfer_status_MAX_SELECTED_NODES`). 201 roots
 	// go past it and use 3 input pages of `files_TRANSFER_SELECTION_PAGE_SIZE`. It runs only with
 	// test:files:full-size. files_move_scale.selection.test.ts lowers both limits and crosses them with 21 roots.
 	test(

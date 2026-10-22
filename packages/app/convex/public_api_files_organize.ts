@@ -23,7 +23,7 @@ import { activities_is_active } from "./activities_db.ts";
 import { files_nodes_db_archive_named_nodes, files_nodes_db_restore_named_nodes } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_transfer_db_start_for_api } from "./files_transfer.ts";
-import { files_transfer_queries_db_require_activity } from "./files_transfer_queries.ts";
+import { files_transfer_status_db_require_activity } from "./files_transfer_status.ts";
 import { public_api_db_revalidate_file_write_principal, public_api_get_invalid_name_message } from "./public_api.ts";
 import { public_api_validate_canonical_folder_path } from "./public_api_plugin_files.ts";
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
@@ -1025,7 +1025,7 @@ export const transfer_paths = internalMutation({
 					status: 409,
 				});
 			}
-			const activity = await files_transfer_queries_db_require_activity(ctx, previous._id);
+			const activity = await files_transfer_status_db_require_activity(ctx, previous._id);
 			return {
 				jobId: activity._id,
 				isDone: !activities_is_active(activity.status),

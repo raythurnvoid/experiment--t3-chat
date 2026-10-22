@@ -65,7 +65,7 @@ describe("start", () => {
 		expect((await start_transfer(asUser, { ...args, requestId: "another-request" }))._nay?.message).toBe(
 			"A transfer is already running in this workspace",
 		);
-		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toMatchObject([
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
 			{
 				_id: first._yay.runId,
 				step: "discover",
@@ -95,7 +95,7 @@ describe("start", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: started._yay.runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: started._yay.runId }),
 		).toMatchObject({
 			activity: {
 				status: "failed",
@@ -130,18 +130,18 @@ describe("start", () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const member = await add_member(fixture);
 		const runId = await start_copy(fixture, [fixture.folders.get("/source")!]);
-		expect(await member.asUser.query(api.files_transfer_queries.get, { membershipId: member.membershipId, runId })).toBeNull();
+		expect(await member.asUser.query(api.files_transfer_status.get, { membershipId: member.membershipId, runId })).toBeNull();
 		expect(
-			await member.asUser.query(api.files_transfer_queries.list_items, {
+			await member.asUser.query(api.files_transfer_status.list_items, {
 				membershipId: member.membershipId,
 				runId,
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
 		).toBeNull();
-		expect(await member.asUser.query(api.files_transfer_queries.list_current, { membershipId: member.membershipId })).toEqual(
+		expect(await member.asUser.query(api.files_transfer_status.list_current, { membershipId: member.membershipId })).toEqual(
 			[],
 		);
-		const before = await fixture.asUser.query(api.files_transfer_queries.get, {
+		const before = await fixture.asUser.query(api.files_transfer_status.get, {
 			membershipId: fixture.db.membershipId,
 			runId,
 		});
@@ -149,10 +149,10 @@ describe("start", () => {
 			await member.asUser.mutation(api.files_transfer.stop, { membershipId: member.membershipId, runId }),
 		).toEqual({ _yay: null });
 		expect(
-			await fixture.asUser.query(api.files_transfer_queries.get, { membershipId: fixture.db.membershipId, runId }),
+			await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId }),
 		).toEqual(before);
 		expect(
-			(await fixture.asUser.query(api.files_transfer_queries.get, { membershipId: fixture.db.membershipId, runId }))?.activity
+			(await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId }))?.activity
 				.status,
 		).toBe("running");
 	});
@@ -165,18 +165,18 @@ describe("start", () => {
 			if (userState === "missing") await ctx.db.delete("users", db.userId);
 			else await ctx.db.patch("users", db.userId, { deletedAt: Date.now() });
 		});
-		await expect(asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).rejects.toThrow(
+		await expect(asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).rejects.toThrow(
 			"Unauthenticated",
 		);
 		await expect(
-			asUser.query(api.files_transfer_queries.list_items, {
+			asUser.query(api.files_transfer_status.list_items, {
 				membershipId: db.membershipId,
 				runId,
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
 		).rejects.toThrow("Unauthenticated");
 		await expect(
-			asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId }),
+			asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId }),
 		).rejects.toThrow("Unauthenticated");
 	});
 
@@ -197,7 +197,7 @@ describe("start", () => {
 		expect(started._nay).toBeUndefined();
 		if (started._nay) return;
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: started._yay.runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: started._yay.runId }),
 		).toMatchObject({ step: "discover", activity: { progress: { discovered: count } } });
 		expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toHaveLength(count);
 	});
@@ -221,7 +221,7 @@ describe("Rename at a group boundary", () => {
 			path: "second",
 		});
 		if (!first._yay || !second._yay) throw new Error("Expected both Renames");
-		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toMatchObject([
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
 			{ _id: first._yay.runId, activity: { source: { isRename: true }, status: "queued" } },
 		]);
 		expect(
@@ -238,11 +238,11 @@ describe("Rename at a group boundary", () => {
 			runId: first._yay.runId,
 		})).toEqual({ _yay: null });
 		await test_finish_transfer_run(asUser, first._yay.runId);
-		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toMatchObject([
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
 			{ _id: second._yay.runId },
 		]);
 		await test_finish_transfer_run(asUser, second._yay.runId);
-		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toEqual([]);
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toEqual([]);
 	});
 
 	test("lets queued Rename run after Stop finishes the bulk Move group", async () => {
@@ -307,7 +307,7 @@ describe("Rename at a group boundary", () => {
 		expect((await t.run((ctx) => ctx.db.get("activities", rename._yay!.activityId)))?.status).toBe("queued");
 		await test_finish_transfer_run(asUser, moved._yay.runId);
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: moved._yay.runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: moved._yay.runId }),
 		).toMatchObject({ activity: { status: "canceled", progress: { completed: 0, canceled: 2 } } });
 		expect((await get_node(fixture, "/first"))?._id).toBe(folders.get("/first"));
 		expect((await get_node(fixture, "/first/child"))?._id).toBe(folders.get("/first/child"));
@@ -378,7 +378,7 @@ describe("Rename at a group boundary", () => {
 		expect((await get_node(fixture, "/renamed"))?._id).toBe(folders.get("/other"));
 		await test_finish_transfer_run(asUser, moved._yay.runId);
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: moved._yay.runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: moved._yay.runId }),
 		).toMatchObject({ activity: { status: "succeeded", progress: { completed: 2 } } });
 	});
 
@@ -542,12 +542,12 @@ describe("Rename at a group boundary", () => {
 		if (!first._yay || !second._yay) throw new Error("Expected both Renames");
 		await t.mutation(internal.files_transfer.advance, { runId: second._yay.runId });
 		expect((await t.run((ctx) => ctx.db.get("activities", second._yay!.activityId)))?.status).toBe("queued");
-		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toMatchObject([
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
 			{ _id: runId },
 		]);
 		await test_finish_transfer_run(asUser, first._yay.runId);
 		await test_finish_transfer_run(asUser, second._yay.runId);
-		const conflict = await asUser.query(api.files_transfer_queries.get, {
+		const conflict = await asUser.query(api.files_transfer_status.get, {
 			membershipId: db.membershipId,
 			runId: second._yay.runId,
 		});
@@ -600,9 +600,9 @@ describe("Rename at a group boundary", () => {
 		await test_finish_transfer_run(asUser, second._yay.runId);
 		// The Activity card opens the paused Rename through get, so it does not need list_current.
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: second._yay.runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: second._yay.runId }),
 		).toMatchObject({ activity: { status: "awaiting_input" }, conflicts: [{ kind: "destination_changed" }] });
-		expect(await asUser.query(api.files_transfer_queries.list_current, { membershipId: db.membershipId })).toEqual([]);
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toEqual([]);
 		const copy = await start_transfer(asUser, {
 			membershipId: db.membershipId,
 			requestId: "copy-during-paused-rename",
@@ -630,7 +630,7 @@ describe("Rename at a group boundary", () => {
 		).toEqual({ _yay: null });
 		await test_finish_transfer_run(asUser, renamed._yay.runId);
 		expect((await get_node(fixture, "/other"))?._id).toBe(folders.get("/other"));
-		expect((await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
+		expect((await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
 			"running",
 		);
 		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
@@ -903,7 +903,7 @@ describe("start_for_agent", () => {
 				});
 			expect(drafts.map((draft) => draft.name)).toEqual(["cross-source", "child"]);
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
-			const items = await asUser.query(api.files_transfer_queries.list_items, {
+			const items = await asUser.query(api.files_transfer_status.list_items, {
 				membershipId: db.membershipId,
 				runId: started._yay.runId,
 				paginationOpts: { numItems: 20, cursor: null },
@@ -1365,7 +1365,7 @@ describe("stop", () => {
 		);
 		const args = { membershipId: db.membershipId, runId };
 		expect((await asUser.mutation(api.files_transfer.stop, args))._nay).toBeUndefined();
-		const stopping = await asUser.query(api.files_transfer_queries.get, args);
+		const stopping = await asUser.query(api.files_transfer_status.get, args);
 		expect(stopping).toMatchObject({
 			activity: { status: "stopping", progress: { discovered: 101, total: null, canceled: 50 } },
 			controls: { canStop: false, canRetry: false, canDismiss: false },
@@ -1383,11 +1383,11 @@ describe("stop", () => {
 			)._nay?.message,
 		).toBe("A transfer is already running in this workspace");
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await asUser.query(api.files_transfer_queries.get, args)).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, args)).toMatchObject({
 			activity: { status: "stopping", progress: { canceled: 100 } },
 		});
 		await t.mutation(internal.files_transfer.advance, { runId });
-		const finished = await asUser.query(api.files_transfer_queries.get, args);
+		const finished = await asUser.query(api.files_transfer_status.get, args);
 		// Stop came before discovery ended, so Retry would copy an incomplete list.
 		expect(finished).toMatchObject({
 			activity: { status: "canceled", progress: { total: null, canceled: 101, completed: 0, blocked: 0 } },
@@ -1396,7 +1396,7 @@ describe("stop", () => {
 		expect(finished?.activity.finishedAt).toBeTypeOf("number");
 		await asUser.mutation(api.files_transfer.stop, args);
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await asUser.query(api.files_transfer_queries.get, args)).toEqual(finished);
+		expect(await asUser.query(api.files_transfer_status.get, args)).toEqual(finished);
 		await t.run(async (ctx) => {
 			const items = await ctx.db.query("files_transfer_items").collect();
 			expect(items).toHaveLength(101);
@@ -1415,7 +1415,7 @@ describe("stop", () => {
 		const args = { membershipId: db.membershipId, runId };
 		await asUser.mutation(api.files_transfer.stop, args);
 		await asUser.mutation(api.files_transfer.stop, args);
-		expect(await asUser.query(api.files_transfer_queries.get, args)).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, args)).toMatchObject({
 			activity: { status: "canceled", progress: { total: 2, blocked: 0, canceled: 2 } },
 			conflicts: [],
 		});
@@ -1429,7 +1429,7 @@ describe("stop", () => {
 			(await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId }))._nay,
 		).toBeUndefined();
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "canceled", progress: { discovered: 1, total: null, canceled: 1, completed: 0 } },
 		});
 		expect(await get_node(fixture, "/target/source")).toBeNull();
@@ -1477,7 +1477,7 @@ describe("stop", () => {
 			(await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId }))._nay,
 		).toBeUndefined();
 		expect(
-			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.status,
+			(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status,
 		).toBe("stopping");
 		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: item._id, attempt: item.attempt });
 		await t.mutation(internal.files_transfer.handle_copy_complete, {
@@ -1485,7 +1485,7 @@ describe("stop", () => {
 			context: { itemId: item._id, attempt: item.attempt },
 			result: { kind: "canceled" },
 		});
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "canceled", progress: { completed: 1, canceled: 1 } },
 		});
 		expect((await get_node(fixture, "/target/source"))?._id).toBe(completed!._id);
@@ -1826,7 +1826,7 @@ describe("retry_remaining", () => {
 			outputTarget: null,
 		});
 		expect(
-			await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: retried._yay.runId }),
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: retried._yay.runId }),
 		).toMatchObject({ activity: { progress: { discovered: 2, skipped: 1, completed: 0 } } });
 		expect(await get_node(fixture, "/target/fails.bin")).toBeNull();
 	});
@@ -1993,7 +1993,7 @@ describe("retry_remaining", () => {
 		await asUser.mutation(api.files_transfer.stop, stopArgs);
 		await t.mutation(internal.files_transfer.advance, { runId: retried._yay.runId });
 		await asUser.mutation(api.files_transfer.stop, stopArgs);
-		expect((await asUser.query(api.files_transfer_queries.get, stopArgs))?.activity.status).toBe("stopping");
+		expect((await asUser.query(api.files_transfer_status.get, stopArgs))?.activity.status).toBe("stopping");
 		expect(await finish_folder_copy(fixture, retried._yay.runId)).toMatchObject({
 			activity: { status: "canceled", progress: { discovered: 56, total: 56, completed: 0, canceled: 56 } },
 		});
@@ -2280,7 +2280,7 @@ describe("move", () => {
 		expect(ended?.outputReviewUntil, "Stop must set the Move output review deadline").toBe(
 			Date.now() + 4 * 60 * 60 * 1000,
 		);
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "canceled", progress: { completed: 1, canceled: 1 } },
 		});
 		await expect(
@@ -2347,12 +2347,12 @@ describe("move", () => {
 		// Finish only this Move. The other user's choice must stay open.
 		await test_finish_transfer_run(member.asUser, moving._yay.runId);
 		expect(
-			await member.asUser.query(api.files_transfer_queries.get, moveArgs),
+			await member.asUser.query(api.files_transfer_status.get, moveArgs),
 			"An unrelated paused Copy must not block Move",
 		).toMatchObject({ activity: { status: "succeeded", progress: { completed: 1 } } });
 		expect((await get_node(fixture, "/target/moving"))?._id).toBe(folders.get("/moving"));
 		expect((await get_node(fixture, "/target/moving/child"))?._id).toBe(folders.get("/moving/child"));
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: copyRunId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: copyRunId })).toMatchObject({
 			activity: { status: "awaiting_input", progress: { completed: 0, blocked: 1 } },
 		});
 	});
@@ -2401,7 +2401,7 @@ describe("move", () => {
 			vi.setSystemTime(Date.now() + 5 * 60_000);
 			await t.mutation(internal.activities.recover_expired, { _test_disableReschedule: true });
 		}
-		const waiting = (await member.asUser.query(api.files_transfer_queries.get, secondArgs))?.activity;
+		const waiting = (await member.asUser.query(api.files_transfer_status.get, secondArgs))?.activity;
 		expect(waiting?.status, "a Paste waiting for a Move does not time out").toBe("queued");
 		expect(waiting?.errorCode, "the waiting Paste says why").toBe("waiting_for_move");
 		expect((await slot())?.cohortId, "the first Move still holds the workspace").not.toBeNull();
@@ -2411,7 +2411,7 @@ describe("move", () => {
 		vi.setSystemTime(Date.now() + 31 * 60_000);
 		await t.mutation(internal.files_transfer.advance, { runId: second._yay.runId });
 		expect(
-			(await member.asUser.query(api.files_transfer_queries.get, secondArgs))?.activity,
+			(await member.asUser.query(api.files_transfer_status.get, secondArgs))?.activity,
 			"a Move that timed out while waiting says why",
 		).toMatchObject({
 			errorCode: "timed_out",
@@ -2456,7 +2456,7 @@ describe("move", () => {
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const runId = started._yay.runId;
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			step: "plan",
 			activity: { progress: { total: paths.length, completed: 0 } },
 		});
@@ -2540,7 +2540,7 @@ describe("move", () => {
 			if (started._nay) throw new Error(started._nay.message);
 			const runId = started._yay.runId;
 			const waiting = await finish_discovery(fixture, runId);
-			const page = await asUser.query(api.files_transfer_queries.list_items, {
+			const page = await asUser.query(api.files_transfer_status.list_items, {
 				membershipId: db.membershipId,
 				runId,
 				paginationOpts: { cursor: null, numItems: 50 },
@@ -2646,7 +2646,7 @@ describe("move", () => {
 		if (started._nay) throw new Error(started._nay.message);
 		const runId = started._yay.runId;
 		const waiting = await finish_discovery(fixture, runId);
-		const page = await asUser.query(api.files_transfer_queries.list_items, {
+		const page = await asUser.query(api.files_transfer_status.list_items, {
 			membershipId: db.membershipId,
 			runId,
 			paginationOpts: { cursor: null, numItems: 50 },
@@ -2727,7 +2727,7 @@ describe("move", () => {
 			const runId = started._yay.runId;
 			const waiting = await finish_discovery(fixture, runId);
 			const list = async () =>
-				(await asUser.query(api.files_transfer_queries.list_items, {
+				(await asUser.query(api.files_transfer_status.list_items, {
 					membershipId: db.membershipId,
 					runId,
 					paginationOpts: { cursor: null, numItems: 50 },
@@ -2878,7 +2878,7 @@ describe("move", () => {
 			if (started._nay) throw new Error(started._nay.message);
 			const runId = started._yay.runId;
 			await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
-			const view = await actor.query(api.files_transfer_queries.get, { membershipId, runId });
+			const view = await actor.query(api.files_transfer_status.get, { membershipId, runId });
 			expect(JSON.stringify(view)).not.toContain("hidden-name");
 			expect(view).toMatchObject({
 				activity: { status: "succeeded", progress: { completed: 2 }, errorMessage: null },
@@ -2967,7 +2967,7 @@ describe("move", () => {
 			)._nay,
 		).toBeUndefined();
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
-		const waiting = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
+		const waiting = await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId });
 		expect(waiting).toMatchObject({ activity: { status: "awaiting_input", progress: { completed: 1 } } });
 		expect(await get_node(fixture, "/one")).toBeNull();
 		expect((await get_node(fixture, "/two"))?._id).toBe(folders.get("/two"));
@@ -3033,7 +3033,7 @@ describe("move", () => {
 			})).toMatchObject({ _nay: { name: "move_busy" } });
 		});
 		expect(observedOldPath, "The test sees publication before stored path repair").toBe(true);
-		expect(await asUser.query(api.files_transfer_queries.get, {
+		expect(await asUser.query(api.files_transfer_status.get, {
 			membershipId: db.membershipId, runId: renamed._yay.runId,
 		})).toMatchObject({ activity: { status: "succeeded" } });
 		const newA = await asUser.mutation(api.files_nodes.create_folder_node, {
@@ -3092,7 +3092,7 @@ describe("move", () => {
 			parentId: folders.get("/shared")!, restrictedScopeNodeId: null,
 		});
 		await test_finish_transfer_run(member.asUser, runId);
-		expect(await member.asUser.query(api.files_transfer_queries.get, {
+		expect(await member.asUser.query(api.files_transfer_status.get, {
 			membershipId: member.membershipId, runId,
 		})).toMatchObject({ activity: { status: "failed", errorMessage: "Permission denied" } });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
@@ -3135,7 +3135,7 @@ describe("move", () => {
 		await t.mutation(internal.files_transfer.advance, { runId });
 		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)), "Move waits for the native scope repair before reading its source").toMatchObject({ step: "select" });
 		await test_finish_transfer_run(member.asUser, runId);
-		expect(await member.asUser.query(api.files_transfer_queries.get, {
+		expect(await member.asUser.query(api.files_transfer_status.get, {
 			membershipId: member.membershipId, runId,
 		})).toMatchObject({ activity: { status: "succeeded" } });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
@@ -3162,7 +3162,7 @@ describe("move", () => {
 			_yay: null,
 		});
 		await test_finish_transfer_run(asUser, runId);
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "failed", errorMessage: "Not found" },
 		});
 	});
@@ -3332,7 +3332,7 @@ describe("copy deadline", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		const stopping = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
+		const stopping = await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId });
 		expect(stopping).toMatchObject({
 			activity: { status: "stopping", errorCode: "timed_out", progress: { completed: 0, canceled: 1 } },
 		});
@@ -3345,13 +3345,13 @@ describe("copy deadline", () => {
 			result: { kind: "success" as const, returnValue: null },
 		};
 		await t.mutation(internal.files_transfer.handle_copy_complete, callback);
-		const finished = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
+		const finished = await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId });
 		expect(finished).toMatchObject({
 			activity: { status: "timed_out", errorMessage: "Paste timed out.", progress: { completed: 0, canceled: 1 } },
 		});
 		vi.setSystemTime(deadlineAt + 1000);
 		await t.mutation(internal.files_transfer.handle_copy_complete, callback);
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toEqual(finished);
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toEqual(finished);
 	});
 });
 
@@ -3458,7 +3458,7 @@ describe("changed folders", () => {
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		expect(await finish_folder_copy(fixture, runId)).toMatchObject({ activity: { status: "succeeded" } });
 		const receipt = () =>
-			asUser.query(api.files_transfer_queries.list_items, {
+			asUser.query(api.files_transfer_status.list_items, {
 				membershipId: db.membershipId,
 				runId,
 				paginationOpts: { numItems: 10, cursor: null },
@@ -3499,7 +3499,7 @@ describe("changed folders", () => {
 			)._nay,
 		).toBeUndefined();
 		await t.mutation(internal.files_transfer.advance, { runId });
-		const view = await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
+		const view = await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId });
 		expect(view).toMatchObject({
 			activity: { status: "awaiting_input", progress: { completed: 0 } },
 			conflicts: [{ kind: "source_changed", sourceName: "source", sourcePath: "/source" }],
@@ -3536,7 +3536,7 @@ describe("changed folders", () => {
 			)._nay,
 		).toBeUndefined();
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId })).toMatchObject({
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toMatchObject({
 			activity: { status: "awaiting_input", progress: { completed: 1 } },
 			conflicts: [{ kind: "destination_changed" }],
 		});

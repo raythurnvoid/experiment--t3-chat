@@ -84,7 +84,7 @@ test.each(["finish", "replace", "stop-before", "stop-after"] as const)(
 				const activity = await f.t.run((ctx) => ctx.db.get("activities", activityId));
 				if (ending === "replace" && activity?.status === "awaiting_input") {
 					const run = (await f.t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))!;
-					const conflicts = await f.asUser.query(api.files_transfer_queries.list_items, {
+					const conflicts = await f.asUser.query(api.files_transfer_status.list_items, {
 						membershipId: f.db.membershipId,
 						runId: run._id,
 						state: "conflict",

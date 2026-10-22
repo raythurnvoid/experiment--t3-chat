@@ -47,19 +47,19 @@ describe("Move intake recovery lookup", () => {
 	test("returns only the owned Move request state", async () => {
 		const { t, db, asUser, runId } = await create_fixture();
 		expect(
-			await asUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await asUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: db.membershipId,
 				requestId: "saved-request",
 			}),
 		).toEqual({ runId, step: "apply", isFinished: false });
 		expect(
-			await asUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await asUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: db.membershipId,
 				requestId: "missing-request",
 			}),
 		).toBeNull();
 		await expect(
-			t.query(api.files_transfer_queries.get_move_acceptance, {
+			t.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: db.membershipId,
 				requestId: "saved-request",
 			}),
@@ -80,26 +80,26 @@ describe("Move intake recovery lookup", () => {
 		);
 		const asOtherUser = t.withIdentity({ issuer: "https://clerk.test", external_id: otherUser.userId });
 		expect(
-			await asOtherUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await asOtherUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: db.membershipId,
 				requestId: "saved-request",
 			}),
 		).toBeNull();
 		expect(
-			await asOtherUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await asOtherUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: otherUser.membershipId,
 				requestId: "saved-request",
 			}),
 		).toBeNull();
 		expect(
-			await asUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await asUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: otherWorkspace.membershipId,
 				requestId: "saved-request",
 			}),
 		).toBeNull();
 		const copy = await create_fixture("copy");
 		expect(
-			await copy.asUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await copy.asUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: copy.db.membershipId,
 				requestId: "saved-request",
 			}),
@@ -110,7 +110,7 @@ describe("Move intake recovery lookup", () => {
 		const fixture = await create_fixture();
 		await reinvite(fixture);
 		expect(
-			await fixture.asUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await fixture.asUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: fixture.db.membershipId,
 				requestId: "saved-request",
 			}),
@@ -128,7 +128,7 @@ describe("Move intake recovery lookup", () => {
 		await fixture.t.finishAllScheduledFunctions(vi.runAllTimers);
 		await reinvite(fixture);
 		expect(
-			await fixture.asUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await fixture.asUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: fixture.db.membershipId,
 				requestId: "saved-request",
 			}),

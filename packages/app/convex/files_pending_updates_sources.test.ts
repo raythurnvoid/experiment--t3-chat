@@ -109,7 +109,7 @@ describe("pending source summaries", () => {
 				}),
 			).toEqual({ _yay: null });
 			for (let step = 0; step < 30; step++) {
-				const run = await f.asUser.query(api.files_transfer_queries.get, {
+				const run = await f.asUser.query(api.files_transfer_status.get, {
 					membershipId: f.current.membershipId,
 					runId: started._yay.runId,
 				});
@@ -117,7 +117,7 @@ describe("pending source summaries", () => {
 				await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 			}
 			expect(
-				await f.asUser.query(api.files_transfer_queries.get, {
+				await f.asUser.query(api.files_transfer_status.get, {
 					membershipId: f.current.membershipId,
 					runId: started._yay.runId,
 				}),
@@ -237,7 +237,7 @@ describe("pending source summaries", () => {
 			}),
 		).toEqual({ _yay: null });
 		for (let step = 0; step < 30; step++) {
-			const run = await f.asUser.query(api.files_transfer_queries.get, {
+			const run = await f.asUser.query(api.files_transfer_status.get, {
 				membershipId: f.current.membershipId,
 				runId: started._yay.runId,
 			});
@@ -245,7 +245,7 @@ describe("pending source summaries", () => {
 			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 		}
 		expect(
-			await f.asUser.query(api.files_transfer_queries.get, { membershipId: f.current.membershipId, runId: started._yay.runId }),
+			await f.asUser.query(api.files_transfer_status.get, { membershipId: f.current.membershipId, runId: started._yay.runId }),
 		).toMatchObject({ activity: { status: "succeeded" } });
 		const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 			membershipId: f.current.membershipId,

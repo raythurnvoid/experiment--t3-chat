@@ -260,7 +260,7 @@ describe("Move owner parent resolution", () => {
 				});
 				if (started._nay) throw new Error(started._nay.message);
 				await test_finish_transfer_run(f.asUser, started._yay.runId);
-				const result = await f.asUser.query(api.files_transfer_queries.get, {
+				const result = await f.asUser.query(api.files_transfer_status.get, {
 					membershipId: f.db.membershipId,
 					runId: started._yay.runId,
 				});

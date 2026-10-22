@@ -105,7 +105,7 @@ async function start_move(
 		const run = await f.t.run((ctx) => ctx.db.get("files_transfer_runs", started._yay.runId));
 		const activity = await f.t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
 		if (replace && activity?.status === "awaiting_input") {
-			const page = await f.asUser.query(api.files_transfer_queries.list_items, {
+			const page = await f.asUser.query(api.files_transfer_status.list_items, {
 				membershipId: f.db.membershipId,
 				runId: started._yay.runId,
 				state: "conflict",

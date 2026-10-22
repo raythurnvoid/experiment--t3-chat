@@ -180,7 +180,7 @@ describe("functions.ts", () => {
 			"convex/files_write_policy_runs.ts",
 			"convex/plugins_runtime.ts",
 		]);
-		const queue = ["activities_feed.ts", "files_transfer_queries.ts", "files_pending_target.ts"].map((name) =>
+		const queue = ["activities_feed.ts", "files_transfer_status.ts", "files_pending_target.ts"].map((name) =>
 			path.join(convexRoot, name),
 		);
 		const reached = new Set(queue);

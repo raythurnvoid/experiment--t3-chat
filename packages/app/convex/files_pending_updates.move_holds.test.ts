@@ -848,7 +848,7 @@ test("accepted Copy keeps its capture and resumes after a parent hold", async ()
 			release = () => finish(true);
 		},
 		async (runId) => {
-			const waiting = await f.editor.query(api.files_transfer_queries.get, { membershipId: f.membership._id, runId });
+			const waiting = await f.editor.query(api.files_transfer_status.get, { membershipId: f.membership._id, runId });
 			expect(waiting?.activity, "accepted Copy waits instead of failing on move_busy").toMatchObject({
 				status: "running",
 				errorCode: files_MOVE_WAIT_CODE,

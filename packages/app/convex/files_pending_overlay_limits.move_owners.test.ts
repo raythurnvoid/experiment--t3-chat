@@ -125,10 +125,10 @@ describe("paged Move transaction budgets", () => {
 		await finish_scheduled(
 			t,
 			async () =>
-				(await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !==
+				(await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !==
 				undefined,
 		);
-		const receipt = await asOwner.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId });
+		const receipt = await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId });
 		expect(peaks.get("accept")?.calls, "the large draft budget includes automatic acceptance").toBe(1);
 		console.info(
 			"singleton Move with six native 800KiB drafts",

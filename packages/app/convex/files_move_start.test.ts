@@ -601,7 +601,7 @@ describe("initial Move publication", () => {
 			throw new Error("reply lost after commit");
 		};
 		await expect(loseReply()).rejects.toThrow("reply lost after commit");
-		const found = await asUser.query(api.files_transfer_queries.get_move_acceptance, {
+		const found = await asUser.query(api.files_transfer_status.get_move_acceptance, {
 			membershipId: db.membershipId,
 			requestId: args.requestId,
 		});
@@ -628,7 +628,7 @@ describe("initial Move publication", () => {
 		await test_finish_transfer_run(asUser, found.runId);
 		expect(await asUser.mutation(api.files_transfer.accept_input, args)).toEqual(replayed);
 		expect(
-			await asUser.query(api.files_transfer_queries.get_move_acceptance, {
+			await asUser.query(api.files_transfer_status.get_move_acceptance, {
 				membershipId: db.membershipId,
 				requestId: args.requestId,
 			}),
@@ -640,7 +640,7 @@ describe("initial Move publication", () => {
 			name: "source",
 		});
 		expect(
-			(await asUser.query(api.files_transfer_queries.get, { membershipId: db.membershipId, runId: found.runId }))?.activity,
+			(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: found.runId }))?.activity,
 		).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 1, failed: 0, canceled: 0 },

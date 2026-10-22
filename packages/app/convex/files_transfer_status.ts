@@ -1,4 +1,9 @@
-// Transfer reads. Work and controls stay in files_transfer.ts.
+// Show the status of a Copy, Move or Rename run: the run view with its conflicts, its items, whether a
+// Move request was accepted, and the agent's view of the job. The Files page reads these while it is open.
+// Starting, running and stopping a run stay in files_transfer.ts, because they need its heavy imports.
+//
+// Keep the imports of this module small. On a cold call Convex loads every file that this module imports,
+// even the unused ones. files_transfer.ts imports the shared run helpers below from here, never the other way.
 
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
@@ -21,12 +26,12 @@ import { server_convex_get_user_fallback_to_anonymous, should_never_happen } fro
 import { convex_error } from "../server/convex-utils.ts";
 import type { files_PendingTarget, files_VisibleEntry } from "../shared/files.ts";
 import { files_type_query_db_get_readiness } from "../server/files-type-query.ts";
-import { files_transfer_queries_MAX_SELECTED_NODES } from "../server/files-transfer-queries.ts";
+import { files_transfer_status_MAX_SELECTED_NODES } from "../server/files-transfer-status.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
 export const experimental_reuseContext = true;
 
-export async function files_transfer_queries_db_require_activity(
+export async function files_transfer_status_db_require_activity(
 	ctx: QueryCtx | MutationCtx,
 	runId: Id<"files_transfer_runs">,
 ) {
@@ -45,7 +50,7 @@ export async function files_transfer_queries_db_require_activity(
 	};
 }
 
-export async function files_transfer_queries_db_get_current_activity(
+export async function files_transfer_status_db_get_current_activity(
 	ctx: QueryCtx | MutationCtx,
 	args: { userId: Id<"users">; workspaceId: Id<"organizations_workspaces"> },
 	readyRenamesOnly = false,
@@ -75,7 +80,7 @@ export async function files_transfer_queries_db_get_current_activity(
 	return null;
 }
 
-export async function files_transfer_queries_db_get_owned_run(
+export async function files_transfer_status_db_get_owned_run(
 	ctx: QueryCtx | MutationCtx,
 	args: { membershipId: Id<"organizations_workspaces_users">; runId: Id<"files_transfer_runs"> },
 ) {
@@ -102,7 +107,7 @@ export async function files_transfer_queries_db_get_owned_run(
 	return Result({ _yay: { run, membership } });
 }
 
-export async function files_transfer_queries_db_get_entry(args: {
+export async function files_transfer_status_db_get_entry(args: {
 	ctx: QueryCtx | MutationCtx;
 	run: Pick<Doc<"files_transfer_runs">, "organizationId" | "workspaceId" | "userId" | "sourceView" | "rename">;
 	target: files_PendingTarget;
@@ -156,18 +161,18 @@ async function db_get_run_view(args: {
 }) {
 	const { ctx, run, membership } = args;
 
-	const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
+	const activity = await files_transfer_status_db_require_activity(ctx, run._id);
 	const conflicts = await ctx.db
 		.query("files_transfer_items")
 		.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "conflict"))
-		.take(files_transfer_queries_MAX_SELECTED_NODES);
+		.take(files_transfer_status_MAX_SELECTED_NODES);
 
 	const movedItems =
 		run.kind === "move"
 			? await ctx.db
 					.query("files_transfer_items")
 					.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "completed"))
-					.take(files_transfer_queries_MAX_SELECTED_NODES)
+					.take(files_transfer_status_MAX_SELECTED_NODES)
 			: [];
 
 	return {
@@ -193,7 +198,7 @@ export const get = query({
 	args: { membershipId: v.id("organizations_workspaces_users"), runId: v.id("files_transfer_runs") },
 	returns: v.union(run_view_validator, v.null()),
 	handler: async (ctx, args) => {
-		const owned = await files_transfer_queries_db_get_owned_run(ctx, args);
+		const owned = await files_transfer_status_db_get_owned_run(ctx, args);
 		if (owned._nay) {
 			if (owned._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
 			return null;
@@ -253,7 +258,7 @@ export const get_activity_for_agent = internalQuery({
 			run.workspaceId !== args.workspaceId
 		)
 			return null;
-		const checkedActivity = await files_transfer_queries_db_require_activity(ctx, run._id);
+		const checkedActivity = await files_transfer_status_db_require_activity(ctx, run._id);
 		const destinationMembership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_user_organization_workspace_active", (q) =>
@@ -340,7 +345,7 @@ export const get_activity_for_agent = internalQuery({
 	},
 });
 
-export type files_transfer_queries_get_activity_for_agent_Result =
+export type files_transfer_status_get_activity_for_agent_Result =
 	typeof get_activity_for_agent extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
@@ -370,7 +375,7 @@ export const get_move_acceptance = query({
 			)
 			.unique();
 		if (!run || run.kind !== "move" || run.organizationId !== membership.organizationId) return null;
-		const activity = await files_transfer_queries_db_require_activity(ctx, run._id);
+		const activity = await files_transfer_status_db_require_activity(ctx, run._id);
 		const isFinished = activity.finishedAt !== undefined;
 		// A finished run can retire old browser input after a reinvite. Live input keeps its lifetime fence.
 		if (!isFinished) {
@@ -407,7 +412,7 @@ export const list_current = query({
 			return [];
 		}
 
-		const activity = await files_transfer_queries_db_get_current_activity(ctx, {
+		const activity = await files_transfer_status_db_get_current_activity(ctx, {
 			userId: userAuth.id,
 			workspaceId: membership.workspaceId,
 		});
@@ -459,7 +464,7 @@ export const list_items = query({
 	},
 	returns: v.union(paginationResultValidator(item_view_validator), v.null()),
 	handler: async (ctx, args) => {
-		const owned = await files_transfer_queries_db_get_owned_run(ctx, args);
+		const owned = await files_transfer_status_db_get_owned_run(ctx, args);
 		if (owned._nay) {
 			if (owned._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
 			return null;

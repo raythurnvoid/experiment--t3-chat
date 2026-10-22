@@ -21,7 +21,7 @@ Primary:
 - `../../../packages/app/convex/files_visible_db.ts`
 - `../../../packages/app/server/files-write-policy.ts`
 - `../../../packages/app/convex/files_transfer.ts`
-- `../../../packages/app/convex/files_transfer_queries.ts`
+- `../../../packages/app/convex/files_transfer_status.ts`
 - `../../../packages/app/convex/files_folder_sorts.ts`
 - `../../../packages/app/shared/files-sort.ts`
 - `../../../packages/app/src/hooks/files-search-hooks.ts`
@@ -48,7 +48,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Tree, table and picker directory pages choose their Move view on the server. They start together,
   without waiting for `get_workspace_move_view`. Search and Shared with you still use that workspace
   view. Tree and table queries use `files_tree_db` for current access and public fields.
-- `files_transfer_queries` owns the four public Transfer read queries. Move and Copy writers stay in `files_transfer`. `files_visible_db` owns the shared draft reader. Read queries load its actual body, without loading the Visible list or file writers.
+- `files_transfer_status` owns the four public Transfer read queries. Move and Copy writers stay in `files_transfer`. `files_visible_db` owns the shared draft reader. Read queries load its actual body, without loading the Visible list or file writers.
 - Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
 - Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
 - The client prepends `files_SYNTHETIC_ROOT_FOLDER` to the returned `files_nodes` docs.

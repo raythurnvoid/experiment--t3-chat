@@ -413,7 +413,7 @@ describe("private pending text", () => {
 				_yay: null,
 			});
 			await test_finish_transfer_run(asUser, runId);
-			const finished = await asUser.query(api.files_transfer_queries.get, { membershipId, runId });
+			const finished = await asUser.query(api.files_transfer_status.get, { membershipId, runId });
 			expect(finished?.activity, finished?.activity.errorMessage ?? "Expected a completed move").toMatchObject({
 				status: "succeeded",
 				progress: { completed: 1, failed: 0 },

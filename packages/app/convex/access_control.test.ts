@@ -10184,7 +10184,7 @@ describe("file sharing", () => {
 			if (!memberRunId) throw new Error("Expected the member's waiting Move");
 			await test_finish_transfer_run(fixture.asMember, memberRunId);
 			expect(
-				await fixture.asMember.query(api.files_transfer_queries.get, {
+				await fixture.asMember.query(api.files_transfer_status.get, {
 					membershipId: fixture.memberMembershipId,
 					runId: memberRunId,
 				}),

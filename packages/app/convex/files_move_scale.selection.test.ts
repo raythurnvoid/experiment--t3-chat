@@ -4,9 +4,9 @@
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { mock_move_scale_storage, move_selected_files } from "./files_move_scale.setup.test.ts";
 
-vi.mock("../server/files-transfer-queries.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../server/files-transfer-queries.ts")>()),
-	files_transfer_queries_MAX_SELECTED_NODES: 20,
+vi.mock("../server/files-transfer-status.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../server/files-transfer-status.ts")>()),
+	files_transfer_status_MAX_SELECTED_NODES: 20,
 }));
 vi.mock("../shared/files.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../shared/files.ts")>()),

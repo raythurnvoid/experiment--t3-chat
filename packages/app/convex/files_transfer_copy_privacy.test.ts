@@ -255,7 +255,7 @@ describe("cross-workspace Copy privacy", () => {
 			["/folder/secret-name", "skipped", "permission_denied", false],
 		]);
 		// The receipt cannot read the locked source, so it gets the path from the item.
-		const page = await f.asUser.query(api.files_transfer_queries.list_items, {
+		const page = await f.asUser.query(api.files_transfer_status.list_items, {
 			membershipId: f.current.membershipId,
 			runId,
 			paginationOpts: { numItems: 10, cursor: null },
@@ -272,7 +272,7 @@ describe("cross-workspace Copy privacy", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			await f.asUser.query(api.files_transfer_queries.list_items, {
+			await f.asUser.query(api.files_transfer_status.list_items, {
 				membershipId: f.current.membershipId,
 				runId,
 				paginationOpts: { numItems: 10, cursor: null },

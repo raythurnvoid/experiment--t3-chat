@@ -9,7 +9,7 @@ import type {
 	ai_chat_files_list_bash_calls_for_agent_Result,
 	ai_chat_files_list_bash_transfers_for_agent_Result,
 } from "../convex/ai_chat_files.ts";
-import type { files_transfer_queries_get_activity_for_agent_Result } from "../convex/files_transfer_queries.ts";
+import type { files_transfer_status_get_activity_for_agent_Result } from "../convex/files_transfer_status.ts";
 import { activities_is_active } from "../convex/activities_db.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
@@ -174,7 +174,7 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
 	return `[${summary.jobNumber}] ${status} ${shell} ${summary.scriptPreview}${parent}\n`;
 }
 
-function activity_text(view: NonNullable<files_transfer_queries_get_activity_for_agent_Result>) {
+function activity_text(view: NonNullable<files_transfer_status_get_activity_for_agent_Result>) {
 	const progress = view.progress;
 	return (
 		[
@@ -212,10 +212,10 @@ async function print_status(args: {
 		exitCode: bash_COMMAND_EXIT_FAILURE,
 	};
 	if (mode.kind === "activity") {
-		const view = (await ctx.runQuery(internal.files_transfer_queries.get_activity_for_agent, {
+		const view = (await ctx.runQuery(internal.files_transfer_status.get_activity_for_agent, {
 			...job_scope(job),
 			activityId: mode.activityId,
-		})) as files_transfer_queries_get_activity_for_agent_Result;
+		})) as files_transfer_status_get_activity_for_agent_Result;
 		return view ? { stdout: activity_text(view), stderr: "", exitCode: 0 } : unavailable;
 	}
 	let cursor: string | null = null;
@@ -251,10 +251,10 @@ async function print_status(args: {
 		stdout = call_text(transfers.call) + "Accepted transfers at this check; a live call may accept more.\n";
 		// Transfer docs can be large. Read each status in its own bounded query.
 		for (const receipt of transfers.page) {
-			const view = (await ctx.runQuery(internal.files_transfer_queries.get_activity_for_agent, {
+			const view = (await ctx.runQuery(internal.files_transfer_status.get_activity_for_agent, {
 				...job_scope(job),
 				activityId: receipt.activityId,
-			})) as files_transfer_queries_get_activity_for_agent_Result;
+			})) as files_transfer_status_get_activity_for_agent_Result;
 			stdout += `Command ${receipt.commandNumber}:\n${view ? activity_text(view) : "Transfer: unavailable\n"}`;
 		}
 		page = transfers;
