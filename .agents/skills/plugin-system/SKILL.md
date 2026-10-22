@@ -1030,6 +1030,24 @@ frontend files); the retry of the same commit passed. The update asked for no ne
 check: with the Gmail page open, the first slice after the update ran at 00:32:12 UTC with sync
 `live`, no error and no temporary failures. A new-mail save was not checked live. 490 tests.
 
+Gmail 0.3.10 was published and installed in `personal/home` on 2026-10-22 (plugin commit
+`4f060f05e54c68e6543f5521399d0b07647983f9`, version doc `hn7g073b9gvf2s27pb7sz5w7m18gsf2x`). It
+changes only the pages, so no backend deploy was needed. The Gmail page reads the status every 5
+seconds only while something moves (an open connect attempt, a backfilling account, a button click in
+the last two minutes, or a failed read), and every minute otherwise. The Mail page checks for new mail
+every minute. It reads drafts at open, after its own changes, when the tab becomes visible again, and
+every 5 seconds only while a read failed or a draft is still saving. Requests no longer set
+`cache: "no-store"`, because with it Chromium sent one CORS preflight before every POST. The first
+publish passed, and the update asked for no new consent. Live check, one idle `live` account, 10
+minutes per page, page calls with their child calls:
+
+| Page  | 0.3.9 calls/hour | 0.3.10 calls/hour | OPTIONS per POST, 0.3.9 → 0.3.10 |
+| ----- | ---------------- | ----------------- | -------------------------------- |
+| Gmail | 2,940            | 228               | 120/120 → 1/10                   |
+| Mail  | 3,960            | 216               | 161/161 → 1/10                   |
+
+No call failed. The Mail page read drafts once, at load, and not again in the window. 494 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
