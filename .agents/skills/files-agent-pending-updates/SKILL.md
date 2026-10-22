@@ -22,6 +22,13 @@ Bash reads the caller's pending view. Its `file` command reads that view's store
 
 Pending updates work for both document shapes: a Markdown file's `rich_text` (ProseMirror) Yjs document and every other editable text file's `plain_text` (`Y.Text`) document. The node's `textKind` decides the current shape. After a restore changes shape, `contentRebaseRootKind` keeps the old branches readable until preparation replaces them (see the `files-editable-text` skill). Both shapes use the same three branches and text merge.
 
+Known scale gap: replacement and Restore still handle all owners' content drafts in one transaction.
+The 32-row structural overlay limit does not bound these drafts. The overlay flush schedules a job
+for each owner, but a transaction can schedule at most 1,000 jobs. Local model checks with 29-byte
+drafts passed at 512 owners. At 1,024 owners, both Restore paths failed on job 1,001 and rolled back
+the saved file and every draft. This is model evidence, not a live failure count. A fix needs bounded
+work across transactions while keeping every owner's draft; do not treat the structural limit as a fix.
+
 A content proposal stores one `content` object. Its `base` is `{ kind: "yjs", sequence, lineageGeneration }` for a collaborative file, `{ kind: "asset", assetId }` for a file with collaboration off, or `{ kind: "new" }` for private new content. The same object owns the three sealed state IDs:
 
 - `base`: the live file state the pending update was built from.
