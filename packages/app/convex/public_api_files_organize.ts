@@ -482,16 +482,18 @@ export const delete_paths = internalMutation({
 			nodeIds: [...pathByNodeId.keys()],
 			credentialId: args.credentialId,
 		});
+		const refusedData =
+			archived._nay?.data && "refusedItems" in archived._nay.data ? archived._nay.data : null;
 		// The job stopped inside the request. Its one message is for every found path.
-		if (archived._nay && !archived._nay.data?.refusedItems) {
+		if (archived._nay && !refusedData) {
 			for (const path of pathByNodeId.values()) refused.push({ path, message: archived._nay.message });
 			return { jobId: null, isDone: true, refused };
 		}
 		// Every item was refused before a job started, and `data` has each one's own reason. A path not in
 		// the list is inside a refused folder, or it was already archived and is skipped like `rm -f`.
-		if (archived._nay) {
+		if (refusedData) {
 			const refusedPaths: string[] = [];
-			for (const item of archived._nay.data.refusedItems) {
+			for (const item of refusedData.refusedItems) {
 				const path = pathByNodeId.get(item.nodeId)!;
 				refusedPaths.push(path);
 				refused.push({ path, message: item.refusal.message });
@@ -599,7 +601,12 @@ export async function public_api_files_organize_http_delete(args: {
 	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
 }
 
-const RESTORE_MAX_PATHS = 200;
+/**
+ * Each path can come from its own delete, and each delete starts its own job in this one mutation. A
+ * member's key used about 16 database queries per path, so 200 paths came close to the 4,096 query
+ * limit. 100 leaves room for restricted folders, which cost more access reads.
+ */
+const RESTORE_MAX_PATHS = 100;
 
 const restore_failure_validator = z.object({
 	status: z.union([z.literal(401), z.literal(403), z.literal(409), z.literal(429)]),
@@ -692,7 +699,7 @@ export const restore_paths = internalMutation({
 					status: 409,
 				});
 			}
-			// At most one job per path, so at most 200 reads.
+			// At most one job per path, so at most 100 reads.
 			const activities = await Promise.all(
 				previous.apiRequest.activityIds.map((activityId) => ctx.db.get("activities", activityId)),
 			);
@@ -800,11 +807,13 @@ export const restore_paths = internalMutation({
 			}
 		}
 
+		// The jobs include a job that stopped partway, because it keeps what it restored.
 		const jobIds = restored.jobs.map((job) => job.activityId);
-		// An API restore always keeps its jobs, so the first one can hold the request for a retry.
-		const firstJob = restored.jobs[0];
-		if (firstJob) {
-			await ctx.db.patch("files_archive_runs", firstJob.runId, {
+		// An API restore always keeps its jobs, so one of them can hold the request for a retry. Use the
+		// last one: the jobs run one after another, so it ends last, and history cleanup deletes it last.
+		const lastJob = restored.jobs.at(-1);
+		if (lastJob) {
+			await ctx.db.patch("files_archive_runs", lastJob.runId, {
 				apiRequest: { requestId, inputHash, refused, activityIds: jobIds },
 			});
 		}
@@ -1343,6 +1352,23 @@ export const get_job = internalQuery({
 		const nodes = (
 			await Promise.all(run.refusedItems.map((refusedItem) => ctx.db.get("files_nodes", refusedItem.nodeId)))
 		).flatMap((node) => (node && node.workspaceId === run.workspaceId ? [node] : []));
+		// A restore that ended before it brought back its whole delete leaves the rest in the Trash under the
+		// delete's operation id. Name one of those items, because a restore of any item of a delete brings
+		// back the whole delete. One index read, however many items are left.
+		const leftNode =
+			run.kind === "restore" && !args.cursor && !activities_is_active(activity.status)
+				? await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
+							q
+								.eq("organizationId", run.organizationId)
+								.eq("workspaceId", run.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("archiveOperationId", run.archiveOperationId),
+						)
+						.first()
+				: null;
+		if (leftNode) nodes.push(leftNode);
 		// Name an item only while the key may still read it, like the app's job card.
 		const readableNodes = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: run.organizationId,
@@ -1373,7 +1399,7 @@ export const get_job = internalQuery({
 			errorMessage: activity.errorMessage,
 			refused: [
 				// A delete or a restore names at most 200 paths, so its refused paths fit on the first page.
-				// The paths a restore refused come on its first job only, like the start of a move.
+				// The paths a restore refused come only on the job that holds the request, its last job.
 				...(args.cursor
 					? []
 					: [
@@ -1383,6 +1409,15 @@ export const get_job = internalQuery({
 								message: refusedItem.refusal.message,
 							})),
 						]),
+				...(leftNode && pathByNodeId.has(leftNode._id)
+					? [
+							{
+								path: pathByNodeId.get(leftNode._id)!,
+								message:
+									"This item and the rest of its delete are still in the Trash. Restore this path to bring them back.",
+							},
+						]
+					: []),
 				...items.flatMap((item) =>
 					item.newPath === null
 						? [

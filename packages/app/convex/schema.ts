@@ -6636,8 +6636,9 @@ const app_convex_schema = defineSchema({
 		 */
 		longPathOperationId: v.optional(v.string()),
 		/**
-		 * Set only on the first job of a restore that the public API `files/restore` started. A retry with
-		 * the same request id finds it, and answers with the same jobs instead of restoring again.
+		 * Set only on the last job of a restore that the public API `files/restore` started. The jobs run one
+		 * after another, so the last one ends last and history cleanup deletes it last. A retry with the same
+		 * request id finds it, and answers with the same jobs instead of restoring again.
 		 * `requestId` holds the key's id, so it never matches a request id of another key.
 		 */
 		apiRequest: v.optional(
@@ -6652,7 +6653,7 @@ const app_convex_schema = defineSchema({
 				 */
 				refused: v.array(v.object({ path: v.string(), message: v.string() })),
 				/**
-				 * Every job of the request, this one first. One job per archive operation.
+				 * Every job of the request, this one last. One job per archive operation.
 				 */
 				activityIds: v.array(v.id("activities")),
 			}),

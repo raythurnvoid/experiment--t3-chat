@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
+import { restore_paths } from "./public_api_files_organize.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_mocks } from "./setup.test.ts";
+import { test_mocks, test_spy_handler } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	fixture,
@@ -331,5 +332,124 @@ describe("files/restore", () => {
 					.collect(),
 			),
 		).toEqual([]);
+	});
+
+	test("a restore that stops partway returns its job, and the job names a path that brings back the rest", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		// One delete with two files. `a.md` comes back first. `clash.md` clashes, and every name Keep both
+		// tries is taken, so the job stops partway inside the request.
+		const archiveOperationId = crypto.randomUUID();
+		const restoredId = await insert_root_file(f, { name: "a.md", archiveOperationId });
+		const leftId = await insert_root_file(f, { name: "clash.md", archiveOperationId });
+		await insert_root_file(f, { name: "clash.md", archiveOperationId: null });
+		const takenIds: Array<Id<"files_nodes">> = [];
+		for (let counter = 2; counter <= 100; counter++) {
+			takenIds.push(await insert_root_file(f, { name: `clash-${counter}.md`, archiveOperationId: null }));
+		}
+
+		const body = { paths: ["/a.md"], requestId: "partway" };
+		const response = await post(f, "/api/v1/files/restore", ownerKey.credential, body);
+		expect(response).toMatchObject({
+			status: 200,
+			body: {
+				jobIds: [expect.any(String)],
+				isDone: true,
+				refused: [{ path: "/a.md", message: expect.stringMatching(/^Stopped partway: /u) }],
+			},
+		});
+		expect((await read_node(f, restoredId)).archiveOperationId).toBeNull();
+		// The stopped job holds the request, so a retry answers the same and restores nothing again.
+		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, body)).toEqual(response);
+
+		const jobId = (response.body.jobIds as string[])[0];
+		expect(await post(f, "/api/v1/files/jobs/get", ownerKey.credential, { jobId })).toMatchObject({
+			status: 200,
+			body: {
+				status: "failed",
+				refused: [
+					{ path: "/a.md", message: expect.stringMatching(/^Stopped partway: /u) },
+					{
+						path: "/clash.md",
+						message:
+							"This item and the rest of its delete are still in the Trash. Restore this path to bring them back.",
+					},
+				],
+			},
+		});
+
+		// Once a name is free, that path brings back the rest.
+		await f.t.run((ctx) => ctx.db.delete("files_nodes", takenIds[0]!));
+		expect(
+			await post(f, "/api/v1/files/restore", ownerKey.credential, { paths: ["/clash.md"], requestId: "rest" }),
+		).toMatchObject({ status: 200, body: { isDone: true, refused: [] } });
+		expect(await read_node(f, leftId)).toMatchObject({ archiveOperationId: null, name: "clash-2.md" });
+	});
+
+	test("a retry answers the same jobs after history cleanup deleted the first job", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		await insert_root_file(f, { name: "x.md", archiveOperationId: crypto.randomUUID() });
+		await insert_root_file(f, { name: "y.md", archiveOperationId: crypto.randomUUID() });
+		const body = { paths: ["/x.md", "/y.md"], requestId: "two-jobs" };
+
+		const first = await post(f, "/api/v1/files/restore", ownerKey.credential, body);
+		expect(first).toEqual({
+			status: 200,
+			body: { jobIds: [expect.any(String), expect.any(String)], isDone: true, refused: [] },
+		});
+
+		// History cleanup deletes each job 7 days after it ends. The jobs run one after another, so the
+		// first one can be deleted while the last one still runs.
+		const firstJobId = (first.body.jobIds as Array<Id<"activities">>)[0]!;
+		const firstRunId = (await read_activity(f, firstJobId)).source.id as Id<"files_archive_runs">;
+		await f.t.run(async (ctx) => {
+			while (!(await files_archive_runs_db_delete_run_batch(ctx, { runId: firstRunId })).done);
+		});
+		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, body)).toEqual(first);
+	});
+
+	test("the most paths from separate deletes stay well inside the transaction limits", async () => {
+		const f = await fixture();
+		// A member pays for the access checks the owner skips.
+		const member = await add_member(f);
+		await f.t.run((ctx) =>
+			quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId: member.userId,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				now: Date.now(),
+			}),
+		);
+		const memberKey = await create_key({ asUser: member.asUser, membershipId: member.membershipId });
+		// Each path comes from its own delete, so each one starts its own job.
+		const paths = [];
+		for (let index = 0; index < 101; index++) {
+			const name = `m${String(index).padStart(3, "0")}.md`;
+			await insert_root_file(f, { name, archiveOperationId: crypto.randomUUID() });
+			paths.push(`/${name}`);
+		}
+
+		expect(
+			await post(f, "/api/v1/files/restore", memberKey.credential, { paths, requestId: "too-many" }),
+		).toMatchObject({ status: 400 });
+
+		let databaseQueries = 0;
+		test_spy_handler(restore_paths, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			databaseQueries = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
+			return result;
+		});
+		const response = await post(f, "/api/v1/files/restore", memberKey.credential, {
+			paths: paths.slice(0, 100),
+			requestId: "most",
+		});
+		vi.restoreAllMocks();
+		expect(response).toMatchObject({ status: 200, body: { refused: [] } });
+		expect(response.body.jobIds).toHaveLength(100);
+		// Restricted folders cost more access reads per path, so keep half of the 4,096 query limit free.
+		expect(databaseQueries).toBeGreaterThan(0);
+		expect(databaseQueries).toBeLessThan(4096 / 2);
 	});
 });

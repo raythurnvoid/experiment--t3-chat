@@ -4335,6 +4335,8 @@ export async function files_nodes_db_restore_named_nodes(
 		});
 		if (started._nay) {
 			refusals.push({ archiveOperationId, nay: started._nay });
+			// A job that stopped partway keeps what it restored, so list it too. The caller can read what it did.
+			if (started._nay.data) jobs.push({ ...started._nay.data, isDone: true });
 			if (args.stopAtRefusal) break;
 			continue;
 		}

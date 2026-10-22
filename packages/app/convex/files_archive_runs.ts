@@ -2110,9 +2110,12 @@ export async function files_archive_runs_db_start(
 	if (outcome) {
 		await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
 		// A request that failed after some writes keeps them and a failed Activity. Answer with the error, so
-		// the caller does not say the work goes on in the background.
+		// the caller does not say the work goes on in the background. `data` names the job, so an API
+		// caller can read what the job did before it stopped.
 		if (outcome.kind === "failed") {
-			return Result({ _nay: { ...outcome.nay, message: `Stopped partway: ${outcome.nay.message}` } });
+			return Result({
+				_nay: { ...outcome.nay, message: `Stopped partway: ${outcome.nay.message}`, data: { runId, activityId } },
+			});
 		}
 	}
 
