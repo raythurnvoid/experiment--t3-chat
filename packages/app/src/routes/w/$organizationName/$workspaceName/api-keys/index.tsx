@@ -134,13 +134,20 @@ const API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES = API_KEY_SETUP_ALLOWED_SCOPES.filter
 	public_api_SERVICE_ACCOUNT_SCOPES.some((serviceAccountScope) => serviceAccountScope === scope),
 );
 
+// A scope's docs for the editor's hover and suggest details panel. Name the scopes service account keys cannot use.
+function api_key_scope_docs(row: (typeof API_KEY_SCOPE_ROWS)[number]) {
+	return API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope)
+		? row.description
+		: `${row.description} Personal keys only.`;
+}
+
 // Short labels for the two setup fields, shown on each row of the editor's suggestions.
 const API_KEY_SETUP_FIELD_LABELS = {
 	name: "Key name",
 	scopes: "Scope list",
 } as const;
 
-// Docs for the two setup fields, shown on hover.
+// Docs for the two setup fields, shown on hover and in the suggest details panel.
 const API_KEY_SETUP_FIELD_DOCS = {
 	name: "A name that tells you where the key is used, 1 to 80 characters.",
 	scopes: 'The scopes the key needs, like ["files:list"]. "All scopes" under the editor lists them.',
@@ -834,14 +841,14 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 					return { suggestions: [] };
 				}
 
-				// Show each item's short label on its row, and give it no `detail` and no `documentation`. With
-				// either one, Monaco offers a details panel. That panel opens to the right of the list, past the
-				// editor's edge and out of the dialog. The full docs stay in the hover and "All scopes".
+				// Show each item's short label on its row and its full docs in Monaco's details panel. The panel
+				// opens past the editor's edge, which works because `MyModalMonacoEditor` shows it above the dialog.
 				const range = to_monaco_range(model, suggestion.replace.offset, suggestion.replace.length);
 				if (suggestion.kind === "field") {
 					return {
 						suggestions: suggestion.values.map((key) => ({
 							label: { label: key, description: API_KEY_SETUP_FIELD_LABELS[key] },
+							documentation: API_KEY_SETUP_FIELD_DOCS[key],
 							kind: monaco_languages.CompletionItemKind.Property,
 							filterText: `"${key}"`,
 							// Add the value too, with the caret inside it, unless the field already has its colon.
@@ -858,15 +865,19 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 				}
 
 				return {
-					suggestions: suggestion.values.map((scope, index) => ({
-						label: { label: scope, description: API_KEY_SCOPE_LABELS[scope] },
-						kind: monaco_languages.CompletionItemKind.Value,
-						filterText: `"${scope}"`,
-						insertText: `"${scope}"`,
-						// Keep the "All scopes" list order instead of sorting by name.
-						sortText: String(index).padStart(2, "0"),
-						range,
-					})),
+					suggestions: suggestion.values.map((scope, index) => {
+						const row = API_KEY_SCOPE_ROWS.find((item) => item.scope === scope);
+						return {
+							label: { label: scope, description: API_KEY_SCOPE_LABELS[scope] },
+							documentation: row ? api_key_scope_docs(row) : undefined,
+							kind: monaco_languages.CompletionItemKind.Value,
+							filterText: `"${scope}"`,
+							insertText: `"${scope}"`,
+							// Keep the "All scopes" list order instead of sorting by name.
+							sortText: String(index).padStart(2, "0"),
+							range,
+						};
+					}),
 				};
 			},
 		});
@@ -893,11 +904,7 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 					range,
 					contents: [
 						{ value: `**${API_KEY_SCOPE_LABELS[row.scope]}** \`${row.scope}\`` },
-						{
-							value: API_KEY_SETUP_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope)
-								? row.description
-								: `${row.description} Personal keys only.`,
-						},
+						{ value: api_key_scope_docs(row) },
 					],
 				};
 			},
