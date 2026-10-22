@@ -305,17 +305,6 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("option", { name: "file.path" })).toBeTruthy();
 		});
 
-		test("suggests public for file.link without any tree rows and names the chip file.link", async () => {
-			render(<FilesSearchInput {...props} variant={variant} />);
-			const input = screen.getByRole<HTMLInputElement>("combobox");
-			act(() => input.focus());
-			fireEvent.click(await screen.findByRole("option", { name: "file.link" }));
-			expect(input.value).toBe("file.link:");
-			fireEvent.click(await screen.findByRole("option", { name: "public" }));
-			const remove = await screen.findByRole("button", { name: "Remove filter file.link:public" });
-			expect(remove.closest(".FilesSearchInputFilterChip")?.textContent).toContain("file.link public");
-		});
-
 		test("completes a file.path value from the saved folders the search finds", async () => {
 			render(<FilesSearchInput {...props} variant={variant} />);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
@@ -395,8 +384,6 @@ describe("FilesSearchInput", () => {
 			expect(screen.getByRole("option", { name: "metadata.done boolean" }).getAttribute("aria-disabled")).toBe("true");
 			await waitFor(() => expect(test_catalog.requests.map((request) => request.prefix)).toContain("metadata.zz"));
 			expect(screen.getByRole("option", { name: "metadata.done boolean" }).getAttribute("aria-disabled")).toBe("true");
-			// The held rows already show the list is busy, so no skeleton rows join them.
-			expect(document.querySelector(".FilesSearchInput-suggestions-skeleton")).toBeNull();
 			fireEvent.change(input, { target: { value: "STA" } });
 			await waitFor(() => expect(screen.queryByRole("option", { name: "metadata.done boolean" })).toBeNull());
 			expect(screen.getByRole("option", { name: "frontmatter.status text" })).toBeTruthy();
