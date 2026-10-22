@@ -1064,6 +1064,24 @@ and the Mail page showed no sender warning. The first slice that wrote a file af
 replaced the old grant (`press_reconnect_needed`) and saved with the new one, with no error left.
 496 tests.
 
+Gmail 0.3.12 was published and installed in `personal/home` on 2026-10-22 (plugin commit
+`04010dbcaa824e0613d6c7ff55cc96ed0d21fba4`, version doc `hn7ydvd2t51bxp5pex1pwmkenx8gs91b`). It
+changes a log line to say "Bonobo Senate" and adds a `read_draft` test. The publish review failed
+twice with "could not finish its assessment" and passed on the third try of the same commit. Live
+check of the 0.3.11 draft rule: one draft saved on the Mail page at 13:18:25 UTC, and the next two
+slices kept `idleSlices` at 4 with 15-minute waits, so draft saves no longer reset the idle wait.
+
+Gmail 0.4.0 was published and installed in `personal/home` on 2026-10-22 (plugin commit
+`c76ab4dc89e03779f3eaa222a95b3564dc91e91c`, version doc `hn7x5rwt9esvp41eyfk6q37xys8grgh0`). It adds
+Gmail push: a daily `users.watch` without drafts, a `POST /google/push` route on the plugin backend
+protected by a URL token, and a 60-minute idle wait while the watch is live (README "Gmail push").
+Two account fields were added in two deploys (optional plus backfill, then required). The first
+publish passed, and the update asked for no new consent. Live check: the first slice after the
+deploy saved a watch ending 2026-10-29. An email sent at 14:14:36 UTC, while the next poll was due at
+14:45:22, was saved by a slice that ended at 14:14:57, and the Mail page listed it. The Gmail card
+showed `data-gmail-push="on"`. Wrong-token and bad-base64 posts to the live route got 403 and 204.
+Setup and token steps are in `../gmail-plugin/SKILL.md`. 501 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
