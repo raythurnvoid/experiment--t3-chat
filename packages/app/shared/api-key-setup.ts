@@ -3,11 +3,11 @@ import {
 	createScanner,
 	findNodeAtLocation,
 	findNodeAtOffset,
+	format,
 	getLocation,
 	modify,
 	parseTree,
 	printParseErrorCode,
-	SyntaxKind,
 	type Edit,
 	type FormattingOptions,
 	type Node,
@@ -39,6 +39,7 @@ type ErrorCode =
 	| "scopes_empty"
 	| "unknown_scope"
 	| "scope_not_allowed"
+	| "duplicate_scope"
 	| "unknown_field"
 	| "missing_name"
 	| "missing_scopes";
@@ -70,8 +71,8 @@ function parse_object(jsonText: string) {
 /**
  * Parse setup text like `{ "name": "Local file reader", "scopes": ["files:list"] }`.
  *
- * Every problem is an error with the offset and length of the text it is about, so the editor can mark it.
- * `setup` is null when there is any error.
+ * Every problem has the offset and length of the text it is about, so the editor can mark it. `setup` is
+ * null when there is any error. A warning, like a scope listed twice, does not stop the key.
  *
  * Pass `serviceAccountScopes` for a key bound to a service account, and `null` for a personal key.
  */
@@ -83,10 +84,11 @@ export function api_key_setup_parse<TScope extends string>(
 	},
 ) {
 	const errors: Array<{ code: ErrorCode; offset: number; length: number; message: string }> = [];
+	const warnings: typeof errors = [];
 
 	if (files_get_utf8_byte_size(text) > MAX_TEXT_BYTES) {
 		errors.push({ code: "too_large", offset: 0, length: 0, message: "The setup must be at most 16 KiB." });
-		return { setup: null, errors };
+		return { setup: null, errors, warnings };
 	}
 
 	const jsonText = to_json_text(text);
@@ -101,7 +103,7 @@ export function api_key_setup_parse<TScope extends string>(
 		// `parseTree` calls itself for each nested bracket. About 6,000 brackets, well under the size cap,
 		// overflow the call stack. This runs during render, so show an error instead of crashing the page.
 		errors.push({ code: "too_deep", offset: 0, length: 0, message: "The setup has too many nested brackets." });
-		return { setup: null, errors };
+		return { setup: null, errors, warnings };
 	}
 	if (parseErrors.length > 0) {
 		for (const parseError of parseErrors) {
@@ -114,12 +116,12 @@ export function api_key_setup_parse<TScope extends string>(
 				message: words.charAt(0) + words.slice(1).toLowerCase(),
 			});
 		}
-		return { setup: null, errors };
+		return { setup: null, errors, warnings };
 	}
 
 	if (root?.type !== "object") {
 		errors.push({ code: "not_object", offset: 0, length: text.length, message: "Paste a JSON object." });
-		return { setup: null, errors };
+		return { setup: null, errors, warnings };
 	}
 
 	// Compare decoded key values, so `"n\u0061me"` counts as `name`. Use a Set and `find`, never a plain
@@ -210,13 +212,20 @@ export function api_key_setup_parse<TScope extends string>(
 						length: item.length,
 						message: `Service account keys cannot use ${scope}. Remove it, or choose Personal.`,
 					});
+				} else if (foundScopes.includes(scope)) {
+					// A scope listed twice grants nothing more, so the key keeps one copy, like the server does.
+					warnings.push({
+						code: "duplicate_scope",
+						offset: item.offset,
+						length: item.length,
+						message: `${scope} is in the scopes twice. The key gets it once.`,
+					});
 				} else {
 					foundScopes.push(scope);
 				}
 			}
 
-			// A scope listed twice grants nothing more, so keep one copy, like the server does.
-			scopes = Array.from(new Set(foundScopes));
+			scopes = foundScopes;
 		} else {
 			errors.push({
 				code: "unknown_field",
@@ -240,10 +249,10 @@ export function api_key_setup_parse<TScope extends string>(
 	}
 
 	if (errors.length > 0 || name === null || scopes === null) {
-		return { setup: null, errors };
+		return { setup: null, errors, warnings };
 	}
 
-	return { setup: { name, scopes }, errors };
+	return { setup: { name, scopes }, errors, warnings };
 }
 
 /**
@@ -345,6 +354,34 @@ export function api_key_setup_hover_target(text: string, offset: number) {
 }
 
 /**
+ * List the text items of the top-level "scopes" list with the text range of each, so the editor can show a
+ * label after each one. The text may be broken while the user types, so this reads it without refusing anything.
+ */
+export function api_key_setup_scope_items(text: string) {
+	let root: ReturnType<typeof parseTree>;
+	try {
+		root = parseTree(text, [], { allowTrailingComma: true });
+	} catch {
+		// `parseTree` calls itself for each nested bracket, so a very deep text overflows the call stack.
+		return [];
+	}
+
+	const listNode = root?.type === "object" ? findNodeAtLocation(root, ["scopes"]) : undefined;
+	return (listNode?.type === "array" ? (listNode.children ?? []) : []).flatMap((item) =>
+		item.type === "string" ? [{ value: item.value as string, offset: item.offset, length: item.length }] : [],
+	);
+}
+
+/**
+ * Format the part of the setup at `range` like the dialog's default setup: two spaces, one item per line.
+ * Returns the text edits. Only spaces and line breaks change.
+ */
+export function api_key_setup_format_edits(text: string, range: { offset: number; length: number }) {
+	// Format the swapped text, so a pasted non-breaking space reads as spacing and not as a stray character.
+	return format(to_json_text(text), range, FORMATTING_OPTIONS);
+}
+
+/**
  * Read the text items of the top-level "scopes" list, in text order, so the scope checkboxes can mirror
  * the setup. A setup with no "scopes" field lists none.
  *
@@ -390,8 +427,9 @@ function remove_edit(text: string, node: Node): Edit {
 	if (!before && !after) {
 		const scanner = createScanner(to_json_text(text), true);
 		scanner.setPosition(end);
-		if (scanner.scan() === SyntaxKind.CommaToken) {
-			const commaOffset = scanner.getTokenOffset();
+		scanner.scan();
+		const commaOffset = scanner.getTokenOffset();
+		if (text[commaOffset] === ",") {
 			return { offset: start, length: commaOffset + 1 - start, content: text.slice(end, commaOffset) };
 		}
 	}
@@ -458,9 +496,13 @@ export function api_key_setup_quick_fixes(
 			fixes.push({ title: "Remove this scope", edits: [remove_edit(text, node)] });
 			break;
 		}
-		case "scope_not_allowed": {
+		case "scope_not_allowed":
+		case "duplicate_scope": {
 			if (node) {
-				fixes.push({ title: "Remove this scope", edits: [remove_edit(text, node)] });
+				fixes.push({
+					title: error.code === "duplicate_scope" ? "Remove this copy" : "Remove this scope",
+					edits: [remove_edit(text, node)],
+				});
 			}
 			break;
 		}

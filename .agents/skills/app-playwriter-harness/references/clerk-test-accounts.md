@@ -107,6 +107,12 @@ The URL passed to `Start-Process` does not always open: the first tab can sit on
 
 The first app load in a fresh scratch profile mints an anonymous user with its own org and workspace. Signing in does not remove it, and after sign-in the tab no longer holds its token. So delete it **before** you sign in: `app_convex.action(app_convex_api.users.delete_current_user_account, {})` from that tab, then wait for `window.Clerk?.loaded` (see the reload note below). If you already signed in, record its id and creation time from the `users` table and delete it as operator cleanup. Seen 2026-09-30: two scratch browsers left two anonymous users.
 
+Operator cleanup, from `packages/app` (the [convex-admin-ops](../../convex-admin-ops/SKILL.md) skill has the full rules):
+
+1. Find the user: `vp env exec pnpm exec convex data users --limit 15 --order desc --format jsonLines`. It must have `clerkUserId: null`, an `anonymousAuthToken`, and a `_creationTime` from your session. Its `defaultOrganizationId` must not be a protected org. If any of this does not match, stop and ask.
+2. Delete it with the same mode the in-app delete uses: `vp env exec pnpm exec convex run --typecheck disable --codegen disable users:hard_delete_user_now '{"userId":"<id>","purgeUserMod":"data_and_auth"}'`.
+3. Read it back with `users:get`: `deletedAt` is set and `anonymousAuthToken` is gone. Done this way on 2026-10-22.
+
 ```js
 state.page = context.pages().find((p) => p.url().includes("localhost:5173"));
 const pk = await state.page.evaluate(() => window.Clerk.publishableKey);

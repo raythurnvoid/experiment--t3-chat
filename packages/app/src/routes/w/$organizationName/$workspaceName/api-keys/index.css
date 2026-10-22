@@ -581,6 +581,43 @@
 		color: var(--color-red-11);
 	}
 
+	.RouteApiKeysCreateModal-warnings {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+
+		margin: 0;
+		padding-inline-start: 20px;
+
+		font-size: 15px;
+		line-height: 1.45;
+		color: var(--color-accent-10);
+	}
+
+	/* A problem is a button that puts the caret on the text it is about. Keep it looking like the list text. */
+	.RouteApiKeysCreateModal-problem {
+		min-height: 24px;
+		padding: 0;
+		border: 0;
+
+		font: inherit;
+		text-align: start;
+		text-decoration: underline dotted;
+		text-underline-offset: 3px;
+		color: inherit;
+
+		background: none;
+		cursor: pointer;
+
+		&:hover {
+			text-decoration-style: solid;
+		}
+
+		&:focus-visible {
+			outline-color: var(--color-fg-12);
+		}
+	}
+
 	.RouteApiKeysCreateModal-summary {
 		display: flex;
 		flex-direction: column;

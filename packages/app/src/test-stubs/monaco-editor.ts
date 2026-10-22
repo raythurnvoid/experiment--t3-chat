@@ -18,6 +18,7 @@ export class Range {
 }
 
 export const MarkerSeverity = {
+	Warning: 4,
 	Error: 8,
 };
 
@@ -82,6 +83,9 @@ export const languages = {
 		return { dispose() {} };
 	},
 	registerCodeActionProvider() {
+		return { dispose() {} };
+	},
+	registerInlayHintsProvider() {
 		return { dispose() {} };
 	},
 };

@@ -2,7 +2,7 @@ import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
-import { memo, type Ref, useMemo, useRef, useState } from "react";
+import { memo, type Ref, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -267,6 +267,21 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 	const rootRef = useRef<HTMLDivElement>(null);
 	const listRef = useRef<HTMLUListElement>(null);
 
+	// This box goes away when the link ends or changes, for example from another tab. The browser then
+	// puts focus on `<body>` and a keyboard user loses their place, so this cleanup gives focus to the
+	// link section. The section carries `tabIndex={-1}` so it can take it.
+	useLayoutEffect(() => {
+		const root = rootRef.current;
+		return () => {
+			if (!root?.contains(document.activeElement)) return;
+			const section = root.closest<HTMLElement>(".FilesShareModalLink");
+			// Wait for the box removal to finish. Keep any focus that moved somewhere else.
+			queueMicrotask(() => {
+				if (document.activeElement === document.body) section?.focus();
+			});
+		};
+	}, []);
+
 	const handleReview = useFn(async () => {
 		if (busy || pending) return;
 		setPending("review");
@@ -431,6 +446,8 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 
 	return (
 		<section
+			// Not reachable by Tab, but focus lands here when the media box it held goes away.
+			tabIndex={-1}
 			aria-label="Anyone with the link"
 			className={cn(
 				"FilesShareModal-section" satisfies FilesShareModal_ClassNames,

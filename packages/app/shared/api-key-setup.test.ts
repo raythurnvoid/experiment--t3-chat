@@ -1,6 +1,7 @@
 import { applyEdits } from "jsonc-parser";
 import { describe, expect, test } from "vitest";
 import {
+	api_key_setup_format_edits,
 	api_key_setup_parse,
 	api_key_setup_quick_fixes,
 	api_key_setup_suggest,
@@ -22,14 +23,27 @@ function error_at(text: string, marked: string, code: string, message: string) {
 }
 
 describe("api_key_setup_parse", () => {
-	test("returns the trimmed name and the scopes once each", () => {
-		const result = parse_personal(`{
+	test("returns the trimmed name and the scopes once each, and warns about a scope listed twice", () => {
+		const text = `{
 	// Comments and trailing commas are fine.
 	"name": "  Local file reader ",
 	"scopes": ["files:list", "files:read", "files:list",],
-}`);
+}`;
 
-		expect(result).toEqual({ setup: { name: "Local file reader", scopes: ["files:list", "files:read"] }, errors: [] });
+		const result = parse_personal(text);
+
+		expect(result).toEqual({
+			setup: { name: "Local file reader", scopes: ["files:list", "files:read"] },
+			errors: [],
+			warnings: [
+				{
+					code: "duplicate_scope",
+					offset: text.lastIndexOf('"files:list"'),
+					length: '"files:list"'.length,
+					message: "files:list is in the scopes twice. The key gets it once.",
+				},
+			],
+		});
 	});
 
 	test("marks the exact text of an unknown scope, an unknown field, and a repeated field", () => {
@@ -100,6 +114,7 @@ describe("api_key_setup_parse", () => {
 		expect(parse_personal(text)).toEqual({
 			setup: null,
 			errors: [error_at(text, "[]", "scopes_empty", "Choose at least one scope.")],
+			warnings: [],
 		});
 	});
 
@@ -145,6 +160,16 @@ describe("api_key_setup_with_scopes", () => {
 			'{\n  // CI uploads\n  "name": "Uploader", "scopes": [\n    "files:list",\n    "files:write"\n  ] // keep\n}',
 		);
 		expect(api_key_setup_with_scopes('{"name": "Uploader" "scopes": []}', ["files:list"])).toBeNull();
+	});
+});
+
+describe("api_key_setup_format_edits", () => {
+	test("lays out a pasted one-line setup like the default one, and keeps the text inside strings", () => {
+		const text = '{"name":"My  reader","scopes":["files:list","files:read"]}';
+
+		expect(applyEdits(text, api_key_setup_format_edits(text, { offset: 0, length: text.length }))).toBe(
+			'{\n  "name": "My  reader",\n  "scopes": [\n    "files:list",\n    "files:read"\n  ]\n}',
+		);
 	});
 });
 
