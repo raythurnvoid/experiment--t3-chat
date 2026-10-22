@@ -149,6 +149,42 @@ describe("api_key_setup_with_scopes", () => {
 });
 
 describe("api_key_setup_quick_fixes", () => {
+	test.each([
+		['{"name":"Reader","scopes":["bogus",]}', '{"name":"Reader","scopes":[]}'],
+		[
+			'{"name":"Reader","scopes":["bogus" /* keep, before */, // keep after\n]}',
+			'{"name":"Reader","scopes":[ /* keep, before */ // keep after\n]}',
+		],
+		[
+			'{"name":"Reader","scopes":["bogus" // keep before\n, /* keep after */]}',
+			'{"name":"Reader","scopes":[ // keep before\n /* keep after */]}',
+		],
+	])("removes the only scope and its trailing comma, keeping comments: %s", (text, expected) => {
+		const error = parse_personal(text).errors[0]!;
+		const fix = api_key_setup_quick_fixes(text, error, ALLOWED_SCOPES).find((item) => item.title === "Remove this scope")!;
+		const changed = applyEdits(text, fix.edits);
+
+		expect(parse_personal(changed).errors.map((item) => item.code), "Removing the only scope leaves valid JSON").toEqual([
+			"scopes_empty",
+		]);
+		expect(changed).toBe(expected);
+	});
+
+	test.each([
+		['{"scope":[],}', "{}"],
+		['{"scope":[] /* keep before */, // keep after\n}', "{ /* keep before */ // keep after\n}"],
+	])("removes the only field and its trailing comma, keeping comments: %s", (text, expected) => {
+		const error = parse_personal(text).errors[0]!;
+		const fix = api_key_setup_quick_fixes(text, error, ALLOWED_SCOPES)[0]!;
+		const changed = applyEdits(text, fix.edits);
+
+		expect(parse_personal(changed).errors.map((item) => item.code), "Removing the only field leaves valid JSON").toEqual([
+			"missing_name",
+			"missing_scopes",
+		]);
+		expect(changed).toBe(expected);
+	});
+
 	test("offers a close scope for a typo, and only removal for a word that is not close", () => {
 		const text = '{"name": "Reader", "scopes": ["files:raed", "constructor"]}';
 

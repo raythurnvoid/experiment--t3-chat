@@ -1,11 +1,13 @@
 import {
 	applyEdits,
+	createScanner,
 	findNodeAtLocation,
 	findNodeAtOffset,
 	getLocation,
 	modify,
 	parseTree,
 	printParseErrorCode,
+	SyntaxKind,
 	type Edit,
 	type FormattingOptions,
 	type Node,
@@ -375,7 +377,7 @@ export function api_key_setup_with_scopes(text: string, scopes: readonly string[
 /**
  * Remove a list item or an object field, together with the comma that joins it to its neighbor.
  */
-function remove_edit(node: Node): Edit {
+function remove_edit(text: string, node: Node): Edit {
 	const siblings = node.parent?.children ?? [];
 	const index = siblings.indexOf(node);
 	const before = siblings[index - 1];
@@ -384,6 +386,15 @@ function remove_edit(node: Node): Edit {
 	// Remove from the end of the item before, so its comma goes too. The first item takes the comma after it.
 	const start = before ? before.offset + before.length : node.offset;
 	const end = !before && after ? after.offset : node.offset + node.length;
+	// A lone item can still have a trailing comma. Keep comments on either side.
+	if (!before && !after) {
+		const scanner = createScanner(to_json_text(text), true);
+		scanner.setPosition(end);
+		if (scanner.scan() === SyntaxKind.CommaToken) {
+			const commaOffset = scanner.getTokenOffset();
+			return { offset: start, length: commaOffset + 1 - start, content: text.slice(end, commaOffset) };
+		}
+	}
 	return { offset: start, length: end - start, content: "" };
 }
 
@@ -444,12 +455,12 @@ export function api_key_setup_quick_fixes(
 					});
 				}
 			}
-			fixes.push({ title: "Remove this scope", edits: [remove_edit(node)] });
+			fixes.push({ title: "Remove this scope", edits: [remove_edit(text, node)] });
 			break;
 		}
 		case "scope_not_allowed": {
 			if (node) {
-				fixes.push({ title: "Remove this scope", edits: [remove_edit(node)] });
+				fixes.push({ title: "Remove this scope", edits: [remove_edit(text, node)] });
 			}
 			break;
 		}
@@ -459,7 +470,7 @@ export function api_key_setup_quick_fixes(
 			if (node?.parent?.type === "property") {
 				fixes.push({
 					title: error.code === "duplicate_field" ? "Remove this copy" : "Remove this field",
-					edits: [remove_edit(node.parent)],
+					edits: [remove_edit(text, node.parent)],
 				});
 			}
 			break;

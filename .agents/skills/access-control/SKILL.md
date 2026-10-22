@@ -143,9 +143,10 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
 - `access_control_db_has_permission` accepts either the existing user/public input or an exclusive
   `serviceAccountId`. The account branch runs before the human owner shortcut. It requires an
   active same-tenant account and its own content grant.
-- Workspace grants cover unrestricted content. An unrestricted file/folder grant covers that
-  exact node, not its descendants. Restricted content requires a grant at the nearest live
-  restricted scope. A workspace grant never crosses that boundary.
+- Workspace grants cover unrestricted content. A grant on an ordinary file or folder first makes
+  it an Add people root. A folder grant then covers its descendants until a restricted boundary;
+  a file grant covers that file. Restricted content requires a grant at the nearest live restricted
+  scope. A workspace grant never crosses that boundary.
 - A plugin subject reaches a node only when its human can, and the node is inside one of the
   installation's **sandbox roots** at a level that gives the permission. An `open` root covers open
   content only. A folder root covers that folder and what is below it in the same restricted area;
