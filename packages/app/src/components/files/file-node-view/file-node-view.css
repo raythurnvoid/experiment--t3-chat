@@ -1364,42 +1364,6 @@
 		}
 	}
 
-	.FileNodeViewFolderExplorerColumns-skeleton {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	/* Match a column row: its height, padding, and the gap between the box and the label. */
-	.FileNodeViewFolderExplorerColumns-skeleton-row {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-
-		min-height: 36px;
-		padding: 6px 12px;
-	}
-
-	.FileNodeViewFolderExplorerColumns-skeleton-box {
-		width: 18px;
-		height: 18px;
-		flex: 0 0 auto;
-
-		border-radius: 4px;
-	}
-
-	.FileNodeViewFolderExplorerColumns-skeleton-label {
-		width: 50%;
-		height: 12px;
-
-		border-radius: 4px;
-
-		/* Vary the widths a little, so the rows look like names and not like one block. */
-		.FileNodeViewFolderExplorerColumns-skeleton-row:nth-child(even) & {
-			width: 35%;
-		}
-	}
-
 	.FileNodeViewFolderExplorerColumns-popover > p[role="status"] {
 		margin: 0;
 		font-size: 0.9375rem;

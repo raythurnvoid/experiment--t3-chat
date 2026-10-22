@@ -121,27 +121,6 @@
 		color: var(--color-fg-08);
 	}
 
-	/* Match a suggestion row: its height and padding. */
-	.FileNodeViewFolderFilterBar-suggestions-skeleton-row {
-		display: flex;
-		align-items: center;
-
-		min-height: 32px;
-		padding: 6px 12px;
-	}
-
-	.FileNodeViewFolderFilterBar-suggestions-skeleton-label {
-		width: 50%;
-		height: 12px;
-
-		border-radius: 4px;
-
-		/* Vary the widths a little, so the rows look like names and not like one block. */
-		.FileNodeViewFolderFilterBar-suggestions-skeleton-row:nth-child(even) & {
-			width: 35%;
-		}
-	}
-
 	/* Status and limit notes. The box is empty, and hidden, when there is nothing to say. */
 	.FileNodeViewFolderFilterBar-notes {
 		flex-shrink: 0;

@@ -46,6 +46,20 @@ Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a descri
 - Use `MyRadioButtonLabel` and `MyRadioButtonDescription`, or `MyCheckboxButtonContent`, `MyCheckboxButtonLabel` and `MyCheckboxButtonDescription`. Do not write a local label class for them.
 - A disabled button dims its label and description with the rest of the button.
 
+## Popovers only grow while they load
+
+A popover, menu or suggestion list must not shrink when its data arrives. A shrink right after
+opening looks like the popover is shaking.
+
+- Show the parts that are ready at once.
+- For the part that is still loading, show nothing: no loading text and no skeleton rows. A
+  placeholder that goes away makes the popover shrink when the result is smaller.
+- When the result arrives, the popover may grow. If the result adds nothing, the popover keeps its size.
+- While newer text loads, older rows may stay on screen, disabled.
+
+Full pages and panels that fill a fixed area (the folder table, the file editors) may still use
+skeletons, because their size does not depend on the content.
+
 ## Phone layout
 
 Only the agent chat has a phone layout. Other pages keep the desktop layout on a phone (see "Phone Layout" in the `ai-chat-agent` skill).

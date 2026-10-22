@@ -118,27 +118,6 @@
 		color: var(--color-fg-07);
 	}
 
-	/* Match a suggestion row: its height and padding. */
-	.FilesSearchInput-suggestions-skeleton-row {
-		display: flex;
-		align-items: center;
-
-		min-height: 32px;
-		padding: 6px 12px;
-	}
-
-	.FilesSearchInput-suggestions-skeleton-label {
-		width: 50%;
-		height: 12px;
-
-		border-radius: 4px;
-
-		/* Vary the widths a little, so the rows look like names and not like one block. */
-		.FilesSearchInput-suggestions-skeleton-row:nth-child(even) & {
-			width: 35%;
-		}
-	}
-
 	.FilesSearchInput-syntax {
 		flex-shrink: 0;
 		padding: 8px 16px;

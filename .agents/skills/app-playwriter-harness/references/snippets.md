@@ -853,6 +853,35 @@ const allowlist = document.featurePolicy.getAllowlistForFeature("clipboard-write
 Read the status the app itself renders after the click. That is the only reading that covers the
 policy and the gesture at the same time.
 
+## Prove A Popover Never Shrinks While It Loads
+
+A popover must only grow while its data arrives (see "Popovers only grow while they load" in the
+`ui-design` skill). A first page often lands in under 200 ms, so a later read misses a placeholder that
+came and went. Start a per-frame sampler before the click, in the same `-f` runner:
+
+```js
+await state.page.bringToFront();
+const sampling = state.page.evaluate((selector) => new Promise((resolve) => {
+	const heights = [];
+	const start = performance.now();
+	const tick = () => {
+		const el = document.querySelector(selector);
+		const h = el && el.checkVisibility() ? Math.round(el.getBoundingClientRect().height) : 0;
+		if (heights.length === 0 || heights.at(-1).h !== h) heights.push({ t: Math.round(performance.now() - start), h });
+		if (performance.now() - start < 2500) requestAnimationFrame(tick);
+		else resolve(heights);
+	};
+	tick();
+}), ".FileNodeViewFolderExplorerColumns-popover");
+await state.page.getByRole("button", { name: "Columns" }).click({ timeout: 2000 });
+const heights = await sampling;
+console.log(JSON.stringify(heights)); // each nonzero height must be >= the one before it
+```
+
+Other popover selectors: `.FileNodeViewFolderFilterBar-popover` (open it by clicking the
+`Filter and sort this folder` combobox) and `.FilesSearchInput-popover` (the `Search files…` combobox).
+The sampler stops by itself, so nothing stays installed in the page.
+
 ## Propose A Durable Memory
 
 ```powershell

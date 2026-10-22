@@ -554,7 +554,7 @@ and `find` also keep raw name order.
   text as a key prefix
   to the server (start of the key, ignoring case, like the search box); the short Built-in list still
   matches locally, anywhere in the name. Show more fields loads the next page. Rows of an older text
-  stay, disabled. With no rows to keep, skeleton rows show. A failed read shows "Fields could not be loaded" and
+  stay, disabled. With no rows to keep, the Metadata part shows nothing until its page arrives, so the menu only grows. A failed read shows "Fields could not be loaded" and
   Retry. A chosen key that the page lacks stays listed and removable.
 - Column choices use `app_state::files_folder_columns::scope::${membershipId}` in browser storage.
   Each folder id, or `root`, has its own list. Keep at most 100 recent folder choices per membership.

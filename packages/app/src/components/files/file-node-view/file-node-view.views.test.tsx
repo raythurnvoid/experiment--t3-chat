@@ -1011,9 +1011,7 @@ describe("FileNodeView folder filter", () => {
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["open", "opened"]));
 		// While another key's values load, the held values of this key do not show.
 		fireEvent.change(input, { target: { value: "metadata.stage:is:op" } });
-		const stageValues = screen.getByRole("group", { name: "Values for metadata.stage" });
-		expect(within(stageValues).queryAllByRole("option")).toEqual([]);
-		expect(stageValues.querySelector(".FileNodeViewFolderFilterBar-suggestions-skeleton")).toBeTruthy();
+		expect(within(screen.getByRole("group", { name: "Values for metadata.stage" })).queryAllByRole("option")).toEqual([]);
 
 		// New typed text clears a failed list, without Retry.
 		failed = true;
