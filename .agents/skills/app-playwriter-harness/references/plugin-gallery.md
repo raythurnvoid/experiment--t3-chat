@@ -19,6 +19,7 @@ const tiles = await frame.evaluate(() => document.querySelectorAll(".tile").leng
 
 - Grid: `.gallery-grid` containing `.tile` wrappers; each tile has an `<a class="tile-link" href="#/file/<nodeId>">` and reveals `.tile-name` on hover or `:focus-visible`.
 - Failed tile: `.tile-placeholder.is-failed` plus a sibling real button `.tile-retry` (aria-label `Retry <name>`).
+- Locked tile (0.1.26+): `.tile.is-locked[data-locked]` with text `Locked<name>`, no link, and no `download-urls` request for its id.
 - Load more: `.button` with text `Load more`. It stays visible while buffered/pending work remains — including after a short page that found nothing yet, which only the access check can cause (no false empty state).
 - Item count: text `N items`; empty state text `No images or videos yet.` appears only at visible completion.
 - Detail view (`#/file/<nodeId>`): `.viewer` with `.viewer-back` link, full-size `<img>` or `<video>`, `role="alert"` error + Retry button on media failure.
@@ -36,7 +37,7 @@ const tiles = await frame.evaluate(() => document.querySelectorAll(".tile").leng
 
 ## Live check of the dead-cursor restart
 
-Gallery 0.1.23 starts the scan again, once per click, when `/api/v1/files/list` answers 400 `errorCode: "invalid_cursor"`. `personal/home` (the only Gallery install) has fewer than 100 media files, so with the real page size the first page is the last one and no cursor is ever kept. To get real cursors, shrink only the page size in your own tab before you open the page:
+Gallery 0.1.23 starts the scan again, once per click, when `/api/v1/files/list` answers 400 `errorCode: "invalid_cursor"`. `personal/home` has fewer than 100 media files, so with the real page size the first page is the last one and no cursor is ever kept. To get real cursors, shrink only the page size in your own tab before you open the page:
 
 ```js
 await page.route("**/api/v1/files/list", async (route) => {
@@ -48,7 +49,13 @@ await page.route("**/api/v1/files/list", async (route) => {
 
 Then wait for 12 tiles and `Load more`, rename an empty QA folder in the same workspace (`files_nodes:rename_node` with the CLI `--identity`; `path` is the new name, relative to the parent), and wait until the list shows the new name. Press `Load more` (focus plus Enter). Expected: one request with the old cursor gets 400 `invalid_cursor`, the next request sends `cursor: null`, and the grid grows to 24 unique tiles with no alert. Further clicks reach the full media count with no repeats and no `Load more`. Rename the folder back afterwards. Verified 2026-10-11 with 29 media files and `/qa/qa-cmp-empty-0924`.
 
+## Live check of locked tiles (second user)
+
+Gallery is installed in `chitchat-qa/xfer-qa-0914`. There, `/g4-media/shapes.png` and `/g4-media/speakers.mp4` are restricted files that `qa.perm.member` cannot open, while `/g4-media` stays readable, so the recursive list returns them as `locked: true`. Sign `qa.perm.member` into a scratch browser (`clerk-test-accounts.md`), register `request`/`response` listeners on `state.page` for `/api/v1/files/` before you open `/w/chitchat-qa/xfer-qa-0914/plugins/gallery/pages/gallery`, then read the frame. Expected (verified 2026-10-22 on 0.1.26): 4 tiles, 2 of them `[data-locked]`, no failed tile, and the `download-urls` bodies hold only the two open ids. The owner can open both files, so an owner run shows 4 normal tiles and proves nothing about locked rows.
+
 ## Known hazards
+
+- A plugin installed from the CLI without `serviceAccountGrants` has empty `sandbox.roots`, and every Gallery list then answers 403 `Permission denied: /` even for a member with `content.read`. Read `plugins_workspace_installations.sandbox` first; see the `install_version` note in `snippets.md`.
 
 - `fetch()` from the plugin page to R2 fails by design because CSP limits `connect-src` to the Convex origin. Probe media via element `readyState`/`naturalWidth`, not fetch.
 - The extension relay does not support `Emulation.*` CDP methods: `page.emulateMedia()` and `page.unrouteAll()` fail. To restore real network after `page.route()` interception, register a later route with the same pattern that calls `route.continue()` (last-registered wins).

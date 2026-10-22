@@ -831,6 +831,7 @@ The details-page Health section (`RoutePluginsPluginHealth` in `$pluginName.tsx`
 Git submodule with its own repo (`<owner>/bonobo-plugin-gallery`). `dist/` is committed; publish fetches raw files from GitHub at the pinned commit; `scripts/build-manifest.mjs` recomputes manifest hashes. Vite keeps the React source API but aliases it to Preact's readable source entrypoints. Do not use Preact's compact distribution in the release build: even with `minify: false`, its one-letter internal names fail the plugin mechanical source review. Gallery tests use the packaged Preact runtime from the same pinned version. Vite emits fixed un-hashed output names, then Prettier formats the generated JS/CSS. The manifest build rejects text files with a line over 1,000 characters, and every bundle must fit the host's 1,000,000-byte per-file cap.
 
 - List scanning (`src/list-scan.ts`): each "Load more" drains buffered `pending_items` first, then requests `/api/v1/files/list` with `limit: 100`, `scanLimit: 10000`, `kind: "file"`, media `contentTypePrefixes` (`image/`, `video/`), and the current cursor. The server reads those families from type indexes, so a page is full unless the access check drops rows, and it ignores `scanLimit`. The Gallery stops at 12 new unique tiles, source completion, or 30 successfully advanced pages; overflow buffers for the next click; dedup by nodeId against everything ever seen; cursor and partial progress survive failures. Visible completion (empty state allowed) is `source_is_done && pending_items.length === 0`, which is exactly what `has_more()` negates — a short page keeps "Load more".
+- Locked rows (Gallery 0.1.26+): the recursive list returns a media file the member cannot open as `locked: true` when its folder is readable (a file inside a locked folder is not listed at all; the walk stops there). `App` renders such a row as `GalleryLockedTile`: a `.tile.is-locked[data-locked]` with a lock icon, the text `Locked`, and the always-visible name. It is not a link and never asks `download-urls` for that id, because opening it answers 403 "Permission denied" (see "Locked, not hidden" in `../access-control/SKILL.md`).
 - 429 handling (`src/retry.ts`): same-body retry after 3 s then 6 s; retries never consume the page budget.
 - Media URLs (`src/media-urls.ts`): `{url, expiresAt}` values; initial loads and renewals share one 4-slot pool with per-node in-flight dedup. The `use_media_url` hook in `app.tsx` permits one automatic renewal per failure episode, resets the budget only after a successful replacement load, and offers manual Retry after renewal failure. Video renewal restores `currentTime` and paused state after `loadedmetadata` and catches rejected `play()`.
 - Accessibility: loading uses `role="status"`/`aria-live="polite"`, errors use `role="alert"`, Retry controls are real buttons, tile labels reveal on `:focus-visible` as well as hover, and `prefers-reduced-motion: reduce` disables animation/transitions. Buttons and the viewer back control are at least 44px high; the grid and media padding keep controls and tiles usable at a 360px viewport and 200% zoom.
@@ -1119,6 +1120,19 @@ was the review's grep: each call scanned at most 200 lines, so one search over t
 calls than the review's step budget. Commit `199a9d05` (review policy 19) lets one grep call scan a
 whole plugin file, and the next publish passed on the first try. The Chitchat backend was deployed
 from `3b26f018`.
+
+Gallery 0.1.26 (`d3b00e3a`, version doc `hn7vet1f2trjqk280v2v86aayx8grsg9`) was published on
+2026-10-22 from the CLI with the owner's `--identity`. Before it, a locked row became a normal tile
+that asked `download-urls` for it and showed a red failed tile with Retry. Now it is a locked tile
+(see the Gallery section above). 39 tests (the new one fails with the branch off), typecheck, two
+identical builds; bundle 251,276 bytes. The owner installation in `personal/home`
+(`hx7t9966kctjs7b3890dsccjzn8cf7fc`) was updated in place. For the second-user check, Gallery was
+added to the `chitchat-qa` allowlist and installed in `chitchat-qa/xfer-qa-0914`
+(`hx7k1ccsn7kqq2g8wb2jsyjjqs8grbzn`) with a workspace read grant. As `qa.perm.member` the page showed
+`/g4-media/shapes.png` and `speakers.mp4` as locked tiles, and the only `download-urls` call named the
+two open images. A CLI `install_version` without `serviceAccountGrants` gives a new account no
+grant, so its sandbox has no roots and every list answers 403 "Permission denied: /". Pass
+`serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }]`, as the UI picker does.
 
 Gmail 0.2.4 was published and installed in `personal/home` on 2026-10-11 the same way (plugin commit
 `4a756dbff2b042eeb6711ad37bf9f74fa45c72ba`, version doc `hn7qf8eb759fkf1s6ennhc5pah8g2yh7`). Its page

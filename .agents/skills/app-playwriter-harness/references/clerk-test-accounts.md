@@ -135,6 +135,10 @@ await state.page.waitForFunction(() => window.Clerk?.user != null, { timeout: 15
   follow-up read answered `qa.perm.owner+clerk_test@example.com`. Read `window.Clerk.user` before
   retrying a sign-in, or the retry opens a modal on an already signed-in session.
 
+- **The delete action can take longer than the 5 s call limit.** On 2026-10-22 an awaited
+  `delete_current_user_account` timed out and the user was not deleted. Start it without awaiting
+  (`.then((r) => { window.__del = JSON.stringify(r); })`), end the call, then read `window.__del`
+  after a few seconds. It answered `{"_yay":null}` about 10 s later.
 - **Deleting the minted anonymous user reloads the tab.** After `users.delete_current_user_account`,
   the next call can fail with `Cannot read properties of undefined (reading 'user')`, because
   `window.Clerk` is gone while the page reloads. Wait for `window.Clerk?.loaded === true` before the

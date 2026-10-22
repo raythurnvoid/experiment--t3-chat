@@ -17,7 +17,7 @@ means look but do not change anything.
 
 | Workspace | Reached by | Policy | Use it for |
 | --- | --- | --- | --- |
-| `chitchat-qa/xfer-qa-0914` | QA Edge profile (owner) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. |
+| `chitchat-qa/xfer-qa-0914` | QA Edge profile (owner) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. Gallery is installed (2026-10-22). |
 | `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.3.0 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
 | `chitchat-qa/metadata-qa-0906` | QA Edge profile | reuse | Metadata checks. Chitchat and Council installed. |
 | `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat page and its transcript files. Its plan has no file uploads (seen 2026-10-18). Agent chat has credits; `qa.perm.member` cannot restrict here, only the owner can. Empty GitHub Sources service account `rd7tqp8qb5vkfa0jvnp8kgjj398fbctd` remains without grants after both test uninstalls. Reinstall needs permission to manage this account. |
@@ -127,6 +127,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | File with a user writer | `chitchat-qa/xfer-qa-0914:/u18/dest.md` |
 | Folder a plugin service owns | `qa-browser/home:/chitchat`, `chitchat-qa/home:/chitchat-2eff489e` (read-only for tests) |
 | Restricted (shared) scope roots | `chitchat-qa/xfer-qa-0914:/u34-dst-a/u34a/sub`, `/u34-dst-b/u34b/sub`, `/g4-media/speakers.mp4`, `/g4-media/shapes.png` |
+| Locked media rows for a plugin (Gallery) | `chitchat-qa/xfer-qa-0914:/g4-media/shapes.png` and `/g4-media/speakers.mp4` are locked for `qa.perm.member`, and `/g4-media` is readable, so a recursive `files/list` returns them as `locked: true`. Gallery 0.1.26 is installed in this workspace (`hx7k1ccsn7kqq2g8wb2jsyjjqs8grbzn`, workspace read grant) and `gallery` is on the `chitchat-qa` plugin allowlist (2026-10-22). Recipe: `plugin-gallery.md`. |
 | Move path error below a locked folder | Archived: `qa-browser/home:/c2-move-limit` (`v975tb2hs4e1dn2zh78pc3ekg98ghawa`), empty folders with a locked child and a 785-character leaf path. Archived destination `v9779mbbm27n9tmcqgjt0bf4fh8gge4d` has a 255-character name; moving into it would make the leaf path 1,041 characters. Owner can open the child; viewer cannot. Both roots share one archive operation; restore them for reuse. One copied empty folder is inside the source. |
 
 ### Plugin output (read-only)
