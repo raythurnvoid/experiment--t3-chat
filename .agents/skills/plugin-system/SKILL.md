@@ -999,6 +999,19 @@ unsaved text. The first publish failed with "Plugin AI review rate limit exceede
 slice after the update ran with sync `live` and no error. A new-mail save was not checked live. 488
 tests.
 
+Gmail 0.3.8 was published and installed in `personal/home` on 2026-10-21 (plugin commit
+`03c2943884877c7d69296d30a151d5d2995ce508`, version doc `hn7jv7r78w265rdg6azfm8n4vs8gqny6`). It
+cuts idle backend calls. `finish_slice` cancels the slice's pending `check_slice` job, so an idle
+slice no longer runs a check. An idle slice reads its retry rows with one query and skips the held
+rows read when the account counts none. `history.list` now returns each new message's `labelIds`,
+and a new message labeled `DRAFT` is saved as a skipped draft with no `messages.get` fetch (60 quota
+units each). A sent draft gets a new message id, so this skips no mail. Only the version changed in
+`dist/`, so the publish reused the passed 0.3.7 review. Deploy note: `check_slice` and the worker
+args changed, so the backend was deployed while no slice ran and no check job was pending. Live
+check: the 23:45:56 UTC slice cancelled its check. A draft made on the Mail page left four ledger
+rows (each draft save is a new Gmail id), all created already skipped with 0 attempts. New history
+events still reset the idle wait to 1 minute, even when they are only drafts. 490 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
