@@ -205,6 +205,11 @@ describe("files/restore", () => {
 		expect(response).toMatchObject({ status: 200, body: { isDone: false, refused: [] } });
 		const jobId = (response.body.jobIds as Array<Id<"activities">>)[0]!;
 		const activity = await read_activity(f, jobId);
+		// While the job runs, the items it has not reached yet are not left behind, so no path is named.
+		expect(await post(f, "/api/v1/files/jobs/get", ownerKey.credential, { jobId })).toMatchObject({
+			status: 200,
+			body: { status: "running", refused: [] },
+		});
 
 		// Revoke stamps `revokedAt`. The key mutations allow only two changes in a row, so stamp it here.
 		await f.t.run((ctx) => ctx.db.patch("api_credentials", ownerKey.credentialId, { revokedAt: Date.now() }));

@@ -482,8 +482,7 @@ export const delete_paths = internalMutation({
 			nodeIds: [...pathByNodeId.keys()],
 			credentialId: args.credentialId,
 		});
-		const refusedData =
-			archived._nay?.data && "refusedItems" in archived._nay.data ? archived._nay.data : null;
+		const refusedData = archived._nay?.data && "refusedItems" in archived._nay.data ? archived._nay.data : null;
 		// The job stopped inside the request. Its one message is for every found path.
 		if (archived._nay && !refusedData) {
 			for (const path of pathByNodeId.values()) refused.push({ path, message: archived._nay.message });
@@ -1398,7 +1397,7 @@ export const get_job = internalQuery({
 			progress: activity.progress,
 			errorMessage: activity.errorMessage,
 			refused: [
-				// A delete or a restore names at most 200 paths, so its refused paths fit on the first page.
+				// A delete names at most 200 paths and a restore at most 100, so their refused paths fit on the first page.
 				// The paths a restore refused come only on the job that holds the request, its last job.
 				...(args.cursor
 					? []
