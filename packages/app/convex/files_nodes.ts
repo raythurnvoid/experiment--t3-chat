@@ -7086,10 +7086,12 @@ export const search_saved = query({
 		searchGeneration: v.optional(v.number()),
 		clause: v.union(
 			// Whole words and word starts of the name. `nodeKind` lists only files or only folders.
+			// `childrenOnly` keeps only the direct children of the folder (`file.path:/a/*`).
 			v.object({
 				kind: v.literal("name"),
 				text: v.string(),
 				nodeKind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
+				childrenOnly: v.optional(v.boolean()),
 			}),
 			v.object({ kind: v.literal("content"), text: v.string() }),
 			// An exact path, with its case, or a saved node id.
@@ -7254,8 +7256,9 @@ export const search_saved = query({
 			if (!folder) {
 				return { ...refused, page: [{ kind: "problem" as const, message: "Folder not found" as const }] };
 			}
-			// A node keeps only its top 12 ancestors, so a deeper folder cannot scope a name search.
-			if (folder.pathDepth > files_ANCESTOR_FIELD_COUNT) {
+			// A node keeps only its top 12 ancestors, so a deeper folder cannot scope a name search. Direct
+			// children also read the ancestor field below the folder, so they reach one level less deep.
+			if (folder.pathDepth > files_ANCESTOR_FIELD_COUNT - (clause.kind === "name" && clause.childrenOnly ? 1 : 0)) {
 				return {
 					...refused,
 					page: [
@@ -7279,11 +7282,11 @@ export const search_saved = query({
 
 			if (clause.kind === "name") {
 				const nodeKind = clause.nodeKind;
+				type AncestorField = Extract<keyof Doc<"files_nodes">, `ancestor${number}`>;
 				// A node is under the folder exactly when its ancestor at the folder's depth is the folder.
-				const ancestorField = `ancestor${folder?.pathDepth ?? 1}` as Extract<
-					keyof Doc<"files_nodes">,
-					`ancestor${number}`
-				>;
+				const ancestorField = `ancestor${folder?.pathDepth ?? 1}` as AncestorField;
+				// A direct child has no ancestor one level below the folder. At the root that is `ancestor1`.
+				const childField = clause.childrenOnly ? (`ancestor${(folder?.pathDepth ?? 0) + 1}` as AncestorField) : null;
 				const result = saved.tag
 					? await ctx.db
 							.query("files_saved_places")
@@ -7294,7 +7297,8 @@ export const search_saved = query({
 									.eq("view", saved.tag!.view)
 									.eq("archiveOperationId", null);
 								const kinded = nodeKind ? active.eq("kind", nodeKind) : active;
-								return folderId ? kinded.eq(ancestorField, folderId) : kinded;
+								const inFolder = folderId ? kinded.eq(ancestorField, folderId) : kinded;
+								return childField ? inFolder.eq(childField, undefined) : inFolder;
 							})
 							.paginate(paginationOpts)
 					: await ctx.db
@@ -7306,7 +7310,8 @@ export const search_saved = query({
 									.eq("moveCohortId", undefined)
 									.eq("archiveOperationId", null);
 								const kinded = nodeKind ? active.eq("kind", nodeKind) : active;
-								return folderId ? kinded.eq(ancestorField, folderId) : kinded;
+								const inFolder = folderId ? kinded.eq(ancestorField, folderId) : kinded;
+								return childField ? inFolder.eq(childField, undefined) : inFolder;
 							})
 							.paginate(paginationOpts);
 				if (result.page.length > SEARCH_SAVED_MAX_ITEMS) {

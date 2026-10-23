@@ -1035,7 +1035,7 @@ browser is still up, since a dead scratch browser and a wrong flag fail the same
 - After a sign-in or sign-up the app needs a few seconds before `Clerk.user` and the Convex identity are both readable; a probe run immediately after the code is entered reports `email: null` and looks like a failure. Read it again instead of retrying the sign-in.
 - Close only the localhost tabs created for QA. Leave unrelated user tabs open.
 - Do not hand-launch Edge or infer CDP readiness from the presence of `--remote-debugging-port`. When direct CDP is required, load the Edge remote-debugging skill, run its bundled Node script through `vp env exec node`, and verify the process arguments and `/json/version` endpoint.
-- On this Windows machine, multi-line code passed to `vp env exec pnpx playwriter -e "..."` is truncated at the first newline — only the first statement runs, and it still reports `Code executed successfully`. Always use `-f <script.js>` for multi-statement code.
+- On this Windows machine, multi-line code passed to `vp env exec pnpx playwriter -e "..."` is truncated at the first newline — only the first statement runs, and it still reports `Code executed successfully`. With pnpm 12 a Git Bash heredoc `-e "$(cat <<'EOF' ...)"` fails before it runs, with `ERR_PNPM_CLI_DLX_SPAWN ... batch file arguments are invalid` (checked 2026-10-23). Always use `-f <script.js>` for multi-statement code. A one-line `-e` from Git Bash keeps its inner double quotes, so it can set inputs such as `state.q = "..."` before a `-f` runner reads them.
 - The CLI wait timeout defaults to 10 seconds; it is not a sandbox cap. Pass a suitable `--timeout`. A CLI timeout does not cancel the runner, so verify app state before retrying. Keep interactive calls short, and poll durable state from outside through `convex data` or read-only `convex run` calls.
 - In multi-statement scripts, only `console.log(...)` output is printed; a bare trailing expression is not echoed (single-expression `-e` calls do echo their value as `[return value]`). A `console.log` after an in-call navigation can also be lost — split navigation and observation into separate calls.
 - A long-running `page.evaluate(...)` parked on `state` (the "start work, read it later" pattern above) dies with `Execution context was destroyed, most likely because of a navigation` whenever the app reloads mid-run — an HMR full reload or the route's own navigation is enough, and on this app that happens often. The whole run is lost, including work it already did. Keep page-side async work to a few seconds. When the work is a series of HTTP calls rather than DOM interaction, run it from the **sandbox** instead: read the auth token and any ids out of the page in one short call, park them on `state`, then `fetch(...)` from the runner itself. Sandbox `fetch` works and no navigation can kill it. Verified 2026-08-02 against `/api/chat`.
@@ -2244,7 +2244,7 @@ Press `Escape` once after typing. That closes the popover and keeps both the typ
 search chips, so the filtered tree stays as you set it:
 
 ```js
-await input.fill("file.path:/my-fixture");
+await input.fill("report file.path:/my-fixture/**");
 await page.waitForTimeout(2500);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(600);
@@ -2346,8 +2346,9 @@ Only about 30 `[role="treeitem"]` rows exist in the DOM at once. Two failures fo
    tree element's own `scrollTop` is a silent no-op:
    `await page.locator('.FilesSidebar-content').first().evaluate((el) => { el.scrollTop = 0; });`
 2. A folder with many children pushes its own siblings out of the rendered window. Filtering on
-   `file.path:/run/big` matched 61 nodes (the folder plus 60 children) and never rendered the
-   sibling `big-dst` at all — `file.path:/run/big` does not prefix-match `big-dst` either. Give the
+   the folder `/run/big` (old syntax; today `<words> file.path:/run/big/**`) matched 61 nodes (the
+   folder plus 60 children) and never rendered the sibling `big-dst` at all — the folder filter does
+   not prefix-match `big-dst` either. Give the
    destination its own filter, or pick a destination that is not buried under a large folder.
 
 Do not try to fix this with `page.goto("...?nodeId=<id>")`. The file clipboard is React state: a

@@ -79,14 +79,14 @@ describe("validateSearch", () => {
 		const validateSearch = Route.options.validateSearch as {
 			parse: (input: unknown) => { filter?: string; view_q?: string };
 		};
-		// The cleaner keeps one filter or the allowed pair, and drops what cannot run: an old `contains`
-		// or `missing` filter, and a sort the filter does not allow.
+		// The cleaner keeps one filter or the allowed pair, and drops what cannot run: an exact name, an
+		// old `starts_with` token, a missing metadata value, and a sort the filter does not allow.
 		expect(
 			validateSearch.parse({
 				filter:
-					"junk file.name:contains:a file.name:starts_with:b file.size:is:1 metadata.x:missing sort_by:file.updated:desc sort_by:file.name:desc",
+					"junk file.name:a file.name:starts_with:c file.name:b* file.size:1 !metadata.x:* sort_by:file.updated:desc sort_by:file.name:desc",
 			}).filter,
-		).toBe("file.name:starts_with:b file.size:is:1 sort_by:file.name:desc");
+		).toBe("file.name:b* file.size:1 sort_by:file.name:desc");
 		expect(validateSearch.parse({ filter: "junk" }).filter).toBeUndefined();
 		expect(validateSearch.parse({ view_q: "file.na" }).view_q).toBe("file.na");
 		expect(validateSearch.parse({ view_q: "a".repeat(2001) }).view_q).toBeUndefined();

@@ -1,5 +1,16 @@
 import "./files-search-input.css";
-import React, { createContext, memo, use, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import React, {
+	createContext,
+	Fragment,
+	memo,
+	use,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+	type ReactNode,
+} from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useQueries } from "convex/react";
@@ -48,7 +59,6 @@ import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { search_path_filter } from "@/lib/files-search.ts";
 import { cn } from "@/lib/utils.ts";
 import type { files_SavedStream } from "../../../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX, type files_metadata_Value } from "../../../shared/files-metadata.ts";
@@ -59,6 +69,7 @@ import {
 	files_search_query_parse,
 	files_search_query_field_paths,
 	files_search_query_serialize,
+	files_search_query_SYNTAX_EXAMPLES,
 	files_search_query_typing_token,
 	type files_search_query_Filter,
 } from "../../../shared/files-search-query.ts";
@@ -86,13 +97,15 @@ const FilesSearchInputFilterChip = memo(function FilesSearchInputFilterChip(prop
 	const valueLabel =
 		filter.match.op === "exists"
 			? "any value"
-			: filter.match.op === "range"
-				? `${{ gt: ">", gte: "≥", lt: "<", lte: "≤" }[filter.match.comparator]} ${filter.match.value}`
-				: filter.match.op === "prefix"
-					? `${filter.match.value}*`
-					: filter.match.quoted
-						? JSON.stringify(filter.match.value)
-						: filter.match.value;
+			: filter.match.op === "folder"
+				? filter.raw.slice(filter.raw.indexOf(":") + 1)
+				: filter.match.op === "range"
+					? `${{ gt: ">", gte: "≥", lt: "<", lte: "≤" }[filter.match.comparator]} ${filter.match.value}`
+					: filter.match.op === "prefix"
+						? `${filter.match.value}*`
+						: filter.match.quoted
+							? JSON.stringify(filter.match.value)
+							: filter.match.value;
 
 	return (
 		<MyChip
@@ -583,7 +596,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	const typedValue =
 		typingFilter === null || typingFilter.match.op === "exists" || typingFilter.match.op === "range"
 			? ""
-			: typingFilter.match.value;
+			: typingFilter.match.op === "folder"
+				? typingFilter.match.path
+				: typingFilter.match.value;
 	const typedValueDebounced = useDebounce(typedValue, 150);
 
 	const matchingFileFields =
@@ -600,9 +615,14 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		: matchingFileFields;
 	const keyPrefix = isNewFilter ? "" : typedKeyDebounced;
 
-	// Key and value suggestions read the area of the `file.path` chip's folder, like the search.
-	const pathFilter = search_path_filter(filters);
-	const folderPath = pathFilter === null ? "/" : files_search_query_folder_path(pathFilter.value);
+	// Key and value suggestions read the area of the `file.path` chip's folder, like the search. A
+	// folder chip alone has a problem until words or a filter join it, so read its folder anyway.
+	const folderPath =
+		filters.flatMap((filter) =>
+			filter.key.namespace === "file" && filter.key.name === "path" && filter.match.op === "folder"
+				? [filter.match.path]
+				: [],
+		)[0] ?? "/";
 
 	// A range value (`>2`) has nothing to complete. A `file.*` key completes from the rows below.
 	const valueFieldPath =
@@ -741,7 +761,15 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		}
 
 		const negation = typingFilter.negated ? "!" : "";
-		const valueText = value === "*" ? "*" : files_search_query_format_value(value);
+		// A picked folder searches everything under it, unless the typed path already asks for its
+		// children only. The `/` stays inside quotes: `"/my tasks/"**`.
+		const folderGlob = typingFilter.match.op === "folder" && typingFilter.match.depth === "children" ? "*" : "**";
+		const valueText =
+			value === "*"
+				? "*"
+				: typingFilter.key.namespace === "file" && typingFilter.key.name === "path"
+					? `${files_search_query_format_value(`${value}/`)}${folderGlob}`
+					: files_search_query_format_value(value);
 		const raw = `${negation}${typingFilter.key.namespace}.${typingFilter.key.name}:${valueText}`;
 		commitFilters(files_search_query_parse(raw).filters, text.slice(0, typing.start));
 	};
@@ -1071,18 +1099,12 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 										<dd>Finds names and contents with these words.</dd>
 									</>
 								) : null}
-								<dt>Exact value</dt>
-								<dd>metadata.status:open</dd>
-								<dt>Any value</dt>
-								<dd>metadata.status:*</dd>
-								<dt>Starts with</dt>
-								<dd>metadata.title:Rec*</dd>
-								<dt>Number or date</dt>
-								<dd>metadata.priority:&gt;=2</dd>
-								<dt>Spaces in values</dt>
-								<dd>metadata.key:"two words"</dd>
-								<dt>Folder</dt>
-								<dd>file.path:/tasks</dd>
+								{files_search_query_SYNTAX_EXAMPLES.filter((row) => row.inputs.includes("search")).map((row) => (
+									<Fragment key={row.label}>
+										<dt>{row.label}</dt>
+										<dd>{row.example}</dd>
+									</Fragment>
+								))}
 							</dl>
 						</details>
 					</div>

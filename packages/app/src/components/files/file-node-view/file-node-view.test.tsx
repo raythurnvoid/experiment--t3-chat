@@ -306,7 +306,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 	}) => {
 		const search =
 			typeof props.search === "function"
-				? props.search({ filter: "file.name:starts_with:a", view_q: "typed" })
+				? props.search({ filter: "file.name:a*", view_q: "typed" })
 				: props.search;
 		return (
 			<a
@@ -1950,7 +1950,7 @@ describe("FileNodeView folder sort", () => {
 		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", path: "/Docs/a.html", parentId: node._id }];
 		folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: true };
 		// The sort token names the filter's own field, so it is the order on screen, but only for the filter.
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:a sort_by:file.name:desc" });
+		renderFileView({ nodeId: node._id, filter: "file.name:a* sort_by:file.name:desc" });
 
 		await screen.findByRole("table", { name: "Folder contents" });
 		expect(screen.queryByRole("button", { name: "Save sort for everyone" })).toBeNull();

@@ -961,7 +961,7 @@ describe("useFilesSearchSaved", () => {
 			results: [{ kind: "problem", message: "Folder not found" }],
 			status: "Exhausted",
 		});
-		const { result } = render_search("file.path:/docs plan");
+		const { result } = render_search("file.path:/docs/** plan");
 
 		expect(saved.argsSeen).toEqual([
 			{ membershipId: MEMBERSHIP_ID, clause: { kind: "name", text: "plan" }, folderPath: "/docs",
@@ -971,10 +971,30 @@ describe("useFilesSearchSaved", () => {
 		expect(result.current.names).toMatchObject({ rows: [], status: "done", problem: "Folder not found" });
 		// The sidebar asks for no contents list.
 		expect(render_search("plan", false).result.current.contents).toBeNull();
+
+		// `/*` asks for the folder's direct children only.
+		saved.argsSeen.length = 0;
+		render_search("file.path:/docs/* plan");
+		expect(saved.argsSeen.map((args) => [args.clause, args.folderPath])).toEqual([
+			[{ kind: "name", text: "plan", childrenOnly: true }, "/docs"],
+		]);
+	});
+
+	test("a file.content chip runs the contents search as its only list", () => {
+		saved.answers.set(JSON.stringify({ kind: "content", text: "annual report" }), {
+			results: [saved_match("/notes.md")],
+			status: "Exhausted",
+		});
+		const { result } = render_search('file.content:"annual report"', false);
+
+		expect(saved.argsSeen.map((args) => args.clause)).toEqual([{ kind: "content", text: "annual report" }]);
+		expect(result.current.contentText).toBe("annual report");
+		expect(result.current.names.rows.map((row) => row.path)).toEqual(["/notes.md"]);
+		expect(result.current.contents).toBeNull();
 	});
 
 	test("a path or id asks for that node with no folder", () => {
-		const { result } = render_search("file.path:/docs /Notes/a.md");
+		const { result } = render_search("file.path:/docs/** /Notes/a.md");
 
 		expect(saved.argsSeen).toEqual([{ membershipId: MEMBERSHIP_ID, clause: { kind: "path", path: "/Notes/a.md" },
 			savedStream: { kind: "normal", generation: 0 }, searchGeneration: 0 }]);
@@ -983,7 +1003,7 @@ describe("useFilesSearchSaved", () => {
 	});
 
 	test("a metadata chip merges its plans into one list", async () => {
-		const { result } = render_search("file.path:/docs metadata.count:3");
+		const { result } = render_search("file.path:/docs/** metadata.count:3");
 		await act(async () => {});
 
 		expect(saved.argsSeen).toEqual([]);
@@ -1073,7 +1093,7 @@ describe("useFilesSearchSaved", () => {
 	});
 
 	test("a date in a folder asks for the typed text only and says so", () => {
-		const { result } = render_search("file.path:/docs metadata.due:2026-09-04");
+		const { result } = render_search("file.path:/docs/** metadata.due:2026-09-04");
 
 		// A folder cannot scope the range plan that finds dates stored with a time.
 		expect(saved.metadataArgsSeen.map((args) => [args.plan, args.folderPath])).toEqual([
@@ -1087,8 +1107,8 @@ describe("useFilesSearchSaved", () => {
 	});
 
 	test("the root folder scopes nothing, so a range and a date run in full", () => {
-		const range = render_search("file.path:/ metadata.priority:>2").result.current;
-		const date = render_search("file.path:/ metadata.due:2026-09-04").result.current;
+		const range = render_search("file.path:/** metadata.priority:>2").result.current;
+		const date = render_search("file.path:/** metadata.due:2026-09-04").result.current;
 
 		expect(range.mode).toBe("search");
 		expect(date.isFolderDate).toBe(false);

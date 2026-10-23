@@ -303,7 +303,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 	}) => {
 		const search =
 			typeof props.search === "function"
-				? props.search({ filter: "file.name:starts_with:a", view_q: "typed" })
+				? props.search({ filter: "file.name:a*", view_q: "typed" })
 				: props.search;
 		return (
 			<a
@@ -840,7 +840,7 @@ describe("FileNodeView folder filter", () => {
 		const filterSort: files_sort_Sort = [{ field: "name", direction: "asc" }];
 		const filter: files_table_Filter = { kind: "name", field: "name", op: "starts_with", value: "file-2." };
 		rowsByScope.set(JSON.stringify(["membership_1", node._id, filterSort, filter]), [rows[2]!]);
-		renderFileView({ nodeId: node._id, columns: "name,extension", filter: "file.name:starts_with:file-2." });
+		renderFileView({ nodeId: node._id, columns: "name,extension", filter: "file.name:file-2.*" });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		expect(sortedChildrenMock.mock.calls.at(-1)![0]).toMatchObject({
 			membershipId: "membership_1",
@@ -869,7 +869,7 @@ describe("FileNodeView folder filter", () => {
 		folderSort = { sort: [{ field: "updated", direction: "desc" }], canSave: false };
 		const { otherNavigations } = renderFileView({
 			nodeId: node._id,
-			filter: "file.extension:is:html sort_by:file.name:desc",
+			filter: "file.extension:html sort_by:file.name:desc",
 		});
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		expect(sortedChildrenMock.mock.calls.at(-1)![0].sort).toEqual([{ field: "name", direction: "desc" }]);
@@ -918,14 +918,14 @@ describe("FileNodeView folder filter", () => {
 
 	test("a change of the name prefix alone keeps the old rows and names the old prefix", async () => {
 		result = { rows: [rows[0]!] };
-		const view = renderFileView({ nodeId: node._id, filter: "file.name:starts_with:file file.extension:is:html" });
+		const view = renderFileView({ nodeId: node._id, filter: "file.name:file* file.extension:html" });
 		await screen.findByRole("table", { name: "Folder contents" });
 		const filter = sortedChildrenMock.mock.calls.at(-1)![0].filter;
 		result = { rows: [rows[0]!], rowsFilter: filter, rowsNamePrefix: "file", isBusy: true, isDone: false };
 
 		view.rerender(
 			<FileNodeView
-				searchParams={{ nodeId: node._id, filter: "file.name:starts_with:other file.extension:is:html" }}
+				searchParams={{ nodeId: node._id, filter: "file.name:other* file.extension:html" }}
 				onNavigateSearch={view.onNavigateSearch}
 			/>,
 		);
@@ -941,21 +941,21 @@ describe("FileNodeView folder filter", () => {
 		const { onNavigateSearch } = renderFileView({ nodeId: node._id });
 		const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
 
-		fireEvent.change(input, { target: { value: "file.name:starts_with:abc" } });
+		fireEvent.change(input, { target: { value: "file.name:abc*" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 		expect(onNavigateSearch).toHaveBeenLastCalledWith(
-			expect.objectContaining({ filter: "file.name:starts_with:abc" }),
+			expect.objectContaining({ filter: "file.name:abc*" }),
 			{
 				replace: false,
 			},
 		);
 
-		fireEvent.change(input, { target: { value: "file.name:starts_with:xyz" } });
+		fireEvent.change(input, { target: { value: "file.name:xyz*" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 		expect(screen.getByRole("alert").textContent).toContain(
 			"Use one filter, or 'name starts with' plus one 'is' filter",
 		);
-		expect(input).toHaveProperty("value", "file.name:starts_with:xyz");
+		expect(input).toHaveProperty("value", "file.name:xyz*");
 	});
 
 	test("the bar pages the folder's keys and saved values from the server, and retries a failed list", async () => {
@@ -1002,33 +1002,36 @@ describe("FileNodeView folder filter", () => {
 		expect(await screen.findByRole("option", { name: "No keys start with zzz" })).toBeTruthy();
 
 		// Values page with Show more, and keep exact case.
-		fireEvent.change(input, { target: { value: "metadata.status:is:" } });
+		fireEvent.change(input, { target: { value: "metadata.status:" } });
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["fixed", "open", "opened", "Show more"]));
 		fireEvent.click(screen.getByRole("option", { name: "Show more values" }));
 		expect(loadMorePendingMock).toHaveBeenCalledWith(50);
-		fireEvent.change(input, { target: { value: "metadata.status:is:op" } });
+		fireEvent.change(input, { target: { value: "metadata.status:op" } });
+		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["open", "opened"]));
+		// A value with spaces starts with a quote, and its values still show.
+		fireEvent.change(input, { target: { value: 'metadata.status:"ope' } });
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["open", "opened"]));
 		// While another key's values load, the held values of this key do not show.
-		fireEvent.change(input, { target: { value: "metadata.stage:is:op" } });
+		fireEvent.change(input, { target: { value: "metadata.stage:op" } });
 		expect(within(screen.getByRole("group", { name: "Values for metadata.stage" })).queryAllByRole("option")).toEqual([]);
 
 		// New typed text clears a failed list, without Retry.
 		failed = true;
-		fireEvent.change(input, { target: { value: "metadata.status:is:" } });
+		fireEvent.change(input, { target: { value: "metadata.status:" } });
 		expect(await screen.findByRole("option", { name: "Could not load suggestions." })).toBeTruthy();
 		failed = false;
-		fireEvent.change(input, { target: { value: "metadata.status:is:fi" } });
+		fireEvent.change(input, { target: { value: "metadata.status:fi" } });
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["fixed"]));
 
 		// A failed list stays in its group, keeps the text, and retries.
 		failed = true;
-		fireEvent.change(input, { target: { value: "metadata.status:is:f" } });
+		fireEvent.change(input, { target: { value: "metadata.status:f" } });
 		// Wait for the debounced text, so only Retry can bring the list back.
 		await waitFor(() =>
 			expect(queryMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ prefix: "f" })),
 		);
 		expect(await screen.findByRole("option", { name: "Could not load suggestions." })).toBeTruthy();
-		expect(input).toHaveProperty("value", "metadata.status:is:f");
+		expect(input).toHaveProperty("value", "metadata.status:f");
 		failed = false;
 		fireEvent.click(screen.getByRole("option", { name: "Retry" }));
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["fixed"]));
@@ -1065,7 +1068,7 @@ describe("FileNodeView folder filter", () => {
 			});
 			const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
 			act(() => input.focus());
-			fireEvent.change(input, { target: { value: "metadata.status:is:" } });
+			fireEvent.change(input, { target: { value: "metadata.status:" } });
 		};
 
 		// A guest in `/Docs`, an open folder: the reason, not "No saved values" or the hint.
@@ -1147,7 +1150,7 @@ describe("FileNodeView folder filter", () => {
 			within(screen.getByRole("group", { name: heading }))
 				.getAllByRole("option")
 				.map((option) => option.querySelector(".FileNodeViewFolderFilterBar-suggestion-label")?.textContent);
-		const view = renderFileView({ nodeId: node._id, filter: "file.name:starts_with:abc" });
+		const view = renderFileView({ nodeId: node._id, filter: "file.name:abc*" });
 		const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
 		act(() => input.focus());
 
@@ -1155,17 +1158,25 @@ describe("FileNodeView folder filter", () => {
 		const nextToPrefix = suggestions("Filter by");
 		expect(nextToPrefix).toEqual(expect.arrayContaining(["file.extension", "file.size"]));
 		for (const field of ["file.name", "file.updated", "file.created"]) expect(nextToPrefix).not.toContain(field);
+		// Only "is" and "missing" can join. "is" is just `file.size:`, so the note names it.
 		fireEvent.change(input, { target: { value: "file.size:" } });
-		const sizeOperations = suggestions("How to compare file.size");
-		expect(sizeOperations).toContain("is");
-		expect(sizeOperations).not.toContain("at_least");
-		expect(sizeOperations).not.toContain("at_most");
+		expect(suggestions("How to compare file.size")).toEqual(["!…:*"]);
+		expect(screen.getByText("Type bytes for is")).toBeTruthy();
+
+		// With no other filter, the range forms and the missing form show.
+		view.rerender(
+			<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={view.onNavigateSearch} />,
+		);
+		expect(suggestions("How to compare file.size")).toEqual([":>=bytes", ":<=bytes", ":>bytes", ":<bytes", "!…:*"]);
+		fireEvent.change(input, { target: { value: "file.size:<" } });
+		expect(suggestions("How to compare file.size")).toEqual([":<=bytes"]);
+		expect(screen.getByText("Type <bytes for less than")).toBeTruthy();
 
 		// Next to an "is" filter only the name prefix can join.
 		fireEvent.change(input, { target: { value: "" } });
 		view.rerender(
 			<FileNodeView
-				searchParams={{ nodeId: node._id, filter: "file.extension:is:html" }}
+				searchParams={{ nodeId: node._id, filter: "file.extension:html" }}
 				onNavigateSearch={view.onNavigateSearch}
 			/>,
 		);
@@ -1174,7 +1185,7 @@ describe("FileNodeView folder filter", () => {
 		// A range filter takes no second filter.
 		view.rerender(
 			<FileNodeView
-				searchParams={{ nodeId: node._id, filter: "file.size:at_least:1" }}
+				searchParams={{ nodeId: node._id, filter: "file.size:>=1" }}
 				onNavigateSearch={view.onNavigateSearch}
 			/>,
 		);
@@ -1188,7 +1199,7 @@ describe("FileNodeView folder filter", () => {
 		const onNavigateSearch = vi.fn();
 		render(
 			<FileNodeView
-				searchParams={{ nodeId: node._id, filter: "file.name:starts_with:abc", view_q: "" }}
+				searchParams={{ nodeId: node._id, filter: "file.name:abc*", view_q: "" }}
 				onNavigateSearch={onNavigateSearch}
 			/>,
 			{
@@ -1226,7 +1237,7 @@ describe("FileNodeView folder filter", () => {
 	test("Backspace on an empty text reaches the last chip, and removing a chip drops its token", async () => {
 		const { onNavigateSearch } = renderFileView({
 			nodeId: node._id,
-			filter: "file.name:starts_with:abc sort_by:file.name:desc",
+			filter: "file.name:abc* sort_by:file.name:desc",
 		});
 		const input = await screen.findByRole("combobox", { name: "Filter and sort this folder" });
 
@@ -1236,7 +1247,7 @@ describe("FileNodeView folder filter", () => {
 
 		fireEvent.click(removeButton);
 		expect(onNavigateSearch).toHaveBeenLastCalledWith(
-			expect.objectContaining({ filter: "file.name:starts_with:abc" }),
+			expect.objectContaining({ filter: "file.name:abc*" }),
 			{
 				replace: false,
 			},
@@ -1244,7 +1255,7 @@ describe("FileNodeView folder filter", () => {
 	});
 
 	test("a day filter covers the local calendar day, 25 hours on the day the clocks go back", async () => {
-		renderFileView({ nodeId: node._id, filter: "file.updated:on:2026-10-25" });
+		renderFileView({ nodeId: node._id, filter: "file.updated:2026-10-25" });
 		await screen.findByRole("table", { name: "Folder contents" });
 
 		// The test time zone is Europe/London.
@@ -1255,7 +1266,7 @@ describe("FileNodeView folder filter", () => {
 
 	test("links to another node drop the filter and the typed text", async () => {
 		result = { rows: [rows[0]!] };
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:a", view_q: "typed" });
+		renderFileView({ nodeId: node._id, filter: "file.name:a*", view_q: "typed" });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		const links = Array.from(document.querySelectorAll("a[data-node-id]"));
 
@@ -1270,7 +1281,7 @@ describe("FileNodeView folder filter", () => {
 	test("keeps the old filter label and rows through newer filter changes", async () => {
 		folderSort = { sort: [{ field: "name", direction: "asc" }], canSave: false };
 		result = { rows: [rows[0]!] };
-		const view = renderFileView({ nodeId: node._id, filter: "file.updated:on:2026-10-25" });
+		const view = renderFileView({ nodeId: node._id, filter: "file.updated:2026-10-25" });
 		await screen.findByRole("table", { name: "Folder contents" });
 		const oldFilter = sortedChildrenMock.mock.calls.at(-1)![0].filter;
 		result = {
@@ -1284,7 +1295,7 @@ describe("FileNodeView folder filter", () => {
 		for (const value of ["second", "third"]) {
 			view.rerender(
 				<FileNodeView
-					searchParams={{ nodeId: node._id, filter: `file.name:starts_with:${value}` }}
+					searchParams={{ nodeId: node._id, filter: `file.name:${value}*` }}
 					onNavigateSearch={view.onNavigateSearch}
 				/>,
 			);
@@ -1307,7 +1318,7 @@ describe("FileNodeView folder filter", () => {
 		},
 	])("shows the honest zero-row state for $name and keeps the toolbar", async ({ overrides, message }) => {
 		result = { rows: [], ...overrides };
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:absent" });
+		renderFileView({ nodeId: node._id, filter: "file.name:absent*" });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-filter-state")).toBe("ready");
 		expect(screen.getByText(message)).toBeTruthy();
@@ -1331,7 +1342,7 @@ describe("FileNodeView folder filter", () => {
 
 	test("keeps a loading filter out of the empty state, and Show more keeps looking after a short page", async () => {
 		result = { rows: undefined, isBusy: true, isDone: false };
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:rare" });
+		renderFileView({ nodeId: node._id, filter: "file.name:rare*" });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		expect(screen.getByText("Applying filter…")).toBeTruthy();
 		expect(table.closest(".FileNodeViewFolderExplorer")!.getAttribute("data-filter-state")).toBe("applying");
@@ -1353,7 +1364,7 @@ describe("FileNodeView folder filter", () => {
 
 	test("Show more shows the hidden rows first, then loads more, and Show less collapses", async () => {
 		result = { rows, isDone: false };
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:file" });
+		renderFileView({ nodeId: node._id, filter: "file.name:file*" });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		expect(within(table).getAllByRole("link", { name: /^Open / })).toHaveLength(5);
 		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
@@ -1374,7 +1385,7 @@ describe("FileNodeView folder filter", () => {
 		lockedRows = [
 			{ ...NODE, _id: "a-locked.html", name: "a-locked.html", path: "/Docs/a-locked.html", parentId: node._id },
 		];
-		renderFileView({ nodeId: node._id, filter: "metadata.status:is:Open" });
+		renderFileView({ nodeId: node._id, filter: "metadata.status:Open" });
 		await screen.findByRole("link", { name: "Open file-1.html" });
 		expect(await screen.findByRole("link", { name: "Open a-shared.html" })).toBeTruthy();
 		expect(screen.queryByRole("link", { name: /^Open a-locked\.html/ })).toBeNull();
@@ -1382,7 +1393,7 @@ describe("FileNodeView folder filter", () => {
 
 		// A name filter reads the twin, so the locked row shows and the note goes.
 		cleanup();
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:a" });
+		renderFileView({ nodeId: node._id, filter: "file.name:a*" });
 		expect(await screen.findByRole("link", { name: "Open a-locked.html, you don't have access" })).toBeTruthy();
 		expect(screen.queryByText(/^Locked items are not included/)).toBeNull();
 	});

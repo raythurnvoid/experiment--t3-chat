@@ -15,24 +15,13 @@ import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_ROOT_ID } from "@/lib/files.ts";
-import { detect_search_query_mode, search_free_text } from "@/lib/files-search.ts";
+import { detect_search_query_mode, search_content_snippet, search_free_text } from "@/lib/files-search.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
 import { url_parse_file_link } from "@/lib/urls.ts";
 import { cn } from "@/lib/utils.ts";
 import { files_search_query_parse, files_search_query_serialize } from "../../../shared/files-search-query.ts";
 import { FilesSearchInput } from "./files-search-input.tsx";
-
-const SNIPPET_RADIUS = 60;
-
-function files_search_palette_snippet(textChunk: string, query: string) {
-	const flatText = textChunk.replace(/\s+/gu, " ").trim();
-	const firstTerm = query.trim().split(/\s+/u)[0] ?? "";
-	const hitIndex = firstTerm ? flatText.toLowerCase().indexOf(firstTerm.toLowerCase()) : -1;
-	const start = hitIndex < 0 ? 0 : Math.max(0, hitIndex - SNIPPET_RADIUS);
-	const end = Math.min(flatText.length, start + SNIPPET_RADIUS * 2);
-	return `${start > 0 ? "…" : ""}${flatText.slice(start, end)}${end < flatText.length ? "…" : ""}`;
-}
 
 type FilesSearchPaletteGroup_ClassNames =
 	| "FilesSearchPaletteGroup"
@@ -182,7 +171,7 @@ const FilesSearchPaletteGroup = memo(function FilesSearchPaletteGroup(props: Fil
 								{row.locked ? <span className="sr-only">, you don't have access</span> : null}
 								{row.textChunk ? (
 									<span className={"FilesSearchPaletteGroup-item-snippet" satisfies FilesSearchPaletteGroup_ClassNames}>
-										{files_search_palette_snippet(row.textChunk, snippetText)}
+										{search_content_snippet(row.textChunk, snippetText)}
 									</span>
 								) : null}
 							</Ariakit.CompositeItem>
@@ -279,7 +268,8 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	});
 
 	const handleUseFilters = useFn(() => {
-		const q = files_search_query_serialize({ filters: parsed.filters, text: "" });
+		// Keep the words too. A folder glob runs only next to words, so the sidebar would refuse it alone.
+		const q = files_search_query_serialize({ filters: parsed.filters, text: parsed.text });
 		app_local_storage_set_value("app_state::sidebar::files_open", true);
 		onClose();
 		navigate({
@@ -365,7 +355,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 							<FilesSearchPaletteGroup
 								label={search.contents === null ? "Matches" : "Names"}
 								list={search.names}
-								snippetText={text}
+								snippetText={search.contentText ?? text}
 								note={search.isFolderDate ? "In a folder, a date matches only values written the same way." : null}
 								onSelect={handleSelectResult}
 							/>

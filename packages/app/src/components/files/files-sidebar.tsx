@@ -1,7 +1,12 @@
 import "./files-sidebar.css";
 import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-input.tsx";
 import { useFilesSearchSaved, type FilesSearchSavedRow } from "@/hooks/files-search-hooks.ts";
-import { detect_search_query_mode, search_free_text, search_path_filter } from "@/lib/files-search.ts";
+import {
+	detect_search_query_mode,
+	search_content_snippet,
+	search_free_text,
+	search_path_filter,
+} from "@/lib/files-search.ts";
 import React, {
 	createContext,
 	memo,
@@ -4594,6 +4599,7 @@ type FilesSidebarSearchResults_ClassNames =
 	| "FilesSidebarSearchResults-row-text"
 	| "FilesSidebarSearchResults-row-name"
 	| "FilesSidebarSearchResults-row-path"
+	| "FilesSidebarSearchResults-row-snippet"
 	| "FilesSidebarSearchResults-more";
 
 type FilesSidebarSearchResults_CustomAttributes = {
@@ -4602,6 +4608,11 @@ type FilesSidebarSearchResults_CustomAttributes = {
 
 type FilesSidebarSearchResultsRow_Props = {
 	row: FilesSearchSavedRow;
+	/**
+	 * The words of a `file.content` search, to cut the row's snippet around them. Null for other
+	 * searches, whose rows have no snippet.
+	 */
+	snippetText: string | null;
 	isCurrent: boolean;
 	/**
 	 * Whether the user may write in the workspace. The row has no write state of its own, so the
@@ -4622,7 +4633,7 @@ type FilesSidebarSearchResultsRow_Props = {
 const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 	props: FilesSidebarSearchResultsRow_Props,
 ) {
-	const { row, isCurrent, canWrite, menusPortalHost, onOpen, onShare, onProperties, onArchive } = props;
+	const { row, snippetText, isCurrent, canWrite, menusPortalHost, onOpen, onShare, onProperties, onArchive } = props;
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 	const buttonRef = useRef<HTMLButtonElement | null>(null);
 	const name = path_name_of(row.path);
@@ -4700,6 +4711,11 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 							<span className={"FilesSidebarSearchResults-row-path" satisfies FilesSidebarSearchResults_ClassNames}>
 								{parentPath}
 							</span>
+							{row.textChunk && snippetText !== null ? (
+								<span className={"FilesSidebarSearchResults-row-snippet" satisfies FilesSidebarSearchResults_ClassNames}>
+									{search_content_snippet(row.textChunk, snippetText)}
+								</span>
+							) : null}
 						</span>
 					</MyButton>
 				</MyContextMenuTrigger>
@@ -4832,6 +4848,7 @@ const FilesSidebarSearchResults = memo(function FilesSidebarSearchResults(props:
 						<FilesSidebarSearchResultsRow
 							key={row.nodeId}
 							row={row}
+							snippetText={search.contentText}
 							isCurrent={row.nodeId === selectedNodeId}
 							canWrite={canWrite}
 							menusPortalHost={menusPortalHost}
@@ -10240,15 +10257,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	describe("search_path_filter", () => {
 		const filters = (query: string) => files_search_query_parse(query).filters;
 
-		test("takes the first plain file.path chip and skips a negated, prefixed, or broken one", () => {
-			expect(search_path_filter(filters("!file.path:/tasks metadata.status:open"))).toBeNull();
+		test("reads the first working file.path chip as an exact path or a folder glob", () => {
+			expect(search_path_filter(filters("!file.path:/tasks/** metadata.status:open"))).toBeNull();
 			expect(search_path_filter(filters("file.path:tasks* metadata.status:open"))).toBeNull();
 			expect(search_path_filter(filters("file.path: metadata.status:open"))).toBeNull();
-			expect(search_path_filter(filters("metadata.status:open file.path:/a file.path:/b"))).toEqual({
-				raw: "file.path:/a",
-				value: "/a",
+			expect(search_path_filter(filters("metadata.status:open file.path:/a/** file.path:/b/**"))).toEqual({
+				raw: "file.path:/a/**",
+				path: "/a",
+				depth: "all",
 			});
-			expect(search_path_filter(filters("file.path:/tasks/"))).toEqual({ raw: "file.path:/tasks/", value: "/tasks/" });
+			expect(search_path_filter(filters("report file.path:tasks/*"))).toEqual({
+				raw: "file.path:tasks/*",
+				path: "/tasks",
+				depth: "children",
+			});
+			expect(search_path_filter(filters("file.path:/tasks/a.md"))).toEqual({
+				raw: "file.path:/tasks/a.md",
+				path: "/tasks/a.md",
+				depth: "exact",
+			});
 		});
 	});
 

@@ -197,7 +197,7 @@ describe("FilesSearchInput", () => {
 	test("a committed filter shows its problem as soon as words are typed next to it", () => {
 		render(<FilesSearchInput {...props} initialQuery="metadata.status:open" />);
 		const input = screen.getByRole("combobox");
-		const problem = "Search for words or one filter, not both. You can also add a folder, like file.path:/tasks";
+		const problem = "Search for words or one filter, not both. You can also add a folder, like file.path:/tasks/**";
 		expect(screen.queryByText(problem)).toBeNull();
 		fireEvent.change(input, { target: { value: "notes" } });
 		expect(screen.getByText(problem, { selector: ".FilesSearchInput-error" })).toBeTruthy();
@@ -220,7 +220,7 @@ describe("FilesSearchInput", () => {
 		await waitFor(() => expect(test_labels("Values for metadata.status")).toEqual(["* (any value)", "true", "false", "fixed", "open", "opened"]));
 	});
 
-	test.each(["", "file.path:/Docs"])(
+	test.each(["", "file.path:/Docs/**"])(
 		"a member without workspace read sees why no keys or values are suggested (%s)",
 		async (initialQuery) => {
 			// Like the server, a guest gets empty pages at the root and in an open folder like `/Docs`.
@@ -250,7 +250,7 @@ describe("FilesSearchInput", () => {
 		// A guest too: inside a restricted folder they can open, the server answers from its area.
 		test_catalog.permissions = ["files.read"];
 		const hint = "Suggestions show values from files everyone can open, or from the restricted folder you are in.";
-		render(<FilesSearchInput {...props} initialQuery="file.path:/HR" />);
+		render(<FilesSearchInput {...props} initialQuery="file.path:/HR/**" />);
 		const input = screen.getByRole<HTMLInputElement>("combobox");
 		act(() => input.focus());
 		fireEvent.change(input, { target: { value: "metadata.status:" } });
@@ -320,6 +320,18 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("option", { name: "/Projects/tasks" })).toBeTruthy();
 			expect(screen.getByRole("option", { name: "/tasks" })).toBeTruthy();
 			expect(screen.queryByRole("option", { name: "/archive" })).toBeNull();
+			// A picked folder searches everything under it.
+			fireEvent.click(screen.getByRole("option", { name: "/tasks" }));
+			expect(await screen.findByRole("button", { name: "Remove filter file.path:/tasks/**" })).toBeTruthy();
+		});
+
+		test("a picked folder keeps the typed /* for its children only", async () => {
+			render(<FilesSearchInput {...props} variant={variant} />);
+			const input = screen.getByRole<HTMLInputElement>("combobox");
+			act(() => input.focus());
+			fireEvent.change(input, { target: { value: "file.path:/tas/*" } });
+			fireEvent.click(await screen.findByRole("option", { name: "/tasks" }));
+			expect(await screen.findByRole("button", { name: "Remove filter file.path:/tasks/*" })).toBeTruthy();
 		});
 
 		test("during a Move, completes a file.path value from both streams, each folder once", async () => {

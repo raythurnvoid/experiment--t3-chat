@@ -142,7 +142,7 @@
 		}
 	}
 
-	/* Status and limit notes. The box is empty, and hidden, when there is nothing to say. */
+	/* Status and limit notes, then the syntax help, like the search box footer. */
 	.FileNodeViewFolderFilterBar-notes {
 		flex-shrink: 0;
 		padding: 8px 16px;
@@ -152,12 +152,29 @@
 		line-height: 1.4;
 		color: var(--color-fg-08);
 
-		&:empty {
-			display: none;
-		}
-
 		p {
 			margin: 0;
+		}
+
+		summary {
+			width: fit-content;
+			min-height: 24px;
+			padding-top: 4px;
+			cursor: pointer;
+			color: var(--color-fg-10);
+		}
+
+		dl {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr);
+			gap: 4px 12px;
+			margin: 8px 0 4px;
+		}
+
+		dd {
+			margin: 0;
+			color: var(--color-fg-10);
+			overflow-wrap: anywhere;
 		}
 	}
 	/* #endregion folder filter bar */

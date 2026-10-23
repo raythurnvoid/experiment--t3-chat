@@ -1059,7 +1059,7 @@ describe("FilesSidebar", () => {
 		await view.findByRole("treeitem", { name: "alpha" });
 
 		const searchInput = view.getByRole("combobox");
-		fireEvent.change(searchInput, { target: { value: "file.path:/docs metadata.due:2026-09-04" } });
+		fireEvent.change(searchInput, { target: { value: "file.path:/docs/** metadata.due:2026-09-04" } });
 		fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
 		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
 		expect(await within(results).findByRole("button", { name: "a.md in /docs" })).toBeTruthy();

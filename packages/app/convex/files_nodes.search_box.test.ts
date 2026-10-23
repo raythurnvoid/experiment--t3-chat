@@ -112,7 +112,7 @@ describe("search box doors", () => {
 		expect(await search(statusOpenPlans)).toEqual(
 			new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]),
 		);
-		// `file.path:/tasks` stops at the folder: `/tasks-archive` shares the prefix but not the path.
+		// `file.path:/tasks/**` stops at the folder: `/tasks-archive` shares the prefix but not the path.
 		expect(await search(statusOpenPlans, "/tasks")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 
 		// `priority:3` asks the number and the text. Only the number exists.
@@ -572,6 +572,16 @@ describe("search box doors", () => {
 		expect(await search("weekly", "/tasks/inner")).toEqual(new Set([notesId]));
 		expect(await search("weekly", "/tasks-archive")).toEqual(new Set([oldId]));
 		expect(await search("weekly", "/")).toEqual(new Set([reportId, notesId, oldId, rootId]));
+		// `childrenOnly` keeps the folder's direct children, or the root's.
+		const children = (folderPath: string) =>
+			search_saved_page({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				clause: { kind: "name", text: "weekly", childrenOnly: true },
+				folderPath,
+			});
+		expect(await children("/tasks")).toEqual(new Set([reportId]));
+		expect(await children("/")).toEqual(new Set([rootId]));
 		const innerFolders = await search_saved_page({
 			asWho: seeded.asOwner,
 			membershipId: seeded.db.membershipId,
@@ -618,16 +628,20 @@ describe("search box doors", () => {
 			membershipId: db.membershipId,
 			path: `${twelve}/deep-note.md`,
 		});
-		const search = (folderPath: string) =>
+		const search = (folderPath: string, childrenOnly = false) =>
 			search_saved_page({
 				asWho: asUser,
 				membershipId: db.membershipId,
-				clause: { kind: "name", text: "deep" },
+				clause: { kind: "name", text: "deep", childrenOnly },
 				folderPath,
 			});
 
 		expect(await search(twelve)).toEqual(new Set([deepId]));
 		expect(await search(`/${levels.join("/")}`)).toEqual(
+			new Set(["This folder is too deep to search inside. Search a folder higher up"]),
+		);
+		// Direct children also read the ancestor field below the folder, so they reach one level less.
+		expect(await search(twelve, true)).toEqual(
 			new Set(["This folder is too deep to search inside. Search a folder higher up"]),
 		);
 	});

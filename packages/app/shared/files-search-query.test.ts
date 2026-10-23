@@ -20,7 +20,10 @@ function parse_one(query: string): files_search_query_Filter {
 	return parsed.filters[0]!;
 }
 
-const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can also add a folder, like file.path:/tasks";
+const ONE_CLAUSE_PROBLEM =
+	"Search for words or one filter, not both. You can also add a folder, like file.path:/tasks/**";
+const NOT_PROBLEM =
+	"Search has no NOT. The folder table can find a missing file.extension or file.size, like !file.extension:*";
 
 describe("files_search_query_parse", () => {
 	test("splits filters from free text and keeps the raw token", () => {
@@ -108,14 +111,16 @@ describe("files_search_query_parse", () => {
 	test("keeps one clause and one folder, and refuses every other chip and a NOT", () => {
 		const problems = (query: string) => files_search_query_parse(query).filters.map((filter) => filter.problem);
 
-		expect(problems("metadata.a:1 file.path:/tasks")).toEqual([null, null]);
-		expect(problems("file.path:/tasks notes")).toEqual([null]);
+		expect(problems("metadata.a:1 file.path:/tasks/**")).toEqual([null, null]);
+		expect(problems("file.path:/tasks/** notes")).toEqual([null]);
 		expect(problems("file.link:public")).toEqual([null]);
 		expect(problems("metadata.a:1 metadata.b:2")).toEqual([null, ONE_CLAUSE_PROBLEM]);
 		expect(problems("notes file.link:public")).toEqual([ONE_CLAUSE_PROBLEM]);
+		expect(problems('notes file.content:"annual report"')).toEqual([ONE_CLAUSE_PROBLEM]);
 		expect(problems("file.path:/a file.path:/b")).toEqual([null, ONE_CLAUSE_PROBLEM]);
-		expect(problems("!metadata.status:done")).toEqual([ONE_CLAUSE_PROBLEM]);
-		expect(problems("metadata.status:!done")).toEqual([ONE_CLAUSE_PROBLEM]);
+		expect(problems("!metadata.status:done")).toEqual([NOT_PROBLEM]);
+		expect(problems("!metadata.status:*")).toEqual([NOT_PROBLEM]);
+		expect(problems("metadata.status:!done")).toEqual([NOT_PROBLEM]);
 		// A chip with its own problem does not take the clause, so the next chip still can.
 		expect(problems("metadata.a: metadata.b:2")).toEqual([
 			"Filter needs a value right after the colon. Use * for any value",
@@ -132,17 +137,56 @@ describe("files_search_query_parse", () => {
 		const tooDeepProblem = "This folder is too deep to search inside. Search a folder higher up";
 		const twelveLevels = `/${Array.from({ length: 12 }, (_, index) => `f${index}`).join("/")}`;
 
-		expect(problems("file.path:/tasks metadata.priority:>2")).toEqual([null, folderRangeProblem]);
-		expect(problems("metadata.title:Rec* file.path:/tasks")).toEqual([folderRangeProblem, null]);
+		expect(problems("file.path:/tasks/** metadata.priority:>2")).toEqual([null, folderRangeProblem]);
+		expect(problems("metadata.title:Rec* file.path:/tasks/**")).toEqual([folderRangeProblem, null]);
 		expect(problems("metadata.priority:>2")).toEqual([null]);
-		// The root folder scopes nothing, so a range or a prefix still runs.
-		expect(problems("file.path:/ metadata.priority:>2")).toEqual([null, null]);
-		expect(problems("file.path:// metadata.title:Rec*")).toEqual([null, null]);
-		expect(problems(`file.path:${twelveLevels} notes`)).toEqual([null]);
-		expect(problems(`file.path:${twelveLevels}/f12 notes`)).toEqual([tooDeepProblem]);
-		expect(problems(`file.path:${twelveLevels}/f12/ metadata.a:*`)).toEqual([tooDeepProblem, null]);
-		// A folder alone is an exact path, so its depth does not matter.
+		// `/**` at the root scopes nothing, so a range or a prefix still runs.
+		expect(problems("file.path:/** metadata.priority:>2")).toEqual([null, null]);
+		expect(problems(`file.path:${twelveLevels}/** notes`)).toEqual([null]);
+		expect(problems(`file.path:${twelveLevels}/f12/** notes`)).toEqual([tooDeepProblem]);
+		expect(problems(`file.path:${twelveLevels}/f12/** metadata.a:*`)).toEqual([tooDeepProblem, null]);
+		// `/*` reads one more ancestor field, so it reaches one level less deep.
+		expect(problems(`file.path:${twelveLevels.slice(0, twelveLevels.lastIndexOf("/"))}/* notes`)).toEqual([null]);
+		expect(problems(`file.path:${twelveLevels}/* notes`)).toEqual([tooDeepProblem]);
+		// An exact path alone does not scope anything, so its depth does not matter.
 		expect(problems(`file.path:${twelveLevels}/f12`)).toEqual([null]);
+	});
+
+	test("reads file.path as an exact path or a folder glob", () => {
+		const problems = (query: string) => files_search_query_parse(query).filters.map((filter) => filter.problem);
+
+		expect(parse_one("file.path:/tasks/a.md").match).toEqual({ op: "eq", value: "/tasks/a.md", quoted: false });
+		expect(parse_one("file.path:/tasks/*").match).toEqual({ op: "folder", path: "/tasks", depth: "children" });
+		expect(parse_one("file.path:tasks/**").match).toEqual({ op: "folder", path: "/tasks", depth: "all" });
+		expect(parse_one('file.path:"/my tasks/"**').match).toEqual({ op: "folder", path: "/my tasks", depth: "all" });
+		expect(parse_one("file.path:/*").match).toEqual({ op: "folder", path: "/", depth: "children" });
+		expect(parse_one("file.path:/tasks*").problem).toBe("Use /* or /** after a folder name, like file.path:/tasks/**");
+
+		// A glob scopes a clause, and an exact path stands alone.
+		expect(problems("file.path:/tasks/**")).toEqual(["Add words or a filter to search inside the folder"]);
+		expect(problems("file.path:/tasks notes")).toEqual([
+			"Add /* to search this folder or /** to search all its subfolders, like file.path:/tasks/**",
+		]);
+		expect(problems("file.path:/* notes")).toEqual([null]);
+		expect(problems("file.path:/tasks/* metadata.status:open")).toEqual([
+			"/* works with words only. Use /** with a filter",
+			null,
+		]);
+	});
+
+	test("file.content takes words and no folder", () => {
+		expect(parse_one('file.content:"annual report"').match).toEqual({ op: "eq", value: "annual report", quoted: true });
+		expect(parse_one("file.content:report").problem).toBeNull();
+		expect(parse_one("file.content:rep*").problem).toBe('file.content takes words, like file.content:"annual report"');
+		expect(parse_one("file.content:*").problem).toBe("file.content needs a value");
+		expect(files_search_query_parse("file.content:report file.path:/tasks/**").filters.map((filter) => filter.problem)).toEqual([
+			"Contents search does not work inside a folder. Remove the folder to search contents",
+			null,
+		]);
+		expect(files_search_query_parse("file.content:report file.path:/**").filters.map((filter) => filter.problem)).toEqual([
+			null,
+			null,
+		]);
 	});
 
 	test("refuses a metadata value over 1,024 characters, because the index cuts longer values", () => {
@@ -181,12 +225,10 @@ describe("files_search_query_parse", () => {
 			"Ranges take the number or the date without quotes, like metadata.priority:>2",
 		);
 		expect(parse_one("metadata.due:>2026-09-04").problem).toBeNull();
-		expect(parse_one("file.size:3").problem).toBe("Unknown file field. Use file.path, file.link");
-		// The old spelling file.ext is not a field any more.
-		expect(parse_one("file.ext:md").problem).toContain("Unknown file field");
+		expect(parse_one("file.ext:md").problem).toBe("Unknown file field. Use file.path, file.content, file.link");
 		// The key problem comes before the value problem.
-		expect(parse_one("file.size:").problem).toBe("Unknown file field. Use file.path, file.link");
-		expect(parse_one("file.path:tasks*").problem).toBe("file.path takes a folder path, without *");
+		expect(parse_one("file.ext:").problem).toBe("Unknown file field. Use file.path, file.content, file.link");
+		expect(parse_one("file.path:tasks*").problem).toBe("Use /* or /** after a folder name, like file.path:/tasks/**");
 		expect(parse_one("file.path:*").problem).toBe("file.path needs a value");
 		expect(parse_one("frontmatter.a..b:x").problem).toBe(
 			"Frontmatter keys use letters, digits, _ and -, joined by dots",
@@ -215,6 +257,7 @@ describe("files_search_query_parse", () => {
 		expect(parse_one("file.updated:>abc").problem).toBe(
 			"file.updated is not supported in search. Use the folder table filters",
 		);
+		expect(parse_one("file.size:").problem).toBe("file.size is not supported in search. Use the folder table filters");
 	});
 
 	test("file.link takes only public, in any case", () => {

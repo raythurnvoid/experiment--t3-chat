@@ -2,6 +2,7 @@ import "./file-node-view-folder-filter-bar.css";
 import { ListFilter, SlidersHorizontal, X } from "lucide-react";
 import {
 	createContext,
+	Fragment,
 	memo,
 	use,
 	useEffect,
@@ -58,20 +59,21 @@ import {
 	files_folder_table_query_close_open_quote,
 	files_folder_table_query_FILE_FIELDS,
 	files_folder_table_query_field_text,
-	files_folder_table_query_format_value,
+	files_folder_table_query_forms,
 	files_folder_table_query_get_add_problem,
 	files_folder_table_query_MAX_LENGTH,
-	files_folder_table_query_operations,
 	files_folder_table_query_parse,
 	files_folder_table_query_parse_field,
 	files_folder_table_query_parse_token,
 	files_folder_table_query_serialize,
 	files_folder_table_query_with_filter,
-	type files_folder_table_query_Operation,
+	type files_folder_table_query_Form,
 	type files_folder_table_query_Token,
 } from "../../../../shared/files-folder-table-query.ts";
 import {
+	files_search_query_format_value,
 	files_search_query_split_tokens,
+	files_search_query_SYNTAX_EXAMPLES,
 	files_search_query_typing_token,
 } from "../../../../shared/files-search-query.ts";
 import { files_sort_field_is_valid } from "../../../../shared/files-sort.ts";
@@ -94,13 +96,13 @@ const FileNodeViewFolderFilterBarChip = memo(function FileNodeViewFolderFilterBa
 ) {
 	const { token, onRemove } = props;
 
-	const keyLabel = token.kind === "sort" ? "sort_by" : files_folder_table_query_field_text(token.field);
+	// A filter chip shows the value form as typed (`>=1024`, `rep*`), not the operation it maps to.
+	const keyEnd = token.raw.indexOf(":");
+	const keyLabel = token.kind === "sort" ? "sort_by" : token.raw.slice(0, keyEnd);
 	const valueLabel =
 		token.kind === "sort"
 			? `${files_folder_table_query_field_text(token.field)} ${token.direction}`
-			: token.value === null
-				? token.op
-				: `${token.op} ${JSON.stringify(token.value)}`;
+			: token.raw.slice(keyEnd + 1);
 
 	return (
 		<MyChip
@@ -510,29 +512,20 @@ function get_typing_stage(token: string) {
 	}
 
 	const firstColon = token.indexOf(":");
-	if (firstColon < 0) {
-		return { kind: "key", typed: token } as const;
-	}
-
-	const secondColon = token.indexOf(":", firstColon + 1);
-	return secondColon < 0
-		? ({ kind: "operation", field: token.slice(0, firstColon), typed: token.slice(firstColon + 1) } as const)
-		: ({
-				kind: "value",
-				field: token.slice(0, firstColon),
-				operation: token.slice(firstColon + 1, secondColon),
-				typed: token.slice(secondColon + 1).replace(/^"/u, ""),
-			} as const);
+	return firstColon < 0
+		? ({ kind: "key", typed: token } as const)
+		: ({ kind: "value", field: token.slice(0, firstColon), typed: token.slice(firstColon + 1) } as const);
 }
 
 /**
- * Whether a filter on this field with this operation can join the committed query. The parser decides,
- * so the bar never keeps its own copy of the pairing rules. The sample value only has to be valid.
+ * Whether a filter written in this form can join the committed query. The parser decides, so the bar
+ * never keeps its own copy of the pairing rules. The sample value only has to be valid.
  */
-function can_add_filter(committedQuery: string, fieldText: string, operation: files_folder_table_query_Operation) {
+function can_add_filter(committedQuery: string, fieldText: string, form: files_folder_table_query_Form) {
 	const field = files_folder_table_query_parse_field(fieldText).field;
-	const value = field === "size" ? "0" : field === "updated" || field === "created" ? "2000-01-01" : "a";
-	const raw = `${fieldText}:${operation.op}${operation.needsValue ? `:${value}` : ""}`;
+	const value = field === "size" ? "1" : field === "updated" || field === "created" ? "2000-01-01" : "a";
+	// A "starts with" form needs the `*` after its sample.
+	const raw = form.needsValue ? `${form.token}${value}${form.label.endsWith("*") ? "*" : ""}` : form.token;
 	return files_folder_table_query_get_add_problem(committedQuery, raw) === null;
 }
 
@@ -619,7 +612,9 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 	const stage = get_typing_stage(typing.token);
 	const typedLower = stage.typed.toLowerCase();
 	const typedKeyDebounced = useDebounce(stage.kind === "key" || stage.kind === "sort_field" ? stage.typed : "", 150);
-	const typedValueDebounced = useDebounce(stage.kind === "value" ? stage.typed : "", 150);
+	// A value with spaces starts with a quote. The saved values have none, so match them without it.
+	const typedValue = stage.kind === "value" ? stage.typed.replace(/^"/u, "") : "";
+	const typedValueDebounced = useDebounce(typedValue, 150);
 
 	const canAddSort = parsed.sorts.length === 0;
 
@@ -631,17 +626,10 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 	}));
 	const fieldRows = allFieldRows.filter((row) => row.field.toLowerCase().includes(typedLower));
 
-	// The table runs one filter, or `file.name:starts_with` plus one "is" filter. A field shows when one
-	// of its operations can still join.
-	const canAddFilterOn = (fieldText: string) => {
-		const field = files_folder_table_query_parse_field(fieldText).field;
-		return (
-			field !== null &&
-			files_folder_table_query_operations(field).some((operation) =>
-				can_add_filter(committedQuery, fieldText, operation),
-			)
-		);
-	};
+	// The table runs one filter, or a `file.name:report*` start plus one "is" filter. A field shows when
+	// one of its forms can still join.
+	const canAddFilterOn = (fieldText: string) =>
+		files_folder_table_query_forms(fieldText).some((form) => can_add_filter(committedQuery, fieldText, form));
 	const keyRows = stage.kind === "key" ? fieldRows.filter((row) => canAddFilterOn(row.field)) : [];
 	const canAddFilter = stage.kind !== "key" || allFieldRows.some((row) => canAddFilterOn(row.field));
 	const showSortKey = stage.kind === "key" && canAddSort && "sort_by".includes(typedLower);
@@ -655,23 +643,25 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 	const sortDirectionRows =
 		stage.kind === "sort_direction" ? ["asc", "desc"].filter((direction) => direction.startsWith(typedLower)) : [];
 
-	const operationRows = ((/* iife */) => {
-		if (stage.kind !== "operation") {
-			return [];
-		}
+	// The forms show until the value starts. A form that is just `field:` adds nothing to click, so the
+	// notes name it instead. A typed `!` has one form, `!field:*`, and the rows would read the wrong way.
+	const showForms = stage.kind === "value" && !stage.field.startsWith("!") && /^(?:[<>]=?)?$/u.test(stage.typed);
+	const addableForms = showForms
+		? files_folder_table_query_forms(stage.field).filter((form) => can_add_filter(committedQuery, stage.field, form))
+		: [];
+	const typedForm = `${stage.kind === "value" ? stage.field : ""}:${stage.typed}`;
+	const formRows = addableForms.filter((form) =>
+		form.token.startsWith("!") ? stage.typed === "" : form.token.length > typedForm.length && form.token.startsWith(typedForm),
+	);
+	const plainFormHints = addableForms
+		.filter((form) => form.token === typedForm)
+		.map((form) => `${form.label.slice(1)} for ${form.hint}`);
 
-		const field = files_folder_table_query_parse_field(stage.field).field;
-		return field === null
-			? []
-			: files_folder_table_query_operations(field).filter(
-					(operation) =>
-						operation.op.startsWith(typedLower) && can_add_filter(committedQuery, stage.field, operation),
-				);
-	})();
-
-	// Only the folder fields have values to suggest. File details have no value list.
+	// Only the folder fields have values to suggest. File details have no value list. A comparison like
+	// `<` has no value list either.
 	const valueFieldPath =
 		stage.kind === "value" &&
+		!/^[<>]/u.test(stage.typed) &&
 		(stage.field.startsWith("metadata.") || stage.field.startsWith("frontmatter.")) &&
 		files_folder_table_query_parse_field(stage.field).field !== null
 			? stage.field
@@ -1088,36 +1078,32 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 									))}
 								</MyComboboxGroup>
 							) : null}
-							{operationRows.length > 0 && stage.kind === "operation" ? (
+							{formRows.length > 0 && stage.kind === "value" ? (
 								<MyComboboxGroup heading={`How to compare ${stage.field}`}>
-									{operationRows.map((operation) => (
+									{formRows.map((form) => (
 										<MyComboboxItem
-											key={operation.op}
-											value={operation.op}
+											key={form.label}
+											value={form.token}
 											hideOnClick={false}
 											setValueOnClick={false}
 											className={cn(
 												"FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames,
 											)}
-											onClick={() =>
-												operation.needsValue
-													? pickPart(`${stage.field}:${operation.op}:`)
-													: pickToken(`${stage.field}:${operation.op}`)
-											}
+											onClick={() => (form.needsValue ? pickPart(form.token) : pickToken(form.token))}
 										>
 											<span
 												className={cn(
 													"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
 												)}
 											>
-												{operation.op}
+												{form.label}
 											</span>
 											<span
 												className={cn(
 													"FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames,
 												)}
 											>
-												{operation.needsValue ? "needs a value" : "no value"}
+												{form.hint}
 											</span>
 										</MyComboboxItem>
 									))}
@@ -1135,11 +1121,9 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 											folderPath={folderPath}
 											fieldPath={valueFieldPath}
 											prefix={typedValueDebounced}
-											typed={stage.typed}
-											stale={stage.typed !== typedValueDebounced}
-											onPick={(value) =>
-												pickToken(`${stage.field}:${stage.operation}:${files_folder_table_query_format_value(value)}`)
-											}
+											typed={typedValue}
+											stale={typedValue !== typedValueDebounced}
+											onPick={(value) => pickToken(`${stage.field}:${files_search_query_format_value(value)}`)}
 										/>
 									</CatchBoundary>
 								</MyComboboxGroup>
@@ -1150,6 +1134,18 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 						{stage.kind === "key" && !canAddFilter ? (
 							<p>Use one filter, or 'name starts with' plus one 'is' filter</p>
 						) : null}
+						{plainFormHints.length > 0 ? <p>Type {plainFormHints.join(", ")}</p> : null}
+						<details>
+							<summary>Filter syntax</summary>
+							<dl>
+								{files_search_query_SYNTAX_EXAMPLES.filter((row) => row.inputs.includes("table")).map((row) => (
+									<Fragment key={row.label}>
+										<dt>{row.label}</dt>
+										<dd>{row.example}</dd>
+									</Fragment>
+								))}
+							</dl>
+						</details>
 					</div>
 				</MyComboboxPopoverScrollableArea>
 			</MyComboboxPopover>

@@ -5081,7 +5081,7 @@ type FileNodeViewFolderExplorer_Props = {
 	 */
 	rowsFilter: files_table_Filter | null;
 	/**
-	 * The `file.name:starts_with` value that joins the filter.
+	 * The `file.name` prefix, like `report` for `file.name:report*`, that joins the filter.
 	 */
 	namePrefix: string | null;
 	/**

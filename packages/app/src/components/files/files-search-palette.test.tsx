@@ -209,9 +209,19 @@ describe("FilesSearchPalette", () => {
 		});
 	});
 
+	test("Use filters in sidebar keeps the words next to a folder", async () => {
+		savedPages.set(saved_key({ kind: "name", text: "plan" }, "/docs"), [[saved_row("/docs/plan.md")]]);
+		await open_search("file.path:/docs/** plan");
+		await screen.findByRole("button", { name: /plan\.md/ });
+
+		// A folder glob alone is refused, so the sidebar needs the words too.
+		fireEvent.click(screen.getByRole("button", { name: "Use filters in sidebar" }));
+		expect(navigateMock.mock.calls.at(-1)?.[0].search({})).toMatchObject({ q: "file.path:/docs/** plan" });
+	});
+
 	test("with a folder, names search inside it and Contents says why it is empty", async () => {
 		savedPages.set(saved_key({ kind: "name", text: "plan" }, "/docs"), [[saved_row("/docs/plan.md")]]);
-		await open_search("file.path:/docs plan");
+		await open_search("file.path:/docs/** plan");
 
 		const contents = await screen.findByRole("group", { name: "Contents" });
 		expect(
@@ -227,7 +237,7 @@ describe("FilesSearchPalette", () => {
 		savedPages.set(saved_key({ kind: "name", text: "plan" }, "/missing"), [
 			[{ kind: "problem", message: "Folder not found" }],
 		]);
-		await open_search("file.path:/missing plan");
+		await open_search("file.path:/missing/** plan");
 
 		const names = await screen.findByRole("group", { name: "Names" });
 		expect(await within(names).findByText("Folder not found")).toBeTruthy();
@@ -292,7 +302,7 @@ describe("FilesSearchPalette", () => {
 			saved_key({ kind: "metadata", plan: { op: "eq", fieldPath: "metadata.due", value: "2026-09-04" } }, "/docs"),
 			[[saved_row("/docs/a.md")]],
 		);
-		await open_search("file.path:/docs metadata.due:2026-09-04");
+		await open_search("file.path:/docs/** metadata.due:2026-09-04");
 		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
 
 		const matches = await screen.findByRole("group", { name: "Matches" });

@@ -233,20 +233,50 @@ Tree-item components:
 
 ## Search
 
+### One search grammar
+
+Design principle (decided 2026-10-23): every search input reads the one grammar of
+`shared/files-search-query.ts`. The sidebar box (`q`), the search palette and the folder table bar
+(`filter`) read each token with `files_search_query_read_token`, so a token means the same in each.
+An input that cannot run a token shows it as a chip with a problem that names where it works. It
+never gives the token another meaning. The rules are simple so users and agents can write links by
+hand.
+
+| Token | Sidebar and palette | Folder table |
+|---|---|---|
+| plain words | names (the palette adds a contents preview) | not parsed |
+| `file.content:"words"` | contents, workspace-wide, no folder | problem |
+| `file.path:/a/b.md` | that item, alone | problem |
+| `file.path:/a/*`, `/a/**` | the folder's direct children, or all under it, next to words or one filter | problem |
+| `file.link:public` | yes | problem |
+| `file.name:Rec*` | problem ("Type the name as plain text") | yes |
+| `file.extension`, `file.size`, `file.updated`, `file.created` | problem | yes |
+| metadata `v`, `v*`, `*` | yes | yes |
+| metadata `>=v` and the other ranges | yes, no folder | problem |
+| `!file.extension:*`, `!file.size:*` | problem | yes |
+| `sort_by:` | free text | yes |
+
+`*` and `**` work only at the end of a path, right after `/`. A glob alone gets "Add words or a
+filter to search inside the folder". `/*` takes words only. Both input footers show their rows of
+`files_search_query_SYNTAX_EXAMPLES`, and a test parses each example in each input that lists it.
+
+### Search box
+
 - Shared controls live in `components/files/files-search-input.tsx`, the text shape rules in `lib/files-search.ts`, and the search hook `useFilesSearchSaved` in `hooks/files-search-hooks.ts`. Both search surfaces use them.
 - The search box is `FilesSearchInput`: a combobox (`MyCombobox`, from `native-popovers/combobox`) inside a `MyInput`, with the committed filters shown as chips (`FilesSearchInputFilterChip`, a `MyChip` inside a `MyChipRow`) above the input. The chips wrap within a scroll area capped at 96px. A query is whitespace-separated tokens: a `metadata.key:value`, `frontmatter.path:value`, or `file.field:value` token is a filter, everything else is free text (a bare `status:open` is free text). The language (parser, serializer, plans) lives in `packages/app/shared/files-search-query.ts`; the `file-metadata` skill describes it and the Convex doors under "Search Box".
 - The input sets `autoCapitalize="none"`, `autoCorrect="off"` and `spellCheck={false}`: keys and metadata values are exact-case, so a phone keyboard must not capitalize `status` into `Status` or correct a value.
 - Search input is debounced and consumed through a deferred query value.
 - While a search is active, the sidebar shows a flat list of matches (`FilesSidebarSearchResults`, a `section` named "Search results") in place of the tree and the "Shared with you" group. The tree keeps its expanded folders for when the search closes.
-  - Each row shows the name and the folder that holds it; its `aria-label` is "<name> in <folder>". A click opens the node. The row has the tree row menu, which acts on that row only, like a "Shared with you" row: no rename, create, drag, or multi-select. Its rows carry `data-search-row-id`, and an archive keeps focus in the list the same way.
+  - Each row shows the name and the folder that holds it; its `aria-label` is "<name> in <folder>". A `file.content` match also shows a snippet of the text around the words (`FilesSidebarSearchResults-row-snippet`). A click opens the node. The row has the tree row menu, which acts on that row only, like a "Shared with you" row: no rename, create, drag, or multi-select. Its rows carry `data-search-row-id`, and an archive keeps focus in the list the same way.
   - A hit with `locked: true` (a name or path match the user cannot open) shows the `Lock` icon, a muted name, the title "You don't have access", and ", you don't have access" in its name (class `FilesSidebarSearchResults-row-locked`). A click opens its node route. Its menu has only Copy path and Properties.
   - Show more loads the next 50 and moves focus like Show more in the "Shared with you" group.
   - With archived items shown, the list says "Search shows active items only.", because the search reads active rows only.
   - Opening a match selects it. The selected node is pinned (`get_tree_ancestors`), so the tree shows it with its folders once the search closes. A `files::reveal_node` during a search waits until the search closes.
 - The free text keeps its shape rules, so users paste what they copied without learning a prefix syntax. `detect_search_query_mode` decides: a pasted app link is unwrapped into the `nodeId` search param or the `/files/<path>` splat it carries; a long lowercase alphanumeric string is a node id; anything containing `/` matches `path`; everything else matches `name`. There is no `>`/`#` prefix syntax.
 - Both surfaces read the server doors `files_nodes.search_saved` and `files_nodes.search_saved_metadata` through `useFilesSearchSaved`. The parser keeps one clause plus an optional `file.path` folder. The hook turns the query into at most 2 paginated queries (`usePaginatedQuery`, 50 rows a page) or at most 2 custom-field searches:
-  - Plain text: a `name` query with the folder. The palette adds a `content` query with no folder (the sidebar does not search contents). With a folder, the palette shows a static text instead of contents.
-  - A path or a node id: one `path` query with no folder (`isExact`). A folder alone is a `path` query too.
+  - Plain text: a `name` query with the folder (`file.path:/a/**`, or `/a/*` with `childrenOnly`). The palette adds a `content` query with no folder as a preview (the sidebar does not search contents for plain text). With a folder, the palette shows a static text instead of contents.
+  - A `file.content:"words"` chip: one `content` query, the only list (`contentText` holds the words). Its rows show a snippet in the sidebar and the palette, cut by `search_content_snippet` in `lib/files-search.ts`.
+  - A path or a node id: one `path` query with no folder (`isExact`). An exact `file.path:/a/b.md` alone is a `path` query too. `file.path:/**` scopes nothing.
   - A metadata chip: one `search_saved_metadata` action call per plan (at most 2), merged into one list (`useFilesSearchSavedMetadata`). The action runs the walk of Bash `meta search`, so its rows are a snapshot, not reactive: it runs again when the query, folder or search view changes, and a late answer of an old search is dropped. Show more sends the action's cursor (a `value_store` id bound to the search view). An answer with `_nay` shows as the list's text. `file.link:public`: one `link` query.
   - A pasted draft link sends no query: `draftNodeId` holds its id, and Enter opens it.
   - Rows are kept once per node id. A problem row (`{ kind: "problem", message }`) is shown as the list's text. A finished list at 1,024 rows shows "Showing the top 1,024 matches. Add more words to narrow the search.", the most matches one search index read returns.
@@ -273,11 +303,11 @@ Tree-item components:
     write permission, selected node) through `useCachedQuery` too. Per-row queries stay on the
     plain `useQuery`: the cache keeps at most 250 idle queries, and the rows of a big folder would push
     out the folder's own queries.
-- How the server answers: one clause plus an optional folder, one `.paginate()` per call, saved and active rows only, each row `{ kind, nodeId, path }`. `name` reads the `files_nodes.search_name` text index; a folder adds one `ancestor<folder depth>` equality from the folder's saved row, so it must be 12 levels deep or less. `content` reads committed chunks only and takes no folder. A custom-field plan goes to `search_saved_metadata` instead: `eq` and `exists` walk the folder area by area and never read under a locked folder; `prefix` and `range` take no folder and read the open area only for a member (the access-control skill, "The walk"). `path` is an exact, case-sensitive path or a node id. `link` pages `files_share_links` (at most 500 per workspace). The folder is resolved from its exact path on the server and checked with `files_tree_db_get_readable_node` in `files_tree_db.ts`; a missing or unreadable folder, or one deeper than 12 levels, comes back as the only row of a done page: `{ kind: "problem", message }`. A text search page that grew past 100 rows throws `convex_invalid_cursor_error`, and the hook starts again from page 1.
+- How the server answers: one clause plus an optional folder, one `.paginate()` per call, saved and active rows only, each row `{ kind, nodeId, path }`. `name` reads the `files_nodes.search_name` text index; a folder adds one `ancestor<folder depth>` equality from the folder's saved row, so it must be 12 levels deep or less. `childrenOnly` adds `ancestor<folder depth + 1>` equal to `undefined` (`ancestor1` at the root), so it keeps the direct children and needs a folder 11 levels deep or less. `content` reads committed chunks only and takes no folder. A custom-field plan goes to `search_saved_metadata` instead: `eq` and `exists` walk the folder area by area and never read under a locked folder; `prefix` and `range` take no folder and read the open area only for a member (the access-control skill, "The walk"). `path` is an exact, case-sensitive path or a node id. `link` pages `files_share_links` (at most 500 per workspace). The folder is resolved from its exact path on the server and checked with `files_tree_db_get_readable_node` in `files_tree_db.ts`; a missing or unreadable folder, or one deeper than 12 levels, comes back as the only row of a done page: `{ kind: "problem", message }`. A text search page that grew past 100 rows throws `convex_invalid_cursor_error`, and the hook starts again from page 1.
 - While the first page loads, the list shows "Searching…". A finished empty list shows "No files match your search." in the sidebar and "No matching files" in the palette. An archived node never matches.
 - The free text loses its quotes before `detect_search_query_mode`, and a text of quotes alone matches nothing.
 - The suggestion `useQueries` argument objects are wrapped in `useMemo` on purpose: `useQueries` resubscribes on object identity and calls setState during render, so a fresh object every render is "Too many re-renders".
-- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (paged and subscribed through `useFilesMetadataCatalogPages`; each key row is one qualified key such as `metadata.status`, with a short value-kind hint; paging, held rows, Show more, no-match rows and Retry are in the `file-metadata` skill, "Suggestions"), the two `file.*` fields from `files_search_query_FILE_FIELDS`, `file.path` and `file.link` (each row shows only its key, the same text the chip shows; there is no second label), and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, `public` for `file.link`, and folder paths for `file.path`; folder paths come from `search_saved` with `{ kind: "name", nodeKind: "folder" }`, found by the words of the last part of the typed path, and a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. Key rows match the start of the key, ignoring case: `st` asks for `frontmatter.st` and `metadata.st`, and `meta` lists every `metadata.` key. When a plain word starts no key, the list shows every key and a picked key is added after the words. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`). Any other `file.*` key is a chip with a problem, for example `file.name:x` gets "Type the name as plain text.". Metadata value rows match the typed prefix in exact case, the same rule as the server range, so a row never shows for a prefix the server will not confirm; `true` and `false` come from `get_search_field`, not from a page; file value rows ignore case, and a picked row writes the stored value. `list_search_fields`, `get_search_field` and `list_search_values` get the `file.path` chip's folder (`/` without one): the owner gets the whole workspace, a member the keys and values of that folder's area (the area rule in the `file-metadata` skill, "Suggestions"). A guest gets no metadata keys or values at the root, in an open folder, or in a restricted folder whose root they cannot open; when a page comes back empty, the key and value groups say "Suggestions need access to the whole workspace or to the restricted folder you are in. You can still type a filter, like metadata.status:open." (`useFilesMetadataHasWorkspaceRead`). Otherwise a member who is not the owner sees "Suggestions show values from files everyone can open, or from the restricted folder you are in." under the values. The `file.*` rows and typed filters still work. A short hint sits below the list. The expandable Filter syntax section shows every token form.
+- Suggestions: while the box is focused, the popover lists keys from `files_metadata.list_search_fields` (paged and subscribed through `useFilesMetadataCatalogPages`; each key row is one qualified key such as `metadata.status`, with a short value-kind hint; paging, held rows, Show more, no-match rows and Retry are in the `file-metadata` skill, "Suggestions"), the `file.*` fields from `files_search_query_FILE_FIELDS`, `file.path`, `file.content` and `file.link` (each row shows only its key, the same text the chip shows; there is no second label), and values from `list_search_values` (or `true`/`false` for a boolean key, `* (any value)`, `public` for `file.link`, and folder paths for `file.path`; folder paths come from `search_saved` with `{ kind: "name", nodeKind: "folder" }`, found by the words of the last part of the typed path, and a folder is listed when its path contains the typed text without the leading slash the filter adds, so `tasks` lists `/projects/tasks`; a picked folder writes `file.path:<folder>/**`). Picking a key writes `key:` into the input; picking a value commits the chip. The final token comes from `files_search_query_typing_token`, so a quoted value with spaces still gets value suggestions. Key rows match the start of the key, ignoring case: `st` asks for `frontmatter.st` and `metadata.st`, and `meta` lists every `metadata.` key. When a plain word starts no key, the list shows every key and a picked key is added after the words. A typed `file.path` value is read as a folder path (`tasks` lists `/tasks`). Any other `file.*` key is a chip with a problem, for example `file.name:x` gets "Type the name as plain text.". Metadata value rows match the typed prefix in exact case, the same rule as the server range, so a row never shows for a prefix the server will not confirm; `true` and `false` come from `get_search_field`, not from a page; file value rows ignore case, and a picked row writes the stored value. `list_search_fields`, `get_search_field` and `list_search_values` get the folder of the `file.path` glob chip, even while that chip waits for words or a filter (`/` without one): the owner gets the whole workspace, a member the keys and values of that folder's area (the area rule in the `file-metadata` skill, "Suggestions"). A guest gets no metadata keys or values at the root, in an open folder, or in a restricted folder whose root they cannot open; when a page comes back empty, the key and value groups say "Suggestions need access to the whole workspace or to the restricted folder you are in. You can still type a filter, like metadata.status:open." (`useFilesMetadataHasWorkspaceRead`). Otherwise a member who is not the owner sees "Suggestions show values from files everyone can open, or from the restricted folder you are in." under the values. The `file.*` rows and typed filters still work. A short hint sits below the list. The expandable Filter syntax section shows the search rows of `files_search_query_SYNTAX_EXAMPLES`.
 - Keyboard: Enter commits the typed filters, or opens the top match when only free text is typed. Space commits the complete filters typed so far, but only when the caret is at the end of the text, because the commit rewrites the whole text; a filter with a problem stays in the text next to the free text, so the user can fix it. An open quote is closed on commit: `metadata.assignee:"Denys` becomes the chip `metadata.assignee:"Denys"`. A key pressed while an IME composes text (`nativeEvent.isComposing`, or Safari's `keyCode` 229 on the key that ends a composition) is left to the composition. Removing a chip re-parses the chips left, so a chip that broke the one-clause rule becomes valid once the other clause is gone. Escape closes suggestions and keeps the text and chips. Ctrl+Space reopens suggestions without changing the text or selection. Plain typing and Space do not reopen a dismissed menu. Backspace on an empty input focuses the last chip's remove button; after a removal the chip row moves focus to the next chip, else the previous one, else back to the input. The chip row comes before the input in the Tab order. Tab from the input reaches Add search filter, then Clear. A filter the parser cannot run becomes a chip on Enter, with the `-invalid` class, a `title`, and an `aria-describedby` reason; it matches nothing.
 - The sr-only `role="status"` line reads "Added filter …", "Removed filter …", or "Filter … cannot run. <reason>", followed by "Searching…" or "N matches". While more pages can load, it reads "N+ matches".
 - Chips show a muted key and a separate value. A file field shows its key, such as `file.path` or `file.link`, with no short label. Negation, ranges, and quoted values stay visible; the raw token remains in the URL, hover title, and remove-button name.
@@ -297,7 +327,7 @@ Tree-item components:
 - Plain text shows two lists, "Names" and "Contents". Each is a `role="group"` named by its label, with its own count ("N+ matches" until the list is done), problem text, and Show more (`FilesSearchPaletteGroup`). Show more keeps focus on itself while more pages remain, then moves it to the first new row. A content row shows a snippet around the first word.
 - A locked hit (`locked: true`, class `FilesSearchPaletteGroup-item-locked`) shows the `Lock` icon, a muted name and the title "You don't have access". It has no snippet, and Enter or a click opens its node route.
 - With a folder, "Contents" shows "Contents search does not work inside a folder. Remove the folder to search contents."
-- A path, a node id, a metadata chip, or `file.link:public` shows one list, "Matches". A pasted draft link shows "This is a link to a draft. Press Enter to open it."
+- A path, a node id, a `file.content` chip, a metadata chip, or `file.link:public` shows one list, "Matches". The rows of a `file.content` chip show a snippet. A pasted draft link shows "This is a link to a draft. Press Enter to open it."
 - Enter opens the first "Names" row (or the one exact match), or the draft of a pasted draft link. It waits while the debounce runs or the names list loads.
 - Suggestions open on entry, with the same Escape, Ctrl+Space, and filter-button behavior as the sidebar. After dismissing suggestions, ArrowDown from the input focuses results. ArrowUp from the first result returns to the input. Enter opens a result. Escape closes suggestions first, then the modal.
 - “Use filters in sidebar” transfers chips into route `q` and opens the tree. Plain content text stays in global search because the sidebar matches names and paths.
@@ -663,11 +693,28 @@ and `find` also keep raw name order.
   `FilesSearchInput`. The URL owns the state. The `filter` search param holds the committed tokens,
   and `view_q` holds the text still being typed (debounced 300 ms, never parsed). The folder keeps no
   local filter or sort copy, so a refresh, a copied link, and Back all restore the table.
-- One token is `<field>:<op>[:<value>]` for a filter, or `sort_by:<field>:<asc|desc>` for a sort.
-  Fields are `file.name`, `file.updated`, `file.created`, `file.extension`, `file.size`,
-  `metadata.<key>`, and `frontmatter.<path>`. A metadata key never contains `:`. There is no
-  negation. The grammar and the cleaner live in `shared/files-folder-table-query.ts`.
-- Allow one filter, or `file.name:starts_with` plus one "is" filter, and one sort. The "is"
+- The bar reads the search box grammar (see "One search grammar" above): a filter is
+  `<field>:<value form>`, a sort is `sort_by:<field>:<asc|desc>`. Fields are `file.name`,
+  `file.updated`, `file.created`, `file.extension`, `file.size`, `metadata.<key>`, and
+  `frontmatter.<path>`. A metadata key never contains `:`. The forms and what they become in
+  `files_table_Filter` (`shared/files-table.ts`, which the server reads unchanged):
+
+  | Token | Table filter |
+  |---|---|
+  | `file.name:Rec*` | name starts with `Rec` |
+  | `file.extension:md`, `!file.extension:*` | extension is, missing |
+  | `file.size:1024`, `!file.size:*` | size is, missing |
+  | `file.size:>=N`, `>N`, `<=N`, `<N` | at least N, N+1, at most N, N-1 |
+  | `file.updated:D` (and `file.created`) | on day D |
+  | `file.updated:<D`, `<=D`, `>D`, `>=D` | before D, D+1, after D, D-1 |
+  | `metadata.x:v`, `v*`, `*` | is, starts with, present |
+
+  Sizes are whole bytes and dates whole local days, so a strict bound moves to its neighbour
+  exactly. `!field:*` is the only negation. Every other `!`, a metadata range, an exact name, and
+  the search-only fields (`file.path`, `file.content`, `file.link`) get a problem that says where
+  they work. The parser and the cleaner live in `shared/files-folder-table-query.ts`; the token
+  reader is the shared `files_search_query_read_token`.
+- Allow one filter, or a `file.name:Rec*` start plus one "is" filter, and one sort. The "is"
   filters are `file.extension` is or missing, `file.size` is or missing, and a metadata is. The
   index of an "is" filter keeps the name right after the value, so the name prefix is one more
   range on the same index; other pairs, free AND, and multi-sort wait for the search engine. The
@@ -684,11 +731,17 @@ and `find` also keep raw name order.
   one filter, or 'name starts with' plus one 'is' filter.", "Remove the filter to sort by
   <field>", or "The folder table sorts by one field". A URL that breaks a rule is cleaned:
   `validateSearch` in the files route keeps the first allowed filter (or pair) and the first
-  allowed sort, drops the rest, and the router rewrites the address bar. So old links with `name
-  contains`, a metadata `missing`, or extra sorts open with those parts removed. Bare words are not
-  structure and are never parsed.
+  allowed sort, drops the rest, and the router rewrites the address bar. So old links with word
+  tokens (`file.name:starts_with:x`), a missing metadata value, or extra sorts open with those parts
+  removed. There is no parser for the old word tokens. Bare words are not structure and are never
+  parsed.
 - Enter and Space commit whole tokens. Ctrl+Space or the slider button opens the menu. Menu groups:
-  Sort, Filter by, Sort by, Direction, How to compare, Values. Filter by and Sort by list the
+  Sort, Filter by, Sort by, Direction, How to compare, Values. After `field:` the bar is at the value.
+  How to compare lists the forms that add text, with a hint (`:>=bytes` at least, `!…:*` has no
+  size), while the value is empty or a comparison (`<`, `>=`). A form that is just `field:` shows as
+  a note instead, like "Type bytes for is". A chip shows the value as typed (`>=1024`, `rep*`).
+  The footer has the same Filter syntax list as the search box, with the rows the table runs
+  (`files_search_query_SYNTAX_EXAMPLES`). Filter by and Sort by list the
   folder's keys from `files_metadata.list_folder_fields`; value suggestions for metadata and
   frontmatter fields come from `files_metadata.list_search_values` with the table folder's path (the
   owner gets the whole workspace, a member that folder's area; a guest who gets an empty page sees
@@ -700,23 +753,27 @@ and `find` also keep raw name order.
   key named `sort_by` side by side. The menu stops offering `sort_by` once the bar has a sort, and
   with a filter Sort by lists only the filter's order field. With a filter, Filter by lists only
   the fields that can join it (file.name next to an "is" filter, an "is" field next to a name
-  prefix, with only its is and missing operations). When nothing can join, the menu says "Use one
+  prefix, with only its is and missing forms). When nothing can join, the menu says "Use one
   filter, or 'name starts with' plus one 'is' filter."
 - Every same-node navigation (view, editor mode, `q`) carries `filter` and `view_q`. Every link to
   another node drops them, so a child folder opens clean and Back restores the bar. The `files::open_browser` event opens a file, which has no table, so it drops them too.
-- Operations per field: `file.name` offers starts with. `file.extension` offers is and missing.
-  Dates (`file.updated`, `file.created`) offer on, before, and after one local calendar day,
-  written `2026-09-04`. `file.size` offers is, at least, at most, and missing. Metadata offers text
-  is, starts with, and present. An applied key can stay hidden as a column.
+- Forms per field (`files_folder_table_query_forms`): `file.name` offers starts with.
+  `file.extension` offers is and missing. Dates (`file.updated`, `file.created`) offer on, before,
+  on or before, after, and on or after one local calendar day, written `2026-09-04`. `file.size`
+  offers is, at least, at most, more than, less than, and missing. Metadata offers is, starts with,
+  and present. An applied key can stay hidden as a column.
 - `is` and `starts with` on names and metadata compare the stored sort key
   (`files_sort_text_key`): case and accents are ignored, and digit runs compare by value. The key
   writes a number with its length first (`2` is `012`, `10` is `0210`), so a `starts with` value
   cannot end in a digit: the bar says "'Starts with' cannot end with a number here. Remove the last
-  digits, or use 'is'." The check reads the key, so a digit followed by an accent mark is refused
+  digits, or use an exact value". The check reads the key, so a digit followed by an accent mark is refused
   too. A `starts with` range ends at `string_prefix_upper_bound` of the key.
   `file.extension` uses the lowercase extension. A leading dot is ordinary input and does not match
   an extension. Dates use checked half-open day bounds. Size is a nonnegative whole number;
   folders have no size.
+- Search compares the stored metadata value in exact case, so `metadata.status:Open` can match in
+  the table and not in search. This difference is known and accepted: equal results need a new
+  index or the search engine.
 - Known limit: "starts with" uses the sort key, so a few letters that change at the end of a word
   (Greek final sigma) can miss rows.
 - A filter pages like the plain table: five rows first, then Show more and Show less.
@@ -1172,7 +1229,7 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   rows and shared roots. No query loads the whole workspace.
 - The sidebar search shows a flat list with each row's folder, and the tree comes back with its expanded folders when the search closes.
 - Search matches a name word, a path, a node id, and a pasted app link. Enter opens the exact match, or the only match of a finished search.
-- `metadata.status:open`, `metadata.priority:>2`, and `file.path:/tasks metadata.status:open` list the files and folders whose own metadata matches, and `/tasks-archive` stays out of `file.path:/tasks`.
+- `metadata.status:open`, `metadata.priority:>2`, and `file.path:/tasks/** metadata.status:open` list the files and folders whose own metadata matches, and `/tasks-archive` stays out of `file.path:/tasks/**`.
 - A member with no read access on a restricted folder never sees its files in the results and cannot open them, while the owner sees them (second identity). A member who reads the workspace (for example the `member` role) does not see its keys or values in the search box suggestions at the root; inside the folder, once it is shared with them, they do (the area rule, `file-metadata` skill, "Suggestions"). A guest (no workspace read) gets no key or value suggestions at the root, and Columns shows a restricted child's keys to the owner only.
 - A file with a public link shows the badge and `data-file-public-link="on"` for the owner and for a second member who can read it. `file.link:public` lists it even inside a folder that is not expanded, and Enter right after typing the chip waits for the list.
 - Breaking `search_saved_metadata` on purpose empties every metadata chip while free text keeps matching, which proves the browser runs the Convex working tree.

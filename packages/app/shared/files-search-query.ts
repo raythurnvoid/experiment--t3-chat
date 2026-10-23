@@ -7,17 +7,20 @@
 //   string prefix, and `metadata.title:"Recall the"*` for a prefix with spaces.
 // - `metadata.priority:>2`, `frontmatter.due:<=2026-09-30` ranges on numbers or ISO dates.
 // - `metadata.assignee:"Denys Voloshyn"` quotes a value with spaces.
-// - `file.path:/tasks` is a folder, or an exact path when nothing else is searched.
-//   `frontmatter.x` and `metadata.x` name one metadata kind.
+// - `frontmatter.x` and `metadata.x` name one metadata kind.
+// - `file.path:/tasks/a.md` is one exact path. `file.path:/tasks/*` searches the folder's direct
+//   children and `file.path:/tasks/**` everything under it, so these two need words or a filter.
+// - `file.content:"annual report"` searches the saved text of files.
 // - `file.link:public` lists the files that have a public link. It takes no other value.
 //
 // Every key starts with its namespace: `file.`, `frontmatter.` or `metadata.`. A token like
 // `status:open` has no namespace, so it is free text. A key holds no colon, so it never needs quotes.
-// The folder table bar reads the same field names (`files-folder-table-query.ts`).
+// The folder table bar reads the same tokens (`files-folder-table-query.ts`) and runs the ones its
+// index can serve. Only the table runs a NOT, and only `!file.extension:*` and `!file.size:*`.
 //
 // A search is one thing plus an optional folder: the free text or one filter, and one `file.path`.
 // The server answers one clause at a time, so every other chip gets a `problem` and runs nothing.
-// So do a negated chip (`!metadata.status:done`) and the `file.*` chips the box no longer runs.
+// So do a negated chip (`!metadata.status:*`) and the `file.*` chips only the folder table runs.
 import {
 	files_metadata_FIELD_PATH_MAX_LENGTH,
 	files_metadata_FIELD_SEGMENT_REGEX,
@@ -41,7 +44,32 @@ export const files_search_query_FIELD_PATH_MAX_LENGTH = files_metadata_FIELD_PAT
  */
 export const files_search_query_FOLDER_PATH_MAX_LENGTH = 1024;
 
-export const files_search_query_FILE_FIELDS = ["path", "link"] as const;
+export const files_search_query_FILE_FIELDS = ["path", "content", "link"] as const;
+
+/**
+ * The rows of the syntax help. The search inputs (`search`) and the folder table bar (`table`) read
+ * one grammar, and each shows only the rows it can run. A test parses every example in each input
+ * that lists it.
+ */
+export const files_search_query_SYNTAX_EXAMPLES: ReadonlyArray<{
+	label: string;
+	example: string;
+	inputs: ReadonlyArray<"search" | "table">;
+}> = [
+	{ label: "Name starts with", example: "file.name:Rec*", inputs: ["table"] },
+	{ label: "Contents", example: 'file.content:"annual report"', inputs: ["search"] },
+	{ label: "Exact value", example: "metadata.status:open", inputs: ["search", "table"] },
+	{ label: "Any value", example: "metadata.status:*", inputs: ["search", "table"] },
+	{ label: "Starts with", example: "metadata.title:Rec*", inputs: ["search", "table"] },
+	{ label: "Number or date", example: "metadata.priority:>=2", inputs: ["search"] },
+	{ label: "Size or date", example: "file.size:>=1024", inputs: ["table"] },
+	{ label: "No extension", example: "!file.extension:*", inputs: ["table"] },
+	{ label: "Spaces in values", example: 'metadata.key:"two words"', inputs: ["search", "table"] },
+	{ label: "In a folder", example: "report file.path:/tasks/**", inputs: ["search"] },
+	{ label: "Only this folder", example: "report file.path:/tasks/*", inputs: ["search"] },
+	{ label: "Exact path", example: "file.path:/tasks/a.md", inputs: ["search"] },
+	{ label: "Sort", example: "sort_by:file.updated:desc", inputs: ["table"] },
+];
 
 export type files_search_query_Key = {
 	namespace: "file" | "frontmatter" | "metadata";
@@ -61,6 +89,12 @@ type FilterMatch =
 	| { op: "prefix"; value: string }
 	| { op: "range"; comparator: "gt" | "gte" | "lt" | "lte"; value: string };
 
+/**
+ * A `file.path:/tasks/*` (direct children) or `file.path:/tasks/**` (any depth) folder. `path` is the
+ * folder path in the form `files_search_query_folder_path` gives.
+ */
+type FolderMatch = { op: "folder"; path: string; depth: "children" | "all" };
+
 export type files_search_query_Filter = {
 	/**
 	 * The exact token text. Serializing writes it back unchanged, so the `q` URL param round-trips.
@@ -68,7 +102,7 @@ export type files_search_query_Filter = {
 	raw: string;
 	negated: boolean;
 	key: files_search_query_Key;
-	match: FilterMatch;
+	match: FilterMatch | FolderMatch;
 	/**
 	 * Why the filter cannot run, in user-facing words, or null when it can. An invalid filter is
 	 * shown as a chip with this reason and matches nothing.
@@ -105,17 +139,28 @@ const BOOLEAN_LITERALS = new Map([
 ]);
 const DATE_ONLY_LITERAL_REGEX = /^\d{4}-\d{2}-\d{2}$/u;
 const FILE_FIELD_PREFIX = "file.";
-// The search box no longer runs these chips. The folder table bar still filters on these fields.
-const REMOVED_FILE_FIELD_PROBLEMS = new Map([
+// The search box does not run these chips. The folder table bar filters on most of these fields.
+const NO_SEARCH_FILE_FIELD_PROBLEMS = new Map([
 	["name", "Type the name as plain text"],
 	["extension", "file.extension is not supported in search. Use the folder table filters"],
 	["kind", "file.kind is not supported in search. Use the folder table filters"],
+	["size", "file.size is not supported in search. Use the folder table filters"],
+	["created", "file.created is not supported in search. Use the folder table filters"],
 	["updated", "file.updated is not supported in search. Use the folder table filters"],
 ]);
-const ONE_CLAUSE_PROBLEM = "Search for words or one filter, not both. You can also add a folder, like file.path:/tasks";
+const ONE_CLAUSE_PROBLEM =
+	"Search for words or one filter, not both. You can also add a folder, like file.path:/tasks/**";
+const NOT_PROBLEM =
+	"Search has no NOT. The folder table can find a missing file.extension or file.size, like !file.extension:*";
 const FOLDER_RANGE_PROBLEM =
 	"A folder works with words, exact values and any value. Remove the folder to compare numbers or dates";
 const FOLDER_TOO_DEEP_PROBLEM = "This folder is too deep to search inside. Search a folder higher up";
+const FOLDER_GLOB_PROBLEM = "Use /* or /** after a folder name, like file.path:/tasks/**";
+const FOLDER_NEEDS_GLOB_PROBLEM =
+	"Add /* to search this folder or /** to search all its subfolders, like file.path:/tasks/**";
+const FOLDER_ALONE_PROBLEM = "Add words or a filter to search inside the folder";
+const FOLDER_CHILDREN_FILTER_PROBLEM = "/* works with words only. Use /** with a filter";
+const CONTENT_FOLDER_PROBLEM = "Contents search does not work inside a folder. Remove the folder to search contents";
 // The index cuts longer metadata strings, so a longer value could match the wrong files.
 export const files_search_query_VALUE_TOO_LONG_PROBLEM = "Search values can have at most 1,024 characters" as const;
 // The index keeps no docs for a longer field, so the search would always find nothing.
@@ -334,7 +379,7 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 	if (value.startsWith("!")) {
 		return {
 			match: { op: "eq", value, quoted: false },
-			problem: ONE_CLAUSE_PROBLEM,
+			problem: NOT_PROBLEM,
 		};
 	}
 	if (value.startsWith("=")) {
@@ -346,9 +391,11 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 
 	if (value.startsWith('"')) {
 		const quoted = files_search_query_read_quoted(value, 0);
-		// A `*` right after the closing quote asks for a prefix, like `Recall*` does for one word.
-		if (quoted.text.length > 0 && quoted.end === value.length - 1 && value[quoted.end] === "*") {
-			return { match: { op: "prefix", value: quoted.text }, problem: null };
+		const rest = value.slice(quoted.end);
+		// A `*` right after the closing quote asks for a prefix, like `Recall*` does for one word. `**`
+		// reads like `Recall**` does, so `"/my tasks/"**` is a folder glob, like `/tasks/**`.
+		if (quoted.text.length > 0 && (rest === "*" || rest === "**")) {
+			return { match: { op: "prefix", value: `${quoted.text}${rest.slice(1)}` }, problem: null };
 		}
 		// `""` stays a value: a stored empty string is listed by the value catalog and must be
 		// searchable back.
@@ -373,9 +420,32 @@ function parse_value(value: string): { match: FilterMatch; problem: string | nul
 }
 
 /**
- * File fields have their own rules: a path is a folder and a link is `public`.
+ * Read a `file.path` value: `/tasks/a.md` is that exact path, `/tasks/*` the folder's direct children
+ * and `/tasks/**` everything under it. `parse_value` reads a trailing `*` as a prefix, so `/tasks/*`
+ * arrives as the prefix `/tasks/` and `/tasks/**` as the prefix `/tasks/*`. Any other `*` is not a
+ * glob, so it stays a prefix that `file_field_problem` refuses.
  */
-function file_field_problem(name: string, match: FilterMatch) {
+function read_path_match(match: FilterMatch): FilterMatch | FolderMatch {
+	if (match.op !== "prefix") {
+		return match;
+	}
+	if (match.value.endsWith("/*")) {
+		return { op: "folder", path: files_search_query_folder_path(match.value.slice(0, -1)), depth: "all" };
+	}
+	if (match.value.endsWith("/")) {
+		return { op: "folder", path: files_search_query_folder_path(match.value), depth: "children" };
+	}
+	return match;
+}
+
+/**
+ * File fields have their own rules: a path is an item or a folder glob, content is words, and a link
+ * is `public`.
+ */
+function file_field_problem(name: string, match: FilterMatch | FolderMatch) {
+	if (match.op === "folder") {
+		return null;
+	}
 	if (match.op === "range") {
 		return `file.${name} does not support ranges`;
 	}
@@ -383,13 +453,42 @@ function file_field_problem(name: string, match: FilterMatch) {
 		return `file.${name} needs a value`;
 	}
 	if (name === "path" && match.op === "prefix") {
-		return "file.path takes a folder path, without *";
+		return FOLDER_GLOB_PROBLEM;
+	}
+	if (name === "content" && match.op === "prefix") {
+		return 'file.content takes words, like file.content:"annual report"';
 	}
 	// The Files tree knows only one link state, so `public` is the only value. Case does not matter.
 	if (name === "link" && (match.op === "prefix" || match.value.toLowerCase() !== "public")) {
 		return "file.link takes public, like file.link:public";
 	}
 	return null;
+}
+
+/**
+ * Read one `key:value` token, or return null for free text. It checks the key against `fileFields`
+ * and reads the value form (`v`, `v*`, `*`, `>=v` and so on), but it applies no clause rule. The
+ * search box and the folder table bar both read their tokens with it, so a token means the same in
+ * both, and each one then decides what it can run.
+ */
+export function files_search_query_read_token(token: string, fileFields: readonly string[]) {
+	const keyValue = split_key_value(token);
+	if (!keyValue) {
+		return null;
+	}
+
+	// `split_key_value` only returns a key with a namespace, so the field always parses.
+	const parsedKey = files_search_query_parse_field(keyValue.key, fileFields)!;
+	const parsedValue = parse_value(keyValue.value);
+	return {
+		negated: keyValue.negated,
+		keyText: keyValue.key,
+		key: parsedKey.key,
+		keyProblem: parsedKey.problem,
+		valueText: keyValue.value,
+		match: parsedValue.match,
+		valueProblem: parsedValue.problem,
+	};
 }
 
 // #endregion key and value rules
@@ -405,77 +504,83 @@ export function files_search_query_parse(query: string): ParsedQuery {
 		// A quote left open runs to the end of the query. Close it in the token, so a chip made from
 		// it stays one token when the chips are joined and read back.
 		const closedToken = openQuote && index === tokens.length - 1 ? files_search_query_close_open_quote(token) : token;
-		const keyValue = split_key_value(closedToken);
-		if (!keyValue) {
+		const read = files_search_query_read_token(closedToken, files_search_query_FILE_FIELDS);
+		if (!read) {
 			// Free text keeps its quotes, so the text reads back as typed. The sidebar's name search
 			// ignores them.
 			textTokens.push(closedToken);
 			continue;
 		}
 
-		// `split_key_value` only returns a key with a namespace, so the field always parses.
-		const parsedKey = files_search_query_parse_field(keyValue.key, files_search_query_FILE_FIELDS)!;
-		const parsedValue = parse_value(keyValue.value);
-		// A removed chip says so before "Unknown file field". A file field explains its own value
-		// next, so `file.path:` does not say "use *" while `file.path:*` says "needs a value".
+		const isPath = read.key.namespace === "file" && read.key.name === "path";
+		const match = isPath ? read_path_match(read.match) : read.match;
+		// A file field search does not run says so before "Unknown file field". A file field explains its
+		// own value next, so `file.path:` does not say "use *" while `file.path:*` says "needs a value".
 		const problem =
-			(parsedKey.key.namespace === "file" ? REMOVED_FILE_FIELD_PROBLEMS.get(parsedKey.key.name) : null) ??
-			parsedKey.problem ??
-			(parsedKey.key.namespace !== "file" && keyValue.key.length > files_search_query_FIELD_PATH_MAX_LENGTH
+			(read.key.namespace === "file" ? NO_SEARCH_FILE_FIELD_PROBLEMS.get(read.key.name) : null) ??
+			read.keyProblem ??
+			(read.negated ? NOT_PROBLEM : null) ??
+			(read.key.namespace !== "file" && read.keyText.length > files_search_query_FIELD_PATH_MAX_LENGTH
 				? FIELD_TOO_LONG_PROBLEM
 				: null) ??
-			(parsedKey.key.namespace === "file" ? file_field_problem(parsedKey.key.name, parsedValue.match) : null) ??
-			parsedValue.problem ??
-			(parsedKey.key.namespace !== "file" &&
-			parsedValue.match.op !== "exists" &&
-			parsedValue.match.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
+			(read.key.namespace === "file" ? file_field_problem(read.key.name, match) : null) ??
+			read.valueProblem ??
+			(read.key.namespace !== "file" &&
+			read.match.op !== "exists" &&
+			read.match.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
 				? files_search_query_VALUE_TOO_LONG_PROBLEM
 				: null);
 
 		filters.push({
 			raw: closedToken,
-			negated: keyValue.negated,
-			key: parsedKey.key,
-			match: parsedValue.match,
+			negated: read.negated,
+			key: read.key,
+			match,
 			problem,
 		});
 	}
 
 	// Keep one clause (the free text or the first filter) and one folder. A chip that already has
 	// its own problem does not take a place.
-	let hasClause = textTokens.length > 0;
+	let clause: "text" | files_search_query_Filter | null = textTokens.length > 0 ? "text" : null;
 	let folder: files_search_query_Filter | null = null;
 	for (const filter of filters) {
 		if (filter.problem !== null) {
 			continue;
 		}
 		const isFolder = filter.key.namespace === "file" && filter.key.name === "path";
-		if (filter.negated || (isFolder ? folder !== null : hasClause)) {
+		if (isFolder ? folder !== null : clause !== null) {
 			filter.problem = ONE_CLAUSE_PROBLEM;
 		} else if (isFolder) {
 			folder = filter;
 		} else {
-			hasClause = true;
+			clause = filter;
 		}
 	}
 
-	// A folder alone is an exact path. With a clause it scopes the search, and the server can
-	// scope only words, `key:value` and `key:*`, and only so many levels deep. The root folder scopes
+	// An exact path stands alone, and a glob needs a clause to scope. With a clause, the server can
+	// scope only words, `key:value` and `key:*`, and only so many levels deep. `/**` at the root scopes
 	// nothing, so it has none of these limits.
-	// A folder chip without a problem is always an `eq` match. The check narrows the type.
-	const folderPath = folder?.match.op === "eq" ? files_search_query_folder_path(folder.match.value) : "/";
-	if (folder !== null && hasClause && folderPath !== "/") {
-		if (folderPath.split("/").filter((part) => part.length > 0).length > FOLDER_SEARCH_MAX_DEPTH) {
+	const glob = folder?.match.op === "folder" ? folder.match : null;
+	if (folder !== null && clause === null && glob !== null) {
+		folder.problem = FOLDER_ALONE_PROBLEM;
+	} else if (folder !== null && clause !== null && glob === null) {
+		folder.problem = FOLDER_NEEDS_GLOB_PROBLEM;
+	} else if (folder !== null && clause !== null && glob !== null && !(glob.path === "/" && glob.depth === "all")) {
+		const depth = glob.path.split("/").filter((part) => part.length > 0).length;
+		// `/*` also reads the ancestor field right below the folder, so it reaches one level less deep.
+		if (glob.depth === "children" && clause !== "text") {
+			folder.problem = FOLDER_CHILDREN_FILTER_PROBLEM;
+		} else if (depth > FOLDER_SEARCH_MAX_DEPTH - (glob.depth === "children" ? 1 : 0)) {
 			folder.problem = FOLDER_TOO_DEEP_PROBLEM;
-		}
-		for (const filter of filters) {
-			if (
-				filter.problem === null &&
-				filter.key.namespace !== "file" &&
-				(filter.match.op === "prefix" || filter.match.op === "range")
-			) {
-				filter.problem = FOLDER_RANGE_PROBLEM;
-			}
+		} else if (clause !== "text" && clause.key.namespace === "file" && clause.key.name === "content") {
+			clause.problem = CONTENT_FOLDER_PROBLEM;
+		} else if (
+			clause !== "text" &&
+			clause.key.namespace !== "file" &&
+			(clause.match.op === "prefix" || clause.match.op === "range")
+		) {
+			clause.problem = FOLDER_RANGE_PROBLEM;
 		}
 	}
 

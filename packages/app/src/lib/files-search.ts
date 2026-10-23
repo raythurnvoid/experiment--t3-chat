@@ -1,7 +1,7 @@
 import { app_convex_is_id_like } from "@/lib/app-convex-client.ts";
 import { path_is_path_like } from "@/lib/paths.ts";
 import { url_parse_file_link } from "@/lib/urls.ts";
-import type { files_search_query_Filter } from "../../shared/files-search-query.ts";
+import { files_search_query_folder_path, type files_search_query_Filter } from "../../shared/files-search-query.ts";
 
 type SearchMode = "name" | "path" | "node" | "private";
 
@@ -50,20 +50,36 @@ export function search_free_text(text: string) {
 	return text.replace(/"/gu, "").trim();
 }
 
+const SNIPPET_RADIUS = 60;
+
 /**
- * The `file.path` chip that scopes the search to one folder, or null. `value` is the typed folder
- * that `files_search_query_folder_path` turns into the exact folder path.
+ * The part of a content match's text chunk to show under the row: about 120 characters around the
+ * first searched word, on one line.
+ */
+export function search_content_snippet(textChunk: string, query: string) {
+	const flatText = textChunk.replace(/\s+/gu, " ").trim();
+	const firstTerm = query.trim().split(/\s+/u)[0] ?? "";
+	const hitIndex = firstTerm ? flatText.toLowerCase().indexOf(firstTerm.toLowerCase()) : -1;
+	const start = hitIndex < 0 ? 0 : Math.max(0, hitIndex - SNIPPET_RADIUS);
+	const end = Math.min(flatText.length, start + SNIPPET_RADIUS * 2);
+	return `${start > 0 ? "…" : ""}${flatText.slice(start, end)}${end < flatText.length ? "…" : ""}`;
+}
+
+/**
+ * The `file.path` chip of a query, or null. `path` is the exact path. `depth` is "exact" for one
+ * item (`/a/b.md`), "children" for a folder's direct children (`/a/*`), and "all" for everything
+ * under it (`/a/**`).
  */
 export function search_path_filter(filters: files_search_query_Filter[]) {
 	for (const filter of filters) {
-		if (
-			filter.problem === null &&
-			!filter.negated &&
-			filter.key.namespace === "file" &&
-			filter.key.name === "path" &&
-			filter.match.op === "eq"
-		) {
-			return { raw: filter.raw, value: filter.match.value };
+		if (filter.problem !== null || filter.key.namespace !== "file" || filter.key.name !== "path") {
+			continue;
+		}
+		if (filter.match.op === "folder") {
+			return { raw: filter.raw, path: filter.match.path, depth: filter.match.depth };
+		}
+		if (filter.match.op === "eq") {
+			return { raw: filter.raw, path: files_search_query_folder_path(filter.match.value), depth: "exact" as const };
 		}
 	}
 	return null;

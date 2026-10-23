@@ -198,9 +198,9 @@ function useFilesSearchSavedMetadata(args: {
  * its shape rules (`detect_search_query_mode`): a path or a node id asks for that one node, a pasted
  * draft link asks for nothing (`mode: "draft"`), and other text searches name words.
  *
- * `names` is the name list, or the only list of a path, a metadata chip or `file.link:public`. A
- * metadata chip runs on `useFilesSearchSavedMetadata` and can make two plans, so its list merges
- * two searches. `contents` is the contents list
+ * `names` is the name list, or the only list of a path, a `file.content` chip, a metadata chip or
+ * `file.link:public`. A metadata chip runs on `useFilesSearchSavedMetadata` and can make two plans,
+ * so its list merges two searches. `contents` is the contents list
  * of plain text when `withContents` is set, "folder" when a folder chip blocks it, and null otherwise.
  */
 export function useFilesSearchSaved(args: {
@@ -215,13 +215,22 @@ export function useFilesSearchSaved(args: {
 	const parsed = files_search_query_parse(searchQuery);
 	const isInvalid = parsed.filters.some((filter) => filter.problem !== null);
 	const pathFilter = search_path_filter(parsed.filters);
-	const folderPath = pathFilter === null ? undefined : files_search_query_folder_path(pathFilter.value);
-	// The root folder scopes nothing.
-	const hasFolder = folderPath !== undefined && folderPath !== "/";
+	// A glob scopes the clause, and `/**` at the root scopes nothing. An exact path is its own clause:
+	// the parser refuses it next to another clause.
+	const folderPath =
+		pathFilter === null || pathFilter.depth === "exact" || (pathFilter.depth === "all" && pathFilter.path === "/")
+			? undefined
+			: pathFilter.path;
+	const childrenOnly = pathFilter?.depth === "children";
+	const hasFolder = folderPath !== undefined;
 	// The parser keeps at most one chip next to the folder.
 	const clauseFilter = parsed.filters.find(
 		(filter) => filter.problem === null && !(filter.key.namespace === "file" && filter.key.name === "path"),
 	);
+	const contentText =
+		clauseFilter?.key.namespace === "file" && clauseFilter.key.name === "content" && clauseFilter.match.op === "eq"
+			? clauseFilter.match.value
+			: null;
 	const text = search_free_text(parsed.text);
 	const textQuery = isInvalid || text.length === 0 ? null : detect_search_query_mode(text);
 	const isText = textQuery?.mode === "name";
@@ -237,8 +246,14 @@ export function useFilesSearchSaved(args: {
 		const path = textQuery.mode === "path" ? files_search_query_folder_path(textQuery.value) : textQuery.value;
 		first = { membershipId, clause: { kind: "path", path } };
 	} else if (textQuery) {
-		first = { membershipId, clause: { kind: "name", text: textQuery.value }, folderPath };
+		first = {
+			membershipId,
+			clause: { kind: "name", text: textQuery.value, ...(childrenOnly ? { childrenOnly } : {}) },
+			folderPath,
+		};
 		second = withContents && !hasFolder ? { membershipId, clause: { kind: "content", text } } : null;
+	} else if (contentText !== null) {
+		first = { membershipId, clause: { kind: "content", text: contentText } };
 	} else if (clauseFilter?.key.namespace === "file") {
 		first = { membershipId, clause: { kind: "link" }, folderPath };
 	} else if (clauseFilter) {
@@ -246,9 +261,8 @@ export function useFilesSearchSaved(args: {
 		// A folder cannot scope a range, so a date `eq` in a folder asks for the typed text only.
 		isFolderDate = hasFolder && secondPlan?.op === "range";
 		metadataPlans = [firstPlan, isFolderDate ? undefined : secondPlan].filter((plan) => plan !== undefined);
-	} else if (folderPath !== undefined) {
-		// A folder alone is an exact path.
-		first = { membershipId, clause: { kind: "path", path: folderPath } };
+	} else if (pathFilter?.depth === "exact") {
+		first = { membershipId, clause: { kind: "path", path: pathFilter.path } };
 	}
 
 	const savedView = useFilesSavedView(membershipId, first !== null || second !== null || metadataPlans.length > 0);
@@ -289,10 +303,19 @@ export function useFilesSearchSaved(args: {
 		 * A date chip inside a folder: it matches only values stored with the same text.
 		 */
 		isFolderDate,
+		/**
+		 * The words of a `file.content` chip, or null. With a chip the `names` rows are contents matches,
+		 * each with a text chunk.
+		 */
+		contentText,
 		names:
 			metadataPlans.length > 0
 				? metadataList
-				: files_merge_search_lists([...firstResults, ...(isText ? [] : secondResults)], isText, savedView.loading),
+				: files_merge_search_lists(
+						[...firstResults, ...(isText ? [] : secondResults)],
+						isText || contentText !== null,
+						savedView.loading,
+					),
 		contents:
 			isText && withContents
 				? hasFolder
@@ -403,7 +426,7 @@ type useFilesSortedChildren_Props = {
 	sort: files_sort_Sort | null;
 	filter: files_table_Filter | null;
 	/**
-	 * The `file.name:starts_with` value that joins an "is" filter, or null.
+	 * The `file.name` prefix, like `report` for `file.name:report*`, that joins an "is" filter, or null.
 	 */
 	namePrefix: string | null;
 	/**

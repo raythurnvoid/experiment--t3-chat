@@ -1,16 +1,17 @@
 // The folder table bar language. A query is a list of whitespace-separated tokens. A token is one
-// filter or one sort. The folder table runs one filter, or `file.name:starts_with` plus one "is"
+// filter or one sort. The folder table runs one filter, or a `file.name` prefix plus one "is"
 // filter, and one sort. A filter fixes the order (`files_table_filter_order_field`), so a sort for
 // another field is dropped while a filter is on.
 //
-// - Filter: `<field>:<op>` or `<field>:<op>:<value>`, like `file.name:starts_with:report`,
-//   `file.size:at_least:1024` or `metadata.status:present`. The value is everything after the
-//   second colon, or one quoted string.
+// - Filter: the search box tokens (`files-search-query.ts`), read by `files_search_query_read_token`,
+//   so a token means the same in both: `file.name:report*`, `file.extension:md`, `file.size:>=1024`,
+//   `file.updated:<2026-09-04`, `metadata.status:open`, `metadata.status:*`. `!file.extension:*` and
+//   `!file.size:*` ask for the rows with no value. Each one maps to one `files_table_Filter`.
 // - Sort: `sort_by:<field>:<asc|desc>`, like `sort_by:file.updated:desc`.
 //
-// A field starts with its namespace, like in the search box (`files-search-query.ts`):
-// `file.name`, `file.updated`, `file.created`, `file.extension`, `file.size`, `metadata.<key>` or
-// `frontmatter.<path>`. A key holds no colon, so a field never needs quotes.
+// A field starts with its namespace: `file.name`, `file.updated`, `file.created`, `file.extension`,
+// `file.size`, `metadata.<key>` or `frontmatter.<path>`. A key holds no colon, so a field never needs
+// quotes.
 //
 // The browser turns a day into a start and an end, because a day is a local calendar day. So the
 // request builder takes that function from the caller, and this file stays free of the clock.
@@ -18,8 +19,7 @@ import { files_metadata_parse_maybe_date } from "./files-metadata.ts";
 import {
 	files_search_query_close_open_quote,
 	files_search_query_parse_field,
-	files_search_query_quote,
-	files_search_query_read_quoted,
+	files_search_query_read_token,
 	files_search_query_split_tokens,
 } from "./files-search-query.ts";
 import {
@@ -47,8 +47,18 @@ export const files_folder_table_query_MAX_LENGTH = 2000;
 
 const DAY_REGEX = /^\d{4}-\d{2}-\d{2}$/u;
 const WHOLE_NUMBER_REGEX = /^\d+$/u;
-// A quote that starts a value and is not closed yet, like `file.name:starts_with:"my rep`.
+// A quote that starts a value and is not closed yet, like `file.name:"my rep`.
 const OPEN_VALUE_QUOTE_REGEX = /(?:^|:)"(?:[^"\\]|\\.)*$/u;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const SIZE_PROBLEM = "Enter a whole number of bytes, zero or more";
+const DAY_PROBLEM = "Enter a valid calendar day like 2026-09-04";
+const NOT_PROBLEM = "Use ! only for a missing value, like !file.extension:* or !file.size:*";
+// The search box runs these fields. The folder table is already one folder, and its index has no text.
+const SEARCH_ONLY_FILE_FIELD_PROBLEMS = new Map([
+	["path", "The folder table shows one folder. Use file.path in the search box"],
+	["content", "Search contents in the search box"],
+	["link", "Find public links in the search box"],
+]);
 
 /**
  * The `file.` names the table accepts. Each one is also the id of its table field, so `file.extension`
@@ -56,8 +66,17 @@ const OPEN_VALUE_QUOTE_REGEX = /(?:^|:)"(?:[^"\\]|\\.)*$/u;
  */
 export const files_folder_table_query_FILE_FIELDS = ["name", "updated", "created", "extension", "size"] as const;
 
-export type files_folder_table_query_Operation = {
-	op: string;
+/**
+ * One way to write a filter on a field, for the bar's "How to compare" suggestions. `token` is the
+ * start of the token, like `file.size:>=` or `!file.size:*`.
+ */
+export type files_folder_table_query_Form = {
+	token: string;
+	/**
+	 * The form as the user reads it, like `:>=bytes`.
+	 */
+	label: string;
+	hint: string;
 	needsValue: boolean;
 };
 
@@ -69,9 +88,14 @@ export type files_folder_table_query_FilterToken = {
 	 * `frontmatter.<path>`.
 	 */
 	field: string;
+	/**
+	 * The `files_table_Filter` operation the token maps to, like `at_least` for `file.size:>=1024`.
+	 */
 	op: string;
 	/**
-	 * The unquoted value, or null for an operation that takes none.
+	 * The value the operation compares with, or null for an operation that takes none. A strict
+	 * comparison is moved to its whole-number or whole-day neighbour, so `file.size:>1024` holds
+	 * `1025` and `file.updated:<=2026-09-04` holds `2026-09-05`.
 	 */
 	value: string | null;
 };
@@ -95,7 +119,7 @@ export type files_folder_table_query_Parsed = {
 	 */
 	filter: files_folder_table_query_FilterToken | null;
 	/**
-	 * The `file.name:starts_with` token kept next to an "is" filter, or null.
+	 * The `file.name` prefix token, like `file.name:report*`, kept next to an "is" filter, or null.
 	 */
 	namePrefix: files_folder_table_query_FilterToken | null;
 	/**
@@ -109,37 +133,41 @@ export type files_folder_table_query_Parsed = {
 };
 
 /**
- * The operations a table field allows. They match `files_table_Filter`.
+ * The ways to write a filter on a table field. Each one maps to a `files_table_Filter` operation.
+ * `fieldText` is the field as typed, like `file.size` or `metadata.status`.
  */
-export function files_folder_table_query_operations(field: string): files_folder_table_query_Operation[] {
+export function files_folder_table_query_forms(fieldText: string): files_folder_table_query_Form[] {
+	const field = files_folder_table_query_parse_field(fieldText).field;
+	const form = (token: string, label: string, hint: string, needsValue = true) => ({ token, label, hint, needsValue });
 	if (field === "name") {
-		return [{ op: "starts_with", needsValue: true }];
+		return [form(`${fieldText}:`, ":value*", "starts with")];
 	}
 	if (field === "extension") {
-		return [
-			{ op: "is", needsValue: true },
-			{ op: "missing", needsValue: false },
-		];
+		return [form(`${fieldText}:`, ":value", "is"), form(`!${fieldText}:*`, "!…:*", "has no extension", false)];
 	}
 	if (field === "updated" || field === "created") {
 		return [
-			{ op: "on", needsValue: true },
-			{ op: "before", needsValue: true },
-			{ op: "after", needsValue: true },
+			form(`${fieldText}:`, ":day", "on"),
+			form(`${fieldText}:<`, ":<day", "before"),
+			form(`${fieldText}:<=`, ":<=day", "on or before"),
+			form(`${fieldText}:>`, ":>day", "after"),
+			form(`${fieldText}:>=`, ":>=day", "on or after"),
 		];
 	}
 	if (field === "size") {
 		return [
-			{ op: "is", needsValue: true },
-			{ op: "at_least", needsValue: true },
-			{ op: "at_most", needsValue: true },
-			{ op: "missing", needsValue: false },
+			form(`${fieldText}:`, ":bytes", "is"),
+			form(`${fieldText}:>=`, ":>=bytes", "at least"),
+			form(`${fieldText}:<=`, ":<=bytes", "at most"),
+			form(`${fieldText}:>`, ":>bytes", "more than"),
+			form(`${fieldText}:<`, ":<bytes", "less than"),
+			form(`!${fieldText}:*`, "!…:*", "has no size", false),
 		];
 	}
 	return [
-		{ op: "is", needsValue: true },
-		{ op: "starts_with", needsValue: true },
-		{ op: "present", needsValue: false },
+		form(`${fieldText}:`, ":value", "is"),
+		form(`${fieldText}:`, ":value*", "starts with"),
+		form(`${fieldText}:*`, ":*", "has a value", false),
 	];
 }
 
@@ -150,14 +178,6 @@ export function files_folder_table_query_operations(field: string): files_folder
  */
 export function files_folder_table_query_field_text(field: string) {
 	return files_sort_field_is_built_in(field) || field === "updated_by" ? `file.${field}` : field;
-}
-
-/**
- * Write a value the way the parser reads it back: quoted when it is empty or holds whitespace or
- * a quote.
- */
-export function files_folder_table_query_format_value(value: string) {
-	return value.length === 0 || /[\s"]/u.test(value) ? files_search_query_quote(value) : value;
 }
 
 /**
@@ -183,45 +203,119 @@ export function files_folder_table_query_parse_field(
 	return { field, problem: null };
 }
 
-function parse_value(op: files_folder_table_query_Operation, field: string, text: string | null) {
-	if (!op.needsValue) {
-		return text === null ? { value: null, problem: null } : { value: null, problem: `${op.op} takes no value` };
+function is_day(value: string) {
+	return DAY_REGEX.test(value) && !value.startsWith("0000") && files_metadata_parse_maybe_date(value) !== null;
+}
+
+/**
+ * The calendar day `days` days after `day`. Both are `YYYY-MM-DD` days, not instants, so UTC math
+ * is exact here.
+ */
+function shift_day(day: string, days: number) {
+	return new Date(Date.parse(`${day}T00:00:00Z`) + days * ONE_DAY_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * Map one read token to a table operation and its value, or say why the table cannot run it.
+ */
+function read_filter(
+	field: string,
+	read: NonNullable<ReturnType<typeof files_search_query_read_token>>,
+): { op: string; value: string | null; problem: null } | { problem: string } {
+	const { match } = read;
+
+	// `!field:*` (no value) is the only NOT, and only file.extension and file.size have a "missing" index.
+	if (read.negated) {
+		return match.op === "exists" && (field === "extension" || field === "size")
+			? { op: "missing", value: null, problem: null }
+			: { problem: NOT_PROBLEM };
 	}
-	if (text === null) {
-		return { value: null, problem: `${op.op} needs a value, like ${op.op}:value` };
+	// A bare quote would open a quoted run when the query is split again, and it would swallow the
+	// tokens after it.
+	if (!read.valueText.startsWith('"') && read.valueText.includes('"')) {
+		return { problem: 'Put the value in quotes to use a " in it' };
 	}
 
-	let value = text;
-	if (text.startsWith('"')) {
-		const quoted = files_search_query_read_quoted(text, 0);
-		if (quoted.end !== text.length) {
-			return { value: null, problem: "Nothing can follow the closing quote" };
-		}
-		value = quoted.text;
-	} else if (text.includes('"')) {
-		// A bare quote would open a quoted run when the query is split again, and it would swallow
-		// the tokens after it.
-		return { value: null, problem: 'Put the value in quotes to use a " in it' };
-	}
-
+	// The search box words its value problems for search, like "Use * for any value". So each file
+	// field below gives its own problem, and only a metadata value uses the search box's problem.
 	if (field === "size") {
-		return WHOLE_NUMBER_REGEX.test(value) && Number.isSafeInteger(Number(value))
-			? { value, problem: null }
-			: { value: null, problem: "Enter a whole number of bytes, zero or more" };
-	}
-	if (field === "updated" || field === "created") {
-		return DAY_REGEX.test(value) && !value.startsWith("0000") && files_metadata_parse_maybe_date(value) !== null
-			? { value, problem: null }
-			: { value: null, problem: "Enter a valid calendar day like 2026-09-04" };
-	}
-	if (value.length === 0 || value.length > VALUE_MAX_LENGTH) {
-		return { value: null, problem: `Enter 1 to ${VALUE_MAX_LENGTH.toLocaleString("en-US")} characters` };
-	}
-	if (op.op === "starts_with" && files_table_starts_with_ends_in_digit(value)) {
-		return { value: null, problem: "'Starts with' cannot end with a number here. Remove the last digits, or use 'is'" };
+		if (match.op !== "eq" && match.op !== "range") {
+			return { problem: "Compare a size like file.size:1024 or file.size:>=1024, or use !file.size:* for none" };
+		}
+		if (
+			read.valueProblem !== null ||
+			!WHOLE_NUMBER_REGEX.test(match.value) ||
+			!Number.isSafeInteger(Number(match.value))
+		) {
+			return { problem: SIZE_PROBLEM };
+		}
+		const size = Number(match.value);
+		if (match.op === "eq") return { op: "is", value: String(size), problem: null };
+		// Sizes are whole bytes, so a strict bound is the next whole number.
+		const bound =
+			match.comparator === "gte"
+				? { op: "at_least", size }
+				: match.comparator === "gt"
+					? { op: "at_least", size: size + 1 }
+					: match.comparator === "lte"
+						? { op: "at_most", size }
+						: { op: "at_most", size: size - 1 };
+		return bound.size >= 0 && Number.isSafeInteger(bound.size)
+			? { op: bound.op, value: String(bound.size), problem: null }
+			: { problem: SIZE_PROBLEM };
 	}
 
-	return { value, problem: null };
+	if (field === "updated" || field === "created") {
+		if (match.op !== "eq" && match.op !== "range") {
+			return { problem: "Compare a day like file.updated:2026-09-04 or file.updated:>=2026-09-04" };
+		}
+		if (read.valueProblem !== null || !is_day(match.value)) {
+			return { problem: DAY_PROBLEM };
+		}
+		if (match.op === "eq") return { op: "on", value: match.value, problem: null };
+		// `before` ends at the start of its day and `after` starts at the end of its day, so `<=` and
+		// `>=` move to the next and the previous day.
+		const bound =
+			match.comparator === "lt"
+				? { op: "before", day: match.value }
+				: match.comparator === "lte"
+					? { op: "before", day: shift_day(match.value, 1) }
+					: match.comparator === "gt"
+						? { op: "after", day: match.value }
+						: { op: "after", day: shift_day(match.value, -1) };
+		// The move can leave the calendar, like `<=9999-12-31`. The browser could not turn that day
+		// into a time, so the table would run no filter.
+		return is_day(bound.day) ? { op: bound.op, value: bound.day, problem: null } : { problem: DAY_PROBLEM };
+	}
+
+	if (field === "name" && match.op !== "prefix") {
+		return { problem: "Filter names by their start, like file.name:report*" };
+	}
+	if (field === "extension" && (match.op !== "eq" || read.valueProblem !== null)) {
+		return { problem: "Write an extension like file.extension:md, or use !file.extension:* for none" };
+	}
+	// Only a metadata or frontmatter field is left here once it is not an exact value or a prefix.
+	if (match.op === "exists") {
+		return { op: "present", value: null, problem: null };
+	}
+	if (match.op === "range") {
+		return { problem: "The folder table compares this field with a value, like metadata.status:open, open*, or *" };
+	}
+	// A value that starts with `!` reads as NOT, and the table has NOT only for a missing value.
+	if (match.op === "eq" && !match.quoted && match.value.startsWith("!")) {
+		return { problem: NOT_PROBLEM };
+	}
+	if (read.valueProblem !== null) {
+		return { problem: read.valueProblem };
+	}
+	if (match.value.length === 0 || match.value.length > VALUE_MAX_LENGTH) {
+		return { problem: `Enter 1 to ${VALUE_MAX_LENGTH.toLocaleString("en-US")} characters` };
+	}
+	if (match.op === "prefix" && files_table_starts_with_ends_in_digit(match.value)) {
+		return { problem: "'Starts with' cannot end with a number here. Remove the last digits, or use an exact value" };
+	}
+
+	return { op: match.op === "prefix" ? "starts_with" : "is", value: match.value, problem: null };
 }
 
 /**
@@ -248,40 +342,29 @@ export function files_folder_table_query_parse_token(
 		return { token: { kind: "sort", raw, field: field.field, direction: parts[1] }, problem: null };
 	}
 
-	const fieldEnd = raw.indexOf(":");
-	if (fieldEnd < 0) {
+	const read = files_search_query_read_token(raw, files_folder_table_query_FILE_FIELDS);
+	if (read === null) {
 		return {
 			token: null,
-			problem: `Type a filter like file.name:starts_with:report, or a sort like ${SORT_KEY}:file.updated:desc`,
+			problem: `Type a filter like file.name:report*, or a sort like ${SORT_KEY}:file.updated:desc`,
 		};
 	}
-	if (raw.startsWith("!")) {
-		return { token: null, problem: "Not is not available in the folder table" };
-	}
 
-	const field = files_folder_table_query_parse_field(raw.slice(0, fieldEnd));
+	const searchOnlyProblem = read.key.namespace === "file" ? SEARCH_ONLY_FILE_FIELD_PROBLEMS.get(read.key.name) : null;
+	if (searchOnlyProblem) {
+		return { token: null, problem: searchOnlyProblem };
+	}
+	const field = files_folder_table_query_parse_field(read.keyText);
 	if (field.problem !== null) {
 		return { token: null, problem: field.problem };
 	}
 
-	const opEnd = raw.indexOf(":", fieldEnd + 1);
-	const opText = raw.slice(fieldEnd + 1, opEnd < 0 ? undefined : opEnd);
-	const op = files_folder_table_query_operations(field.field).find((operation) => operation.op === opText);
-	if (op === undefined) {
-		return {
-			token: null,
-			problem: `Use one of ${files_folder_table_query_operations(field.field)
-				.map((operation) => operation.op)
-				.join(", ")}`,
-		};
+	const filter = read_filter(field.field, read);
+	if (filter.problem !== null) {
+		return { token: null, problem: filter.problem };
 	}
 
-	const value = parse_value(op, field.field, opEnd < 0 ? null : raw.slice(opEnd + 1));
-	if (value.problem !== null) {
-		return { token: null, problem: value.problem };
-	}
-
-	return { token: { kind: "filter", raw, field: field.field, op: op.op, value: value.value }, problem: null };
+	return { token: { kind: "filter", raw, field: field.field, op: filter.op, value: filter.value }, problem: null };
 }
 
 /**

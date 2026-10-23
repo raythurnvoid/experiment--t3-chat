@@ -219,6 +219,18 @@
 		color: var(--color-fg-08);
 	}
 
+	/* The text around a contents match, like the palette snippet. */
+	.FilesSidebarSearchResults-row-snippet {
+		overflow: hidden;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+
+		font-size: 0.8125rem;
+		white-space: normal;
+		color: var(--color-fg-08);
+	}
+
 	.FilesSidebarSearchResults-more {
 		width: 100%;
 	}
