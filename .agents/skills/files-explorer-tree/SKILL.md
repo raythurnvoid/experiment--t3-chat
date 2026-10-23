@@ -263,6 +263,10 @@ Tree-item components:
     the plain live queries. Dropping that request releases its subscription after React commits.
     Old Move views must not keep adding idle subscriptions. A first page already in the cache
     can still stay there if it later fails or becomes a split parent. This is not general cache eviction.
+    One exception, decided by the user: the metadata catalog menus (Columns, the folder filter bar,
+    the search box) pass `cacheSavedStreamFirstPage` for their untyped first page, so a menu opens
+    again with its rows and no skeleton. That is at most 8 queries per menu, so an old Move
+    generation leaves only those idle, for up to 5 minutes. Typed prefixes stay live.
     An ordinary cursor error takes a new ID. The folder view reads its own queries (sort, README, drafts,
     write permission, selected node) through the cached `useQuery` too. Per-row queries stay on the
     plain `useQuery`: the cache keeps at most 250 idle queries, and the rows of a big folder would push

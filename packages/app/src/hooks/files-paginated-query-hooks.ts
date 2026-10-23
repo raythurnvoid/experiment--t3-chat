@@ -109,7 +109,15 @@ function complete_split(key: number) {
 export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	query: Query,
 	args: PaginatedQueryArgs<Query> | "skip",
-	options: { initialNumItems: number },
+	options: {
+		initialNumItems: number;
+		/**
+		 * Let the first page of a `savedStream` use the query cache too. Pass it only for a few queries
+		 * per stream, like a menu's untyped first page. Each old Move generation then stays idle in the
+		 * cache for up to 5 minutes.
+		 */
+		cacheSavedStreamFirstPage?: boolean;
+	},
 ): UsePaginatedQueryResult<PaginatedQueryItem<Query>> & { directoryView: files_DirectoryView | undefined } {
 	if (typeof options?.initialNumItems !== "number" || options.initialNumItems < 0)
 		throw new Error("initialNumItems must be a positive number.");
@@ -155,13 +163,14 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		setState(current);
 	}
 	// Keep reusable first pages in the idle cache. Old view and cursor queries must stop with their pager.
+	const cacheSavedStreamFirstPage = options.cacheSavedStreamFirstPage ?? false;
 	const [cachedQueries, liveQueries] = useMemo(() => {
 		const cached: Record<number, PageQuery> = {};
 		const live: Record<number, PageQuery> = {};
 		for (const [key, page] of Object.entries(current.queries)) {
 			const paginationOpts = page.args.paginationOpts;
 			const queries =
-				"savedStream" in page.args ||
+				("savedStream" in page.args && !cacheSavedStreamFirstPage) ||
 				"pageView" in page.args ||
 				paginationOpts.cursor !== null ||
 				paginationOpts.endCursor != null ||
@@ -171,7 +180,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 			queries[Number(key)] = page;
 		}
 		return [cached, live];
-	}, [current.queries]);
+	}, [current.queries, cacheSavedStreamFirstPage]);
 	const cachedResults = useCachedQueries(cachedQueries);
 	const liveResults = useQueries(liveQueries);
 	const resultsObject = useMemo(() => ({ ...cachedResults, ...liveResults }), [cachedResults, liveResults]) as Record<

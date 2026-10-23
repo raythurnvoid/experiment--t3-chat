@@ -640,6 +640,18 @@ describe("useFilesPaginatedQuery", () => {
 		expect(second.result.current.results).toEqual([{ name: "a" }]);
 	});
 
+	test("an opted-in saved-stream first page stays cached for the next pager", () => {
+		const usePager = () => useFilesPaginatedQuery(query, args, { initialNumItems: 2, cacheSavedStreamFirstPage: true });
+		const first = renderHook(usePager, { wrapper: CachingWrapper });
+		const watch = activeWatches()[0]!;
+		answer(watch, page(["a"], true, ""));
+		first.unmount();
+		expect(listeners.get(watch.key)?.size, "the cache keeps the query subscribed").toBe(1);
+
+		const second = renderHook(usePager, { wrapper: CachingWrapper });
+		expect(second.result.current.results).toEqual([{ name: "a" }]);
+	});
+
 	test("keeps the memoized rows and session on a same-args rerender", () => {
 		const hook = renderPager();
 		answer(activeWatches()[0]!, page(["a", "b"], true, ""));

@@ -3011,6 +3011,13 @@ button. `click()` then waits until the call times out, and a mouse click lands o
 `page.setViewportSize({ width: 1400, height: 900 })` and press Escape before clicking. Check with
 `document.elementFromPoint(x, y)` when a click does nothing. Hit 2026-10-21.
 
+## A combobox closed with Escape does not open again on click
+
+After Escape closes the folder filter bar or the files search list, the input keeps focus. A
+`click()` on that focused input does not open the list again, so a sampler that opens it twice sees
+height 0 on the second run and looks like a broken popover. Call
+`document.activeElement?.blur()` and wait about 300 ms before the click. Hit 2026-10-23.
+
 ## `click()` waits forever on an `aria-disabled` button
 
 Playwright treats `aria-disabled="true"` as not enabled, so `locator.click()` retries until the call

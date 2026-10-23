@@ -70,8 +70,14 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 	 * `list_folder_fields`) and merge its rows in.
 	 */
 	restricted?: boolean;
+	/**
+	 * Keep the first pages in the query cache for 5 minutes after the menu closes, so it opens again
+	 * with its rows and no skeleton. Pass it only for the untyped text: each typed prefix would add
+	 * its own idle queries and push the folder's queries out of the cache.
+	 */
+	cacheFirstPage: boolean;
 }) {
-	const { query, membershipId, requests, scope, order, rowKey, restricted = false } = args;
+	const { query, membershipId, requests, scope, order, rowKey, restricted = false, cacheFirstPage } = args;
 
 	const view = useFilesSavedView(membershipId, requests !== null);
 	const streamArgs = (index: number, savedStream: files_SavedStream | null, twin = false) => {
@@ -80,7 +86,7 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 			? ({ ...request, savedStream, ...(twin ? { restricted: true } : {}) } as unknown as PaginatedQueryArgs<Query>)
 			: "skip";
 	};
-	const options = { initialNumItems: FILES_METADATA_CATALOG_PAGE_SIZE };
+	const options = { initialNumItems: FILES_METADATA_CATALOG_PAGE_SIZE, cacheSavedStreamFirstPage: cacheFirstPage };
 	const groups = [
 		[
 			useFilesPaginatedQuery(query, streamArgs(0, view.normal), options),
@@ -189,6 +195,7 @@ export function useFilesMetadataFolderKeys(args: {
 		// Like the tree's twin, read it until the reader is known not to be the owner, so the owner does
 		// not see restricted keys late. Anyone else gets an empty page.
 		restricted: isOwner !== false,
+		cacheFirstPage: prefix === "",
 	});
 }
 

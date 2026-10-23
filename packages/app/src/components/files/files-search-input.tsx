@@ -2,7 +2,8 @@ import "./files-search-input.css";
 import React, { createContext, memo, use, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
-import { useQueries, useQuery } from "convex/react";
+import { useQueries } from "convex/react";
+import { useQuery as useCachedQuery } from "convex-helpers/react/cache";
 import type { FunctionReturnType } from "convex/server";
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -255,6 +256,7 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 		scope: `${membershipId}\n${folderPath}`,
 		order: (row) => files_metadata_catalog_key_order(row.fieldPath),
 		rowKey: (row) => row.fieldPath,
+		cacheFirstPage: prefix === "",
 	});
 	const isDisabled = stale || keys.updating;
 	const isUnmatched = !isDisabled && keys.status === "Exhausted" && keys.rows.length === 0 && prefix !== "";
@@ -382,9 +384,11 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 		scope: `${membershipId}\n${folderPath}\n${fieldPath}`,
 		order: (value) => value,
 		rowKey: (value) => value,
+		cacheFirstPage: prefix === "",
 	});
-	// The exact key's kinds, not a prefix page, decide the boolean hint.
-	const field = useQuery(app_convex_api.files_metadata.get_search_field, { membershipId, folderPath, fieldPath });
+	// The exact key's kinds, not a prefix page, decide the boolean hint. Cache it like the values'
+	// first page, because the rows wait for it.
+	const field = useCachedQuery(app_convex_api.files_metadata.get_search_field, { membershipId, folderPath, fieldPath });
 	const isDisabled = stale || values.updating;
 	// Like the key rows: an empty page for a member without workspace read gets the reason, not the hint.
 	const isNoAccess = hasWorkspaceRead === false && values.rows.length === 0 && values.status === "Exhausted";

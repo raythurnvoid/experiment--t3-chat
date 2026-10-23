@@ -63,7 +63,9 @@ data arrives. This is a product rule, decided by the user.
 - While newer text loads, older rows of the same list stay on screen, disabled, with no skeleton.
 
 `useFilesMetadataCatalogPages` gives `noRowsYet` for this: the first page loads and no older rows
-are held. The Columns menu, the folder filter bar and the files search box follow this rule.
+are held. The Columns menu, the folder filter bar and the files search box follow this rule. They
+also keep their untyped first page in the query cache (`cacheFirstPage`), so closing and opening a
+menu again shows its rows at once, with no skeleton.
 
 ## Phone layout
 
