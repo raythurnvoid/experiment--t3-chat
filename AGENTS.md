@@ -506,6 +506,7 @@ Write comments and JSDoc for a reader who is not an eloquent native English spea
 - Do not invent shorthand or metaphors ("crash-shaped exit", "yanked out from under", "the overflow rides the continuation").
 - Do not assume the reader knows what a referenced mechanism does; give one short clause of context ("the cron fallback picks this attempt up again after the deadline").
 - Plain does not mean longer. Keep comments concise by dropping asides that are already explained at the site where they matter, not by compressing sentences.
+- Split a comment of more than about three lines into short paragraphs, one idea each, with an empty comment line between them. A long comment without breaks reads as an unreadable block of text. The same applies to doc and skill paragraphs.
 
 ```ts
 // ✅ Good
