@@ -97,6 +97,7 @@ import { useFilesSortedChildren, files_merge_sorted_streams } from "@/hooks/file
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "@/hooks/files-paginated-query-hooks.ts";
 import { useFilesPendingUpdates } from "@/hooks/files-pending-list-hooks.ts";
+import { useCachedQuery } from "@/hooks/convex-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -140,7 +141,6 @@ import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-d
 import { measureNaturalWidth, prepareWithSegments } from "@chenglou/pretext";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useConvex, useQueries, useQuery } from "convex/react";
-import { useQuery as useCachedQuery } from "convex-helpers/react/cache";
 import type { FunctionReturnType } from "convex/server";
 import { compareValues } from "convex/values";
 import {

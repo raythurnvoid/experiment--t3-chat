@@ -7,6 +7,14 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { FunctionReference } from "convex/server";
 
 /**
+ * The query cache hooks of `convex-helpers`. The package names them `useQuery` and `useQueries`, like
+ * the plain Convex hooks, so import them from here with names that say they use the cache. The cache
+ * keeps a query subscribed for 5 minutes after its last user unmounts (`ConvexQueryCacheProvider` in
+ * `main.tsx`).
+ */
+export { useQuery as useCachedQuery, useQueries as useCachedQueries } from "convex-helpers/react/cache";
+
+/**
  * Drop-in replacement for `useQuery` that keeps the previous result while new args load.
  * Useful when query args change often (e.g., dynamic ID lists) to avoid `undefined` flicker.
  */

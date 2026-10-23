@@ -98,7 +98,7 @@ if (url_is_share_path(router.state.location.pathname)) {
 					<AppAuthProvider>
 						<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useConvexAuth}>
 							{/* Keep a query subscribed for 5 minutes after its last user unmounts, so going back to a
-							    folder shows its rows at once. Only hooks imported from `convex-helpers/react/cache` use it. */}
+							    folder shows its rows at once. Only `useCachedQuery` and `useCachedQueries` from `hooks/convex-hooks.ts` use it. */}
 							<ConvexQueryCacheProvider>
 								<RouterProvider router={router} />
 							</ConvexQueryCacheProvider>

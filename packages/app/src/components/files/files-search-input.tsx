@@ -3,7 +3,6 @@ import React, { createContext, memo, use, useEffect, useId, useMemo, useRef, use
 import { Search, SlidersHorizontal, X } from "lucide-react";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useQueries } from "convex/react";
-import { useQuery as useCachedQuery } from "convex-helpers/react/cache";
 import type { FunctionReturnType } from "convex/server";
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -44,6 +43,7 @@ import {
 	useFilesMetadataHasWorkspaceRead,
 	useFilesMetadataIsOwner,
 } from "@/hooks/files-metadata-catalog-hooks.ts";
+import { useCachedQuery } from "@/hooks/convex-hooks.ts";
 import { useFilesSavedView } from "@/hooks/files-saved-view-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";

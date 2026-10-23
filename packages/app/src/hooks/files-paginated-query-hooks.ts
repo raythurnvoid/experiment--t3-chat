@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { useQueries as useCachedQueries } from "convex-helpers/react/cache";
 import {
 	useQueries,
 	type PaginatedQueryArgs,
@@ -16,6 +15,7 @@ import {
 } from "convex/server";
 import { ConvexError, convexToJson, jsonToConvex, type Infer, type Value } from "convex/values";
 import type { files_DirectoryView } from "../../shared/files.ts";
+import { useCachedQueries } from "./convex-hooks.ts";
 import { useFn } from "./utils-hooks.ts";
 
 // Adapted from Convex 1.46.0 src/react/use_paginated_query.ts.
