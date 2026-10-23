@@ -2,6 +2,12 @@
 
 Use this reference when adding, moving, or reviewing tests.
 
+## Cursor Test Discovery
+
+- Keep Vitest's config exclusions in both `.vscode/settings.json` and the local, Git-ignored `t3-chat.code-workspace`. The setting has window scope, so Cursor ignores the folder copy when both workspace folders are open.
+- Skip reference repos in both copies. The workspace copy must also skip personal `sources/` and `+ai/` folders, which can contain copied test configs. Keep the extension's default exclusions too.
+- After changing these settings, use **Developer: Reload Window** in Cursor and check the Vitest output.
+
 ## Anchors
 
 - Prefer a module-owned test file when a feature has a natural Convex module owner, such as `organizations.test.ts` for `convex/organizations.ts`.

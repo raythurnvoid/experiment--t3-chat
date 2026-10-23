@@ -39,7 +39,7 @@
 		"**/*": "docs-assets/${documentRelativeDirName}${fileName}"
 	},
 	"tailwindCSS.experimental.configFile": "packages/app/src/app.css",
-	// Keep the extension defaults, and skip the read-only reference repos.
+	// For single-folder windows. t3-chat.code-workspace also skips personal sources and scratch work.
 	"vitest.configSearchPatternExclude": "{**/node_modules/**,**/vendor/**,**/.*/**,**/*.d.ts,**/references-submodules/**,**/native-popovers/references/**}",
 	"[json]": {
 		"editor.defaultFormatter": "oxc.oxc-vscode"
