@@ -556,11 +556,12 @@ and `find` also keep raw name order.
   matches locally, anywhere in the name. Show more fields loads the next page. Rows of an older text
   stay, disabled. With no rows to keep, the Metadata part shows nothing until its page arrives, so the menu only grows. A failed read shows "Fields could not be loaded" and
   Retry. A chosen key that the page lacks stays listed and removable.
-- Column choices use `app_state::files_folder_columns::scope::${membershipId}` in browser storage.
-  Each folder id, or `root`, has its own list. Keep at most 100 recent folder choices per membership.
-  A folder rename keeps its choice. Another membership starts with its own choices. A list saved
-  before the rename may hold `type`. The reader maps it to `extension`, and the key is written
-  again only at the next column change.
+- Column choices live only in the URL `columns` param, like `name,updated,metadata.stage`, so a link
+  or a reload shows the same columns. No param shows the default columns, and Reset drops it. Each
+  change adds a history entry, so Back undoes it, like a committed filter token. Opening another node
+  drops the param with `filter` and `view_q`, so every folder opens on the defaults. The route cleans
+  a hand-edited value with `files_table_columns_param_clean`: unknown and repeated fields go, `name`
+  is added, and at most eight stay.
 - Cells read their own row facts or `files_metadata.get_field_values`. Every row is saved, so cells
   show committed values, also while the owner edits pending text. Lists show the first plain
   value. Only a checked missing value shows `—`. Loading, deferred, and failed reads have real text.

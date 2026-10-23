@@ -33,12 +33,7 @@ import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-bill
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
-import {
-	MyCheckboxButton,
-	MyCheckboxButtonContent,
-	MyCheckboxButtonDescription,
-	MyCheckboxButtonLabel,
-} from "@/components/my-checkbox-button.tsx";
+import { MyCheckboxButton, MyCheckboxButtonContent, MyCheckboxButtonLabel } from "@/components/my-checkbox-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import {
 	MyGridTable,
@@ -538,6 +533,7 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 													// The table bar belongs to the node it was made for.
 													filter: undefined,
 													view_q: undefined,
+													columns: undefined,
 													nodeId: crumb.target === "saved" ? crumb.id : undefined,
 													pendingNodeId: crumb.target === "private" ? crumb.id : undefined,
 													view: undefined,
@@ -841,6 +837,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 										...prev,
 										filter: undefined,
 										view_q: undefined,
+										columns: undefined,
 										nodeId: files_ROOT_ID,
 										pendingNodeId: undefined,
 										view: undefined,
@@ -887,6 +884,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 										...prev,
 										filter: undefined,
 										view_q: undefined,
+										columns: undefined,
 										nodeId: files_ROOT_ID,
 										pendingNodeId: undefined,
 										view: undefined,
@@ -2901,7 +2899,13 @@ type FileNodeViewFolder_Props = {
 	 * The text typed in the table bar. It comes from the URL `view_q` param.
 	 */
 	viewQuery: string;
+	/**
+	 * The table columns, like `name,updated,metadata.stage`. They come from the URL `columns` param.
+	 * Null shows the default columns.
+	 */
+	columnsParam: string | null;
 	onQueryChange: FileNodeViewFolderFilterBar_Props["onChange"];
+	onColumnsParamChange: (columnsParam: string | null) => void;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 };
 
@@ -2924,7 +2928,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		viewSelectPortalHost,
 		committedQuery,
 		viewQuery,
+		columnsParam,
 		onQueryChange,
+		onColumnsParamChange,
 		onEditorModeChange,
 	} = props;
 
@@ -2941,10 +2947,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		folderId: folderItemId,
 	});
 	const folderScope = JSON.stringify([membershipId, folderItemId]);
-	const [columnPreferences, setColumnPreferences] = useAppLocalStorageStateValue(
-		`app_state::files_folder_columns::scope::${membershipId}`,
-	);
-	const columns = get_folder_columns(columnPreferences[folderItemId] ?? files_table_DEFAULT_COLUMNS);
+	const columns = get_folder_columns(columnsParam?.split(",") ?? files_table_DEFAULT_COLUMNS);
 	const [columnsOpen, setColumnsOpen] = useState({ scope: folderScope, open: false });
 	const [activeTargets, setActiveTargets] = useState({ scope: folderScope, keys: [] as string[] });
 	const [isSavingSort, setIsSavingSort] = useState(false);
@@ -3093,13 +3096,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			sortedChildren.loadMore();
 		}
 	});
+	// The default columns drop the param, so Reset leaves no `columns` in the URL.
 	const handleColumnsChange = useFn((nextColumns: string[]) => {
-		setColumnPreferences((current) => {
-			const next = { ...current };
-			delete next[folderItemId];
-			next[folderItemId] = get_folder_columns(nextColumns);
-			return Object.fromEntries(Object.entries(next).slice(-100));
-		});
+		const nextParam = get_folder_columns(nextColumns).join(",");
+		onColumnsParamChange(nextParam === files_table_DEFAULT_COLUMNS.join(",") ? null : nextParam);
 	});
 	const handleColumnsOpenChange = useFn((open: boolean) => setColumnsOpen({ scope: folderScope, open }));
 	const handleQueryChange = useFn<FileNodeViewFolderFilterBar_Props["onChange"]>((change) => {
@@ -4258,6 +4258,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 						...prev,
 						filter: undefined,
 						view_q: undefined,
+						columns: undefined,
 						nodeId: child._id,
 						pendingNodeId: undefined,
 						view: undefined,
@@ -4386,6 +4387,7 @@ const FileNodeViewFolderExplorerLockedRow = memo(function FileNodeViewFolderExpl
 						...prev,
 						filter: undefined,
 						view_q: undefined,
+						columns: undefined,
 						nodeId: child._id,
 						pendingNodeId: undefined,
 						view: undefined,
@@ -4469,7 +4471,6 @@ const FileNodeViewFolderExplorerColumnsGroup = memo(function FileNodeViewFolderE
 						>
 							<MyCheckboxButtonContent>
 								<MyCheckboxButtonLabel>{files_folder_table_query_field_text(field)}</MyCheckboxButtonLabel>
-								{field === "name" && <MyCheckboxButtonDescription>Always shown</MyCheckboxButtonDescription>}
 							</MyCheckboxButtonContent>
 						</MyCheckboxButton>
 					</div>
@@ -4648,7 +4649,7 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 				{columns.length >= files_table_MAX_COLUMNS && <p>Show up to 8 columns. Hide one to add another.</p>}
 				<div className={"FileNodeViewFolderExplorerColumns-actions" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
 					<MyButton variant="outline" onClick={() => onColumnsChange([...files_table_DEFAULT_COLUMNS])}>
-						Reset columns
+						Reset
 					</MyButton>
 					<MyButton variant="outline" onClick={() => handleOpenChange(false)}>
 						Done
@@ -5673,6 +5674,8 @@ type FileNodeViewContent_Props = {
 	committedQuery: FileNodeViewFolder_Props["committedQuery"];
 	viewQuery: FileNodeViewFolder_Props["viewQuery"];
 	onTableQueryChange: FileNodeViewFolder_Props["onQueryChange"];
+	columnsParam: FileNodeViewFolder_Props["columnsParam"];
+	onColumnsParamChange: FileNodeViewFolder_Props["onColumnsParamChange"];
 };
 
 const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeViewContent_Props) {
@@ -5702,6 +5705,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		committedQuery,
 		viewQuery,
 		onTableQueryChange,
+		columnsParam,
+		onColumnsParamChange,
 	} = props;
 
 	if (selectedNodeId === files_ROOT_ID) {
@@ -5734,7 +5739,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					viewSelectPortalHost={viewSelectPortalHost}
 					committedQuery={committedQuery}
 					viewQuery={viewQuery}
+					columnsParam={columnsParam}
 					onQueryChange={onTableQueryChange}
+					onColumnsParamChange={onColumnsParamChange}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -5775,7 +5782,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					viewSelectPortalHost={viewSelectPortalHost}
 					committedQuery={committedQuery}
 					viewQuery={viewQuery}
+					columnsParam={columnsParam}
 					onQueryChange={onTableQueryChange}
+					onColumnsParamChange={onColumnsParamChange}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -5907,6 +5916,10 @@ export type FileNodeView_SearchParams = {
 	 * The text typed in the folder table bar.
 	 */
 	view_q?: string;
+	/**
+	 * The folder table columns, like `name,updated,metadata.stage`.
+	 */
+	columns?: string;
 };
 
 export type FileNodeView_Props = {
@@ -6085,6 +6098,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		q: searchParams.q,
 		filter: searchParams.filter,
 		view_q: searchParams.view_q,
+		columns: searchParams.columns,
 	});
 	const shownViewSearch = get_view_search(selectedFileView === "default" ? undefined : selectedFileView);
 
@@ -6152,6 +6166,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			},
 			{ replace: change.committedQuery === undefined },
 		);
+	});
+	// Each column change adds a history entry, so Back undoes it, like a committed filter token.
+	const handleTableColumnsChange = useFn<FileNodeViewContent_Props["onColumnsParamChange"]>((columnsParam) => {
+		onNavigateSearch({ ...searchParams, columns: columnsParam ?? undefined });
 	});
 
 	/**
@@ -6234,6 +6252,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					q: searchParams.q,
 					filter: searchParams.filter,
 					view_q: searchParams.view_q,
+					columns: searchParams.columns,
 				},
 				options,
 			);
@@ -6248,6 +6267,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				q: searchParams.q,
 				filter: searchParams.filter,
 				view_q: searchParams.view_q,
+				columns: searchParams.columns,
 			},
 			options,
 		);
@@ -6275,6 +6295,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					q,
 					filter: searchParams.filter,
 					view_q: searchParams.view_q,
+					columns: searchParams.columns,
 				},
 				{ replace: true },
 			);
@@ -6673,6 +6694,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					committedQuery={searchParams.filter ?? ""}
 					viewQuery={searchParams.view_q ?? ""}
 					onTableQueryChange={handleTableQueryChange}
+					columnsParam={searchParams.columns ?? null}
+					onColumnsParamChange={handleTableColumnsChange}
 				/>
 			</>
 		) : searchNodeId ? (

@@ -91,6 +91,20 @@ describe("validateSearch", () => {
 		expect(validateSearch.parse({ view_q: "file.na" }).view_q).toBe("file.na");
 		expect(validateSearch.parse({ view_q: "a".repeat(2001) }).view_q).toBeUndefined();
 	});
+
+	test("cleans the folder table columns", () => {
+		const validateSearch = Route.options.validateSearch as {
+			parse: (input: unknown) => { columns?: string };
+		};
+		// Name is always a column. Unknown and repeated fields go, and at most 8 columns stay.
+		expect(validateSearch.parse({ columns: "size,rank,size,metadata.stage,file.name" }).columns).toBe(
+			"name,size,metadata.stage",
+		);
+		expect(
+			validateSearch.parse({ columns: "updated_by,updated,created,extension,size,metadata.a,metadata.b,metadata.c" })
+				.columns,
+		).toBe("name,updated_by,updated,created,extension,size,metadata.a,metadata.b");
+	});
 });
 
 describe("README preload", () => {

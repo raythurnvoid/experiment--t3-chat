@@ -15,6 +15,7 @@ import {
 	files_folder_table_query_clean,
 	files_folder_table_query_MAX_LENGTH,
 } from "../../../../../../shared/files-folder-table-query.ts";
+import { files_table_columns_param_clean } from "../../../../../../shared/files-table.ts";
 import { files_node_has_editable_text_content } from "../../../../../../shared/files.ts";
 
 const RouteFiles = memo(function RouteFiles() {
@@ -281,6 +282,11 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 				)
 				.optional()
 				.catch(undefined),
+			/**
+			 * The folder table columns, like `name,updated,metadata.stage`. No value shows the default
+			 * columns. The cleaner drops fields that cannot be columns, so a hand-edited link still opens.
+			 **/
+			columns: z.string().max(2000).transform(files_table_columns_param_clean).optional().catch(undefined),
 		}),
 	),
 });

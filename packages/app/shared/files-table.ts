@@ -18,6 +18,16 @@ export function files_table_column_is_valid(field: string) {
 }
 
 /**
+ * Clean the URL `columns` param, like `name,updated,metadata.stage`. Field names never hold a comma.
+ * Unknown and repeated fields are dropped, so a hand-edited link still opens. Name is always a column,
+ * and at most `files_table_MAX_COLUMNS` columns stay.
+ */
+export function files_table_columns_param_clean(value: string) {
+	const fields = value.split(",").filter((field) => field !== "name" && files_table_column_is_valid(field));
+	return ["name", ...new Set(fields)].slice(0, files_table_MAX_COLUMNS).join(",");
+}
+
+/**
  * The text of a file.updated_by cell. With no name found, it shows "Unknown".
  */
 export function files_table_updated_by_text(displayName: string | null) {

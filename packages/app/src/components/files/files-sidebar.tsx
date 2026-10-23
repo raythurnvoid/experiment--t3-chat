@@ -3648,6 +3648,7 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 								...prev,
 								filter: undefined,
 								view_q: undefined,
+								columns: undefined,
 								nodeId: files_ROOT_ID,
 								pendingNodeId: undefined,
 								view,

@@ -25,7 +25,6 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
 import type { useFilesSortedChildren } from "@/hooks/files-search-hooks.ts";
-import { app_local_storage_set_value } from "@/lib/storage.ts";
 import { global_custom_event_dispatch, global_custom_event_listen } from "@/lib/global-event.tsx";
 
 const {
@@ -706,7 +705,6 @@ beforeEach(() => {
 	vi.mocked(toast.error).mockClear();
 	vi.mocked(toast.success).mockClear();
 	localStorage.clear();
-	app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {});
 	header = document.createElement("div");
 	header.id = "app_main_header_content";
 	document.body.append(header);
@@ -834,14 +832,11 @@ describe("FileNodeView folder filter", () => {
 	test("a filter token narrows the rows in its own order, and Clear brings the saved sort back", async () => {
 		const sort: files_sort_Sort = [{ field: "updated", direction: "desc" }];
 		folderSort = { sort, canSave: false };
-		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
-			folder_1: ["name", "extension"],
-		});
 		// A name filter reads rows in name order, whatever the saved sort is.
 		const filterSort: files_sort_Sort = [{ field: "name", direction: "asc" }];
 		const filter: files_table_Filter = { kind: "name", field: "name", op: "starts_with", value: "file-2." };
 		rowsByScope.set(JSON.stringify(["membership_1", node._id, filterSort, filter]), [rows[2]!]);
-		renderFileView({ nodeId: node._id, filter: "file.name:starts_with:file-2." });
+		renderFileView({ nodeId: node._id, columns: "name,extension", filter: "file.name:starts_with:file-2." });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		expect(sortedChildrenMock.mock.calls.at(-1)![0]).toMatchObject({
 			membershipId: "membership_1",

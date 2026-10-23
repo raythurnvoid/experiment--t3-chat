@@ -830,15 +830,20 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
 
 ### Folder Table Columns
 
-Verified 2026-09-29. Use the current QA inventory. A large real folder can stay read-only: only personal
-column choices need to change. Do not write file metadata or shared sorts for this check.
+Verified 2026-09-29. Use the current QA inventory. A large real folder can stay read-only: column choices
+live only in the URL. Do not write file metadata or shared sorts for this check.
 
-- **Controls.** `Columns` opens a dialog named `Columns`; its input is `Search columns`.
-  Fields sit in groups named `Built-in` and `Metadata`. file.name is checked and locked; its checkbox
-  name is `file.name Always shown`. Actions is always shown. Up to eight columns may be selected, including file.name;
-  Actions does not count. The order is fixed: built-ins first, then full qualified field keys.
-  Choose fields in a different click order and check the same order after reload. `Reset columns` restores
+- **Controls.** `Columns` opens a dialog named `Columns`, anchored at the trigger's right edge; its input is
+  `Search columns`. Fields sit in groups named `Built-in` and `Metadata`. file.name is checked and locked;
+  its checkbox name is `file.name`. Actions is always shown. Up to eight columns may be selected, including
+  file.name; Actions does not count. The order is fixed: built-ins first, then full qualified field keys.
+  Choose fields in a different click order and check the same order after reload. `Reset` restores
   file.name, file.updated_by and file.updated. Column changes must keep row ids, row order and paging unchanged.
+- **URL.** The `columns` param holds the choice, like `columns=name,updated_by,updated,size` (the router
+  writes the commas as `%2C`). Each change adds a history entry. Reset and the default columns drop the
+  param. Opening another node drops it too, so every folder opens on the default columns. A hand-typed
+  value is cleaned: unknown and repeated fields go, `name` is added, at most eight stay. Verified
+  2026-10-23: `columns=size,bogus,created,size,file.name` became `columns=name,size,created`.
 - **Checkboxes.** The native input is visually hidden and does not take pointer clicks. Click the visible
   label inside `.FileNodeViewFolderExplorerColumns-field[data-column-field="<field>"]`, or focus its
   checkbox and press Space. Do not force-click the input. Tab scrolls clipped fields into view.
@@ -863,8 +868,8 @@ column choices need to change. Do not write file metadata or shared sorts for th
 - **Scalar check.** First read one bounded catalog page. Pick a key that exists now, then read at most a few
   accessible targets with `get_field_values`. Compare one ready cell with that API and `get_entries`.
   Record the value type and equality without printing private values. Main table preview rows may be folders
-  with no value; open a readable child folder through its normal link to reach files. Back up that folder's
-  own preference entry before changing it too.
+  with no value; open a readable child folder through its normal link to reach files. That link drops the
+  `columns` param, so pick the columns again there.
 - **Actual subscriptions.** DOM counters alone do not prove the caps. Import the exact
   `/src/lib/app-convex-client.ts` URL already present in Resource Timing; do not import a second client URL.
   Increase the Resource Timing buffer in an init script before reload if that entry was evicted.
@@ -896,12 +901,8 @@ column choices need to change. Do not write file metadata or shared sorts for th
   and check its hit target. A 640×450 viewport is a 200% reflow check for 1280×900, not proof of real browser
   zoom. State that limit. Also record whole-page overflow separately; the existing Files header/panel layout
   overflowed at 320 px in this run while the chooser fit. Reduced motion must leave the chooser animation off.
-- **Restore.** The membership's column map is stored under
-  `app_state::files_folder_columns::scope::<membershipId>`. Back up the exact touched folder entries,
-  including whether each entry and the physical key existed. Restore only those entries, preserving unrelated
-  entries added meanwhile. If the 100-entry map is full, reuse an existing entry so QA does not evict another
-  folder's choice. Reload to clear the app's storage cache, then prove the original columns and
-  query counts. Restore viewport and media overrides. For screenshots, bring only your owned tab to the front
+- **Restore.** Columns are not stored anywhere but the URL, so `Reset` or a URL without `columns` restores
+  them. Restore viewport and media overrides. For screenshots, bring only your owned tab to the front
   if background capture times out; do not raise the timeout.
 
 ### Folder Table Filter

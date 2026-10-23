@@ -703,7 +703,6 @@ beforeEach(() => {
 	vi.mocked(toast.error).mockClear();
 	vi.mocked(toast.success).mockClear();
 	localStorage.clear();
-	app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {});
 	header = document.createElement("div");
 	header.id = "app_main_header_content";
 	document.body.append(header);
@@ -2299,7 +2298,7 @@ describe("FileNodeView folder columns", () => {
 		vi.unstubAllGlobals();
 	});
 
-	test("keeps the empty table and chooser, saves fixed column order, and restores defaults", async () => {
+	test("keeps the empty table and chooser, writes fixed column order to the URL, and restores defaults", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node];
 		const previousQuery = queryMock.getMockImplementation()!;
@@ -2317,8 +2316,8 @@ describe("FileNodeView folder columns", () => {
 		const trigger = screen.getByRole("button", { name: "Columns" });
 		fireEvent.click(trigger);
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
-		expect(within(chooser).getByRole("checkbox", { name: "file.name Always shown" })).toHaveProperty("disabled", true);
-		expect(within(chooser).getByRole("checkbox", { name: "file.name Always shown" })).toHaveProperty("checked", true);
+		expect(within(chooser).getByRole("checkbox", { name: "file.name" })).toHaveProperty("disabled", true);
+		expect(within(chooser).getByRole("checkbox", { name: "file.name" })).toHaveProperty("checked", true);
 		for (const field of ["metadata.zeta", "file.size", "metadata.alpha", "file.extension", "file.created"]) {
 			fireEvent.click(within(chooser).getByRole("checkbox", { name: field }));
 		}
@@ -2341,8 +2340,10 @@ describe("FileNodeView folder columns", () => {
 		]);
 		fireEvent.click(within(chooser).getByRole("button", { name: "Done" }));
 		await waitFor(() => expect(document.activeElement).toBe(trigger));
+		const columns = view.onNavigateSearch.mock.lastCall?.[0].columns;
+		expect(columns).toBe("name,updated_by,updated,created,extension,size,metadata.alpha,metadata.zeta");
 		view.unmount();
-		renderFileView({ nodeId: node._id });
+		const restoredView = renderFileView({ nodeId: node._id, columns });
 		const restored = await screen.findByRole("table", { name: "Folder contents" });
 		expect(
 			within(restored)
@@ -2360,28 +2361,26 @@ describe("FileNodeView folder columns", () => {
 			"actions",
 		]);
 		fireEvent.click(screen.getByRole("button", { name: "Columns" }));
-		fireEvent.click(await screen.findByRole("button", { name: "Reset columns" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Reset" }));
 		expect(
 			within(restored)
 				.getAllByRole("columnheader")
 				.map((cell) => cell.getAttribute("data-column-field")),
 		).toEqual(["name", "updated_by", "updated", "actions"]);
+		expect(restoredView.onNavigateSearch.mock.lastCall?.[0].columns).toBeUndefined();
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
 	test("keeps a hidden selected field focusable and closes with Escape", async () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node];
-		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
-			folder_1: ["name", "metadata.old"],
-		});
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) =>
 			getFunctionName(reference) === "files_metadata:list_folder_fields"
 				? []
 				: previousQuery(reference, args),
 		);
-		renderFileView({ nodeId: node._id });
+		renderFileView({ nodeId: node._id, columns: "name,metadata.old" });
 		const trigger = await screen.findByRole("button", { name: "Columns" });
 		fireEvent.click(trigger);
 		const chooser = await screen.findByRole("dialog", { name: "Columns" });
@@ -2499,9 +2498,6 @@ describe("FileNodeView folder columns", () => {
 				contentByteSize: 2048,
 			},
 		];
-		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
-			folder_1: ["name", "updated_by", "size", "metadata.status"],
-		});
 		anagraphic = { displayName: "Ada Lovelace" };
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) =>
@@ -2513,7 +2509,7 @@ describe("FileNodeView folder columns", () => {
 					}
 				: previousQuery(reference, args),
 		);
-		renderFileView({ nodeId: node._id });
+		renderFileView({ nodeId: node._id, columns: "name,updated_by,size,metadata.status" });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		act(() => observers[0]!.emit());
 		pushQueryChanges();
@@ -2541,9 +2537,6 @@ describe("FileNodeView folder columns", () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node, { ...NODE, _id: "a.html", name: "a.html", parentId: node._id }];
 		const fields = ["metadata.empty", "metadata.flag", "metadata.missing", "metadata.number"];
-		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
-			folder_1: ["name", ...fields],
-		});
 		let response: unknown;
 		const ready = {
 			values: [
@@ -2559,7 +2552,7 @@ describe("FileNodeView folder columns", () => {
 		queryMock.mockImplementation((reference, args) =>
 			getFunctionName(reference) === "files_metadata:get_field_values" ? response : previousQuery(reference, args),
 		);
-		renderFileView({ nodeId: node._id });
+		renderFileView({ nodeId: node._id, columns: ["name", ...fields].join(",") });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		const row = within(table).getAllByRole("row")[1]!;
 		expect(row.querySelector('[data-column-field="metadata.number"]')).toHaveProperty(
@@ -2607,9 +2600,6 @@ describe("FileNodeView folder columns", () => {
 	async function renderFullValueCell() {
 		node = { ...NODE, _id: "folder_1", name: "Docs", path: "/Docs", kind: "folder" };
 		treeNodes = [node, { ...NODE, _id: "a.md", name: "a.md", parentId: node._id, contentType: "text/markdown" }];
-		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
-			folder_1: ["name", "frontmatter.note"],
-		});
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) =>
 			getFunctionName(reference) === "files_metadata:get_field_values"
@@ -2620,7 +2610,7 @@ describe("FileNodeView folder columns", () => {
 					}
 				: previousQuery(reference, args),
 		);
-		const view = renderFileView({ nodeId: node._id });
+		const view = renderFileView({ nodeId: node._id, columns: "name,frontmatter.note" });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		act(() => observers[0]!.emit());
 		const button = await within(table).findByRole("button", { name: "Show full frontmatter.note values for a.md" });
@@ -2812,9 +2802,6 @@ describe("FileNodeView folder columns", () => {
 		}));
 		treeNodes = [node, ...children];
 		const fields = Array.from({ length: 7 }, (_, index) => `metadata.field${index}`);
-		app_local_storage_set_value("app_state::files_folder_columns::scope::membership_1", {
-			folder_1: ["name", ...fields],
-		});
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) => {
 			if (getFunctionName(reference) !== "files_metadata:get_field_values") return previousQuery(reference, args);
@@ -2825,7 +2812,7 @@ describe("FileNodeView folder columns", () => {
 				isDone: index === 6,
 			};
 		});
-		const view = renderFileView({ nodeId: node._id });
+		const view = renderFileView({ nodeId: node._id, columns: ["name", ...fields].join(",") });
 		const table = await screen.findByRole("table", { name: "Folder contents" });
 		fireEvent.click(screen.getByRole("button", { name: "Show more" }));
 		expect(table.querySelectorAll(".FileNodeViewFolderExplorer-row")).toHaveLength(120);

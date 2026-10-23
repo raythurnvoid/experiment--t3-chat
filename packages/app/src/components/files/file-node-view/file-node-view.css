@@ -1334,17 +1334,6 @@
 			}
 		}
 
-		.MyCheckboxButtonContent {
-			grid-auto-flow: column;
-			justify-content: space-between;
-			align-items: baseline;
-			gap: 12px;
-		}
-
-		.MyCheckboxButtonDescription {
-			color: var(--color-fg-08);
-		}
-
 		/* A column that cannot be added now, because the table is full. */
 		.MyCheckboxButton.MyButton-state-disabled {
 			color: var(--color-fg-06);
