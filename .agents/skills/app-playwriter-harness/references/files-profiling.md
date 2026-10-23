@@ -116,6 +116,15 @@ and result table together in the personal run folder.
   Save at most one raw row per sample ID; only its final checked receipt accepts the timing.
   Record readback times as upper bounds. Shell and relay delays are not app latency.
 
+On reconnect, Convex SDK 1.47 rejects a sent, unfinished Action locally instead of resending it.
+That error does not prove server rollback. An empty name slot proves only that it is empty now.
+Keep the intent, Convex client session UUID, socket ID and request ID. Do not repeat the write or
+claim ownership by name. For read-only recovery, `/api/stream_function_logs` accepts `cursor`,
+`sessionId` and `clientRequestCounter` to find retained logs for the exact request. Use the Convex
+client UUID, not the Playwriter session number. Ordinary success logs omit the returned node ID.
+An empty log result does not prove the server did nothing. Keep the write unresolved until exact
+evidence proves its outcome.
+
 ## Proven selectors and checks
 
 Root creation uses `.FilesSidebarTopSection-actions-icon-button[aria-label="New file"]` or
