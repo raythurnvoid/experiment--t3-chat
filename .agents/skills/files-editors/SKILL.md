@@ -36,12 +36,25 @@ Read the existing specs when the task touches their rules:
 The fork uses stable v3.32.0. Its packages export source files, and `@tiptap/y-tiptap`
 comes from the same workspace (3.0.10). Keep the fork's worker HTML parser, bubble visibility
 request, block-lexer state, emphasis spacing around marked atoms, and EditorContent unmount
-patches. Also keep the Markdown save patches: a code block's fence is longer than any backtick run in
-its code, and ordered-list continuation lines strip the full `1. ` width. Without them a save can
-break a code block open or grow its indent on every save. The app's own marked `code` renderer in
-`shared/files-tiptap.ts` drops the `\n` that marked writes before `</code>`, so a code block keeps
-its text exactly and gains no empty line before its closing fence. Frontmatter that is not the first block,
-or that holds a `---` line, is saved as `<pre data-frontmatter>` HTML (`files_frontmatter_node`). Upstream now owns the drag-handle portal fix. The rich editor sets `pluginKey="bubbleMenu"`
+patches.
+
+Also keep the Markdown save patches:
+
+- A code block's fence is longer than any backtick run in its code.
+- Ordered-list continuation lines strip the full `1. ` width.
+- `escapeBlockStarts` adds a backslash before `#`, `-`, `+`, `1.`, `1)`, a `===` line, or a table divider
+  row when one starts a line of paragraph text.
+
+Without them a save can break a code block open, grow its indent on every save, or turn text such as
+`\# not a heading` into a heading when the file opens again.
+
+The app's own marked `code` renderer in `shared/files-tiptap.ts` drops the `\n` that marked writes
+before `</code>`, so a code block keeps its text exactly and gains no empty line before its closing
+fence. Frontmatter that is not the first block, or that holds a `---` line, is saved as
+`<pre data-frontmatter>` HTML (`files_frontmatter_node`). The frontmatter tokenizer has no `start`,
+because a `start` made marked split `\---` into a lone `\` and a divider.
+
+Upstream now owns the drag-handle portal fix. The rich editor sets `pluginKey="bubbleMenu"`
 to match its visibility and position requests; upstream otherwise creates a key per instance.
 React node views flush when they are created. Shared-page content updates run in a cancellable
 microtask after React commits, so an effect does not call `flushSync` during React's own work.

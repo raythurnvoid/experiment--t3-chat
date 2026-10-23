@@ -3255,6 +3255,29 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		}
 	});
 
+	test("keeps escaped block markers at a line start as paragraph text", () => {
+		const fixtures = [
+			["\\# a\n", "\\# a\n"],
+			["\\- a\n", "\\- a\n"],
+			["\\+ a\n", "\\+ a\n"],
+			["1\\. a\n", "1\\. a\n"],
+			["1\\) a\n", "1\\) a\n"],
+			["\\---\n", "\\---\n"],
+			["a\n\\===\n", "a\n\\===\n"],
+			["a\n\\## b\n", "a\n\\## b\n"],
+			["a  \n\\- b\n", "a  \n\\- b\n"],
+			["a \\| b\n\\--- \\| ---\n", "a | b\n\\--- | ---\n"],
+			// A line without a dash is no table divider, so it needs no escape.
+			["a\n:::\n", "a\n:::\n"],
+		] as const;
+		for (const [fixture, expected] of fixtures) {
+			const once = normalize(fixture);
+			expect(once).toBe(expected);
+			const json = files_tiptap_markdown_to_json({ markdown: once });
+			expect(JSON.stringify(json._yay)).not.toMatch(/"type":"(heading|bulletList|orderedList|horizontalRule|table)"/);
+		}
+	});
+
 	test("settles trailing-newline variants", () => {
 		for (const fixture of ["text", "text\n", "text\n\n\n"]) {
 			const once = normalize(fixture);

@@ -190,11 +190,11 @@ function configure_marked(instance: Marked | typeof marked) {
 				// document token stream so nested list/blockquote content keeps its
 				// normal Markdown meaning. The emitted HTML round-trips through
 				// `files_frontmatter_node.parseHTML` -> Tiptap JSON -> `renderMarkdown`.
+				// It has no `start`. Marked runs this tokenizer first at the start of the document anyway. With a
+				// `start`, Marked ended a paragraph after its first character when `---` came next. So `\---`
+				// became a lone `\` and a divider.
 				name: "frontmatter",
 				level: "block",
-				start(src) {
-					return src.startsWith("---\n") ? 0 : -1;
-				},
 				tokenizer(this: { lexer: { tokens: unknown } }, src, tokens) {
 					if (tokens !== this.lexer.tokens) return undefined;
 					if (tokens && tokens.length > 0) return undefined;
