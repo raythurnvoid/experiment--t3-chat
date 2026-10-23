@@ -173,8 +173,22 @@
 			border-bottom: 0;
 		}
 
-		p {
+		p,
+		div[data-html-block] {
 			margin: 10px 0;
+		}
+
+		/* An HTML block is aligned like its leading `<p align>`, `<div align>` or `<center>` tag. */
+		div[data-html-block][data-align="left"] {
+			text-align: left;
+		}
+
+		div[data-html-block][data-align="center"] {
+			text-align: center;
+		}
+
+		div[data-html-block][data-align="right"] {
+			text-align: right;
 		}
 
 		strong {
@@ -357,7 +371,7 @@
 			background: var(--color-base-1-10);
 		}
 
-		pre:not([data-frontmatter]) {
+		pre:not([data-frontmatter], [data-html-comment]) {
 			margin: 12px 0 16px;
 			padding: 16px;
 			border: 1px solid var(--color-base-1-07);
@@ -479,6 +493,20 @@
 			.FileEditorRichTextFrontmatter-key {
 				color: var(--color-fg-11);
 			}
+		}
+
+		/* An HTML comment block. Readers of the file never see it, so keep it dim. */
+		pre[data-html-comment] {
+			margin: 10px 0;
+			padding: 8px 12px;
+			border: 1px dashed var(--color-base-1-07);
+			border-radius: 6px;
+
+			font-family: var(--app-font-monospace);
+			font-size: 13px;
+			line-height: 1.6;
+			white-space: pre-wrap;
+			color: var(--color-fg-07);
 		}
 
 		/* #region media embeds */

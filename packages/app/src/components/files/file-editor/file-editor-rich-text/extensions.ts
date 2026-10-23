@@ -209,6 +209,8 @@ const extensionsAfterStarterKit = [
 	sharedExtensions.superscript,
 	sharedExtensions.kbd,
 	sharedExtensions.htmlTag,
+	sharedExtensions.htmlComment,
+	sharedExtensions.htmlBlock,
 	sharedExtensions.liveblocksComments,
 	CustomKeymap,
 	DragHandle,

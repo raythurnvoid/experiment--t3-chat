@@ -31,11 +31,11 @@ import {
 } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { EditorState } from "@tiptap/pm/state";
-import { DOMParser as ProseMirrorDOMParser, type Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { DOMParser as ProseMirrorDOMParser, Fragment, type Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { DOMParser as LinkedomDOMParser } from "linkedom/worker";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { is_browser, should_never_happen } from "./shared-utils.ts";
-import { files_CommentsExtension } from "./files-tiptap-comments.ts";
+import { files_COMMENT_MARK_TYPE, files_CommentsExtension } from "./files-tiptap-comments.ts";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -350,12 +350,17 @@ function configure_marked(instance: Marked | typeof marked) {
 			},
 
 			// Turn an inline tag that the editor cannot show, or an inline comment, into a hidden tag node
-			// (`files_html_tag_node`), so save writes it back. A public parse keeps the raw tag. The public page
-			// must see the real tags to remove a script, a form or an SVG with the text inside them. It drops
-			// the other unknown tags and comments itself, so it shows the same text as the editor.
+			// (`files_html_tag_node`), so save writes it back. An HTML block goes to `html_block_to_editor_html`.
+			// A public parse keeps the raw HTML. The public page must see the real tags to remove a script, a
+			// form or an SVG with the text inside them. It drops the other unknown tags and comments itself, so
+			// it shows the same text as the editor.
 			html(token) {
-				if (token.block || markdown_hidden_link_text !== null) {
+				if (markdown_hidden_link_text !== null) {
 					return false;
+				}
+
+				if (token.block) {
+					return html_block_to_editor_html(token.text);
 				}
 
 				const name = INLINE_HTML_TAG_NAME_REGEX.exec(token.text)?.[1]?.toLowerCase();
@@ -1251,6 +1256,26 @@ function html_escape_attribute(value: string) {
 }
 
 /**
+ * Write an image as a raw `<img>` tag. Keep the attribute order fixed so the round-trip stays byte-stable.
+ */
+function image_html_tag(node: TiptapJSONContent) {
+	const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+	const alt = typeof node.attrs?.alt === "string" ? node.attrs.alt : "";
+	const title = typeof node.attrs?.title === "string" ? node.attrs.title : "";
+	const width =
+		typeof node.attrs?.width === "number" && Number.isFinite(node.attrs.width) && node.attrs.width > 0
+			? Math.round(node.attrs.width)
+			: null;
+	const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
+
+	const altAttribute = alt ? ` alt="${html_escape_attribute(alt)}"` : "";
+	const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
+	const widthAttribute = width !== null ? ` width="${width}"` : "";
+	const alignAttribute = align !== null ? ` align="${align}"` : "";
+	return `<img src="${html_escape_attribute(src)}"${altAttribute}${titleAttribute}${widthAttribute}${alignAttribute}>`;
+}
+
+/**
  * Image embed.
  *
  * Inline because CommonMark images are inline. Marked wraps a standalone `![alt](src)` in
@@ -1315,14 +1340,9 @@ const files_image_node = Node.create({
 		const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
 
 		// A sized or aligned image rides through markdown as a raw `<img>` tag, the same way
-		// the video node below always does. Keep the attribute order fixed so the round-trip
-		// stays byte-stable.
+		// the video node below always does.
 		if (width !== null || align !== null) {
-			const altAttribute = alt ? ` alt="${html_escape_attribute(alt)}"` : "";
-			const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
-			const widthAttribute = width !== null ? ` width="${width}"` : "";
-			const alignAttribute = align !== null ? ` align="${align}"` : "";
-			return `<img src="${html_escape_attribute(src)}"${altAttribute}${titleAttribute}${widthAttribute}${alignAttribute}>`;
+			return image_html_tag(node);
 		}
 
 		const image = `![${markdown_escape_image_alt(alt)}](${markdown_link_destination(src)}`;
@@ -1629,6 +1649,19 @@ const INLINE_HTML_SUPPORTED_TAGS = new Set([
 const INLINE_HTML_TAG_NAME_REGEX = /^<\/?([a-z][a-z0-9-]*)/i;
 
 /**
+ * Read back HTML that the Marked renderers stored URI-encoded in an attribute. happy-dom, the test DOM,
+ * does not decode `&lt;` in an attribute, so HTML escaping would not read back the same in every parser.
+ */
+function html_attribute_decode(value: string) {
+	// Pasted HTML from outside the app can hold a broken escape. Keep the raw text then.
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
+
+/**
  * An inline HTML tag that the editor cannot show, or an inline HTML comment. Examples: `<owner>`,
  * `<Foo />`, `</div>`, `<!-- note -->`.
  *
@@ -1649,19 +1682,9 @@ const files_html_tag_node = Node.create({
 
 	addAttributes() {
 		return {
-			// The tag is URI-encoded in the attribute. happy-dom, the test DOM, does not decode `&lt;` in an
-			// attribute, so HTML escaping would not read back the same in every parser.
 			html: {
 				default: "",
-				parseHTML: (element) => {
-					const value = element.getAttribute("data-html-tag") ?? "";
-					// Pasted HTML from outside the app can hold a broken escape. Keep the raw text then.
-					try {
-						return decodeURIComponent(value);
-					} catch {
-						return value;
-					}
-				},
+				parseHTML: (element) => html_attribute_decode(element.getAttribute("data-html-tag") ?? ""),
 				renderHTML: (attributes) => ({ "data-html-tag": encodeURIComponent(String(attributes.html)) }),
 			},
 		};
@@ -1680,6 +1703,327 @@ const files_html_tag_node = Node.create({
 	},
 });
 // #endregion hidden html tags
+
+// #region html blocks
+/**
+ * Marked's inline tag pattern, changed to find every tag in a text instead of one tag at its start.
+ */
+const HTML_TAG_REGEX = ((/* iife */) => {
+	const source = Lexer.rules.inline.gfm.tag.source;
+	if (!source.startsWith("^<!--")) {
+		throw should_never_happen("Marked's inline tag pattern changed");
+	}
+
+	return new RegExp(source.slice(1).replaceAll("|^<", "|<"), "g");
+})();
+const HTML_BLOCK_ALIGN_REGEX = /^<(?:p|div)\s[^>]*?\balign\s*=\s*["']?(left|center|right)\b/i;
+const HTML_BLOCK_CENTER_REGEX = /^<center[\s>]/i;
+const HTML_BLOCK_SCRIPT_OR_STYLE_REGEX = /^<(?:script|style)[\s>]/i;
+const HTML_BLOCK_TABLE_REGEX = /^<table[\s>]/i;
+const LEADING_WHITESPACE_REGEX = /^\s+/;
+const TRAILING_WHITESPACE_REGEX = /(?<!\s)\s+$/;
+const HTML_TEXT_ESCAPE_REGEX = /[&<>]/g;
+const HTML_AND_MARKDOWN_TEXT_ESCAPE_REGEX = /[&<>\\`*_[\]~]/g;
+
+/**
+ * Turn one HTML block from Marked into editor HTML, or return `false` to keep Marked's own HTML.
+ *
+ * A block that is one comment becomes an `htmlComment` node. Any other block with a tag that the editor
+ * cannot show becomes an `htmlBlock` node. Its unknown tags become hidden tag nodes, and its text and
+ * known inline tags work as usual. Marked's HTML stays for a block with only known tags (the `<img
+ * width>` line that the image node writes), for a table, and for the `<pre data-frontmatter>` that the
+ * frontmatter node writes.
+ */
+function html_block_to_editor_html(text: string) {
+	const source = text.replace(TRAILING_NEWLINES_REGEX, "");
+	const start = source.trimStart();
+	if (start.startsWith("<pre data-frontmatter>") || HTML_BLOCK_TABLE_REGEX.test(start)) {
+		return false;
+	}
+
+	// The block is one comment, with nothing after it on its last line.
+	if (source.startsWith("<!--") && source.indexOf("-->", 4) === source.length - 3) {
+		return `<div data-html-comment="${encodeURIComponent(source.slice(4, -3))}"></div>`;
+	}
+
+	const pieces: Array<{ kind: "text" | "tag" | "hidden"; html: string }> = [];
+	// Script and style text is code, not text for the reader. So the whole block is one hidden tag.
+	if (HTML_BLOCK_SCRIPT_OR_STYLE_REGEX.test(start)) {
+		pieces.push({ kind: "hidden", html: source });
+	} else {
+		let textStart = 0;
+		for (const match of source.matchAll(HTML_TAG_REGEX)) {
+			if (match.index > textStart) {
+				pieces.push({ kind: "text", html: source.slice(textStart, match.index) });
+			}
+
+			const name = INLINE_HTML_TAG_NAME_REGEX.exec(match[0])?.[1]?.toLowerCase();
+			// A video is a block node. Inside this block it would split the block in two.
+			const known = name !== undefined && name !== "video" && INLINE_HTML_SUPPORTED_TAGS.has(name);
+			pieces.push({ kind: known ? "tag" : "hidden", html: match[0] });
+			textStart = match.index + match[0].length;
+		}
+		if (textStart < source.length) {
+			pieces.push({ kind: "text", html: source.slice(textStart) });
+		}
+
+		// A block with no tag at all, like an unclosed `<!-- note`, still becomes an `htmlBlock`. With
+		// Marked's HTML, the DOM would read it as a comment and drop it.
+		if (pieces.some((piece) => piece.kind === "tag") && !pieces.some((piece) => piece.kind === "hidden")) {
+			return false;
+		}
+	}
+
+	// A line break next to a hidden tag is the author's layout. Move it into the tag, so the editor does not
+	// show an empty line for it, and save writes it back. The DOM step also removes a line break between two
+	// tags (`STRUCTURAL_HTML_WHITESPACE_REGEX`), but not one inside an attribute.
+	for (let index = 0; index < pieces.length; index++) {
+		const piece = pieces[index];
+		const before = pieces[index - 1];
+		const after = pieces[index + 1];
+		if (piece.kind !== "hidden") {
+			continue;
+		}
+
+		const whitespaceBefore = before?.kind === "text" ? TRAILING_WHITESPACE_REGEX.exec(before.html)?.[0] : undefined;
+		if (whitespaceBefore?.includes("\n")) {
+			before.html = before.html.slice(0, -whitespaceBefore.length);
+			piece.html = whitespaceBefore + piece.html;
+		}
+		const whitespaceAfter = after?.kind === "text" ? LEADING_WHITESPACE_REGEX.exec(after.html)?.[0] : undefined;
+		if (whitespaceAfter?.includes("\n")) {
+			after.html = after.html.slice(whitespaceAfter.length);
+			piece.html += whitespaceAfter;
+		}
+	}
+
+	const align = HTML_BLOCK_CENTER_REGEX.test(start)
+		? "center"
+		: (HTML_BLOCK_ALIGN_REGEX.exec(start)?.[1]?.toLowerCase() ?? null);
+	// A `<` left in the text is not a whole tag, like the start of an unclosed comment. Escape it, so the DOM
+	// shows it as text instead of reading the rest of the block as a tag.
+	const content = pieces
+		.map((piece) =>
+			piece.kind === "hidden"
+				? `<span data-html-tag="${encodeURIComponent(piece.html)}"></span>`
+				: piece.kind === "text"
+					? piece.html.replaceAll("<", "&lt;")
+					: piece.html,
+		)
+		.join("");
+	const alignAttribute = align === null ? "" : ` data-align="${align}"`;
+	return `<div data-html-block data-html-source="${encodeURIComponent(source)}"${alignAttribute}>${content}</div>`;
+}
+
+/**
+ * An HTML comment block, like `<!-- note -->` on its own lines. It shows as a dim block of plain text, like
+ * the frontmatter node, and save writes it back as a comment.
+ */
+const files_html_comment_node = Node.create({
+	name: "htmlComment",
+	// Above `codeBlock` (default priority 100), so the `pre` that `renderHTML` writes reads back as this node.
+	priority: 1000,
+	group: "block",
+	content: "text*",
+	marks: "",
+	code: true,
+	defining: true,
+
+	parseHTML() {
+		return [
+			// The Marked renderer keeps the text in an attribute. As the content of a `pre`, the DOM would drop
+			// a line break right after `<pre>`, and the DOM step would drop a text of only line breaks.
+			{
+				tag: "div[data-html-comment]",
+				getContent: (element, schema) => {
+					const commentText = html_attribute_decode((element as HTMLElement).getAttribute("data-html-comment") ?? "");
+					return commentText ? Fragment.from(schema.text(commentText)) : Fragment.empty;
+				},
+			},
+			// A copy and paste inside the editor reads back the `pre` that `renderHTML` writes.
+			{ tag: "pre[data-html-comment]", preserveWhitespace: "full" },
+		];
+	},
+
+	renderHTML() {
+		return ["pre", { "data-html-comment": "" }, 0];
+	},
+
+	renderMarkdown(node) {
+		const commentText = (node.content ?? []).map((child) => child.text ?? "").join("");
+		return `<!--${commentText}-->`;
+	},
+});
+
+/**
+ * Any other HTML block, like `<div>…</div>`, `<p align="center">…</p>`, or `<center>…</center>`. It shows
+ * its text, with its unknown tags as hidden tag nodes, and it is aligned like a leading `<p align>`,
+ * `<div align>`, or `<center>` says.
+ *
+ * `htmlSource` keeps the block's original text, and `htmlSourceContent` keeps the content that the parse
+ * made from it (`html_block_set_source_content`). While the content is the same, save writes the
+ * original text exactly. After an edit, save writes the content as new HTML (`html_block_render_content`).
+ */
+const files_html_block_node = Node.create({
+	name: "htmlBlock",
+	group: "block",
+	content: "inline*",
+
+	addAttributes() {
+		return {
+			align: {
+				default: null,
+				parseHTML: (element) => {
+					const value = element.getAttribute("data-align");
+					return value === "left" || value === "center" || value === "right" ? value : null;
+				},
+				renderHTML: (attributes) => (attributes.align ? { "data-align": attributes.align } : {}),
+			},
+			htmlSource: {
+				default: null,
+				rendered: false,
+				parseHTML: (element) => {
+					const value = element.getAttribute("data-html-source");
+					return value === null ? null : html_attribute_decode(value);
+				},
+			},
+			htmlSourceContent: { default: null, rendered: false, parseHTML: () => null },
+		};
+	},
+
+	parseHTML() {
+		return [{ tag: "div[data-html-block]", preserveWhitespace: "full" }];
+	},
+
+	renderHTML({ HTMLAttributes }) {
+		return ["div", { "data-html-block": "", ...HTMLAttributes }, 0];
+	},
+
+	renderMarkdown(node) {
+		const content = node.content ?? [];
+		if (typeof node.attrs?.htmlSource === "string" && node.attrs.htmlSourceContent === JSON.stringify(content)) {
+			return node.attrs.htmlSource;
+		}
+
+		return html_block_render_content(content);
+	},
+});
+
+/**
+ * Store each HTML block's parsed content next to its source, so save can tell if a person changed it.
+ */
+function html_block_set_source_content(mut_node: TiptapJSONContent) {
+	for (const child of mut_node.content ?? []) {
+		if (child.type === "htmlBlock" && typeof child.attrs?.htmlSource === "string") {
+			child.attrs.htmlSourceContent = JSON.stringify(child.content ?? []);
+		} else {
+			html_block_set_source_content(child);
+		}
+	}
+}
+
+/**
+ * The opening and closing HTML tags of one mark.
+ */
+function html_mark_tags(mark: NonNullable<TiptapJSONContent["marks"]>[number]): [string, string] {
+	const attrs = mark.attrs ?? {};
+	switch (mark.type) {
+		case "bold":
+			return ["<strong>", "</strong>"];
+		case "italic":
+			return ["<em>", "</em>"];
+		case "strike":
+			return ["<s>", "</s>"];
+		case "code":
+			return ["<code>", "</code>"];
+		case "underline":
+			return ["<u>", "</u>"];
+		case "subscript":
+			return ["<sub>", "</sub>"];
+		case "superscript":
+			return ["<sup>", "</sup>"];
+		case "kbd":
+			return ["<kbd>", "</kbd>"];
+		case "link": {
+			const href = typeof attrs.href === "string" ? attrs.href : "";
+			const title =
+				typeof attrs.title === "string" && attrs.title ? ` title="${html_escape_attribute(attrs.title)}"` : "";
+			return [`<a href="${html_escape_attribute(href)}"${title}>`, "</a>"];
+		}
+		case "highlight":
+			return typeof attrs.color === "string" && attrs.color
+				? [`<mark style="background-color: ${html_escape_attribute(attrs.color)}">`, "</mark>"]
+				: ["<mark>", "</mark>"];
+		case "textStyle":
+			return typeof attrs.color === "string" && attrs.color
+				? [`<span style="color: ${html_escape_attribute(attrs.color)}">`, "</span>"]
+				: ["", ""];
+		case files_COMMENT_MARK_TYPE:
+			return typeof attrs.threadId === "string" && attrs.threadId
+				? [`<span data-type="comment" data-lb-thread-id="${html_escape_attribute(attrs.threadId)}">`, "</span>"]
+				: ["", ""];
+		default:
+			return ["", ""];
+	}
+}
+
+/**
+ * Write the content of an edited HTML block as HTML. CommonMark reads no Markdown inside an HTML block,
+ * so Markdown would show there as plain text. `files.test.ts` checks that every inline node and mark type
+ * of the shared schema has a branch here.
+ */
+function html_block_render_content(content: TiptapJSONContent[]) {
+	// Without its first tag, the block can read back as a Markdown paragraph. Then also escape the Markdown
+	// characters, so the text reads back the same.
+	const textEscapeRegex = content[0]?.type === "htmlTag" ? HTML_TEXT_ESCAPE_REGEX : HTML_AND_MARKDOWN_TEXT_ESCAPE_REGEX;
+
+	let html = "";
+	let openMarks: NonNullable<TiptapJSONContent["marks"]> = [];
+	// Keep the marks that the next node shares with the open ones, and close and open the rest. The schema
+	// keeps marks in a fixed order, so the tags nest correctly.
+	const writeMarks = (marks: NonNullable<TiptapJSONContent["marks"]>) => {
+		let kept = 0;
+		while (
+			kept < openMarks.length &&
+			kept < marks.length &&
+			openMarks[kept].type === marks[kept].type &&
+			JSON.stringify(openMarks[kept].attrs) === JSON.stringify(marks[kept].attrs)
+		) {
+			kept += 1;
+		}
+		for (let index = openMarks.length - 1; index >= kept; index--) {
+			html += html_mark_tags(openMarks[index])[1];
+		}
+		for (let index = kept; index < marks.length; index++) {
+			html += html_mark_tags(marks[index])[0];
+		}
+		openMarks = marks;
+	};
+
+	for (const node of content) {
+		writeMarks(node.marks ?? []);
+		switch (node.type) {
+			case "text":
+				html += (node.text ?? "").replace(textEscapeRegex, (char) =>
+					char === "&" ? "&amp;" : char === "<" ? "&lt;" : char === ">" ? "&gt;" : `&#${char.charCodeAt(0)};`,
+				);
+				break;
+			case "hardBreak":
+				html += "<br>";
+				break;
+			case "image":
+				html += image_html_tag(node);
+				break;
+			case "htmlTag":
+				html += typeof node.attrs?.html === "string" ? node.attrs.html : "";
+				break;
+		}
+	}
+	writeMarks([]);
+
+	return html;
+}
+// #endregion html blocks
 
 export function files_tiptap_markdown_to_json(args: {
 	markdown: string;
@@ -1702,12 +2046,13 @@ export function files_tiptap_markdown_to_json(args: {
 		return markdownToHtml;
 	}
 
-	return Result({
-		_yay: files_tiptap_html_to_json({
-			html: markdownToHtml._yay,
-			extensions: args.extensions,
-		}),
+	const json = files_tiptap_html_to_json({
+		html: markdownToHtml._yay,
+		extensions: args.extensions,
 	});
+	html_block_set_source_content(json);
+
+	return Result({ _yay: json });
 }
 
 /**
@@ -1949,6 +2294,8 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			}),
 			kbd: files_kbd_mark,
 			htmlTag: files_html_tag_node,
+			htmlComment: files_html_comment_node,
+			htmlBlock: files_html_block_node,
 			horizontalRule: HorizontalRule.configure({
 				HTMLAttributes: {
 					class: "mt-4 mb-6 border-t border-muted-foreground",

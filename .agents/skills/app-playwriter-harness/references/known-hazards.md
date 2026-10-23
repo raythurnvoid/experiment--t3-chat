@@ -15,6 +15,14 @@ extension Edge (opened with `context.newPage()`): on 2026-10-19 a click and a `f
 tab timed out with `waiting for locator(...)` while `page.evaluate` found the element, and
 `bringToFront()` fixed it.
 
+In the user's own Edge window, `bringToFront()` also moves the OS keyboard focus to the QA tab. If the
+user is typing in another window at that moment, their keys land in the QA editor and are saved to the
+file. On 2026-10-23 a `keyboard.type(" edited")` in the rich editor saved as ` edaitednd `, and text
+kept appearing between runs while no script typed. `keyboard.type`, `keyboard.press`, and DOM reads work
+in a background tab, so never call `bringToFront()` before typing into an editor in the user's browser.
+Read the result from the DOM instead of a screenshot, or take the screenshot in a separate call after
+the typing is checked.
+
 Before the first attempt at a new interaction type (upload, download, screenshot, toast, tooltip, hovercard, dialog, navigation, sign-in), search this file for that word — the recipe often already exists, and finding it before the attempt is much cheaper than after the failure. Routing hints:
 
 - **File upload / folder import** — try `setInputFiles` under a Windows relay first; use the fallback under Playwriter Availability only after an actual failure.

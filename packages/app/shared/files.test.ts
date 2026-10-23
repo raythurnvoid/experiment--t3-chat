@@ -36,7 +36,9 @@ import {
 	files_pending_update_has_yjs_content,
 	type files_VisibleTreeNode,
 } from "./files.ts";
+import { getSchema, type JSONContent as TiptapJSONContent } from "@tiptap/core";
 import {
+	files_get_tiptap_shared_extensions,
 	files_headless_tiptap_editor_create,
 	files_headless_tiptap_editor_get_markdown,
 	files_parse_markdown_to_html,
@@ -2305,6 +2307,119 @@ describe("hidden HTML tags round-trip through Yjs", () => {
 		const input =
 			"# Draft <name>\n\nReplace <Owner> with Array<T>, call <Foo /> and close </div>. a <!-- note --> b\n\n- [ ] ask <who>\n\n| a | b |\n| --- | --- |\n| <x y=\"1\"> | c |\n";
 		expect(round_trip_markdown(input)).toBe(input);
+	});
+});
+
+describe("HTML blocks round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected HTML block markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	function edit_and_save(markdown: string, edit: (mut_content: TiptapJSONContent[]) => void) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+		const json = editor._yay.getJSON();
+		editor._yay.destroy();
+
+		edit(json.content ?? []);
+		const edited = files_headless_tiptap_editor_create({ initialContent: { json } });
+		if (edited._nay) {
+			throw new Error("Expected the editor to load the edited document", { cause: edited._nay });
+		}
+		const saved = files_headless_tiptap_editor_get_markdown({ mut_editor: edited._yay });
+		edited._yay.destroy();
+		return saved + "\n";
+	}
+
+	test("keeps comment blocks and other HTML blocks", () => {
+		const input =
+			'<!-- note -->\n\n<!--\nline one\n\nline two\n-->\n\n<div>\nhello <b>x</b> **raw** <name>\n</div>\n\n<p align="center">\n  <img src="https://example.com/x.png" width="100">\n</p>\n\n<center>Title</center>\n\n<section>\n\n# Heading\n\n</section>\n\n<script>alert(1)</script>\n\n> <!-- quoted -->\n\nText\n\n<!-- unclosed\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("writes an edited HTML block as HTML and keeps its tags", () => {
+		const saved = edit_and_save('<div align="center">\n  hello <name> **raw** a&amp;b\n</div>\n', (content) => {
+			const text = content[0]?.content?.find((node) => node.text?.includes("hello"));
+			if (!text?.text) {
+				throw new Error("Expected the block text");
+			}
+			text.text = text.text.replace("hello", "hi");
+		});
+
+		expect(saved).toBe('<div align="center">\n  hi <name> **raw** a&amp;b\n</div>\n');
+		expect(round_trip_markdown(saved)).toBe(saved);
+	});
+
+	test("has an HTML writer branch for every inline node and mark type", () => {
+		const schema = getSchema(Object.values(files_get_tiptap_shared_extensions()));
+		const inlineNodeTypes = Object.values(schema.nodes).filter((type) => type.isInline);
+		// A new inline node or mark type needs a branch in `html_block_render_content`. Add it there, then here.
+		expect(inlineNodeTypes.map((type) => type.name).sort()).toEqual(["hardBreak", "htmlTag", "image", "text"]);
+		expect(Object.keys(schema.marks).sort()).toEqual([
+			"bold",
+			"code",
+			"highlight",
+			"italic",
+			"kbd",
+			"link",
+			"liveblocksCommentMark",
+			"strike",
+			"subscript",
+			"superscript",
+			"textStyle",
+			"underline",
+		]);
+
+		const markAttrs: Record<string, Record<string, string>> = {
+			link: { href: "https://example.com" },
+			highlight: { color: "yellow" },
+			textStyle: { color: "red" },
+			liveblocksCommentMark: { threadId: "thread-1" },
+		};
+		const content: TiptapJSONContent[] = [
+			{ type: "htmlTag", attrs: { html: "<div>\n" } },
+			...Object.keys(schema.marks).map((markType) => ({
+				type: "text",
+				text: `${markType} `,
+				marks: [{ type: markType, attrs: markAttrs[markType] ?? {} }],
+			})),
+			{ type: "text", text: "both", marks: [{ type: "bold" }, { type: "italic" }] },
+			{ type: "hardBreak" },
+			{ type: "image", attrs: { src: "https://example.com/x.png", alt: "x" } },
+			{ type: "htmlTag", attrs: { html: "\n</div>" } },
+		];
+		const saved = edit_and_save("<div>\nold\n</div>\n", (mut_content) => {
+			mut_content[0]!.content = content;
+		});
+
+		const parsed = files_tiptap_markdown_to_json({ markdown: saved });
+		if (parsed._nay) {
+			throw new Error("Expected the saved block to parse", { cause: parsed._nay });
+		}
+		const shape = (nodes: TiptapJSONContent[]) =>
+			nodes.map((node) => [node.type, node.text, node.marks?.map((mark) => mark.type)]);
+		expect(shape(parsed._yay.content?.[0]?.content ?? [])).toEqual(shape(content));
 	});
 });
 
