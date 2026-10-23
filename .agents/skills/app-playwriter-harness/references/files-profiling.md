@@ -125,6 +125,16 @@ client UUID, not the Playwriter session number. Ordinary success logs omit the r
 An empty log result does not prove the server did nothing. Keep the write unresolved until exact
 evidence proves its outcome.
 
+For child-call diagnostics, the normal unfiltered Convex completion stream includes `componentPath`,
+`requestId`, `executionId` and `parentExecutionId`. The client UUID and request-counter filter above
+selects only the root execution. Start a bounded capture before native input and buffer safe
+completion metadata in memory. Use the filtered root's server request ID, then require that same
+ID and exact parent execution links for its children. Save only this joined request group. Drop
+raw log text, args, results, error text, secrets, signed URLs and unrelated records. Keep
+`cachedResult: true` records as trace evidence only; exclude their old metrics from new execution
+cost. Missing children do not prove zero child work. Keep a server-only diagnostic separate from
+rejected browser timings; it does not make those timings valid or prove an A/B gain.
+
 ## Proven selectors and checks
 
 Root creation uses `.FilesSidebarTopSection-actions-icon-button[aria-label="New file"]` or
