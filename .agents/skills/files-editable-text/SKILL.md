@@ -55,6 +55,8 @@ Rich text documents support GFM tables. The shared extension set in `packages/ap
 
 Links keep any address scheme except `javascript:`, `vbscript:` and `data:` (`files_tiptap_link_is_allowed_uri` in `packages/app/shared/files-tiptap.ts`). Tiptap's own list keeps only a few schemes (`http`, `mailto`, ...), so a `bonobo-file://` or `obsidian://` link lost its address on the next save. Both browser lists and the shared set use this one check, so the browser and Convex keep the same links. The scheme must start the address with no tab, newline or control character inside it, so a hidden `java<tab>script:` is refused. The public link page keeps its own stricter rule: only checked `http(s)` links (see "Public Link Reader").
 
+`<sub>`, `<sup>` and `<kbd>` are real marks (`subscript`, `superscript`, and `files_kbd_mark`). Markdown has no syntax for them, so save writes the same tags back, like `<u>` for underline. Before, the editor showed only the text inside and the next save dropped the tags. The public link page has the same three marks, so it shows them like the editor. Two known spelling changes, with no lost content, are stable after one save: a mark around a whole link moves inside the link (`<sup>[1](#n)</sup>` saves as `[<sup>1</sup>](#n)`), and a space at the edge of a mark moves outside it. Inline code still drops every mark around it (`` [`x`](url) `` saves as `` `x` ``), because Tiptap's `code` mark excludes all other marks.
+
 # The Content Type Policy
 
 `files_nodes.contentType` decides how a file opens, how it is edited, and how it is served. The name is only a hint, used once, when a file is created without an explicit type. All in `packages/app/shared/files.ts`:

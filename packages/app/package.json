@@ -80,6 +80,8 @@
 		"@tiptap/extension-paragraph": "workspace:*",
 		"@tiptap/extension-placeholder": "workspace:*",
 		"@tiptap/extension-strike": "workspace:*",
+		"@tiptap/extension-subscript": "workspace:*",
+		"@tiptap/extension-superscript": "workspace:*",
 		"@tiptap/extension-table": "workspace:*",
 		"@tiptap/extension-task-item": "workspace:*",
 		"@tiptap/extension-task-list": "workspace:*",

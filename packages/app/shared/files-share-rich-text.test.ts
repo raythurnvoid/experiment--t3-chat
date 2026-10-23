@@ -89,6 +89,19 @@ describe("files_share_rich_text_prepare", () => {
 		expect(json).not.toContain('"title"');
 	});
 
+	test("keeps sub, sup and kbd like the editor", () => {
+		const json = rich_json(publish("H<sub>2</sub>O x<sup>2</sup> <kbd>Ctrl</kbd>\n").content);
+
+		expect(find_nodes(json, "text").map((node) => [node.text, node.marks?.map((mark) => mark.type) ?? []])).toEqual([
+			["H", []],
+			["2", ["subscript"]],
+			["O x", []],
+			["2", ["superscript"]],
+			[" ", []],
+			["Ctrl", ["kbd"]],
+		]);
+	});
+
 	test("keeps only a checked paragraph alignment from author styles", () => {
 		const json = rich_json(
 			publish('<p style="text-align:center;color:red;background:url(https://third.example/x)">x</p>\n').content,

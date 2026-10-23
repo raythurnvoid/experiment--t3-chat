@@ -32,11 +32,13 @@ import { Italic } from "@tiptap/extension-italic";
 import { Strike } from "@tiptap/extension-strike";
 import { Code } from "@tiptap/extension-code";
 import { Underline } from "@tiptap/extension-underline";
+import { Subscript } from "@tiptap/extension-subscript";
+import { Superscript } from "@tiptap/extension-superscript";
 import { Highlight } from "@tiptap/extension-highlight";
 import { Link } from "@tiptap/extension-link";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_frontmatter_node, files_parse_markdown_to_html } from "./files-tiptap.ts";
+import { files_frontmatter_node, files_kbd_mark, files_parse_markdown_to_html } from "./files-tiptap.ts";
 import { files_media_parse_src } from "./files-media.ts";
 import { files_get_utf8_byte_size, files_MAX_TEXT_CONTENT_BYTES, type files_YjsRootKind } from "./files.ts";
 
@@ -592,6 +594,9 @@ export const files_share_rich_text_get_extensions = ((/* iife */) => {
 			strike: Strike,
 			code: Code,
 			underline: Underline,
+			subscript: Subscript,
+			superscript: Superscript,
+			kbd: files_kbd_mark,
 			highlight: Highlight.configure({ multicolor: false }),
 			// Autolink and paste linking would add link marks the server never checked. The renderer
 			// owns `rel`, `target`, and the referrer policy; the author sets only a checked `href`.

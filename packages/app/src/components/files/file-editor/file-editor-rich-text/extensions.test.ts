@@ -236,6 +236,11 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(normalize(input)).toBe(input);
 	});
 
+	test("keeps sub, sup and kbd tags", () => {
+		const input = "H<sub>2</sub>O, x<sup>2</sup> and <kbd>Ctrl</kbd>\n";
+		expect(normalize(input)).toBe(input);
+	});
+
 	test("un-escapes a backslash-escaped date once, then holds still", () => {
 		const once = normalize("Meeting on 2026\\-08\\-30\n");
 		expect(once).toContain("2026-08-30");

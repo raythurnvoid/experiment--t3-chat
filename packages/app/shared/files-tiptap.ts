@@ -12,6 +12,8 @@ import { TextAlign } from "@tiptap/extension-text-align";
 import { Typography } from "@tiptap/extension-typography";
 import { TextStyle, Color } from "@tiptap/extension-text-style";
 import { Underline } from "@tiptap/extension-underline";
+import { Subscript } from "@tiptap/extension-subscript";
+import { Superscript } from "@tiptap/extension-superscript";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
@@ -20,6 +22,7 @@ import type { Doc as YDoc } from "yjs";
 import {
 	Editor,
 	Extension,
+	Mark,
 	Node,
 	getSchema,
 	getText,
@@ -1558,6 +1561,27 @@ const files_table_node = Table.extend({
 });
 // #endregion tables
 
+// #region keyboard keys
+/**
+ * Keyboard keys, like `<kbd>Ctrl</kbd>`. Markdown has no syntax for them, so save writes the tag back.
+ */
+export const files_kbd_mark = Mark.create({
+	name: "kbd",
+
+	parseHTML() {
+		return [{ tag: "kbd" }];
+	},
+
+	renderHTML() {
+		return ["kbd", 0];
+	},
+
+	renderMarkdown(node, helpers) {
+		return `<kbd>${helpers.renderChildren(node.content || [])}</kbd>`;
+	},
+});
+// #endregion keyboard keys
+
 export function files_tiptap_markdown_to_json(args: {
 	markdown: string;
 	extensions?: Extensions;
@@ -1817,6 +1841,14 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 					return `<u>${content}</u>`;
 				},
 			}),
+			// Markdown has no syntax for these, so save writes the HTML tag back, like underline.
+			subscript: Subscript.extend({
+				renderMarkdown: (node, helpers) => `<sub>${helpers.renderChildren(node.content || [])}</sub>`,
+			}),
+			superscript: Superscript.extend({
+				renderMarkdown: (node, helpers) => `<sup>${helpers.renderChildren(node.content || [])}</sup>`,
+			}),
+			kbd: files_kbd_mark,
 			horizontalRule: HorizontalRule.configure({
 				HTMLAttributes: {
 					class: "mt-4 mb-6 border-t border-muted-foreground",
