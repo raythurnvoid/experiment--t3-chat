@@ -6,7 +6,7 @@ import { test_save_file_pending_update, test_convex, test_mocks_fill_db_with, te
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 
 beforeEach(() => {
 	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_file_read" as never);

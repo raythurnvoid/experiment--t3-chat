@@ -22,7 +22,7 @@ import {
 	files_private_storage_db_release_deleted_resource,
 	files_private_storage_db_set_cohort_owner,
 } from "./files_private_storage.ts";
-import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
+import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_client.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
 import {

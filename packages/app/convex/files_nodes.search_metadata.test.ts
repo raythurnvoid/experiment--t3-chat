@@ -5,10 +5,10 @@ import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { Doc as YjsDoc, encodeStateAsUpdate } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
-import { db_insert_file_text_content } from "./files_nodes_create.ts";
+import { db_insert_file_text_content } from "./files_nodes_content.ts";
 import { files_nodes_db_archive_node, files_nodes_db_restore_node } from "./files_nodes.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { files_metadata_db_insert_committed } from "./files_metadata_db.ts";
+import { files_metadata_db_insert_committed } from "./files_metadata.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_apply_file_pending_move,
@@ -28,7 +28,7 @@ import {
 	files_yjs_doc_get_text,
 	files_yjs_doc_update_from_text,
 } from "../shared/files-tiptap.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { files_metadata_Entry, files_metadata_SearchPlan } from "../shared/files-metadata.ts";

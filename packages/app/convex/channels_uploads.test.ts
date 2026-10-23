@@ -7,7 +7,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { channels_db_purge_workspace_batch } from "./channels.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_assets.ts";
+import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 import { files_UPLOAD_URL_TTL_MS } from "./files_nodes.ts";
 import {
 	test_convex,

@@ -657,7 +657,7 @@ Use this when changing tree focus, context menus, selection, or route sync.
   `[aria-label="File content"]` must be disabled, and the top `role=status` surface must say
   `This folder is archived. Restore it before adding items.` Read `button.disabled` from page
   context; the snapshot does not show disabled state. To prove the deployed create doors refuse
-  too, run `convex run files_nodes_create_preflight:get_create_file_node_write_preflight` with the archived
+  too, run `convex run files_nodes_content:get_create_file_node_write_preflight` with the archived
   folder as `parentId`: it prints nothing (null) for an archived parent and an object for root.
 - While a submitted New folder action is pending, Control+V on the New file / New folder group
   must not start a paste. A Cut/Paste dialog can briefly say `Paste files` while loading, then `Move files`; it must never

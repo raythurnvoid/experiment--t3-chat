@@ -12,7 +12,7 @@ import { files_move_reservations_db_check } from "../server/files-move-reservati
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_content_type_index_fields, files_derive_tree_path_for_file_node, files_lowercase_extension, files_check_name_and_path_length, files_check_new_folder_count } from "../shared/files.ts";
-import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
+import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import { type files_nodes_WriteContext, files_nodes_db_require_writable, files_nodes_db_resolve_parent_new_child_policy } from "../server/files-write-policy.ts";
 import {
 	files_write_policy_db_has_write_context_permission as db_has_write_context_permission,
@@ -22,7 +22,7 @@ import {
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
+import { r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_client.ts";
 
 /**
  * Insert a paired set of committed `files_text_chunks` + `files_plain_text_chunks` for one file node.

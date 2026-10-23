@@ -70,7 +70,7 @@ the full text.
 
 Committed `field` docs, of both sources, also carry the folder table's sort fields: `parentId`,
 `nodeKind`, `isRestrictedScopeRoot`, `name`, `sortName`, `sortValue`, and `sortDisplayValue` (built
-by `files_metadata_committed_field_sort_fields` in `files_metadata_db.ts`). Value docs and pending docs never carry
+by `files_metadata_committed_field_sort_fields` in `files_metadata.ts`). Value docs and pending docs never carry
 them. `sortValue` uses the short search value through `files_sort_value_of` in `shared/files-sort.ts`: a
 number as `String(value)`, a boolean as `true`/`false`, a list by its first item, `maybe_date`
 skipped. A key with no plain value (a frontmatter map parent) has no `sortValue`, so the file sorts
@@ -265,7 +265,7 @@ only when Convex auth has no usable identity.
 # Metadata Written By The File-Creation Flows
 
 The two doors above are the only doors a person or an agent can knock on. The file-creation flows
-write the map directly with `files_metadata_db_write_entries`, exported from `files_metadata_db.ts`.
+write the map directly with `files_metadata_db_write_entries`, exported from `files_metadata.ts`.
 They write initial metadata once. Later content writes and repeated ensure calls leave it unchanged.
 
 That writer checks the map bounds. It skips user permission checks because it runs inside an
