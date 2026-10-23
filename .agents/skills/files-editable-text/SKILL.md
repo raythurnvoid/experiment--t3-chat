@@ -63,7 +63,7 @@ A `<details>` block works like on GitHub: a toggle button opens and closes it, a
 - Tiptap's plugin that moves the caret out of a closed block reads the editor view, so only the browser editor has it (`extensions.ts`). The server and the headless parse leave it out.
 - The toggle button is not editable and ProseMirror ignores its events, so Enter and Space press it. Before, Enter split the block at the caret.
 - Line breaks in the summary show as spaces. After an edit, Markdown characters in a compact body are escaped (`*` becomes `&#42;`), and loose text in a compact body may read as Markdown. All are stable after one save.
-- The public link page still shows a details block as raw HTML.
+- The public link page shows a details block as a native disclosure (see "Public Link Reader").
 
 Links keep any address scheme except `javascript:`, `vbscript:` and `data:` (`files_tiptap_link_is_allowed_uri` in `packages/app/shared/files-tiptap.ts`). Tiptap's own list keeps only a few schemes (`http`, `mailto`, ...), so a `bonobo-file://` or `obsidian://` link lost its address on the next save. Both browser lists and the shared set use this one check, so the browser and Convex keep the same links. The scheme must start the address with no tab, newline or control character inside it, so a hidden `java<tab>script:` is refused. The public link page keeps its own stricter rule: only checked `http(s)` links (see "Public Link Reader").
 
@@ -347,6 +347,14 @@ these rules.
   pass, then builds a data-only `linkedom` DOM and reduces it to a small public ProseMirror schema. The
   browser gets that schema's JSON, never HTML or Markdown. `plain_text` files, HTML files included, are
   only redacted and shown as plain text. HTML is never rendered.
+- The page shows the same blocks as the editor. Comments and unknown tags show nothing. `sub`, `sup`
+  and `kbd` are marks. A `<details>` block is a native disclosure that starts closed and opens with no
+  script: `sanitize_dom` gives it the first summary (an empty one when there is none) and one body box.
+  Table cells hold any blocks, so a list stays in its cell. A table's `<caption>` and `<colgroup>` are
+  not shown, like in the editor. `align` on a paragraph or heading, `<div align>` and `<center>` align
+  the text, and blocks inside an aligned `div` inherit it, like in CSS. A style alignment wins over
+  `align`. On this page `<div align="center">` around Markdown (a blank line inside) also centers the
+  Markdown, like GitHub. The editor does not yet.
 - Both paths replace visible `bonobo-file://` references with `[file reference]` and literal
   `data-lb-thread-id` assignments with `[comment reference]`. When in doubt, more text is hidden.
   Comment marks never reach the page. Frontmatter is part of the file and is shown.

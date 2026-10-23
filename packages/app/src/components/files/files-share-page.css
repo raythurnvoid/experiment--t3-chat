@@ -66,6 +66,45 @@
 			overflow-wrap: break-word;
 		}
 
+		/* A native details block, drawn like the editor's: an arrow before the summary and the body lined
+		   up under the summary text. */
+		& details {
+			margin: 10px 0;
+
+			& > summary {
+				display: flex;
+				align-items: center;
+				gap: 4px;
+
+				font-weight: 600;
+				color: var(--color-fg-12);
+
+				/* The base layer hides the browser's own marker. */
+				&::before {
+					content: "\25B6";
+
+					display: flex;
+					align-items: center;
+					justify-content: center;
+					flex: none;
+
+					width: 24px;
+					height: 24px;
+
+					font-size: 10px;
+					color: var(--color-fg-09);
+				}
+			}
+
+			&[open] > summary::before {
+				transform: rotate(90deg);
+			}
+
+			& > div {
+				padding-left: 28px;
+			}
+		}
+
 		/* The private editor's rules for these blocks are scoped to the editor, so copy them here. A quote
 		   must not look like the author's own text. */
 		& code {

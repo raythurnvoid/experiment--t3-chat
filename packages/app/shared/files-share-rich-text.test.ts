@@ -118,6 +118,31 @@ describe("files_share_rich_text_prepare", () => {
 		expect(find_nodes(json, "paragraph")[0]?.attrs).toEqual({ textAlign: null });
 	});
 
+	test("aligns README blocks like the editor", () => {
+		const json = rich_json(
+			publish(
+				'<p align="center">A</p>\n\n<center>B</center>\n\n<div align="right">\n  C <b>c</b>\n  <h1>D</h1>\n  <p align="left">E</p>\n</div>\n',
+			).content,
+		);
+
+		expect(
+			find_nodes(json, "doc")[0]?.content?.map((node) => [
+				node.type,
+				node.attrs?.textAlign,
+				find_nodes(JSON.stringify(node), "text")
+					.map((text) => text.text)
+					.join("")
+					.trim(),
+			]),
+		).toEqual([
+			["paragraph", "center", "A"],
+			["paragraph", "center", "B"],
+			["paragraph", "right", "C c"],
+			["heading", "right", "D"],
+			["paragraph", "left", "E"],
+		]);
+	});
+
 	test("reads the alignment of a long style quickly", () => {
 		// linkedom's style parser took about 3.7 seconds on 100,000 spaces with no `;`.
 		const start = performance.now();
@@ -347,6 +372,37 @@ describe("files_share_rich_text_prepare", () => {
 			align: "left",
 		});
 		expect(find_nodes(json, "tableCell")[1]?.attrs).toEqual({ colspan: 1, rowspan: 1, colwidth: null, align: "right" });
+	});
+
+	test("keeps blocks in table cells and hides the caption like the editor", () => {
+		const json = rich_json(
+			publish(
+				'<table>\n  <caption>Cap</caption>\n  <tr><td colspan="2"><ul><li>one</li></ul></td></tr>\n  <tr><td>a</td><td>b</td></tr>\n</table>\n',
+			).content,
+		);
+
+		expect(find_nodes(json, "doc")[0]?.content?.map((node) => node.type)).toEqual(["table"]);
+		expect(find_nodes(json, "tableCell")[0]?.content?.map((node) => node.type)).toEqual(["bulletList"]);
+		expect(find_nodes(json, "tableRow")).toHaveLength(2);
+		expect(json).not.toContain("Cap");
+	});
+
+	test("shows details blocks as disclosures", () => {
+		const json = rich_json(
+			publish(
+				'<details open class="x">\n<summary>More</summary>\n\nBody **b**\n\n</details>\n\n<details><summary>S</summary>compact</details>\n\n<details>\n\nno summary\n\n</details>\n',
+			).content,
+		);
+
+		const shape = (node: JsonNode): unknown =>
+			node.type === "text" ? node.text : [node.type, ...(node.content ?? []).map(shape)];
+		expect(find_nodes(json, "details").map(shape)).toEqual([
+			["details", ["detailsSummary", "More"], ["detailsContent", ["paragraph", "Body ", "b"]]],
+			["details", ["detailsSummary", "S"], ["detailsContent", ["paragraph", "compact"]]],
+			["details", ["detailsSummary"], ["detailsContent", ["paragraph", "no summary"]]],
+		]);
+		expect(json).not.toContain('"open"');
+		expect(JSON.stringify(files_share_rich_text_parse_json(json)?.toJSON())).toBe(json);
 	});
 
 	test("drops out-of-range table spans and list attributes", () => {

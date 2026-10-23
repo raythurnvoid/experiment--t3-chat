@@ -251,6 +251,11 @@ const MAX_PUBLIC_URL_LENGTH = 8 * 1024;
 const MEDIA_MARKER_ATTRIBUTE = "data-share-media";
 const MEDIA_INDEX_ATTRIBUTE = "data-share-index";
 
+/**
+ * Mark the box that `sanitize_dom` builds around a details block's body. Only this module sets it.
+ */
+const DETAILS_CONTENT_MARKER_ATTRIBUTE = "data-share-details-content";
+
 export type files_share_rich_text_MediaKind = "image" | "video";
 
 /**
@@ -478,6 +483,51 @@ const public_video_node = TiptapNode.create({
 	},
 });
 
+/**
+ * Public details block. It renders as a native `<details>`, which opens and closes without a script.
+ * Like the editor, it starts closed, so the author's `open` is not kept.
+ */
+const public_details_node = TiptapNode.create({
+	name: "details",
+	group: "block",
+	content: "detailsSummary detailsContent",
+
+	parseHTML() {
+		return [{ tag: "details" }];
+	},
+
+	renderHTML() {
+		return ["details", 0];
+	},
+});
+
+const public_details_summary_node = TiptapNode.create({
+	name: "detailsSummary",
+	content: "inline*",
+
+	// Only the summary that `sanitize_dom` put first in a details block. Any other summary is normal text.
+	parseHTML() {
+		return [{ tag: "summary", context: "details/" }];
+	},
+
+	renderHTML() {
+		return ["summary", 0];
+	},
+});
+
+const public_details_content_node = TiptapNode.create({
+	name: "detailsContent",
+	content: "block+",
+
+	parseHTML() {
+		return [{ tag: `div[${DETAILS_CONTENT_MARKER_ATTRIBUTE}]`, context: "details/" }];
+	},
+
+	renderHTML() {
+		return ["div", 0];
+	},
+});
+
 const public_cell_attributes = {
 	colspan: {
 		default: 1,
@@ -575,18 +625,22 @@ export const files_share_rich_text_get_extensions = ((/* iife */) => {
 				},
 			}).configure({ resizable: false }),
 			tableRow: TableRow,
+			// Cells hold any blocks, like in the editor, so a list in a cell stays in the cell.
 			tableHeader: TableHeader.extend({
-				content: "paragraph+",
+				content: "block+",
 				addAttributes() {
 					return public_cell_attributes;
 				},
 			}),
 			tableCell: TableCell.extend({
-				content: "paragraph+",
+				content: "block+",
 				addAttributes() {
 					return public_cell_attributes;
 				},
 			}),
+			details: public_details_node,
+			detailsSummary: public_details_summary_node,
+			detailsContent: public_details_content_node,
 			image: public_image_node,
 			video: public_video_node,
 			bold: Bold,
@@ -1279,9 +1333,10 @@ function remove_all_attributes(element: Element) {
 }
 
 /**
- * Keep only the attributes the public schema reads, with checked values.
+ * Keep only the attributes the public schema reads, with checked values. `inheritedAlignment` is the
+ * checked alignment of an aligned parent block.
  */
-function sanitize_attributes(element: HTMLElement, tag: string) {
+function sanitize_attributes(element: HTMLElement, tag: string, inheritedAlignment: string | null) {
 	const attributes = read_attributes(element);
 	remove_all_attributes(element);
 
@@ -1298,6 +1353,11 @@ function sanitize_attributes(element: HTMLElement, tag: string) {
 					.trim()
 					.toLowerCase();
 			}
+		}
+		// Like a browser, use the `align` attribute (`<p align="center">` in a README) and then the parent's
+		// alignment only when no valid style sets one.
+		if (alignment === null || !TEXT_ALIGNMENTS.includes(alignment)) {
+			alignment = attributes.get("align")?.toLowerCase() ?? inheritedAlignment;
 		}
 		if (alignment !== null && TEXT_ALIGNMENTS.includes(alignment)) {
 			element.setAttribute("style", `text-align: ${alignment}`);
@@ -1348,6 +1408,40 @@ function sanitize_attributes(element: HTMLElement, tag: string) {
 }
 
 /**
+ * Put each run of inline content of an aligned `div` or `center` into an aligned paragraph. Without it
+ * the schema parse would put that content in a plain paragraph and lose the alignment. Block tags are the
+ * ones that also start a new paragraph in the visible text.
+ */
+function wrap_inline_runs(element: HTMLElement, alignment: string) {
+	const document = element.ownerDocument;
+	let paragraph: HTMLElement | null = null;
+
+	let child = element.firstChild;
+	while (child) {
+		const next = child.nextSibling;
+		const isBlock =
+			child.nodeType === 1 &&
+			(PARAGRAPH_SEPARATOR_TAGS.has((child as Element).localName.toLowerCase()) ||
+				(child as Element).localName.toLowerCase() === "video");
+
+		if (isBlock) {
+			paragraph = null;
+		}
+		// Do not start a paragraph for the spaces between two blocks.
+		else if (paragraph || child.nodeType !== 3 || (child as globalThis.Text).data.trim() !== "") {
+			if (!paragraph) {
+				paragraph = document.createElement("p");
+				paragraph.setAttribute("style", `text-align: ${alignment}`);
+				element.insertBefore(paragraph, child);
+			}
+			paragraph.appendChild(child);
+		}
+
+		child = next;
+	}
+}
+
+/**
  * Remove active content from the data-only DOM and give each app image/video a server index.
  *
  * Only decoded `src` values of real image and video elements can add a media entry. Text, code, and
@@ -1371,7 +1465,9 @@ function sanitize_dom(args: {
 		return link;
 	};
 
-	const visit = (parent: Node) => {
+	// `alignment` is the checked alignment of the nearest aligned `div` or `center`. Blocks inside inherit it,
+	// like in CSS.
+	const visit = (parent: Node, alignment: string | null) => {
 		let child = parent.firstChild;
 		while (child) {
 			const next = child.nextSibling;
@@ -1450,11 +1546,46 @@ function sanitize_dom(args: {
 						if (url) {
 							element.setAttribute("href", url);
 						}
-						visit(element);
+						visit(element, alignment);
 					}
+				} else if (tag === "caption" || tag === "colgroup") {
+					// The editor keeps a table's caption and column group in the file but does not show them.
+					parent.removeChild(element);
+				} else if (tag === "details") {
+					// Give the block the shape the schema reads: the first summary, then one box with everything
+					// else. A block with no summary gets an empty one, like in the editor.
+					const summary =
+						Array.from(element.childNodes).find(
+							(item): item is HTMLElement =>
+								item.nodeType === 1 && (item as Element).localName.toLowerCase() === "summary",
+						) ?? document.createElement("summary");
+					const content = document.createElement("div");
+					if (summary.parentNode === element) {
+						element.removeChild(summary);
+					}
+					while (element.firstChild) {
+						content.appendChild(element.firstChild);
+					}
+					remove_all_attributes(element);
+					remove_all_attributes(summary);
+					content.setAttribute(DETAILS_CONTENT_MARKER_ATTRIBUTE, "");
+					element.appendChild(summary);
+					element.appendChild(content);
+					visit(summary, alignment);
+					visit(content, alignment);
+				} else if (tag === "div" || tag === "center") {
+					// Like the editor, `<div align>` and `<center>` align their text.
+					const align = read_attributes(element).get("align")?.toLowerCase();
+					const ownAlignment = tag === "center" ? "center" : align && TEXT_ALIGNMENTS.includes(align) ? align : null;
+					const nextAlignment = ownAlignment ?? alignment;
+					remove_all_attributes(element);
+					if (nextAlignment) {
+						wrap_inline_runs(element, nextAlignment);
+					}
+					visit(element, nextAlignment);
 				} else {
-					sanitize_attributes(element, tag);
-					visit(element);
+					sanitize_attributes(element, tag, alignment);
+					visit(element, alignment);
 				}
 			}
 
@@ -1474,7 +1605,7 @@ function sanitize_dom(args: {
 		}
 	};
 
-	visit(body);
+	visit(body, null);
 }
 
 /**
