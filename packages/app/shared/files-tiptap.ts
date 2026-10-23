@@ -349,6 +349,23 @@ function configure_marked(instance: Marked | typeof marked) {
 					: false;
 			},
 
+			// Turn an inline tag that the editor cannot show, or an inline comment, into a hidden tag node
+			// (`files_html_tag_node`), so save writes it back. A public parse keeps the raw tag. The public page
+			// must see the real tags to remove a script, a form or an SVG with the text inside them. It drops
+			// the other unknown tags and comments itself, so it shows the same text as the editor.
+			html(token) {
+				if (token.block || markdown_hidden_link_text !== null) {
+					return false;
+				}
+
+				const name = INLINE_HTML_TAG_NAME_REGEX.exec(token.text)?.[1]?.toLowerCase();
+				if (name !== undefined && INLINE_HTML_SUPPORTED_TAGS.has(name)) {
+					return false;
+				}
+
+				return `<span data-html-tag="${encodeURIComponent(token.text)}"></span>`;
+			},
+
 			// Author-typed HTML can still take in a link's tag, for example a line `<div x="`. Then the address
 			// is lost in an attribute, and the label shows as plain text. So a public parse writes the hidden
 			// text instead of a hidden link's label and title. The file name never gets into its HTML.
@@ -1582,6 +1599,88 @@ export const files_kbd_mark = Mark.create({
 });
 // #endregion keyboard keys
 
+// #region hidden html tags
+/**
+ * Inline HTML tags that the editor reads as formatting, a link, an image, a video, or a line break.
+ * `image` is here because a browser reads an `<image>` tag as `<img>`.
+ */
+const INLINE_HTML_SUPPORTED_TAGS = new Set([
+	"u",
+	"mark",
+	"span",
+	"br",
+	"img",
+	"image",
+	"video",
+	"code",
+	"a",
+	"b",
+	"strong",
+	"i",
+	"em",
+	"s",
+	"del",
+	"strike",
+	"sub",
+	"sup",
+	"kbd",
+]);
+
+const INLINE_HTML_TAG_NAME_REGEX = /^<\/?([a-z][a-z0-9-]*)/i;
+
+/**
+ * An inline HTML tag that the editor cannot show, or an inline HTML comment. Examples: `<owner>`,
+ * `<Foo />`, `</div>`, `<!-- note -->`.
+ *
+ * Before, the editor dropped these tags and kept only the text around them, so the next save deleted
+ * them from the file. Now the tag is an empty node that shows nothing, and save writes it back exactly.
+ * Code view, the agent, and the API still see the tag in the file.
+ *
+ * Marked gives each tag as its own token, and the `html` renderer in `configure_marked` writes it as
+ * `<span data-html-tag>`. The DOM must never read the tag itself: it would treat `<owner>` as an open tag
+ * that wraps the rest of the line, and it would write the name in lowercase.
+ */
+const files_html_tag_node = Node.create({
+	name: "htmlTag",
+	inline: true,
+	group: "inline",
+	atom: true,
+	selectable: false,
+
+	addAttributes() {
+		return {
+			// The tag is URI-encoded in the attribute. happy-dom, the test DOM, does not decode `&lt;` in an
+			// attribute, so HTML escaping would not read back the same in every parser.
+			html: {
+				default: "",
+				parseHTML: (element) => {
+					const value = element.getAttribute("data-html-tag") ?? "";
+					// Pasted HTML from outside the app can hold a broken escape. Keep the raw text then.
+					try {
+						return decodeURIComponent(value);
+					} catch {
+						return value;
+					}
+				},
+				renderHTML: (attributes) => ({ "data-html-tag": encodeURIComponent(String(attributes.html)) }),
+			},
+		};
+	},
+
+	parseHTML() {
+		return [{ tag: "span[data-html-tag]" }];
+	},
+
+	renderHTML({ HTMLAttributes }) {
+		return ["span", { ...HTMLAttributes, contenteditable: "false" }];
+	},
+
+	renderMarkdown(node) {
+		return typeof node.attrs?.html === "string" ? node.attrs.html : "";
+	},
+});
+// #endregion hidden html tags
+
 export function files_tiptap_markdown_to_json(args: {
 	markdown: string;
 	extensions?: Extensions;
@@ -1849,6 +1948,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 				renderMarkdown: (node, helpers) => `<sup>${helpers.renderChildren(node.content || [])}</sup>`,
 			}),
 			kbd: files_kbd_mark,
+			htmlTag: files_html_tag_node,
 			horizontalRule: HorizontalRule.configure({
 				HTMLAttributes: {
 					class: "mt-4 mb-6 border-t border-muted-foreground",

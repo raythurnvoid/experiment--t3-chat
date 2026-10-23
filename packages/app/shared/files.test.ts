@@ -2277,6 +2277,37 @@ describe("sub, sup and kbd round-trip through Yjs", () => {
 	});
 });
 
+describe("hidden HTML tags round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected hidden tag markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	test("keeps inline tags and comments that the editor cannot show", () => {
+		const input =
+			"# Draft <name>\n\nReplace <Owner> with Array<T>, call <Foo /> and close </div>. a <!-- note --> b\n\n- [ ] ask <who>\n\n| a | b |\n| --- | --- |\n| <x y=\"1\"> | c |\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+});
+
 describe("GFM tables round-trip through Yjs", () => {
 	function round_trip_markdown(markdown: string) {
 		const yjsDoc = new YDoc();
