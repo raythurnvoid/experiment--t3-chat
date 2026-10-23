@@ -82,3 +82,44 @@ describe("Files rich text styles", () => {
 		}
 	});
 });
+
+describe("Files rich text details", () => {
+	test("opens a details block with Enter on its toggle button and leaves the document unchanged", async () => {
+		const container = document.createElement("div");
+		document.body.append(container);
+		const editor = new Editor({
+			element: container,
+			injectCSS: false,
+			extensions: defaultExtensions,
+			content: {
+				type: "doc",
+				content: [
+					{ type: "paragraph", content: [{ type: "text", text: "Before" }] },
+					{
+						type: "details",
+						content: [
+							{ type: "detailsSummary", content: [{ type: "text", text: "Summary" }] },
+							{ type: "detailsContent", content: [{ type: "paragraph", content: [{ type: "text", text: "Body" }] }] },
+						],
+					},
+				],
+			},
+		});
+		try {
+			const details = container.querySelector('[data-type="details"]')!;
+			const toggle = details.querySelector<HTMLButtonElement>(":scope > button")!;
+
+			// Leave the caret in another block. Enter must not split it.
+			editor.commands.setTextSelection(1);
+			const doc = editor.state.doc;
+			toggle.focus();
+			await userEvent.keyboard("{Enter}");
+
+			expect(details.classList.contains("is-open")).toBe(true);
+			expect(editor.state.doc.eq(doc)).toBe(true);
+		} finally {
+			editor.destroy();
+			container.remove();
+		}
+	});
+});

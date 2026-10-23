@@ -331,6 +331,9 @@ importers:
       '@tiptap/extension-collaboration-caret':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-collaboration-caret
+      '@tiptap/extension-details':
+        specifier: workspace:*
+        version: link:vendor/tiptap/packages/extension-details
       '@tiptap/extension-document':
         specifier: workspace:*
         version: link:vendor/tiptap/packages/extension-document

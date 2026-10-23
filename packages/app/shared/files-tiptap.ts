@@ -17,6 +17,7 @@ import { Superscript } from "@tiptap/extension-superscript";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
+import { Details, DetailsSummary, DetailsContent } from "@tiptap/extension-details";
 import {
 	marked,
 	Marked,
@@ -296,7 +297,8 @@ function configure_marked(instance: Marked | typeof marked) {
 					return `<mark>${this.parser.parseInline(token.tokens as Parameters<typeof this.parser.parseInline>[0])}</mark>`;
 				},
 			},
-			// An HTML table that `html_table_merge_tokens` joined. A public parse writes its parts as Marked does.
+			// An HTML table or details block that `html_merge_tokens` joined. A public parse writes its parts as
+			// Marked does.
 			{
 				name: "htmlTable",
 				renderer(token) {
@@ -306,9 +308,18 @@ function configure_marked(instance: Marked | typeof marked) {
 						: html_table_to_editor_html({ raw: token.raw, parts, parse: (tokens) => this.parser.parse(tokens) });
 				},
 			},
+			{
+				name: "htmlDetails",
+				renderer(token) {
+					const parts = (token as { tokens?: Token[] }).tokens ?? [];
+					return markdown_hidden_link_text !== null
+						? this.parser.parse(parts)
+						: html_details_to_editor_html({ raw: token.raw, parts, parse: (tokens) => this.parser.parse(tokens) });
+				},
+			},
 		],
 		hooks: {
-			processAllTokens: (tokens) => html_table_merge_tokens(tokens),
+			processAllTokens: (tokens) => html_merge_tokens(tokens),
 		},
 		renderer: {
 			heading(token) {
@@ -645,6 +656,8 @@ function bound_tiptap_tokenizers(extension: MarkedExtension): MarkedExtension {
 			// Keep Marked's GFM table parser. Tiptap's extra pipe scan reads the whole remaining
 			// document at every line, outside our work budget. Our serializer already escapes pipes.
 			if (tokenizerExtension.name === "table") return [];
+			// Tiptap's details nodes read a Pandoc `:::details` block. GitHub shows that text as it is, so keep it.
+			if (DETAILS_NODE_NAMES.has(tokenizerExtension.name)) return [];
 
 			const marker =
 				tokenizerExtension.name === "highlight"
@@ -1692,7 +1705,8 @@ function table_fits_pipe(table: TiptapJSONContent) {
 	);
 }
 
-const HTML_TABLE_TAG_REGEX = /<(\/?)table(?=[\s/>])/gi;
+const HTML_MERGE_TAG_REGEX = /<(\/?)(table|details)(?=[\s/>])/gi;
+const HTML_BLOCK_MERGE_START_REGEX = /^<(table|details)[\s>]/i;
 const HTML_TABLE_STRUCTURE_TAG_REGEX = /^(?:table|thead|tbody|tfoot|tr|td|th)$/;
 const WHITESPACE_WITH_NEWLINE_REGEX = /\s*\n\s*/g;
 const HTML_TABLE_TEXT_ESCAPE_REGEX = /[&<>\n]/g;
@@ -1716,57 +1730,83 @@ const HTML_TABLE_BLOCK_TAGS = new Set([
 	"h6",
 	"hr",
 	"video",
+	"details",
+	"summary",
 ]);
 
 /**
- * Join each HTML table that Marked split into several blocks into one `htmlTable` token.
+ * Join each HTML table or details block that Marked split into several blocks into one `htmlTable` or
+ * `htmlDetails` token.
  *
  * Marked ends an HTML block at a blank line. So a README table with Markdown in a cell comes as an HTML block
- * that opens the table, the Markdown blocks, and an HTML block that closes it. Read one by one, the closing
- * block became an `htmlBlock`, and the Markdown moved out of the table. A table joins only when its last
- * block ends right after its `</table>`, so no other content shares its source text (`htmlSource`).
+ * that opens the table, the Markdown blocks, and an HTML block that closes it. A GitHub `<details>` with
+ * Markdown inside comes the same way. Read one by one, the closing block became an `htmlBlock`, and the
+ * Markdown moved out of the table. A join happens only when its last block ends right after the closing tag, so
+ * no other content shares its source text (`htmlSource`).
  */
-function html_table_merge_tokens(mut_tokens: Token[]) {
-	// Pair each `<table` with its `</table>` in one pass, like brackets. Many unclosed tables then stay cheap.
-	const opens: Array<{ tokenIndex: number; joins: boolean }> = [];
-	const lastTokenIndexByStart = new Map<number, number>();
+function html_merge_tokens(mut_tokens: Token[]) {
+	// Pair each opening tag with its closing tag in one pass, like brackets. Many unclosed tags then stay cheap.
+	const opens = { table: [], details: [] } as Record<
+		"table" | "details",
+		Array<{ tokenIndex: number; joins: boolean }>
+	>;
+	const pairs = new Map<number, { name: "table" | "details"; lastTokenIndex: number }>();
 	mut_tokens.forEach((token, tokenIndex) => {
 		if (token.type !== "html") {
 			return;
 		}
 
 		markdown_work_add(token.text.length * MARKDOWN_WORK_HTML_TABLE_SCAN_PER_CHAR);
-		// Only a block that starts with the table can start a join.
-		let startsJoin = token.block && HTML_BLOCK_TABLE_REGEX.test(token.text.trimStart());
-		for (const match of token.text.matchAll(HTML_TABLE_TAG_REGEX)) {
+		// Only a block that starts with the tag can start a join.
+		let joinName = token.block ? HTML_BLOCK_MERGE_START_REGEX.exec(token.text.trimStart())?.[1].toLowerCase() : null;
+		for (const match of token.text.matchAll(HTML_MERGE_TAG_REGEX)) {
+			const name = match[2].toLowerCase() === "table" ? "table" : "details";
 			if (!match[1]) {
-				opens.push({ tokenIndex, joins: startsJoin });
-				startsJoin = false;
+				opens[name].push({ tokenIndex, joins: joinName === name });
+				joinName = null;
 				continue;
 			}
 
-			const open = opens.pop();
+			const open = opens[name].pop();
 			const closeEnd = token.text.indexOf(">", match.index) + 1;
 			if (open?.joins && closeEnd > 0 && token.text.slice(closeEnd).trim() === "") {
-				lastTokenIndexByStart.set(open.tokenIndex, tokenIndex);
+				pairs.set(open.tokenIndex, { name, lastTokenIndex: tokenIndex });
 			}
 		}
 	});
 
-	if (lastTokenIndexByStart.size > 0) {
+	// Join the pairs between `from` and `to`. A table reads the tables inside it itself, so they stay split. A
+	// table and a details block can cross, like `<details> <table> </details> </table>`. Then the inner one stays
+	// split.
+	const join = (from: number, to: number, inTable: boolean): Token[] => {
 		const joined: Token[] = [];
-		for (let index = 0; index < mut_tokens.length; index++) {
-			const lastTokenIndex = lastTokenIndexByStart.get(index);
-			if (lastTokenIndex === undefined) {
+		for (let index = from; index < to; index++) {
+			const pair = pairs.get(index);
+			if (pair === undefined || pair.lastTokenIndex >= to || (inTable && pair.name === "table")) {
 				joined.push(mut_tokens[index]);
 				continue;
 			}
 
-			const parts = mut_tokens.slice(index, lastTokenIndex + 1);
-			joined.push({ type: "htmlTable", raw: parts.map((part) => part.raw).join(""), tokens: parts });
-			index = lastTokenIndex;
+			const last = pair.lastTokenIndex;
+			const parts =
+				last === index
+					? [mut_tokens[index]]
+					: [mut_tokens[index], ...join(index + 1, last, inTable || pair.name === "table"), mut_tokens[last]];
+			joined.push({
+				type: pair.name === "table" ? "htmlTable" : "htmlDetails",
+				raw: mut_tokens
+					.slice(index, last + 1)
+					.map((part) => part.raw)
+					.join(""),
+				tokens: parts,
+			});
+			index = last;
 		}
+		return joined;
+	};
 
+	if (pairs.size > 0) {
+		const joined = join(0, mut_tokens.length, false);
 		// Keep the array itself. Marked keeps the link definitions on it.
 		mut_tokens.length = 0;
 		for (const token of joined) {
@@ -1774,15 +1814,21 @@ function html_table_merge_tokens(mut_tokens: Token[]) {
 		}
 	}
 
-	for (const token of mut_tokens) {
-		if (token.type === "list") {
-			for (const item of token.items) {
-				html_table_merge_tokens(item.tokens);
+	// Lists and quotes hold their own blocks, also inside a joined token.
+	const mergeNested = (tokens: Token[]) => {
+		for (const token of tokens) {
+			if (token.type === "list") {
+				for (const item of token.items) {
+					html_merge_tokens(item.tokens);
+				}
+			} else if (token.type === "blockquote") {
+				html_merge_tokens(token.tokens ?? []);
+			} else if (token.type === "htmlTable" || token.type === "htmlDetails") {
+				mergeNested((token as { tokens?: Token[] }).tokens ?? []);
 			}
-		} else if (token.type === "blockquote") {
-			html_table_merge_tokens(token.tokens ?? []);
 		}
-	}
+	};
+	mergeNested(mut_tokens);
 
 	return mut_tokens;
 }
@@ -2095,6 +2141,8 @@ function html_render_blocks(content: TiptapJSONContent[]): string {
 					return video_html_tag(node);
 				case "table":
 					return html_table_render(node);
+				case "details":
+					return html_details_render(node, html_render_blocks(node.content?.[1]?.content ?? []), "html");
 				case "frontmatter":
 					return `<pre data-frontmatter>${html_escape_text(childText, HTML_TABLE_TEXT_ESCAPE_REGEX)}</pre>`;
 				// A comment in a cell reads back as a hidden tag in a paragraph, and an HTML block as a paragraph.
@@ -2136,6 +2184,130 @@ const files_table_node = Table.extend({
 	},
 });
 // #endregion tables
+
+// #region details
+const DETAILS_NODE_NAMES = new Set(["details", "detailsSummary", "detailsContent"]);
+const HTML_DETAILS_SUMMARY_REGEX = /^\s*(<summary(?=[\s>])[^>]*>)([\s\S]*?)<\/summary\s*>/i;
+const HTML_DETAILS_CLOSE_REGEX = /<\/details(?=[\s/>])[^>]*>\s*$/i;
+
+/**
+ * Turn the parts of a details block (`html_merge_tokens`) into editor HTML for `files_details_node`.
+ *
+ * The first part starts with the `<details>` tag and usually holds the `<summary>`. The Markdown parts between
+ * the first and the last part are the body. HTML text around them in the first or last part, like the body of a
+ * details block with no blank lines, becomes an HTML block. The details block keeps its whole source in
+ * `htmlSource`, so save writes it back exactly while nobody changes it.
+ */
+function html_details_to_editor_html(args: { raw: string; parts: Token[]; parse: (tokens: Token[]) => string }) {
+	const first = args.parts[0];
+	const last = args.parts[args.parts.length - 1];
+	const leading = first.raw.length - first.raw.trimStart().length;
+	const openMatch = first.raw.slice(leading).matchAll(HTML_TAG_REGEX).next().value;
+	// Marked's tag pattern did not read the `<details>` tag. Read the parts one by one, like before the join.
+	if (openMatch?.index !== 0) {
+		return args.parse(args.parts);
+	}
+
+	const openTag = openMatch[0];
+	let head = first.raw.slice(leading + openTag.length);
+	let tail = "";
+	const close = HTML_DETAILS_CLOSE_REGEX.exec(args.parts.length === 1 ? head : last.raw);
+	if (close === null) {
+		return args.parse(args.parts);
+	}
+	if (args.parts.length === 1) {
+		head = head.slice(0, close.index);
+	} else {
+		tail = last.raw.slice(0, close.index);
+	}
+
+	// The editor shows the summary on one line. Save writes the summary's source back while nobody changes it.
+	// Without a summary element, the DOM step moves the body out of the block, so write an empty one.
+	const summary = HTML_DETAILS_SUMMARY_REGEX.exec(head);
+	const summaryHtml =
+		summary === null
+			? "<summary></summary>"
+			: `<summary data-html-open-tag="${encodeURIComponent(summary[1])}">${html_inline_to_editor_html(summary[2])
+					.html.trim()
+					.replace(WHITESPACE_WITH_NEWLINE_REGEX, " ")}</summary>`;
+	const looseHtml = (html: string) => {
+		const text = html.trim();
+		return text ? html_block_to_editor_html(text) || text : "";
+	};
+	const body =
+		looseHtml(summary === null ? head : head.slice(summary[0].length)) +
+		args.parse(args.parts.slice(1, -1)) +
+		looseHtml(tail);
+
+	const source = encodeURIComponent(args.raw.replace(TRAILING_NEWLINES_REGEX, ""));
+	return `<details data-html-source="${source}" data-html-open-tag="${encodeURIComponent(openTag)}">${summaryHtml}<div data-type="detailsContent">${body}</div></details>`;
+}
+
+/**
+ * Write a details block around its `body`. The `markdown` layout is GitHub's: a blank line around the body, so
+ * the body reads as Markdown. In a table cell no line may be blank, so the `html` layout writes the body as HTML
+ * on one line.
+ */
+function html_details_render(details: TiptapJSONContent, body: string, layout: "markdown" | "html") {
+	const summary = details.content?.[0];
+	const openTag = typeof details.attrs?.htmlOpenTag === "string" ? details.attrs.htmlOpenTag : "<details>";
+	const summaryOpenTag = typeof summary?.attrs?.htmlOpenTag === "string" ? summary.attrs.htmlOpenTag : null;
+	const summaryHtml = html_render_inline(summary?.content ?? [], HTML_TABLE_TEXT_ESCAPE_REGEX);
+	// Write no summary when the file had none and nobody typed one. A browser then shows its own "Details" label.
+	const summaryLine =
+		summaryHtml || summaryOpenTag !== null ? `${summaryOpenTag ?? "<summary>"}${summaryHtml}</summary>` : "";
+
+	if (layout === "html") {
+		return `${openTag}${summaryLine}${body}</details>`;
+	}
+
+	const head = summaryLine ? `${openTag}\n${summaryLine}` : openTag;
+	return body ? `${head}\n\n${body}\n\n</details>` : `${head}\n\n</details>`;
+}
+
+/**
+ * A `<details>` block that opens and closes, like on GitHub. Its body is Markdown.
+ *
+ * Like `files_html_block_node`, it keeps its source in `htmlSource`, and save writes the source exactly while the
+ * content is the same. After an edit, save writes GitHub's layout (`html_details_render`). The open state is not
+ * saved: it changes only the view, and a `<details open>` tag stays in `htmlOpenTag`.
+ */
+const files_details_node = Details.extend({
+	addAttributes() {
+		return {
+			htmlSource: html_data_attribute("data-html-source"),
+			htmlSourceContent: { default: null, rendered: false, parseHTML: () => null },
+			htmlOpenTag: html_data_attribute("data-html-open-tag"),
+		};
+	},
+
+	// Tiptap's plugin moves the caret out of a closed details block. It reads the editor view, and a headless
+	// editor has none, so only the browser editor adds it back (`extensions.ts`).
+	addProseMirrorPlugins() {
+		return [];
+	},
+
+	renderMarkdown(node, helpers) {
+		const content = node.content ?? [];
+		if (typeof node.attrs?.htmlSource === "string" && node.attrs.htmlSourceContent === JSON.stringify(content)) {
+			return node.attrs.htmlSource;
+		}
+
+		return html_details_render(node, helpers.renderChildren(content[1]?.content ?? [], "\n\n"), "markdown");
+	},
+});
+
+const files_details_summary_node = DetailsSummary.extend({
+	// Tiptap's summary holds only plain text. Hold formatting and hidden tags too.
+	content: "inline*",
+
+	addAttributes() {
+		return {
+			htmlOpenTag: html_data_attribute("data-html-open-tag"),
+		};
+	},
+});
+// #endregion details
 
 // #region keyboard keys
 /**
@@ -2285,32 +2457,47 @@ function html_block_to_editor_html(text: string) {
 		return `<div data-html-comment="${encodeURIComponent(source.slice(4, -3))}"></div>`;
 	}
 
-	const pieces: Array<{ kind: "text" | "tag" | "hidden"; html: string }> = [];
+	let content: string;
 	// Script and style text is code, not text for the reader. So the whole block is one hidden tag.
 	if (HTML_BLOCK_SCRIPT_OR_STYLE_REGEX.test(start)) {
-		pieces.push({ kind: "hidden", html: source });
+		content = `<span data-html-tag="${encodeURIComponent(source)}"></span>`;
 	} else {
-		let textStart = 0;
-		for (const match of source.matchAll(HTML_TAG_REGEX)) {
-			if (match.index > textStart) {
-				pieces.push({ kind: "text", html: source.slice(textStart, match.index) });
-			}
-
-			const name = INLINE_HTML_TAG_NAME_REGEX.exec(match[0])?.[1]?.toLowerCase();
-			// A video is a block node. Inside this block it would split the block in two.
-			const known = name !== undefined && name !== "video" && INLINE_HTML_SUPPORTED_TAGS.has(name);
-			pieces.push({ kind: known ? "tag" : "hidden", html: match[0] });
-			textStart = match.index + match[0].length;
-		}
-		if (textStart < source.length) {
-			pieces.push({ kind: "text", html: source.slice(textStart) });
-		}
-
+		const inline = html_inline_to_editor_html(source);
 		// A block with no tag at all, like an unclosed `<!-- note`, still becomes an `htmlBlock`. With
 		// Marked's HTML, the DOM would read it as a comment and drop it.
-		if (pieces.some((piece) => piece.kind === "tag") && !pieces.some((piece) => piece.kind === "hidden")) {
+		if (inline.onlyKnownTags) {
 			return false;
 		}
+		content = inline.html;
+	}
+
+	const align = HTML_BLOCK_CENTER_REGEX.test(start)
+		? "center"
+		: (HTML_BLOCK_ALIGN_REGEX.exec(start)?.[1]?.toLowerCase() ?? null);
+	const alignAttribute = align === null ? "" : ` data-align="${align}"`;
+	return `<div data-html-block data-html-source="${encodeURIComponent(source)}"${alignAttribute}>${content}</div>`;
+}
+
+/**
+ * Turn HTML text into editor inline HTML. Tags the editor cannot show become hidden tag nodes. Its text and
+ * known inline tags work as usual. `onlyKnownTags` says if the text has a tag and every tag is known.
+ */
+function html_inline_to_editor_html(source: string) {
+	const pieces: Array<{ kind: "text" | "tag" | "hidden"; html: string }> = [];
+	let textStart = 0;
+	for (const match of source.matchAll(HTML_TAG_REGEX)) {
+		if (match.index > textStart) {
+			pieces.push({ kind: "text", html: source.slice(textStart, match.index) });
+		}
+
+		const name = INLINE_HTML_TAG_NAME_REGEX.exec(match[0])?.[1]?.toLowerCase();
+		// A video is a block node. Inside inline content it would split the block in two.
+		const known = name !== undefined && name !== "video" && INLINE_HTML_SUPPORTED_TAGS.has(name);
+		pieces.push({ kind: known ? "tag" : "hidden", html: match[0] });
+		textStart = match.index + match[0].length;
+	}
+	if (textStart < source.length) {
+		pieces.push({ kind: "text", html: source.slice(textStart) });
 	}
 
 	// A line break next to a hidden tag is the author's layout. Move it into the tag, so the editor does not
@@ -2336,12 +2523,9 @@ function html_block_to_editor_html(text: string) {
 		}
 	}
 
-	const align = HTML_BLOCK_CENTER_REGEX.test(start)
-		? "center"
-		: (HTML_BLOCK_ALIGN_REGEX.exec(start)?.[1]?.toLowerCase() ?? null);
 	// A `<` left in the text is not a whole tag, like the start of an unclosed comment. Escape it, so the DOM
 	// shows it as text instead of reading the rest of the block as a tag.
-	const content = pieces
+	const html = pieces
 		.map((piece) =>
 			piece.kind === "hidden"
 				? `<span data-html-tag="${encodeURIComponent(piece.html)}"></span>`
@@ -2350,8 +2534,10 @@ function html_block_to_editor_html(text: string) {
 					: piece.html,
 		)
 		.join("");
-	const alignAttribute = align === null ? "" : ` data-align="${align}"`;
-	return `<div data-html-block data-html-source="${encodeURIComponent(source)}"${alignAttribute}>${content}</div>`;
+	return {
+		html,
+		onlyKnownTags: pieces.some((piece) => piece.kind === "tag") && !pieces.some((piece) => piece.kind === "hidden"),
+	};
 }
 
 /**
@@ -2454,15 +2640,20 @@ const files_html_block_node = Node.create({
 });
 
 /**
- * Store the parsed content of each HTML block and HTML table next to its source, so save can tell if a person
- * changed it.
+ * Store the parsed content of each HTML block, HTML table and details block next to its source, so save can tell
+ * if a person changed it.
  */
 function html_source_set_content(mut_node: TiptapJSONContent) {
 	for (const child of mut_node.content ?? []) {
-		if ((child.type === "htmlBlock" || child.type === "table") && typeof child.attrs?.htmlSource === "string") {
+		// Set the blocks inside first. The stored content then already holds their attributes, so it stays equal
+		// to the content while nobody changes it. An edited details block still writes its unchanged inner blocks
+		// exactly.
+		html_source_set_content(child);
+		if (
+			(child.type === "htmlBlock" || child.type === "table" || child.type === "details") &&
+			typeof child.attrs?.htmlSource === "string"
+		) {
 			child.attrs.htmlSourceContent = JSON.stringify(child.content ?? []);
-		} else {
-			html_source_set_content(child);
 		}
 	}
 }
@@ -2859,6 +3050,9 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			tableRow: files_table_row_node,
 			tableHeader: files_table_header_node,
 			tableCell: files_table_cell_node,
+			details: files_details_node,
+			detailsSummary: files_details_summary_node,
+			detailsContent: DetailsContent,
 			liveblocksComments: files_CommentsExtension,
 		};
 	}

@@ -16,6 +16,7 @@ import {
 import { cx } from "class-variance-authority";
 import { common, createLowlight } from "lowlight";
 import { mergeAttributes } from "@tiptap/core";
+import { Details } from "@tiptap/extension-details";
 import { Plugin } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import {
@@ -175,6 +176,37 @@ const frontmatter = sharedExtensions.frontmatter.extend({
 });
 
 /**
+ * The shared details node leaves out Tiptap's plugin that moves the caret out of a closed details block, because
+ * the plugin reads the editor view. The browser editor has a view, so add the plugin back.
+ */
+const details = sharedExtensions.details.extend({
+	addProseMirrorPlugins: Details.config.addProseMirrorPlugins,
+	addNodeView() {
+		const renderNodeView = this.parent?.();
+		if (!renderNodeView) {
+			return null;
+		}
+
+		return (props) => {
+			const nodeView = renderNodeView(props);
+			const toggle = nodeView.dom.firstChild;
+
+			// Enter and Space on the focused toggle button must press the button. Inside the editable area the
+			// browser and ProseMirror would treat them as typing instead, and Enter would split the block at the
+			// caret. So mark the button as not editable and keep ProseMirror away from its events.
+			if (toggle instanceof HTMLElement) {
+				toggle.contentEditable = "false";
+			}
+
+			return {
+				...nodeView,
+				stopEvent: (event) => event.target instanceof Node && (toggle?.contains(event.target) ?? false),
+			};
+		};
+	},
+});
+
+/**
  * Everything after StarterKit is identical in both lists. Neither list holds the
  * Liveblocks/Collaboration extension. The collaborative editor adds it where it is assembled.
  */
@@ -201,6 +233,9 @@ const extensionsAfterStarterKit = [
 	sharedExtensions.tableRow,
 	sharedExtensions.tableHeader,
 	sharedExtensions.tableCell,
+	details,
+	sharedExtensions.detailsSummary,
+	sharedExtensions.detailsContent,
 	sharedExtensions.highlight,
 	sharedExtensions.textStyle,
 	Color,

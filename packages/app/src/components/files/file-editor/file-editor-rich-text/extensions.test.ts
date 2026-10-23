@@ -253,6 +253,12 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(normalize(input)).toBe(input);
 	});
 
+	test("keeps details blocks", () => {
+		const input =
+			"<details open>\n<summary>Use <name> here</summary>\n\nBody **bold**\n\n- a\n\n</details>\n\n<details><summary>S</summary>Body</details>\n";
+		expect(normalize(input)).toBe(input);
+	});
+
 	test("un-escapes a backslash-escaped date once, then holds still", () => {
 		const once = normalize("Meeting on 2026\\-08\\-30\n");
 		expect(once).toContain("2026-08-30");

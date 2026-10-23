@@ -509,6 +509,61 @@
 			color: var(--color-fg-07);
 		}
 
+		/* A details block, like on GitHub. Tiptap's node view writes a toggle button, then the summary and the
+		   content. The content has the `hidden` attribute while the block is closed. */
+		div[data-type="details"] {
+			display: flex;
+			gap: 4px;
+
+			margin: 10px 0;
+
+			> button {
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				flex: none;
+
+				width: 24px;
+				height: 24px;
+				margin-top: 1px;
+				padding: 0;
+				border: 0;
+				border-radius: 4px;
+
+				background: transparent;
+				color: var(--color-fg-09);
+				cursor: pointer;
+
+				&::before {
+					content: "\25B6";
+					font-size: 10px;
+				}
+
+				&:hover {
+					background: var(--color-base-1-05);
+				}
+
+				&:focus-visible {
+					outline: 2px solid var(--color-fg-12);
+					outline-offset: 1px;
+				}
+			}
+
+			&.is-open > button::before {
+				transform: rotate(90deg);
+			}
+
+			> div {
+				flex: 1;
+				min-width: 0;
+			}
+
+			summary {
+				color: var(--color-fg-12);
+				font-weight: 600;
+			}
+		}
+
 		/* #region media embeds */
 		.FileEditorRichTextMedia {
 			/* Anchor for the selected-embed controls below (alt button, resize handle). */

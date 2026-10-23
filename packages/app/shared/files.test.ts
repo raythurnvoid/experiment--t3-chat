@@ -3001,11 +3001,15 @@ describe("HTML tables round-trip through Yjs", () => {
 	test("has an HTML writer branch for every block node type", () => {
 		const schema = getSchema(Object.values(files_get_tiptap_shared_extensions()));
 		const blockNodeTypes = Object.values(schema.nodes).filter((type) => type.isBlock);
-		// A new block node type needs a branch in `html_render_blocks`. Add it there, then here.
+		// A new block node type needs a branch in `html_render_blocks`. Add it there, then here. The `details`
+		// branch writes `detailsSummary` and `detailsContent`.
 		expect(blockNodeTypes.map((type) => type.name).sort()).toEqual([
 			"blockquote",
 			"bulletList",
 			"codeBlock",
+			"details",
+			"detailsContent",
+			"detailsSummary",
 			"doc",
 			"frontmatter",
 			"heading",
@@ -3036,6 +3040,13 @@ describe("HTML tables round-trip through Yjs", () => {
 			{ type: "horizontalRule" },
 			{ type: "video", attrs: { src: "https://example.com/v.mp4" } },
 			{ type: "table", content: [{ type: "tableRow", content: [{ type: "tableCell", content: [paragraph("n")] }] }] },
+			{
+				type: "details",
+				content: [
+					{ type: "detailsSummary", content: [{ type: "text", text: "s" }] },
+					{ type: "detailsContent", content: [paragraph("e1"), paragraph("e2")] },
+				],
+			},
 			{ type: "frontmatter", content: [{ type: "text", text: "a: 1" }] },
 			{ type: "htmlComment", content: [{ type: "text", text: " c " }] },
 			{ type: "htmlBlock", content: [{ type: "text", text: "d" }] },
@@ -3055,6 +3066,98 @@ describe("HTML tables round-trip through Yjs", () => {
 		expect(shape(cellContent)).toEqual(
 			shape([...content.slice(0, -2), { type: "paragraph", content: [{ type: "htmlTag" }] }, paragraph("d")]),
 		);
+	});
+});
+
+describe("details blocks round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected details markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	function edit_and_save(markdown: string, edit: (mut_content: TiptapJSONContent[]) => void) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+		const json = editor._yay.getJSON();
+		editor._yay.destroy();
+
+		edit(json.content ?? []);
+		const edited = files_headless_tiptap_editor_create({ initialContent: { json } });
+		if (edited._nay) {
+			throw new Error("Expected the editor to load the edited document", { cause: edited._nay });
+		}
+		const saved = files_headless_tiptap_editor_get_markdown({ mut_editor: edited._yay });
+		edited._yay.destroy();
+		return saved + "\n";
+	}
+
+	test("keeps details blocks exactly", () => {
+		const inputs = [
+			// GitHub's layout: Marked gives the body as Markdown blocks between two HTML blocks.
+			"<details>\n<summary>More</summary>\n\nBody **bold**\n\n- a\n- b\n\n</details>\n",
+			"<details>\n<summary>More</summary>\nBody **bold**\n</details>\n",
+			"<details><summary>Use <name> and <b>bold</b></summary>Body</details>\n",
+			"<details>\n\nNo summary\n\n</details>\n",
+			"<details>\n<summary>A</summary>\n\n<details>\n<summary>B</summary>\n\ninner\n\n</details>\n\n</details>\n",
+			"<details>\n<summary>T</summary>\n\n<table>\n<tr>\n<td>\n\n**x**\n\n</td>\n</tr>\n</table>\n\n</details>\n",
+			"<table>\n<tr>\n<td>\n\n<details>\n<summary>S</summary>\n\nin a cell\n\n</details>\n\n</td>\n</tr>\n</table>\n",
+			"- item\n  <details><summary>S</summary>in a list</details>\n",
+			// GitHub shows a Pandoc block as text. Tiptap's details nodes would read it as a details block.
+			":::details\nhello\n:::\n",
+		];
+		for (const input of inputs) {
+			expect(round_trip_markdown(input)).toBe(input);
+		}
+	});
+
+	test("reads a details block as one node with its Markdown body inside", () => {
+		const parsed = files_tiptap_markdown_to_json({
+			markdown: "<details>\n<summary>More</summary>\n\nBody **bold**\n\n- a\n\n</details>\n",
+		});
+		if (parsed._nay) {
+			throw new Error("Expected the details block to parse", { cause: parsed._nay });
+		}
+
+		const blocks: TiptapJSONContent[] = parsed._yay.content ?? [];
+		expect(blocks.map((node) => node.type)).toEqual(["details"]);
+		expect(blocks[0]?.content?.[1]?.content?.map((node) => node.type)).toEqual(["paragraph", "bulletList"]);
+	});
+
+	test("writes an edited details block in GitHub's layout and keeps its tags", () => {
+		const input = '<details open class="x"><summary>Use <name></summary><div>Body <b>x</b></div></details>\n';
+		const saved = edit_and_save(input, (content) => {
+			const summaryText = content[0]?.content?.[0]?.content?.[0];
+			if (summaryText?.text !== "Use ") {
+				throw new Error("Expected the summary text");
+			}
+			summaryText.text = "See ";
+		});
+
+		// The body did not change, so it keeps its exact source (`<b>`, not `<strong>`).
+		expect(saved).toBe(
+			'<details open class="x">\n<summary>See <name></summary>\n\n<div>Body <b>x</b></div>\n\n</details>\n',
+		);
+		expect(round_trip_markdown(saved)).toBe(saved);
 	});
 });
 

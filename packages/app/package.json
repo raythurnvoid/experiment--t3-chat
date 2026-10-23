@@ -67,6 +67,7 @@
 		"@tiptap/extension-code-block": "workspace:*",
 		"@tiptap/extension-collaboration": "workspace:*",
 		"@tiptap/extension-collaboration-caret": "workspace:*",
+		"@tiptap/extension-details": "workspace:*",
 		"@tiptap/extension-document": "workspace:*",
 		"@tiptap/extension-drag-handle": "workspace:*",
 		"@tiptap/extension-hard-break": "workspace:*",
