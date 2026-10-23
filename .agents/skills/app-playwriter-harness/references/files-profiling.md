@@ -49,7 +49,9 @@ vp env exec pnpx playwriter -s <session> --timeout 5000 -f "<absolute-repo>/.age
 
 Create the personal run folder first. Save the following small steps in that folder and run each
 with `-f` and `--timeout 5000`. Replace the example absolute path with the checked run path. Use
-an owned tab at the ready root, with search cleared and no rename or dialog open.
+an owned tab at the ready root, with sidebar search and folder filters cleared and no rename or
+dialog open. Check that `q`, `filter` and `view_q` are absent or empty, both search inputs are empty,
+and no filter chips remain. Match the chosen view and sort across samples.
 
 ```js
 await state.qa.filesProfile.install({
