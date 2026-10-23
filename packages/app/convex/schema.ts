@@ -4827,6 +4827,13 @@ const app_convex_schema = defineSchema({
 		 * the node has no folder at depth N. A node more than 12 folders deep keeps the top 12 only, so a
 		 * folder deeper than 12 levels cannot scope a search.
 		 *
+		 * These fields are a workaround, not a good design. Convex limits force them. A search filter can
+		 * only match one exact value: no prefix, no range, and no "the array contains X". So "name words
+		 * inside a folder and all its subfolders" needs one field per folder depth. We checked the other
+		 * ways in 2026-10: a word table on normal indexes, more search indexes, vector search, and Convex
+		 * components. Each one scans, keeps a depth limit, or makes every Move write 20 to 40 times more
+		 * rows. Delete these fields when an external search engine (Elasticsearch) takes over name search.
+		 *
 		 * Only the overlay flush (`server/files-pending-overlay.ts`) writes them.
 		 */
 		ancestor1: v.optional(v.id("files_nodes")),
@@ -5310,7 +5317,7 @@ const app_convex_schema = defineSchema({
 			filterFields: ["organizationId", "workspaceId", "archiveOperationId", "kind", "parentId"],
 		})
 		// Name search, scoped to a folder by one `ancestor<depth>` equality. 16 filter fields, the Convex
-		// limit.
+		// limit. The `ancestor1` comment says why this workaround exists and when to delete it.
 		.searchIndex("search_name", {
 			searchField: "name",
 			filterFields: [
