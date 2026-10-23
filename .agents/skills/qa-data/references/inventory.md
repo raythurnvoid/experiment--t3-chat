@@ -232,6 +232,8 @@ The file's original unrestricted scope and empty grant list were restored.
 `personal/home` already has about 410 chats. For an agent check where chat history does not
 matter, continue a chat you already made for the same task instead of starting a new one.
 
+Reuse `QA workspace framing (on)` (`n1782ahb6cb83z87bb9sy7w0qs8gt8fw`) and `QA workspace framing (off)` (`n17451rkcfafmrf7a0swh1nqxd8gt71e`) in `personal/home` for system prompt checks. Each has one turn that asks about `MOVE-MARKER-4411` (in `/documents/notes.md`).
+
 Reuse `QA paged message edit` in `chitchat-qa/home` (`n175v5tanrcx2363yz4478h0w58fn2nc`) for loading older history and editing or retrying messages more than 50 nodes behind the leaf. It has two long branches with 56 and 58 short fixture nodes.
 
 Reuse `Move Folder QA Check` in `chitchat-qa/home` (`n1708nc8w74tp1gne8n8jxa7r98gcg8k`) for agent folder Move checks. Its pending rename was discarded. The saved empty folder remains at `/qa-profile-20261005-folder-a/new-folder`, with no metadata or pending changes.
@@ -306,3 +308,4 @@ Only the original Chitchat installation was present.
 - 2026-10-22: image size limit check in `personal/home`. Added `/qa-size-limit` with two PNG uploads (about one and two cents). The 16-bit PNG stayed 22,123,638 bytes, and image 0.3.5 refused it after only the activity start call. The other PNG was resized by the sidebar to 13.4 MiB and got a normal description. No new tenant or user.
 - 2026-10-22: service-account key organize checks in `chitchat-qa/xfer-qa-0914` as the owner. Folder `/qa-sa-organize` (with `granted/`, restricted, and `outside/`, a few small Markdown files) is archived. Its service account `qa-organize-key` (`rd7nqezxpd1r3c2x2yhaxqmwph8gq6h4`) and its bound key are revoked (verify 401). The account keeps its two grants (workspace read, write on `granted`), which do nothing while it is revoked. No new tenant or user.
 - 2026-10-22: service-account copy with `onConflict: "replace"` check in `chitchat-qa/xfer-qa-0914` as the owner. Folder `/qa-sa-copy-replace` (with `granted/`, restricted, holding `src.md` and `dst.md`) is archived. Its service account `qa-copy-replace-key` (`rd7ntwwmty6zw2xdrssjr3r7558gs4bv`) and its bound key are revoked (verify 401). The account keeps one write grant on `granted`, which does nothing while it is revoked. No new tenant or user.
+- 2026-10-23: added two one-turn agent chats in `personal/home` for a system prompt check. No file, tenant or user.
