@@ -33,7 +33,8 @@ import {
 	files_u8_to_array_buffer,
 } from "../server/files.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
-import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
+import { r2_confirmed_object_delete } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_WRITE_POLICY_INVALID_WRITERS_MESSAGE } from "../shared/files.ts";
@@ -5189,7 +5190,45 @@ describe("member controls on plugin-labeled nodes", () => {
 	});
 });
 
-describe("files_nodes_content.create_file_node read-only barrier", () => {
+describe("files_nodes_create.create_file_node read-only barrier", () => {
+	test("waits for both initial PUTs before handing failed uploads to cleanup", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const bothStarted = Promise.withResolvers<void>();
+		const latePut = Promise.withResolvers<void>();
+		let puts = 0;
+		vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			if (init?.method !== "PUT") throw new Error("Expected only initial PUTs");
+			puts++;
+			if (puts === 1) return new Response("denied", { status: 403 });
+			bothStarted.resolve();
+			await latePut.promise;
+			return new Response(null, { status: 200 });
+		}));
+		const creation = asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "failed-upload.md",
+		});
+		await bothStarted.promise;
+		const pending = await t.run(async (ctx) => ({
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			jobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+			nodes: await ctx.db.query("files_nodes").collect(),
+		}));
+		latePut.resolve();
+		const refused = await creation;
+		expect(pending.assets).toHaveLength(2);
+		expect(pending.jobs).toEqual([]);
+		expect(pending.nodes).toEqual([]);
+		expect(refused._nay?.message).toBe("Failed to create file");
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
+		expect((await read_deletion_jobs(t)).map((job) => job.r2Key).sort()).toEqual(
+			pending.assets.map((asset) => r2_create_asset_key({ ...db, assetId: asset._id })).sort(),
+		);
+	});
+
 	test("the create mutation publishes both assets and the first version snapshot atomically", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -5213,7 +5252,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 			]);
 		});
 
-		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const created = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -5366,7 +5405,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 			});
 			return { userId };
 		});
-		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+		const preflight = await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: member.userId,
@@ -5387,7 +5426,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		});
 		await set_read_only_or_throw({ asUser: asOwner, membershipId: db.membershipId, nodeId: hidden._yay.nodeId });
 
-		const refused = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const refused = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: member.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -5411,7 +5450,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		const t = test_convex();
 		const { db, asUser, innerId } = await seed_read_only_lock_tree(t);
 
-		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+		const preflight = await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -5426,7 +5465,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: innerId });
 
-		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const created = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -5456,7 +5495,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		const t = test_convex();
 		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
 
-		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+		const preflight = await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -5483,7 +5522,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		// The prepared create (captured before the lock) refuses on the current lock in the final
 		// mutation and hands its uploads to the ledger.
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
-		const refused = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const refused = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -5519,7 +5558,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 			name: "Raced Target User",
 		});
 
-		const barrier = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+		const barrier = await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -5543,7 +5582,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		}
 
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
-		const refused = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const refused = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -5584,7 +5623,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 			name: "ABA Epoch User",
 		});
 
-		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+		const preflight = await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -5627,7 +5666,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		}
 		expect(await read_active_child({ t, db, parentId: files_ROOT_ID, name: "aba" })).toBeNull();
 
-		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const created = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -5680,7 +5719,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 			throw new Error(archived._nay.message);
 		}
 
-		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const created = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -5708,7 +5747,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		const { db, asUser, outerId, frozenId } = await seed_read_only_lock_tree(t);
 
 		// /outer/frozen is archived, so the create walks past it and would recreate the folder.
-		const preflight = await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, {
+		const preflight = await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -5724,7 +5763,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: frozenId });
 		await set_writable_or_throw({ asUser, membershipId: db.membershipId, nodeId: frozenId });
 
-		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
+		const created = await t.mutation(internal.files_nodes_create.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,

@@ -11,7 +11,7 @@ import { files_pending_target_validator } from "./schema.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { activities_db_get_by_source_id, activities_is_active } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
-import { r2_enqueue_object_deletion_job } from "./r2_client.ts";
+import { r2_enqueue_object_deletion_job } from "./r2_assets.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";

@@ -5,7 +5,7 @@ import { expect, vi } from "vitest";
 import { encodeStateAsUpdate } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { files_metadata_db_write_entries } from "./files_metadata.ts";
+import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import {
 	test_compact_metadata_catalog,
 	test_convex,
@@ -15,7 +15,7 @@ import {
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 } from "./setup.test.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_text } from "../shared/files-tiptap.ts";
 import type { Id } from "./_generated/dataModel.js";

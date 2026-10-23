@@ -13,10 +13,12 @@ import {
 import {
 	r2,
 	r2_confirmed_object_delete,
-	r2_enqueue_object_deletion_job,
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_server_side_copy,
 } from "./r2_client.ts";
+import {
+	r2_enqueue_object_deletion_job,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+} from "./r2_assets.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
 import {
@@ -3264,7 +3266,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		const assetId = await t.mutation(internal.r2.insert_asset, {
+		const assetId = await t.mutation(internal.r2_assets.insert_asset, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			kind: "content_snapshot",
@@ -3350,14 +3352,14 @@ describe("content pipeline crash orphans", () => {
 			// Do exactly what the create action does up to its PUTs: two unfinalized assets and both
 			// objects at their deterministic keys. The simulated crash means the atomic
 			// create_file_node publication never runs.
-			const yjsSnapshotAssetId = await t.mutation(internal.r2.insert_asset, {
+			const yjsSnapshotAssetId = await t.mutation(internal.r2_assets.insert_asset, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				kind: "yjs_snapshot",
 				size: 24,
 				createdBy: db.userId,
 			});
-			const versionSnapshotAssetId = await t.mutation(internal.r2.insert_asset, {
+			const versionSnapshotAssetId = await t.mutation(internal.r2_assets.insert_asset, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				kind: "content_snapshot",
@@ -3484,14 +3486,14 @@ describe("content pipeline crash orphans", () => {
 			// Do what the restore action does up to its PUTs: two content_snapshot assets (backup of
 			// the current state + restored content). The crash lands mid-PUTs: only the backup's
 			// bytes reached R2, and restore_snapshot never runs, so no files_snapshots row exists.
-			const currentSnapshotAssetId = await t.mutation(internal.r2.insert_asset, {
+			const currentSnapshotAssetId = await t.mutation(internal.r2_assets.insert_asset, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				kind: "content_snapshot",
 				size: 32,
 				createdBy: db.userId,
 			});
-			const restoredSnapshotAssetId = await t.mutation(internal.r2.insert_asset, {
+			const restoredSnapshotAssetId = await t.mutation(internal.r2_assets.insert_asset, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				kind: "content_snapshot",
@@ -3617,14 +3619,14 @@ describe("content pipeline crash orphans", () => {
 			// Do what the repair action does up to its PUTs: fresh replacement yjs_snapshot and
 			// content_snapshot assets with both objects written. The crash means
 			// finalize_file_yjs_repair never runs, so nothing references the fresh assets.
-			const freshYjsAssetId = await t.mutation(internal.r2.insert_asset, {
+			const freshYjsAssetId = await t.mutation(internal.r2_assets.insert_asset, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				kind: "yjs_snapshot",
 				size: 22,
 				createdBy: db.userId,
 			});
-			const freshContentAssetId = await t.mutation(internal.r2.insert_asset, {
+			const freshContentAssetId = await t.mutation(internal.r2_assets.insert_asset, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				kind: "content_snapshot",

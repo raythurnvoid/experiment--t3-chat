@@ -11,7 +11,7 @@ import { advance as advance_subtree } from "./files_subtree_ops.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import { files_metadata_preflight_frontmatter } from "../shared/files-metadata.ts";
 import {
 	type Metadata,

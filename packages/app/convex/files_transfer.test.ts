@@ -18,7 +18,8 @@ import {
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
-import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
+import { r2_server_side_copy } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import {
 	r2Objects,
 	mock_transfer_storage,

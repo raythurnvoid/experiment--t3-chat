@@ -8,7 +8,8 @@ import type { FunctionArgs } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "../convex/r2_client.ts";
+import { r2 } from "../convex/r2_client.ts";
+import { r2_PUT_MAY_ARRIVE_MARGIN_MS } from "../convex/r2_assets.ts";
 import type { ai_chat_ToolOutputRef } from "../shared/ai-chat-files.ts";
 import { crypto_sha256_hex } from "./crypto-utils.ts";
 

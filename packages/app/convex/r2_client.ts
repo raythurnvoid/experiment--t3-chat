@@ -5,14 +5,15 @@
 // or delete an R2 object (file-tree mutations, pending updates) import this lean module so a cold
 // Convex call does not pay the whole upload-pipeline module evaluation. A module that only needs a
 // read URL imports `r2_get_url.ts` instead, which does not load the AWS SDK.
+// Asset docs and durable cleanup handoff use `r2_assets.ts` without the object client.
 
 import { R2 } from "@convex-dev/r2";
 import type { RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { components, internal } from "./_generated/api.js";
-import type { Doc, Id } from "./_generated/dataModel.js";
-import { internalAction, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
+import { r2_BUCKET_FILES } from "./r2_assets.ts";
+import { internalAction, internalQuery, type ActionCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error } from "../server/convex-utils.ts";
@@ -24,12 +25,6 @@ const ETAG_WEAK_PREFIX_REGEX = /^W\//;
 const ETAG_QUOTES_REGEX = /^"|"$/g;
 const CONTENT_RANGE_TOTAL_REGEX = /\/(\d+)$/;
 const ASSET_KEY_REGEX = /^organizations\/[^/]+\/workspaces\/[^/]+\/assets\/([^/]+)$/;
-
-if (!process.env.R2_BUCKET_FILES) {
-	throw convex_error({ message: "R2_BUCKET_FILES is not set in Convex env" });
-}
-
-const R2_BUCKET_FILES = process.env.R2_BUCKET_FILES;
 
 if (!process.env.R2_ENDPOINT) {
 	throw convex_error({ message: "R2_ENDPOINT is not set in Convex env" });
@@ -50,25 +45,11 @@ if (!process.env.R2_SECRET_ACCESS_KEY) {
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 
 export const r2 = new R2(components.r2, {
-	bucket: R2_BUCKET_FILES,
+	bucket: r2_BUCKET_FILES,
 	endpoint: R2_ENDPOINT,
 	accessKeyId: R2_ACCESS_KEY_ID,
 	secretAccessKey: R2_SECRET_ACCESS_KEY,
 });
-
-export function r2_create_asset_key(args: {
-	organizationId: string;
-	workspaceId: string;
-	assetId: Id<"files_r2_assets">;
-}) {
-	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
-}
-
-/**
- * Wait 24 hours before checking an unfinished asset. This is much longer than the 15-minute upload
- * URL lifetime, so cleanup does not remove a normal upload that is still finishing.
- */
-export const r2_UNFINALIZED_ASSET_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Try one PUT up to 3 times. A PUT to R2 sometimes gets no answer (observed 2026-10-21: 2 of about
@@ -253,7 +234,7 @@ export const r2_server_side_copy = {
 			destinationKey: args.destinationKey,
 			expectedSize: args.expectedSize,
 			expectedEtag: args.expectedEtag,
-			bucket: R2_BUCKET_FILES,
+			bucket: r2_BUCKET_FILES,
 			endpoint: R2_ENDPOINT,
 			accessKeyId: R2_ACCESS_KEY_ID,
 			secretAccessKey: R2_SECRET_ACCESS_KEY,
@@ -378,12 +359,6 @@ export async function r2_copy_object_to_immutable_key(
 // number of times and does not report whether its last try worked. Keep the job until R2 confirms
 // the object is gone.
 
-/**
- * Wait five extra minutes after an upload URL expires. An upload may start just before the URL
- * expires. This gives it time to reach R2 before the final delete.
- */
-export const r2_PUT_MAY_ARRIVE_MARGIN_MS = 5 * 60 * 1000;
-
 /** Wait 30 seconds after the first failed delete. Later failures wait longer. */
 const DELETION_RETRY_INITIAL_MS = 30 * 1000;
 
@@ -405,114 +380,13 @@ export const r2_confirmed_object_delete = {
 	delete_object: async (ctx: ActionCtx, key: string) => {
 		await ctx.runAction(components.r2.lib.deleteR2Object, {
 			key,
-			bucket: R2_BUCKET_FILES,
+			bucket: r2_BUCKET_FILES,
 			endpoint: R2_ENDPOINT,
 			accessKeyId: R2_ACCESS_KEY_ID,
 			secretAccessKey: R2_SECRET_ACCESS_KEY,
 		});
 	},
 };
-
-/**
- * Create or update one R2 deletion job. Do this before deleting the asset or stage docs. If a crash
- * happens later, the exact R2 key still has a cleanup job.
- *
- * Increase `generation` when new bytes may have reached the key. A delete started for an older
- * generation cannot remove the newer job. Repeating the same R2 event makes no change.
- * `mode: "ensure"` creates a missing job without restarting an existing job. It may attach the
- * asset that waits for the existing job so the final delete can clear that asset's deadline.
- */
-export async function r2_enqueue_object_deletion_job(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		r2Key: string;
-		reason: Doc<"files_r2_object_deletion_jobs">["reason"];
-		/**
-		 * Set this when cleanup keeps the asset doc. The final delete clears the asset's
-		 * `unfinalizedExpiresAt`.
-		 */
-		assetId?: Id<"files_r2_assets">;
-		/**
-		 * Set for a stored tool output. The final delete releases its quota hold and deletes its doc.
-		 */
-		chatOutputObjectId?: Id<"ai_chat_output_objects">;
-		/**
-		 * The last time another upload may reach this key. Before this time, keep the job after a
-		 * successful delete and delete again later. Leave it empty when no later upload can arrive.
-		 */
-		putMayArriveUntil?: number;
-		r2EventId?: string;
-		mode?: "advance" | "ensure";
-	},
-) {
-	const now = Date.now();
-	const existing = await ctx.db
-		.query("files_r2_object_deletion_jobs")
-		.withIndex("by_r2_key", (q) => q.eq("r2Key", args.r2Key))
-		.first();
-	// The hold survives deletion of the asset doc, including a late R2 event handoff.
-	const reservation = existing?.privateStorageReservationId
-		? null
-		: await ctx.db
-				.query("files_private_storage_reservations")
-				.withIndex("by_r2_key", (q) => q.eq("resource.r2Key", args.r2Key))
-				.unique();
-	const privateStorageReservationId =
-		existing?.privateStorageReservationId ?? (reservation?.settlement.kind === "held" ? reservation._id : undefined);
-
-	if (!existing) {
-		const jobId = await ctx.db.insert("files_r2_object_deletion_jobs", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			r2Key: args.r2Key,
-			reason: args.reason,
-			assetId: args.assetId,
-			privateStorageReservationId,
-			chatOutputObjectId: args.chatOutputObjectId,
-			generation: 1,
-			lastR2EventId: args.r2EventId,
-			putMayArriveUntil: args.putMayArriveUntil,
-			failureCount: 0,
-			nextAttemptAt: now,
-		});
-		await ctx.scheduler.runAfter(0, internal.r2_client.process_object_deletion_job, { jobId, generation: 1 });
-		return;
-	}
-
-	if (existing.privateStorageReservationId === undefined && privateStorageReservationId !== undefined) {
-		await ctx.db.patch("files_r2_object_deletion_jobs", existing._id, { privateStorageReservationId });
-	}
-
-	if (args.mode === "ensure") {
-		if (existing.assetId === undefined && args.assetId !== undefined) {
-			await ctx.db.patch("files_r2_object_deletion_jobs", existing._id, { assetId: args.assetId });
-		}
-		return;
-	}
-
-	// Ignore the same R2 event when it arrives more than once.
-	if (args.r2EventId !== undefined && existing.lastR2EventId === args.r2EventId) {
-		return;
-	}
-
-	const generation = existing.generation + 1;
-	await ctx.db.patch("files_r2_object_deletion_jobs", existing._id, {
-		generation,
-		...(args.r2EventId === undefined ? {} : { lastR2EventId: args.r2EventId }),
-		// A new upload may make the safe final-delete time later. Never move it earlier.
-		...(args.putMayArriveUntil === undefined
-			? {}
-			: { putMayArriveUntil: Math.max(existing.putMayArriveUntil ?? 0, args.putMayArriveUntil) }),
-		failureCount: 0,
-		nextAttemptAt: now,
-	});
-	await ctx.scheduler.runAfter(0, internal.r2_client.process_object_deletion_job, {
-		jobId: existing._id,
-		generation,
-	});
-}
 
 export const get_object_deletion_job = internalQuery({
 	args: {
@@ -608,7 +482,7 @@ export const settle_object_deletion_job = internalMutation({
 		}
 
 		// R2 confirmed the final delete. Remove the job and clear the asset's cleanup deadline.
-		await ctx.runMutation(components.r2.lib.deleteMetadata, { bucket: R2_BUCKET_FILES, key: job.r2Key });
+		await ctx.runMutation(components.r2.lib.deleteMetadata, { bucket: r2_BUCKET_FILES, key: job.r2Key });
 		if (job.privateStorageReservationId) {
 			await files_private_storage_db_release(ctx, {
 				reservationId: job.privateStorageReservationId,

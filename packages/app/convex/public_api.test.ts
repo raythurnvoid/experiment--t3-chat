@@ -23,11 +23,13 @@ import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import {
-	r2_create_asset_key,
 	r2_confirmed_object_delete,
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_server_side_copy,
 } from "./r2_client.ts";
+import {
+	r2_create_asset_key,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+} from "./r2_assets.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { prepare_file_write } from "./public_api.ts";
 import { delete_paths, transfer_paths } from "./public_api_files_organize.ts";

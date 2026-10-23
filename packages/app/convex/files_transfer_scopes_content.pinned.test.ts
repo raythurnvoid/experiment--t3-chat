@@ -12,7 +12,7 @@ import {
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import { files_media_build_file_src, files_media_build_private_src } from "../shared/files-media.ts";
 import { files_ROOT_ID, type files_PendingTarget } from "../shared/files.ts";
 import {

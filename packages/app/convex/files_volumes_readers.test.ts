@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { ActionCtx } from "./_generated/server.js";
-import { files_metadata_db_write_entries } from "./files_metadata.ts";
-import { db_insert_file_text_content } from "./files_nodes_content.ts";
+import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
+import { db_insert_file_text_content } from "./files_nodes_create.ts";
 import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";

@@ -24,14 +24,15 @@ import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-ut
 import { files_upload_content_from_bytes } from "../server/files-upload-content.ts";
 import {
 	r2,
-	r2_create_asset_key,
 	r2_get_object_metadata,
-	r2_enqueue_object_deletion_job,
 	r2_fetch_object_from_bucket,
 	r2_put_object,
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
-	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
+import {
+	r2_create_asset_key,
+	r2_enqueue_object_deletion_job,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+} from "./r2_assets.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
@@ -71,7 +72,7 @@ import {
 import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { db_get_file_content_materialization_db_state } from "./files_nodes_db.ts";
-import { db_insert_file_text_content } from "./files_nodes_content.ts";
+import { db_insert_file_text_content } from "./files_nodes_create.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_resolve_read_target,
@@ -133,30 +134,6 @@ function extract_asset_id_from_r2_key(key: string) {
 
 	return assetId || null;
 }
-
-export const insert_asset = internalMutation({
-	args: {
-		organizationId: doc(app_convex_schema, "files_r2_assets").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_r2_assets").fields.workspaceId,
-		kind: doc(app_convex_schema, "files_r2_assets").fields.kind,
-		size: doc(app_convex_schema, "files_r2_assets").fields.size,
-		createdBy: doc(app_convex_schema, "files_r2_assets").fields.createdBy,
-	},
-	returns: v.id("files_r2_assets"),
-	handler: async (ctx, args) => {
-		const now = Date.now();
-		return await ctx.db.insert("files_r2_assets", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			kind: args.kind,
-			r2Bucket: r2.config.bucket,
-			size: args.size,
-			createdBy: args.createdBy,
-			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
-			updatedAt: now,
-		});
-	},
-});
 
 export const patch_asset = internalMutation({
 	args: {
@@ -1271,14 +1248,14 @@ export const finalize_uploaded_text_file = internalAction({
 		const nonCollaborative = serviceTarget?.nonCollaborative === true;
 		const yjsSnapshotAssetId = nonCollaborative
 			? null
-			: ((await ctx.runMutation(internal.r2.insert_asset, {
+			: ((await ctx.runMutation(internal.r2_assets.insert_asset, {
 					organizationId: fileNode.organizationId,
 					workspaceId: fileNode.workspaceId,
 					kind: "yjs_snapshot",
 					size: snapshotUpdate.byteLength,
 					createdBy: fileNode.createdBy,
 				})) as Id<"files_r2_assets">);
-		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
+		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2_assets.insert_asset, {
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
 			kind: "content_snapshot",

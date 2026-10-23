@@ -2553,7 +2553,7 @@ describe("enforcement", () => {
 			return [await insert_asset(), await insert_asset()];
 		});
 		const create_node = (path: string) =>
-			t.mutation(internal.files_nodes_content.create_file_node, {
+			t.mutation(internal.files_nodes_create.create_file_node, {
 				userId: fixture.memberId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,

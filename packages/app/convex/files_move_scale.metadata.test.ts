@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_ROOT_ID } from "../server/files.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import { files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import {
 	files_metadata_MAX_FRONTMATTER_FIELDS,

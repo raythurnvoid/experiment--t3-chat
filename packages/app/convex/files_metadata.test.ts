@@ -5,10 +5,12 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
-	files_metadata_db_insert_committed,
 	files_metadata_db_replace_pending,
-	files_metadata_db_write_entries,
 } from "./files_metadata.ts";
+import {
+	files_metadata_db_insert_committed,
+	files_metadata_db_write_entries,
+} from "./files_metadata_db.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_compact_metadata_catalog,

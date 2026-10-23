@@ -4,7 +4,7 @@ import { api, internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "../convex/files_nodes_create_db.ts";
-import { files_nodes_db_insert_file_content_docs } from "../convex/files_nodes_content.ts";
+import { files_nodes_db_insert_file_content_docs } from "../convex/files_nodes_create.ts";
 import { files_db_authorize_volume_read } from "../convex/files_volume_access.ts";
 import { r2 } from "../convex/r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";

@@ -3,7 +3,7 @@
 import type { MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api.js";
-import { r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
+import { r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_assets.ts";
 import { files_media_dependencies_db_retire } from "./files_media_dependencies.ts";
 
 export async function files_nodes_content_db_discard_transfer_file_attempt(

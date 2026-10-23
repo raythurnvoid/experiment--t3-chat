@@ -11,11 +11,13 @@ import {
 	test_spy_handler,
 } from "./setup.test.ts";
 import {
-	r2_create_asset_key,
 	r2_confirmed_object_delete,
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_server_side_copy,
 } from "./r2_client.ts";
+import {
+	r2_create_asset_key,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+} from "./r2_assets.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { copy_transfer_file } from "./files_nodes_content.ts";

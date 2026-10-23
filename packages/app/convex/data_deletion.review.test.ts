@@ -12,7 +12,7 @@ import {
 	test_spy_handler,
 } from "./setup.test.ts";
 import { hard_delete_user_data } from "./data_deletion.ts";
-import { files_metadata_db_write_entries } from "./files_metadata.ts";
+import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { files_metadata_stringify_entries_yaml, files_metadata_validate_entries } from "../shared/files-metadata.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
@@ -25,7 +25,8 @@ import {
 } from "./organizations.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
-import { r2_confirmed_object_delete, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_client.ts";
+import { r2_confirmed_object_delete } from "./r2_client.ts";
+import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_assets.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 

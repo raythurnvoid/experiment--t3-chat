@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { files_metadata_db_insert_committed } from "./files_metadata.ts";
+import { files_metadata_db_insert_committed } from "./files_metadata_db.ts";
 import { insert_tree_node, seed_grant_only_member } from "./files_nodes.setup.test.ts";
 import {
 	test_compact_metadata_catalog,

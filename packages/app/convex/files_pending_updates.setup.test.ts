@@ -14,10 +14,11 @@ import {
 } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
+import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
-import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
+import { r2_confirmed_object_delete } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_get_pending_update,

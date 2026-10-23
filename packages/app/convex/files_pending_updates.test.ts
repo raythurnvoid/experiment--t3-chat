@@ -19,7 +19,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_pending_updates_db_mark_content_for_rebase } from "./files_pending_updates.ts";
 import { billing_event } from "../server/billing.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import {
 	files_db_get_pending_update,
 	files_DRAFT_IDLE_EXPIRY_MS,

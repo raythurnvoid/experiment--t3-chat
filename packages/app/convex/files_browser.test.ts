@@ -20,7 +20,7 @@ import {
 import type { Id } from "./_generated/dataModel.js";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import {
 	runnerQueue,
 	runnerCalls,

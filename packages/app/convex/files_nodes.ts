@@ -201,11 +201,13 @@ import {
 import { quotas } from "../shared/quotas.ts";
 import {
 	r2,
+} from "./r2_client.ts";
+import {
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
-} from "./r2_client.ts";
+} from "./r2_assets.ts";
 import {
 	type files_nodes_WriteContext,
 	files_write_policy_db_is_within_scope,

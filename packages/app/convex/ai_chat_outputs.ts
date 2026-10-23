@@ -20,7 +20,8 @@ import { ai_chat_workspaces_source_validator } from "./schema.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { r2_enqueue_object_deletion_job, r2_fetch_object_range_from_bucket } from "./r2_client.ts";
+import { r2_fetch_object_range_from_bucket } from "./r2_client.ts";
+import { r2_enqueue_object_deletion_job } from "./r2_assets.ts";
 import {
 	ai_chat_outputs_storage_db_release,
 	ai_chat_outputs_storage_db_reserve,

@@ -27,7 +27,8 @@ import { server_path_normalize } from "../server/server-utils.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
-import { r2, r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
+import { r2 } from "./r2_client.ts";
+import { r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_assets.ts";
 
 /**
  * Create upload nodes and presigned R2 PUT urls for a batch of binary files.

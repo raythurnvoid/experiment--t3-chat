@@ -28,7 +28,8 @@ import app_convex_schema, {
 	files_pending_updates_state_family_validator,
 } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
-import { r2, r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_client.ts";
+import { r2 } from "./r2_client.ts";
+import { r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const PREPARING_TTL_MS = 30 * 60 * 1000;

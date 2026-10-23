@@ -14,7 +14,8 @@ import {
 } from "./setup.test.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
-import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
+import { r2_server_side_copy } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import {
 	r2Objects,
 	mock_transfer_storage,

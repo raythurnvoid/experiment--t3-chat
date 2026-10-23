@@ -77,7 +77,8 @@ import {
 } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { ai_chat_tool_output_keep } from "./ai-chat-tool-output.ts";
-import { r2, r2_fetch_object_range_from_bucket, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "../convex/r2_client.ts";
+import { r2, r2_fetch_object_range_from_bucket } from "../convex/r2_client.ts";
+import { r2_PUT_MAY_ARRIVE_MARGIN_MS } from "../convex/r2_assets.ts";
 import { crypto_sha256_hex } from "./crypto-utils.ts";
 import { bash_cat_command_create } from "./bash-cat-command.ts";
 import { bash_cp_command_create } from "./bash-cp-command.ts";

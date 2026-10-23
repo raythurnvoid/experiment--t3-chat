@@ -70,7 +70,8 @@ import {
 	files_browser_runner_usage_schema,
 	files_browser_runner_viewer_url,
 } from "../server/files-browser.ts";
-import { r2, r2_create_asset_key, r2_fetch_object_from_bucket, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
+import { r2, r2_fetch_object_from_bucket } from "./r2_client.ts";
+import { r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_assets.ts";
 import { r2_action_create_signed_download_url } from "./r2.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import type { files_nodes_get_file_text_content_db_state_by_path_Result } from "./files_nodes_content.ts";

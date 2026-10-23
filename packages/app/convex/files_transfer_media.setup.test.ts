@@ -14,7 +14,8 @@ import {
 import { files_transfer_db_prepare_copy_item } from "./files_transfer.ts";
 import { files_transfer_media_db_map_refs } from "./files_transfer_media.ts";
 import { files_media_dependencies_PAGE_SIZE } from "./files_media_dependencies.ts";
-import { r2_server_side_copy, r2_create_asset_key } from "./r2_client.ts";
+import { r2_server_side_copy } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import { files_media_build_file_src, files_media_build_private_src } from "../shared/files-media.ts";
 import type { files_PendingTarget } from "../shared/files.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";

@@ -189,7 +189,7 @@ describe("cleanup_file_yjs_task", () => {
 		});
 		const [yjsSnapshotAssetId, contentSnapshotAssetId] = await Promise.all(
 			(["yjs_snapshot", "content_snapshot"] as const).map((kind) =>
-				t.mutation(internal.r2.insert_asset, {
+				t.mutation(internal.r2_assets.insert_asset, {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					createdBy: db.userId,

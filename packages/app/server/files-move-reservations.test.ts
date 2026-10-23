@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import { Doc as YjsDoc, encodeStateAsUpdate } from "yjs";
 import { files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
-import { r2_create_asset_key } from "../convex/r2_client.ts";
+import { r2_create_asset_key } from "../convex/r2_assets.ts";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { MutationCtx } from "../convex/_generated/server.js";
 import { files_private_storage_db_reserve } from "../convex/files_private_storage.ts";

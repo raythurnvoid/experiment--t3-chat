@@ -10,7 +10,7 @@ import {
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
-import { r2_create_asset_key } from "./r2_client.ts";
+import { r2_create_asset_key } from "./r2_assets.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { activities_db_start } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
