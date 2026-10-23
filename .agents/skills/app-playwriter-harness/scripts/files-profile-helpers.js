@@ -59,6 +59,7 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 				});
 				frames.push({
 					direction: "sent",
+					socketId: event.requestId,
 					at: event.timestamp * 1000,
 					type: message.type,
 					requestId: Number.isFinite(message.requestId) ? message.requestId : undefined,
@@ -80,6 +81,7 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 				const modifications = Array.isArray(message.modifications) ? message.modifications : [];
 				frames.push({
 					direction: "received",
+					socketId: event.requestId,
 					at: event.timestamp * 1000,
 					type: message.type,
 					requestId: Number.isFinite(message.requestId) ? message.requestId : undefined,
@@ -142,7 +144,7 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 						}
 						return rig.originalSend.call(this, data);
 					};
-					const check = () => {
+					const check = (source) => {
 						const active = rig.active;
 						if (!active || active.start === undefined || active.predicateError) return;
 						try {
@@ -153,6 +155,7 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 							if (active.requireNewEditor && (!visibleEditor() || visibleEditor() === rig.previousEditor)) return;
 							if (!active.predicate()) return;
 							active.done = performance.now();
+							active.doneSource = source;
 							active.nodeId = new URL(location.href).searchParams.get("nodeId");
 							active.focusTag = document.activeElement?.tagName;
 							rig.frameRequest = requestAnimationFrame(() => {
@@ -163,10 +166,12 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 					};
 					rig.start = (event) => {
 						const active = rig.active;
-						if (!active || active.start !== undefined || event.type !== active.eventType) return;
+						if (!active || !event.target.closest?.(active.startSelector)) return;
+						if (event.isTrusted && ["pointerdown", "click"].includes(event.type)) active.nativeEvents.push({ type: event.type, at: performance.now() });
+						if (active.start !== undefined || event.type !== active.eventType) return;
 						const fileChange = active.allowUntrustedChange === true && active.eventType === "change";
 						if (!event.isTrusted && !fileChange) return;
-						if (!event.target.closest?.(active.startSelector) || active.startKey && event.key !== active.startKey) return;
+						if (active.startKey && event.key !== active.startKey) return;
 						active.start = performance.now();
 						active.startedAt = new Date().toISOString();
 						active.startVisibility = document.visibilityState;
@@ -174,7 +179,7 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 						active.eventIsTrusted = event.isTrusted;
 						active.startKind = event.isTrusted ? "trusted-browser-event" : "browser-file-change";
 						// Check after the event handlers, so capture does not finish on the old DOM.
-						rig.startCheck = setTimeout(check, 0);
+						rig.startCheck = setTimeout(() => check("after-event"), 0);
 					};
 					rig.visibilityListener = () => {
 						if (rig.active?.start !== undefined && rig.active.frame === undefined && document.visibilityState !== "visible") rig.active.backgroundDuringAction = true;
@@ -191,6 +196,7 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 							predicate: new Function(`return (${config.doneExpression})`),
 							milestonePredicates: Object.fromEntries(Object.entries(config.milestoneExpressions ?? {}).map(([name, value]) => [name, new Function(`return (${value})`)])),
 							milestones: {},
+							nativeEvents: [],
 							devtoolsDisabled: window.__REACT_DEVTOOLS_GLOBAL_HOOK__?.isDisabled === true,
 							visibility: document.visibilityState,
 							mountedRows: document.querySelectorAll(".FilesSidebarTreeItem").length,
@@ -220,6 +226,8 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 							start: active.start,
 							startedAt: active.startedAt,
 							done: active.done,
+							doneSource: active.doneSource,
+							nativeEvents: active.nativeEvents,
 							frame: active.frame,
 							readAt,
 							startVisibility: active.startVisibility,
@@ -248,7 +256,7 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 						const sendPatchRestored = WebSocket.prototype.send === rig.send;
 						if (sendPatchRestored) WebSocket.prototype.send = rig.originalSend;
 						for (const socket of rig.sockets) socket.removeEventListener("message", rig.responseListener);
-						for (const type of ["click", "keydown", "input", "change", "drop"]) document.removeEventListener(type, rig.start, true);
+						for (const type of ["pointerdown", "click", "keydown", "input", "change", "drop"]) document.removeEventListener(type, rig.start, true);
 						document.removeEventListener("visibilitychange", rig.visibilityListener);
 						window.removeEventListener("blur", rig.focusListener);
 						rig.observer.disconnect();
@@ -266,13 +274,13 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 						});
 						rig.performanceObserver.observe({ type: "longtask", buffered: true });
 					} catch { rig.performanceObserver?.disconnect(); rig.performanceObserver = null; }
-					rig.observer = new MutationObserver(check);
+					rig.observer = new MutationObserver(() => check("mutation-observer"));
 					rig.observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
 					WebSocket.prototype.send = rig.send;
-					for (const type of ["click", "keydown", "input", "change", "drop"]) document.addEventListener(type, rig.start, true);
+					for (const type of ["pointerdown", "click", "keydown", "input", "change", "drop"]) document.addEventListener(type, rig.start, true);
 					document.addEventListener("visibilitychange", rig.visibilityListener);
 					window.addEventListener("blur", rig.focusListener);
-					rig.poll = setInterval(check, 25);
+					rig.poll = setInterval(() => check("poll-upper-bound"), 25);
 					window.__filesProfile = rig;
 					return performance.timeOrigin;
 				}, ownerId);

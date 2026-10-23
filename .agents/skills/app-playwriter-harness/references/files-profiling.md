@@ -8,6 +8,9 @@ personal AI folder for runners, raw samples, logs, and the progress table. Keep 
 1. Check the browser profile and relay CWD. Follow the machine's QA profile rule.
 2. Install the harness on an owned tab. Disable React DevTools before its first navigation.
 3. Wait for the Files UI. Check the account, membership, viewport, and open editor.
+   Check the full expected frontend response URL set and exact bytes, plus backend source, before
+   the quiet-host check below. A response count alone is not proof. Recheck the URL set before
+   input, and check any later lazy-loaded responses before accepting the sample.
 4. Wait for tests, builds, and HMR to finish. Save the commit and hashes of changed source files.
    Call `page.bringToFront()` before timing. Check at least six quiet animation frames. A tab can
    report visible and focused while Edge runs its frames about once a second. Require a normal
@@ -27,8 +30,12 @@ handoff before a push. A clean HEAD can still roll back another task or reject r
 If a migration is active, wait for its data audit and final strict deployment. Do not hide the
 missing query. Then recheck the real app and loaded source before collecting samples.
 
-Use at least seven samples per scenario. Keep first open and cached reopen separate. Record each
-failure. Do not report p95 from seven samples. Pace Yjs pushes and snapshot restores by at least five
+Keep each frontend/backend source pin in a separate sample set. After a runtime change, preserve
+the old set and prove the new source before continuing. Never relabel earlier samples.
+
+Use at least seven samples per scenario. Keep first open in a page load separate from a reopen
+already visited by that same page. A fresh page does not prove a cold server or empty browser cache.
+Record each failure. Do not report p95 from seven samples. Pace Yjs pushes and snapshot restores by at least five
 seconds, including restoration writes. Push and snapshot writes use separate limiter buckets with
 the same two-token burst.
 
@@ -82,20 +89,30 @@ and result table together in the personal run folder.
 
 ## Record the right boundaries
 
-- Start inside the page at the native `click`, `keydown`, `input`, `change`, or `drop` event.
+- Start inside the page at the native `pointerdown`, `click`, `keydown`, `input`, `change`, or `drop` event.
+  File links can preload on pointerdown. Keep pointerdown and click times separate.
 - Record first feedback, confirmed state, required focus, and the next animation-frame callback.
   The callback does not prove paint or that typing works.
 - Record each outgoing Action/Mutation ID with `performance.now()`. Match its CDP send and reply.
   Use a numeric request ID and the function name to align the clocks. Query-set changes have no
   request ID; do not match them by an undefined ID.
+  Keep the CDP socket ID too. Request IDs can repeat after reconnect. Reject a sample with a
+  reconnect unless its clock join also proves the socket identity.
 - Map query IDs to function names from sent frames. Keep queries separate and keep their normal args.
-- Save times, IDs, status, and UTF-8 byte counts. Drop authentication frames, args, response bodies,
-  signed URLs, and private text.
+- Keep the generic trace to times, IDs, status, and UTF-8 byte counts. In a separate personal
+  recorder, retain exact query args and needed result fields only for allowlisted queries tied to
+  exact owned fixtures. This proves which folder, page, and result were observed. Never retain
+  authentication frames, tokens, signed URLs, unrelated payloads, or private text.
 - Clip long tasks to the measured window, including tasks that began before the event. Keep cached
   server records separate. A function/time-window match is inferred, not an exact request match.
 - Keep milestone observers alive after first feedback. Save incomplete and refused samples, but keep
   them out of successful UI medians. Check visibility and the DevTools stub for every sample.
+  `doneSource` says whether the result was seen by the DOM observer, after the input event, or by
+  the fallback poll. A polled result is an upper bound, not the exact DOM change time.
 - After each action, read current state and `getLatestLogs({ page, sinceLastCall: true })`.
+  A node read can be stale while a later job read has already succeeded. Keep that action pending.
+  Save at most one raw row per sample ID; only its final checked receipt accepts the timing.
+  Record readback times as upper bounds. Shell and relay delays are not app latency.
 
 ## Proven selectors and checks
 
@@ -103,15 +120,25 @@ Root creation uses `.FilesSidebarTopSection-actions-icon-button[aria-label="New 
 `.FilesSidebarTopSection-actions-icon-button[aria-label="New folder"]`. The folder toolbar opens a different flow. Read the new ID from the
 route. Do not infer it from virtual rows.
 
-For a file, require the matching provider from `window.__qa.filesYjs()` to have the new `nodeId`,
+For named creation, save the typed value, sent path, and returned name/path. The modal normalizes
+the input. Bind ownership to the exact accepted request/reply and returned ID, then check parent
+and content. If a name check fails after acceptance, recover that ID and repair the receipt;
+do not repeat the create. A matching name alone never proves ownership.
+
+In a dev build, require the matching provider from `window.__qa.filesYjs()` to have the new `nodeId`,
 `status === "synchronized"`, and `loadFailed === false`. Require a **new** editor DOM instance,
 `.FileEditorRichText-visible`, the expected text, and the new row's rename focus. The old root README
 also says Welcome and can remain visible after the URL changes. Text alone gives an early result.
+Production builds do not expose `window.__qa`. Record provider state and app promise resolution as
+unobserved there. Use raw CDP replies, exact route and new editor DOM checks, and later authenticated
+readback. Keep tokens and signed URLs inside the page.
 
 For a folder, require the new row and `input[aria-label="Rename <name>"]` to have focus. Record the
 folder table's ready state separately. Wait for that state before saving the raw sample, so its
 later milestone is kept. Require the new route ID, `aria-busy="false"`, ready sort state, and the
 expected row IDs. A new empty folder must have zero rows; the previous root table can still be ready.
+The current table selector is `[role="table"][aria-label="Folder contents"]`; it is a `div`.
+Rows use `data-file-node-id`. `data-sort-state` belongs to `.FileNodeViewFolderExplorer`, not the table.
 After rename, check the row, breadcrumb, and saved path.
 No-op rename sends no mutation, so report it as a client-only case.
 Rename now returns an accepted Move Activity. Record the reply, the published row/name/path,
@@ -173,6 +200,16 @@ from `window.__qa.convexSubscriptions()` with `app_convex.watchQuery(...).localQ
 Remove duplicate IDs in first-occurrence order and reject problem rows. Keep the current page size;
 do not load the whole workspace to verify search. Metadata equality can still have one result.
 Start normal tree timing on `.FilesSidebarTreeItem[data-file-id="<id>"]`, including its children.
+For one exact sidebar row, use `[role="treeitem"][data-file-id="<id>"]`. The child drag surface also
+has `data-file-id`, so that attribute alone matches two elements. Scope More actions to the outer
+treeitem. A failed menu setup does not permit repeating the accepted create.
+
+The sidebar mounts only nearby rows. If an exact owned ID is missing from the DOM, inspect
+`.FilesSidebar-content.app-scrollable`, then use the mouse wheel over that pane and read again.
+Do not assign `scrollTop` or infer ownership from the rendered name. Read its disabled title input's
+value; row `innerText` can be empty. Expand the exact parent through its native Expand button before
+opening a child. Archive can return to root and scroll the sidebar to the top, so recheck it before
+the next setup step. Keep these setup actions outside the timed submit.
 
 Properties must be scoped to `[data-files-properties-modal][data-open="true"]`. The current footer
 has one `Save` button for metadata and protection. It stays open after a successful save. Metadata
@@ -183,9 +220,18 @@ Copy/Paste keeps its clipboard in the page. Navigate inside the app after Copy. 
 a conflict can finish without a transfer dialog. Check the new row and then the completed run through
 `files_transfer_status.get` and `files_transfer_status.list_items`. A copied folder row can appear before its children
 finish. Completed move items can have `source: null`; use the output target and stored node path.
+Single-item transfers show Activity without opening a Transfer dialog. Never wait for that dialog
+as acceptance.
 
 The top More options menu has no root Paste item. To paste at root, focus the Files tree container
 and press Control+V. Focus on a folder row pastes into it. Focus on a file row pastes into its parent.
+Use a trusted Enter event for inline Rename and Control+V for Paste. Keep Copy's accept and seal
+replies separate. A matching new row is only the visible milestone; join its ID to the exact run
+output, then audit copied descendants and content before accepting the sample. One-child folder
+archives return a background run even when a file or empty-folder archive returns none.
+Read an archive run through `files_archive_runs.get` (`files_archive_runs:get` in CLI), using its
+exact returned run ID and membership. Transfer status uses `files_transfer_status`; do not send
+an archive run ID there.
 
 For a native drag, click the source first to clear other selected rows. Check `.FilesSidebarTree-dragging`
 after drag start and the target indicator before release. Empty `DataTransfer.types` is normal: the
@@ -262,10 +308,23 @@ Keep native creation timing separate from direct API comparisons. The native sid
 candidate module measures its full implementation, not module load alone. Keep normal cached queries
 separate. Alternate variant order and check stored text, parsed Yjs text, snapshots and asset state.
 
-To pin deployed code without a push, compare deployment module hashes with a local debug bundle.
-The installed Convex CLI supports `--debug-bundle-path`; require its `Skipping rest of push` result.
-Hash each module's source followed by its source map, or an empty string when absent. Source-only
-hashes give false differences. Keep credentials in memory and save only module paths and hashes.
+To pin deployed code without a push, follow the exact-source proof in `convex-admin-ops`.
+Compare the live module paths, environments, and raw source hashes with a clean frozen dependency
+build. Include schema and component config, which normal root function bundling can omit. Report
+auth, Node modules, external Node packages, child components, and source maps as separate coverage.
+Do not mix raw source hashes with source-plus-map hashes. Keep credentials in memory and save only
+paths and hashes. A function list alone does not prove code identity.
+
+For README cost, use matched sibling folders with the same row count and content shape. Give one
+the exact README filename and the other a neutral filename. Keep fresh and warm visits separate.
+Record rows-ready and README-editor-ready separately. Require a new visible editor with the exact
+owned text, bound to the README query's returned ID. Check a null README result for the control.
+Install observers before input. Record table DOM identity and requested page extent separately
+from exact query function/args, socket/query IDs, Add/Remove events, and results. A DOM replacement
+does not prove a React remount, query resubscription, or backend execution. Stable query IDs do not
+prove a stable mount either: the list can reuse its cached first page after a remount. Time Show
+more separately, after rows and any README editor are ready. Do not compare a large root with an
+empty folder and attribute the difference to README presence.
 
 Do not edit harness Markdown during a timed batch. Vite can watch it for CSS changes and send HMR.
 Check long-running test workers too. Quiet animation frames do not prove the host CPU is quiet.
@@ -328,8 +387,8 @@ dev network noise can be several hundred ms, so compare quiet pairs as well as m
 
 For a folder press, the assertion is that `get_folder_sort` goes out before the release (without
 the press start it goes out about 150ms after it). Also count `ModifyQuerySet` frames that name the
-folder id, per `udfPath`: one each means the view joined the early subscriptions. Only a folder's
-first open in a page load is cold, so reload between passes and alternate off and on across the
+folder id, per `udfPath`: one each means the view joined the early subscriptions. For a folder's
+first open in a page load, reload between passes and alternate off and on across the
 folders of one pass. Learn each folder's child ids in a first pass, and mark rows shown only when
 every row link points to one of them.
 
