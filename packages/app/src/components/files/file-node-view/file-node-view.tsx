@@ -4595,7 +4595,7 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 	);
 
 	return (
-		<MyPopover open={open} setOpen={handleOpenChange}>
+		<MyPopover placement="bottom-end" open={open} setOpen={handleOpenChange}>
 			<MyPopoverTrigger>
 				<MyIconButton variant="outline" tooltip="Columns">
 					<MyIconButtonIcon>
