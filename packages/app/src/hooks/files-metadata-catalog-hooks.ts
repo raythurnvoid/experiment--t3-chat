@@ -139,6 +139,11 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 		 */
 		loadedRows: isHolding ? held.loadedRows : loadedRows,
 		updating: loading,
+		/**
+		 * The first page loads and no rows of this scope are held, so there is nothing to show yet.
+		 * Callers show skeleton rows then.
+		 */
+		noRowsYet: loading && !isHolding,
 		status: loading
 			? ("LoadingFirstPage" as const)
 			: streams.some((stream) => stream.status === "LoadingMore")

@@ -554,8 +554,9 @@ and `find` also keep raw name order.
   text as a key prefix
   to the server (start of the key, ignoring case, like the search box); the short Built-in list still
   matches locally, anywhere in the name. Show more fields loads the next page. Rows of an older text
-  stay, disabled. With no rows to keep, the Metadata part shows nothing until its page arrives, so the menu only grows. A failed read shows "Fields could not be loaded" and
-  Retry. A chosen key that the page lacks stays listed and removable.
+  stay, disabled. With no rows to keep, the menu shows one skeleton row per Built-in row and per
+  chosen key, then all real rows at once ("Loading skeletons are all or nothing" in the `ui-design`
+  skill). A failed read keeps the Built-in rows and shows "Fields could not be loaded" and Retry. A chosen key that the page lacks stays listed and removable.
 - Column choices live only in the URL `columns` param, like `name,updated,metadata.stage`, so a link
   or a reload shows the same columns. No param shows the default columns, and Reset drops it. Each
   change adds a history entry, so Back undoes it, like a committed filter token. Opening another node

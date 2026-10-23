@@ -853,7 +853,8 @@ live only in the URL. Do not write file metadata or shared sorts for this check.
   goes to the server as a key prefix (start of the key, no case) after 150 ms; Built-in rows match
   locally. `Show more fields` asks every unfinished stream for 50 more; it has `aria-busy` while it
   loads. Read `data-fields-state` on the status child, not the dialog: `loading`
-  (older rows stay, disabled, or with none the Metadata part is empty), `ready` and `failed`. An empty
+  (older rows stay, disabled, or with none the whole list is `.FileNodeViewFolderExplorerColumns-skeleton-row`
+  rows, one per Built-in row and chosen key), `ready` and `failed`. An empty
   finished list says `No fields match` or `No fields start with <text>`. On failure the menu says
   `Fields could not be loaded`; `Retry` restarts page 1. A new key shows only after the catalog
   compactor runs (about 5 to 15 seconds). Keys of restricted children show to the owner only, also

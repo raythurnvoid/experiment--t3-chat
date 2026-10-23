@@ -268,7 +268,8 @@ describe("FilesSearchInput", () => {
 		// The other key's first page keeps loading.
 		test_catalog.loading.add("");
 		fireEvent.change(input, { target: { value: "metadata.stage:" } });
-		expect(screen.getByRole("option", { name: "* (any value)" }).getAttribute("aria-disabled")).toBe("true");
+		// Skeleton rows stand in for all rows, `*` too, until the first page arrives.
+		expect(within(screen.getByRole("group", { name: "Values for metadata.stage" })).queryAllByRole("option")).toEqual([]);
 		expect(screen.queryByRole("option", { name: "open" })).toBeNull();
 	});
 

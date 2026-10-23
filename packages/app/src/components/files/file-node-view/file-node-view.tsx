@@ -4425,7 +4425,17 @@ type FileNodeViewFolderExplorerColumns_ClassNames =
 	| "FileNodeViewFolderExplorerColumns-group-title"
 	| "FileNodeViewFolderExplorerColumns-fields"
 	| "FileNodeViewFolderExplorerColumns-field"
+	| "FileNodeViewFolderExplorerColumns-fields-state"
+	| "FileNodeViewFolderExplorerColumns-skeleton-row"
+	| "FileNodeViewFolderExplorerColumns-skeleton-box"
+	| "FileNodeViewFolderExplorerColumns-skeleton-label"
 	| "FileNodeViewFolderExplorerColumns-actions";
+
+/**
+ * The Built-in group, for the error fallback. `CatchBoundary` gives its fallback only `error` and
+ * `reset`, so the group reaches it here. A failed key read then keeps the built-in columns usable.
+ */
+const FileNodeViewFolderExplorerColumnsBuiltInContext = createContext<ReactNode>(null);
 
 const FileNodeViewFolderExplorerColumnsGroup = memo(function FileNodeViewFolderExplorerColumnsGroup(props: {
 	/**
@@ -4483,8 +4493,14 @@ const FileNodeViewFolderExplorerColumnsGroup = memo(function FileNodeViewFolderE
 const FileNodeViewFolderExplorerColumnsError = memo(function FileNodeViewFolderExplorerColumnsError(
 	props: ErrorComponentProps,
 ) {
+	const builtInGroup = use(FileNodeViewFolderExplorerColumnsBuiltInContext);
+
 	return (
-		<div data-fields-state="failed">
+		<div
+			data-fields-state="failed"
+			className={"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+		>
+			{builtInGroup}
 			<p role="status">Fields could not be loaded</p>
 			<MyButton variant="outline" onClick={props.reset}>
 				Retry
@@ -4494,11 +4510,71 @@ const FileNodeViewFolderExplorerColumnsError = memo(function FileNodeViewFolderE
 });
 
 /**
- * The Metadata group of the Columns menu: the keys on the folder's children that start with the
- * search text, in pages, then the chosen metadata columns that match it. Rows from an older text
- * stay, disabled, until the new first page arrives.
+ * The column groups while the first page of keys loads: the real group titles, and one skeleton
+ * row for each column the menu will surely list. The page can only add rows.
  */
-const FileNodeViewFolderExplorerColumnsKeys = memo(function FileNodeViewFolderExplorerColumnsKeys(props: {
+const FileNodeViewFolderExplorerColumnsSkeleton = memo(function FileNodeViewFolderExplorerColumnsSkeleton(props: {
+	groups: Array<{ title: string; rows: number }>;
+}) {
+	const { groups } = props;
+
+	return (
+		<div
+			data-fields-state="loading"
+			className={"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+		>
+			{groups
+				.filter((group) => group.rows > 0)
+				.map((group) => (
+					<div
+						key={group.title}
+						aria-hidden="true"
+						className={"FileNodeViewFolderExplorerColumns-group" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+					>
+						<p
+							className={
+								"FileNodeViewFolderExplorerColumns-group-title" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+							}
+						>
+							{group.title}
+						</p>
+						<div className={"FileNodeViewFolderExplorerColumns-fields" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
+							{Array.from({ length: group.rows }, (_, index) => (
+								<div
+									key={index}
+									className={
+										"FileNodeViewFolderExplorerColumns-skeleton-row" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+									}
+								>
+									<MySkeleton
+										className={
+											"FileNodeViewFolderExplorerColumns-skeleton-box" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+										}
+									/>
+									<MySkeleton
+										className={
+											"FileNodeViewFolderExplorerColumns-skeleton-label" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+										}
+									/>
+								</div>
+							))}
+						</div>
+					</div>
+				))}
+		</div>
+	);
+});
+
+/**
+ * The column groups of the Columns menu. Built-in holds the fixed columns that match the search
+ * text. Metadata holds the keys on the folder's children that start with the search text, in pages,
+ * then the chosen metadata columns that match it. Rows from an older text stay, disabled, until the
+ * new first page arrives.
+ *
+ * Until the first page arrives, skeleton rows stand in for every row, built-in ones too. So the
+ * rows show all at once, and the menu keeps its size or grows.
+ */
+const FileNodeViewFolderExplorerColumnsFields = memo(function FileNodeViewFolderExplorerColumnsFields(props: {
 	name: string;
 	folderId: app_convex_Doc<"files_nodes">["parentId"];
 	prefix: string;
@@ -4506,24 +4582,37 @@ const FileNodeViewFolderExplorerColumnsKeys = memo(function FileNodeViewFolderEx
 	 * The search text is newer than `prefix`.
 	 */
 	stale: boolean;
+	builtInRows: number;
 	chosenFields: string[];
-	/**
-	 * No built-in column matches, so an empty page says so.
-	 */
-	showNoMatch: boolean;
 	columns: string[];
 	onColumnsChange: (columns: string[]) => void;
 }) {
-	const { name, folderId, prefix, stale, chosenFields, showNoMatch, columns, onColumnsChange } = props;
+	const { name, folderId, prefix, stale, builtInRows, chosenFields, columns, onColumnsChange } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const isOwner = FilesTreeProvider.useIsOwner();
+	const builtInGroup = use(FileNodeViewFolderExplorerColumnsBuiltInContext);
 
 	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix, isOwner });
 	const isDisabled = stale || keys.updating;
 	const fields = [...new Set([...keys.rows, ...chosenFields])];
 
+	if (keys.noRowsYet) {
+		return (
+			<FileNodeViewFolderExplorerColumnsSkeleton
+				groups={[
+					{ title: "Built-in", rows: builtInRows },
+					{ title: "Metadata", rows: chosenFields.length },
+				]}
+			/>
+		);
+	}
+
 	return (
-		<div data-fields-state={isDisabled ? "loading" : "ready"}>
+		<div
+			data-fields-state={isDisabled ? "loading" : "ready"}
+			className={"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+		>
+			{builtInGroup}
 			{fields.length > 0 && (
 				<FileNodeViewFolderExplorerColumnsGroup
 					name={name}
@@ -4534,9 +4623,7 @@ const FileNodeViewFolderExplorerColumnsKeys = memo(function FileNodeViewFolderEx
 					onColumnsChange={onColumnsChange}
 				/>
 			)}
-			{/* Show nothing while the first page loads. A loading row that goes away would make the menu
-			    shrink when the page arrives, so the menu only grows. */}
-			{!isDisabled && fields.length === 0 && showNoMatch && keys.status === "Exhausted" && (
+			{!isDisabled && fields.length === 0 && builtInRows === 0 && keys.status === "Exhausted" && (
 				<p role="status">{prefix === "" ? "No fields match" : `No fields start with ${prefix}`}</p>
 			)}
 			{(keys.status === "CanLoadMore" || keys.status === "LoadingMore") && (
@@ -4620,32 +4707,37 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 						/>
 					</MyInputArea>
 				</MyInput>
-				{builtInFields.length > 0 && (
-					<FileNodeViewFolderExplorerColumnsGroup
-						name={id}
-						title="Built-in"
-						fields={builtInFields}
-						columns={columns}
-						disabled={false}
-						onColumnsChange={onColumnsChange}
-					/>
-				)}
-				<CatchBoundary
-					getResetKey={() => `${membershipId}\n${folderId}\n${prefixDebounced}`}
-					onCatch={handleKeysError}
-					errorComponent={FileNodeViewFolderExplorerColumnsError}
+				<FileNodeViewFolderExplorerColumnsBuiltInContext.Provider
+					value={
+						builtInFields.length > 0 && (
+							<FileNodeViewFolderExplorerColumnsGroup
+								name={id}
+								title="Built-in"
+								fields={builtInFields}
+								columns={columns}
+								disabled={false}
+								onColumnsChange={onColumnsChange}
+							/>
+						)
+					}
 				>
-					<FileNodeViewFolderExplorerColumnsKeys
-						name={id}
-						folderId={folderId}
-						prefix={prefixDebounced}
-						stale={prefix !== prefixDebounced}
-						chosenFields={chosenFields}
-						showNoMatch={builtInFields.length === 0}
-						columns={columns}
-						onColumnsChange={onColumnsChange}
-					/>
-				</CatchBoundary>
+					<CatchBoundary
+						getResetKey={() => `${membershipId}\n${folderId}\n${prefixDebounced}`}
+						onCatch={handleKeysError}
+						errorComponent={FileNodeViewFolderExplorerColumnsError}
+					>
+						<FileNodeViewFolderExplorerColumnsFields
+							name={id}
+							folderId={folderId}
+							prefix={prefixDebounced}
+							stale={prefix !== prefixDebounced}
+							builtInRows={builtInFields.length}
+							chosenFields={chosenFields}
+							columns={columns}
+							onColumnsChange={onColumnsChange}
+						/>
+					</CatchBoundary>
+				</FileNodeViewFolderExplorerColumnsBuiltInContext.Provider>
 				{columns.length >= files_table_MAX_COLUMNS && <p>Show up to 8 columns. Hide one to add another.</p>}
 				<div className={"FileNodeViewFolderExplorerColumns-actions" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
 					<MyButton variant="outline" onClick={() => onColumnsChange([...files_table_DEFAULT_COLUMNS])}>

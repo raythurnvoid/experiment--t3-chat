@@ -855,9 +855,10 @@ policy and the gesture at the same time.
 
 ## Prove A Popover Never Shrinks While It Loads
 
-A popover must only grow while its data arrives (see "Popovers only grow while they load" in the
-`ui-design` skill). A first page often lands in under 200 ms, so a later read misses a placeholder that
-came and went. Start a per-frame sampler before the click, in the same `-f` runner:
+A popover shows skeleton rows first and must never shrink when its data arrives (see "Loading
+skeletons are all or nothing" in the `ui-design` skill). A first page often lands in under 200 ms, so
+a later read misses a skeleton that came and went. Start a per-frame sampler before the click, in the
+same `-f` runner:
 
 ```js
 await state.page.bringToFront();
@@ -880,7 +881,10 @@ console.log(JSON.stringify(heights)); // each nonzero height must be >= the one 
 
 Other popover selectors: `.FileNodeViewFolderFilterBar-popover` (open it by clicking the
 `Filter and sort this folder` combobox) and `.FilesSearchInput-popover` (the `Search files…` combobox).
-The sampler stops by itself, so nothing stays installed in the page.
+Their skeleton rows are `.FileNodeViewFolderExplorerColumns-skeleton-row`,
+`.FileNodeViewFolderFilterBar-suggestions-skeleton-row` and `.FilesSearchInput-suggestions-skeleton-row`;
+count them in each frame too, to check the all-or-nothing swap. The sampler stops by itself, so
+nothing stays installed in the page.
 
 ## Propose A Durable Memory
 

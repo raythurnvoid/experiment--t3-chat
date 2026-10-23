@@ -698,10 +698,10 @@ and values from the catalog. Each read is one index range, so it costs the same 
   prefix. A bare `st` sends `frontmatter.st` and `metadata.st`. A start of a namespace name (`meta`,
   `front`) sends that whole namespace (`metadata.`). The hook pages each prefix and joins the pages.
 - **Held rows.** While a new prefix waits for its debounce or its first page, the list keeps the last
-  rows, disabled. With no rows to keep, the loading part shows nothing: no loading text and no
-  skeleton, so the menu only grows when the page arrives (see "Popovers only grow while they load" in
-  the `ui-design` skill). Held rows clear when the membership, the folder or (for values) the key
-  changes.
+  rows, disabled. With no rows to keep (the hook's `noRowsYet`), the menu shows skeleton rows for
+  every row it will surely show, the static rows too, then all real rows at once (see "Loading
+  skeletons are all or nothing" in the `ui-design` skill). Held rows clear when the membership, the
+  folder or (for values) the key changes.
 - **Show more.** "Show more keys", "Show more values" and "Show more fields" load 50 more rows of every
   stream that has more. There is no row cut in the browser. While a page loads the row has
   `aria-busy` and ignores clicks.

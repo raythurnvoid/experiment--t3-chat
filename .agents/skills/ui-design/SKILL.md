@@ -46,19 +46,24 @@ Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a descri
 - Use `MyRadioButtonLabel` and `MyRadioButtonDescription`, or `MyCheckboxButtonContent`, `MyCheckboxButtonLabel` and `MyCheckboxButtonDescription`. Do not write a local label class for them.
 - A disabled button dims its label and description with the rest of the button.
 
-## Popovers only grow while they load
+## Loading skeletons are all or nothing
 
-A popover, menu or suggestion list must not shrink when its data arrives. A shrink right after
-opening looks like the popover is shaking.
+A popover, menu or suggestion list opens at once, with skeleton rows, and keeps its size when the
+data arrives. This is a product rule, decided by the user.
 
-- Show the parts that are ready at once.
-- For the part that is still loading, show nothing: no loading text and no skeleton rows. A
-  placeholder that goes away makes the popover shrink when the result is smaller.
-- When the result arrives, the popover may grow. If the result adds nothing, the popover keeps its size.
-- While newer text loads, older rows may stay on screen, disabled.
+- Show one skeleton row for every row the list will surely show. Count the rows you already know
+  (the six default columns, the built-in fields, the static groups) and the rows the first page
+  always adds (at least one: a result, Show more, or a "nothing found" message). Use the real group
+  headings, so only the rows change.
+- All or nothing: while the first page loads, show no real rows at all, not even the ones that are
+  ready. When the page arrives, replace every skeleton row with every real row in one step. Never show
+  some real rows and then skeleton rows, or rows that appear one group after another.
+- Make a skeleton row exactly as tall as a real row. Then the default case does not resize at all.
+- The list may grow when the data has more rows than the skeleton. It must never shrink.
+- While newer text loads, older rows of the same list stay on screen, disabled, with no skeleton.
 
-Full pages and panels that fill a fixed area (the folder table, the file editors) may still use
-skeletons, because their size does not depend on the content.
+`useFilesMetadataCatalogPages` gives `noRowsYet` for this: the first page loads and no older rows
+are held. The Columns menu, the folder filter bar and the files search box follow this rule.
 
 ## Phone layout
 

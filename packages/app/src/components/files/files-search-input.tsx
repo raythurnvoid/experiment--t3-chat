@@ -1,5 +1,5 @@
 import "./files-search-input.css";
-import React, { memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { createContext, memo, use, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useQueries, useQuery } from "convex/react";
@@ -33,6 +33,7 @@ import {
 	MyInputIcon,
 	type MyInputArea_Props,
 } from "@/components/my-input.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
 	files_metadata_catalog_AREA_VALUES_MESSAGE,
 	files_metadata_catalog_key_order,
@@ -168,26 +169,58 @@ const FilesSearchInputSuggestionsMore = memo(function FilesSearchInputSuggestion
 	);
 });
 
-const FilesSearchInputSuggestionsError = memo(function FilesSearchInputSuggestionsError(props: ErrorComponentProps) {
+/**
+ * Skeleton rows while a first page loads. They are not options, so they cannot be picked.
+ */
+const FilesSearchInputSuggestionsSkeleton = memo(function FilesSearchInputSuggestionsSkeleton(props: { rows: number }) {
 	return (
-		<MyComboboxGroup heading="Suggestions">
-			<FilesSearchInputSuggestionsMessage>Could not load suggestions.</FilesSearchInputSuggestionsMessage>
-			<MyComboboxItem
-				value="retry"
-				hideOnClick={false}
-				setValueOnClick={false}
-				className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
-				onClick={props.reset}
-			>
-				Retry
-			</MyComboboxItem>
-		</MyComboboxGroup>
+		<div aria-hidden="true">
+			{Array.from({ length: props.rows }, (_, index) => (
+				<div key={index} className={cn("FilesSearchInput-suggestions-skeleton-row" satisfies FilesSearchInput_ClassNames)}>
+					<MySkeleton
+						className={cn("FilesSearchInput-suggestions-skeleton-label" satisfies FilesSearchInput_ClassNames)}
+					/>
+				</div>
+			))}
+		</div>
 	);
 });
 
 /**
- * Saved keys that start with the typed text, in pages. Rows from an older text stay, disabled,
- * until the new first page arrives.
+ * The File details group that shows under the saved keys. The key rows show it, or skeleton rows in
+ * its place while the first page loads. `CatchBoundary` gives its fallback only `error` and `reset`,
+ * so the fallback reads it here too. A failed key read then keeps the file fields usable.
+ */
+const FilesSearchInputFileFieldsContext = createContext<{ group: ReactNode; rows: number }>({ group: null, rows: 0 });
+
+const FilesSearchInputSuggestionsError = memo(function FilesSearchInputSuggestionsError(props: ErrorComponentProps) {
+	const fileFields = use(FilesSearchInputFileFieldsContext);
+
+	return (
+		<>
+			<MyComboboxGroup heading="Suggestions">
+				<FilesSearchInputSuggestionsMessage>Could not load suggestions.</FilesSearchInputSuggestionsMessage>
+				<MyComboboxItem
+					value="retry"
+					hideOnClick={false}
+					setValueOnClick={false}
+					className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+					onClick={props.reset}
+				>
+					Retry
+				</MyComboboxItem>
+			</MyComboboxGroup>
+			{fileFields.group}
+		</>
+	);
+});
+
+/**
+ * Saved keys that start with the typed text, in pages, then the File details group. Rows from an
+ * older text stay, disabled, until the new first page arrives.
+ *
+ * Until the first page arrives, skeleton rows stand in for every row, the file fields too. So the
+ * rows show all at once, and the menu keeps its size or grows.
  */
 const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -207,6 +240,7 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 	onUnmatched: (prefix: string) => void;
 }) {
 	const { membershipId, folderPath, prefix, stale, onPick, onUnmatched } = props;
+	const fileFields = use(FilesSearchInputFileFieldsContext);
 
 	const { workspaceId } = AppTenantProvider.useContext();
 	const hasWorkspaceRead = useFilesMetadataHasWorkspaceRead(workspaceId);
@@ -241,62 +275,79 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 		kindsByKey.set(row.fieldPath, kinds);
 	}
 
+	if (keys.noRowsYet) {
+		return (
+			<>
+				<MyComboboxGroup heading="Properties">
+					{/* The page always shows one row: a key, Show more, or a message. */}
+					<FilesSearchInputSuggestionsSkeleton rows={1} />
+				</MyComboboxGroup>
+				{fileFields.rows > 0 && (
+					<MyComboboxGroup heading="File details" separator>
+						<FilesSearchInputSuggestionsSkeleton rows={fileFields.rows} />
+					</MyComboboxGroup>
+				)}
+			</>
+		);
+	}
+
 	return (
-		<MyComboboxGroup heading="Properties">
-			{keys.rows.map((key) => {
-				const kinds = [...(kindsByKey.get(key.fieldPath) ?? [])]
-					.map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind])
-					.join(", ");
-				const metadataKind = key.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX) ? "frontmatter" : "metadata";
-				return (
-					<MyComboboxItem
-						key={key.fieldPath}
-						value={key.fieldPath}
+		<>
+			<MyComboboxGroup heading="Properties">
+				{keys.rows.map((key) => {
+					const kinds = [...(kindsByKey.get(key.fieldPath) ?? [])]
+						.map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind])
+						.join(", ");
+					const metadataKind = key.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX) ? "frontmatter" : "metadata";
+					return (
+						<MyComboboxItem
+							key={key.fieldPath}
+							value={key.fieldPath}
+							disabled={isDisabled}
+							hideOnClick={false}
+							setValueOnClick={false}
+							className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+							title={`${kinds} · ${metadataKind}`}
+							onClick={() => {
+								if (!isDisabled) {
+									onPick(key.fieldPath);
+								}
+							}}
+						>
+							<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
+								{key.fieldPath}
+							</span>
+							<span className={cn("FilesSearchInput-suggestion-hint" satisfies FilesSearchInput_ClassNames)}>
+								{kinds}
+							</span>
+						</MyComboboxItem>
+					);
+				})}
+				{isDisabled ? null : hasWorkspaceRead === false && keys.rows.length === 0 ? (
+					// A member without workspace read gets keys only in a restricted folder they can open. Say why.
+					<FilesSearchInputSuggestionsMessage>
+						{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
+					</FilesSearchInputSuggestionsMessage>
+				) : keys.rows.length === 0 ? (
+					<FilesSearchInputSuggestionsMessage>
+						{prefix === "" ? "No saved keys yet" : `No keys start with ${prefix}`}
+					</FilesSearchInputSuggestionsMessage>
+				) : null}
+				{keys.status === "CanLoadMore" || keys.status === "LoadingMore" ? (
+					<FilesSearchInputSuggestionsMore
+						label="Show more keys"
 						disabled={isDisabled}
-						hideOnClick={false}
-						setValueOnClick={false}
-						className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
-						title={`${kinds} · ${metadataKind}`}
+						loading={keys.status === "LoadingMore"}
 						onClick={() => {
-							if (!isDisabled) {
-								onPick(key.fieldPath);
+							if (!isDisabled && keys.status === "CanLoadMore") {
+								keys.loadMore();
 							}
 						}}
-					>
-						<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
-							{key.fieldPath}
-						</span>
-						<span className={cn("FilesSearchInput-suggestion-hint" satisfies FilesSearchInput_ClassNames)}>
-							{kinds}
-						</span>
-					</MyComboboxItem>
-				);
-			})}
-			{/* Show nothing while the first page loads. A loading row that goes away would make the menu
-			    shrink when the page arrives, so the menu only grows. */}
-			{isDisabled ? null : hasWorkspaceRead === false && keys.rows.length === 0 ? (
-				// A member without workspace read gets keys only in a restricted folder they can open. Say why.
-				<FilesSearchInputSuggestionsMessage>
-					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
-				</FilesSearchInputSuggestionsMessage>
-			) : keys.rows.length === 0 ? (
-				<FilesSearchInputSuggestionsMessage>
-					{prefix === "" ? "No saved keys yet" : `No keys start with ${prefix}`}
-				</FilesSearchInputSuggestionsMessage>
-			) : null}
-			{keys.status === "CanLoadMore" || keys.status === "LoadingMore" ? (
-				<FilesSearchInputSuggestionsMore
-					label="Show more keys"
-					disabled={isDisabled}
-					loading={keys.status === "LoadingMore"}
-					onClick={() => {
-						if (!isDisabled && keys.status === "CanLoadMore") {
-							keys.loadMore();
-						}
-					}}
-				/>
-			) : null}
-		</MyComboboxGroup>
+					/>
+				) : null}
+			</MyComboboxGroup>
+			{fileFields.group}
+		</>
 	);
 });
 
@@ -357,6 +408,17 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 		push(value);
 	}
 
+	// Wait for the key's kinds too, so `true` and `false` do not show after the other rows.
+	// The page always shows one row: `*`, a value, Show more, or a message. A member who can read
+	// the workspace also gets the area note under it.
+	if (values.noRowsYet || field === undefined) {
+		return (
+			<MyComboboxGroup heading={`Values for ${fieldPath}`}>
+				<FilesSearchInputSuggestionsSkeleton rows={isOwner === false && hasWorkspaceRead !== false ? 2 : 1} />
+			</MyComboboxGroup>
+		);
+	}
+
 	return (
 		<MyComboboxGroup heading={`Values for ${fieldPath}`}>
 			{rows.map((row) => (
@@ -377,13 +439,11 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 					</span>
 				</MyComboboxItem>
 			))}
-			{/* Like the key rows: show nothing while the first page loads, so the menu only grows. */}
 			{isDisabled ? null : isNoAccess ? (
 				<FilesSearchInputSuggestionsMessage>
 					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
 				</FilesSearchInputSuggestionsMessage>
-			) : rows.length === 0 && values.status === "Exhausted" && field !== undefined ? (
-				// Wait for the key's kinds too: a boolean key adds `true` and `false` when they load.
+			) : rows.length === 0 && values.status === "Exhausted" ? (
 				<FilesSearchInputSuggestionsMessage>{`No saved values start with ${prefix}`}</FilesSearchInputSuggestionsMessage>
 			) : null}
 			{values.status === "CanLoadMore" || values.status === "LoadingMore" ? (
@@ -422,6 +482,8 @@ type FilesSearchInput_ClassNames =
 	| "FilesSearchInput-suggestion"
 	| "FilesSearchInput-suggestion-label"
 	| "FilesSearchInput-suggestion-hint"
+	| "FilesSearchInput-suggestions-skeleton-row"
+	| "FilesSearchInput-suggestions-skeleton-label"
 	| "FilesSearchInput-syntax";
 
 export type FilesSearchInput_Props = {
@@ -912,39 +974,49 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 				>
 					<MyComboboxList aria-label="Search suggestions">
 						<MyComboboxPopoverContent>
+							{/* File fields show only while no filter is typed, so the key rows render them. */}
 							{typingFilter === null ? (
-								<CatchBoundary
-									getResetKey={() => `${membershipId}\n${folderPath}\n${keyPrefix}`}
-									onCatch={handleSuggestionsError}
-									errorComponent={FilesSearchInputSuggestionsError}
+								<FilesSearchInputFileFieldsContext.Provider
+									value={{
+										rows: fileFieldRows.length,
+										group:
+											fileFieldRows.length > 0 ? (
+												<MyComboboxGroup heading="File details" separator>
+													{fileFieldRows.map((field) => (
+														<MyComboboxItem
+															key={field}
+															value={field}
+															hideOnClick={false}
+															setValueOnClick={false}
+															className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
+															onClick={() => pickKey(field)}
+														>
+															<span
+																className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}
+															>
+																{field}
+															</span>
+														</MyComboboxItem>
+													))}
+												</MyComboboxGroup>
+											) : null,
+									}}
 								>
-									<FilesSearchInputKeyRows
-										membershipId={membershipId}
-										folderPath={folderPath}
-										prefix={keyPrefix}
-										stale={!isNewFilter && typedKey !== typedKeyDebounced}
-										onPick={pickKey}
-										onUnmatched={setUnmatchedKey}
-									/>
-								</CatchBoundary>
-							) : null}
-							{fileFieldRows.length > 0 ? (
-								<MyComboboxGroup heading="File details" separator={typingFilter === null}>
-									{fileFieldRows.map((field) => (
-										<MyComboboxItem
-											key={field}
-											value={field}
-											hideOnClick={false}
-											setValueOnClick={false}
-											className={cn("FilesSearchInput-suggestion" satisfies FilesSearchInput_ClassNames)}
-											onClick={() => pickKey(field)}
-										>
-											<span className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}>
-												{field}
-											</span>
-										</MyComboboxItem>
-									))}
-								</MyComboboxGroup>
+									<CatchBoundary
+										getResetKey={() => `${membershipId}\n${folderPath}\n${keyPrefix}`}
+										onCatch={handleSuggestionsError}
+										errorComponent={FilesSearchInputSuggestionsError}
+									>
+										<FilesSearchInputKeyRows
+											membershipId={membershipId}
+											folderPath={folderPath}
+											prefix={keyPrefix}
+											stale={!isNewFilter && typedKey !== typedKeyDebounced}
+											onPick={pickKey}
+											onUnmatched={setUnmatchedKey}
+										/>
+									</CatchBoundary>
+								</FilesSearchInputFileFieldsContext.Provider>
 							) : null}
 							{fileValueRows.length > 0 ? (
 								<MyComboboxGroup heading={`Values for ${typingFilter?.key.namespace}.${typingFilter?.key.name}`}>

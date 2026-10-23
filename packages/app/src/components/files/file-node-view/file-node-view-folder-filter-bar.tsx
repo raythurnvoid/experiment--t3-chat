@@ -1,6 +1,17 @@
 import "./file-node-view-folder-filter-bar.css";
 import { ListFilter, SlidersHorizontal, X } from "lucide-react";
-import { memo, useEffect, useId, useImperativeHandle, useRef, useState, type Ref } from "react";
+import {
+	createContext,
+	memo,
+	use,
+	useEffect,
+	useId,
+	useImperativeHandle,
+	useRef,
+	useState,
+	type ReactNode,
+	type Ref,
+} from "react";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import {
 	MyChip,
@@ -22,6 +33,7 @@ import {
 	type MyComboboxInputControl_Props,
 } from "@/components/my-combobox.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -154,10 +166,51 @@ const FileNodeViewFolderFilterBarSuggestionsMore = memo(function FileNodeViewFol
 	);
 });
 
+/**
+ * Skeleton rows while a first page loads. They are not options, so they cannot be picked.
+ */
+const FileNodeViewFolderFilterBarSuggestionsSkeleton = memo(function FileNodeViewFolderFilterBarSuggestionsSkeleton(props: {
+	rows: number;
+}) {
+	return (
+		<div aria-hidden="true">
+			{Array.from({ length: props.rows }, (_, index) => (
+				<div
+					key={index}
+					className={cn(
+						"FileNodeViewFolderFilterBar-suggestions-skeleton-row" satisfies FileNodeViewFolderFilterBar_ClassNames,
+					)}
+				>
+					<MySkeleton
+						className={cn(
+							"FileNodeViewFolderFilterBar-suggestions-skeleton-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+						)}
+					/>
+				</div>
+			))}
+		</div>
+	);
+});
+
+/**
+ * The rows that show with the saved keys: the Sort group above them, and the built-in rows of their
+ * own group. The key rows show them, or skeleton rows in their place while the first page loads.
+ * `CatchBoundary` gives its fallback only `error` and `reset`, so the fallback reads them here too.
+ * A failed key read then keeps them usable.
+ */
+const FileNodeViewFolderFilterBarKeyFrameContext = createContext<{
+	sortGroup: ReactNode;
+	heading: string;
+	separator: boolean;
+	knownRows: ReactNode[];
+} | null>(null);
+
 const FileNodeViewFolderFilterBarSuggestionsError = memo(function FileNodeViewFolderFilterBarSuggestionsError(
 	props: ErrorComponentProps,
 ) {
-	return (
+	const keyFrame = use(FileNodeViewFolderFilterBarKeyFrameContext);
+
+	const errorRows = (
 		<>
 			<FileNodeViewFolderFilterBarSuggestionsMessage>Could not load suggestions.</FileNodeViewFolderFilterBarSuggestionsMessage>
 			<MyComboboxItem
@@ -171,11 +224,29 @@ const FileNodeViewFolderFilterBarSuggestionsError = memo(function FileNodeViewFo
 			</MyComboboxItem>
 		</>
 	);
+
+	// The value rows have no frame: their boundary sits inside their group.
+	if (keyFrame === null) {
+		return errorRows;
+	}
+
+	return (
+		<>
+			{keyFrame.sortGroup}
+			<MyComboboxGroup heading={keyFrame.heading} separator={keyFrame.separator}>
+				{keyFrame.knownRows}
+				{errorRows}
+			</MyComboboxGroup>
+		</>
+	);
 });
 
 /**
- * The keys on the folder's children that start with the typed text, in pages, inside a stage's
- * group. Rows from an older text stay, disabled, until the new first page arrives.
+ * The keys on the folder's children that start with the typed text, in pages, in a stage's group
+ * after its built-in rows. Rows from an older text stay, disabled, until the new first page arrives.
+ *
+ * Until the first page arrives, skeleton rows stand in for every row, the frame's rows too. So the
+ * rows show all at once, and the menu keeps its size or grows.
  */
 const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilterBarKeyRows(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -185,67 +256,83 @@ const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilte
 	 * The typed text is newer than `prefix`.
 	 */
 	stale: boolean;
-	/**
-	 * No other row of the group matches, so an empty page says so.
-	 */
-	showNoMatch: boolean;
 	canPick: (field: string) => boolean;
 	onPick: (field: string) => void;
 }) {
-	const { membershipId, folderId, prefix, stale, showNoMatch, canPick, onPick } = props;
+	const { membershipId, folderId, prefix, stale, canPick, onPick } = props;
 	const isOwner = FilesTreeProvider.useIsOwner();
+	// Always rendered under its provider.
+	const keyFrame = use(FileNodeViewFolderFilterBarKeyFrameContext)!;
 
 	const keys = useFilesMetadataFolderKeys({ membershipId, folderId, prefix, isOwner });
 	const isDisabled = stale || keys.updating;
 	const rows = keys.rows.filter(canPick);
 
+	if (keys.noRowsYet) {
+		return (
+			<>
+				{keyFrame.sortGroup !== null && (
+					<MyComboboxGroup heading="Sort">
+						<FileNodeViewFolderFilterBarSuggestionsSkeleton rows={1} />
+					</MyComboboxGroup>
+				)}
+				<MyComboboxGroup heading={keyFrame.heading} separator={keyFrame.separator}>
+					{/* With no built-in rows the page still shows one row: a key, Show more, or "No folder keys yet". */}
+					<FileNodeViewFolderFilterBarSuggestionsSkeleton rows={Math.max(keyFrame.knownRows.length, 1)} />
+				</MyComboboxGroup>
+			</>
+		);
+	}
+
 	return (
 		<>
-			{rows.map((field) => (
-				<MyComboboxItem
-					key={field}
-					value={field}
-					disabled={isDisabled}
-					hideOnClick={false}
-					setValueOnClick={false}
-					className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
-					onClick={() => {
-						if (!isDisabled) {
-							onPick(field);
-						}
-					}}
-				>
-					<span
-						className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+			{keyFrame.sortGroup}
+			<MyComboboxGroup heading={keyFrame.heading} separator={keyFrame.separator}>
+				{keyFrame.knownRows}
+				{rows.map((field) => (
+					<MyComboboxItem
+						key={field}
+						value={field}
+						disabled={isDisabled}
+						hideOnClick={false}
+						setValueOnClick={false}
+						className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+						onClick={() => {
+							if (!isDisabled) {
+								onPick(field);
+							}
+						}}
 					>
-						{field}
-					</span>
-					<span
-						className={cn("FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames)}
-					>
-						{field.startsWith("metadata.") ? "metadata" : "frontmatter"}
-					</span>
-				</MyComboboxItem>
-			))}
-			{/* Show nothing while the first page loads. A loading row that goes away would make the menu
-			    shrink when the page arrives, so the menu only grows. */}
-			{isDisabled ? null : showNoMatch && rows.length === 0 && keys.status === "Exhausted" ? (
-				<FileNodeViewFolderFilterBarSuggestionsMessage>
-					{prefix === "" ? "No folder keys yet" : `No keys start with ${prefix}`}
-				</FileNodeViewFolderFilterBarSuggestionsMessage>
-			) : null}
-			{keys.status === "CanLoadMore" || keys.status === "LoadingMore" ? (
-				<FileNodeViewFolderFilterBarSuggestionsMore
-					label="Show more keys"
-					disabled={isDisabled}
-					loading={keys.status === "LoadingMore"}
-					onClick={() => {
-						if (!isDisabled && keys.status === "CanLoadMore") {
-							keys.loadMore();
-						}
-					}}
-				/>
-			) : null}
+						<span
+							className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+						>
+							{field}
+						</span>
+						<span
+							className={cn("FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+						>
+							{field.startsWith("metadata.") ? "metadata" : "frontmatter"}
+						</span>
+					</MyComboboxItem>
+				))}
+				{isDisabled ? null : keyFrame.knownRows.length === 0 && rows.length === 0 && keys.status === "Exhausted" ? (
+					<FileNodeViewFolderFilterBarSuggestionsMessage>
+						{prefix === "" ? "No folder keys yet" : `No keys start with ${prefix}`}
+					</FileNodeViewFolderFilterBarSuggestionsMessage>
+				) : null}
+				{keys.status === "CanLoadMore" || keys.status === "LoadingMore" ? (
+					<FileNodeViewFolderFilterBarSuggestionsMore
+						label="Show more keys"
+						disabled={isDisabled}
+						loading={keys.status === "LoadingMore"}
+						onClick={() => {
+							if (!isDisabled && keys.status === "CanLoadMore") {
+								keys.loadMore();
+							}
+						}}
+					/>
+				) : null}
+			</MyComboboxGroup>
 		</>
 	);
 });
@@ -288,6 +375,14 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 	// restricted folder whose root they cannot open. Its page is then empty: say why, not "No saved values".
 	const isNoAccess = hasWorkspaceRead === false && values.rows.length === 0 && values.status === "Exhausted";
 
+	// The page always shows one row: a value, Show more, or a message. A member who can read the
+	// workspace also gets the area note under it.
+	if (values.noRowsYet) {
+		return (
+			<FileNodeViewFolderFilterBarSuggestionsSkeleton rows={isOwner === false && hasWorkspaceRead !== false ? 2 : 1} />
+		);
+	}
+
 	return (
 		<>
 			{rows.map((value) => (
@@ -310,7 +405,6 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 					</span>
 				</MyComboboxItem>
 			))}
-			{/* Like the key rows: show nothing while the first page loads, so the menu only grows. */}
 			{isDisabled ? null : isNoAccess ? (
 				<FileNodeViewFolderFilterBarSuggestionsMessage>
 					{files_metadata_catalog_NO_WORKSPACE_READ_MESSAGE}
@@ -355,6 +449,8 @@ type FileNodeViewFolderFilterBar_ClassNames =
 	| "FileNodeViewFolderFilterBar-suggestion"
 	| "FileNodeViewFolderFilterBar-suggestion-label"
 	| "FileNodeViewFolderFilterBar-suggestion-hint"
+	| "FileNodeViewFolderFilterBar-suggestions-skeleton-row"
+	| "FileNodeViewFolderFilterBar-suggestions-skeleton-label"
 	| "FileNodeViewFolderFilterBar-notes";
 
 export type FileNodeViewFolderFilterBar_Ref = {
@@ -731,6 +827,25 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 		}
 	}, [textDebounced]);
 
+	const sortGroup = showSortKey ? (
+		<MyComboboxGroup heading="Sort">
+			<MyComboboxItem
+				value="sort_by"
+				hideOnClick={false}
+				setValueOnClick={false}
+				className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+				onClick={() => pickPart("sort_by:")}
+			>
+				<span className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
+					sort_by
+				</span>
+				<span className={cn("FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
+					sort the table
+				</span>
+			</MyComboboxItem>
+		</MyComboboxGroup>
+	) : null;
+
 	return (
 		<MyCombobox value={text} setValue={handleTextChange} open={isSuggestionsOpen} setOpen={setIsSuggestionsOpen}>
 			<div ref={rootRef} className={cn("FileNodeViewFolderFilterBar" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
@@ -843,63 +958,43 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 				>
 					<MyComboboxList aria-label="Suggestions">
 						<MyComboboxPopoverContent>
-							{showSortKey ? (
-								<MyComboboxGroup heading="Sort">
-									<MyComboboxItem
-										value="sort_by"
-										hideOnClick={false}
-										setValueOnClick={false}
-										className={cn(
-											"FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames,
-										)}
-										onClick={() => pickPart("sort_by:")}
-									>
-										<span
-											className={cn(
-												"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
-											)}
-										>
-											sort_by
-										</span>
-										<span
-											className={cn(
-												"FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames,
-											)}
-										>
-											sort the table
-										</span>
-									</MyComboboxItem>
-								</MyComboboxGroup>
-							) : null}
+							{/* The key rows render the Sort and Filter by groups, so the skeleton can stand in for
+							    all their rows while the first page of keys loads. */}
 							{stage.kind === "key" && canAddFilter ? (
-								<MyComboboxGroup heading="Filter by" separator={showSortKey}>
-									{keyRows.map((row) => (
-										<MyComboboxItem
-											key={row.field}
-											value={row.field}
-											hideOnClick={false}
-											setValueOnClick={false}
-											className={cn(
-												"FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames,
-											)}
-											onClick={() => pickPart(`${row.field}:`)}
-										>
-											<span
+								<FileNodeViewFolderFilterBarKeyFrameContext.Provider
+									value={{
+										sortGroup,
+										heading: "Filter by",
+										separator: showSortKey,
+										knownRows: keyRows.map((row) => (
+											<MyComboboxItem
+												key={row.field}
+												value={row.field}
+												hideOnClick={false}
+												setValueOnClick={false}
 												className={cn(
-													"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+													"FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames,
 												)}
+												onClick={() => pickPart(`${row.field}:`)}
 											>
-												{row.field}
-											</span>
-											<span
-												className={cn(
-													"FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames,
-												)}
-											>
-												{row.hint}
-											</span>
-										</MyComboboxItem>
-									))}
+												<span
+													className={cn(
+														"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+													)}
+												>
+													{row.field}
+												</span>
+												<span
+													className={cn(
+														"FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames,
+													)}
+												>
+													{row.hint}
+												</span>
+											</MyComboboxItem>
+										)),
+									}}
+								>
 									<CatchBoundary
 										getResetKey={() => `${membershipId}\n${folderId}\nkey\n${typedKeyDebounced}`}
 										onCatch={handleSuggestionsError}
@@ -910,42 +1005,49 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 											folderId={folderId}
 											prefix={typedKeyDebounced}
 											stale={stage.typed !== typedKeyDebounced}
-											showNoMatch={keyRows.length === 0}
 											canPick={canFilterByKey}
 											onPick={(field) => pickPart(`${field}:`)}
 										/>
 									</CatchBoundary>
-								</MyComboboxGroup>
-							) : null}
+								</FileNodeViewFolderFilterBarKeyFrameContext.Provider>
+							) : (
+								sortGroup
+							)}
 							{stage.kind === "sort_field" ? (
-								<MyComboboxGroup heading="Sort by">
-									{sortFieldRows.map((row) => (
-										<MyComboboxItem
-											key={row.field}
-											value={row.field}
-											hideOnClick={false}
-											setValueOnClick={false}
-											className={cn(
-												"FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames,
-											)}
-											onClick={() => pickPart(`sort_by:${row.field}:`)}
-										>
-											<span
+								<FileNodeViewFolderFilterBarKeyFrameContext.Provider
+									value={{
+										sortGroup: null,
+										heading: "Sort by",
+										separator: false,
+										knownRows: sortFieldRows.map((row) => (
+											<MyComboboxItem
+												key={row.field}
+												value={row.field}
+												hideOnClick={false}
+												setValueOnClick={false}
 												className={cn(
-													"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+													"FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames,
 												)}
+												onClick={() => pickPart(`sort_by:${row.field}:`)}
 											>
-												{row.field}
-											</span>
-											<span
-												className={cn(
-													"FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames,
-												)}
-											>
-												{row.hint}
-											</span>
-										</MyComboboxItem>
-									))}
+												<span
+													className={cn(
+														"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+													)}
+												>
+													{row.field}
+												</span>
+												<span
+													className={cn(
+														"FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames,
+													)}
+												>
+													{row.hint}
+												</span>
+											</MyComboboxItem>
+										)),
+									}}
+								>
 									<CatchBoundary
 										getResetKey={() => `${membershipId}\n${folderId}\nsort\n${typedKeyDebounced}`}
 										onCatch={handleSuggestionsError}
@@ -956,12 +1058,11 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 											folderId={folderId}
 											prefix={typedKeyDebounced}
 											stale={stage.typed !== typedKeyDebounced}
-											showNoMatch={sortFieldRows.length === 0}
 											canPick={canSortByKey}
 											onPick={(field) => pickPart(`sort_by:${field}:`)}
 										/>
 									</CatchBoundary>
-								</MyComboboxGroup>
+								</FileNodeViewFolderFilterBarKeyFrameContext.Provider>
 							) : null}
 							{sortDirectionRows.length > 0 && stage.kind === "sort_direction" ? (
 								<MyComboboxGroup heading="Direction">
