@@ -10,9 +10,13 @@ import type { FunctionReference } from "convex/server";
  * The query cache hooks of `convex-helpers`. The package names them `useQuery` and `useQueries`, like
  * the plain Convex hooks, so import them from here with names that say they use the cache. The cache
  * keeps a query subscribed for 5 minutes after its last user unmounts (`ConvexQueryCacheProvider` in
- * `main.tsx`).
+ * `main.tsx`). Import the provider from here too, so the app reads the cache through one module.
  */
-export { useQuery as useCachedQuery, useQueries as useCachedQueries } from "convex-helpers/react/cache";
+export {
+	ConvexQueryCacheProvider,
+	useQuery as useCachedQuery,
+	useQueries as useCachedQueries,
+} from "convex-helpers/react/cache";
 
 /**
  * Drop-in replacement for `useQuery` that keeps the previous result while new args load.

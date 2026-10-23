@@ -7,7 +7,7 @@ import { ClerkProvider } from "@clerk/clerk-react";
 import { ThemeProvider } from "./components/theme-provider.tsx";
 import { AppToaster } from "./components/app-toaster.tsx";
 import { ConvexProvider, ConvexProviderWithAuth } from "convex/react";
-import { ConvexQueryCacheProvider } from "convex-helpers/react/cache";
+import { ConvexQueryCacheProvider } from "./hooks/convex-hooks.ts";
 import { AppAuthProvider } from "./components/app-auth.tsx";
 import { AppHotkeysProvider } from "./components/app-hotkeys.tsx";
 import type { AppElementId } from "./lib/dom-utils.ts";

@@ -20,9 +20,13 @@ vi.mock("@/lib/app-channels-context.tsx", () => ({
 }));
 
 // Skip the query cache, so one test's queries do not stay for the next.
-vi.mock("convex-helpers/react/cache", async () => {
+vi.mock("@/hooks/convex-hooks.ts", async (importOriginal) => {
 	const { useQueries, useQuery } = await import("convex/react");
-	return { useQueries, useQuery };
+	return {
+		...(await importOriginal<typeof import("@/hooks/convex-hooks.ts")>()),
+		useCachedQueries: useQueries,
+		useCachedQuery: useQuery,
+	};
 });
 
 const MEMBERSHIP_ID = "membership_1";

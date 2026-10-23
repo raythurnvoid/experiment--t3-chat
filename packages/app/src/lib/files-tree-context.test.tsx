@@ -18,9 +18,13 @@ vi.mock("@/lib/app-channels-context.tsx", () => ({
 }));
 
 // Skip the query cache. It adds its own listener to each query, and these tests count the pager listeners.
-vi.mock("convex-helpers/react/cache", async () => {
+vi.mock("@/hooks/convex-hooks.ts", async (importOriginal) => {
 	const { useQueries, useQuery } = await import("convex/react");
-	return { useQueries, useQuery };
+	return {
+		...(await importOriginal<typeof import("@/hooks/convex-hooks.ts")>()),
+		useCachedQueries: useQueries,
+		useCachedQuery: useQuery,
+	};
 });
 
 const results = new Map<string, unknown>();

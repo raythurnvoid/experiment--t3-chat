@@ -97,9 +97,13 @@ vi.mock("convex/react", async () => {
 	};
 });
 // The cached hooks use the `convex/react` mock above.
-vi.mock("convex-helpers/react/cache", async () => {
+vi.mock("@/hooks/convex-hooks.ts", async (importOriginal) => {
 	const { useQueries, useQuery } = await import("convex/react");
-	return { useQueries, useQuery };
+	return {
+		...(await importOriginal<typeof import("@/hooks/convex-hooks.ts")>()),
+		useCachedQueries: useQueries,
+		useCachedQuery: useQuery,
+	};
 });
 vi.mock("@/lib/files-browser-stream.ts", () => ({
 	files_browser_stream_connect: (args: { events: files_browser_StreamEvents }) => {

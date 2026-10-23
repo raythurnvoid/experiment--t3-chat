@@ -1,6 +1,5 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient, usePaginatedQuery } from "convex/react";
-import { ConvexQueryCacheProvider } from "convex-helpers/react/cache";
 import {
 	getFunctionName,
 	makeFunctionReference,
@@ -11,6 +10,7 @@ import { ConvexError, convexToJson, type Infer, type Value } from "convex/values
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { files_DirectoryView, files_SavedStream } from "../../shared/files.ts";
+import { ConvexQueryCacheProvider } from "./convex-hooks.ts";
 import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 
 type Row = { name: string };
