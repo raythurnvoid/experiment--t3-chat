@@ -82,11 +82,6 @@ describe("browser extension list table schema", () => {
 		expect(attrs?.colwidth).toBeDefined();
 	});
 
-	test("keeps cells paragraph-only", () => {
-		expect(schema.nodes.tableCell.spec.content).toBe("paragraph+");
-		expect(schema.nodes.tableHeader.spec.content).toBe("paragraph+");
-	});
-
 	test("serializes a canonical table to the shared canonical string", () => {
 		const json = files_tiptap_markdown_to_json({ markdown: table_canonical_2x2, extensions: defaultExtensions });
 		if (json._nay) {
@@ -249,6 +244,12 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 	test("keeps comment blocks and other HTML blocks", () => {
 		const input =
 			'<!--\nnote\n-->\n\n<div>\nhello <b>x</b> **raw** <name>\n</div>\n\n<p align="center">\n  <img src="https://example.com/x.png" width="100">\n</p>\n\nText\n';
+		expect(normalize(input)).toBe(input);
+	});
+
+	test("keeps HTML tables", () => {
+		const input =
+			'<table class="t">\n  <caption>Cap</caption>\n  <thead><tr><th>A</th></tr></thead>\n  <tr><td colspan="2" style="color:red">Use <name> here</td></tr>\n</table>\n\n<table>\n<tr>\n<td>\n\n- a\n- b\n\n</td>\n</tr>\n</table>\n';
 		expect(normalize(input)).toBe(input);
 	});
 

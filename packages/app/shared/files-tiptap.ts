@@ -17,7 +17,17 @@ import { Superscript } from "@tiptap/extension-superscript";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
-import { marked, Marked, Lexer, Renderer, Tokenizer, type Links, type MarkedExtension, type Rules } from "marked";
+import {
+	marked,
+	Marked,
+	Lexer,
+	Renderer,
+	Tokenizer,
+	type Links,
+	type MarkedExtension,
+	type Rules,
+	type Token,
+} from "marked";
 import type { Doc as YDoc } from "yjs";
 import {
 	Editor,
@@ -124,6 +134,7 @@ const MARKDOWN_WORK_SETEXT_SCAN_PER_LINE = 40;
 const MARKDOWN_WORK_BLOCKQUOTE_COPIED_LINE = 8;
 const MARKDOWN_WORK_BLOCKQUOTE_COPIED_CHAR = 2;
 const MARKDOWN_WORK_TABLE_CELL = 500;
+const MARKDOWN_WORK_HTML_TABLE_SCAN_PER_CHAR = 1;
 const MARKDOWN_NONBLANK_LINE_REGEX = /^[ \t]*[^ \t\n]/gm;
 
 /**
@@ -285,7 +296,20 @@ function configure_marked(instance: Marked | typeof marked) {
 					return `<mark>${this.parser.parseInline(token.tokens as Parameters<typeof this.parser.parseInline>[0])}</mark>`;
 				},
 			},
+			// An HTML table that `html_table_merge_tokens` joined. A public parse writes its parts as Marked does.
+			{
+				name: "htmlTable",
+				renderer(token) {
+					const parts = (token as { tokens?: Token[] }).tokens ?? [];
+					return markdown_hidden_link_text !== null
+						? this.parser.parse(parts)
+						: html_table_to_editor_html({ raw: token.raw, parts, parse: (tokens) => this.parser.parse(tokens) });
+				},
+			},
 		],
+		hooks: {
+			processAllTokens: (tokens) => html_table_merge_tokens(tokens),
+		},
 		renderer: {
 			heading(token) {
 				const headingToken = token as {
@@ -1351,6 +1375,24 @@ const files_image_node = Node.create({
 });
 
 /**
+ * Write a video as a raw `<video>` tag. Keep the attribute order fixed so the round-trip stays byte-stable.
+ */
+function video_html_tag(node: TiptapJSONContent) {
+	const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+	const title = typeof node.attrs?.title === "string" ? node.attrs.title : "";
+	const width =
+		typeof node.attrs?.width === "number" && Number.isFinite(node.attrs.width) && node.attrs.width > 0
+			? Math.round(node.attrs.width)
+			: null;
+	const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
+
+	const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
+	const widthAttribute = width !== null ? ` width="${width}"` : "";
+	const alignAttribute = align !== null ? ` align="${align}"` : "";
+	return `<video src="${html_escape_attribute(src)}"${titleAttribute}${widthAttribute}${alignAttribute}></video>`;
+}
+
+/**
  * Video embed.
  *
  * Markdown has no video syntax, so it serializes to a raw `<video>` tag, the same way
@@ -1399,19 +1441,7 @@ const files_video_node = Node.create({
 	},
 
 	renderMarkdown(node) {
-		const src = typeof node.attrs?.src === "string" ? node.attrs.src : "";
-		const title = typeof node.attrs?.title === "string" ? node.attrs.title : "";
-		const width =
-			typeof node.attrs?.width === "number" && Number.isFinite(node.attrs.width) && node.attrs.width > 0
-				? Math.round(node.attrs.width)
-				: null;
-		const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
-
-		// Keep the attribute order fixed so the round-trip stays byte-stable.
-		const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
-		const widthAttribute = width !== null ? ` width="${width}"` : "";
-		const alignAttribute = align !== null ? ` align="${align}"` : "";
-		return `<video src="${html_escape_attribute(src)}"${titleAttribute}${widthAttribute}${alignAttribute}></video>`;
+		return video_html_tag(node);
 	},
 });
 // #endregion media embeds
@@ -1433,23 +1463,96 @@ const files_table_cell_align_attribute = {
 	},
 };
 
+/**
+ * An attribute that keeps HTML that the Marked renderer stored URI-encoded in the data attribute `name`.
+ */
+function html_data_attribute(name: string) {
+	return {
+		default: null,
+		rendered: false,
+		parseHTML: (element: HTMLElement) => {
+			const value = element.getAttribute(name);
+			return value === null ? null : html_attribute_decode(value);
+		},
+	};
+}
+
+/**
+ * An attribute that keeps the HTML attributes that the editor does not use, like `style` or `class`, as text.
+ * Save writes them back on the tag. They are not rendered, because an author `style` could load a remote image.
+ *
+ * Only elements that `html_table_to_editor_html` marked with `data-html-kept` have them. A table pasted from
+ * a web page has no mark, so it does not keep the page's classes and stays a pipe table.
+ */
+function html_kept_attributes_attribute(modeledNames: string[]) {
+	return {
+		default: null,
+		rendered: false,
+		parseHTML: (element: HTMLElement) => {
+			if (!element.hasAttribute("data-html-kept")) {
+				return null;
+			}
+
+			let attributes = "";
+			for (const attribute of Array.from(element.attributes)) {
+				if (!attribute.name.startsWith("data-html-") && !modeledNames.includes(attribute.name)) {
+					attributes += ` ${attribute.name}="${html_escape_attribute(attribute.value)}"`;
+				}
+			}
+			return attributes || null;
+		},
+	};
+}
+
+const TABLE_CELL_MODELED_ATTRIBUTES = ["colspan", "rowspan", "colwidth", "data-colwidth", "align"];
+
+// Cells hold any blocks, so an HTML table keeps the lists and code in its cells. A pipe table cannot hold
+// them, so a table with one saves as an HTML table (`table_fits_pipe`).
 const files_table_cell_node = TableCell.extend({
-	// GFM cells hold inline content. Keep multiple paragraphs for pasted HTML, but do not let
-	// members create lists, headings, or code blocks that need another save to become stable.
-	content: "paragraph+",
+	content: "block+",
 
 	// The explicit `this` annotation is needed because `extend` types its config against a
 	// union, which loses the `parent` member from the inferred context.
 	addAttributes(this: { parent?: () => Record<string, unknown> }) {
-		return { ...this.parent?.(), ...files_table_cell_align_attribute };
+		return {
+			...this.parent?.(),
+			...files_table_cell_align_attribute,
+			htmlAttributes: html_kept_attributes_attribute(TABLE_CELL_MODELED_ATTRIBUTES),
+		};
 	},
 });
 
 const files_table_header_node = TableHeader.extend({
-	content: "paragraph+",
+	content: "block+",
 
 	addAttributes(this: { parent?: () => Record<string, unknown> }) {
-		return { ...this.parent?.(), ...files_table_cell_align_attribute };
+		return {
+			...this.parent?.(),
+			...files_table_cell_align_attribute,
+			htmlAttributes: html_kept_attributes_attribute(TABLE_CELL_MODELED_ATTRIBUTES),
+		};
+	},
+});
+
+/**
+ * A table row. `section` says if an HTML table had it in `<thead>`, `<tbody>` or `<tfoot>`. `htmlBefore` keeps
+ * the HTML before the row that the editor does not show, like a caption or a comment between rows.
+ */
+const files_table_row_node = TableRow.extend({
+	addAttributes(this: { parent?: () => Record<string, unknown> }) {
+		return {
+			...this.parent?.(),
+			section: {
+				default: null,
+				rendered: false,
+				parseHTML: (element: HTMLElement) => {
+					const value = element.getAttribute("data-html-row-section");
+					return value === "head" || value === "body" || value === "foot" ? value : null;
+				},
+			},
+			htmlBefore: html_data_attribute("data-html-before"),
+			htmlAttributes: html_kept_attributes_attribute([]),
+		};
 	},
 });
 
@@ -1503,47 +1606,20 @@ function files_render_table_cell_markdown(cell: TiptapJSONContent, helpers: Mark
 }
 
 /**
- * Write a table as a GFM pipe table.
+ * Write a table as a GFM pipe table. `table_fits_pipe` must say yes first, so no cell is merged.
  *
- * Keep compact rows without column padding. Lay out merged cells and keep code backslashes
- * stable across saves; the upstream renderer does not handle those cases.
+ * Keep compact rows without column padding, and keep code backslashes stable across saves. The
+ * upstream renderer does not handle those cases.
  */
 function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownRendererHelpers) {
 	const rows = node.content ?? [];
 	const firstRowCells = rows[0]?.content ?? [];
 
-	// Lay every cell out on a grid before writing anything. A `colspan` cell covers several
-	// columns in its own row, and a `rowspan` cell keeps covering the same columns in the rows
-	// below it. Two things go wrong without this grid. A row wider than the first one loses every
-	// cell past the first row's width. And a row that is short because a rowspan covers its left
-	// side has its cells written too far left, so the text lands under the wrong heading.
-	const grid: Array<Array<TiptapJSONContent | null>> = rows.map(() => []);
-	rows.forEach((row, rowIndex) => {
-		let column = 0;
-		for (const cell of row.content ?? []) {
-			// Step over the columns a rowspan from an earlier row already claimed.
-			while (grid[rowIndex]![column] !== undefined) {
-				column += 1;
-			}
-
-			const colspan = Number(cell.attrs?.colspan) || 1;
-			const rowspan = Number(cell.attrs?.rowspan) || 1;
-			for (let coveredRow = 0; coveredRow < rowspan && rowIndex + coveredRow < rows.length; coveredRow += 1) {
-				for (let coveredColumn = 0; coveredColumn < colspan; coveredColumn += 1) {
-					// Markdown cannot say "this cell spans N columns or rows". Keep the text in the
-					// cell's own top-left column and leave every column it covers empty.
-					grid[rowIndex + coveredRow]![column + coveredColumn] = coveredRow === 0 && coveredColumn === 0 ? cell : null;
-				}
-			}
-			column += colspan;
-		}
-	});
-
 	// marked fixes the column count from the delimiter row, and a row with a different count breaks
 	// the table, so every row we write gets exactly this many cells. Take the widest row, not the
-	// first one: a caption or an empty leading `<tr>` parses as a narrow first row, and measuring
+	// first one: an empty leading `<tr>` in pasted HTML parses as a narrow first row, and measuring
 	// there would throw away the real table below it.
-	const columnCount = grid.reduce((widest, gridRow) => Math.max(widest, gridRow.length), 0);
+	const columnCount = rows.reduce((widest, row) => Math.max(widest, row.content?.length ?? 0), 0);
 	if (columnCount === 0) {
 		return "";
 	}
@@ -1551,7 +1627,7 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 	const renderRow = (rowIndex: number) => {
 		const cells: string[] = [];
 		for (let column = 0; column < columnCount; column += 1) {
-			const cell = grid[rowIndex]![column];
+			const cell = rows[rowIndex]?.content?.[column];
 			cells.push(cell ? files_render_table_cell_markdown(cell, helpers) : "");
 		}
 		return `| ${cells.join(" | ")} |`;
@@ -1565,10 +1641,9 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 	const headerLine = firstRowIsHeader ? renderRow(0) : `| ${new Array(columnCount).fill("").join(" | ")} |`;
 
 	// Read the alignment from the first row whether or not it is a header row, so a table whose
-	// header was toggled off keeps its columns aligned. Read it off the grid so a colspan cell
-	// aligns every column it covers.
-	const alignments = (grid[0] ?? []).map((cell) => {
-		const align = cell?.attrs?.align;
+	// header was toggled off keeps its columns aligned.
+	const alignments = firstRowCells.map((cell) => {
+		const align = cell.attrs?.align;
 		return align === "left" || align === "center" || align === "right" ? align : null;
 	});
 
@@ -1593,8 +1668,472 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 	return [headerLine, `| ${delimiterCells.join(" | ")} |`, ...bodyLines].join("\n");
 }
 
+/**
+ * Say if a pipe table can hold the table. It cannot hold a merged cell, a block other than a paragraph in a
+ * cell, or kept HTML. Several paragraphs in a cell are fine: they are joined with `<br>`, so pressing Enter in
+ * a cell does not turn the table into HTML.
+ */
+function table_fits_pipe(table: TiptapJSONContent) {
+	if (table.attrs?.htmlAttributes || table.attrs?.htmlAfterRows) {
+		return false;
+	}
+
+	return (table.content ?? []).every(
+		(row) =>
+			!row.attrs?.htmlAttributes &&
+			!row.attrs?.htmlBefore &&
+			(row.content ?? []).every(
+				(cell) =>
+					(Number(cell.attrs?.colspan) || 1) === 1 &&
+					(Number(cell.attrs?.rowspan) || 1) === 1 &&
+					!cell.attrs?.htmlAttributes &&
+					(cell.content ?? []).every((block) => block.type === "paragraph"),
+			),
+	);
+}
+
+const HTML_TABLE_TAG_REGEX = /<(\/?)table(?=[\s/>])/gi;
+const HTML_TABLE_STRUCTURE_TAG_REGEX = /^(?:table|thead|tbody|tfoot|tr|td|th)$/;
+const WHITESPACE_WITH_NEWLINE_REGEX = /\s*\n\s*/g;
+const HTML_TABLE_TEXT_ESCAPE_REGEX = /[&<>\n]/g;
+const HTML_TABLE_SECTIONS = { thead: "head", tbody: "body", tfoot: "foot" } as const;
+const HTML_TABLE_SECTION_TAGS = { head: "thead", body: "tbody", foot: "tfoot" } as const;
+/**
+ * Block tags that a table cell reads as blocks.
+ */
+const HTML_TABLE_BLOCK_TAGS = new Set([
+	"p",
+	"ul",
+	"ol",
+	"li",
+	"pre",
+	"blockquote",
+	"h1",
+	"h2",
+	"h3",
+	"h4",
+	"h5",
+	"h6",
+	"hr",
+	"video",
+]);
+
+/**
+ * Join each HTML table that Marked split into several blocks into one `htmlTable` token.
+ *
+ * Marked ends an HTML block at a blank line. So a README table with Markdown in a cell comes as an HTML block
+ * that opens the table, the Markdown blocks, and an HTML block that closes it. Read one by one, the closing
+ * block became an `htmlBlock`, and the Markdown moved out of the table. A table joins only when its last
+ * block ends right after its `</table>`, so no other content shares its source text (`htmlSource`).
+ */
+function html_table_merge_tokens(mut_tokens: Token[]) {
+	// Pair each `<table` with its `</table>` in one pass, like brackets. Many unclosed tables then stay cheap.
+	const opens: Array<{ tokenIndex: number; joins: boolean }> = [];
+	const lastTokenIndexByStart = new Map<number, number>();
+	mut_tokens.forEach((token, tokenIndex) => {
+		if (token.type !== "html") {
+			return;
+		}
+
+		markdown_work_add(token.text.length * MARKDOWN_WORK_HTML_TABLE_SCAN_PER_CHAR);
+		// Only a block that starts with the table can start a join.
+		let startsJoin = token.block && HTML_BLOCK_TABLE_REGEX.test(token.text.trimStart());
+		for (const match of token.text.matchAll(HTML_TABLE_TAG_REGEX)) {
+			if (!match[1]) {
+				opens.push({ tokenIndex, joins: startsJoin });
+				startsJoin = false;
+				continue;
+			}
+
+			const open = opens.pop();
+			const closeEnd = token.text.indexOf(">", match.index) + 1;
+			if (open?.joins && closeEnd > 0 && token.text.slice(closeEnd).trim() === "") {
+				lastTokenIndexByStart.set(open.tokenIndex, tokenIndex);
+			}
+		}
+	});
+
+	if (lastTokenIndexByStart.size > 0) {
+		const joined: Token[] = [];
+		for (let index = 0; index < mut_tokens.length; index++) {
+			const lastTokenIndex = lastTokenIndexByStart.get(index);
+			if (lastTokenIndex === undefined) {
+				joined.push(mut_tokens[index]);
+				continue;
+			}
+
+			const parts = mut_tokens.slice(index, lastTokenIndex + 1);
+			joined.push({ type: "htmlTable", raw: parts.map((part) => part.raw).join(""), tokens: parts });
+			index = lastTokenIndex;
+		}
+
+		// Keep the array itself. Marked keeps the link definitions on it.
+		mut_tokens.length = 0;
+		for (const token of joined) {
+			mut_tokens.push(token);
+		}
+	}
+
+	for (const token of mut_tokens) {
+		if (token.type === "list") {
+			for (const item of token.items) {
+				html_table_merge_tokens(item.tokens);
+			}
+		} else if (token.type === "blockquote") {
+			html_table_merge_tokens(token.tokens ?? []);
+		}
+	}
+
+	return mut_tokens;
+}
+
+/**
+ * Turn the parts of an HTML table (`html_table_merge_tokens`) into editor HTML.
+ *
+ * Table, row and cell tags, and the block tags that a cell reads, stay tags. Any other tag in a cell becomes a
+ * hidden tag node, like in an HTML block. Markdown parts in a cell render as usual.
+ *
+ * The editor does not show a caption, a `colgroup`, or anything between rows. Their HTML goes on the next row
+ * (`htmlBefore`), or on the table after its last row (`htmlAfterRows`), so save writes them back. Section tags
+ * become each row's `section`. The outer table keeps its whole source in `htmlSource`, so save writes it back
+ * exactly while nobody changes the table.
+ */
+function html_table_to_editor_html(args: { raw: string; parts: Token[]; parse: (tokens: Token[]) => string }) {
+	const pieces: Array<{ kind: "text" | "pre" | "tag" | "hidden" | "markdown"; html: string; name?: string }> = [];
+	// One entry per open table, the innermost last.
+	const tables: Array<{
+		openPiece: { html: string };
+		section: "head" | "body" | "foot" | null;
+		cellDepth: number;
+		kept: string[];
+	}> = [];
+	// A caption or a colgroup that is read now.
+	let keptPart: { name: string; html: string } | null = null;
+	let preDepth = 0;
+
+	// Add `attributes` right after the tag name, so the tag's own attributes stay after them.
+	const withAttributes = (tag: string, name: string, attributes: string) =>
+		tag.slice(0, name.length + 1) + attributes + tag.slice(name.length + 1);
+	const keep = (html: string) => {
+		if (keptPart) {
+			keptPart.html += html;
+		} else {
+			tables.at(-1)?.kept.push(html);
+		}
+	};
+	const endKeptPart = () => {
+		if (keptPart) {
+			tables.at(-1)?.kept.push(keptPart.html);
+			keptPart = null;
+		}
+	};
+	const inCell = () => keptPart === null && (tables.at(-1)?.cellDepth ?? 0) > 0;
+
+	const readTag = (tag: string) => {
+		const name = INLINE_HTML_TAG_NAME_REGEX.exec(tag)?.[1]?.toLowerCase() ?? "";
+		const closing = tag.startsWith("</");
+		// A browser ends a caption or a colgroup at the next row, cell, section or table tag, so do the same.
+		if (keptPart && !(closing && name === keptPart.name) && !HTML_TABLE_STRUCTURE_TAG_REGEX.test(name)) {
+			keptPart.html += tag;
+			return;
+		}
+		if (keptPart && closing && name === keptPart.name) {
+			keptPart.html += tag;
+			endKeptPart();
+			return;
+		}
+		endKeptPart();
+
+		const table = tables.at(-1);
+		if (name === "table") {
+			if (closing) {
+				const closed = tables.pop();
+				if (closed && closed.kept.length > 0) {
+					closed.openPiece.html = withAttributes(
+						closed.openPiece.html,
+						name,
+						` data-html-after="${encodeURIComponent(closed.kept.join("\n"))}"`,
+					);
+				}
+				pieces.push({ kind: "tag", html: tag, name });
+				return;
+			}
+
+			const source = tables.length === 0 ? args.raw.replace(TRAILING_NEWLINES_REGEX, "") : null;
+			const openPiece = {
+				kind: "tag" as const,
+				html: withAttributes(
+					tag,
+					name,
+					" data-html-kept" + (source === null ? "" : ` data-html-source="${encodeURIComponent(source)}"`),
+				),
+				name,
+			};
+			pieces.push(openPiece);
+			tables.push({ openPiece, section: null, cellDepth: 0, kept: [] });
+			return;
+		}
+		if (!table) {
+			return;
+		}
+
+		if (name === "thead" || name === "tbody" || name === "tfoot") {
+			table.section = closing ? null : HTML_TABLE_SECTIONS[name];
+		} else if (name === "tr" && !closing) {
+			const section = table.section === null ? "" : ` data-html-row-section="${table.section}"`;
+			const before = table.kept.length === 0 ? "" : ` data-html-before="${encodeURIComponent(table.kept.join("\n"))}"`;
+			table.kept = [];
+			pieces.push({ kind: "tag", html: withAttributes(tag, name, " data-html-kept" + section + before), name });
+		} else if (name === "td" || name === "th") {
+			table.cellDepth = Math.max(0, table.cellDepth + (closing ? -1 : 1));
+			pieces.push({ kind: "tag", html: closing ? tag : withAttributes(tag, name, " data-html-kept"), name });
+		} else if (name === "tr") {
+			pieces.push({ kind: "tag", html: tag, name });
+		} else if (table.cellDepth === 0) {
+			if (!closing && (name === "caption" || name === "colgroup") && !tag.endsWith("/>")) {
+				keptPart = { name, html: tag };
+			} else {
+				keep(tag);
+			}
+		} else if (HTML_TABLE_BLOCK_TAGS.has(name) || INLINE_HTML_SUPPORTED_TAGS.has(name)) {
+			if (name === "pre") {
+				preDepth = Math.max(0, preDepth + (closing ? -1 : 1));
+			}
+			pieces.push({ kind: "tag", html: tag, name });
+		} else {
+			pieces.push({ kind: "hidden", html: tag });
+		}
+	};
+
+	const readText = (text: string) => {
+		if (inCell()) {
+			pieces.push({ kind: preDepth > 0 ? "pre" : "text", html: text });
+		} else if (keptPart) {
+			keptPart.html += text;
+		} else if (text.trim()) {
+			keep(text.trim());
+		}
+	};
+
+	for (const part of args.parts) {
+		if (part.type === "html") {
+			let textStart = 0;
+			for (const match of part.text.matchAll(HTML_TAG_REGEX)) {
+				if (match.index > textStart) {
+					readText(part.text.slice(textStart, match.index));
+				}
+				readTag(match[0]);
+				textStart = match.index + match[0].length;
+			}
+			if (textStart < part.text.length) {
+				readText(part.text.slice(textStart));
+			}
+		} else if (inCell()) {
+			pieces.push({ kind: "markdown", html: args.parse([part]) });
+		} else if (part.type !== "space") {
+			keep(part.raw.replace(TRAILING_NEWLINES_REGEX, ""));
+		}
+	}
+
+	// A line break next to a hidden tag is the author's layout. Move it into the tag, like in an HTML block. Any
+	// other line break in a cell's text shows as a space, like in a browser. At a cell or block edge it shows as
+	// nothing.
+	const isEdge = (piece: (typeof pieces)[number] | undefined) =>
+		piece === undefined ||
+		piece.kind === "markdown" ||
+		(piece.kind === "tag" && piece.name !== undefined && !INLINE_HTML_SUPPORTED_TAGS.has(piece.name)) ||
+		piece.name === "br";
+	for (let index = 0; index < pieces.length; index++) {
+		const piece = pieces[index];
+		const before = pieces[index - 1];
+		const after = pieces[index + 1];
+		if (piece.kind !== "hidden") {
+			continue;
+		}
+
+		const whitespaceBefore = before?.kind === "text" ? TRAILING_WHITESPACE_REGEX.exec(before.html)?.[0] : undefined;
+		if (whitespaceBefore?.includes("\n")) {
+			before.html = before.html.slice(0, -whitespaceBefore.length);
+			piece.html = whitespaceBefore + piece.html;
+		}
+		const whitespaceAfter = after?.kind === "text" ? LEADING_WHITESPACE_REGEX.exec(after.html)?.[0] : undefined;
+		if (whitespaceAfter?.includes("\n")) {
+			after.html = after.html.slice(whitespaceAfter.length);
+			piece.html += whitespaceAfter;
+		}
+	}
+
+	return pieces
+		.map((piece, index) => {
+			if (piece.kind === "hidden") {
+				return `<span data-html-tag="${encodeURIComponent(piece.html)}"></span>`;
+			}
+			if (piece.kind === "pre") {
+				return piece.html.replaceAll("<", "&lt;");
+			}
+			if (piece.kind !== "text") {
+				return piece.html;
+			}
+
+			const text = piece.html.replace(WHITESPACE_WITH_NEWLINE_REGEX, (whitespace, offset: number) =>
+				(offset === 0 && isEdge(pieces[index - 1])) ||
+				(offset + whitespace.length === piece.html.length && isEdge(pieces[index + 1]))
+					? ""
+					: " ",
+			);
+			return text.replaceAll("<", "&lt;");
+		})
+		.join("");
+}
+
+/**
+ * Write the HTML attributes text that `html_kept_attributes_attribute` kept.
+ */
+function html_kept_attributes(node: TiptapJSONContent) {
+	return typeof node.attrs?.htmlAttributes === "string" ? node.attrs.htmlAttributes : "";
+}
+
+/**
+ * Write a table as an HTML table, for a table that a pipe table cannot hold. Each row is one line. No line is
+ * blank: a blank line would end the HTML block, and the rest of the table would read as Markdown.
+ */
+function html_table_render(table: TiptapJSONContent) {
+	const lines = [`<table${html_kept_attributes(table)}>`];
+	let openSection: string | null = null;
+	for (const row of table.content ?? []) {
+		const sectionName: unknown = row.attrs?.section;
+		const section =
+			sectionName === "head" || sectionName === "body" || sectionName === "foot"
+				? HTML_TABLE_SECTION_TAGS[sectionName]
+				: null;
+		if (section !== openSection && openSection !== null) {
+			lines.push(`</${openSection}>`);
+		}
+		if (typeof row.attrs?.htmlBefore === "string") {
+			lines.push(row.attrs.htmlBefore);
+		}
+		if (section !== openSection) {
+			if (section !== null) {
+				lines.push(`<${section}>`);
+			}
+			openSection = section;
+		}
+
+		const cells = (row.content ?? []).map((cell) => {
+			const tag = cell.type === "tableHeader" ? "th" : "td";
+			const colspan = Number(cell.attrs?.colspan) || 1;
+			const rowspan = Number(cell.attrs?.rowspan) || 1;
+			const align = cell.attrs?.align;
+			const attributes =
+				(colspan > 1 ? ` colspan="${colspan}"` : "") +
+				(rowspan > 1 ? ` rowspan="${rowspan}"` : "") +
+				(align === "left" || align === "center" || align === "right" ? ` align="${align}"` : "") +
+				html_kept_attributes(cell);
+			return `<${tag}${attributes}>${html_render_item_content(cell.content ?? [])}</${tag}>`;
+		});
+		lines.push(`<tr${html_kept_attributes(row)}>${cells.join("")}</tr>`);
+	}
+	if (openSection !== null) {
+		lines.push(`</${openSection}>`);
+	}
+	if (typeof table.attrs?.htmlAfterRows === "string") {
+		lines.push(table.attrs.htmlAfterRows);
+	}
+	lines.push("</table>");
+
+	return lines.join("\n");
+}
+
+/**
+ * Write the content of a cell or a list item. One paragraph is written as bare text, so a small edit does not
+ * wrap every cell in `<p>`.
+ */
+function html_render_item_content(content: TiptapJSONContent[]) {
+	return content.length === 1 && content[0].type === "paragraph"
+		? html_render_inline(content[0].content ?? [], HTML_TABLE_TEXT_ESCAPE_REGEX)
+		: html_render_blocks(content);
+}
+
+/**
+ * Write blocks inside an HTML table cell as HTML. `files.test.ts` checks that every block node type of the
+ * shared schema has a branch here.
+ */
+function html_render_blocks(content: TiptapJSONContent[]): string {
+	return content
+		.map((node) => {
+			const children = node.content ?? [];
+			const childText = children.map((child) => child.text ?? "").join("");
+			switch (node.type) {
+				case "paragraph":
+					return `<p>${html_render_inline(children, HTML_TABLE_TEXT_ESCAPE_REGEX)}</p>`;
+				case "heading": {
+					const level = Math.min(6, Math.max(1, Number(node.attrs?.level) || 1));
+					return `<h${level}>${html_render_inline(children, HTML_TABLE_TEXT_ESCAPE_REGEX)}</h${level}>`;
+				}
+				case "blockquote":
+					return `<blockquote>${html_render_blocks(children)}</blockquote>`;
+				case "bulletList":
+					return `<ul>${html_render_blocks(children)}</ul>`;
+				case "orderedList": {
+					const start = Number(node.attrs?.start) || 1;
+					return `<ol${start === 1 ? "" : ` start="${start}"`}>${html_render_blocks(children)}</ol>`;
+				}
+				case "listItem":
+					return `<li>${html_render_item_content(children)}</li>`;
+				case "taskList":
+					return `<ul data-type="taskList">${html_render_blocks(children)}</ul>`;
+				case "taskItem":
+					return `<li data-type="taskItem" data-checked="${node.attrs?.checked ? "true" : "false"}">${html_render_item_content(children)}</li>`;
+				case "codeBlock": {
+					const language = typeof node.attrs?.language === "string" && node.attrs.language ? node.attrs.language : null;
+					const languageAttribute = language === null ? "" : ` class="language-${html_escape_attribute(language)}"`;
+					return `<pre><code${languageAttribute}>${html_escape_text(childText, HTML_TABLE_TEXT_ESCAPE_REGEX)}</code></pre>`;
+				}
+				case "horizontalRule":
+					return "<hr>";
+				case "video":
+					return video_html_tag(node);
+				case "table":
+					return html_table_render(node);
+				case "frontmatter":
+					return `<pre data-frontmatter>${html_escape_text(childText, HTML_TABLE_TEXT_ESCAPE_REGEX)}</pre>`;
+				// A comment in a cell reads back as a hidden tag in a paragraph, and an HTML block as a paragraph.
+				case "htmlComment":
+					return `<p><!--${childText}--></p>`;
+				case "htmlBlock":
+					return typeof node.attrs?.htmlSource === "string" && node.attrs.htmlSourceContent === JSON.stringify(children)
+						? node.attrs.htmlSource
+						: `<p>${html_render_inline(children, HTML_TABLE_TEXT_ESCAPE_REGEX)}</p>`;
+				default:
+					return "";
+			}
+		})
+		.join("");
+}
+
 const files_table_node = Table.extend({
-	renderMarkdown: files_render_table_markdown,
+	addAttributes(this: { parent?: () => Record<string, unknown> }) {
+		return {
+			...this.parent?.(),
+			// Like `htmlSource` on `files_html_block_node`: the source of a table read from HTML.
+			htmlSource: html_data_attribute("data-html-source"),
+			htmlSourceContent: { default: null, rendered: false, parseHTML: () => null },
+			htmlAfterRows: html_data_attribute("data-html-after"),
+			htmlAttributes: html_kept_attributes_attribute([]),
+		};
+	},
+
+	// A table read from HTML stays HTML. Save writes its source exactly while its content is the same. A pipe
+	// table stays a pipe table until it holds something a pipe table cannot write.
+	renderMarkdown(node, helpers) {
+		if (typeof node.attrs?.htmlSource === "string") {
+			return node.attrs.htmlSourceContent === JSON.stringify(node.content ?? [])
+				? node.attrs.htmlSource
+				: html_table_render(node);
+		}
+
+		return table_fits_pipe(node) ? files_render_table_markdown(node, helpers) : html_table_render(node);
+	},
 });
 // #endregion tables
 
@@ -1861,8 +2400,8 @@ const files_html_comment_node = Node.create({
  * `<div align>`, or `<center>` says.
  *
  * `htmlSource` keeps the block's original text, and `htmlSourceContent` keeps the content that the parse
- * made from it (`html_block_set_source_content`). While the content is the same, save writes the
- * original text exactly. After an edit, save writes the content as new HTML (`html_block_render_content`).
+ * made from it (`html_source_set_content`). While the content is the same, save writes the original
+ * text exactly. After an edit, save writes the content as new HTML (`html_render_inline`).
  */
 const files_html_block_node = Node.create({
 	name: "htmlBlock",
@@ -1905,19 +2444,25 @@ const files_html_block_node = Node.create({
 			return node.attrs.htmlSource;
 		}
 
-		return html_block_render_content(content);
+		// Without its first tag, the block can read back as a Markdown paragraph. Then also escape the Markdown
+		// characters, so the text reads back the same.
+		return html_render_inline(
+			content,
+			content[0]?.type === "htmlTag" ? HTML_TEXT_ESCAPE_REGEX : HTML_AND_MARKDOWN_TEXT_ESCAPE_REGEX,
+		);
 	},
 });
 
 /**
- * Store each HTML block's parsed content next to its source, so save can tell if a person changed it.
+ * Store the parsed content of each HTML block and HTML table next to its source, so save can tell if a person
+ * changed it.
  */
-function html_block_set_source_content(mut_node: TiptapJSONContent) {
+function html_source_set_content(mut_node: TiptapJSONContent) {
 	for (const child of mut_node.content ?? []) {
-		if (child.type === "htmlBlock" && typeof child.attrs?.htmlSource === "string") {
+		if ((child.type === "htmlBlock" || child.type === "table") && typeof child.attrs?.htmlSource === "string") {
 			child.attrs.htmlSourceContent = JSON.stringify(child.content ?? []);
 		} else {
-			html_block_set_source_content(child);
+			html_source_set_content(child);
 		}
 	}
 }
@@ -1968,15 +2513,21 @@ function html_mark_tags(mark: NonNullable<TiptapJSONContent["marks"]>[number]): 
 }
 
 /**
- * Write the content of an edited HTML block as HTML. CommonMark reads no Markdown inside an HTML block,
- * so Markdown would show there as plain text. `files.test.ts` checks that every inline node and mark type
- * of the shared schema has a branch here.
+ * Escape the characters of `text` that `escapeRegex` finds as HTML character references.
  */
-function html_block_render_content(content: TiptapJSONContent[]) {
-	// Without its first tag, the block can read back as a Markdown paragraph. Then also escape the Markdown
-	// characters, so the text reads back the same.
-	const textEscapeRegex = content[0]?.type === "htmlTag" ? HTML_TEXT_ESCAPE_REGEX : HTML_AND_MARKDOWN_TEXT_ESCAPE_REGEX;
+function html_escape_text(text: string, escapeRegex: RegExp) {
+	return text.replace(escapeRegex, (char) =>
+		char === "&" ? "&amp;" : char === "<" ? "&lt;" : char === ">" ? "&gt;" : `&#${char.charCodeAt(0)};`,
+	);
+}
 
+/**
+ * Write inline content as HTML, for an edited HTML block or a cell of an HTML table. CommonMark reads no
+ * Markdown inside an HTML block, so Markdown would show there as plain text. `escapeRegex` finds the
+ * characters of text to escape. `files.test.ts` checks that every inline node and mark type of the shared
+ * schema has a branch here.
+ */
+function html_render_inline(content: TiptapJSONContent[], escapeRegex: RegExp) {
 	let html = "";
 	let openMarks: NonNullable<TiptapJSONContent["marks"]> = [];
 	// Keep the marks that the next node shares with the open ones, and close and open the rest. The schema
@@ -2004,9 +2555,7 @@ function html_block_render_content(content: TiptapJSONContent[]) {
 		writeMarks(node.marks ?? []);
 		switch (node.type) {
 			case "text":
-				html += (node.text ?? "").replace(textEscapeRegex, (char) =>
-					char === "&" ? "&amp;" : char === "<" ? "&lt;" : char === ">" ? "&gt;" : `&#${char.charCodeAt(0)};`,
-				);
+				html += html_escape_text(node.text ?? "", escapeRegex);
 				break;
 			case "hardBreak":
 				html += "<br>";
@@ -2050,7 +2599,7 @@ export function files_tiptap_markdown_to_json(args: {
 		html: markdownToHtml._yay,
 		extensions: args.extensions,
 	});
-	html_block_set_source_content(json);
+	html_source_set_content(json);
 
 	return Result({ _yay: json });
 }
@@ -2307,7 +2856,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			// Column widths cannot be written to markdown, so resizing stays off. That also keeps the
 			// extension from installing its DOM node view, which the headless Convex editors could not run.
 			table: files_table_node.configure({ resizable: false }),
-			tableRow: TableRow,
+			tableRow: files_table_row_node,
 			tableHeader: files_table_header_node,
 			tableCell: files_table_cell_node,
 			liveblocksComments: files_CommentsExtension,

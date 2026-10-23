@@ -2374,7 +2374,7 @@ describe("HTML blocks round-trip through Yjs", () => {
 	test("has an HTML writer branch for every inline node and mark type", () => {
 		const schema = getSchema(Object.values(files_get_tiptap_shared_extensions()));
 		const inlineNodeTypes = Object.values(schema.nodes).filter((type) => type.isInline);
-		// A new inline node or mark type needs a branch in `html_block_render_content`. Add it there, then here.
+		// A new inline node or mark type needs a branch in `html_render_inline`. Add it there, then here.
 		expect(inlineNodeTypes.map((type) => type.name).sort()).toEqual(["hardBreak", "htmlTag", "image", "text"]);
 		expect(Object.keys(schema.marks).sort()).toEqual([
 			"bold",
@@ -2729,7 +2729,7 @@ describe("GFM tables round-trip through Yjs", () => {
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
 
-	test("writes a colspan header once and pads the row", () => {
+	test("writes a table with a colspan cell as an HTML table", () => {
 		const markdown = build_markdown_from_json({
 			type: "doc",
 			content: [
@@ -2751,7 +2751,7 @@ describe("GFM tables round-trip through Yjs", () => {
 				},
 			],
 		});
-		expect(markdown).toBe("| X |  |\n| --- | --- |\n| 1 | 2 |");
+		expect(markdown).toBe('<table>\n<tr><th colspan="2">X</th></tr>\n<tr><td>1</td><td>2</td></tr>\n</table>');
 		expect_still_a_table(markdown);
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
@@ -2771,7 +2771,7 @@ describe("GFM tables round-trip through Yjs", () => {
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
 
-	test("writes a rowspan cell once and keeps the covered row in its own columns", () => {
+	test("writes a table with a rowspan cell as an HTML table", () => {
 		const markdown = build_markdown_from_json({
 			type: "doc",
 			content: [
@@ -2798,7 +2798,9 @@ describe("GFM tables round-trip through Yjs", () => {
 				},
 			],
 		});
-		expect(markdown).toBe("| Region | Rep |\n| --- | --- |\n| EU | Ann |\n|  | Bob |");
+		expect(markdown).toBe(
+			'<table>\n<tr><th>Region</th><th>Rep</th></tr>\n<tr><td rowspan="2">EU</td><td>Ann</td></tr>\n<tr><td>Bob</td></tr>\n</table>',
+		);
 		expect_still_a_table(markdown);
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
@@ -2875,15 +2877,184 @@ describe("GFM tables round-trip through Yjs", () => {
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
 
-	test("cell schema stays paragraph-only so one save settles the content", () => {
-		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: table_canonical_2x2 } });
-		if (editor._nay) {
-			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+	test("writes a table with a list in a cell as an HTML table", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						make_table_row("tableHeader", ["A", "B"]),
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableCell",
+									content: [
+										{
+											type: "bulletList",
+											content: [
+												{
+													type: "listItem",
+													content: [{ type: "paragraph", content: [{ type: "text", text: "one" }] }],
+												},
+											],
+										},
+									],
+								},
+								{
+									type: "tableCell",
+									content: [{ type: "paragraph", content: [{ type: "text", text: "2" }] }],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(markdown).toBe(
+			"<table>\n<tr><th>A</th><th>B</th></tr>\n<tr><td><ul><li>one</li></ul></td><td>2</td></tr>\n</table>",
+		);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+
+		const json = files_tiptap_markdown_to_json({ markdown });
+		if (json._nay) {
+			throw new Error("Expected the HTML table to parse", { cause: json._nay });
+		}
+		expect(json._yay.content?.[0]?.content?.[1]?.content?.[0]?.content?.[0]?.type).toBe("bulletList");
+	});
+});
+
+describe("HTML tables round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected HTML table markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
 		}
 
-		expect(editor._yay.schema.nodes.tableCell.spec.content).toBe("paragraph+");
-		expect(editor._yay.schema.nodes.tableHeader.spec.content).toBe("paragraph+");
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	function edit_and_save(markdown: string, edit: (mut_content: TiptapJSONContent[]) => void) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+		const json = editor._yay.getJSON();
 		editor._yay.destroy();
+
+		edit(json.content ?? []);
+		const edited = files_headless_tiptap_editor_create({ initialContent: { json } });
+		if (edited._nay) {
+			throw new Error("Expected the editor to load the edited document", { cause: edited._nay });
+		}
+		const saved = files_headless_tiptap_editor_get_markdown({ mut_editor: edited._yay });
+		edited._yay.destroy();
+		return saved + "\n";
+	}
+
+	const table_full =
+		'<table class="t">\n  <caption>Cap</caption>\n  <colgroup><col width="10"></colgroup>\n  <thead>\n    <tr><th>A</th><th>B</th></tr>\n  </thead>\n  <tbody>\n    <tr>\n      <td colspan="2" style="color:red">\n        <ul><li>one</li><li>two</li></ul>\n      </td>\n    </tr>\n    <!-- last row -->\n    <tr><td rowspan="2">Use <name> here</td><td>b</td></tr>\n  </tbody>\n</table>\n';
+
+	test("keeps HTML tables exactly", () => {
+		const inputs = [
+			"<table><tr><td>a</td></tr></table>\n",
+			table_full,
+			// A README table with Markdown in its cells comes from Marked as several blocks.
+			"<table>\n<tr>\n<td>\n\n- a\n- b\n\n</td>\n<td>\n\n**bold** text\n\n</td>\n</tr>\n</table>\n",
+			"- item\n  <table><tr><td>in a list</td></tr></table>\n",
+		];
+		for (const input of inputs) {
+			expect(round_trip_markdown(input)).toBe(input);
+		}
+	});
+
+	test("writes an edited HTML table as HTML and keeps its parts", () => {
+		const saved = edit_and_save(table_full, (content) => {
+			const header = content[0]?.content?.[0]?.content?.[0]?.content?.[0]?.content?.[0];
+			if (header?.text !== "A") {
+				throw new Error("Expected the first header text");
+			}
+			header.text = "AA";
+		});
+
+		expect(saved).toBe(
+			'<table class="t">\n<caption>Cap</caption>\n<colgroup><col width="10"></colgroup>\n<thead>\n<tr><th>AA</th><th>B</th></tr>\n</thead>\n<tbody>\n<tr><td colspan="2" style="color:red"><ul><li>one</li><li>two</li></ul></td></tr>\n<!-- last row -->\n<tr><td rowspan="2">Use <name> here</td><td>b</td></tr>\n</tbody>\n</table>\n',
+		);
+		expect(round_trip_markdown(saved)).toBe(saved);
+	});
+
+	test("has an HTML writer branch for every block node type", () => {
+		const schema = getSchema(Object.values(files_get_tiptap_shared_extensions()));
+		const blockNodeTypes = Object.values(schema.nodes).filter((type) => type.isBlock);
+		// A new block node type needs a branch in `html_render_blocks`. Add it there, then here.
+		expect(blockNodeTypes.map((type) => type.name).sort()).toEqual([
+			"blockquote",
+			"bulletList",
+			"codeBlock",
+			"doc",
+			"frontmatter",
+			"heading",
+			"horizontalRule",
+			"htmlBlock",
+			"htmlComment",
+			"listItem",
+			"orderedList",
+			"paragraph",
+			"table",
+			"tableCell",
+			"tableHeader",
+			"tableRow",
+			"taskItem",
+			"taskList",
+			"video",
+		]);
+
+		const paragraph = (text: string) => ({ type: "paragraph", content: [{ type: "text", text }] });
+		const content: TiptapJSONContent[] = [
+			paragraph("p <&>"),
+			{ type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "h" }] },
+			{ type: "blockquote", content: [paragraph("q")] },
+			{ type: "bulletList", content: [{ type: "listItem", content: [paragraph("b1"), paragraph("b2")] }] },
+			{ type: "orderedList", attrs: { start: 3 }, content: [{ type: "listItem", content: [paragraph("o")] }] },
+			{ type: "taskList", content: [{ type: "taskItem", attrs: { checked: true }, content: [paragraph("t")] }] },
+			{ type: "codeBlock", attrs: { language: "js" }, content: [{ type: "text", text: "a <\n\nb" }] },
+			{ type: "horizontalRule" },
+			{ type: "video", attrs: { src: "https://example.com/v.mp4" } },
+			{ type: "table", content: [{ type: "tableRow", content: [{ type: "tableCell", content: [paragraph("n")] }] }] },
+			{ type: "frontmatter", content: [{ type: "text", text: "a: 1" }] },
+			{ type: "htmlComment", content: [{ type: "text", text: " c " }] },
+			{ type: "htmlBlock", content: [{ type: "text", text: "d" }] },
+		];
+		const saved = edit_and_save("| a |\n| --- |\n| 1 |\n", (mut_content) => {
+			mut_content[0]!.content![1]!.content![0]!.content = content;
+		});
+
+		const parsed = files_tiptap_markdown_to_json({ markdown: saved });
+		if (parsed._nay) {
+			throw new Error("Expected the saved table to parse", { cause: parsed._nay });
+		}
+		const shape = (nodes: TiptapJSONContent[]): unknown[] =>
+			nodes.map((node) => [node.type, node.text, shape(node.content ?? [])]);
+		const cellContent = parsed._yay.content?.[0]?.content?.[1]?.content?.[0]?.content ?? [];
+		// A comment in a cell reads back as a hidden tag in a paragraph, and an HTML block as a paragraph.
+		expect(shape(cellContent)).toEqual(
+			shape([...content.slice(0, -2), { type: "paragraph", content: [{ type: "htmlTag" }] }, paragraph("d")]),
+		);
 	});
 });
 
