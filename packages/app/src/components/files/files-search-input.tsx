@@ -256,7 +256,6 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 		scope: `${membershipId}\n${folderPath}`,
 		order: (row) => files_metadata_catalog_key_order(row.fieldPath),
 		rowKey: (row) => row.fieldPath,
-		cacheFirstPage: prefix === "",
 	});
 	const isDisabled = stale || keys.updating;
 	const isUnmatched = !isDisabled && keys.status === "Exhausted" && keys.rows.length === 0 && prefix !== "";
@@ -384,7 +383,6 @@ const FilesSearchInputValueRows = memo(function FilesSearchInputValueRows(props:
 		scope: `${membershipId}\n${folderPath}\n${fieldPath}`,
 		order: (value) => value,
 		rowKey: (value) => value,
-		cacheFirstPage: prefix === "",
 	});
 	// The exact key's kinds, not a prefix page, decide the boolean hint. Cache it like the values'
 	// first page, because the rows wait for it.

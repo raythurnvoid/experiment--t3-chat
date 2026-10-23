@@ -367,7 +367,6 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 		scope: `${membershipId}\n${folderPath}\n${fieldPath}`,
 		order: (value) => value,
 		rowKey: (value) => value,
-		cacheFirstPage: prefix === "",
 	});
 	const isDisabled = stale || values.updating;
 	// A held row of an older text may not start with the typed text any more.

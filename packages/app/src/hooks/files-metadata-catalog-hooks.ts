@@ -16,6 +16,7 @@ import type { files_SavedStream } from "../../shared/files.ts";
 import { useFilesSavedView } from "./files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 import { files_merge_sorted_streams } from "./files-search-hooks.ts";
+import { useDebounce } from "./utils-hooks.ts";
 
 /**
  * Rows per catalog page. The doors return at most 50.
@@ -70,14 +71,8 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 	 * `list_folder_fields`) and merge its rows in.
 	 */
 	restricted?: boolean;
-	/**
-	 * Keep the first pages in the query cache for 5 minutes after the menu closes, so it opens again
-	 * with its rows and no skeleton. Pass it only for the untyped text: each typed prefix would add
-	 * its own idle queries and push the folder's queries out of the cache.
-	 */
-	cacheFirstPage: boolean;
 }) {
-	const { query, membershipId, requests, scope, order, rowKey, restricted = false, cacheFirstPage } = args;
+	const { query, membershipId, requests, scope, order, rowKey, restricted = false } = args;
 
 	const view = useFilesSavedView(membershipId, requests !== null);
 	const streamArgs = (index: number, savedStream: files_SavedStream | null, twin = false) => {
@@ -86,7 +81,17 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 			? ({ ...request, savedStream, ...(twin ? { restricted: true } : {}) } as unknown as PaginatedQueryArgs<Query>)
 			: "skip";
 	};
-	const options = { initialNumItems: FILES_METADATA_CATALOG_PAGE_SIZE, cacheSavedStreamFirstPage: cacheFirstPage };
+	// Keep the first pages in the query cache for 5 minutes after the menu closes, so it opens again
+	// with its rows and no skeleton, also with text left in its box. Cache the requests the menu opens
+	// with at once, and later requests once they stay the same for 1 second. Text typed quickly stays
+	// live: the cache stops keeping new idle queries once 250 are idle, so a page for every typed
+	// prefix would take the place of the folder's own queries.
+	const identity = JSON.stringify(requests);
+	const settledIdentity = useDebounce(identity, 1000);
+	const options = {
+		initialNumItems: FILES_METADATA_CATALOG_PAGE_SIZE,
+		cacheSavedStreamFirstPage: settledIdentity === identity,
+	};
 	const groups = [
 		[
 			useFilesPaginatedQuery(query, streamArgs(0, view.normal), options),
@@ -126,7 +131,6 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 
 	// Keep the last loaded rows. A length check is enough: held rows only show while a new first
 	// page loads, and they are disabled then.
-	const identity = JSON.stringify(requests);
 	const [held, setHeld] = useState<{
 		scope: string;
 		identity: string;
@@ -195,7 +199,6 @@ export function useFilesMetadataFolderKeys(args: {
 		// Like the tree's twin, read it until the reader is known not to be the owner, so the owner does
 		// not see restricted keys late. Anyone else gets an empty page.
 		restricted: isOwner !== false,
-		cacheFirstPage: prefix === "",
 	});
 }
 

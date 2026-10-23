@@ -264,9 +264,11 @@ Tree-item components:
     Old Move views must not keep adding idle subscriptions. A first page already in the cache
     can still stay there if it later fails or becomes a split parent. This is not general cache eviction.
     One exception, decided by the user: the metadata catalog menus (Columns, the folder filter bar,
-    the search box) pass `cacheSavedStreamFirstPage` for their untyped first page, so a menu opens
-    again with its rows and no skeleton. That is at most 8 queries per menu, so an old Move
-    generation leaves only those idle, for up to 5 minutes. Typed prefixes stay live.
+    the search box) pass `cacheSavedStreamFirstPage` for the first page they open with, and for a
+    later text once it stays the same for 1 second. So a menu opens again with its rows and no
+    skeleton, also with text left in its box. Text typed quickly stays live: the cache stops keeping
+    new idle queries once 250 are idle, and a page for every typed prefix would take the folder's
+    place. An old Move generation leaves only these few pages idle, for up to 5 minutes.
     An ordinary cursor error takes a new ID. The folder view reads its own queries (sort, README, drafts,
     write permission, selected node) through `useCachedQuery` too. Per-row queries stay on the
     plain `useQuery`: the cache keeps at most 250 idle queries, and the rows of a big folder would push

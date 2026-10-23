@@ -113,8 +113,8 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		initialNumItems: number;
 		/**
 		 * Let the first page of a `savedStream` use the query cache too. Pass it only for a few queries
-		 * per stream, like a menu's untyped first page. Each old Move generation then stays idle in the
-		 * cache for up to 5 minutes.
+		 * per stream, like the page a menu shows when it closes. Each old Move generation then stays
+		 * idle in the cache for up to 5 minutes.
 		 */
 		cacheSavedStreamFirstPage?: boolean;
 	},
