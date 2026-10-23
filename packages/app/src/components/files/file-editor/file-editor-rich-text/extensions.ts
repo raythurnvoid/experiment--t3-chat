@@ -18,7 +18,10 @@ import { common, createLowlight } from "lowlight";
 import { mergeAttributes } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { files_get_tiptap_shared_extensions } from "../../../../../shared/files-tiptap.ts";
+import {
+	files_get_tiptap_shared_extensions,
+	files_tiptap_link_is_allowed_uri,
+} from "../../../../../shared/files-tiptap.ts";
 
 //TODO I am using cx here to get tailwind autocomplete working, idk if someone else can write a regex to just capture the class key in objects
 const decorationHighlight = DecorationHighlight;
@@ -41,6 +44,8 @@ const starterKitSharedOptions = {
 	},
 	horizontalRule: false,
 	codeBlock: false,
+	// Same address check as the shared set, so the browser and Convex keep the same links.
+	link: { isAllowedUri: files_tiptap_link_is_allowed_uri },
 } as const;
 
 /**

@@ -231,6 +231,11 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(normalize(input)).toBe(input);
 	});
 
+	test("keeps links to app files and to other apps", () => {
+		const input = "[Doc](bonobo-file://k17abcdef) and [note](obsidian://open?vault=a)\n";
+		expect(normalize(input)).toBe(input);
+	});
+
 	test("un-escapes a backslash-escaped date once, then holds still", () => {
 		const once = normalize("Meeting on 2026\\-08\\-30\n");
 		expect(once).toContain("2026-08-30");

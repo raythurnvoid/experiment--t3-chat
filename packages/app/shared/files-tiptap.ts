@@ -1711,6 +1711,32 @@ export function files_yjs_doc_create_from_text(args: { text: string; rootKind: f
 	}
 }
 
+// #region links
+const LINK_URI_SCHEME_REGEX = /^([a-z][a-z0-9+.-]*):/i;
+// These schemes run code or hold a whole page, so a click on them must never work.
+const LINK_BLOCKED_SCHEMES = new Set(["javascript", "vbscript", "data"]);
+
+/**
+ * Decide which link addresses the editor keeps.
+ *
+ * Tiptap keeps only a short list of schemes (`http`, `mailto`, ...) and turns every other link into plain
+ * text. A link to an app file (`bonobo-file://`) or to another app (`obsidian://`) then lost its address
+ * on the next save. So keep every scheme except the blocked ones.
+ *
+ * The scheme must start the address and hold only scheme characters. A browser ignores a tab, a newline,
+ * or a control character at the start, so `java<tab>script:` runs as `javascript:`. Any of those
+ * characters makes this check fail, so a hidden blocked scheme never passes.
+ */
+export function files_tiptap_link_is_allowed_uri(url: string, ctx: { defaultValidate: (url: string) => boolean }) {
+	if (ctx.defaultValidate(url)) {
+		return true;
+	}
+
+	const scheme = LINK_URI_SCHEME_REGEX.exec(url)?.[1];
+	return scheme !== undefined && !LINK_BLOCKED_SCHEMES.has(scheme.toLowerCase());
+}
+// #endregion links
+
 // #region tiptap editor
 /**
  * Server-safe Tiptap extensions (no DOM, no React).
@@ -1729,6 +1755,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 				listKeymap: false,
 
 				horizontalRule: false,
+				link: { isAllowedUri: files_tiptap_link_is_allowed_uri },
 			}),
 			taskList: TaskList.configure({
 				HTMLAttributes: {

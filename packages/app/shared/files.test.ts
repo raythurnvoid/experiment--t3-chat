@@ -2206,6 +2206,47 @@ describe("media embeds round-trip through Yjs", () => {
 	});
 });
 
+describe("links round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected link markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	test("keeps links to app files and to other apps", () => {
+		const input =
+			"[Doc](bonobo-file://k17abcdef), [draft](bonobo-file://private/k17abcdef) and [note](obsidian://open?vault=a)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("keeps only the label of a link that could run code", () => {
+		// A browser ignores a tab inside the scheme, so `java<tab>script:` runs as `javascript:`. Markdown
+		// link syntax cannot hold a tab, so the HTML link carries it.
+		expect(
+			round_trip_markdown(
+				'[a](JavaScript:alert(1)) <a href="java\tscript:alert(1)">b</a> [c](vbscript:x) [d](data:text/html,x)\n',
+			),
+		).toBe("a b c d\n");
+	});
+});
+
 describe("GFM tables round-trip through Yjs", () => {
 	function round_trip_markdown(markdown: string) {
 		const yjsDoc = new YDoc();
