@@ -11,6 +11,10 @@ personal AI folder for runners, raw samples, logs, and the progress table. Keep 
    Check the full expected frontend response URL set and exact bytes, plus backend source, before
    the quiet-host check below. A response count alone is not proof. Recheck the URL set before
    input, and check any later lazy-loaded responses before accepting the sample.
+   If setup needs a reload to capture the first Convex `Connect` message, wait for the initial
+   load's response-body reads to finish first. Require zero pending reads and no read errors.
+   An early reload can make CDP lose the old response IDs. Keep exact-byte proof for both loads.
+   A failed body read blocks input; save the failure and prepare a fresh owned page.
 4. Wait for tests, builds, and HMR to finish. Save the commit and hashes of changed source files.
    Call `page.bringToFront()` before timing. Check at least six quiet animation frames. A tab can
    report visible and focused while Edge runs its frames about once a second. Require a normal
