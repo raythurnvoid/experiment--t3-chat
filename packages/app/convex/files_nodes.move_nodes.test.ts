@@ -10,6 +10,7 @@ import { db_insert_file_text_content } from "./files_nodes_create.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	test_convex,
+	test_finish_archive_jobs,
 	test_finish_pending_update_run,
 	test_save_file_pending_update,
 	test_rename_node,
@@ -1171,6 +1172,9 @@ describe("move_nodes", () => {
 						})
 					)._nay,
 				).toBeUndefined();
+				// The archive job runs its steps on real timers, and the Move below switches to fake timers.
+				// A step that has not run by then never runs, and the Move would wait for the job.
+				await test_finish_archive_jobs(t);
 			}
 			const asUser =
 				access === "owner" ? asOwner : t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
