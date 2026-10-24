@@ -54,6 +54,8 @@ Also keep the Markdown save patches:
   `meta.markTextNodes`, the number of text nodes in that run.
 - A link keeps how Markdown wrote an auto link in `markdownAutolink` (`bare` or `angle`) and saves it
   that way while its text still gives the same address.
+- An inline atom with `markdownOptions.staysInsideMarks` is written inside the marks around it, like
+  text. The app's hidden HTML tag and image set it. Other atoms close the marks before them.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and
   `escapeBlockStarts` escapes a `>` that starts a line. So `R&D` and `a < b` save as written.
 - `escapeMarkdownSyntax` escapes `*`, `_`, `~`, `=` and `\` only where they would read as Markdown, so
@@ -64,6 +66,11 @@ Also keep the Markdown save patches:
 
 Without them a save can break a code block open, grow its indent on every save, turn text such as
 `\# not a heading` into a heading, or split a heading in two when the file opens again.
+
+`y-tiptap` keeps the marks of an inline node, like a link on an image, in the element attribute
+`ymarks`. Upstream y-prosemirror drops them, so a linked image lost its link in every Yjs round trip.
+Server writes (`files_yjs_doc_update_from_tiptap_editor` in `shared/files-yjs.ts`) use `y-tiptap`'s
+`updateYFragment` too, so the server and the live editor store marks the same way.
 
 The app's own marked `code` renderer in `shared/files-tiptap.ts` drops the `\n` that marked writes
 before `</code>`, so a code block keeps its text exactly and gains no empty line before its closing

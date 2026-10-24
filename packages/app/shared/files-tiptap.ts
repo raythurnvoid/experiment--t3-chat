@@ -1508,6 +1508,12 @@ const files_image_node = Node.create({
 		const image = `![${markdown_escape_image_alt(alt)}](${markdown_link_destination(src)}`;
 		return title ? `${image} "${title.replace(/([\\"])/g, "\\$1")}")` : `${image})`;
 	},
+
+	// Write the image inside the link or bold around it. Without this, save closes the marks before
+	// the image, so a linked image `[![i](src)](page)` lost its link.
+	markdownOptions: {
+		staysInsideMarks: true,
+	},
 });
 
 /**
@@ -2836,6 +2842,13 @@ const files_html_tag_node = Node.create({
 
 	renderMarkdown(node) {
 		return typeof node.attrs?.html === "string" ? node.attrs.html : "";
+	},
+
+	// Write the tag inside the bold or link around it, where the file had it. Without this, save closes
+	// the marks before the tag and opens them again after it, so `**<a target>x</a>**` became
+	// `<a target>**x**</a>`.
+	markdownOptions: {
+		staysInsideMarks: true,
 	},
 });
 // #endregion hidden html tags

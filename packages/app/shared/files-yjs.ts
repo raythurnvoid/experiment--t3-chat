@@ -1,6 +1,6 @@
 // Yjs helpers for files: Y.Doc construction, update/diff plumbing, and Tiptap-editor bridging.
 //
-// Split out of `shared/files.ts` for module-eval weight: importing `yjs`/`y-prosemirror` must not
+// Split out of `shared/files.ts` for module-eval weight: importing `yjs`/`@tiptap/y-tiptap` must not
 // tax consumers that only need the lean helpers in `shared/files.ts`. Keep this module free of
 // Tiptap runtime imports (`@tiptap/core` type imports are fine); Tiptap-heavy helpers live in
 // `shared/files-tiptap.ts`.
@@ -17,7 +17,8 @@ import {
 	ContentString as YContentString,
 	ContentDeleted as YContentDeleted,
 } from "yjs";
-import { updateYFragment } from "y-prosemirror";
+// Use the same Yjs binding as the live editor. It keeps the marks of inline nodes, such as a link on an image.
+import { updateYFragment } from "@tiptap/y-tiptap";
 import type { Editor } from "@tiptap/core";
 import { Result } from "common/errors-as-values-utils.ts";
 import { files_YJS_DOC_KEYS, files_yjs_doc_is_diff_update_empty, type files_YjsRootKind } from "./files.ts";

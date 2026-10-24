@@ -2370,6 +2370,13 @@ describe("hidden HTML tags round-trip through Yjs", () => {
 			'{"type":"htmlTag","attrs":{"html":"<code class=\\"c\\">"}}',
 		);
 	});
+
+	test("keeps a hidden tag or an image inside the bold or link around it", () => {
+		// Yjs and the Markdown writer used to drop the marks of these inline nodes. A linked image lost its link.
+		const input =
+			'**<a href="https://e.com" target="_blank">x</a>** and a **b <span class="x">c</span>**, [<span class="x">d</span>](https://e.com) [![i](https://e.com/i.png)](https://e.com/page) **e ![j](https://e.com/j.png)**\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
 });
 
 describe("HTML entities round-trip through Yjs", () => {
