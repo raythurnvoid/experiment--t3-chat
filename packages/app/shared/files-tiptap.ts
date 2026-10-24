@@ -73,6 +73,27 @@ const TRAILING_NEWLINES_REGEX = /(?<!\n)\n+$/;
 // matched, the blank line survived into the document as a "\n\n" text node next to an inline
 // image, and every re-parse wrote it back plus a new blank line, so each copy of a copy grew.
 const STRUCTURAL_HTML_WHITESPACE_REGEX = />(?:\n[ \t]*)+</g;
+const HTML_TAG_NAME_START_REGEX = /^<\/?([a-z][a-z0-9-]*)/i;
+// A newline between two of these tags is a soft line break in the text, like `*a*\n<u>b</u>`.
+const HTML_INLINE_LAYOUT_TAG_NAMES = new Set([
+	"a",
+	"b",
+	"br",
+	"code",
+	"del",
+	"em",
+	"i",
+	"img",
+	"kbd",
+	"mark",
+	"s",
+	"span",
+	"strike",
+	"strong",
+	"sub",
+	"sup",
+	"u",
+]);
 const TRAILING_HARD_BREAKS_REGEX = /(?<!\\\n)(?:\\\n)+$/;
 const HARD_BREAK_REGEX = /\\\n/g;
 const HIGHLIGHT_SPACE_INSIDE_REGEX = /^==\s|\s==$/;
@@ -1337,7 +1358,19 @@ export function files_tiptap_html_to_json(args: { html: string; extensions?: Ext
 	const parseOptions = {
 		preserveWhitespace: "full" as const,
 	};
-	const normalizedHtml = args.html.replace(STRUCTURAL_HTML_WHITESPACE_REGEX, "><").trimEnd();
+	// Keep a newline between two inline tags. It is text: dropping it joined `*a*\n<u>b</u>` into `*a*<u>b</u>`.
+	const normalizedHtml = args.html
+		.replace(STRUCTURAL_HTML_WHITESPACE_REGEX, (match, offset: number) => {
+			const before = HTML_TAG_NAME_START_REGEX.exec(args.html.slice(args.html.lastIndexOf("<", offset)))?.[1];
+			const after = HTML_TAG_NAME_START_REGEX.exec(args.html.slice(offset + match.length - 1))?.[1];
+			const inline =
+				before !== undefined &&
+				after !== undefined &&
+				HTML_INLINE_LAYOUT_TAG_NAMES.has(before.toLowerCase()) &&
+				HTML_INLINE_LAYOUT_TAG_NAMES.has(after.toLowerCase());
+			return inline ? match : "><";
+		})
+		.trimEnd();
 
 	const json = is_browser()
 		? tiptap_generateJSON_browser(normalizedHtml, extensions, parseOptions)

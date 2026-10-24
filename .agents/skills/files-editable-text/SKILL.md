@@ -113,7 +113,7 @@ Typed text gets a backslash only where it would read as Markdown (`escapeMarkdow
 
 `++` is plain text, like on GitHub and in other Markdown apps. So `C++ and C++17` stays as written, and underline saves as `<u>`. A `==` highlight needs text right inside its markers, like `*` emphasis, so `a == b == c` stays plain text. A `#` run at the end of a `#` heading would read as its closing marks, so save escapes it: `## Issue \#`.
 
-Line breaks keep the style the file uses: a backslash, two spaces, or a `<br>` tag. The hard break node stores it in `markdownSource`. A new break saves as a backslash, because editors often delete two trailing spaces. A break inside a `#` heading still saves as `<br>`.
+Line breaks keep the style the file uses: a backslash, two spaces, or a `<br>` tag. The hard break node stores it in `markdownSource`. A new break saves as a backslash, because editors often delete two trailing spaces. A break inside a `#` heading still saves as `<br>`. A soft line break (a plain newline) between two inline tags, like `*a*\n<u>b</u>` or `**a**\n![i](x)`, stays a newline. `files_tiptap_html_to_json` drops newlines between tags as HTML layout, so before, it dropped this one too and the two words joined.
 
 Known limits, with no lost content:
 

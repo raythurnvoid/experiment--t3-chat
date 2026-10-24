@@ -2540,6 +2540,12 @@ describe("Markdown escapes and line breaks round-trip through Yjs", () => {
 		});
 		expect(typed).toBe("a\\\nb\n");
 	});
+
+	test("keeps a soft line break between a mark and a tag or image", () => {
+		const input =
+			'*a*\n<u>b</u> `c`\n<mark>d</mark> **e**\n![i](https://e.com/i.png) f<br>\n<span class="g">h</span>\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
 });
 
 describe("mark syntax round-trip through Yjs", () => {
@@ -2583,7 +2589,7 @@ describe("mark syntax round-trip through Yjs", () => {
 			"a <b>x</b> <strong>y</strong> <i>z</i> <em>w</em> <B>q</B> __u__ _v_ ___t___ **s** *r*",
 			"<s>x</s> <del>y</del> <strike>z</strike> <S>q</S> ~t~ ~~u~~ <code>npm run dev</code> `v`",
 			"<mark>a=b</mark> <MARK>m</MARK> ==h==",
-			'<a href="https://e.com" title="T">x</a> <a href=\'#top\'>y</a> [z](#z)\n',
+			'<a href="https://e.com" title="T">x</a> <a href=\'#top\'>y</a> [z](#z) <A HREF="#w">w</A>\n',
 		].join("\n\n");
 		expect(round_trip_markdown(input)).toBe(input);
 	});

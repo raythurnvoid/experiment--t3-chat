@@ -60,6 +60,8 @@ Also keep the Markdown save patches:
   a tag always, `_` and `~` only while they still parse, else the default. Code keeps a `<code>` tag
   only around plain text. The app's highlight mark uses the same attribute and helper. A link keeps its
   whole `<a …>` tag there and writes it back while its `href` and `title` still match the tag.
+- The server `generateJSON` (`@tiptap/html/server`) lower-cases attribute names. Linkedom keeps `HREF`
+  as written, so the parse missed the address and `<A HREF="u">x</A>` lost its link.
 - An inline atom with `markdownOptions.staysInsideMarks` is written inside the marks around it, like
   text. The app's hidden HTML tag and image set it. Other atoms close the marks before them.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and
