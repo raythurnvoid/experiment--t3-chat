@@ -265,6 +265,7 @@ import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tipt
 import {
 	files_PENDING_PATH_TOO_DEEP_MESSAGE,
 	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+	type files_YjsRootKind,
 } from "../../../../../shared/files.ts";
 import { files_u8_to_array_buffer } from "@/lib/files.ts";
 
@@ -295,9 +296,9 @@ const requiredParentsById = new Map<
 		threadIds?: string[];
 	}>
 >();
-function registerPendingState(stateId: string, text: string) {
+function registerPendingState(stateId: string, text: string, rootKind: files_YjsRootKind = "rich_text") {
 	// Always overwrite: tests reuse fixture ids with different texts.
-	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "rich_text" });
+	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind });
 	if ("_nay" in yjsDoc) {
 		throw new Error(yjsDoc._nay.message);
 	}
@@ -311,6 +312,7 @@ function makePendingUpdate(args: {
 	fileNodeId: string;
 	staged?: string;
 	unstaged?: string;
+	rootKind?: files_YjsRootKind;
 	pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
 	copiedFrom?: { nodeId: string; path: string };
 	pendingReplacement?: { assetId: string; size: number; contentType: string; baseAssetId: string };
@@ -325,7 +327,6 @@ function makePendingUpdate(args: {
 	 * Set for a proposal on a file with collaboration off: the content asset it was built from.
 	 */
 	baseAssetId?: string;
-	contentNeedsRebase?: true;
 }): app_convex_Doc<"files_pending_updates"> {
 	const doc = {
 		_id: args.id,
@@ -339,12 +340,15 @@ function makePendingUpdate(args: {
 		...(args.staged != null && args.unstaged != null
 			? {
 					content: {
-						base: args.baseAssetId
-							? { kind: "asset", assetId: args.baseAssetId }
-							: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
-						baseStateId: registerPendingState(`${args.id}_base`, "") as never,
-						stagedStateId: registerPendingState(`${args.id}_staged`, args.staged) as never,
-						unstagedStateId: registerPendingState(`${args.id}_unstaged`, args.unstaged) as never,
+						rootKind: args.rootKind ?? "rich_text",
+						base: args.privatePath
+							? { kind: "new" }
+							: args.baseAssetId
+								? { kind: "asset", assetId: args.baseAssetId, pendingContentVersion: 1 }
+								: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
+						baseStateId: registerPendingState(`${args.id}_base`, "", args.rootKind) as never,
+						stagedStateId: registerPendingState(`${args.id}_staged`, args.staged, args.rootKind) as never,
+						unstagedStateId: registerPendingState(`${args.id}_unstaged`, args.unstaged, args.rootKind) as never,
 					},
 				}
 			: {}),
@@ -382,7 +386,7 @@ function makePendingUpdate(args: {
 									}
 								: {
 										kind: "text",
-										textKind: "rich_text",
+										textKind: args.rootKind ?? "rich_text",
 										contentType: "text/markdown",
 										collaborationEnabled: true,
 										metadata: [],
@@ -392,7 +396,6 @@ function makePendingUpdate(args: {
 		...(args.preparing ? { preparation: { transferItemId: "transfer_item_1", creationGeneration: 1 } } : {}),
 		...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
 		...(args.threadIds ? { threadIds: args.threadIds } : {}),
-		...(args.contentNeedsRebase ? { contentNeedsRebase: true } : {}),
 		size: 0,
 		updatedAt: 1,
 	} as unknown as app_convex_Doc<"files_pending_updates">;
@@ -553,11 +556,13 @@ function makeNode(args: {
 	canWrite?: boolean;
 	nonCollaborative?: boolean;
 	archived?: boolean;
+	pendingContentVersion?: number;
 }): app_convex_Doc<"files_nodes"> {
 	const kind = args.kind ?? "file";
 	return {
 		_id: args.id,
 		_creationTime: 0,
+		pendingContentVersion: args.pendingContentVersion ?? 1,
 		path: args.path,
 		name: args.path.split("/").pop() ?? args.path,
 		kind,
@@ -2643,30 +2648,23 @@ describe("FileEditorSidebarPending", () => {
 	] as const)(
 		"previews the retained %s proposal after restore changes the file shape to %s",
 		async (sourceKind, rootKind) => {
-			const pendingUpdate = {
-				...makePendingUpdate({
-					id: "pu_restored",
-					fileNodeId: "node_restored",
-					staged: "accepted\n",
-					unstaged: "proposed\n",
-					contentNeedsRebase: true,
-				}),
-				contentRebaseRootKind: sourceKind,
-			};
-			for (const [role, text] of [
-				["staged", "accepted\n"],
-				["unstaged", "proposed\n"],
-			] as const) {
-				const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: sourceKind });
-				if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
-				pendingStateBytesByStateId.set(`pu_restored_${role}`, files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)));
-				yjsDoc.destroy();
-			}
+			const pendingUpdate = makePendingUpdate({
+				id: "pu_restored",
+				fileNodeId: "node_restored",
+				staged: "accepted\n",
+				unstaged: "proposed\n",
+				rootKind: sourceKind,
+			});
 			useQueryMock.mockReturnValue([pendingUpdate]);
 			treeNodesMock.mockReturnValue([
 				{
-					...makeNode({ id: "node_restored", path: "/restored.txt", hasEditableYjsState: rootKind !== null }),
-					textKind: rootKind ?? undefined,
+					...makeNode({
+						id: "node_restored",
+						path: "/restored.txt",
+						hasEditableYjsState: rootKind !== null,
+						pendingContentVersion: 2,
+					}),
+					textKind: rootKind,
 				},
 			]);
 
@@ -2736,20 +2734,18 @@ describe("FileEditorSidebarPending", () => {
 				fileNodeId: "node_a",
 				staged: "s",
 				unstaged: "u",
-				contentNeedsRebase: true,
 			}),
 			makePendingUpdate({
 				id: "pu_delete",
 				fileNodeId: "node_b",
 				staged: "s",
 				unstaged: "u",
-				contentNeedsRebase: true,
 				pendingArchive: { fromPath: "/b.md" },
 			}),
 		]);
 		treeNodesMock.mockReturnValue([
-			makeNode({ id: "node_a", path: "/a.md" }),
-			makeNode({ id: "node_b", path: "/b.md" }),
+			makeNode({ id: "node_a", path: "/a.md", pendingContentVersion: 2 }),
+			makeNode({ id: "node_b", path: "/b.md", pendingContentVersion: 2 }),
 		]);
 		render(<FileEditorSidebarPending />);
 
@@ -2778,7 +2774,6 @@ describe("FileEditorSidebarPending", () => {
 				fileNodeId: "node_b",
 				staged: "s",
 				unstaged: "u",
-				contentNeedsRebase: true,
 			}),
 			makePendingUpdate({ id: "pu_fresh", fileNodeId: "node_c", staged: "s", unstaged: "u" }),
 			makePendingUpdate({
@@ -2786,15 +2781,14 @@ describe("FileEditorSidebarPending", () => {
 				fileNodeId: "node_d",
 				staged: "s",
 				unstaged: "u",
-				contentNeedsRebase: true,
 				pendingArchive: { fromPath: "/d.md" },
 			}),
 		]);
 		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md", nonCollaborative: true }),
-			makeNode({ id: "node_b", path: "/b.md" }),
+			makeNode({ id: "node_b", path: "/b.md", pendingContentVersion: 2 }),
 			makeNode({ id: "node_c", path: "/c.md" }),
-			makeNode({ id: "node_d", path: "/d.md" }),
+			makeNode({ id: "node_d", path: "/d.md", pendingContentVersion: 2 }),
 		]);
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept all"));

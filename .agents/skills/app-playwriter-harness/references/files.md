@@ -1649,6 +1649,18 @@ Use `convex/files_nodes_content.restore.test.ts` for the exact overlapping R2 PU
 interception cannot pause those server-side uploads. The tests hold each PUT and cover stale
 materialization, same-counter workers, restore after an edit, and OFF/ON during materialization.
 
+### Keep another member's draft through Restore
+
+Use two signed-in QA members and one reused file. Create a draft through the second member's
+Review editor, then navigate that member away from Review. Record the draft's full header and
+state hashes, IDs, revision and expiry before the owner restores a saved version.
+
+After Restore, compare those values before opening the second member's Review again. Opening
+Review can prepare that member's draft and change its state family. Restore itself must keep the
+other member's draft exact and advance only the saved file's content version. Repeat with the same
+saved text to cover a Restore that changes no visible text. Then open Review and check the draft
+text is still there. Discard only the draft made for this check.
+
 ### Copy, paste and answer a transfer name conflict
 
 Build the fixture through the deployed doors, not the UI. `files_nodes:create_folder_node` joins its
