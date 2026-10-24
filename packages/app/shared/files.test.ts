@@ -3323,6 +3323,20 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		}
 	});
 
+	test("keeps the list markers the file uses", () => {
+		const fixtures = [
+			"* a\n* b\n",
+			"+ a\n  * b\n",
+			"1) a\n2) b\n",
+			"3) a\n   - b\n",
+			// A new marker starts a new list, so two lists must not become one.
+			"- a\n\n* b\n",
+		];
+		for (const fixture of fixtures) {
+			expect(normalize(fixture)).toBe(fixture);
+		}
+	});
+
 	test("settles trailing-newline variants", () => {
 		for (const fixture of ["text", "text\n", "text\n\n\n"]) {
 			const once = normalize(fixture);

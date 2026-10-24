@@ -73,6 +73,7 @@ const STRUCTURAL_HTML_WHITESPACE_REGEX = />(?:\n[ \t]*)+</g;
 const TRAILING_HARD_BREAKS_REGEX = /(?<!\\\n)(?:\\\n)+$/;
 const HARD_BREAK_REGEX = /\\\n/g;
 const CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX = /\n<\/code><\/pre>\n$/;
+const LIST_MARKER_REGEX = /^ {0,3}(?:([*+])|\d{1,9}(\)))/;
 const VIDEO_BLOCK_START_REGEX = /^<video[\s>]/m;
 const VIDEO_BLOCK_REGEX = /^(<video\b[^>]*>(?:\s*<\/video>)?)[ \t]*(?:\n|$)/;
 const FOOTNOTE_DEFINITION_START_REGEX = /^ {0,3}\[\^[^\]\s]+\]:/;
@@ -426,6 +427,18 @@ function configure_marked(instance: Marked | typeof marked) {
 				return Renderer.prototype.code
 					.call(this, token)
 					.replace(CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX, "</code></pre>\n");
+			},
+
+			// Keep a `*` or `+` bullet and a `1)` number, so a save does not rewrite every list in the file.
+			// A new marker also starts a new list, so two lists next to each other stay two lists.
+			list(token) {
+				const marker = LIST_MARKER_REGEX.exec(token.raw);
+				if (!marker) {
+					return false;
+				}
+
+				const attribute = marker[1] ? `data-bullet="${marker[1]}"` : `data-delimiter="${marker[2]}"`;
+				return Renderer.prototype.list.call(this, token).replace(/^<(ul|ol)/, `<$1 ${attribute}`);
 			},
 
 			// Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>` tag. Then
