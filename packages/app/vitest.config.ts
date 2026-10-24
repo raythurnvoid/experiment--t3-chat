@@ -65,7 +65,14 @@ export default defineConfig({
 			// config values in each project, and Vitest ignores `--maxWorkers` and `--hookTimeout`.
 			name: "root-test-options",
 			configureVitest({ project, vitest }) {
-				project.config.maxWorkers = vitest.config.maxWorkers;
+				// Open at most 4 browser pages. One Node process serves the modules and the Playwright commands
+				// of every page. With 16 pages, a click waited more than 20 seconds behind their module loads,
+				// and the test timed out.
+				//
+				// More pages do not make the browser tests faster: 8 pages took as long as 4.
+				project.config.maxWorkers = project.config.browser.enabled
+					? Math.min(vitest.config.maxWorkers, 4)
+					: vitest.config.maxWorkers;
 				project.config.hookTimeout = vitest.config.hookTimeout;
 			},
 		},
@@ -203,6 +210,9 @@ export default defineConfig({
 				test: {
 					include: ["src/**/*.browser.test.{ts,tsx}"],
 					name: "browser",
+					// Run after the other projects. Vitest needs this because the browser project opens fewer
+					// pages than the others use workers (see "root-test-options").
+					sequence: { groupOrder: 1 },
 					browser: {
 						enabled: true,
 						provider: playwright(),
