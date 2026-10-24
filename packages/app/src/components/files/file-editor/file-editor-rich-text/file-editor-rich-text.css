@@ -371,7 +371,7 @@
 			background: var(--color-base-1-10);
 		}
 
-		pre:not([data-frontmatter], [data-html-comment]) {
+		pre:not([data-frontmatter], [data-html-comment], [data-footnote-definition]) {
 			margin: 12px 0 16px;
 			padding: 16px;
 			border: 1px solid var(--color-base-1-07);
@@ -507,6 +507,21 @@
 			line-height: 1.6;
 			white-space: pre-wrap;
 			color: var(--color-fg-07);
+		}
+
+		/* Footnote definitions, shown as their source text. Readers of the file see these notes, so the text
+		   stays readable, unlike a comment block. */
+		pre[data-footnote-definition] {
+			margin: 10px 0;
+			padding: 8px 12px;
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 6px;
+
+			font-family: var(--app-font-monospace);
+			font-size: 15px;
+			line-height: 1.6;
+			white-space: pre-wrap;
+			color: var(--color-fg-10);
 		}
 
 		/* A details block, like on GitHub. Tiptap's node view writes a toggle button, then the summary and the

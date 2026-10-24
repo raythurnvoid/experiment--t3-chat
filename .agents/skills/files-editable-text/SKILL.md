@@ -65,6 +65,19 @@ A `<details>` block works like on GitHub: a toggle button opens and closes it, a
 - Line breaks in the summary show as spaces. After an edit, Markdown characters in a compact body are escaped (`*` becomes `&#42;`), and loose text in a compact body may read as Markdown. All are stable after one save.
 - The public link page shows a details block as a native disclosure (see "Public Link Reader").
 
+Footnotes keep their text. The editor cannot show them like GitHub does, so it shows them as source:
+
+- A reference like `[^1]` is plain text. The writer keeps it as written (`escapeMarkdownSyntax` in the tiptap fork). Before `(`, `[` or `:` it stays escaped, because there it would start a link or a definition.
+- A definition like `[^1]: The note.` is a `footnoteDefinition` block of source text, styled like a comment block but readable. Save writes its text back exactly, also after an edit inside it.
+- One block takes the definition with its wrapped lines, the indented lines under it, and the definitions right after it, with or without blank lines between them. So a list of notes saves with no added blank lines.
+
+Before, Marked read a one-word note as a link definition. Then `[^1]` became a link to that word, the definition line disappeared, and the indented lines became code. Known limits, with no lost content:
+
+- Only definitions in the document's own block list become a block. A definition in a list or a quote still reads as Marked does, because the list writer drops the blank line before it.
+- A heading right after a definition gets a blank line before it on save.
+- In a rich table cell, the block saves as a paragraph with the same text.
+- The public link page shows a definition block as a code block with the same text.
+
 Links keep any address scheme except `javascript:`, `vbscript:` and `data:` (`files_tiptap_link_is_allowed_uri` in `packages/app/shared/files-tiptap.ts`). Tiptap's own list keeps only a few schemes (`http`, `mailto`, ...), so a `bonobo-file://` or `obsidian://` link lost its address on the next save. Both browser lists and the shared set use this one check, so the browser and Convex keep the same links. The scheme must start the address with no tab, newline or control character inside it, so a hidden `java<tab>script:` is refused. The public link page keeps its own stricter rule: only checked `http(s)` links (see "Public Link Reader").
 
 `<sub>`, `<sup>` and `<kbd>` are real marks (`subscript`, `superscript`, and `files_kbd_mark`). Markdown has no syntax for them, so save writes the same tags back, like `<u>` for underline. Before, the editor showed only the text inside and the next save dropped the tags. The public link page has the same three marks, so it shows them like the editor. Two known spelling changes, with no lost content, are stable after one save: a mark around a whole link moves inside the link (`<sup>[1](#n)</sup>` saves as `[<sup>1</sup>](#n)`), and a space at the edge of a mark moves outside it. Inline code still drops every mark around it (`` [`x`](url) `` saves as `` `x` ``), because Tiptap's `code` mark excludes all other marks.

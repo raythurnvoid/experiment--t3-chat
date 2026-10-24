@@ -246,6 +246,7 @@ const extensionsAfterStarterKit = [
 	sharedExtensions.htmlTag,
 	sharedExtensions.htmlComment,
 	sharedExtensions.htmlBlock,
+	sharedExtensions.footnoteDefinition,
 	sharedExtensions.liveblocksComments,
 	CustomKeymap,
 	DragHandle,

@@ -405,6 +405,15 @@ describe("files_share_rich_text_prepare", () => {
 		expect(JSON.stringify(files_share_rich_text_parse_json(json)?.toJSON())).toBe(json);
 	});
 
+	test("shows footnote definitions as source text like the editor", () => {
+		const json = rich_json(publish("A[^a].\n\n[^a]: First <b>.\n\n    Second.\n").content);
+
+		expect(find_nodes(json, "codeBlock").map((node) => node.content?.[0]?.text)).toEqual([
+			"[^a]: First <b>.\n\n    Second.",
+		]);
+		expect(json).not.toContain('"link"');
+	});
+
 	test("drops out-of-range table spans and list attributes", () => {
 		const json = rich_json(
 			publish(

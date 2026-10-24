@@ -75,6 +75,10 @@ const HARD_BREAK_REGEX = /\\\n/g;
 const CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX = /\n<\/code><\/pre>\n$/;
 const VIDEO_BLOCK_START_REGEX = /^<video[\s>]/m;
 const VIDEO_BLOCK_REGEX = /^(<video\b[^>]*>(?:\s*<\/video>)?)[ \t]*(?:\n|$)/;
+const FOOTNOTE_DEFINITION_START_REGEX = /^ {0,3}\[\^[^\]\s]+\]:/;
+// The line end, then any blank lines, before the next part of a footnote definition block.
+const FOOTNOTE_DEFINITION_GAP_REGEX = /^\n(?:[ \t]*\n)*/;
+const FOOTNOTE_DEFINITION_INDENTED_LINE_REGEX = /^(?: {4}|\t)[ \t]*\S/;
 // Marked's own paragraph rule, with a cheaper table check. Every instance here uses `gfm: true`.
 // At each line the rule asks whether a table starts there, with the whole table pattern. Its rows part
 // reads every later line that cannot end a table, so lines like `<?a?>` and `-|-` made each check read
@@ -124,6 +128,7 @@ const MARKDOWN_WORK_STRIKE_SCAN_PER_CHAR = 70;
 const MARKDOWN_WORK_CODE_SPAN_SCAN_PER_CHAR = 1.5;
 const MARKDOWN_WORK_VIDEO_SCAN_PER_CHAR = 10;
 const MARKDOWN_WORK_VIDEO_START_PER_CHAR = 1;
+const MARKDOWN_WORK_FOOTNOTE_SCAN_PER_CHAR = 1;
 const MARKDOWN_WORK_LIST_BLOCK_PER_CHAR = 4;
 const MARKDOWN_WORK_LEXER_CALL = 1500;
 const MARKDOWN_WORK_LINK_DEFINITION_PER_CALL = 100;
@@ -253,6 +258,55 @@ function configure_marked(instance: Marked | typeof marked) {
 				},
 				renderer(token) {
 					return (token as { text?: string }).text ?? "";
+				},
+			},
+			{
+				// Footnote definitions, like `[^1]: The note.`. When a note is one word, Marked read it as a link
+				// definition. Then `[^1]` in the text became a link to that word, and the indented lines under the
+				// definition became code.
+				//
+				// The block takes the definition with its wrapped lines, the indented lines under it, and the
+				// definitions right after it. So a list of notes stays one block, and save adds no blank lines
+				// between them.
+				//
+				// It has no `start`: like a link definition, it cannot end a paragraph.
+				//
+				// It runs only in the document's own token list, like the frontmatter tokenizer. In a list, save
+				// drops the blank line before the block, and in a numbered list the next read no longer finds the
+				// definition. `state.top` is not enough, because Tiptap's numbered list reads its items with it set.
+				name: "footnoteDefinition",
+				level: "block",
+				tokenizer(this: { lexer: { tokens: unknown } }, src, tokens) {
+					if (tokens !== this.lexer.tokens || !FOOTNOTE_DEFINITION_START_REGEX.test(src)) {
+						return undefined;
+					}
+
+					// Take the first definition line with the lines Marked's paragraph rule adds to it. Then take each
+					// later part that is indented or that starts another definition, with its own added lines.
+					let end = PARAGRAPH_REGEX.exec(src)?.[0].length ?? 0;
+					for (;;) {
+						const gap = FOOTNOTE_DEFINITION_GAP_REGEX.exec(src.slice(end))?.[0] ?? "";
+						const next = src.slice(end + gap.length);
+						if (
+							!gap ||
+							!(FOOTNOTE_DEFINITION_START_REGEX.test(next) || FOOTNOTE_DEFINITION_INDENTED_LINE_REGEX.test(next))
+						) {
+							break;
+						}
+
+						end += gap.length + (PARAGRAPH_REGEX.exec(next)?.[0].length ?? 0);
+					}
+					markdown_work_add(end * MARKDOWN_WORK_FOOTNOTE_SCAN_PER_CHAR);
+
+					const raw = src.slice(0, end);
+					return { type: "footnoteDefinition", raw, text: raw };
+				},
+				// A public parse writes a code block, which the share page can show.
+				renderer(token) {
+					const text = (token as { text?: string }).text ?? "";
+					return markdown_hidden_link_text !== null
+						? `<pre><code>${html_escape_text(text, HTML_TEXT_ESCAPE_REGEX)}</code></pre>`
+						: `<div data-footnote-definition="${encodeURIComponent(text)}"></div>`;
 				},
 			},
 			{
@@ -2145,9 +2199,12 @@ function html_render_blocks(content: TiptapJSONContent[]): string {
 					return html_details_render(node, html_render_blocks(node.content?.[1]?.content ?? []), "html");
 				case "frontmatter":
 					return `<pre data-frontmatter>${html_escape_text(childText, HTML_TABLE_TEXT_ESCAPE_REGEX)}</pre>`;
-				// A comment in a cell reads back as a hidden tag in a paragraph, and an HTML block as a paragraph.
+				// A comment in a cell reads back as a hidden tag in a paragraph. An HTML block and a footnote
+				// definition read back as a paragraph.
 				case "htmlComment":
 					return `<p><!--${childText}--></p>`;
+				case "footnoteDefinition":
+					return `<p>${html_escape_text(childText, HTML_TABLE_TEXT_ESCAPE_REGEX)}</p>`;
 				case "htmlBlock":
 					return typeof node.attrs?.htmlSource === "string" && node.attrs.htmlSourceContent === JSON.stringify(children)
 						? node.attrs.htmlSource
@@ -2577,6 +2634,44 @@ const files_html_comment_node = Node.create({
 	renderMarkdown(node) {
 		const commentText = (node.content ?? []).map((child) => child.text ?? "").join("");
 		return `<!--${commentText}-->`;
+	},
+});
+
+/**
+ * Footnote definitions, like `[^1]: The note.` and the indented lines under it. The editor cannot show
+ * footnotes, so the definitions show as a block of source text, like a comment block. Save writes the
+ * text back as it is.
+ */
+const files_footnote_definition_node = Node.create({
+	name: "footnoteDefinition",
+	// Above `codeBlock` (default priority 100), so the `pre` that `renderHTML` writes reads back as this node.
+	priority: 1000,
+	group: "block",
+	content: "text*",
+	marks: "",
+	code: true,
+	defining: true,
+
+	parseHTML() {
+		return [
+			// Like the comment block, the Marked renderer keeps the text in an attribute.
+			{
+				tag: "div[data-footnote-definition]",
+				getContent: (element, schema) => {
+					const text = html_attribute_decode((element as HTMLElement).getAttribute("data-footnote-definition") ?? "");
+					return text ? Fragment.from(schema.text(text)) : Fragment.empty;
+				},
+			},
+			{ tag: "pre[data-footnote-definition]", preserveWhitespace: "full" },
+		];
+	},
+
+	renderHTML() {
+		return ["pre", { "data-footnote-definition": "" }, 0];
+	},
+
+	renderMarkdown(node) {
+		return (node.content ?? []).map((child) => child.text ?? "").join("");
 	},
 });
 
@@ -3036,6 +3131,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			htmlTag: files_html_tag_node,
 			htmlComment: files_html_comment_node,
 			htmlBlock: files_html_block_node,
+			footnoteDefinition: files_footnote_definition_node,
 			horizontalRule: HorizontalRule.configure({
 				HTMLAttributes: {
 					class: "mt-4 mb-6 border-t border-muted-foreground",

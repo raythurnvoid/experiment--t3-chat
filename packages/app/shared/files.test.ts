@@ -3011,6 +3011,7 @@ describe("HTML tables round-trip through Yjs", () => {
 			"detailsContent",
 			"detailsSummary",
 			"doc",
+			"footnoteDefinition",
 			"frontmatter",
 			"heading",
 			"horizontalRule",
@@ -3050,6 +3051,7 @@ describe("HTML tables round-trip through Yjs", () => {
 			{ type: "frontmatter", content: [{ type: "text", text: "a: 1" }] },
 			{ type: "htmlComment", content: [{ type: "text", text: " c " }] },
 			{ type: "htmlBlock", content: [{ type: "text", text: "d" }] },
+			{ type: "footnoteDefinition", content: [{ type: "text", text: "[^1]: <f>" }] },
 		];
 		const saved = edit_and_save("| a |\n| --- |\n| 1 |\n", (mut_content) => {
 			mut_content[0]!.content![1]!.content![0]!.content = content;
@@ -3062,9 +3064,15 @@ describe("HTML tables round-trip through Yjs", () => {
 		const shape = (nodes: TiptapJSONContent[]): unknown[] =>
 			nodes.map((node) => [node.type, node.text, shape(node.content ?? [])]);
 		const cellContent = parsed._yay.content?.[0]?.content?.[1]?.content?.[0]?.content ?? [];
-		// A comment in a cell reads back as a hidden tag in a paragraph, and an HTML block as a paragraph.
+		// A comment in a cell reads back as a hidden tag in a paragraph. An HTML block and a footnote definition
+		// read back as a paragraph.
 		expect(shape(cellContent)).toEqual(
-			shape([...content.slice(0, -2), { type: "paragraph", content: [{ type: "htmlTag" }] }, paragraph("d")]),
+			shape([
+				...content.slice(0, -3),
+				{ type: "paragraph", content: [{ type: "htmlTag" }] },
+				paragraph("d"),
+				paragraph("[^1]: <f>"),
+			]),
 		);
 	});
 });
@@ -3276,6 +3284,26 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 			const json = files_tiptap_markdown_to_json({ markdown: once });
 			expect(JSON.stringify(json._yay)).not.toMatch(/"type":"(heading|bulletList|orderedList|horizontalRule|table)"/);
 		}
+	});
+
+	test("keeps footnotes exactly", () => {
+		const fixtures = [
+			"A[^a].\n\n[^a]: First.\n\n    Second paragraph.\n",
+			"A[^1] B[^my_note].\n\n[^1]: One wrapped\nline.\n[^my_note]: a <b> & c\n\n[^3]: Three.\n\nAfter.\n",
+			// A reference before `(` would start a link, so it stays escaped.
+			"\\[^1\\](x)\n",
+		];
+		for (const fixture of fixtures) {
+			expect(normalize(fixture)).toBe(fixture);
+		}
+
+		// A definition in a list stays as Marked reads it. As a block there, the next read lost it.
+		const inList = normalize("1. a[^1]\n\n   [^1]: note\n       more\n");
+		expect(normalize(inList)).toBe(inList);
+
+		const json = JSON.stringify(files_tiptap_markdown_to_json({ markdown: fixtures[0] })._yay);
+		expect(json).toContain('"type":"footnoteDefinition"');
+		expect(json).not.toMatch(/"type":"(link|codeBlock)"/);
 	});
 
 	test("settles trailing-newline variants", () => {
