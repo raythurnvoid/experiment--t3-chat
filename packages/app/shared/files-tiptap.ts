@@ -36,9 +36,11 @@ import {
 	Extension,
 	Mark,
 	Node,
+	getMarkDelimiters,
 	getSchema,
 	getText,
 	getTextSerializersFromSchema,
+	markdownSyntaxAttribute,
 	type Extensions,
 } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
@@ -500,8 +502,9 @@ function configure_marked(instance: Marked | typeof marked) {
 				return `<span data-html-tag="${encodeURIComponent(token.text)}"></span>`;
 			},
 
-			// Mark bold and italic written with underscores, so save writes `__x__` and `_x_` back instead of
-			// `**x**` and `*x*`. The fork's marks keep it in `markdownSyntax`.
+			// Mark bold and italic written with underscores, and a strikethrough with one `~`, so save writes
+			// `__x__`, `_x_` and `~x~` back instead of `**x**`, `*x*` and `~~x~~`. The fork's marks keep it in
+			// `markdownSyntax`.
 			strong(token) {
 				return token.raw.startsWith("__")
 					? Renderer.prototype.strong.call(this, token).replace(/^<strong>/, '<strong data-markdown-syntax="__">')
@@ -511,6 +514,12 @@ function configure_marked(instance: Marked | typeof marked) {
 			em(token) {
 				return token.raw.startsWith("_")
 					? Renderer.prototype.em.call(this, token).replace(/^<em>/, '<em data-markdown-syntax="_">')
+					: false;
+			},
+
+			del(token) {
+				return token.raw.startsWith("~") && !token.raw.startsWith("~~")
+					? Renderer.prototype.del.call(this, token).replace(/^<del>/, '<del data-markdown-syntax="~">')
 					: false;
 			},
 
@@ -2744,16 +2753,16 @@ function html_tag_with_attributes(tag: string, name: string, attributes: string)
 }
 
 /**
- * A bold or italic tag with no attributes. Save writes it back as the same tag.
+ * A bold, italic, strikethrough, code or highlight tag with no attributes. Save writes it back as the same tag.
  */
-const HTML_MARK_SYNTAX_TAG_REGEX = /^<(?:b|strong|i|em)>$/i;
+const HTML_MARK_SYNTAX_TAG_REGEX = /^<(?:b|strong|i|em|s|del|strike|code|mark)>$/i;
 
 /**
  * Write a tag that the editor shows. An image from the file gets `data-html-kept`, so the image node keeps
  * its other attributes (`htmlAttributes`). A pasted image has no mark, so it does not keep a web page's
  * classes.
  *
- * A bold or italic tag gets `data-markdown-syntax`, so save writes `<b>` back instead of `**`.
+ * A bare formatting tag gets `data-markdown-syntax`, so save writes `<b>` back instead of `**`.
  */
 function html_shown_tag_to_editor_html(tag: string, name: string) {
 	if (name === "img" || name === "image") {
@@ -3504,12 +3513,20 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 				},
 			}),
 			highlight: Highlight.extend({
+				addAttributes() {
+					return {
+						...this.parent?.(),
+						markdownSyntax: markdownSyntaxAttribute(),
+					};
+				},
+
 				renderMarkdown: (node: TiptapJSONContent, helpers: MarkdownRendererHelpers, ctx: RenderContext) => {
 					const color = node.attrs?.color;
 
+					// Write `==` unless the file wrote a bare `<mark>` tag.
 					if (!color) {
-						// Default to markdown syntax
-						return `==${helpers.renderChildren(node.content || [])}==`;
+						const { open, close } = getMarkDelimiters(node.attrs?.markdownSyntax, "==", ctx.meta);
+						return `${open}${helpers.renderChildren(node.content || [])}${close}`;
 					}
 
 					const content = helpers.renderChildren(node.content || []);

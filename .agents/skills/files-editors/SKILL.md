@@ -55,9 +55,10 @@ Also keep the Markdown save patches:
   `meta.markWordAfter` say whether a letter, a digit or another node touches the run from outside.
 - A link keeps how Markdown wrote an auto link in `markdownAutolink` (`bare` or `angle`) and saves it
   that way while its text still gives the same address.
-- Bold and italic keep their source syntax (`__`, `_`, or a tag like `<b>`) in `markdownSyntax`, read
-  from `data-markdown-syntax`. Core's `getMarkDelimiters` picks the delimiters: a tag always, underscores
-  only while they still parse, else `**` or `*`.
+- Bold, italic, strike and code keep their source syntax (`__`, `_`, `~`, or a tag like `<b>`) in
+  `markdownSyntax`, read from `data-markdown-syntax`. Core's `getMarkDelimiters` picks the delimiters:
+  a tag always, `_` and `~` only while they still parse, else the default. Code keeps a `<code>` tag
+  only around plain text. The app's highlight mark uses the same attribute and helper.
 - An inline atom with `markdownOptions.staysInsideMarks` is written inside the marks around it, like
   text. The app's hidden HTML tag and image set it. Other atoms close the marks before them.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and

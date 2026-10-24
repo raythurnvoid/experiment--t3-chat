@@ -2542,7 +2542,7 @@ describe("Markdown escapes and line breaks round-trip through Yjs", () => {
 	});
 });
 
-describe("bold and italic syntax round-trip through Yjs", () => {
+describe("mark syntax round-trip through Yjs", () => {
 	function round_trip_markdown(markdown: string) {
 		const yjsDoc = new YDoc();
 		const updateResult = files_yjs_doc_update_from_text({
@@ -2578,8 +2578,12 @@ describe("bold and italic syntax round-trip through Yjs", () => {
 		return saved + "\n";
 	}
 
-	test("keeps each bold and italic syntax as the file writes it", () => {
-		const input = "a <b>x</b> <strong>y</strong> <i>z</i> <em>w</em> <B>q</B> __u__ _v_ ___t___ **s** *r*\n";
+	test("keeps each mark syntax as the file writes it", () => {
+		const input = [
+			"a <b>x</b> <strong>y</strong> <i>z</i> <em>w</em> <B>q</B> __u__ _v_ ___t___ **s** *r*",
+			"<s>x</s> <del>y</del> <strike>z</strike> <S>q</S> ~t~ ~~u~~ <code>npm run dev</code> `v`",
+			"<mark>a=b</mark> <MARK>m</MARK> ==h==\n",
+		].join("\n\n");
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
@@ -2593,6 +2597,16 @@ describe("bold and italic syntax round-trip through Yjs", () => {
 			editor.view.dispatch(tr);
 		});
 		expect(saved).toBe("*x*a b**y** *z\\_*\n");
+	});
+
+	test("writes backticks and `~~` where typed text would read differently inside a tag or `~`", () => {
+		const saved = edit_and_save("<code>ab</code> ~x~\n", (editor) => {
+			const { schema } = editor.state;
+			const tr = editor.state.tr.insert(5, schema.text("~", [schema.marks.strike.create({ markdownSyntax: "~" })]));
+			tr.insert(2, schema.text("*", [schema.marks.code.create({ markdownSyntax: "<code>" })]));
+			editor.view.dispatch(tr);
+		});
+		expect(saved).toBe("`a*b` ~~x\\~~~\n");
 	});
 });
 
