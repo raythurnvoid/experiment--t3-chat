@@ -1589,7 +1589,7 @@ describe("files_parse_markdown_to_html", () => {
 		[
 			"after other marks and code",
 			"*a* ==b== _c_ `e` ==f==",
-			"<em>a</em> <mark>b</mark> <em>c</em> <code>e</code> <mark>f</mark>",
+			'<em>a</em> <mark>b</mark> <em data-markdown-syntax="_">c</em> <code>e</code> <mark>f</mark>',
 		],
 		["after a leading `~~` run", "~~a ==b==", "~~a <mark>b</mark>"],
 		["inside an email-like word", "a b!c==d==@e", "a b!c<mark>d</mark>@e"],
@@ -2539,6 +2539,60 @@ describe("Markdown escapes and line breaks round-trip through Yjs", () => {
 			editor.view.dispatch(editor.state.tr.insert(2, [schema.nodes.hardBreak.create(), schema.text("b")]));
 		});
 		expect(typed).toBe("a\\\nb\n");
+	});
+});
+
+describe("bold and italic syntax round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected bold markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	function edit_and_save(markdown: string, edit: (editor: Editor) => void) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+
+		edit(editor._yay);
+		const saved = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+		return saved + "\n";
+	}
+
+	test("keeps each bold and italic syntax as the file writes it", () => {
+		const input = "a <b>x</b> <strong>y</strong> <i>z</i> <em>w</em> <B>q</B> __u__ _v_ ___t___ **s** *r*\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("writes stars where typed text would stop underscores from reading as bold or italic", () => {
+		const saved = edit_and_save("_x_ __y__ _z_\n", (editor) => {
+			const { schema } = editor.state;
+			// Insert from the end, so each insert keeps the positions of the ones before it.
+			const tr = editor.state.tr.insert(6, schema.text("_", [schema.marks.italic.create({ markdownSyntax: "_" })]));
+			tr.insert(3, schema.text("b"));
+			tr.insert(2, schema.text("a"));
+			editor.view.dispatch(tr);
+		});
+		expect(saved).toBe("*x*a b**y** *z\\_*\n");
 	});
 });
 

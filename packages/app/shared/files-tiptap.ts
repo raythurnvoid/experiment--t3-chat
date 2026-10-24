@@ -500,6 +500,20 @@ function configure_marked(instance: Marked | typeof marked) {
 				return `<span data-html-tag="${encodeURIComponent(token.text)}"></span>`;
 			},
 
+			// Mark bold and italic written with underscores, so save writes `__x__` and `_x_` back instead of
+			// `**x**` and `*x*`. The fork's marks keep it in `markdownSyntax`.
+			strong(token) {
+				return token.raw.startsWith("__")
+					? Renderer.prototype.strong.call(this, token).replace(/^<strong>/, '<strong data-markdown-syntax="__">')
+					: false;
+			},
+
+			em(token) {
+				return token.raw.startsWith("_")
+					? Renderer.prototype.em.call(this, token).replace(/^<em>/, '<em data-markdown-syntax="_">')
+					: false;
+			},
+
 			// Author-typed HTML can still take in a link's tag, for example a line `<div x="`. Then the address
 			// is lost in an attribute, and the label shows as plain text. So a public parse writes the hidden
 			// text instead of a hidden link's label and title. The file name never gets into its HTML.
@@ -2730,12 +2744,26 @@ function html_tag_with_attributes(tag: string, name: string, attributes: string)
 }
 
 /**
+ * A bold or italic tag with no attributes. Save writes it back as the same tag.
+ */
+const HTML_MARK_SYNTAX_TAG_REGEX = /^<(?:b|strong|i|em)>$/i;
+
+/**
  * Write a tag that the editor shows. An image from the file gets `data-html-kept`, so the image node keeps
  * its other attributes (`htmlAttributes`). A pasted image has no mark, so it does not keep a web page's
  * classes.
+ *
+ * A bold or italic tag gets `data-markdown-syntax`, so save writes `<b>` back instead of `**`.
  */
 function html_shown_tag_to_editor_html(tag: string, name: string) {
-	return name === "img" || name === "image" ? html_tag_with_attributes(tag, name, " data-html-kept") : tag;
+	if (name === "img" || name === "image") {
+		return html_tag_with_attributes(tag, name, " data-html-kept");
+	}
+
+	// Write the tag unescaped. It has no quote or `&`, and happy-dom does not decode `&lt;` in attributes.
+	return HTML_MARK_SYNTAX_TAG_REGEX.test(tag)
+		? html_tag_with_attributes(tag, name, ` data-markdown-syntax="${tag}"`)
+		: tag;
 }
 
 /**

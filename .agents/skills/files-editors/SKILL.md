@@ -51,9 +51,13 @@ Also keep the Markdown save patches:
 - A list with `loose: true` puts a blank line between its items.
 - A mark can write the text it covers with `markdownOptions.renderText`. The HTML entity and backslash
   escape marks use it. It also gets the whole text of the mark run, and a mark's `renderMarkdown` gets
-  `meta.markTextNodes`, the number of text nodes in that run.
+  `meta.markTextNodes`, the number of text nodes in that run. `meta.markWordBefore` and
+  `meta.markWordAfter` say whether a letter, a digit or another node touches the run from outside.
 - A link keeps how Markdown wrote an auto link in `markdownAutolink` (`bare` or `angle`) and saves it
   that way while its text still gives the same address.
+- Bold and italic keep their source syntax (`__`, `_`, or a tag like `<b>`) in `markdownSyntax`, read
+  from `data-markdown-syntax`. Core's `getMarkDelimiters` picks the delimiters: a tag always, underscores
+  only while they still parse, else `**` or `*`.
 - An inline atom with `markdownOptions.staysInsideMarks` is written inside the marks around it, like
   text. The app's hidden HTML tag and image set it. Other atoms close the marks before them.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and
