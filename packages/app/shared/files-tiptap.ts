@@ -2762,11 +2762,19 @@ const HTML_MARK_SYNTAX_TAG_REGEX = /^<(?:b|strong|i|em|s|del|strike|code|mark)>$
  * its other attributes (`htmlAttributes`). A pasted image has no mark, so it does not keep a web page's
  * classes.
  *
- * A bare formatting tag gets `data-markdown-syntax`, so save writes `<b>` back instead of `**`.
+ * A bare formatting tag or a link tag gets `data-markdown-syntax`, so save writes `<b>` back instead of `**`.
  */
 function html_shown_tag_to_editor_html(tag: string, name: string) {
 	if (name === "img" || name === "image") {
 		return html_tag_with_attributes(tag, name, " data-html-kept");
+	}
+
+	// Keep a link's own tag, so save writes `<a href>` back instead of `[text](href)`. Quote it with the
+	// quote mark the tag does not use. Skip a tag with both quote marks or with `&`, because the DOM would
+	// decode an `&amp;` and save would change it.
+	if (name === "a" && /^<a\s/i.test(tag) && !tag.includes("&") && !(tag.includes("'") && tag.includes('"'))) {
+		const quote = tag.includes("'") ? '"' : "'";
+		return html_tag_with_attributes(tag, name, ` data-markdown-syntax=${quote}${tag}${quote}`);
 	}
 
 	// Write the tag unescaped. It has no quote or `&`, and happy-dom does not decode `&lt;` in attributes.

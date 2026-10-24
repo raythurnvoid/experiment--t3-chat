@@ -2582,7 +2582,8 @@ describe("mark syntax round-trip through Yjs", () => {
 		const input = [
 			"a <b>x</b> <strong>y</strong> <i>z</i> <em>w</em> <B>q</B> __u__ _v_ ___t___ **s** *r*",
 			"<s>x</s> <del>y</del> <strike>z</strike> <S>q</S> ~t~ ~~u~~ <code>npm run dev</code> `v`",
-			"<mark>a=b</mark> <MARK>m</MARK> ==h==\n",
+			"<mark>a=b</mark> <MARK>m</MARK> ==h==",
+			'<a href="https://e.com" title="T">x</a> <a href=\'#top\'>y</a> [z](#z)\n',
 		].join("\n\n");
 		expect(round_trip_markdown(input)).toBe(input);
 	});
