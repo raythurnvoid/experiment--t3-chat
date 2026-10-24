@@ -158,10 +158,19 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 							active.doneSource = source;
 							active.nodeId = new URL(location.href).searchParams.get("nodeId");
 							active.focusTag = document.activeElement?.tagName;
-							rig.frameRequest = requestAnimationFrame(() => {
+							const recordFrame = () => {
+								let exposed;
+								try { exposed = !active.recheckDoneAtFrame || active.predicate(); }
+								catch { active.predicateError = true; return; }
+								if (!exposed) {
+									active.coveredFrames = (active.coveredFrames ?? 0) + 1;
+									rig.frameRequest = requestAnimationFrame(recordFrame);
+									return;
+								}
 								active.frame = performance.now();
 								active.frameVisibility = document.visibilityState;
-							});
+							};
+							rig.frameRequest = requestAnimationFrame(recordFrame);
 						} catch { active.predicateError = true; }
 					};
 					rig.start = (event) => {
@@ -229,6 +238,8 @@ state.qa.filesProfile = state.qa.filesProfile ?? (() => {
 							doneSource: active.doneSource,
 							nativeEvents: active.nativeEvents,
 							frame: active.frame,
+							recheckDoneAtFrame: active.recheckDoneAtFrame === true,
+							coveredFrames: active.coveredFrames,
 							readAt,
 							startVisibility: active.startVisibility,
 							startFocus: active.startFocus,

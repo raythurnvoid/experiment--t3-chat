@@ -115,10 +115,24 @@ and result table together in the personal run folder.
   them out of successful UI medians. Check visibility and the DevTools stub for every sample.
   `doneSource` says whether the result was seen by the DOM observer, after the input event, or by
   the fallback poll. A polled result is an upper bound, not the exact DOM change time.
+- Set `recheckDoneAtFrame: true` when the result can be covered before the next frame, as with Rename.
+  The helper keeps the first DOM time, then waits for a frame where the same `doneExpression` passes.
+  `coveredFrames` counts frames that failed this recheck. Keep the DOM and frame times separate.
 - After each action, read current state and `getLatestLogs({ page, sinceLastCall: true })`.
   A node read can be stale while a later job read has already succeeded. Keep that action pending.
   Save at most one raw row per sample ID; only its final checked receipt accepts the timing.
   Record readback times as upper bounds. Shell and relay delays are not app latency.
+
+For `QueryFailed` transitions, keep the exact `errorMessage` and `errorData` in a separate personal
+error log. Join each error to its socket ID, query ID and query path. Do not retain auth frames,
+query arguments or successful result bodies in that log.
+
+The known saved-view reset has
+`errorData.paginationError === "InvalidCursor"` and reason `saved_move_view_changed` or
+`saved_search_view_changed`. Classify only those exact payloads as expected resets.
+
+Keep missing payloads unknown and other errors unexpected. Inspect unexpected errors before
+the next action; an error count alone cannot show which rule applied.
 
 On reconnect, Convex SDK 1.47 rejects a sent, unfinished Action locally instead of resending it.
 That error does not prove server rollback. An empty name slot proves only that it is empty now.
@@ -170,6 +184,22 @@ Rename now returns an accepted Move Activity. Record the reply, the published ro
 and the finished Activity as separate milestones. The published saved view is the UI milestone;
 do not wait for all background repair to report it. Check descendant paths and terminal run state
 later, through the separate `files_transfer_status.get` and `list_items` reads.
+
+Native Rename can open a `Rename item` result dialog. Close any old dialog before input.
+Require one `.FilesTransferRunModal-item` whose legend is the exact source path. Its direct status
+paragraph must be exactly `Saved`, and its destination paragraph exactly `Destination: <new path>`.
+
+Check each of those three elements is visible and contains the element returned by
+`elementFromPoint` at its centre. A requested destination without `Saved`, another dialog,
+or text covered by a dialog must not pass.
+
+Without a dialog, require the exact selected node ID, saved row name and breadcrumb, with clear
+hit tests on the row and breadcrumb. Typed input alone is not a saved name. Keep saved-label DOM
+changes as a separate milestone.
+
+Use the same exposed-result predicate with `recheckDoneAtFrame` for the frame time: a row can
+update just before a loading dialog covers it. Join either result
+surface to the exact accepted run and final saved-node audit.
 
 Use `a[aria-label="Home"]` for the root breadcrumb. It is not always inside the path-list class.
 At root, that breadcrumb is absent. Check `nodeId=root` first and skip the Home click there.
@@ -244,9 +274,10 @@ the exact already-loaded Monaco module URL and select the editor with `ariaLabel
 Copy/Paste keeps its clipboard in the page. Navigate inside the app after Copy. A short copy without
 a conflict can finish without a transfer dialog. Check the new row and then the completed run through
 `files_transfer_status.get` and `files_transfer_status.list_items`. A copied folder row can appear before its children
-finish. Completed move items can have `source: null`; use the output target and stored node path.
-Single-item transfers show Activity without opening a Transfer dialog. Never wait for that dialog
-as acceptance.
+finish. For successful owned Move or Rename, require the exact `source.target.id`, output target,
+and `movedNodeId`. Permission-denied items can hide the source; do not count them as success.
+Copy and Move can show Activity without opening a Transfer dialog. Native Rename can open the
+result dialog described above. A dialog alone never proves acceptance or completion.
 
 The top More options menu has no root Paste item. To paste at root, focus the Files tree container
 and press Control+V. Focus on a folder row pastes into it. Focus on a file row pastes into its parent.
