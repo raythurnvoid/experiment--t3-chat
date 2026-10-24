@@ -3337,6 +3337,20 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		}
 	});
 
+	test("keeps the blank lines between list items", () => {
+		const fixtures = [
+			"- a\n\n- b\n",
+			"1. a\n\n2. b\n",
+			"3) a\n\n4) b\n",
+			"- a\n\n- b\n  - c\n  - d\n",
+			// A blank line inside an item does not put blank lines between the items.
+			"- a\n\n  more\n- b\n",
+		];
+		for (const fixture of fixtures) {
+			expect(normalize(fixture)).toBe(fixture);
+		}
+	});
+
 	test("settles trailing-newline variants", () => {
 		for (const fixture of ["text", "text\n", "text\n\n\n"]) {
 			const once = normalize(fixture);

@@ -80,7 +80,16 @@ Before, Marked read a one-word note as a link definition. Then `[^1]` became a l
 
 Lists keep the marker the file uses: a `*` or `+` bullet, and a `)` after the number (`1)`). The `list` renderer in `configure_marked` writes it as `data-bullet` or `data-delimiter`. The fork's lists keep it as the `bullet` or `delimiter` attribute, and the list item writer uses it. Without a marker, save writes `-` and `1.`. A new list made in the editor has no marker.
 
-This keeps a save from rewriting every list in a file. It also keeps two lists apart: `- a`, a blank line, then `* b` is two lists, and writing both with `-` made them one list. Known changes, with no lost content: a task list saves with `-`, a loose list loses its blank lines, and the indent before a top-level list is dropped.
+This keeps a save from rewriting every list in a file. It also keeps two lists apart: `- a`, a blank line, then `* b` is two lists, and writing both with `-` made them one list.
+
+Lists also keep blank lines between their items. When a blank line comes after any item but the last, the renderer adds `data-loose`, the list gets `loose: true`, and save puts one blank line between every two items. A blank line inside an item does not count. `list_has_blank_line_between_items` reads only the end of each item's text, so it stays cheap in a long list.
+
+Known changes, with no lost content, all stable after one save:
+
+- A task list saves with `-`.
+- A list with blank lines between only some items gets one between all of them. Two blank lines become one.
+- The blank line between an item's first line and a list inside it is dropped. A blank line in a list nested inside an item saves as a line of spaces.
+- The indent before a top-level list is dropped.
 
 Links keep any address scheme except `javascript:`, `vbscript:` and `data:` (`files_tiptap_link_is_allowed_uri` in `packages/app/shared/files-tiptap.ts`). Tiptap's own list keeps only a few schemes (`http`, `mailto`, ...), so a `bonobo-file://` or `obsidian://` link lost its address on the next save. Both browser lists and the shared set use this one check, so the browser and Convex keep the same links. The scheme must start the address with no tab, newline or control character inside it, so a hidden `java<tab>script:` is refused. The public link page keeps its own stricter rule: only checked `http(s)` links (see "Public Link Reader").
 

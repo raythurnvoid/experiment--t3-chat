@@ -2427,6 +2427,10 @@ What worked: create a session on the new key, then open the app with `context.ne
 enabled. Confirm the account from the signed-in app header before you trust the key. Leave the other
 agent's tabs alone.
 
+It happened twice the same day, each time after editing `shared/files-tiptap.ts` while the QA tab was
+the only enabled tab. The hot update broke the tab with `useAppAuth` errors, the tab closed, and the
+extension came back under a new key. So after a source edit, expect this and run the recovery above.
+
 ## The agent chat has a per-reply tool budget
 
 A Bash-heavy message can stop part way with, in the terminal card,

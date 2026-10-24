@@ -48,6 +48,7 @@ Also keep the Markdown save patches:
 - A level 1 or 2 heading with more lines saves underlined (`===` or `---`). A level 3 to 6 heading
   joins its lines with a space.
 - Bullet and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
+- A list with `loose: true` puts a blank line between its items.
 
 Without them a save can break a code block open, grow its indent on every save, turn text such as
 `\# not a heading` into a heading, or split a heading in two when the file opens again.

@@ -28,6 +28,7 @@ import {
 	type MarkedExtension,
 	type Rules,
 	type Token,
+	type Tokens,
 } from "marked";
 import type { Doc as YDoc } from "yjs";
 import {
@@ -429,16 +430,21 @@ function configure_marked(instance: Marked | typeof marked) {
 					.replace(CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX, "</code></pre>\n");
 			},
 
-			// Keep a `*` or `+` bullet and a `1)` number, so a save does not rewrite every list in the file.
-			// A new marker also starts a new list, so two lists next to each other stay two lists.
+			// Keep a `*` or `+` bullet, a `1)` number, and blank lines between the items, so a save does not
+			// rewrite every list in the file. A new marker also starts a new list, so two lists next to each
+			// other stay two lists.
 			list(token) {
 				const marker = LIST_MARKER_REGEX.exec(token.raw);
-				if (!marker) {
+				let attributes = marker?.[1] ? ` data-bullet="${marker[1]}"` : marker?.[2] ? ` data-delimiter="${marker[2]}"` : "";
+				if (list_has_blank_line_between_items(token)) {
+					attributes += " data-loose";
+				}
+
+				if (!attributes) {
 					return false;
 				}
 
-				const attribute = marker[1] ? `data-bullet="${marker[1]}"` : `data-delimiter="${marker[2]}"`;
-				return Renderer.prototype.list.call(this, token).replace(/^<(ul|ol)/, `<$1 ${attribute}`);
+				return Renderer.prototype.list.call(this, token).replace(/^<(ul|ol)/, `<$1${attributes}`);
 			},
 
 			// Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>` tag. Then
@@ -790,6 +796,23 @@ function bound_tiptap_tokenizers(extension: MarkedExtension): MarkedExtension {
 			};
 		}),
 	};
+}
+
+/**
+ * Tell if a blank line comes after one of the list's items, before the next item. A blank line inside
+ * an item does not count, because it does not put blank lines between the items.
+ *
+ * Marked keeps the blank line at the end of the item's text, after the item's own line break. Tiptap's
+ * ordered list tokenizer leaves out the item's own line break and sets no `loose`, so there the blank
+ * line shows as one final line break. Only the end of each item is read, so this stays cheap in a long
+ * list.
+ */
+function list_has_blank_line_between_items(token: Tokens.List) {
+	const lineBreaksWhenTight = "loose" in token ? 1 : 0;
+	return token.items.slice(0, -1).some((item) => {
+		const tail = item.raw.slice(item.raw.trimEnd().length);
+		return tail.split("\n").length - 1 > lineBreaksWhenTight;
+	});
 }
 
 /**
