@@ -1521,7 +1521,9 @@ describe("files_parse_markdown_to_html", () => {
 		);
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
 
-		expect(html._yay).toContain('<p>see <a href="https://example.com">https://example.com</a> first</p>');
+		expect(html._yay).toContain(
+			'<p>see <a data-markdown-autolink="bare" href="https://example.com">https://example.com</a> first</p>',
+		);
 	});
 
 	test("lets a close tag inside a highlight end the open link", () => {
@@ -1530,7 +1532,9 @@ describe("files_parse_markdown_to_html", () => {
 		);
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
 
-		expect(html._yay).toContain('<a href="https://example.com/b">https://example.com/b</a>');
+		expect(html._yay).toContain(
+			'<a data-markdown-autolink="bare" href="https://example.com/b">https://example.com/b</a>',
+		);
 	});
 
 	test("reads more text of an ordered item in a bullet item as a paragraph", () => {
@@ -2120,6 +2124,12 @@ describe("media embeds round-trip through Yjs", () => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
+	test("keeps the attributes of a file's image that the image node does not hold", () => {
+		const input =
+			'<img src="bonobo-file://k17abcdef" height="80">\n\nA <img src="bonobo-file://k17abcdef" alt="Logo" width="50%" align="left"> b\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
 	test("preserves a video caption and alignment", () => {
 		const input = '<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>\n';
 		expect(round_trip_markdown(input)).toBe(input);
@@ -2242,6 +2252,18 @@ describe("links round-trip through Yjs", () => {
 		return markdownResult._yay;
 	}
 
+	function edit_and_save(markdown: string, edit: (editor: Editor) => void) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+
+		edit(editor._yay);
+		const saved = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+		return saved + "\n";
+	}
+
 	test("keeps links to app files and to other apps", () => {
 		const input =
 			"[Doc](bonobo-file://k17abcdef), [draft](bonobo-file://private/k17abcdef) and [note](obsidian://open?vault=a)\n";
@@ -2256,6 +2278,24 @@ describe("links round-trip through Yjs", () => {
 				'[a](JavaScript:alert(1)) <a href="java\tscript:alert(1)">b</a> [c](vbscript:x) [d](data:text/html,x)\n',
 			),
 		).toBe("a b c d\n");
+	});
+
+	test("keeps a bare or angle auto link as written", () => {
+		const input = "See https://e.com/a_b?x=1*2, www.e.com/a~b, email_me@foo_bar.com and <https://e.com/x_y>\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("writes an auto link as a Markdown link once its text changes or holds another mark", () => {
+		// Positions: the paragraph starts at 1, so the link text "https://e.com" runs from 1 to 14.
+		const typed = edit_and_save("https://e.com\n", (editor) => {
+			editor.view.dispatch(editor.state.tr.insertText("/x", 14));
+		});
+		expect(typed).toBe("[https://e.com/x](https://e.com)\n");
+
+		const bold = edit_and_save("https://e.com\n", (editor) => {
+			editor.view.dispatch(editor.state.tr.addMark(11, 14, editor.state.schema.marks.bold.create()));
+		});
+		expect(bold).toBe("[https://e.**com**](https://e.com)\n");
 	});
 });
 
@@ -2317,6 +2357,18 @@ describe("hidden HTML tags round-trip through Yjs", () => {
 		const input =
 			"# Draft <name>\n\nReplace <Owner> with Array<T>, call <Foo /> and close </div>. a <!-- note --> b\n\n- [ ] ask <who>\n\n| a | b |\n| --- | --- |\n| <x y=\"1\"> | c |\n";
 		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("hides a known tag with an attribute that save would drop, and its closing tag", () => {
+		// `<b and c>` reads as a `<b>` tag with two attributes. A shown bold tag lost "b and c" on save.
+		const input =
+			'if a<b and c>d, <span class="note">hi</span>, <a href="https://e.com" target="_blank">site</a>, <b class="x">a **bold** b</b> and a stray </i>\n\n<p><code class="c">x</code></p>\n\n| a |\n| --- |\n| <kbd title="t">K</kbd> |\n';
+		expect(round_trip_markdown(input)).toBe(input);
+		expect(files_tiptap_markdown_to_plain_text({ markdown: input })._yay).toContain("hi, site, a bold b");
+		// An HTML block saves from its source until someone edits it. So check its content too.
+		expect(JSON.stringify(files_tiptap_markdown_to_json({ markdown: input })._yay)).toContain(
+			'{"type":"htmlTag","attrs":{"html":"<code class=\\"c\\">"}}',
+		);
 	});
 });
 

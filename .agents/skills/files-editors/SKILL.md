@@ -50,7 +50,10 @@ Also keep the Markdown save patches:
 - Bullet and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
 - A list with `loose: true` puts a blank line between its items.
 - A mark can write the text it covers with `markdownOptions.renderText`. The HTML entity and backslash
-  escape marks use it.
+  escape marks use it. It also gets the whole text of the mark run, and a mark's `renderMarkdown` gets
+  `meta.markTextNodes`, the number of text nodes in that run.
+- A link keeps how Markdown wrote an auto link in `markdownAutolink` (`bare` or `angle`) and saves it
+  that way while its text still gives the same address.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and
   `escapeBlockStarts` escapes a `>` that starts a line. So `R&D` and `a < b` save as written.
 - `escapeMarkdownSyntax` escapes `*`, `_`, `~`, `=` and `\` only where they would read as Markdown, so

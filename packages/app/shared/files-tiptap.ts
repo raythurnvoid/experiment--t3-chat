@@ -370,7 +370,7 @@ function configure_marked(instance: Marked | typeof marked) {
 			},
 		],
 		hooks: {
-			processAllTokens: (tokens) => html_merge_tokens(tokens),
+			processAllTokens: (tokens) => html_hide_unmodeled_inline_tags(html_merge_tokens(tokens)),
 		},
 		renderer: {
 			heading(token) {
@@ -472,8 +472,10 @@ function configure_marked(instance: Marked | typeof marked) {
 				);
 			},
 
-			// Turn an inline tag that the editor cannot show, or an inline comment, into a hidden tag node
-			// (`files_html_tag_node`), so save writes it back. An HTML block goes to `html_block_to_editor_html`.
+			// Turn an inline tag that the editor cannot show or save back the same, or an inline comment, into a
+			// hidden tag node (`files_html_tag_node`), so save writes it back. An HTML block goes to
+			// `html_block_to_editor_html`.
+			//
 			// A public parse keeps the raw HTML. The public page must see the real tags to remove a script, a
 			// form or an SVG with the text inside them. It drops the other unknown tags and comments itself, so
 			// it shows the same text as the editor.
@@ -491,8 +493,8 @@ function configure_marked(instance: Marked | typeof marked) {
 				if (name === "br") {
 					return `<br data-markdown-break="${encodeURIComponent(token.text)}">`;
 				}
-				if (name !== undefined && INLINE_HTML_SUPPORTED_TAGS.has(name)) {
-					return false;
+				if (name !== undefined && INLINE_HTML_SUPPORTED_TAGS.has(name) && !html_hidden_inline_tags.has(token)) {
+					return html_shown_tag_to_editor_html(token.text, name);
 				}
 
 				return `<span data-html-tag="${encodeURIComponent(token.text)}"></span>`;
@@ -501,8 +503,19 @@ function configure_marked(instance: Marked | typeof marked) {
 			// Author-typed HTML can still take in a link's tag, for example a line `<div x="`. Then the address
 			// is lost in an attribute, and the label shows as plain text. So a public parse writes the hidden
 			// text instead of a hidden link's label and title. The file name never gets into its HTML.
+			//
+			// The editor marks a bare `https://…` or an `<https://…>` auto link, so save writes it back the same
+			// instead of as `[https://…](https://…)`.
 			link(token) {
-				const hiddenText = markdown_hidden_link_text?.(token.href) ?? null;
+				if (markdown_hidden_link_text === null) {
+					return token.raw.startsWith("[")
+						? false
+						: Renderer.prototype.link
+								.call(this, token)
+								.replace(/^<a /, `<a data-markdown-autolink="${token.raw.startsWith("<") ? "angle" : "bare"}" `);
+				}
+
+				const hiddenText = markdown_hidden_link_text(token.href);
 				return hiddenText === null
 					? false
 					: Renderer.prototype.link.call(this, {
@@ -1384,6 +1397,8 @@ function html_escape_attribute(value: string) {
 	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+const IMAGE_PIXEL_WIDTH_REGEX = /^[1-9]\d*$/;
+
 /**
  * Write an image as a raw `<img>` tag. Keep the attribute order fixed so the round-trip stays byte-stable.
  */
@@ -1401,7 +1416,7 @@ function image_html_tag(node: TiptapJSONContent) {
 	const titleAttribute = title ? ` title="${html_escape_attribute(title)}"` : "";
 	const widthAttribute = width !== null ? ` width="${width}"` : "";
 	const alignAttribute = align !== null ? ` align="${align}"` : "";
-	return `<img src="${html_escape_attribute(src)}"${altAttribute}${titleAttribute}${widthAttribute}${alignAttribute}>`;
+	return `<img src="${html_escape_attribute(src)}"${altAttribute}${titleAttribute}${widthAttribute}${alignAttribute}${html_kept_attributes(node)}>`;
 }
 
 /**
@@ -1427,7 +1442,13 @@ const files_image_node = Node.create({
 			width: {
 				default: null,
 				parseHTML: (element) => {
-					const parsed = Number.parseInt(element.getAttribute("width") ?? "", 10);
+					const value = element.getAttribute("width") ?? "";
+					// A file's `width="50%"` is not a pixel width. `htmlAttributes` keeps it as written.
+					if (element.hasAttribute("data-html-kept") && !IMAGE_PIXEL_WIDTH_REGEX.test(value)) {
+						return null;
+					}
+
+					const parsed = Number.parseInt(value, 10);
 					return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 				},
 			},
@@ -1441,6 +1462,16 @@ const files_image_node = Node.create({
 					return value === "center" || value === "right" ? value : null;
 				},
 			},
+			// The attributes of a file's `<img>` that the attributes above do not hold, like `height` or
+			// `align="left"`.
+			htmlAttributes: html_kept_attributes_attribute(
+				(attribute) =>
+					attribute.name === "src" ||
+					attribute.name === "alt" ||
+					attribute.name === "title" ||
+					(attribute.name === "width" && IMAGE_PIXEL_WIDTH_REGEX.test(attribute.value)) ||
+					(attribute.name === "align" && (attribute.value === "center" || attribute.value === "right")),
+			),
 			// Set while an upload runs, so the client can find its own placeholder node again
 			// after the upload mutations resolve. `rendered: false` keeps it out of the HTML,
 			// and `renderMarkdown` below ignores it, so it never reaches the saved markdown.
@@ -1468,9 +1499,9 @@ const files_image_node = Node.create({
 				: null;
 		const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
 
-		// A sized or aligned image rides through markdown as a raw `<img>` tag, the same way
-		// the video node below always does.
-		if (width !== null || align !== null) {
+		// A sized or aligned image, or one with other attributes, rides through markdown as a raw `<img>`
+		// tag, the same way the video node below always does.
+		if (width !== null || align !== null || html_kept_attributes(node)) {
 			return image_html_tag(node);
 		}
 
@@ -1586,10 +1617,11 @@ function html_data_attribute(name: string) {
  * An attribute that keeps the HTML attributes that the editor does not use, like `style` or `class`, as text.
  * Save writes them back on the tag. They are not rendered, because an author `style` could load a remote image.
  *
- * Only elements that `html_table_to_editor_html` marked with `data-html-kept` have them. A table pasted from
- * a web page has no mark, so it does not keep the page's classes and stays a pipe table.
+ * Only elements that `html_table_to_editor_html` or `html_shown_tag_to_editor_html` marked with
+ * `data-html-kept` have them. A table pasted from a web page has no mark, so it does not keep the page's
+ * classes and stays a pipe table.
  */
-function html_kept_attributes_attribute(modeledNames: string[]) {
+function html_kept_attributes_attribute(isModeled: (attribute: Attr) => boolean) {
 	return {
 		default: null,
 		rendered: false,
@@ -1600,7 +1632,7 @@ function html_kept_attributes_attribute(modeledNames: string[]) {
 
 			let attributes = "";
 			for (const attribute of Array.from(element.attributes)) {
-				if (!attribute.name.startsWith("data-html-") && !modeledNames.includes(attribute.name)) {
+				if (!attribute.name.startsWith("data-html-") && !isModeled(attribute)) {
 					attributes += ` ${attribute.name}="${html_escape_attribute(attribute.value)}"`;
 				}
 			}
@@ -1622,7 +1654,9 @@ const files_table_cell_node = TableCell.extend({
 		return {
 			...this.parent?.(),
 			...files_table_cell_align_attribute,
-			htmlAttributes: html_kept_attributes_attribute(TABLE_CELL_MODELED_ATTRIBUTES),
+			htmlAttributes: html_kept_attributes_attribute((attribute) =>
+				TABLE_CELL_MODELED_ATTRIBUTES.includes(attribute.name),
+			),
 		};
 	},
 });
@@ -1634,7 +1668,9 @@ const files_table_header_node = TableHeader.extend({
 		return {
 			...this.parent?.(),
 			...files_table_cell_align_attribute,
-			htmlAttributes: html_kept_attributes_attribute(TABLE_CELL_MODELED_ATTRIBUTES),
+			htmlAttributes: html_kept_attributes_attribute((attribute) =>
+				TABLE_CELL_MODELED_ATTRIBUTES.includes(attribute.name),
+			),
 		};
 	},
 });
@@ -1656,7 +1692,7 @@ const files_table_row_node = TableRow.extend({
 				},
 			},
 			htmlBefore: html_data_attribute("data-html-before"),
-			htmlAttributes: html_kept_attributes_attribute([]),
+			htmlAttributes: html_kept_attributes_attribute(() => false),
 		};
 	},
 });
@@ -1948,10 +1984,8 @@ function html_table_to_editor_html(args: { raw: string; parts: Token[]; parse: (
 	// A caption or a colgroup that is read now.
 	let keptPart: { name: string; html: string } | null = null;
 	let preDepth = 0;
+	const readInlineTag = html_inline_tag_reader();
 
-	// Add `attributes` right after the tag name, so the tag's own attributes stay after them.
-	const withAttributes = (tag: string, name: string, attributes: string) =>
-		tag.slice(0, name.length + 1) + attributes + tag.slice(name.length + 1);
 	const keep = (html: string) => {
 		if (keptPart) {
 			keptPart.html += html;
@@ -1987,7 +2021,7 @@ function html_table_to_editor_html(args: { raw: string; parts: Token[]; parse: (
 			if (closing) {
 				const closed = tables.pop();
 				if (closed && closed.kept.length > 0) {
-					closed.openPiece.html = withAttributes(
+					closed.openPiece.html = html_tag_with_attributes(
 						closed.openPiece.html,
 						name,
 						` data-html-after="${encodeURIComponent(closed.kept.join("\n"))}"`,
@@ -2000,7 +2034,7 @@ function html_table_to_editor_html(args: { raw: string; parts: Token[]; parse: (
 			const source = tables.length === 0 ? args.raw.replace(TRAILING_NEWLINES_REGEX, "") : null;
 			const openPiece = {
 				kind: "tag" as const,
-				html: withAttributes(
+				html: html_tag_with_attributes(
 					tag,
 					name,
 					" data-html-kept" + (source === null ? "" : ` data-html-source="${encodeURIComponent(source)}"`),
@@ -2021,10 +2055,14 @@ function html_table_to_editor_html(args: { raw: string; parts: Token[]; parse: (
 			const section = table.section === null ? "" : ` data-html-row-section="${table.section}"`;
 			const before = table.kept.length === 0 ? "" : ` data-html-before="${encodeURIComponent(table.kept.join("\n"))}"`;
 			table.kept = [];
-			pieces.push({ kind: "tag", html: withAttributes(tag, name, " data-html-kept" + section + before), name });
+			pieces.push({
+				kind: "tag",
+				html: html_tag_with_attributes(tag, name, " data-html-kept" + section + before),
+				name,
+			});
 		} else if (name === "td" || name === "th") {
 			table.cellDepth = Math.max(0, table.cellDepth + (closing ? -1 : 1));
-			pieces.push({ kind: "tag", html: closing ? tag : withAttributes(tag, name, " data-html-kept"), name });
+			pieces.push({ kind: "tag", html: closing ? tag : html_tag_with_attributes(tag, name, " data-html-kept"), name });
 		} else if (name === "tr") {
 			pieces.push({ kind: "tag", html: tag, name });
 		} else if (table.cellDepth === 0) {
@@ -2033,11 +2071,14 @@ function html_table_to_editor_html(args: { raw: string; parts: Token[]; parse: (
 			} else {
 				keep(tag);
 			}
-		} else if (HTML_TABLE_BLOCK_TAGS.has(name) || INLINE_HTML_SUPPORTED_TAGS.has(name)) {
+		} else if (HTML_TABLE_BLOCK_TAGS.has(name) || (name === "code" && preDepth > 0)) {
+			// A code block's `<code class="language-js">` holds its language, so it is not a hidden tag.
 			if (name === "pre") {
 				preDepth = Math.max(0, preDepth + (closing ? -1 : 1));
 			}
 			pieces.push({ kind: "tag", html: tag, name });
+		} else if (readInlineTag(tag)) {
+			pieces.push({ kind: "tag", html: html_shown_tag_to_editor_html(tag, name), name });
 		} else {
 			pieces.push({ kind: "hidden", html: tag });
 		}
@@ -2262,7 +2303,7 @@ const files_table_node = Table.extend({
 			htmlSource: html_data_attribute("data-html-source"),
 			htmlSourceContent: { default: null, rendered: false, parseHTML: () => null },
 			htmlAfterRows: html_data_attribute("data-html-after"),
-			htmlAttributes: html_kept_attributes_attribute([]),
+			htmlAttributes: html_kept_attributes_attribute(() => false),
 		};
 	},
 
@@ -2594,6 +2635,154 @@ const INLINE_HTML_SUPPORTED_TAGS = new Set([
 ]);
 
 const INLINE_HTML_TAG_NAME_REGEX = /^<\/?([a-z][a-z0-9-]*)/i;
+const HTML_TAG_ATTRIBUTE_REGEX = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+
+/**
+ * Say if the editor can show this opening tag as formatting and save it back without a loss.
+ *
+ * Each mark writes its tag with a fixed set of attributes. So a tag with any other attribute, like
+ * `<span class>` or `<a target>`, would lose it on save. A typed `a<b and c>d` reads as a `<b>` tag too,
+ * and it lost "b and c". Such a tag becomes a hidden tag instead, and its text shows as plain text.
+ *
+ * An image keeps its other attributes itself (`htmlAttributes`), and a video stays as before.
+ */
+function html_inline_tag_is_modeled(tag: string, name: string) {
+	if (name === "img" || name === "image" || name === "video") {
+		return true;
+	}
+	// A browser reads `<b/>` as an open `<b>`, which save would not write back.
+	if (tag.endsWith("/>")) {
+		return name === "br";
+	}
+
+	const attributes = Array.from(tag.slice(name.length + 1, -1).matchAll(HTML_TAG_ATTRIBUTE_REGEX), (match) => ({
+		name: match[1].toLowerCase(),
+		value: match[2] ?? match[3] ?? match[4] ?? "",
+	}));
+	const names = attributes
+		.map((attribute) => attribute.name)
+		.sort()
+		.join(" ");
+	// The style must hold only the one rule that the mark keeps, like `color: red`.
+	const styleIsOnly = (property: string) => {
+		const rules = (attributes.find((attribute) => attribute.name === "style")?.value ?? "")
+			.split(";")
+			.filter((rule) => rule.trim() !== "");
+		return rules.length === 1 && rules[0].split(":")[0].trim().toLowerCase() === property;
+	};
+
+	switch (name) {
+		case "a":
+			return names === "href" || names === "href title";
+		case "span":
+			return (
+				(names === "style" && styleIsOnly("color")) ||
+				(names === "data-lb-thread-id data-type" &&
+					attributes.some((attribute) => attribute.name === "data-type" && attribute.value === "comment"))
+			);
+		case "mark":
+			return names === "" || (names === "style" && styleIsOnly("background-color"));
+		default:
+			return names === "";
+	}
+}
+
+/**
+ * Read the inline tags of one block in order. The returned function says for each tag if the editor shows
+ * it. A closing tag shows only when its opening tag shows. Otherwise it is hidden too, so save writes the
+ * pair back. A closing tag with no opening tag is hidden as well, because the DOM would drop it.
+ */
+function html_inline_tag_reader() {
+	// The open tags of each name, the last one opened last. Each entry says if its tag shows.
+	const openTags = new Map<string, boolean[]>();
+
+	return (tag: string) => {
+		const name = INLINE_HTML_TAG_NAME_REGEX.exec(tag)?.[1]?.toLowerCase();
+		if (name === undefined || !INLINE_HTML_SUPPORTED_TAGS.has(name)) {
+			return false;
+		}
+		if (tag.startsWith("</")) {
+			return openTags.get(name)?.pop() ?? false;
+		}
+
+		const shown = html_inline_tag_is_modeled(tag, name);
+		// These tags have no closing tag.
+		if (name !== "br" && name !== "img" && name !== "image" && !tag.endsWith("/>")) {
+			const open = openTags.get(name) ?? [];
+			open.push(shown);
+			openTags.set(name, open);
+		}
+		return shown;
+	};
+}
+
+/**
+ * Add `attributes` right after the tag name, so the tag's own attributes stay after them.
+ */
+function html_tag_with_attributes(tag: string, name: string, attributes: string) {
+	return tag.slice(0, name.length + 1) + attributes + tag.slice(name.length + 1);
+}
+
+/**
+ * Write a tag that the editor shows. An image from the file gets `data-html-kept`, so the image node keeps
+ * its other attributes (`htmlAttributes`). A pasted image has no mark, so it does not keep a web page's
+ * classes.
+ */
+function html_shown_tag_to_editor_html(tag: string, name: string) {
+	return name === "img" || name === "image" ? html_tag_with_attributes(tag, name, " data-html-kept") : tag;
+}
+
+/**
+ * The inline tag tokens that `html_hide_unmodeled_inline_tags` found. The `html` renderer writes them as
+ * hidden tags.
+ */
+const html_hidden_inline_tags = new WeakSet<Token>();
+
+/**
+ * Bold, italic, a strikethrough, a highlight and a link hold inline tokens of their block. Their tags pair
+ * with the other tags of the block.
+ */
+const HTML_INLINE_CONTAINER_TOKEN_TYPES = new Set(["strong", "em", "del", "link", "highlight"]);
+
+/**
+ * Find the supported inline tags that the editor must not show (`html_inline_tag_reader`), in every block
+ * of the parsed file. Marked gives each tag as its own token, so the `html` renderer alone cannot pair them.
+ */
+function html_hide_unmodeled_inline_tags(tokens: Token[], readTag = html_inline_tag_reader()) {
+	for (const token of tokens) {
+		if (token.type === "html" && !token.block) {
+			if (!readTag(token.text)) {
+				html_hidden_inline_tags.add(token);
+			}
+			continue;
+		}
+
+		// Each block reads its tags with a new reader. `undefined` gives one.
+		const parts = token as {
+			tokens?: Token[];
+			nestedTokens?: Token[];
+			items?: Token[];
+			header?: Array<{ tokens: Token[] }>;
+			rows?: Array<Array<{ tokens: Token[] }>>;
+		};
+		if (parts.tokens) {
+			html_hide_unmodeled_inline_tags(
+				parts.tokens,
+				HTML_INLINE_CONTAINER_TOKEN_TYPES.has(token.type) ? readTag : undefined,
+			);
+		}
+		if (parts.nestedTokens) {
+			html_hide_unmodeled_inline_tags(parts.nestedTokens);
+		}
+		for (const item of parts.items ?? []) {
+			html_hide_unmodeled_inline_tags([item]);
+		}
+		for (const cell of [...(parts.header ?? []), ...(parts.rows ?? []).flat()]) {
+			html_hide_unmodeled_inline_tags(cell.tokens);
+		}
+	}
+	return tokens;
+}
 
 /**
  * Read back HTML that the Marked renderers stored URI-encoded in an attribute. happy-dom, the test DOM,
@@ -2677,9 +2866,9 @@ const HTML_AND_MARKDOWN_TEXT_ESCAPE_REGEX = /[&<>\\`*_[\]~]/g;
  *
  * A block that is one comment becomes an `htmlComment` node. Any other block with a tag that the editor
  * cannot show becomes an `htmlBlock` node. Its unknown tags become hidden tag nodes, and its text and
- * known inline tags work as usual. Marked's HTML stays for a block with only known tags (the `<img
- * width>` line that the image node writes), for a table, and for the `<pre data-frontmatter>` that the
- * frontmatter node writes.
+ * known inline tags work as usual. A block with only known tags (the `<img width>` line that the image node
+ * writes) stays plain inline content. Marked's HTML stays for a table, and for the `<pre data-frontmatter>`
+ * that the frontmatter node writes.
  */
 function html_block_to_editor_html(text: string) {
 	const source = text.replace(TRAILING_NEWLINES_REGEX, "");
@@ -2702,7 +2891,7 @@ function html_block_to_editor_html(text: string) {
 		// A block with no tag at all, like an unclosed `<!-- note`, still becomes an `htmlBlock`. With
 		// Marked's HTML, the DOM would read it as a comment and drop it.
 		if (inline.onlyKnownTags) {
-			return false;
+			return inline.html;
 		}
 		content = inline.html;
 	}
@@ -2720,6 +2909,7 @@ function html_block_to_editor_html(text: string) {
  */
 function html_inline_to_editor_html(source: string) {
 	const pieces: Array<{ kind: "text" | "tag" | "hidden"; html: string }> = [];
+	const readInlineTag = html_inline_tag_reader();
 	let textStart = 0;
 	for (const match of source.matchAll(HTML_TAG_REGEX)) {
 		if (match.index > textStart) {
@@ -2728,8 +2918,10 @@ function html_inline_to_editor_html(source: string) {
 
 		const name = INLINE_HTML_TAG_NAME_REGEX.exec(match[0])?.[1]?.toLowerCase();
 		// A video is a block node. Inside inline content it would split the block in two.
-		const known = name !== undefined && name !== "video" && INLINE_HTML_SUPPORTED_TAGS.has(name);
-		pieces.push({ kind: known ? "tag" : "hidden", html: match[0] });
+		const known = name !== undefined && name !== "video" && readInlineTag(match[0]);
+		pieces.push(
+			known ? { kind: "tag", html: html_shown_tag_to_editor_html(match[0], name) } : { kind: "hidden", html: match[0] },
+		);
 		textStart = match.index + match[0].length;
 	}
 	if (textStart < source.length) {
