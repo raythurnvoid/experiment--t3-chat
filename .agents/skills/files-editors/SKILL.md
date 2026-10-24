@@ -74,8 +74,9 @@ lists in `file-editor-rich-text/extensions.ts`. Convex writes the Yjs doc with t
 When the browser opens it, y-prosemirror deletes each element its schema cannot build, and syncs
 that delete back to the server. So a missing mark deletes file text. `extensions.test.ts` checks it.
 
-Ship the browser first. The published sites build on a push to `main`, and Convex is pushed by hand.
-So after a new mark or node, push `main`, wait for both site builds, then push Convex.
+Ship the browser first. GitHub Pages builds from the `deploy` branch, Cloudflare from `cf-deploy`,
+and Convex is pushed by hand. So after a new mark or node, update both site branches, wait for both
+builds, then push Convex.
 
 # Keep Editor View And File Mode Separate
 
