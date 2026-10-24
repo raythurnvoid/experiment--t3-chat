@@ -6,7 +6,10 @@ import { Workpool } from "@convex-dev/workpool";
 import type { Infer } from "convex/values";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_content_version_validator } from "./schema.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_sequence,
+} from "../server/files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "../server/files-saved-content.ts";
 import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { components, internal } from "./_generated/api.js";
@@ -92,6 +95,7 @@ export async function files_nodes_db_get_content_version(
 
 	return {
 		kind: "yjs",
+		pendingContentVersion: fileNode.pendingContentVersion,
 		lastSequenceId: sequenceDoc._id,
 		lineageGeneration: sequenceDoc.lineageGeneration,
 		sequence: sequenceDoc.lastSequence,

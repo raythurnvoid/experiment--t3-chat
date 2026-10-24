@@ -7640,6 +7640,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			archiveOperationId: args.archiveOperationId ?? null,
 			contentType: null,
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,

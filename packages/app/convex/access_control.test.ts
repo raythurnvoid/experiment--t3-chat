@@ -6262,6 +6262,7 @@ describe("file sharing", () => {
 				kind: "file",
 				contentType: "text/markdown;charset=utf-8",
 				assetId,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				path: args.path,
 				treePath: args.path,
@@ -8356,6 +8357,8 @@ describe("file sharing", () => {
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				target: { kind: "saved", id: args.nodeId },
+				expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!
+					.pendingContentVersion,
 			},
 		);
 		if (batch._nay) {
@@ -8406,6 +8409,8 @@ describe("file sharing", () => {
 			nodeId: args.nodeId,
 			operationBatchId,
 			expectedRevision: null,
+			expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!
+				.pendingContentVersion,
 			base: {
 				kind: "yjs",
 				baseYjsSequence: 0,
@@ -8471,6 +8476,7 @@ describe("file sharing", () => {
 				kind: "file",
 				contentType: "text/markdown;charset=utf-8",
 				assetId,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				parentId: folderId,
 				// Inside the restricted folder, which is what makes the grant decide.
@@ -9123,6 +9129,7 @@ describe("file sharing", () => {
 				kind: "file",
 				contentType: "text/markdown;charset=utf-8",
 				assetId,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				path: "/closed/notes.md",
 				treePath: "/closed/notes.md",
@@ -11282,6 +11289,7 @@ describe("file sharing", () => {
 				archiveOperationId: null,
 				contentType: null,
 				assetId: null,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
@@ -11356,6 +11364,7 @@ describe("file sharing", () => {
 				archiveOperationId: null,
 				contentType: null,
 				assetId: null,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,
@@ -11470,6 +11479,7 @@ describe("file sharing", () => {
 				archiveOperationId: null,
 				contentType: null,
 				assetId: null,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,

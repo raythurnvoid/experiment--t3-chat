@@ -1699,6 +1699,7 @@ test("home file can be renamed and moved like any file", async () => {
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
@@ -1772,6 +1773,7 @@ test("home file can be archived like any file", async () => {
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,

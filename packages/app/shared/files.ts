@@ -83,6 +83,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	contentType: null,
 	statsId: null,
 	assetId: null,
+	pendingContentVersion: 1,
 	contentByteSize: null,
 	textKind: null,
 	collaborationEnabled: null,
@@ -1013,18 +1014,19 @@ export function files_pending_update_index_revision(
 }
 
 /**
- * A content proposal on a file with collaboration off is stale when a member saved the file
- * after the proposal was made: the node's content asset is no longer the one the branches were
- * built from. Reads use saved text. Agent writes and Review prepare the retained proposal
- * on the current file. Toggles and restores use the same preparation flow. Discard deletes
- * the content proposal, or keeps only its move or delete.
+ * Restore and replacement keep drafts on their original base. Reads use saved text until
+ * that owner prepares the draft. With collaboration off, a later Save also changes its asset.
  */
 export function files_pending_update_content_is_stale(
-	row: FilePendingUpdateFieldsForContent & Pick<app_convex_Doc<"files_pending_updates">, "contentNeedsRebase">,
-	node: Pick<app_convex_Doc<"files_nodes">, "assetId">,
+	row: FilePendingUpdateFieldsForContent,
+	node: Pick<app_convex_Doc<"files_nodes">, "assetId" | "pendingContentVersion">,
 ) {
+	const base = row.content?.base;
 	return (
-		row.contentNeedsRebase === true || (row.content?.base.kind === "asset" && row.content.base.assetId !== node.assetId)
+		base !== undefined &&
+		base.kind !== "new" &&
+		(base.pendingContentVersion !== node.pendingContentVersion ||
+			(base.kind === "asset" && base.assetId !== node.assetId))
 	);
 }
 

@@ -220,7 +220,7 @@ describe.each(["saved", "private"] as const)("%s Copy action replies", (kind) =>
 			} else {
 				const writing = await asUser.mutation(
 					api.files_pending_updates.create_file_pending_update_operation_batch,
-					args,
+					{ ...args, expectedPendingContentVersion: target.kind === "private" ? null : 1 },
 				);
 				if (writing._nay) throw new Error(writing._nay.message);
 				const operationBatchId = writing._yay.operationBatchId;
@@ -399,6 +399,7 @@ describe("copied-parent text Save", () => {
 		expect(
 			(
 				await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+					expectedPendingContentVersion: null,
 					membershipId: f.membershipId,
 					target: child.target,
 				})
@@ -521,6 +522,7 @@ describe("archived-parent draft recovery", () => {
 		expect(
 			(
 				await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+					expectedPendingContentVersion: null,
 					membershipId,
 					target,
 				})
@@ -890,6 +892,7 @@ describe("upsert_file_pending_update", () => {
 		const pendingUpdate = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
 		if (!pendingUpdate) throw new Error("Expected the newer proposal");
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -897,6 +900,7 @@ describe("upsert_file_pending_update", () => {
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const args = {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,

@@ -278,7 +278,11 @@ describe("copy_transfer_file scopes", () => {
 		const target = { kind: "saved" as const, id: sourceId };
 		const batch = await f.t.mutation(
 			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
-			{ ...scope, target },
+			{
+				...scope,
+				target,
+				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
+			},
 		);
 		if (batch._nay) throw new Error(batch._nay.message);
 		for (const role of ["staged", "unstaged"] as const)

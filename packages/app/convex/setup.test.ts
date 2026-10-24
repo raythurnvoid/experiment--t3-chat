@@ -1264,6 +1264,7 @@ export const test_mocks = {
 				lowercaseExtension: null,
 				contentType: null,
 				assetId: null,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				textKind: null,
 				collaborationEnabled: null,

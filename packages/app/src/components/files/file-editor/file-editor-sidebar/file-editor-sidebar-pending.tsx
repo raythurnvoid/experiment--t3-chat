@@ -271,10 +271,7 @@ function build_pending_rows(
 							? node.textKind
 							: null,
 				// Accepting a delete ignores the content branches, so stale content does not block it.
-				isStale:
-					kind !== "delete" &&
-					(pendingUpdate.contentNeedsRebase === true ||
-						(node != null && files_pending_update_content_is_stale(pendingUpdate, node))),
+				isStale: kind !== "delete" && node != null && files_pending_update_content_is_stale(pendingUpdate, node),
 			},
 		];
 	});
@@ -373,16 +370,13 @@ async function decode_staged_unstaged(args: {
 	rootKind: files_YjsRootKind | null;
 }) {
 	const { membershipId, pendingUpdate } = args;
-	const rootKind = pendingUpdate.contentRebaseRootKind ?? args.rootKind;
 	if (pendingUpdate.preparation) {
 		return Result({ _nay: { message: "This file is still being prepared" } });
 	}
 	if (!files_pending_update_has_content(pendingUpdate)) {
 		return Result({ _nay: { message: "Pending update has no content to decode" } });
 	}
-	if (rootKind === null) {
-		return Result({ _nay: { message: "Pending update file is not available" } });
-	}
+	const rootKind = pendingUpdate.content.rootKind;
 
 	const [stagedBytes, unstagedBytes] = await Promise.all([
 		files_fetch_file_pending_update_yjs_state({
@@ -2006,9 +2000,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			...(args.staged != null && args.unstaged != null
 				? {
 						content: {
+							rootKind: "plain_text",
 							base: args.baseAssetId
-								? { kind: "asset", assetId: args.baseAssetId }
-								: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+								? { kind: "asset", assetId: args.baseAssetId, pendingContentVersion: 1 }
+								: args.isPrivate
+									? { kind: "new" }
+									: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 							baseStateId: `${args.id}_base`,
 							stagedStateId: `${args.id}_staged`,
 							unstagedStateId: `${args.id}_unstaged`,
@@ -2069,6 +2066,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			contentType: null,
 			textKind: args.textKind ?? null,
 			collaborationEnabled: args.textKind ? !args.nonCollaborative : null,
+			pendingContentVersion: 1,
 			yjsSnapshotId: null,
 			yjsLastSequenceId: null,
 			...(args.nonCollaborative ? { assetId: `asset_${args.id}`, contentType: "text/markdown" } : {}),

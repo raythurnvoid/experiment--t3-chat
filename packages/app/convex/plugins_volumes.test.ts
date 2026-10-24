@@ -161,6 +161,7 @@ async function create_volume_fixture() {
 		const path = `${rootPath}/notes.md`;
 		const nodeFields = {
 			...scope,
+			pendingContentVersion: 1,
 			assetId: null,
 			contentByteSize: null,
 			textKind: null,

@@ -144,6 +144,9 @@ export async function saved_proposal(args: {
 	const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 		membershipId: f.membershipId,
 		target,
+		expectedPendingContentVersion: await f.asUser.run(async (ctx) =>
+			target.kind === "saved" ? (await ctx.db.get("files_nodes", target.id))!.pendingContentVersion : null,
+		),
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	for (const [role, text] of [

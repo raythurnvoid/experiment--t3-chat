@@ -13,7 +13,6 @@ import {
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { files_pending_updates_db_drop_content_for_node } from "./files_pending_updates.ts";
 import {
 	files_db_get_pending_update,
 	files_db_insert_pending_update,
@@ -807,6 +806,7 @@ describe("private pending text", () => {
 			_yay: { items: [{ target: { kind: "private" }, path: "/draft.txt", preparing: true }] },
 		});
 		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: target.kind === "private" ? null : 1,
 			membershipId,
 			target,
 		});
@@ -971,6 +971,7 @@ describe("private pending text", () => {
 			return ids;
 		});
 		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: null,
 			membershipId,
 			target,
 		});
@@ -1078,7 +1079,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 			if (!row) {
 				throw new Error("Expected a pending content doc");
 			}
-			expect(row.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId });
+			expect(row.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId, pendingContentVersion: 1 });
 			expect(files_pending_update_has_yjs_content(row)).toBe(false);
 			expect(await read_pending_row_markdown_state({ ctx, pendingUpdate: row })).toEqual({
 				baseMarkdown: normalize_pending_update_markdown("# Off base"),
@@ -1143,7 +1144,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 		const secondRow = await read_row();
 		expect(secondRow?._id).toBe(firstRow._id);
-		expect(secondRow?.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId });
+		expect(secondRow?.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId, pendingContentVersion: 1 });
 		// A rebuild would clone the base into the staged branch and lose the accepted hunk.
 		const state = await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: secondRow! }));
 		expect(state.baseMarkdown).toBe(normalize_pending_update_markdown("# Off base"));
@@ -1197,7 +1198,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 		expect(staged._nay).toBeUndefined();
 
 		const rowAfter = await t.run((ctx) => ctx.db.get("files_pending_updates", row._id));
-		expect(rowAfter?.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId });
+		expect(rowAfter?.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId, pendingContentVersion: 1 });
 		const state = await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: rowAfter! }));
 		expect(state.stagedMarkdown).toBe(proposalMarkdown);
 		expect(state.unstagedMarkdown).toBe(proposalMarkdown);
@@ -1251,7 +1252,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 		// The stale proposal stays as it was, for Discard.
 		const rowAfter = await t.run((ctx) => ctx.db.get("files_pending_updates", row._id));
-		expect(rowAfter?.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId });
+		expect(rowAfter?.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId, pendingContentVersion: 1 });
 		expect(rowAfter?.updatedAt).toBe(row.updatedAt);
 		expect(rowAfter?.content?.unstagedStateId).toBe(row.content?.unstagedStateId);
 
@@ -1381,12 +1382,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 		await t.run(async (ctx) => {
 			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base\n\nFirst save");
-			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual({
-				...row,
-				revision: row.revision + 1,
-				contentNeedsRebase: true,
-				contentRebaseRootKind: "rich_text",
-			});
+			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
 		});
 	});
 
@@ -1398,6 +1394,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 		const commit = async (expectedAssetId: Id<"files_r2_assets">) => {
 			const family = await seal_output_family_for_test(t, seeded);
 			const committed = await t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -1451,7 +1448,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 				nodeId: seeded.nodeId,
 			}),
 		);
-		expect(row?.content?.base).toEqual({ kind: "asset", assetId: savedAssetId });
+		expect(row?.content?.base).toEqual({ kind: "asset", assetId: savedAssetId, pendingContentVersion: 1 });
 	});
 
 	test("Discard deletes a stale proposal even when its staged branch differs from base", async () => {
@@ -1727,7 +1724,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 		if (!rowAfter) {
 			throw new Error("Expected the doc to survive Discard");
 		}
-		expect(rowAfter.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId });
+		expect(rowAfter.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId, pendingContentVersion: 1 });
 		expect(rowAfter.content?.stagedStateId).toBe(row.content?.stagedStateId);
 		expect(rowAfter.content?.unstagedStateId).not.toBe(row.content?.unstagedStateId);
 		const state = await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: rowAfter }));
@@ -1788,7 +1785,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 		});
 	});
 
-	test("dropping the content of a mixed row clears the base asset with the branches", async () => {
+	test("discarding the content of a mixed row keeps its move", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			seed_non_collaborative_file({ ctx, path: "/off-drop-mixed.md", text: "# Off base" }),
@@ -1813,13 +1810,17 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 		});
 		expect(moved._nay).toBeUndefined();
 
+		const pending = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
+		expect(
+			(await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+				membershipId: seeded.membershipId,
+				target: { kind: "saved", id: seeded.nodeId },
+				pendingUpdateId: pending!._id,
+				reviewedRevision: pending!.revision,
+			}))._nay,
+		).toBeUndefined();
 		await t.run(async (ctx) => {
-			await files_pending_updates_db_drop_content_for_node(ctx, {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				nodeId: seeded.nodeId,
-			});
-
 			const row = await read_pending_update_row({
 				ctx,
 				organizationId: seeded.organizationId,
@@ -1860,7 +1861,7 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 			if (!row) {
 				throw new Error("Expected a pending content doc");
 			}
-			expect(row.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId });
+			expect(row.content?.base).toEqual({ kind: "asset", assetId: seeded.assetId, pendingContentVersion: 1 });
 			const state = await read_pending_row_markdown_state({ ctx, pendingUpdate: row });
 			expect(state.stagedMarkdown).toBe("");
 			expect(state.unstagedMarkdown).toBe(unstagedMarkdown);

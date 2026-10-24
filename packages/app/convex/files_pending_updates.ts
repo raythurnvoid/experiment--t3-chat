@@ -32,7 +32,11 @@ import app_convex_schema, {
 } from "./schema.ts";
 
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
-import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_sequence,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 import { api, internal } from "./_generated/api.js";
 import { files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_require_subtree_writable, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
@@ -236,7 +240,6 @@ function files_pending_update_check_branch_doc_shape(args: { yjsDoc: YDoc; rootK
  * collaboration off, or a lineage repair landed) and the client must re-read before writing.
  */
 const PENDING_BASE_STALE_MESSAGE = "Pending update base is stale and must be rebuilt from the latest live file state";
-const PENDING_CONTENT_PREPARATION_MESSAGE = "This file changed. Update the proposal before editing it.";
 
 /**
  * A text write onto a file whose pending row is a whole-file copy. The copy carries its own
@@ -436,6 +439,7 @@ async function files_pending_update_upsert_last_sequence_saved(
 		userId: Id<"users">;
 		nodeId: app_convex_Doc<"files_pending_updates_last_sequence_saved">["fileNodeId"];
 		lastSequenceSaved: number;
+		pendingContentVersion: number;
 		updatedAt: number;
 	},
 ) {
@@ -457,6 +461,7 @@ async function files_pending_update_upsert_last_sequence_saved(
 			userId: args.userId,
 			fileNodeId: args.nodeId,
 			lastSequenceSaved: args.lastSequenceSaved,
+			pendingContentVersion: args.pendingContentVersion,
 			updatedAt: args.updatedAt,
 		});
 		return;
@@ -464,6 +469,7 @@ async function files_pending_update_upsert_last_sequence_saved(
 
 	await ctx.db.patch("files_pending_updates_last_sequence_saved", existingRow._id, {
 		lastSequenceSaved: args.lastSequenceSaved,
+		pendingContentVersion: args.pendingContentVersion,
 		updatedAt: args.updatedAt,
 	});
 }
@@ -495,128 +501,6 @@ export type files_pending_updates_get_by_file_node_Result =
 	typeof get_by_file_node extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-/**
- * Saved-sequence markers belong to the old document. A replacement starts counting again,
- * so keeping them would make readers wait for an unrelated sequence.
- */
-async function db_delete_saved_sequences_for_node(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-	},
-) {
-	const lastSequenceSavedDocs = await ctx.db
-		.query("files_pending_updates_last_sequence_saved")
-		.withIndex("by_organization_workspace_fileNode_user", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.collect();
-
-	await Promise.all(
-		lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
-	);
-}
-
-/**
- * Keep old branches until preparation puts them on the current file history.
- */
-export async function files_pending_updates_db_mark_content_for_rebase(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-		rootKind?: files_YjsRootKind;
-	},
-) {
-	const pendingUpdates = await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", args.nodeId))
-		.collect();
-	await db_delete_saved_sequences_for_node(ctx, args);
-	await Promise.all(
-		pendingUpdates.map(async (pendingUpdate) => {
-			if (!files_pending_update_content_of(pendingUpdate)) return;
-			const rootKind = pendingUpdate.contentRebaseRootKind ?? args.rootKind;
-			if (pendingUpdate.contentNeedsRebase && pendingUpdate.contentRebaseRootKind === rootKind) return;
-			// Restores and mode changes keep the owner's existing expiry deadline.
-			await files_db_patch_pending_update({
-				ctx,
-				pendingUpdateId: pendingUpdate._id,
-				value: {
-					revision: pendingUpdate.revision + 1,
-					contentNeedsRebase: true,
-					contentRebaseRootKind: rootKind,
-				},
-			});
-			// Old indexes stay hidden until preparation rebuilds them. Do not rewrite every owner's text here.
-		}),
-	);
-}
-
-/**
- * Whole-file replacement removes old text proposals and keeps their move or delete intent.
- */
-export async function files_pending_updates_db_drop_content_for_node(
-	ctx: MutationCtx,
-	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
-) {
-	const pendingUpdates = await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", args.nodeId))
-		.collect();
-	await db_delete_saved_sequences_for_node(ctx, args);
-
-	const now = Date.now();
-	await Promise.all(
-		pendingUpdates.map(async (pendingUpdate) => {
-			if (!files_pending_update_content_of(pendingUpdate)) {
-				return;
-			}
-
-			// Retire the paged state families instead of deleting the pages here. One family can
-			// hold 12 MiB, and this runs for every member at once, so an inline delete would blow
-			// the mutation write budget.
-			const retireStatesAndChunks = [
-				files_db_retire_pending_update_yjs_states(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					pendingUpdateId: pendingUpdate._id,
-				}),
-				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
-			];
-
-			// Nothing else was proposed, so the whole doc goes.
-			if (!pendingUpdate.pendingMove && !pendingUpdate.pendingArchive) {
-				await Promise.all([
-					...retireStatesAndChunks,
-					files_db_delete_pending_update({ ctx, pendingUpdateId: pendingUpdate._id }),
-				]);
-				return;
-			}
-
-			await Promise.all([
-				...retireStatesAndChunks,
-				files_db_patch_pending_update({
-					ctx,
-					pendingUpdateId: pendingUpdate._id,
-					value: {
-						revision: pendingUpdate.revision + 1,
-						content: undefined,
-						contentNeedsRebase: undefined,
-						contentRebaseRootKind: undefined,
-						copiedFrom: undefined,
-						size: 0,
-						updatedAt: now,
-					},
-				}),
-			]);
-		}),
-	);
-}
 
 /**
  * The pending half of the frontmatter caps: refuse BEFORE any canonical proposal, state, chunk,
@@ -978,6 +862,15 @@ async function db_check_operation_batch_target(
 		}
 		const ancestry = await files_pending_nodes_db_get_ancestry(ctx, { ...batch, privateNodeId: batch.target.id });
 		if (ancestry._nay) return ancestry;
+	} else {
+		const node = await files_saved_placement_db_get_node(ctx.db, batch.target.id);
+		if (
+			!node ||
+			node.organizationId !== batch.organizationId ||
+			node.workspaceId !== batch.workspaceId ||
+			node.pendingContentVersion !== batch.expectedPendingContentVersion
+		)
+			return Result({ _nay: { name: "target_changed", message: "This file changed. Read it again." } });
 	}
 	return Result({ _yay: null });
 }
@@ -1000,6 +893,7 @@ async function db_create_operation_batch(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		target: app_convex_Doc<"files_pending_update_operation_batches">["target"];
+		expectedPendingContentVersion: number | null;
 		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
 		cohortContent?: files_pending_updates_CohortContentContext;
 	},
@@ -1007,6 +901,19 @@ async function db_create_operation_batch(
 	if (args.agentSource) {
 		const allowed = await ai_chat_workspaces_db_authorize_file_scope(ctx, { ...args, agentSource: args.agentSource });
 		if (allowed._nay) return allowed;
+	}
+	// Keep the read's version. A late batch must not adopt a Restore that landed after that read.
+	if (args.target.kind === "saved") {
+		const node = await files_saved_placement_db_get_node(ctx.db, args.target.id);
+		if (
+			!node ||
+			node.organizationId !== args.organizationId ||
+			node.workspaceId !== args.workspaceId ||
+			node.pendingContentVersion !== args.expectedPendingContentVersion
+		)
+			return Result({ _nay: { name: "target_changed", message: "This file changed. Read it again." } });
+	} else if (args.expectedPendingContentVersion !== null) {
+		return Result({ _nay: { name: "target_changed", message: "This file changed. Read it again." } });
 	}
 	const now = Date.now();
 	if (args.cohortContent) {
@@ -1032,6 +939,7 @@ async function db_create_operation_batch(
 			target: proposal.target,
 			expectedPendingUpdateId: proposal._id,
 			expectedRevision: proposal.revision,
+			expectedPendingContentVersion: args.expectedPendingContentVersion,
 			expectedPrivateVersion: item.privateVersion,
 			cohortContentId: content._id,
 			publication: { kind: "review" },
@@ -1096,6 +1004,7 @@ async function db_create_operation_batch(
 		target: args.target,
 		expectedPendingUpdateId: pendingUpdate?._id ?? null,
 		expectedRevision: pendingUpdate?.revision ?? null,
+		expectedPendingContentVersion: args.expectedPendingContentVersion,
 		expectedPrivateVersion,
 		expiresAt,
 		updatedAt: now,
@@ -1236,7 +1145,8 @@ async function db_seal_operation_batch_state(
 	const currentTarget = await db_check_operation_batch_target(ctx, args.batch);
 	if (currentTarget._nay) return currentTarget;
 
-	const fileNode = args.batch.target.kind === "saved" ? await ctx.db.get("files_nodes", args.batch.target.id) : null;
+	const fileNode =
+		args.batch.target.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, args.batch.target.id) : null;
 	const pendingUpdate =
 		args.batch.target.kind === "private" ? await files_db_get_pending_update(ctx, args.batch) : null;
 	let rootKind: files_YjsRootKind;
@@ -1414,6 +1324,7 @@ export const create_file_pending_update_operation_batch = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		target: files_pending_target_validator,
+		expectedPendingContentVersion: v.union(v.number(), v.null()),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1468,6 +1379,7 @@ export const create_file_pending_update_operation_batch = mutation({
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			target: args.target,
+			expectedPendingContentVersion: args.expectedPendingContentVersion,
 		});
 		// Public edit batches always expire. Only the internal cohort door has durable output.
 		return created._nay ? created : Result({ _yay: { ...created._yay, expiresAt: created._yay.expiresAt! } });
@@ -1486,6 +1398,7 @@ export const create_file_pending_update_operation_batch_internal = internalMutat
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		target: files_pending_target_validator,
+		expectedPendingContentVersion: v.union(v.number(), v.null()),
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
 	},
 	returns: v_result({
@@ -1500,6 +1413,7 @@ export const create_file_pending_update_operation_batch_internal = internalMutat
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			target: args.target,
+			expectedPendingContentVersion: args.expectedPendingContentVersion,
 			agentSource: args.agentSource,
 			cohortContent: args.cohortContent,
 		});
@@ -2103,7 +2017,11 @@ export const stage_trusted_yjs_update = internalMutation({
 		kind: v.union(v.literal("pending_accept"), v.literal("public_fill"), v.literal("snapshot_restore")),
 		update: v.bytes(),
 		pendingReview: v.optional(
-			v.object({ pendingUpdateId: v.id("files_pending_updates"), expectedRevision: v.number() }),
+			v.object({
+				pendingUpdateId: v.id("files_pending_updates"),
+				expectedRevision: v.number(),
+				expectedPendingContentVersion: v.number(),
+			}),
 		),
 	},
 	returns: v_result({
@@ -2135,7 +2053,11 @@ export const stage_trusted_yjs_update = internalMutation({
 			});
 			if (args.kind !== "pending_accept" || !pending || pending.revision !== args.pendingReview.expectedRevision)
 				return Result({ _nay: { message: "Stale save" } });
-			const created = await db_create_operation_batch(ctx, { ...args, target: { kind: "saved", id: args.nodeId } });
+			const created = await db_create_operation_batch(ctx, {
+				...args,
+				target: { kind: "saved", id: args.nodeId },
+				expectedPendingContentVersion: args.pendingReview.expectedPendingContentVersion,
+			});
 			if (created._nay) return created;
 			operationBatchId = created._yay.operationBatchId;
 		}
@@ -2311,7 +2233,7 @@ export const get_data_for_pending_content_operation = internalQuery({
 		});
 		if (authorized._nay) return null;
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -2330,7 +2252,7 @@ export const get_data_for_pending_content_operation = internalQuery({
 			  }
 			| { kind: "asset"; baseAssetId: Id<"files_r2_assets">; committedText: string };
 		if (files_node_has_editable_yjs_state(fileNode)) {
-			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+			const lastSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 			if (!lastSequenceDoc) {
 				const errorMessage = "fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc";
 				const errorData = { nodeId: args.nodeId, yjsLastSequenceId: fileNode.yjsLastSequenceId };
@@ -2380,6 +2302,7 @@ export const get_data_for_pending_content_operation = internalQuery({
 					now: Date.now(),
 				})
 			: null;
+		if (batch && (await db_check_operation_batch_target(ctx, batch))._nay) return null;
 		const [inputStates, textInputs, existingPendingUpdate] = await Promise.all([
 			batch
 				? db_get_operation_batch_states(ctx, { operationBatchId: batch._id }).then((states) =>
@@ -3021,6 +2944,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
+		expectedPendingContentVersion: v.number(),
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		expectedRevision: v.union(v.number(), v.null()),
@@ -3052,6 +2976,9 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
+		if (file.pendingContentVersion !== args.expectedPendingContentVersion)
+			return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 
 		const batch = await db_get_owned_operation_batch(ctx, {
 			...args,
@@ -3108,9 +3035,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		if (files_pending_update_content_is_stale(pendingUpdate, file)) {
 			return Result({
 				_nay: {
-					message: pendingUpdate.contentNeedsRebase
-						? PENDING_CONTENT_PREPARATION_MESSAGE
-						: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+					message: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 				},
 			});
 		}
@@ -3127,8 +3052,6 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 					value: {
 						revision: pendingUpdate.revision + 1,
 						content: undefined,
-						contentNeedsRebase: undefined,
-						contentRebaseRootKind: undefined,
 						copiedFrom: undefined,
 						size: 0,
 						updatedAt: now,
@@ -3187,6 +3110,7 @@ export const refresh_file_pending_update_in_db = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
+		expectedPendingContentVersion: v.number(),
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedRevision: v.number(),
@@ -3219,6 +3143,9 @@ export const refresh_file_pending_update_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+		if (file.pendingContentVersion !== args.expectedPendingContentVersion)
+			return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
+
 		const batch = await db_get_owned_operation_batch(ctx, {
 			...args,
 			now: Date.now(),
@@ -3254,9 +3181,7 @@ export const refresh_file_pending_update_in_db = internalMutation({
 		if (files_pending_update_content_is_stale(pendingUpdate, file)) {
 			return Result({
 				_nay: {
-					message: pendingUpdate.contentNeedsRebase
-						? PENDING_CONTENT_PREPARATION_MESSAGE
-						: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+					message: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 				},
 			});
 		}
@@ -3404,6 +3329,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
+		expectedPendingContentVersion: v.number(),
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		/** `null` means the action saw no doc; a number is the read doc's `updatedAt` race guard. */
@@ -3467,6 +3393,9 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
+		if (file.pendingContentVersion !== args.expectedPendingContentVersion)
+			return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 
 		const batch = await db_get_owned_operation_batch(ctx, {
 			organizationId: args.organizationId,
@@ -3557,9 +3486,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			return Result({
 				_nay: {
 					name: "pending_content_changed",
-					message: existingPendingUpdate.contentNeedsRebase
-						? PENDING_CONTENT_PREPARATION_MESSAGE
-						: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+					message: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 				},
 			});
 		}
@@ -3594,10 +3521,20 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 				: undefined;
 
 		const content = {
+			rootKind: file.textKind,
 			base:
 				args.base.kind === "yjs"
-					? { kind: "yjs", sequence: args.base.baseYjsSequence, lineageGeneration: args.base.baseLineageGeneration }
-					: { kind: "asset", assetId: args.base.expectedAssetId },
+					? {
+							kind: "yjs",
+							sequence: args.base.baseYjsSequence,
+							lineageGeneration: args.base.baseLineageGeneration,
+							pendingContentVersion: args.expectedPendingContentVersion,
+						}
+					: {
+							kind: "asset",
+							assetId: args.base.expectedAssetId,
+							pendingContentVersion: args.expectedPendingContentVersion,
+						},
 			baseStateId: args.baseStateId,
 			stagedStateId: args.stagedStateId,
 			unstagedStateId: args.unstagedStateId,
@@ -3844,6 +3781,7 @@ export async function files_pending_updates_db_commit_private_file(
 		value: {
 			revision: pendingUpdate.revision + 1,
 			content: {
+				rootKind: pendingUpdate.createIntent.textKind,
 				base: { kind: "new" },
 				baseStateId: args.family.baseStateId,
 				stagedStateId: args.family.stagedStateId,
@@ -4103,9 +4041,7 @@ async function action_upsert_file_pending_update(
 		return Result({
 			_nay: {
 				name: args.expectedBaseStateId !== undefined ? "pending_content_changed" : undefined,
-				message: existingPendingUpdate.contentNeedsRebase
-					? PENDING_CONTENT_PREPARATION_MESSAGE
-					: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+				message: files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 			},
 		});
 	}
@@ -4381,6 +4317,7 @@ async function action_upsert_file_pending_update(
 	const hasChanges = stagedText._yay !== baseText._yay || unstagedText._yay !== baseText._yay;
 	if (!hasChanges) {
 		const settled = (await ctx.runMutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, {
+			expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -4440,6 +4377,7 @@ async function action_upsert_file_pending_update(
 		outputDigests.get("unstaged") === currentDigests.get("unstaged")
 	) {
 		const refreshed = (await ctx.runMutation(internal.files_pending_updates.refresh_file_pending_update_in_db, {
+			expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -4524,6 +4462,7 @@ async function action_upsert_file_pending_update(
 	let committed: commit_file_pending_update_upsert_in_db_Result;
 	try {
 		committed = (await ctx.runMutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
+			expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -5647,9 +5586,8 @@ export const discard_file_pending_content = mutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		const rootKind = fileNode.textKind;
-		// Collaboration off: a member saved the file after this proposal was made. The proposal can
-		// never be accepted, so Discard removes the whole content proposal below.
+		const rootKind = content.rootKind;
+		// A stale family keeps its own shape until Review rebuilds it on the current file.
 		const stale = files_pending_update_content_is_stale(pendingUpdate, fileNode);
 
 		// Discard only unstaged edits. Keep the staged branch so the user can still accept it
@@ -5716,8 +5654,6 @@ export const discard_file_pending_content = mutation({
 						value: {
 							revision: pendingUpdate.revision + 1,
 							content: undefined,
-							contentNeedsRebase: undefined,
-							contentRebaseRootKind: undefined,
 							copiedFrom: undefined,
 							size: 0,
 							updatedAt: now,
@@ -5814,6 +5750,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
+		expectedPendingContentVersion: v.number(),
 		pendingUpdateId: v.id("files_pending_updates"),
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		expectedRevision: v.number(),
@@ -5908,12 +5845,25 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			return nodeWritable;
 		}
 
+		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== membership.organizationId ||
+			fileNode.workspaceId !== membership.workspaceId ||
+			!files_node_has_editable_text_content(fileNode)
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
 		// A revert in another tab can degrade the doc to move-only: patching the dead
 		// content branches back would resurrect the reverted proposal.
 		const existingContent = files_pending_update_content_of(existingPendingUpdate);
 		if (!existingContent) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (fileNode.pendingContentVersion !== args.expectedPendingContentVersion)
+			return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
+
 		if (args.preparation) {
 			if (
 				existingContent.baseStateId !== args.preparation.sourceBaseStateId ||
@@ -5922,8 +5872,8 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			) {
 				return Result({ _nay: { message: "Pending update changed, retry the write" } });
 			}
-		} else if (existingPendingUpdate.contentNeedsRebase) {
-			return Result({ _nay: { message: PENDING_CONTENT_PREPARATION_MESSAGE } });
+		} else if (files_pending_update_content_is_stale(existingPendingUpdate, fileNode)) {
+			return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 		}
 
 		// Only the exact doc state the action worked from.
@@ -5942,15 +5892,6 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			}
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== membership.organizationId ||
-			fileNode.workspaceId !== membership.workspaceId ||
-			!files_node_has_editable_text_content(fileNode)
-		) {
-			return Result({ _nay: { message: "Not found" } });
-		}
 		if (args.preparation && fileNode.textKind !== args.preparation.rootKind) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -6033,8 +5974,6 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 					value: {
 						revision: existingPendingUpdate.revision + 1,
 						content: undefined,
-						contentNeedsRebase: undefined,
-						contentRebaseRootKind: undefined,
 						copiedFrom: undefined,
 						size: 0,
 						updatedAt: now,
@@ -6056,16 +5995,24 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			value: {
 				revision: existingPendingUpdate.revision + 1,
 				content: {
+					rootKind: fileNode.textKind,
 					base:
 						args.base.kind === "yjs"
-							? { kind: "yjs", sequence: args.base.baseYjsSequence, lineageGeneration: args.base.baseLineageGeneration }
-							: { kind: "asset", assetId: args.base.expectedAssetId },
+							? {
+									kind: "yjs",
+									sequence: args.base.baseYjsSequence,
+									lineageGeneration: args.base.baseLineageGeneration,
+									pendingContentVersion: args.expectedPendingContentVersion,
+								}
+							: {
+									kind: "asset",
+									assetId: args.base.expectedAssetId,
+									pendingContentVersion: args.expectedPendingContentVersion,
+								},
 					baseStateId: args.baseStateId,
 					stagedStateId: args.stagedStateId,
 					unstagedStateId: args.unstagedStateId,
 				},
-				contentNeedsRebase: undefined,
-				contentRebaseRootKind: undefined,
 				size: files_get_utf8_byte_size(args.unstagedText),
 				updatedAt: now,
 			},
@@ -6169,6 +6116,7 @@ async function prepare_pending_update(
 	const batch = (await ctx.runMutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
+			expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 			agentSource: args.agentSource,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -6204,7 +6152,7 @@ async function prepare_pending_update(
 			}
 			const text = files_yjs_doc_get_text({
 				yjsDoc: sourceDoc,
-				rootKind: pendingUpdate.contentRebaseRootKind ?? rootKind,
+				rootKind: content.rootKind,
 			});
 			sourceDoc.destroy();
 			if (text._nay) return Result({ _nay: { message: text._nay.message } });
@@ -6316,6 +6264,7 @@ async function prepare_pending_update(
 		const stagedState = sealedByRole.get("staged")!;
 		const unstagedState = sealedByRole.get("unstaged")!;
 		const result = (await ctx.runMutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
+			expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -6719,9 +6668,9 @@ export const persist_file_pending_update_rebased_state = action({
 			await retireBatch();
 			return Result({ _nay: { message: "The proposal changed while it was being synced" } });
 		}
-		if (existingPendingUpdate?.contentNeedsRebase) {
+		if (existingPendingUpdate && files_pending_update_content_is_stale(existingPendingUpdate, data.fileNode)) {
 			await retireBatch();
-			return Result({ _nay: { message: PENDING_CONTENT_PREPARATION_MESSAGE } });
+			return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 		}
 		if (
 			!existingPendingUpdate ||
@@ -6837,6 +6786,7 @@ export const persist_file_pending_update_rebased_state = action({
 			const settled = (await ctx.runMutation(
 				internal.files_pending_updates.settle_file_pending_update_no_change_in_db,
 				{
+					expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					userId: userAuth.id,
@@ -6868,6 +6818,7 @@ export const persist_file_pending_update_rebased_state = action({
 			unstagedInput.digest === currentDigests.get("unstaged")
 		) {
 			const refreshed = (await ctx.runMutation(internal.files_pending_updates.refresh_file_pending_update_in_db, {
+				expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				userId: userAuth.id,
@@ -6890,6 +6841,7 @@ export const persist_file_pending_update_rebased_state = action({
 		let committed: commit_file_pending_update_rebase_in_db_Result;
 		try {
 			committed = (await ctx.runMutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
+				expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				userId: userAuth.id,
@@ -7278,7 +7230,7 @@ export const get_file_pending_update_last_sequence_saved = query({
 			return null;
 		}
 
-		return await ctx.db
+		const marker = await ctx.db
 			.query("files_pending_updates_last_sequence_saved")
 			.withIndex("by_organization_workspace_user_fileNode", (q) =>
 				q
@@ -7288,6 +7240,8 @@ export const get_file_pending_update_last_sequence_saved = query({
 					.eq("fileNodeId", args.nodeId),
 			)
 			.first();
+		const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+		return node && marker?.pendingContentVersion === node.pendingContentVersion ? marker : null;
 	},
 });
 
@@ -7500,9 +7454,12 @@ export async function files_pending_updates_db_stage_prepared_content(
 			!batch ||
 			batch.cohortContentId !== content._id ||
 			batch.expectedPendingUpdateId !== proposal._id ||
-			batch.expectedRevision !== proposal.revision
+			batch.expectedRevision !== proposal.revision ||
+			(prepared.kind !== "private" && batch.expectedPendingContentVersion !== prepared.expectedPendingContentVersion)
 		)
 			return Result({ _nay: { message: "This preparation is no longer current." } });
+		const currentTarget = await db_check_operation_batch_target(ctx, batch);
+		if (currentTarget._nay) return currentTarget;
 		if (batch.publication?.kind === "assets")
 			for (const assetId of [
 				batch.publication.contentAssetId,
@@ -7599,7 +7556,8 @@ export async function files_pending_updates_db_commit_prepared_content(
 			batch.target.kind !== target.kind ||
 			batch.target.id !== target.id ||
 			batch.expectedPendingUpdateId !== prepared.pendingUpdateId ||
-			batch.expectedRevision !== prepared.reviewedRevision
+			batch.expectedRevision !== prepared.reviewedRevision ||
+			batch.expectedPendingContentVersion !== prepared.expectedPendingContentVersion
 		)
 			return Result({ _nay: { message: "This Save preparation is no longer current" } });
 		const current = await db_check_operation_batch_target(ctx, batch);
@@ -7738,6 +7696,7 @@ export const save_file_pending_update_in_db = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
+		expectedPendingContentVersion: v.number(),
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedRevision: v.number(),
 		baseYjsSequence: v.number(),
@@ -7794,6 +7753,7 @@ async function files_pending_updates_db_save_yjs(args: {
 	nodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates">;
 	expectedRevision: number;
+	expectedPendingContentVersion: number;
 	baseYjsSequence: number;
 	baseLineageGeneration: number;
 	expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
@@ -7877,8 +7837,11 @@ async function files_pending_updates_db_save_yjs(args: {
 		return Result({ _nay: { message: "Stale save" } });
 	}
 
-	if (pendingUpdate.contentNeedsRebase) {
-		return Result({ _nay: { message: PENDING_CONTENT_PREPARATION_MESSAGE } });
+	if (
+		targetNode.pendingContentVersion !== args.expectedPendingContentVersion ||
+		files_pending_update_content_is_stale(pendingUpdate, targetNode)
+	) {
+		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 	}
 	// A pending delete supersedes the content proposal: publishing under it would commit
 	// content onto a file the user is about to archive. Discard the delete first.
@@ -8100,6 +8063,7 @@ async function files_pending_updates_db_save_yjs(args: {
 					userId: user._id,
 					nodeId: args.nodeId,
 					lastSequenceSaved: nextBaseYjsSequence,
+					pendingContentVersion: args.expectedPendingContentVersion,
 					updatedAt: now,
 				}),
 				files_db_patch_pending_update({
@@ -8108,8 +8072,6 @@ async function files_pending_updates_db_save_yjs(args: {
 					value: {
 						revision: pendingUpdate.revision + 1,
 						content: undefined,
-						contentNeedsRebase: undefined,
-						contentRebaseRootKind: undefined,
 						copiedFrom: undefined,
 						size: 0,
 						updatedAt: now,
@@ -8139,6 +8101,7 @@ async function files_pending_updates_db_save_yjs(args: {
 				userId: user._id,
 				nodeId: args.nodeId,
 				lastSequenceSaved: nextBaseYjsSequence,
+				pendingContentVersion: args.expectedPendingContentVersion,
 				updatedAt: now,
 			}),
 			files_db_retire_pending_update_yjs_states(ctx, {
@@ -8174,7 +8137,13 @@ async function files_pending_updates_db_save_yjs(args: {
 			value: {
 				revision: pendingUpdate.revision + 1,
 				content: {
-					base: { kind: "yjs", sequence: nextBaseYjsSequence, lineageGeneration: args.baseLineageGeneration },
+					rootKind: targetNode.textKind,
+					base: {
+						kind: "yjs",
+						sequence: nextBaseYjsSequence,
+						lineageGeneration: args.baseLineageGeneration,
+						pendingContentVersion: args.expectedPendingContentVersion,
+					},
 					baseStateId: partial.baseStateId,
 					stagedStateId: partial.stagedStateId,
 					unstagedStateId: partial.unstagedStateId,
@@ -8190,6 +8159,7 @@ async function files_pending_updates_db_save_yjs(args: {
 			userId: user._id,
 			nodeId: args.nodeId,
 			lastSequenceSaved: nextBaseYjsSequence,
+			pendingContentVersion: args.expectedPendingContentVersion,
 			updatedAt: now,
 		}),
 	]);
@@ -8251,6 +8221,7 @@ export const save_file_pending_update_non_collaborative_in_db = internalMutation
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
+		expectedPendingContentVersion: v.number(),
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedRevision: v.number(),
 		/**
@@ -8299,6 +8270,7 @@ async function files_pending_updates_db_save_asset(args: {
 	nodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates">;
 	expectedRevision: number;
+	expectedPendingContentVersion: number;
 	publish: { text: string; textSize: number; versionSnapshotAssetId: Id<"files_r2_assets"> } | null;
 	partial?: Infer<typeof files_pending_prepared_state_family_validator>;
 	unchanged?: true;
@@ -8371,8 +8343,8 @@ async function files_pending_updates_db_save_asset(args: {
 	if (pendingUpdate.pendingArchive) {
 		return Result({ _nay: { message: "File has a pending delete" } });
 	}
-	if (pendingUpdate.contentNeedsRebase) {
-		return Result({ _nay: { message: PENDING_CONTENT_PREPARATION_MESSAGE } });
+	if (targetNode.pendingContentVersion !== args.expectedPendingContentVersion) {
+		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 	}
 	const content = files_pending_update_asset_content_of(pendingUpdate);
 	if (!content) {
@@ -8550,8 +8522,6 @@ async function files_pending_updates_db_save_asset(args: {
 					value: {
 						revision: pendingUpdate.revision + 1,
 						content: undefined,
-						contentNeedsRebase: undefined,
-						contentRebaseRootKind: undefined,
 						copiedFrom: undefined,
 						size: 0,
 						updatedAt: now,
@@ -8599,7 +8569,12 @@ async function files_pending_updates_db_save_asset(args: {
 			value: {
 				revision: pendingUpdate.revision + 1,
 				content: {
-					base: { kind: "asset", assetId: args.publish ? args.publish.versionSnapshotAssetId : content.base.assetId },
+					rootKind: content.rootKind,
+					base: {
+						kind: "asset",
+						assetId: args.publish ? args.publish.versionSnapshotAssetId : content.base.assetId,
+						pendingContentVersion: args.expectedPendingContentVersion,
+					},
 					baseStateId: partial.baseStateId,
 					stagedStateId: partial.stagedStateId,
 					unstagedStateId: partial.unstagedStateId,
@@ -8657,8 +8632,8 @@ async function action_save_file_pending_update_non_collaborative(
 	if (!pendingUpdate || (args.pendingUpdateId != null && pendingUpdate._id !== args.pendingUpdateId)) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	if (pendingUpdate.contentNeedsRebase) {
-		return Result({ _nay: { message: PENDING_CONTENT_PREPARATION_MESSAGE } });
+	if (files_pending_update_content_is_stale(pendingUpdate, data.fileNode)) {
+		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 	}
 	if (pendingUpdate.pendingArchive) {
 		return Result({ _nay: { message: "File has a pending delete" } });
@@ -8786,6 +8761,7 @@ async function action_save_file_pending_update_non_collaborative(
 		}
 
 		const allocated = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_save_assets, {
+			expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 			cohortContent: args.cohortContent,
 			membershipId: args.membershipId,
 			target: { kind: "saved", id: args.nodeId },
@@ -8827,6 +8803,7 @@ async function action_save_file_pending_update_non_collaborative(
 			const batchCreated = (await ctx.runMutation(
 				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 				{
+					expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 					cohortContent: args.cohortContent,
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
@@ -8925,6 +8902,7 @@ async function action_save_file_pending_update_non_collaborative(
 		const batch = (await ctx.runMutation(
 			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 			{
+				expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 				cohortContent: args.cohortContent,
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -8967,6 +8945,7 @@ async function action_save_file_pending_update_non_collaborative(
 	return Result({
 		_yay: {
 			kind: "saved_asset",
+			expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 			membershipId: args.membershipId,
 			nodeId: args.nodeId,
 			pendingUpdateId: pendingUpdate._id,
@@ -9090,6 +9069,7 @@ export const prepare_pending_save_assets = internalMutation({
 		cohortContent: v.optional(files_pending_cohort_content_context_validator),
 		membershipId: v.id("organizations_workspaces_users"),
 		target: files_pending_target_validator,
+		expectedPendingContentVersion: v.union(v.number(), v.null()),
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedRevision: v.number(),
 		contentSize: v.number(),
@@ -9174,6 +9154,7 @@ export const prepare_pending_save_assets = internalMutation({
 		const created = await db_create_operation_batch(ctx, {
 			...scope,
 			target: args.target,
+			expectedPendingContentVersion: args.expectedPendingContentVersion,
 			cohortContent: args.cohortContent,
 		});
 		if (created._nay) return created;
@@ -9298,6 +9279,7 @@ async function action_save_private_file_pending_update(args: {
 			if (stagedText._nay || unstagedText._nay) return Result({ _nay: { message: "Failed to read this draft" } });
 
 			const allocation = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_save_assets, {
+				expectedPendingContentVersion: null,
 				cohortContent: args.cohortContent,
 				membershipId: args.membershipId,
 				target: { kind: "private", id: node._id },
@@ -9753,8 +9735,8 @@ export async function files_pending_updates_action_prepare_content(
 	if (args.reviewedRevision !== undefined && data.existingPendingUpdate?.revision !== args.reviewedRevision) {
 		return Result({ _nay: { message: "The proposal changed after it was reviewed" } });
 	}
-	if (data.existingPendingUpdate?.contentNeedsRebase) {
-		return Result({ _nay: { message: PENDING_CONTENT_PREPARATION_MESSAGE } });
+	if (data.existingPendingUpdate && files_pending_update_content_is_stale(data.existingPendingUpdate, data.fileNode)) {
+		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 	}
 	// A file with collaboration off has no Yjs document to merge into. Its Accept publishes the
 	// staged text the way a member save does.
@@ -9933,7 +9915,11 @@ export async function files_pending_updates_action_prepare_content(
 			nodeId: nodeId,
 			kind: "pending_accept",
 			update: diffBuffer,
-			pendingReview: { pendingUpdateId: pendingUpdate._id, expectedRevision: pendingUpdate.revision },
+			pendingReview: {
+				pendingUpdateId: pendingUpdate._id,
+				expectedRevision: pendingUpdate.revision,
+				expectedPendingContentVersion: data.fileNode.pendingContentVersion,
+			},
 		})) as files_pending_updates_stage_trusted_yjs_update_Result;
 		if (staged._nay) {
 			return Result({ _nay: { message: staged._nay.message } });
@@ -9951,6 +9937,7 @@ export async function files_pending_updates_action_prepare_content(
 		if (trustedStageId) {
 			const snapshot = files_pending_update_encode_yjs_state_update({ yjsDoc: liveFileYjsDocAfterSave });
 			const allocation = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_save_assets, {
+				expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 				cohortContent: args.cohortContent,
 				membershipId: args.membershipId,
 				target: { kind: "saved", id: nodeId },
@@ -9976,6 +9963,7 @@ export async function files_pending_updates_action_prepare_content(
 			const created = (await ctx.runMutation(
 				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 				{
+					expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 					cohortContent: args.cohortContent,
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
@@ -10004,6 +9992,7 @@ export async function files_pending_updates_action_prepare_content(
 		return Result({
 			_yay: {
 				kind: "saved_yjs",
+				expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 				membershipId: args.membershipId,
 				nodeId: nodeId,
 				pendingUpdateId: pendingUpdate._id,
@@ -10034,6 +10023,7 @@ export async function files_pending_updates_action_prepare_content(
 	const batchCreated = publicationBatchId
 		? Result({ _yay: { operationBatchId: publicationBatchId } })
 		: ((await ctx.runMutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+				expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 				cohortContent: args.cohortContent,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -10143,6 +10133,7 @@ export async function files_pending_updates_action_prepare_content(
 
 	const prepared: files_pending_updates_PreparedContent = {
 		kind: "saved_yjs",
+		expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 		membershipId: args.membershipId,
 		nodeId: nodeId,
 		pendingUpdateId: pendingUpdate._id,
@@ -10212,7 +10203,7 @@ export const get_data_for_pending_replacement_accept = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -10295,6 +10286,7 @@ export const prepare_pending_replacement_assets = internalMutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
+		expectedPendingContentVersion: v.number(),
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
 		contentSize: v.optional(v.number()),
@@ -10367,7 +10359,12 @@ export const prepare_pending_replacement_assets = internalMutation({
 		if (sizes.some(({ size, cap }) => size !== undefined && (!Number.isSafeInteger(size) || size < 0 || size > cap)))
 			return Result({ _nay: { message: "Prepared content is too large" } });
 
-		const created = await db_create_operation_batch(ctx, { ...scope, target, cohortContent: args.cohortContent });
+		const created = await db_create_operation_batch(ctx, {
+			...scope,
+			target,
+			expectedPendingContentVersion: args.expectedPendingContentVersion,
+			cohortContent: args.cohortContent,
+		});
 		if (created._nay) return created;
 		const operationBatchId = created._yay.operationBatchId;
 
@@ -10538,6 +10535,7 @@ async function action_accept_file_pending_replacement(
 	}
 
 	const allocated = (await ctx.runMutation(internal.files_pending_updates.prepare_pending_replacement_assets, {
+		expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 		cohortContent: args.cohortContent,
 		membershipId: args.membershipId,
 		userId: args.userId,
@@ -10557,6 +10555,7 @@ async function action_accept_file_pending_replacement(
 
 	const prepared: Extract<files_pending_updates_PreparedContent, { kind: "replacement" }> = {
 		kind: "replacement",
+		expectedPendingContentVersion: data.fileNode.pendingContentVersion,
 		membershipId: args.membershipId,
 		billedUserId: args.billedUserId,
 		nodeId: args.nodeId,

@@ -201,6 +201,9 @@ with private proposals. `files_pending_updates.ts` and
   write policy, Stop, Activity deadline, attempt, and work id still control publication.
 - New saved output gets new node, content, Yjs, asset, and version docs. Rebuild frontmatter and search docs.
   Remove comment marks. Do not copy comment threads, history, pending proposals, grants, or runs.
+- Replacing a saved file keeps other owners' drafts. Advance `pendingContentVersion` once and
+  keep it through selected saved views and cleanup. An ordinary Save or Move keeps the version.
+  A partial accepted draft uses the published version. Retries reuse the same prepared result.
 - Same-workspace Copy keeps exact image/video links. It does not resolve them or import their bytes.
   Missing, hidden, or unready media never blocks this Copy. Copying a media file itself still needs
   read access. Readers check current media access; a copied link grants none.

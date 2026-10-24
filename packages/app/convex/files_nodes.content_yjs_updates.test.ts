@@ -819,6 +819,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				kind: "file",
 				contentType: "application/pdf",
 				assetId,
+				pendingContentVersion: 1,
 				contentByteSize: null,
 				createdBy: db.userId,
 				updatedBy: db.userId,
@@ -1114,6 +1115,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFileId,
+		expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", createdFileId)))!
+			.pendingContentVersion,
 		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
@@ -1391,6 +1394,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFileId,
+		expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", createdFileId)))!
+			.pendingContentVersion,
 		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
@@ -3311,6 +3316,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion,
 			authorUserId: db.userId,
 			source: "latest_state",
 			acknowledgeDiscardUnmaterialized: false,

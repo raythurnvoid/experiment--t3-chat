@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_MOVE_WAIT_CODE, type files_PendingParent } from "../shared/files.ts";
-import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import {
 	mock_pending_updates_storage,
 	read_file_markdown_from_yjs,
@@ -12,6 +12,7 @@ import {
 } from "./files_pending_updates.setup.test.ts";
 import { files_db_get_pending_update } from "../server/files.ts";
 import { files_pending_updates_action_prepare_content } from "./files_pending_updates.ts";
+import { files_move_content_db_finish } from "./files_move_content_db.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -586,6 +587,7 @@ test("no-change commit checks removal before expiring its batch", async () => {
 	const created = await f.t.mutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
+			expectedPendingContentVersion: 1,
 			...f.scope,
 			target: f.target,
 		},
@@ -597,6 +599,7 @@ test("no-change commit checks removal before expiring its batch", async () => {
 	const batch = await f.t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", operationBatchId));
 	await expect(
 		f.t.mutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, {
+			expectedPendingContentVersion: 1,
 			...f.scope,
 			nodeId: f.nodeId,
 			operationBatchId,
@@ -870,4 +873,256 @@ test("accepted Copy keeps its capture and resumes after a parent hold", async ()
 			await release();
 		},
 	);
+});
+
+async function start_review_rotation(
+	count: number,
+	beforeBegin?: (f: Awaited<ReturnType<typeof fixture>>) => Promise<void>,
+) {
+	const f = await fixture();
+	const nodes = [f.nodeId];
+	const names = ["child.txt"];
+	for (let index = 1; index < count; index++) {
+		vi.setSystemTime(Date.now() + 10_000);
+		const name = `child-${index}.txt`;
+		const created = await f.mover.action(api.files_nodes_content.create_text_node, {
+			membershipId: f.db.membershipId,
+			parentId: f.sourceId,
+			path: name,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		nodes.push(created._yay.nodeId);
+		names.push(name);
+	}
+	expect((await f.edit("accepted\n", "proposed\n"))._nay).toBeUndefined();
+	const move = async (index: number, name: string) => {
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...f.scope,
+			target: { kind: "saved", id: nodes[index]! },
+			destParent: { kind: "saved", id: f.sourceId },
+			destName: name,
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+	};
+	await move(0, "temporary.txt");
+	for (let index = count - 1; index > 0; index--) await move(index, names[(index + 1) % count]!);
+	await move(0, names[1]!);
+	const proposals = await f.t.run((ctx) =>
+		Promise.all(
+			nodes.map((id) =>
+				files_db_get_pending_update(ctx, {
+					...f.scope,
+					target: { kind: "saved", id },
+				}),
+			),
+		),
+	);
+	const started = await f.editor.mutation(api.files_pending_update_runs.start, {
+		membershipId: f.membership._id,
+		requestId: crypto.randomUUID(),
+		kind: "accept",
+		expectedItemCount: count,
+		items: proposals.map((proposal) => ({
+			pendingUpdateId: proposal!._id,
+			reviewedRevision: proposal!.revision,
+			selectedContentStateId: proposal!.content?.stagedStateId ?? null,
+		})),
+	});
+	if (started._nay) throw new Error(started._nay.message);
+	const runId = started._yay.runId;
+	expect(
+		await f.editor.mutation(api.files_pending_update_runs.seal, { membershipId: f.membership._id, runId }),
+	).toEqual({ _yay: null });
+	for (let pass = 0; pass < 100; pass++) {
+		const job = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", (q) =>
+					q.eq("organizationId", f.scope.organizationId).eq("workspaceId", f.scope.workspaceId),
+				)
+				.first(),
+		);
+		if (job)
+			await f.t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+		else await f.t.action(internal.files_pending_update_runs.plan, { runId, fence: 0 });
+		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId));
+		if (run?.step !== "planning") break;
+		if (pass === 99) throw new Error("Review planning did not finish");
+	}
+	await beforeBegin?.(f);
+	await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
+	const unit = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_pending_update_run_units")
+			.withIndex("by_run_order", (q) => q.eq("runId", runId))
+			.first(),
+	);
+	if (!unit?.cohortId) throw new Error("Expected a native Review group");
+	const cohortId = unit.cohortId;
+	const cohort = async () => {
+		const current = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId));
+		if (!current) throw new Error("Expected the Review group");
+		return current;
+	};
+	const step = async () => {
+		const current = await cohort();
+		await f.t.action(internal.files_move_run.run, {
+			cohortId,
+			step: current.step,
+			runGeneration: current.runJob?.generation ?? null,
+			mode: "step",
+		});
+	};
+	return { ...f, nodes, proposals, cohortId, cohort, step };
+}
+
+test("a refused Review capture keeps only its proposal hold and cannot resume publication", async () => {
+	const f = await start_review_rotation(2, async (f) => {
+		expect(
+			await f.mover.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		).toEqual({ _yay: null });
+	});
+	const initial = await f.cohort();
+	await f.step();
+	const aborted = await f.cohort();
+	expect(aborted.phase, "the failed capture enters abort before another step").toBe("aborting");
+	expect(
+		await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_source_reservations")
+				.withIndex("by_cohort", (q) => q.eq("cohortId", f.cohortId))
+				.collect(),
+		),
+	).toMatchObject([{ source: { kind: "proposal", id: f.proposals[0]!._id } }]);
+	expect(
+		await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohort_nodes")
+				.withIndex("by_cohort_order", (q) => q.eq("cohortId", f.cohortId))
+				.collect(),
+		),
+	).toEqual([]);
+	const before = await f.snapshot();
+	expect(
+		await f.t.mutation(internal.files_move_cohorts.advance, {
+			cohortId: f.cohortId,
+			step: initial.step,
+			runGeneration: initial.runJob?.generation ?? null,
+			join: false,
+		}),
+	).toBeNull();
+	expect(await f.snapshot(), "the late capture reply cannot change content").toEqual(before);
+});
+
+test("Restore waits for the exact Review target, then late content cannot undo it after release", async () => {
+	// Ten items make release span several pages, so other proposal holds remain after this target is free.
+	const f = await start_review_rotation(10);
+	const snapshotId = await f.t.run(async (ctx) => {
+		const snapshot = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+				q
+					.eq("organizationId", f.scope.organizationId)
+					.eq("workspaceId", f.scope.workspaceId)
+					.eq("fileNodeId", f.nodeId),
+			)
+			.first();
+		if (!snapshot) throw new Error("Expected the created file's version");
+		return snapshot._id;
+	});
+	const restore = () =>
+		f.mover.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: f.db.membershipId,
+			nodeId: f.nodeId,
+			snapshotId,
+			sessionId: "review-hold-restore",
+		});
+	let candidate: Doc<"files_move_cohort_content"> | null = null;
+	let held = false;
+	let released = false;
+	for (let pass = 0; pass < 400; pass++) {
+		const current = await f.cohort();
+		const reservation = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_source_reservations")
+				.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", f.nodeId))
+				.unique(),
+		);
+		if (reservation && !held) {
+			const before = await f.snapshot();
+			await expect(
+				restore(),
+				"Restore returns a typed refusal for the exact saved-target hold",
+			).resolves.toMatchObject({ _nay: { name: "move_busy" } });
+			expect(await f.snapshot()).toEqual(before);
+			held = true;
+		}
+		const content = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohort_content")
+				.withIndex("by_cohort_node", (q) => q.eq("cohortId", f.cohortId).eq("nodeId", f.nodeId))
+				.first(),
+		);
+		if (content?.prepared) candidate = content;
+		if (held && !reservation) {
+			expect(current.phase).toBe("published");
+			expect(current.workPhase).toBe("release");
+			const remaining = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_move_source_reservations")
+					.withIndex("by_cohort", (q) => q.eq("cohortId", f.cohortId))
+					.collect(),
+			);
+			expect(
+				remaining.some((row) => row.source.kind === "proposal"),
+				"other proposals are still held",
+			).toBe(true);
+			expect(content?.phaseCursor, "content repair finished before target release").toBe("finish:done");
+			expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.moveCohortId).toBeUndefined();
+			expect((await restore())._nay, "Restore can publish after its exact target is released").toBeUndefined();
+			if (!candidate?.prepared) throw new Error("Expected a prepared content reply to replay");
+			const candidateId = candidate._id;
+			const after = await f.snapshot();
+			expect(
+				await f.t.mutation(internal.files_pending_updates.stage_cohort_prepared_content, {
+					cohortContent: {
+						cohortId: f.cohortId,
+						contentId: candidateId,
+						fence: current.fence,
+						attemptFence: current.attemptFence,
+						preparationFence: candidate.preparationFence,
+					},
+					prepared: candidate.prepared,
+				}),
+			).toMatchObject({ _nay: { name: "stopped" } });
+			expect(
+				await test_run_with_flush(f.t, (ctx) =>
+					files_move_content_db_finish(ctx, {
+						cohortId: f.cohortId,
+							contentId: candidateId,
+						fence: current.fence,
+						attemptFence: current.attemptFence,
+					}),
+				),
+				"a late repair reply stays finished",
+			).toMatchObject({ _yay: { done: true } });
+			await f.step();
+			expect((await f.snapshot()).file, "late content and the remaining release page keep the restored file").toEqual(
+				after.file,
+			);
+			released = true;
+			break;
+		}
+		await f.step();
+	}
+	expect(held).toBe(true);
+	expect(released, "the test reaches partial release").toBe(true);
 });

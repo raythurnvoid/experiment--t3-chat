@@ -1236,6 +1236,7 @@ async function test_insert_committed_external_markdown(args: {
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
@@ -1550,6 +1551,7 @@ describe("non-collaborative files", () => {
 			});
 			const nodeId = await ctx.db.insert("files_nodes", {
 				textKind: null,
+				pendingContentVersion: 1,
 				collaborationEnabled: null,
 				yjsSnapshotId: null,
 				yjsLastSequenceId: null,
@@ -3265,20 +3267,21 @@ describe("non-collaborative files", () => {
 				);
 				await ctx.db.patch("files_pending_updates", pendingUpdateId, {
 					content: {
-						base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+						rootKind: "rich_text",
+						base: { kind: "yjs", sequence: 1, lineageGeneration: 0, pendingContentVersion: 1 },
 						baseStateId: baseStateId!,
 						stagedStateId: stagedStateId!,
 						unstagedStateId: unstagedStateId!,
 					},
 				});
-				// The marker a real save leaves behind. It belongs to the document the toggle
-				// deletes, so it has to go with it.
+				// The old marker stays stored, but the changed file version makes it unreadable.
 				await ctx.db.insert("files_pending_updates_last_sequence_saved", {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
 					fileNodeId: nodeId,
 					lastSequenceSaved: 12,
+					pendingContentVersion: 1,
 					updatedAt: now,
 				});
 			}
@@ -3293,16 +3296,26 @@ describe("non-collaborative files", () => {
 				.collect(),
 		);
 		for (const nodeId of [contentOnlyNodeId, contentAndMoveNodeId]) {
+			const before = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
 			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 				membershipId: db.membershipId,
 				nodeId,
 				acknowledgeDropCollaborativeHistory: true,
 			});
 			expect(off._nay).toBeUndefined();
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.pendingContentVersion).toBe(
+				before.pendingContentVersion + 1,
+			);
+			expect(
+				await asUser.query(api.files_pending_updates.get_file_pending_update_last_sequence_saved, {
+					membershipId: db.membershipId,
+					nodeId,
+				}),
+			).toBeNull();
 		}
 		await drain_scheduled_continuations(t);
 
-		// The toggle marks the proposal without changing its source history or review choices.
+		// The file version changes; the owner's proposal and source history stay exact.
 		const pendingAfter = await t.run(async (ctx) => {
 			const docs = await ctx.db.query("files_pending_updates").collect();
 			return {
@@ -3314,13 +3327,9 @@ describe("non-collaborative files", () => {
 				lastSequenceSaved: (await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).length,
 			};
 		});
-		expect(pendingAfter.docs).toEqual(
-			pendingBefore.map((doc) => ({ ...doc, revision: doc.revision + 1, contentNeedsRebase: true })),
-		);
+		expect(pendingAfter.docs).toEqual(pendingBefore);
 		expect(pendingAfter.states).toEqual(statesBefore);
-		// A leftover marker would make the diff editor refetch forever after collaboration is
-		// turned back on, because the fresh document starts counting at 0 again.
-		expect(pendingAfter.lastSequenceSaved).toBe(0);
+		expect(pendingAfter.lastSequenceSaved).toBe(2);
 	});
 
 	test("turning collaboration on keeps content and move proposals for review", async () => {
@@ -3389,7 +3398,8 @@ describe("non-collaborative files", () => {
 				);
 				await ctx.db.patch("files_pending_updates", pendingUpdateId, {
 					content: {
-						base: { kind: "asset", assetId: node.assetId },
+						rootKind: "rich_text",
+						base: { kind: "asset", assetId: node.assetId, pendingContentVersion: node.pendingContentVersion },
 						baseStateId: baseStateId!,
 						stagedStateId: stagedStateId!,
 						unstagedStateId: unstagedStateId!,
@@ -3401,11 +3411,15 @@ describe("non-collaborative files", () => {
 		const pendingBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_updates").collect());
 		const statesBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_update_yjs_states").collect());
 		for (const { nodeId } of [contentOnly, contentAndMove]) {
+			const before = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
 			const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
 				membershipId: db.membershipId,
 				nodeId,
 			});
 			expect(on._nay).toBeUndefined();
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.pendingContentVersion).toBe(
+				before.pendingContentVersion + 1,
+			);
 		}
 
 		// Old asset bases stay intact until Review rebuilds the proposal on the new document.
@@ -3416,9 +3430,7 @@ describe("non-collaborative files", () => {
 				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
 			};
 		});
-		expect(pendingAfter.docs).toEqual(
-			pendingBefore.map((doc) => ({ ...doc, revision: doc.revision + 1, contentNeedsRebase: true })),
-		);
+		expect(pendingAfter.docs).toEqual(pendingBefore);
 		expect(pendingAfter.states).toEqual(statesBefore);
 	});
 

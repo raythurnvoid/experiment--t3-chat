@@ -1091,6 +1091,7 @@ describe("plugin ui sessions", () => {
 				await ctx.db.insert("files_nodes", {
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
+					pendingContentVersion: 1,
 					path: `/${name}`,
 					treePath: `/${name}`,
 					pathDepth: 1,

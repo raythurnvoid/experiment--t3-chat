@@ -624,6 +624,7 @@ describe("ai_chat_context_create", () => {
 	test("uses pending skill text through the same reader as normal files", async () => {
 		const f = await fixture();
 		const nodeId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
+		const pendingContentVersion = (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion;
 		const written = await f.t.action((ctx) =>
 			files_agent_write_file_text(ctx, {
 				agentSource: f.agentSource,
@@ -631,6 +632,7 @@ describe("ai_chat_context_create", () => {
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
 				target: { kind: "saved", id: nodeId },
+				expectedPendingContentVersion: pendingContentVersion,
 				unstagedText: skillText.replace("Saved description", "Pending description"),
 			}),
 		);
@@ -661,6 +663,7 @@ describe("ai_chat_context_create", () => {
 					workspaceId: f.db.workspaceId,
 					userId: f.db.userId,
 					target: created._yay.target,
+					expectedPendingContentVersion: null,
 					operationBatchId: created._yay.operationBatchId!,
 					unstagedText: unstagedText!,
 				}),
@@ -678,6 +681,7 @@ describe("ai_chat_context_create", () => {
 		const rootId = await f.create({ path: "/AGENTS.md", textContent: "SAVED-ROOT\n" });
 		const nestedId = await f.create({ path: "/old/AGENTS.md", textContent: "NESTED-RULE\n" });
 		await f.create({ path: "/invoices/AGENTS.md", textContent: "SIBLING-RULE\n" });
+		const pendingContentVersion = (await f.t.run((ctx) => ctx.db.get("files_nodes", rootId)))!.pendingContentVersion;
 		const written = await f.t.action((ctx) =>
 			files_agent_write_file_text(ctx, {
 				agentSource: f.agentSource,
@@ -685,6 +689,7 @@ describe("ai_chat_context_create", () => {
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
 				target: { kind: "saved", id: rootId },
+				expectedPendingContentVersion: pendingContentVersion,
 				unstagedText: "PENDING-ROOT\n",
 			}),
 		);

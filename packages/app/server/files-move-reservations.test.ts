@@ -1470,6 +1470,7 @@ describe("Move write reservations", () => {
 				expectedPendingUpdateId: null,
 				expectedRevision: null,
 				expectedPrivateVersion: null,
+				expectedPendingContentVersion: 1,
 				updatedAt: Date.now(),
 				lastActivityAt: Date.now(),
 			});

@@ -135,6 +135,7 @@ async function test_insert_searchable_markdown_file(args: {
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
@@ -895,6 +896,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
@@ -3477,6 +3479,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 		ctx.db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,

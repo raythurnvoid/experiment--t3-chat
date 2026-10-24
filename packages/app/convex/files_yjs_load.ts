@@ -20,7 +20,10 @@ import { r2_get_url } from "./r2_get_url.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { files_saved_content_collect, files_saved_content_db_yjs_updates } from "../server/files-saved-content.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_sequence,
+} from "../server/files-saved-placement.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -33,6 +36,7 @@ export const get_file_last_yjs_sequence = query({
 		v.object({
 			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 			lastSequence: v.number(),
+			pendingContentVersion: v.number(),
 		}),
 		v.null(),
 	),
@@ -90,6 +94,7 @@ export const get_file_last_yjs_sequence = query({
 		return {
 			yjsLastSequenceId: lastYjsSequenceDoc._id,
 			lastSequence: lastYjsSequenceDoc.lastSequence,
+			pendingContentVersion: fileNode.pendingContentVersion,
 		};
 	},
 });
@@ -102,6 +107,7 @@ export const yjs_get_incremental_updates = query({
 	returns: v.union(
 		v.object({
 			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+			pendingContentVersion: v.number(),
 			updates: v.array(doc(app_convex_schema, "files_yjs_updates")),
 		}),
 		v.null(),
@@ -157,7 +163,11 @@ export const yjs_get_incremental_updates = query({
 
 		// Return the exact lineage even when the log is empty. Clients fetch the snapshot and update
 		// log separately, so they need this token to refuse a mixed-lineage read.
-		return { yjsLastSequenceId: fileNode.yjsLastSequenceId, updates };
+		return {
+			yjsLastSequenceId: fileNode.yjsLastSequenceId,
+			pendingContentVersion: fileNode.pendingContentVersion,
+			updates,
+		};
 	},
 });
 
@@ -214,6 +224,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 			snapshot: doc(app_convex_schema, "files_yjs_snapshots"),
 			snapshotUrl: v.string(),
 			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+			pendingContentVersion: v.number(),
 			// A live document always has an editable text shape.
 			textKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		}),
@@ -250,6 +261,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 				expiresIn: 15 * 60,
 			}),
 			yjsLastSequenceId: data.yjsLastSequenceDoc._id,
+			pendingContentVersion: data.fileNode.pendingContentVersion,
 			textKind: data.fileNode.textKind,
 		};
 	},

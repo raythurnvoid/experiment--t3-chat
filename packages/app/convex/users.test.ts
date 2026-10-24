@@ -219,6 +219,7 @@ async function users_test_seed_page(
 		updatedAt: Date.now(),
 		contentType: null,
 		assetId: null,
+		pendingContentVersion: 1,
 		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,

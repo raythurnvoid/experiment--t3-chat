@@ -1081,7 +1081,8 @@ describe("bash_run_command", () => {
 			expect(appended.stdout).toBe(`${proposed}agent tail\n`);
 			const [pendingAfter] = await list_pending_updates_for_node(runner, node._id);
 			expect(pendingAfter?._id).toBe(pendingBefore?._id);
-			expect(pendingAfter?.contentNeedsRebase).toBeUndefined();
+			const saved = await get_seeded_node(runner, filePath);
+			expect(pendingAfter).toMatchObject({ content: { base: { pendingContentVersion: saved.pendingContentVersion } } });
 			expect(await read_committed_text(runner, node._id)).toBe(committed);
 		},
 	);

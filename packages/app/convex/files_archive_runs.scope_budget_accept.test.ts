@@ -41,6 +41,7 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 			{
 				...scope,
 				target,
+				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
 			},
 		);
 		if (batch._nay) throw new Error(batch._nay.message);
@@ -164,7 +165,11 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 		const save_draft = async (text: string) => {
 			const batch = await f.t.mutation(
 				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
-				{ ...scope, target },
+				{
+					...scope,
+					target,
+					expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
+				},
 			);
 			if (batch._nay) throw new Error(batch._nay.message);
 			expect(

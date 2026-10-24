@@ -17,7 +17,6 @@ import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
-import { files_pending_updates_db_mark_content_for_rebase } from "./files_pending_updates.ts";
 import { billing_event } from "../server/billing.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
 import {
@@ -32,7 +31,11 @@ import {
 	files_yjs_doc_create_from_array_buffer_update,
 } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
-import { files_get_utf8_byte_size, files_PENDING_UPDATE_STALE_BASE_MESSAGE } from "../shared/files.ts";
+import {
+	files_get_utf8_byte_size,
+	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+	files_pending_update_content_is_stale,
+} from "../shared/files.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 import {
 	accept_as_member,
@@ -1355,6 +1358,7 @@ describe("save_file_pending_update", () => {
 			throw new Error("Missing pending row while testing the stale replayed save");
 		}
 		const replayedSave = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
@@ -1473,6 +1477,7 @@ describe("save_file_pending_update", () => {
 			throw new Error("Missing pending row while testing the concurrent-commit stale save");
 		}
 		const saved = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
@@ -1784,7 +1789,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			if (!docAfter) {
 				throw new Error("Expected the unstaged edits to keep the pending doc");
 			}
-			expect(docAfter.content?.base).toEqual({ kind: "asset", assetId: node?.assetId });
+			expect(docAfter.content?.base).toEqual({ kind: "asset", assetId: node?.assetId, pendingContentVersion: 1 });
 			expect(docAfter.updatedAt).not.toBe(row.updatedAt);
 			// The result names the rewritten doc, so the diff view can wait for its doc query to show it.
 			expect(saved._yay).toEqual({
@@ -2070,6 +2075,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		const replayed = await asUser.mutation(
 			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
 			{
+				expectedPendingContentVersion: 1,
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
 				pendingUpdateId: row._id,
@@ -2123,6 +2129,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		const committed = await asUser.mutation(
 			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
 			{
+				expectedPendingContentVersion: 1,
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
 				pendingUpdateId: row._id,
@@ -2173,6 +2180,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		const committed = await asUser.mutation(
 			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
 			{
+				expectedPendingContentVersion: 1,
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
 				pendingUpdateId: row._id,
@@ -2219,6 +2227,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		const committed = await asUser.mutation(
 			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
 			{
+				expectedPendingContentVersion: 1,
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
 				pendingUpdateId: row._id,
@@ -2257,6 +2266,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		// The action checked credits and uploaded the version object; the credits ran out before
 		// its commit ran.
 		const prepared = await t.mutation(internal.files_pending_updates.prepare_pending_save_assets, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 			pendingUpdateId: row._id,
@@ -2286,6 +2296,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 		const committed = await asUser.mutation(
 			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
 			{
+				expectedPendingContentVersion: 1,
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
 				pendingUpdateId: row._id,
@@ -2793,7 +2804,7 @@ describe("files_pending_updates_last_sequence_saved", () => {
 	});
 });
 
-describe("files_pending_updates_db_mark_content_for_rebase", () => {
+describe("pending content version reads", () => {
 	test("keeps every owner's content and expiry while leaving structural and copy proposals alone", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/mark.txt", text: "base\n" }));
@@ -2873,6 +2884,7 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 					userId,
 					fileNodeId: seeded.nodeId,
 					lastSequenceSaved: 9,
+				pendingContentVersion: 1,
 					updatedAt: 123,
 				});
 			return {
@@ -2896,8 +2908,14 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 		expect(
 			(await t.query(internal.files_nodes.text_search_files, searchArgs)).items.map((item) => item.path),
 		).toContain("/mark.txt");
-		await t.run((ctx) => files_pending_updates_db_mark_content_for_rebase(ctx, seeded));
-		await t.run((ctx) => files_pending_updates_db_mark_content_for_rebase(ctx, seeded));
+		await t.run(async ctx => {
+			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
+			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
+		});
+		await t.run(async ctx => {
+			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
+			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
+		});
 		expect((await t.query(internal.files_nodes.text_search_files, searchArgs)).items).toEqual([]);
 		const content = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: seeded.organizationId,
@@ -2912,18 +2930,18 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 		await t.run(async (ctx) => {
 			for (const doc of before.docs) {
 				expect(await ctx.db.get("files_pending_updates", doc._id)).toEqual(
-					doc.content ? { ...doc, contentNeedsRebase: true, revision: doc.revision + 1 } : doc,
+					doc,
 				);
 			}
 			expect(await ctx.db.query("files_pending_update_yjs_states").collect()).toEqual(before.states);
 			expect(await ctx.db.query("files_pending_update_yjs_state_pages").collect()).toEqual(before.pages);
 			expect(await ctx.db.query("files_text_chunks").collect()).toEqual(before.chunks);
 			expect(await ctx.db.query("files_pending_update_expiry_checks").collect()).toEqual(before.checks);
-			expect(await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).toEqual([]);
+			expect(await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).toHaveLength(2);
 		});
 	});
 
-	test("removes saved markers even when there is no content proposal", async () => {
+	test("keeps old saved markers without a content proposal", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/mark-empty.txt", text: "base\n" }));
 		await t.run(async (ctx) => {
@@ -2933,10 +2951,11 @@ describe("files_pending_updates_db_mark_content_for_rebase", () => {
 				userId: seeded.userId,
 				fileNodeId: seeded.nodeId,
 				lastSequenceSaved: 9,
+				pendingContentVersion: 1,
 				updatedAt: 123,
 			});
-			await files_pending_updates_db_mark_content_for_rebase(ctx, seeded);
-			expect(await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).toEqual([]);
+			await ctx.db.patch("files_nodes", seeded.nodeId, { pendingContentVersion: 2 });
+			expect(await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).toHaveLength(1);
 		});
 	});
 });
@@ -3042,6 +3061,7 @@ describe("get_file_pending_update", () => {
 			expect(await asUser.query(api.files_pending_target.get_file_pending_update, queryArgs)).toEqual({
 				...original,
 				currentYjsLastSequenceId: null,
+				currentPendingContentVersion: 1,
 			});
 
 			for (const collaborative of [true, false]) {
@@ -3061,20 +3081,24 @@ describe("get_file_pending_update", () => {
 				if (collaborative) expect(currentYjsLastSequenceId).not.toBeNull();
 				else expect(currentYjsLastSequenceId).toBeNull();
 				const marked = await t.run((ctx) => ctx.db.get("files_pending_updates", original._id));
-				expect(marked?.contentNeedsRebase).toBe(true);
+				expect(files_pending_update_content_is_stale(marked!, node!)).toBe(true);
 				expect(await asUser.query(api.files_pending_target.get_file_pending_update, queryArgs)).toEqual({
 					...marked,
 					currentYjsLastSequenceId,
+					currentPendingContentVersion: node!.pendingContentVersion,
 				});
 				const prepared = await asUser.action(
 					api.files_pending_updates.prepare_file_pending_update_for_review,
 					queryArgs,
 				);
 				expect(prepared._nay).toBeUndefined();
-				expect(prepared._yay?.pendingUpdate?.contentNeedsRebase).toBeUndefined();
+				expect(
+					files_pending_update_content_is_stale(prepared._yay!.pendingUpdate!, node!),
+				).toBe(false);
 				expect(await asUser.query(api.files_pending_target.get_file_pending_update, queryArgs)).toEqual({
 					...prepared._yay?.pendingUpdate,
 					currentYjsLastSequenceId,
+					currentPendingContentVersion: node!.pendingContentVersion,
 				});
 			}
 
@@ -3288,12 +3312,7 @@ describe("pending text after restore and collaborative edits", () => {
 					})
 				)._nay,
 			).toBeUndefined();
-			expect(await read_seeded_pending_row(t, seeded)).toEqual({
-				...original,
-				revision: original.revision + 1,
-				contentNeedsRebase: true,
-				contentRebaseRootKind: sourceRootKind,
-			});
+			expect(await read_seeded_pending_row(t, seeded)).toEqual(original);
 
 			// Preparation uses the latest saved text, including edits made after the restore.
 			const current = restoredText.replace("Tail: old", "Tail: current");
@@ -3312,8 +3331,10 @@ describe("pending text after restore and collaborative edits", () => {
 			expect(result._nay).toBeUndefined();
 			const prepared = result._yay?.pendingUpdate;
 			if (!prepared) throw new Error("Expected the prepared proposal");
-			expect(prepared.contentNeedsRebase).toBeUndefined();
-			expect(prepared.contentRebaseRootKind).toBeUndefined();
+			expect(
+				files_pending_update_content_is_stale(prepared, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+			).toBe(false);
+			expect(prepared.content?.rootKind).toBe(rootKind);
 			const mergedStaged = current.replace("120", "150");
 			const mergedUnstaged = current.replace("120", "170");
 			expect(await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: prepared, rootKind }))).toEqual(

@@ -797,14 +797,19 @@ describe("files_pending_update_has_content", () => {
 	const baseAssetId = "asset" as app_convex_Doc<"files_r2_assets">["_id"];
 	const yjsContent = {
 		content: {
-			base: { kind: "yjs" as const, sequence: 3, lineageGeneration: 1 },
+			rootKind: "plain_text" as const,
+			base: { kind: "yjs" as const, sequence: 3, lineageGeneration: 1, pendingContentVersion: 1 },
 			baseStateId,
 			stagedStateId,
 			unstagedStateId,
 		},
 	};
 	const assetContent = {
-		content: { base: { kind: "asset" as const, assetId: baseAssetId }, baseStateId, stagedStateId, unstagedStateId },
+		content: {
+			rootKind: "plain_text" as const,
+			base: { kind: "asset" as const, assetId: baseAssetId, pendingContentVersion: 1 },
+			baseStateId, stagedStateId, unstagedStateId,
+		},
 	};
 
 	test("recognizes branches built from a saved asset", () => {
@@ -821,7 +826,7 @@ describe("files_pending_update_has_content", () => {
 
 	test("recognizes a new private file without a saved base", () => {
 		const pendingUpdate = {
-			content: { base: { kind: "new" as const }, baseStateId, stagedStateId, unstagedStateId },
+			content: { rootKind: "plain_text" as const, base: { kind: "new" as const }, baseStateId, stagedStateId, unstagedStateId },
 		};
 		expect(files_pending_update_has_content(pendingUpdate)).toBe(true);
 		expect(files_pending_update_has_yjs_content(pendingUpdate)).toBe(false);
@@ -844,11 +849,16 @@ describe("files_pending_update_content_is_stale", () => {
 	const baseAssetId = "asset" as app_convex_Doc<"files_r2_assets">["_id"];
 	const savedAssetId = "saved-asset" as NonNullable<app_convex_Doc<"files_nodes">["assetId"]>;
 	const assetContent = {
-		content: { base: { kind: "asset" as const, assetId: baseAssetId }, baseStateId, stagedStateId, unstagedStateId },
+		content: {
+			rootKind: "plain_text" as const,
+			base: { kind: "asset" as const, assetId: baseAssetId, pendingContentVersion: 1 },
+			baseStateId, stagedStateId, unstagedStateId,
+		},
 	};
 	const yjsContent = {
 		content: {
-			base: { kind: "yjs" as const, sequence: 3, lineageGeneration: 1 },
+			rootKind: "plain_text" as const,
+			base: { kind: "yjs" as const, sequence: 3, lineageGeneration: 1, pendingContentVersion: 1 },
 			baseStateId,
 			stagedStateId,
 			unstagedStateId,
@@ -856,25 +866,24 @@ describe("files_pending_update_content_is_stale", () => {
 	};
 
 	test("an asset base becomes stale after the saved asset changes", () => {
-		expect(files_pending_update_content_is_stale(assetContent, { assetId: baseAssetId })).toBe(false);
-		expect(files_pending_update_content_is_stale(assetContent, { assetId: savedAssetId })).toBe(true);
-		expect(files_pending_update_content_is_stale(yjsContent, { assetId: savedAssetId })).toBe(false);
-		expect(files_pending_update_content_is_stale({}, { assetId: savedAssetId })).toBe(false);
+		expect(files_pending_update_content_is_stale(assetContent, { assetId: baseAssetId, pendingContentVersion: 1 })).toBe(false);
+		expect(files_pending_update_content_is_stale(assetContent, { assetId: savedAssetId, pendingContentVersion: 1 })).toBe(true);
+		expect(files_pending_update_content_is_stale(yjsContent, { assetId: savedAssetId, pendingContentVersion: 1 })).toBe(false);
+		expect(files_pending_update_content_is_stale({}, { assetId: savedAssetId, pendingContentVersion: 1 })).toBe(false);
 	});
 
 	test("a new private file has no saved asset to become stale against", () => {
 		expect(
 			files_pending_update_content_is_stale(
-				{ content: { base: { kind: "new" }, baseStateId, stagedStateId, unstagedStateId } },
-				{ assetId: savedAssetId },
+				{ content: { rootKind: "plain_text", base: { kind: "new" }, baseStateId, stagedStateId, unstagedStateId } },
+				{ assetId: savedAssetId, pendingContentVersion: 2 },
 			),
 		).toBe(false);
 	});
 
-	test.each([yjsContent, assetContent])("marked content is stale but still available for review %#", (content) => {
-		const markedContent = { ...content, contentNeedsRebase: true as const };
-		expect(files_pending_update_content_is_stale(markedContent, { assetId: baseAssetId })).toBe(true);
-		expect(files_pending_update_has_content(markedContent)).toBe(true);
+	test.each([yjsContent, assetContent])("an older file version is stale but keeps its draft %#", (content) => {
+		expect(files_pending_update_content_is_stale(content, { assetId: baseAssetId, pendingContentVersion: 2 })).toBe(true);
+		expect(files_pending_update_has_content(content)).toBe(true);
 	});
 });
 

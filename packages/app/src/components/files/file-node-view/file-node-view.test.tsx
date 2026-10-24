@@ -1118,6 +1118,7 @@ describe("FileNodeView private targets", () => {
 					kind: "file",
 					sortName: NODE.name,
 					assetId: NODE.assetId as app_convex_Id<"files_r2_assets">,
+					pendingContentVersion: 1,
 					contentByteSize: null,
 					isRestrictedScopeRoot: false,
 					extendedScopeNodeId: null,

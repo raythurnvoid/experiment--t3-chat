@@ -90,6 +90,7 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 	const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 		membershipId: f.db.membershipId,
 		target: { kind: "saved", id: f.nodeId },
+		expectedPendingContentVersion: f.saved.pendingContentVersion,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	for (const [role, text] of [
@@ -248,7 +249,9 @@ test("staging preserves saved content, then publishes exact partial content and 
 		kind: "yjs",
 		sequence: 1,
 		lineageGeneration: 0,
+		pendingContentVersion: old!.pendingContentVersion,
 	});
+	expect(proposal?.content?.rootKind).toBe("plain_text");
 	const bytes = await f.t.run(async (ctx) => {
 		const stateDoc = await ctx.db.get("files_pending_update_yjs_states", proposal!.content!.unstagedStateId);
 		if (!stateDoc) throw new Error("Expected remaining state");
@@ -280,6 +283,7 @@ test("staging preserves saved content, then publishes exact partial content and 
 	expect((await balance())!.usedCount, "physical repair cannot change the published private balance").toBe(
 		initial!.usedCount + content.privateByteDelta,
 	);
+	expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.pendingContentVersion).toBe(old!.pendingContentVersion);
 	expect(await test_run_with_flush(f.t, (ctx) => files_move_content_db_finish(ctx, f.context))).toEqual({
 		_yay: { done: true, paged: false },
 	});
@@ -632,6 +636,7 @@ test("a stale runner cannot retire a successor's preparation at the same step", 
 		userId: f.db.userId,
 		target: { kind: "saved", id: f.nodeId },
 		cohortContent,
+		expectedPendingContentVersion: f.saved.pendingContentVersion,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	const staged = await f.t.mutation(internal.files_pending_updates.stage_prepared_content_text, {
@@ -675,6 +680,7 @@ test("a lost preparation keeps held output and fences the next attempt", async (
 		userId: f.db.userId,
 		target: { kind: "saved", id: f.nodeId },
 		cohortContent: oldContext,
+		expectedPendingContentVersion: f.saved.pendingContentVersion,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	expect(

@@ -23,7 +23,11 @@ import {
 	files_yjs_doc_create_from_array_buffer_update,
 } from "../shared/files-yjs.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
-import { files_MAX_TEXT_CONTENT_BYTES, files_PENDING_UPDATE_STALE_BASE_MESSAGE } from "../shared/files.ts";
+import {
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
+	files_pending_update_content_is_stale,
+} from "../shared/files.ts";
 import { files_metadata_MAX_FRONTMATTER_FIELDS } from "../shared/files-metadata.ts";
 import { encodeStateAsUpdate } from "yjs";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -117,6 +121,7 @@ describe("prepare_file_pending_update_for_agent upload in flight", () => {
 				updatedAt: now,
 			});
 			const nodeId = await ctx.db.insert("files_nodes", {
+				pendingContentVersion: 1,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -193,7 +198,9 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 		const original = await read_seeded_pending_row(t, seeded);
 		const currentAssetId = await save_as_member({ t, seeded, text: args.current });
 		expect(await read_seeded_pending_row(t, seeded)).toEqual(original);
-		expect(original.contentNeedsRebase).toBeUndefined();
+		expect(
+			files_pending_update_content_is_stale(original, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+		).toBe(true);
 		const prepareArgs = {
 			membershipId: seeded.membershipId,
 			target: { kind: "saved" as const, id: seeded.nodeId },
@@ -224,9 +231,11 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 			const prepared = result._yay?.pendingUpdate;
 			if (!prepared) throw new Error("Expected the prepared proposal");
 			expect(prepared._id).toBe(original._id);
-			expect(prepared.content?.base).toEqual({ kind: "asset", assetId: currentAssetId });
+			expect(prepared.content?.base).toEqual({ kind: "asset", assetId: currentAssetId, pendingContentVersion: 1 });
 			expect(prepared.content?.baseStateId).not.toBe(original.content?.baseStateId);
-			expect(prepared.contentNeedsRebase).toBeUndefined();
+			expect(
+				files_pending_update_content_is_stale(prepared, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+			).toBe(false);
 			expect(await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: prepared, rootKind }))).toEqual(
 				{
 					baseMarkdown: current,
@@ -332,6 +341,7 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 			const batch = await t.mutation(
 				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 				{
+					expectedPendingContentVersion: 1,
 					organizationId: seeded.organizationId,
 					workspaceId: seeded.workspaceId,
 					userId: seeded.userId,
@@ -340,6 +350,7 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 			);
 			if (batch._nay) throw new Error(batch._nay.message);
 			const args = {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -378,6 +389,7 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 			await save_as_member({ t, seeded, text: nextText });
 
 			const result = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -514,7 +526,9 @@ describe("prepare_file_pending_update_for_review", () => {
 		}
 		const marked = await t.run((ctx) => ctx.db.get("files_pending_updates", original._id));
 		if (!marked) throw new Error("Expected the proposal after the toggle");
-		expect(marked.contentNeedsRebase).toBe(true);
+		expect(
+			files_pending_update_content_is_stale(marked, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+		).toBe(true);
 		const prepareArgs = {
 			membershipId: seeded.membershipId,
 			target: { kind: "saved" as const, id: seeded.nodeId },
@@ -596,7 +610,9 @@ describe("prepare_file_pending_update_for_review", () => {
 			const pendingUpdate = prepared._yay?.pendingUpdate;
 			if (!pendingUpdate) throw new Error("Expected the prepared proposal");
 			expect(pendingUpdate.content?.base).toMatchObject({ kind: "yjs", sequence: 0 });
-			expect(pendingUpdate.contentNeedsRebase).toBeUndefined();
+			expect(
+				files_pending_update_content_is_stale(pendingUpdate, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+			).toBe(false);
 			expect(await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate, rootKind }))).toEqual({
 				baseMarkdown: base,
 				stagedMarkdown: staged,
@@ -770,7 +786,7 @@ describe("prepare_file_pending_update_for_review", () => {
 			unstagedMarkdown: "proposed\n",
 		};
 		expect((await upsert_file_pending_update_public_for_test(asUser, oldWrite))._nay?.message).toContain(
-			"Update the proposal",
+			"update the proposal",
 		);
 		expect(
 			(
@@ -779,7 +795,7 @@ describe("prepare_file_pending_update_for_review", () => {
 					...(await reviewed_pending_for_test(t, prepareArgs)),
 				})
 			)._nay?.message,
-		).toContain("Update the proposal");
+		).toContain("update the proposal");
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
 		const prepared = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, prepareArgs);
 		expect(prepared._nay).toBeUndefined();
@@ -932,8 +948,11 @@ describe("prepare_file_pending_update_for_review", () => {
 			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toBeNull();
 			if (replacementId)
 				expect(
-					(await t.run((ctx) => ctx.db.get("files_pending_updates", replacementId)))?.contentNeedsRebase,
-				).toBeUndefined();
+					files_pending_update_content_is_stale(
+						(await t.run((ctx) => ctx.db.get("files_pending_updates", replacementId)))!,
+						(await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!,
+					),
+				).toBe(false);
 		} else expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
 
 		const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
@@ -983,7 +1002,7 @@ describe("prepare_file_pending_update_for_review", () => {
 				)._nay,
 			).toBeUndefined();
 			const marked = await t.run((ctx) => ctx.db.get("files_pending_updates", before._id));
-			expect(marked).toMatchObject({ ...before, revision: before.revision + 1, contentNeedsRebase: true });
+			expect(marked).toEqual(before);
 			if (!marked) throw new Error("Expected the proposal to survive the toggle");
 			expect(await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }))).toEqual(beforeBytes);
 
@@ -994,8 +1013,13 @@ describe("prepare_file_pending_update_for_review", () => {
 			});
 			expect(prepared._nay).toBeUndefined();
 			expect(prepared._yay?.pendingUpdate).toMatchObject({ _id: before._id });
-			expect(prepared._yay?.pendingUpdate?.contentNeedsRebase).toBeUndefined();
-			expect(prepared._yay?.pendingUpdate?.content?.base).toEqual({ kind: "asset", assetId: expect.any(String) });
+			expect(
+				files_pending_update_content_is_stale(
+					prepared._yay!.pendingUpdate!,
+					(await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!,
+				),
+			).toBe(false);
+			expect(prepared._yay?.pendingUpdate?.content?.base).toEqual({ kind: "asset", assetId: expect.any(String), pendingContentVersion: 2 });
 
 			expect(
 				(
@@ -1742,6 +1766,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const stalePersistResult = await asUser.mutation(
 			internal.files_pending_updates.commit_file_pending_update_rebase_in_db,
 			{
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -1873,6 +1898,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const stalePersistResult = await asUser.mutation(
 			internal.files_pending_updates.commit_file_pending_update_rebase_in_db,
 			{
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,

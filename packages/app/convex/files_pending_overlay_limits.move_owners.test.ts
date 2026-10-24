@@ -59,6 +59,7 @@ describe("paged Move transaction budgets", () => {
 				{
 					...scope,
 					target: { kind: "saved", id: nodeId },
+					expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion,
 				},
 			);
 			if (batch._nay) throw new Error(batch._nay.message);

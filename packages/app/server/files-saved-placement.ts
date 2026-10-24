@@ -169,6 +169,7 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		contentByteSize: place.contentByteSize,
 		textKind: place.textKind,
 		collaborationEnabled: place.collaborationEnabled,
+		pendingContentVersion: place.pendingContentVersion,
 		yjsSnapshotId: place.yjsSnapshotId,
 		yjsLastSequenceId: place.yjsLastSequenceId,
 		statsId: place.statsId,

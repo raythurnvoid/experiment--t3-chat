@@ -138,6 +138,7 @@ describe("cohort Accept transaction budgets", () => {
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 			...scope,
 			target,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		// A full-size edit of short lines, so the text makes many chunks.
@@ -224,6 +225,7 @@ describe("cohort Accept transaction budgets", () => {
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 			...scope,
 			target,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const text = Array.from({ length: files_MAX_TEXT_CONTENT_BYTES / 16 }, (_, index) =>

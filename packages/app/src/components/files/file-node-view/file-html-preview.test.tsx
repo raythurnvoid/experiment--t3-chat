@@ -99,6 +99,7 @@ const NODE = {
 	lowercaseExtension: "html",
 	textKind: "plain_text",
 	collaborationEnabled: true,
+	pendingContentVersion: 1,
 	yjsSnapshotId: "snapshot_1" as app_convex_Id<"files_yjs_snapshots">,
 	yjsLastSequenceId: DOCUMENT_ID,
 	statsId: null,
@@ -126,7 +127,8 @@ const PENDING = {
 	target: { kind: "saved" as const, id: NODE_ID },
 	revision: 1,
 	content: {
-		base: { kind: "yjs" as const, sequence: 0, lineageGeneration: 0 },
+		rootKind: "plain_text" as const,
+		base: { kind: "yjs" as const, sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 		baseStateId: "base_1" as app_convex_Id<"files_pending_update_yjs_states">,
 		stagedStateId: "staged_1" as app_convex_Id<"files_pending_update_yjs_states">,
 		unstagedStateId: "unstaged_1" as app_convex_Id<"files_pending_update_yjs_states">,
@@ -135,6 +137,7 @@ const PENDING = {
 	expiresAt: 1,
 	size: 10,
 	currentYjsLastSequenceId: DOCUMENT_ID,
+	currentPendingContentVersion: 1,
 };
 
 const PRIVATE_PENDING = {
@@ -149,6 +152,7 @@ const PRIVATE_PENDING = {
 		metadata: [] as { key: string; value: string | number | boolean }[],
 	},
 	currentYjsLastSequenceId: null,
+	currentPendingContentVersion: null,
 } as const;
 const PRIVATE_ENTRY = {
 	kind: "private",
@@ -495,7 +499,7 @@ describe("FileHtmlPreview", () => {
 		let currentNode = { ...NODE, collaborationEnabled: false, yjsLastSequenceId: null, yjsSnapshotId: null };
 		const proposal = {
 			...PENDING,
-			content: { ...PENDING.content, base: { kind: "asset", assetId: NODE.assetId } },
+			content: { ...PENDING.content, base: { kind: "asset", assetId: NODE.assetId, pendingContentVersion: 1 } },
 			currentYjsLastSequenceId: null,
 		};
 		publish_query_values({ pending: proposal });
@@ -516,7 +520,7 @@ describe("FileHtmlPreview", () => {
 				...proposal,
 				content: {
 					...proposal.content,
-					base: { kind: "asset", assetId: currentNode.assetId },
+					base: { kind: "asset", assetId: currentNode.assetId, pendingContentVersion: 1 },
 					unstagedStateId: "unstaged_2",
 				},
 				updatedAt: 2,
@@ -555,7 +559,7 @@ describe("FileHtmlPreview", () => {
 	});
 
 	test("refuses stale proposals without preparing or reading their pages", async () => {
-		publish_query_values({ pending: { ...PENDING, contentNeedsRebase: true } });
+		publish_query_values({ pending: { ...PENDING, currentPendingContentVersion: 2 } });
 		render(<Preview />);
 		await screen.findByText("Review and sync these changes first.");
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
@@ -570,6 +574,21 @@ describe("FileHtmlPreview", () => {
 		render(<Preview />);
 		await waitFor(() => expect(pendingReadMock).toHaveBeenCalled());
 		publish_query_values({ pending: { ...PENDING, revision: 2 } });
+		await act(async () => deferred.resolve(pending_bytes("<p>Old proposal</p>")));
+		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
+		expect(screen.getByRole("alert").textContent).toContain("changed while loading");
+	});
+
+	test("refuses a late proposal read after a no-packet Restore keeps the same family and head", async () => {
+		publish_query_values({ pending: PENDING });
+		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
+		pendingReadMock.mockReturnValue(deferred.promise);
+		render(<Preview />);
+		await waitFor(() => expect(pendingReadMock).toHaveBeenCalled());
+		// The detail read can see Restore before the subscriptions update the mounted preview.
+		queryMock.mockImplementation(async (query: string) =>
+			query === "get_file_pending_update" ? { ...PENDING, currentPendingContentVersion: 2 } : NODE,
+		);
 		await act(async () => deferred.resolve(pending_bytes("<p>Old proposal</p>")));
 		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
 		expect(screen.getByRole("alert").textContent).toContain("changed while loading");

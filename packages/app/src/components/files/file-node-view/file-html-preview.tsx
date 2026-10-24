@@ -175,6 +175,7 @@ async function read_preview_source(args: {
 			current.archiveOperationId !== null ||
 			!files_node_has_editable_text_content(current) ||
 			current.collaborationEnabled !== node.collaborationEnabled ||
+			current.pendingContentVersion !== node.pendingContentVersion ||
 			current.yjsLastSequenceId !== node.yjsLastSequenceId ||
 			(!node.collaborationEnabled && current.assetId !== node.assetId)
 		) {
@@ -226,7 +227,12 @@ async function read_preview_source(args: {
 
 		if (
 			pending_content_key(currentPending) !== pending_content_key(pendingUpdate) ||
-			currentPending?.contentNeedsRebase
+			!currentPending ||
+			currentPending.currentPendingContentVersion === null ||
+			files_pending_update_content_is_stale(currentPending, {
+				assetId: node.assetId,
+				pendingContentVersion: currentPending.currentPendingContentVersion,
+			})
 		) {
 			throw new Error("The proposed changes changed while loading. Refresh to try again.");
 		}
@@ -313,6 +319,8 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 		target.kind,
 		target.id,
 		yjsLastSequenceId,
+		savedNode?.pendingContentVersion,
+		pendingUpdate?.currentPendingContentVersion,
 		savedNode?.collaborationEnabled,
 		entry.kind === "private" ? [entry.node.userId, entry.node.creationGeneration] : null,
 		eligible,
@@ -328,7 +336,10 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 	const staleProposal =
 		hasProposal &&
 		savedNode !== null &&
-		(files_pending_update_content_is_stale(pendingUpdate, savedNode) ||
+		(files_pending_update_content_is_stale(pendingUpdate, {
+			assetId: savedNode.assetId,
+			pendingContentVersion: pendingUpdate.currentPendingContentVersion!,
+		}) ||
 			pendingUpdate.currentYjsLastSequenceId !== savedNode.yjsLastSequenceId);
 
 	// undefined is a real fourth state: no source chosen yet, and the checks below test `!== undefined`.

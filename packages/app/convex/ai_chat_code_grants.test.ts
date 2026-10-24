@@ -186,6 +186,7 @@ describe("two-root code grants", () => {
 			workspaceId: scope.workspaceId,
 			userId: scope.userId,
 			target: { kind: "saved", id: nodeId },
+			expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const staged = await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {

@@ -955,6 +955,8 @@ describe("r2 asset content", () => {
 				workspaceId: db.workspaceId,
 				userId: db.userId,
 				target: { kind: "saved", id: created._yay.nodeId },
+				expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", created._yay.nodeId)))!
+					.pendingContentVersion,
 			},
 		);
 		if (upsertBatch._nay) {

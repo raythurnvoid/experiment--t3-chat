@@ -566,6 +566,7 @@ export async function upsert_pending_update_internal_for_test(
 		workspaceId: args.workspaceId,
 		userId: args.userId,
 		target: { kind: "saved", id: args.nodeId },
+		expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
 	});
 	if (batch._nay) {
 		return batch;

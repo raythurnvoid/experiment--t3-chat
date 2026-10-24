@@ -215,6 +215,7 @@ describe("upsert_file_pending_move_in_db", () => {
 		// A stored file follows the same rule: the name is free, the type stays.
 		const uploadNodeId = await t.run(async (ctx) =>
 			ctx.db.insert("files_nodes", {
+				pendingContentVersion: 1,
 				organizationId: markdownSeeded.organizationId,
 				workspaceId: markdownSeeded.workspaceId,
 				path: "/typed-photo.png",
@@ -4189,6 +4190,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 			throw new Error("Missing pending row while testing save behind a pending delete");
 		}
 		const saved = await asUser.mutation(internal.files_pending_updates.save_file_pending_update_in_db, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
@@ -6312,6 +6314,7 @@ describe("pending path overlay reads", () => {
 				name: "overlay-moved-away.md",
 			});
 			return await ctx.db.insert("files_nodes", {
+				pendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				path: "/overlay-src.md",
@@ -6470,6 +6473,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		const before = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
 		if (!before) throw new Error("Expected the first proposal");
 		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -6572,6 +6576,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		});
 
 		const committed = await t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -6629,6 +6634,7 @@ describe("create_file_pending_update_operation_batch", () => {
 					expiresAt: Date.now() + files_DRAFT_IDLE_EXPIRY_MS,
 				});
 				const operationBatchId = await ctx.db.insert("files_pending_update_operation_batches", {
+					expectedPendingContentVersion: null,
 					organizationId,
 					workspaceId,
 					userId,
@@ -6675,6 +6681,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		});
 
 		const first = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -6683,6 +6690,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		// Two interleaved operations on one proposal would tear each other's staging, so the
 		// second admission is a visible refusal instead of a silent queue.
 		const second = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -6707,6 +6715,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		});
 
 		const first = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -6724,6 +6733,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		});
 
 		const second = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -6752,6 +6762,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		});
 
 		const first = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -6780,6 +6791,7 @@ describe("create_file_pending_update_operation_batch", () => {
 		}
 
 		const second = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -6997,6 +7009,7 @@ describe("pending update state seal door 2", () => {
 		// (the helper stages no page for zero bytes, so its seal finds no state).
 		expect((await persist_with_unstaged(files_u8_to_array_buffer(new Uint8Array(0))))._nay?.message).toBe("Not found");
 		const emptyPage = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -7018,6 +7031,7 @@ describe("pending update state seal door 2", () => {
 		const seeded = await seed_plain_text_pending_fixture(t, "/door2-page-cap");
 
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -7065,6 +7079,7 @@ describe("pending update state seal door 2", () => {
 		// One batch for both roles (one active batch per user/node): the legal state seals under
 		// the "unstaged" role, the over-cap one refuses under "staged".
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -7227,6 +7242,7 @@ describe("cleanup_expired_pending_state_rows", () => {
 		const now = Date.now();
 		const operationBatchId = await t.run((ctx) =>
 			ctx.db.insert("files_pending_update_operation_batches", {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -7305,6 +7321,7 @@ describe("cleanup_expired_pending_state_rows", () => {
 		);
 		const batchId = await t.run(async (ctx) =>
 			ctx.db.insert("files_pending_update_operation_batches", {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -7362,6 +7379,7 @@ describe("cleanup_expired_pending_state_rows", () => {
 		const now = Date.now();
 		const expiredBatchId = await t.run(async (ctx) =>
 			ctx.db.insert("files_pending_update_operation_batches", {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -7376,6 +7394,7 @@ describe("cleanup_expired_pending_state_rows", () => {
 		);
 		const liveBatchId = await t.run(async (ctx) =>
 			ctx.db.insert("files_pending_update_operation_batches", {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -7646,6 +7665,7 @@ describe("pending update read-only checks", () => {
 			name: "Read-only final barrier user",
 		});
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -7658,6 +7678,7 @@ describe("pending update read-only checks", () => {
 		await set_pending_test_writable({ asUser, membershipId: seeded.membershipId, nodeId: seeded.nodeId });
 
 		const settled = await t.mutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -7709,6 +7730,7 @@ describe("pending update read-only checks", () => {
 		}
 
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -7718,6 +7740,7 @@ describe("pending update read-only checks", () => {
 			throw new Error(batch._nay.message);
 		}
 		const settled = await t.mutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -7745,6 +7768,7 @@ describe("pending update read-only checks", () => {
 			name: "Read-only no-change gap user",
 		});
 		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -7845,6 +7869,7 @@ describe("pending update read-only checks", () => {
 			throw new Error("Missing proposal before refresh barrier");
 		}
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -7857,6 +7882,7 @@ describe("pending update read-only checks", () => {
 		await set_pending_test_writable({ asUser, membershipId: seeded.membershipId, nodeId: seeded.nodeId });
 
 		const refreshed = await t.mutation(internal.files_pending_updates.refresh_file_pending_update_in_db, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -8042,6 +8068,7 @@ describe("pending update read-only checks", () => {
 		await set_pending_test_writable({ asUser, membershipId: seeded.membershipId, nodeId: seeded.nodeId });
 
 		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -8240,6 +8267,7 @@ describe("pending update read-only checks", () => {
 		// The editor asks for a batch before it uploads any branch state. Refusing here keeps the
 		// client from uploading Yjs pages that could never be committed.
 		const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			expectedPendingContentVersion: 1,
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.nodeId },
 		});
@@ -8264,6 +8292,7 @@ describe("pending update read-only checks", () => {
 		const staged = await seal_output_family_for_test(t, seeded);
 		const commit = (family: typeof staged) =>
 			t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
+				expectedPendingContentVersion: 1,
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
@@ -8520,6 +8549,7 @@ describe("pending update read-only checks", () => {
 			throw new Error("Missing proposal before refresh refusal");
 		}
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -8533,6 +8563,7 @@ describe("pending update read-only checks", () => {
 		// A refresh rewrites the stored branches, so it is a write and the lock stops it. The
 		// proposal itself stays, so the user can still read or discard it.
 		const refreshed = await t.mutation(internal.files_pending_updates.refresh_file_pending_update_in_db, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
@@ -8604,6 +8635,7 @@ describe("pending update read-only checks", () => {
 
 		// A rebase replaces the stored branch states, so it writes and the lock stops it.
 		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
+			expectedPendingContentVersion: 1,
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,

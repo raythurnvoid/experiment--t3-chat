@@ -557,6 +557,7 @@ export async function files_fetch_private_file_pending_text(args: {
 export async function files_upsert_file_pending_update(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	target: files_PendingTarget;
+	expectedPendingContentVersion: number | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/**
 	 * The revision of the proposal the user reviewed. The server refuses when the
@@ -571,6 +572,7 @@ export async function files_upsert_file_pending_update(args: {
 		{
 			membershipId: args.membershipId,
 			target: args.target,
+			expectedPendingContentVersion: args.expectedPendingContentVersion,
 		},
 	);
 	if (batch._nay) {
@@ -632,6 +634,7 @@ export async function files_save_private_file_pending_text(args: {
 	const upserted = await files_upsert_file_pending_update({
 		membershipId: args.membershipId,
 		target: args.target,
+		expectedPendingContentVersion: null,
 		pendingUpdateId: args.pendingUpdateId,
 		reviewedRevision: args.reviewedRevision,
 		stagedText: args.text,
@@ -662,6 +665,7 @@ export async function files_save_private_file_pending_text(args: {
 export async function files_persist_file_pending_update_rebased_state(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	target: files_PendingTarget;
+	expectedPendingContentVersion: number | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	reviewedRevision?: number;
 	baseYjsSequence: number;
@@ -674,6 +678,7 @@ export async function files_persist_file_pending_update_rebased_state(args: {
 		{
 			membershipId: args.membershipId,
 			target: args.target,
+			expectedPendingContentVersion: args.expectedPendingContentVersion,
 		},
 	);
 	if (batch._nay) {
@@ -749,11 +754,12 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 
 		if (yjsSnapshotTarget == null) return null;
 
-		// All three reads must name the same document. Otherwise updates from one document would
-		// be applied on top of a snapshot from another.
+		// Restore can keep the document ID, so all three reads must match its version too.
 		if (
 			yjsUpdatesData?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId ||
-			yjsLastSequenceDoc?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId
+			yjsLastSequenceDoc?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId ||
+			yjsUpdatesData?.pendingContentVersion !== yjsSnapshotTarget.pendingContentVersion ||
+			yjsLastSequenceDoc?.pendingContentVersion !== yjsSnapshotTarget.pendingContentVersion
 		) {
 			await delay(250);
 			continue;
@@ -784,6 +790,7 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 			yjsSequence: yjsLastSequenceDoc.lastSequence,
 			textKind,
 			yjsLastSequenceId: yjsSnapshotTarget.yjsLastSequenceId,
+			pendingContentVersion: yjsSnapshotTarget.pendingContentVersion,
 		};
 	}
 

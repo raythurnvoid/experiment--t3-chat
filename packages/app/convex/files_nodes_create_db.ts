@@ -334,6 +334,7 @@ function node_insert_fields(args: {
 		contentType: args.contentType ?? null,
 		...files_content_type_index_fields(args.contentType ?? null),
 		assetId: args.assetId ?? null,
+		pendingContentVersion: 1,
 		contentByteSize: args.contentByteSize ?? null,
 		textKind: null,
 		collaborationEnabled: null,

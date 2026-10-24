@@ -974,6 +974,7 @@ export class bash_DbFilesFs implements IFileSystem {
 					userId,
 					target,
 					operationBatchId: created._yay.operationBatchId!,
+					expectedPendingContentVersion: null,
 					pendingUpdateId: created._yay.pendingUpdateId!,
 					unstagedText: normalizedChunk,
 					threadId: threadId ?? undefined,
@@ -1003,6 +1004,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			let currentContent: {
 				target: files_PendingTarget;
 				content: string;
+				pendingContentVersion: number | null;
 				pendingUpdateId: Id<"files_pending_updates"> | null;
 				pendingUpdateBaseStateId?: Id<"files_pending_update_yjs_states">;
 			} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
@@ -1049,6 +1051,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				workspaceId,
 				userId,
 				target,
+				expectedPendingContentVersion: currentContent.pendingContentVersion,
 				pendingUpdateId: currentContent.pendingUpdateId ?? undefined,
 				// Append depends on the text read above; a full overwrite replaces it deliberately.
 				expectedBaseStateId: mode === "append" ? (currentContent.pendingUpdateBaseStateId ?? null) : undefined,
@@ -2499,6 +2502,7 @@ export async function files_agent_write_file_text(
 		userId: Id<"users">;
 		agentSource: Infer<typeof ai_chat_workspaces_source_validator>;
 		target: files_PendingTarget;
+		expectedPendingContentVersion: number | null;
 		operationBatchId?: Id<"files_pending_update_operation_batches">;
 		pendingUpdateId?: Id<"files_pending_updates">;
 		expectedBaseStateId?: Id<"files_pending_update_yjs_states"> | null;
@@ -2514,6 +2518,7 @@ export async function files_agent_write_file_text(
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				target: args.target,
+				expectedPendingContentVersion: args.expectedPendingContentVersion,
 				agentSource: args.agentSource,
 			})) as
 				| {

@@ -168,6 +168,7 @@ export async function seed_file_with_markdown(args: {
 	r2Objects.set(yjsSnapshotAssetKey, yjsSnapshotUpdate);
 
 	const nodeId = await ctx.db.insert("files_nodes", {
+		pendingContentVersion: 1,
 		organizationId,
 		workspaceId,
 		path,
@@ -249,6 +250,7 @@ export async function seed_folder_node(args: {
 }) {
 	const now = Date.now();
 	return await args.ctx.db.insert("files_nodes", {
+		pendingContentVersion: 1,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		path: args.path,
@@ -383,6 +385,7 @@ export async function seed_non_collaborative_file(args: { ctx: MutationCtx; path
 		updatedAt: now,
 	});
 	const nodeId = await ctx.db.insert("files_nodes", {
+		pendingContentVersion: 1,
 		organizationId,
 		workspaceId,
 		parentId: files_ROOT_ID,
@@ -931,6 +934,7 @@ export async function upsert_file_pending_update_internal_for_test(args: {
 	const batch = await args.t.mutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
+			expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -1038,6 +1042,7 @@ export async function upsert_file_pending_update_public_for_test(
 	// Mirror the client flow: one batch, one bounded text per staging call, then the finishing
 	// action that carries only ids. A staging refusal already retired the batch server-side.
 	const batch = await asIdentity.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+		expectedPendingContentVersion: (await asIdentity.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
 		membershipId: args.membershipId,
 		target: { kind: "saved", id: args.nodeId },
 	});
@@ -1092,6 +1097,7 @@ export async function persist_file_pending_update_rebased_state_for_test(
 	// batch, then run the finishing action that carries only ids. A refusal at any staging step
 	// already retired the batch server-side, so return it directly.
 	const batch = await asIdentity.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+		expectedPendingContentVersion: (await asIdentity.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
 		membershipId: args.membershipId,
 		target: { kind: "saved", id: args.nodeId },
 	});
@@ -1159,6 +1165,7 @@ export async function stage_and_seal_input_family_for_test(args: {
 	const batch = await args.t.mutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
+			expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -1274,6 +1281,7 @@ export async function seal_output_family_for_test(
 	seeded: Awaited<ReturnType<typeof seed_non_collaborative_file>>,
 ) {
 	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
 		organizationId: seeded.organizationId,
 		workspaceId: seeded.workspaceId,
 		userId: seeded.userId,

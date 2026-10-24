@@ -634,6 +634,7 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: files
 		...files_content_type_index_fields(place.contentType),
 		textKind: place.textKind,
 		collaborationEnabled: place.collaborationEnabled,
+		pendingContentVersion: place.pendingContentVersion,
 		contentByteSize: place.contentByteSize,
 		yjsSnapshotId: content.afterSnapshotId,
 		yjsLastSequenceId: content.afterSequence?.lastSequenceId ?? null,

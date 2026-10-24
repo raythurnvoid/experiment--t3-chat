@@ -122,6 +122,7 @@ async function data_deletion_test_seed_page(
 		updatedAt: Date.now(),
 		contentType: null,
 		assetId: null,
+		pendingContentVersion: 1,
 		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
@@ -284,6 +285,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedAt: Date.now(),
 			contentType: "text/markdown;charset=utf-8",
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
@@ -530,6 +532,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			userId: args.userId,
 			fileNodeId,
 			lastSequenceSaved: 1,
+			pendingContentVersion: 1,
 			updatedAt: Date.now(),
 		});
 		const threadId = await ctx.db.insert("ai_chat_threads", {
@@ -787,6 +790,7 @@ async function review_seed_all_workspace_content(
 			target: { kind: "saved", id: node._id },
 			expectedPendingUpdateId: pending._id,
 			expectedRevision: 1,
+			expectedPendingContentVersion: node.pendingContentVersion,
 			expectedPrivateVersion: null,
 			expiresAt: now + 1_800_000,
 			lastActivityAt: now,
@@ -825,7 +829,8 @@ async function review_seed_all_workspace_content(
 		}
 		await ctx.db.patch("files_pending_updates", pending._id, {
 			content: {
-				base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+				rootKind: "rich_text",
+				base: { kind: "yjs", sequence: 1, lineageGeneration: 0, pendingContentVersion: 1 },
 				baseStateId: activeIds[0]!,
 				stagedStateId: activeIds[1]!,
 				unstagedStateId: activeIds[2]!,
@@ -1213,6 +1218,7 @@ async function review_seed_all_workspace_content(
 			updatedAt: now,
 			contentType: null,
 			assetId: null,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			textKind: null,
 			collaborationEnabled: null,
@@ -1255,6 +1261,7 @@ async function review_seed_all_workspace_content(
 			updatedBy: args.userId,
 			updatedAt: now,
 			assetId: uploadAssetId,
+			pendingContentVersion: 1,
 			contentByteSize: null,
 			contentType: "image/png",
 			textKind: null,
@@ -2238,6 +2245,7 @@ describe("hard_delete_user_now", () => {
 					userId: user.userId,
 					fileNodeId: file.nodeId,
 					lastSequenceSaved: 1,
+					pendingContentVersion: 1,
 					updatedAt: Date.now(),
 				});
 			}

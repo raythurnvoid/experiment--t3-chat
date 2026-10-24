@@ -1153,6 +1153,8 @@ describe("restore_snapshot_r2", () => {
 				});
 			const before = await readProposals();
 			expect(before.pending).toHaveLength(2);
+			expect(before.pending.every((pending) => pending.content?.rootKind === sourceRootKind)).toBe(true);
+			let pendingContentVersion = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion;
 			const restoredText = "Restored text\n";
 
 			const versionId = await t.run(async (ctx) => {
@@ -1192,16 +1194,9 @@ describe("restore_snapshot_r2", () => {
 					sessionId: "restore-preserved-proposals",
 				});
 				expect(restored._nay).toBeUndefined();
-				expect(await readProposals()).toEqual({
-					...before,
-					pending: before.pending.map((pending) => ({
-						...pending,
-						revision: pending.revision + 1,
-						contentNeedsRebase: true,
-						contentRebaseRootKind: sourceRootKind,
-					})),
-				});
+				expect(await readProposals()).toEqual(before);
 				const node = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+				expect(node?.pendingContentVersion).toBe(++pendingContentVersion);
 				expect(node?.textKind).toBe(rootKind);
 				expect(node?.collaborationEnabled === false).toBe(off);
 				const content = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
@@ -1213,6 +1208,145 @@ describe("restore_snapshot_r2", () => {
 			}
 		},
 	);
+
+	test("a no-op Restore keeps live history and refuses an earlier draft input", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db, asUser, nodeId, snapshotId, pointers } = fixture;
+		const pending = await create_pending_proposal({ fixture });
+		const before = await t.run(async (ctx) => ({
+			node: (await ctx.db.get("files_nodes", nodeId))!,
+			sequence: (await ctx.db.get("files_yjs_docs_last_sequences", pointers.yjsLastSequenceId))!,
+			updates: await ctx.db.query("files_yjs_updates").collect(),
+		}));
+		const target = { kind: "saved", id: nodeId } as const;
+		const input = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+			membershipId: db.membershipId,
+			target,
+			expectedPendingContentVersion: before.node.pendingContentVersion,
+		});
+		if (input._nay) throw new Error(input._nay.message);
+
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId,
+					sessionId: "no-op-restore",
+				})
+			)._nay,
+		).toBeUndefined();
+		const after = await t.run(async (ctx) => ({
+			node: (await ctx.db.get("files_nodes", nodeId))!,
+			sequence: await ctx.db.get("files_yjs_docs_last_sequences", pointers.yjsLastSequenceId),
+			updates: await ctx.db.query("files_yjs_updates").collect(),
+			pending: await ctx.db.get("files_pending_updates", pending._id),
+		}));
+		expect(after.node.pendingContentVersion).toBe(before.node.pendingContentVersion + 1);
+		expect(after.node.yjsLastSequenceId).toBe(before.node.yjsLastSequenceId);
+		expect(after.node.yjsSnapshotId).toBe(before.node.yjsSnapshotId);
+		expect(after.sequence).toEqual(before.sequence);
+		expect(after.updates).toEqual(before.updates);
+		expect(after.pending).toEqual(pending);
+		expect(
+			(
+				await asUser.mutation(api.files_pending_updates.stage_file_pending_update_text_input, {
+					membershipId: db.membershipId,
+					operationBatchId: input._yay.operationBatchId,
+					role: "unstaged",
+					text: "Earlier editor text\n",
+				})
+			)._nay,
+		).toBeDefined();
+		expect(
+			(
+				await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+					membershipId: db.membershipId,
+					target,
+					expectedPendingContentVersion: before.node.pendingContentVersion,
+				})
+			)._nay,
+		).toBeDefined();
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
+	});
+
+	test("a no-op Restore cannot commit across another no-op Restore", async () => {
+		vi.useFakeTimers();
+		const { t, db, asUser, nodeId, snapshotId, pointers } = await create_file_fixture();
+		const before = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+		const fetchObject = vi.mocked(fetch);
+		const originalFetch = fetchObject.getMockImplementation()!;
+		let restoredDuringRead = false;
+		fetchObject.mockImplementation(async (input, init) => {
+			if (!restoredDuringRead && init?.method !== "PUT") {
+				restoredDuringRead = true;
+				const inner = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId,
+					sessionId: "inner-no-op-restore",
+				});
+				expect(inner._nay).toBeUndefined();
+			}
+			return await originalFetch(input, init);
+		});
+		const outer = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId,
+			sessionId: "outer-no-op-restore",
+		});
+		expect(restoredDuringRead).toBe(true);
+		expect(outer._nay, "the earlier read must not receive the newer Restore's version").toBeDefined();
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
+			pendingContentVersion: before.pendingContentVersion + 1,
+			yjsLastSequenceId: pointers.yjsLastSequenceId,
+			yjsSnapshotId: pointers.yjsSnapshotId,
+		});
+	});
+
+	test("Restore hides an old Save marker and the next Save overwrites that row", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db, asUser, nodeId, snapshotId } = fixture;
+		const target = { kind: "saved", id: nodeId } as const;
+		const save = async (text: string) => {
+			const pending = await create_pending_proposal({ fixture, texts: { staged: text, unstaged: text } });
+			const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: db.membershipId,
+				target,
+				pendingUpdateId: pending._id,
+				reviewedRevision: pending.revision,
+			});
+			if (saved._nay) throw new Error(saved._nay.message);
+			if ("kind" in saved._yay) await test_finish_pending_update_run(asUser, saved._yay.runId);
+		};
+		const readMarker = () =>
+			asUser.query(api.files_pending_updates.get_file_pending_update_last_sequence_saved, {
+				membershipId: db.membershipId,
+				nodeId,
+			});
+		await save("First saved text\n");
+		const marker = await readMarker();
+		expect(marker).not.toBeNull();
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId,
+					sessionId: "restore-marker",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await readMarker()).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates_last_sequence_saved", marker!._id))).toEqual(marker);
+		await save("Second saved text\n");
+		const currentMarker = await readMarker();
+		const node = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+		expect(currentMarker).toMatchObject({ _id: marker!._id, pendingContentVersion: node.pendingContentVersion });
+	});
 
 	test("normalizes a version saved with collaboration off when the live document already matches", async () => {
 		const t = test_convex();
@@ -1334,12 +1468,7 @@ describe("restore_snapshot_r2", () => {
 		const node = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(node?.contentType).toBe("application/octet-stream");
 		expect(node?.yjsSnapshotId).toBeNull();
-		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual({
-			...pending,
-			revision: pending.revision + 2,
-			contentNeedsRebase: true,
-			contentRebaseRootKind: "plain_text",
-		});
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
 	});
 
 	test.each([false, true])(
@@ -1569,7 +1698,7 @@ describe("copy_transfer_file saved replacement", () => {
 
 describe("accept_file_pending_replacement", () => {
 	test.each(["text", "stored bytes"] as const)(
-		"drops another owner's retained proposal when copying %s after a stored-byte restore",
+		"keeps another owner's retained proposal when copying %s after a stored-byte restore",
 		async (sourceKind) => {
 			vi.useFakeTimers();
 			const fixture = await create_file_fixture("rich_text");
@@ -1594,6 +1723,27 @@ describe("accept_file_pending_replacement", () => {
 				return userId;
 			});
 			const pending = await create_pending_proposal({ fixture, userId: otherUserId });
+			const readDraft = () =>
+				t.run(async (ctx) => {
+					const stateIds = [pending.content!.baseStateId, pending.content!.stagedStateId, pending.content!.unstagedStateId];
+					return {
+						pending: await ctx.db.get("files_pending_updates", pending._id),
+						states: await Promise.all(stateIds.map((id) => ctx.db.get("files_pending_update_yjs_states", id))),
+						pages: await Promise.all(
+							stateIds.map((stateId) =>
+								ctx.db
+									.query("files_pending_update_yjs_state_pages")
+									.withIndex("by_state_pageIndex", (q) => q.eq("stateId", stateId))
+									.collect(),
+							),
+						),
+						chunks: await ctx.db
+							.query("files_text_chunks")
+							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pending._id))
+							.collect(),
+					};
+				});
+			const beforeDraft = await readDraft();
 			await t.run((ctx) =>
 				ctx.db.patch("files_snapshots", snapshotId, {
 					contentType: "application/octet-stream",
@@ -1630,12 +1780,7 @@ describe("accept_file_pending_replacement", () => {
 			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.textKind).toBeNull();
 			// The old text file could not back media, so no proof could have checked it.
 			expect(await contentClocks()).toEqual(beforeRestore);
-			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual({
-				...pending,
-				revision: pending.revision + 2,
-				contentNeedsRebase: true,
-				contentRebaseRootKind: "rich_text",
-			});
+			expect(await readDraft()).toEqual(beforeDraft);
 			let sourceId: Id<"files_nodes">;
 			if (sourceKind === "text") {
 				sourceId = await test_create_saved_text_file(t, {
@@ -1675,15 +1820,7 @@ describe("accept_file_pending_replacement", () => {
 					})
 				)._nay,
 			).toBeUndefined();
-			await t.run(async (ctx) => {
-				expect(await ctx.db.get("files_pending_updates", pending._id)).toBeNull();
-				expect(
-					await ctx.db
-						.query("files_text_chunks")
-						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pending._id))
-						.collect(),
-				).toHaveLength(0);
-			});
+			expect(await readDraft()).toEqual(beforeDraft);
 			// The accepted proposal was a pending replacement, so a proof could check the file through it.
 			const contentClock = mediaPins.versions[2]!;
 			expect(

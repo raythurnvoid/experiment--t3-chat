@@ -39,6 +39,7 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 
 		const nodeId = await ctx.db.insert("files_nodes", {
 			...basePageData,
+			pendingContentVersion: 1,
 			path: "/chunked-page",
 			treePath: "/chunked-page",
 			pathDepth: 1,

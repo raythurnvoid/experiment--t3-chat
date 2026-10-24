@@ -1846,6 +1846,7 @@ export async function files_nodes_db_create_private_node_by_path(
 							expectedPendingUpdateId: pendingUpdateId,
 							expectedRevision: 1,
 							expectedPrivateVersion: { creationGeneration: 1, structuralRevision: 1 },
+							expectedPendingContentVersion: null,
 							initialCreation: true,
 							...(args.agentSource ? { agentSource: args.agentSource } : {}),
 							expiresAt: now + 30 * 60 * 1000,
@@ -5593,6 +5594,7 @@ export const read_file_content_from_chunks = internalQuery({
 			moreLines: v.boolean(),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
+			pendingContentVersion: v.union(v.number(), v.null()),
 		}),
 		v.null(),
 	),
@@ -5619,6 +5621,7 @@ export const read_file_content_from_chunks = internalQuery({
 
 		const fileNode = entry.kind === "saved" ? entry.node : null;
 		const target = entry.kind === "saved" ? { kind: "saved" as const, id: entry.node._id } : entry.pendingUpdate.target;
+		const pendingContentVersion = fileNode?.pendingContentVersion ?? null;
 
 		const requestedOrganizationId = args.organizationId;
 		const requestedWorkspaceId = args.workspaceId;
@@ -5718,6 +5721,7 @@ export const read_file_content_from_chunks = internalQuery({
 							moreLines: prefix.moreLines,
 							pendingUpdateId: pendingUpdate._id,
 							pendingUpdateBaseStateId,
+							pendingContentVersion,
 						};
 					}
 
@@ -5733,6 +5737,7 @@ export const read_file_content_from_chunks = internalQuery({
 										moreLines: false,
 										pendingUpdateId: pendingUpdate._id,
 										pendingUpdateBaseStateId,
+										pendingContentVersion,
 									};
 						}
 
@@ -5744,6 +5749,7 @@ export const read_file_content_from_chunks = internalQuery({
 							moreLines: false,
 							pendingUpdateId: pendingUpdate._id,
 							pendingUpdateBaseStateId,
+							pendingContentVersion,
 						};
 					}
 
@@ -5767,6 +5773,7 @@ export const read_file_content_from_chunks = internalQuery({
 						moreLines: range.moreLines,
 						pendingUpdateId: pendingUpdate._id,
 						pendingUpdateBaseStateId,
+						pendingContentVersion,
 					};
 				}
 			} else if (args.pendingUpdateId != null) {
@@ -5825,6 +5832,7 @@ export const read_file_content_from_chunks = internalQuery({
 				moreLines: prefix.moreLines,
 				pendingUpdateId: null,
 				pendingUpdateBaseStateId,
+				pendingContentVersion,
 			};
 		}
 
@@ -5849,12 +5857,20 @@ export const read_file_content_from_chunks = internalQuery({
 							moreLines: false,
 							pendingUpdateId: null,
 							pendingUpdateBaseStateId,
+							pendingContentVersion,
 						};
 			}
 
 			const content = files_merge_contiguous_chunks(chunks);
 			if (content == null) return null;
-			return { target, content, moreLines: false, pendingUpdateId: null, pendingUpdateBaseStateId };
+			return {
+				target,
+				content,
+				moreLines: false,
+				pendingUpdateId: null,
+				pendingUpdateBaseStateId,
+				pendingContentVersion,
+			};
 		}
 
 		// Line reads use the lineEnd index to seek near the requested start line
@@ -5885,6 +5901,7 @@ export const read_file_content_from_chunks = internalQuery({
 			moreLines: range.moreLines,
 			pendingUpdateId: null,
 			pendingUpdateBaseStateId,
+			pendingContentVersion,
 		};
 	},
 });

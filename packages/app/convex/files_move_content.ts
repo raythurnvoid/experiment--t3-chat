@@ -468,7 +468,14 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 		}
 		const accepted = await input("staged");
 		const remainder = await input("unstaged");
-		const afterProposal = db_after_proposal({ content, proposal, nextSequence, operationTime: cohort.operationTime });
+		const afterProposal = db_after_proposal({
+			content,
+			proposal,
+			nextSequence,
+			pendingContentVersion: node.pendingContentVersion + (prepared.kind === "replacement" ? 1 : 0),
+			rootKind: shape.rootKind,
+			operationTime: cohort.operationTime,
+		});
 		const docs = files_metadata_content_stage_docs({
 			node: { ...node, textKind: shape.rootKind },
 			metadata:
@@ -546,6 +553,8 @@ function db_after_proposal(args: {
 	content: Doc<"files_move_cohort_content">;
 	proposal: Doc<"files_pending_updates">;
 	nextSequence: number;
+	pendingContentVersion: number;
+	rootKind: Doc<"files_nodes">["textKind"];
 	operationTime: number;
 }) {
 	const { content, proposal, nextSequence } = args;
@@ -564,16 +573,29 @@ function db_after_proposal(args: {
 		pendingArchive: undefined,
 		pendingReplacement: undefined,
 		copiedFrom: undefined,
-		contentNeedsRebase: undefined,
-		contentRebaseRootKind: undefined,
 		content: family
 			? {
+					rootKind: args.rootKind!,
 					base:
 						prepared.kind === "saved_yjs"
-							? { kind: "yjs" as const, sequence: nextSequence, lineageGeneration: prepared.baseLineageGeneration }
+							? {
+									kind: "yjs" as const,
+									sequence: nextSequence,
+									lineageGeneration: prepared.baseLineageGeneration,
+									pendingContentVersion: args.pendingContentVersion,
+								}
 							: content.afterYjsSnapshotAssetId
-								? { kind: "yjs" as const, sequence: 0, lineageGeneration: 0 }
-								: { kind: "asset" as const, assetId: content.afterAssetId! },
+								? {
+										kind: "yjs" as const,
+										sequence: 0,
+										lineageGeneration: 0,
+										pendingContentVersion: args.pendingContentVersion,
+									}
+								: {
+										kind: "asset" as const,
+										assetId: content.afterAssetId!,
+										pendingContentVersion: args.pendingContentVersion,
+									},
 					baseStateId: family.baseStateId,
 					stagedStateId: family.stagedStateId,
 					unstagedStateId: family.unstagedStateId,
@@ -596,6 +618,7 @@ async function db_seal(
 	const { content, cohort, proposal, node } = args;
 	const prepared = content.prepared!;
 	const shape = content_shape(content, proposal, node);
+	const pendingContentVersion = node.pendingContentVersion + (prepared.kind === "replacement" ? 1 : 0);
 	const accepted = await db_input(ctx, content, "staged");
 	const remainder = await db_input(ctx, content, "unstaged");
 	const changed = node.kind === "file" && changes_saved_content(prepared);
@@ -734,6 +757,7 @@ async function db_seal(
 	const afterContentVersion = afterSequence
 		? {
 				kind: "yjs" as const,
+				pendingContentVersion,
 				lastSequenceId: afterSequence.lastSequenceId,
 				lineageGeneration: afterSequence.lineageGeneration,
 				sequence: afterSequence.lastSequence,
@@ -779,6 +803,7 @@ async function db_seal(
 		...files_content_type_index_fields(shape.contentType),
 		textKind: shape.rootKind,
 		collaborationEnabled: shape.collaborationEnabled,
+		pendingContentVersion,
 		contentByteSize: size,
 		yjsSnapshotId: afterSnapshotId,
 		yjsLastSequenceId: afterSequence?.lastSequenceId ?? null,
@@ -811,6 +836,8 @@ async function db_seal(
 		content: { ...content, afterAssetId: assetId },
 		proposal,
 		nextSequence: afterSequence?.lastSequence ?? 0,
+		pendingContentVersion,
+		rootKind: shape.rootKind,
 		operationTime: cohort.operationTime,
 	});
 	await db_add_private_accounting(ctx, {

@@ -320,6 +320,8 @@ describe("Move unchanged plain chunks", () => {
 		const batch = await owner.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId: owner.membershipId,
 			target: { kind: "saved", id: f.nodeId },
+			expectedPendingContentVersion: (await owner.asUser.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))!
+				.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		for (const role of ["staged", "unstaged"] as const)

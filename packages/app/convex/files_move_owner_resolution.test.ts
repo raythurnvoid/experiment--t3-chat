@@ -90,6 +90,7 @@ describe("Move owner parent resolution", () => {
 		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId: f.db.membershipId,
 			target: initial.target,
+			expectedPendingContentVersion: null,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const partial = await stage_text({
@@ -195,6 +196,7 @@ describe("Move owner parent resolution", () => {
 					const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 						membershipId: f.db.membershipId,
 						target: initial.target,
+						expectedPendingContentVersion: null,
 					});
 					if (batch._nay) throw new Error(batch._nay.message);
 					partial = await stage_text({

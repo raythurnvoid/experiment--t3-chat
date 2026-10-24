@@ -141,6 +141,7 @@ test("pending scope pages follow the latest saved path and archive state without
 	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 		...scope,
 		target,
+		expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	const text = `---\n${Array.from({ length: 12 }, (_, index) => `key${index}: value${index}`).join("\n")}\n---\n${"Pending paragraph.\n\n".repeat(1000)}`;

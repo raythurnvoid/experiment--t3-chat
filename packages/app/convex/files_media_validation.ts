@@ -88,12 +88,13 @@ export function files_media_validation_is_media_version(version: {
 export async function files_media_validation_db_can_back_media(ctx: MutationCtx, node: Doc<"files_nodes">) {
 	if (node.kind !== "file") return false;
 	if (files_media_validation_is_media_version(node)) return true;
-	// A user has at most one proposal per target, so this range holds one doc per member at most.
-	for await (const proposal of ctx.db
+	const replacement = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", node._id)))
-		if (proposal.pendingReplacement !== undefined) return true;
-	return false;
+		.withIndex("by_target_replacement", (q) =>
+			q.eq("target.kind", "saved").eq("target.id", node._id).gt("pendingReplacement.assetId", undefined),
+		)
+		.first();
+	return replacement !== null;
 }
 
 /**

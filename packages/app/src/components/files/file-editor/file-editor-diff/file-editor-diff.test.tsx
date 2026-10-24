@@ -301,7 +301,13 @@ beforeEach(() => {
 	convexActionMock.mockReset().mockReturnValue(new Promise(() => {}));
 	convexMutationMock.mockReset();
 	useStableQueryMock.mockReset();
-	useQueryMock.mockReset();
+	useQueryMock
+		.mockReset()
+		.mockImplementation((reference, args) =>
+			args !== "skip" && getFunctionName(reference) === "files_yjs_load:get_file_last_yjs_sequence"
+				? { pendingContentVersion: 1 }
+				: undefined,
+		);
 	convexWatchQueryMock.mockReset();
 	waitNewQueryValueMock.mockReset();
 	openReviewRunMock.mockReset();
@@ -619,12 +625,14 @@ const nonCollabPendingUpdate = {
 	revision: 1,
 	updatedAt: 1,
 	content: {
-		base: { kind: "asset", assetId: "asset_1" },
+		rootKind: "plain_text",
+		base: { kind: "asset", assetId: "asset_1", pendingContentVersion: 1 },
 		baseStateId: "state_base",
 		stagedStateId: "state_staged",
 		unstagedStateId: "state_unstaged",
 	},
 	currentYjsLastSequenceId: null,
+	currentPendingContentVersion: 1,
 } as unknown as app_convex_Doc<"files_pending_updates">;
 
 /**
@@ -787,10 +795,11 @@ describe("FileEditorDiff draft versions", () => {
 	});
 
 	test("opens queued private Save before clearing busy and never reports completed success", async () => {
-		const target = { kind: "private", id: "private_1" } as const;
+		const target = { kind: "private", id: "private_1" as app_convex_Id<"files_pending_nodes"> } as const;
 		const pendingUpdate = {
 			...nonCollabPendingUpdate,
 			target,
+			currentPendingContentVersion: null,
 			content: { ...nonCollabPendingUpdate.content!, base: { kind: "new" } },
 		} as app_convex_Doc<"files_pending_updates">;
 		const onTargetChange = vi.fn();
@@ -803,8 +812,10 @@ describe("FileEditorDiff draft versions", () => {
 				: { _yay: { kind: "queued", runId: "run_1", activityId: "activity_1" } },
 		);
 		openReviewRunMock.mockImplementation(() => {
-			expect((screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled,
-				"Activity opens while Save is still busy").toBe(true);
+			expect(
+				(screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled,
+				"Activity opens while Save is still busy",
+			).toBe(true);
 		});
 		renderNonCollabProposalReview({
 			committedAssetId: "asset_1",
@@ -822,6 +833,7 @@ describe("FileEditorDiff draft versions", () => {
 		expect(convexMutationMock).toHaveBeenCalledWith("create_file_pending_update_operation_batch", {
 			membershipId: MEMBERSHIP_ID,
 			target,
+			expectedPendingContentVersion: null,
 		});
 		expect(convexActionMock.mock.calls[1]?.[1]).toMatchObject({ target, reviewedRevision: 2 });
 		expect(openReviewRunMock, "queued Save opens its Activity").toHaveBeenCalledWith("run_1");
@@ -865,7 +877,7 @@ describe("FileEditorDiff draft versions", () => {
 
 	test("a hidden stale review waits to prepare until Editor is selected", async () => {
 		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
-		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: true });
+		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, currentPendingContentVersion: 2 });
 		resolveStatePages({ base: "saved\n", staged: "accepted\n", unstaged: "proposed\n" });
 		const { rerenderWith } = renderNonCollabProposalReview({ ref, isActive: false, committedAssetId: "asset_1" });
 		await flushNonCollabProposalMount();
@@ -878,6 +890,51 @@ describe("FileEditorDiff draft versions", () => {
 		expect(getFunctionName(convexActionMock.mock.calls[0]![0])).toBe(
 			"files_pending_updates:prepare_file_pending_update_for_review",
 		);
+	});
+
+	test("a no-packet Restore blocks old pane writes with the same proposal, family and head", async () => {
+		vi.useFakeTimers();
+		try {
+			const pending = {
+				...nonCollabPendingUpdate,
+				content: {
+					...nonCollabPendingUpdate.content!,
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
+				},
+				currentYjsLastSequenceId: "sequence_live",
+			};
+			useStableQueryMock.mockReturnValue(pending);
+			resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
+			const { rerenderWith } = renderNonCollabProposalReview({
+				committedAssetId: "asset_1",
+				nonCollaborative: false,
+				yjsLastSequenceId: "sequence_live",
+			});
+			await flushNonCollabProposalMount();
+			act(() => {
+				getPanes().modified.setValue("proposed with unsent typing\n");
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			useStableQueryMock.mockReturnValue({ ...pending, currentPendingContentVersion: 2 });
+			rerenderWith();
+			await flushNonCollabProposalMount();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			expect(monacoHarness.updateOptionsCalls.at(-1), "the unchanged family stays blocked after Restore").toMatchObject(
+				{ readOnly: true },
+			);
+			expect(convexMutationMock, "old pane text is never admitted as a new current batch").not.toHaveBeenCalled();
+			expect(
+				convexActionMock.mock.calls.map(([reference]) => getFunctionName(reference)),
+				"the new version prepares the unchanged family",
+			).toContain("files_pending_updates:prepare_file_pending_update_for_review");
+			expect(getPanes().modified.getValue(), "unsent text remains available while preparation waits").toBe(
+				"proposed with unsent typing\n",
+			);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("typing queued before Preview still persists while the editor is hidden", async () => {
@@ -936,7 +993,7 @@ describe("FileEditorDiff draft versions", () => {
 		const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 		await flushNonCollabProposalMount();
 		act(() => screen.getByRole("button", { name: "Save staged changes" }).focus());
-		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: true });
+		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, currentPendingContentVersion: 2 });
 		rerenderWith({ isActive: false });
 		await flushNonCollabProposalMount();
 		await act(async () => {
@@ -1011,7 +1068,7 @@ describe("FileEditorDiff draft versions", () => {
 				...nonCollabPendingUpdate,
 				content: {
 					...nonCollabPendingUpdate.content!,
-					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 				},
 				currentYjsLastSequenceId: "sequence_live",
 				pendingMove: { fromPath: "old.txt", toPath: "new.txt" },
@@ -1024,6 +1081,7 @@ describe("FileEditorDiff draft versions", () => {
 				yjsSequence: 0,
 				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				pendingContentVersion: 1,
 			});
 			const { rerenderWith } = renderNonCollabProposalReview({
 				committedAssetId: "asset_1",
@@ -1286,13 +1344,14 @@ describe("FileEditorDiff draft versions", () => {
 					yjsSequence: 0,
 					textKind: "plain_text",
 					yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+					pendingContentVersion: 1,
 				});
 				useStableQueryMock.mockReturnValue(null);
 				const initial = {
 					...nonCollabPendingUpdate,
 					content: {
 						...nonCollabPendingUpdate.content!,
-						base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+						base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 					},
 					currentYjsLastSequenceId: "sequence_live",
 				};
@@ -1434,7 +1493,7 @@ describe("FileEditorDiff draft versions", () => {
 				...nonCollabPendingUpdate,
 				content: {
 					...nonCollabPendingUpdate.content!,
-					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 				},
 				currentYjsLastSequenceId: "sequence_live",
 			};
@@ -1446,6 +1505,7 @@ describe("FileEditorDiff draft versions", () => {
 				yjsSequence: 0,
 				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				pendingContentVersion: 1,
 			});
 			const { rerenderWith } = renderNonCollabProposalReview({
 				committedAssetId: "asset_1",
@@ -1498,7 +1558,7 @@ describe("FileEditorDiff draft versions", () => {
 					...nonCollabPendingUpdate,
 					content: {
 						...nonCollabPendingUpdate.content!,
-						base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+						base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 					},
 					currentYjsLastSequenceId: "sequence_live",
 				};
@@ -1510,6 +1570,7 @@ describe("FileEditorDiff draft versions", () => {
 					yjsSequence: committedSequence,
 					textKind: "plain_text",
 					yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+					pendingContentVersion: 1,
 				}));
 				convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
 					if (reference === "stage_file_pending_update_text_input") {
@@ -1608,7 +1669,7 @@ describe("FileEditorDiff draft versions", () => {
 					...nonCollabPendingUpdate,
 					content: {
 						...nonCollabPendingUpdate.content!,
-						base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+						base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 					},
 					currentYjsLastSequenceId: "sequence_live",
 				};
@@ -1687,6 +1748,7 @@ describe("FileEditorDiff draft versions", () => {
 				yjsSequence: 0,
 				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				pendingContentVersion: 1,
 			});
 			useStableQueryMock.mockReturnValue(null);
 			let savedText = "base\n";
@@ -1694,7 +1756,7 @@ describe("FileEditorDiff draft versions", () => {
 				...nonCollabPendingUpdate,
 				content: {
 					...nonCollabPendingUpdate.content!,
-					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 				},
 				currentYjsLastSequenceId: "sequence_live",
 			};
@@ -1754,7 +1816,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			updatedAt: 3,
 			content: {
 				...nonCollabPendingUpdate.content!,
-				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 			},
 			currentYjsLastSequenceId: "sequence_live",
 		});
@@ -1772,6 +1834,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			yjsSequence: 1,
 			textKind: "plain_text",
 			yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			pendingContentVersion: 1,
 		});
 		vi.mocked(files_persist_file_pending_update_rebased_state).mockResolvedValue(
 			Result({ _yay: { pendingUpdate: null } }),
@@ -1797,8 +1860,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 	test("loads preserved branches using their source shape before preparing the new shape", async () => {
 		useStableQueryMock.mockReturnValue({
 			...nonCollabPendingUpdate,
-			contentNeedsRebase: true,
-			contentRebaseRootKind: "plain_text",
+			currentPendingContentVersion: 2,
 		});
 		resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
 		renderNonCollabProposalReview({ committedAssetId: "asset_2", rootKind: "rich_text" });
@@ -1820,7 +1882,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			...nonCollabPendingUpdate,
 			content: {
 				...nonCollabPendingUpdate.content!,
-				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 			},
 			currentYjsLastSequenceId: "sequence_old",
 		};
@@ -1838,6 +1900,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			yjsSequence: 1,
 			textKind: "plain_text",
 			yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			pendingContentVersion: 1,
 		});
 
 		fireEvent.click(screen.getByRole("button", { name: "Restore test snapshot" }));
@@ -1852,7 +1915,8 @@ describe("FileEditorDiff after a collaboration change", () => {
 			revision: 2,
 			updatedAt: 2,
 			content: {
-				base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+				rootKind: "plain_text",
+				base: { kind: "yjs", sequence: 1, lineageGeneration: 0, pendingContentVersion: 1 },
 				baseStateId: "restored_base",
 				stagedStateId: "restored_staged",
 				unstagedStateId: "restored_unstaged",
@@ -1882,7 +1946,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				...nonCollabPendingUpdate,
 				content: {
 					...nonCollabPendingUpdate.content!,
-					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 				},
 				currentYjsLastSequenceId: "sequence_live",
 			};
@@ -1891,7 +1955,8 @@ describe("FileEditorDiff after a collaboration change", () => {
 				revision: 2,
 				updatedAt: 2,
 				content: {
-					base: { kind: "yjs", sequence: 1, lineageGeneration: 0 },
+					rootKind: "plain_text",
+					base: { kind: "yjs", sequence: 1, lineageGeneration: 0, pendingContentVersion: 1 },
 					baseStateId: "restored_base",
 					stagedStateId: "restored_staged",
 					unstagedStateId: "restored_unstaged",
@@ -1943,6 +2008,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				yjsSequence: 10,
 				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				pendingContentVersion: 1,
 			});
 			const { rerenderWith } = renderNonCollabProposalReview({
 				committedAssetId: "asset_1",
@@ -1961,6 +2027,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				yjsSequence: 0,
 				textKind: "plain_text" as const,
 				yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				pendingContentVersion: 1,
 			};
 			const fetchFinished = Promise.withResolvers<typeof nextContent>();
 			vi.mocked(files_fetch_file_yjs_state_and_text).mockReturnValue(fetchFinished.promise);
@@ -1991,7 +2058,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			...nonCollabPendingUpdate,
 			content: {
 				...nonCollabPendingUpdate.content!,
-				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 			},
 			currentYjsLastSequenceId: "sequence_old",
 		});
@@ -2009,6 +2076,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			yjsSequence: 1,
 			textKind: "plain_text",
 			yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			pendingContentVersion: 1,
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Sync with live file" }));
 		await flushNonCollabProposalMount();
@@ -2025,7 +2093,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				...nonCollabPendingUpdate,
 				content: {
 					...nonCollabPendingUpdate.content!,
-					base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+					base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 				},
 				currentYjsLastSequenceId: "sequence_old",
 			});
@@ -2036,6 +2104,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				yjsSequence: 10,
 				textKind: "plain_text" as const,
 				yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				pendingContentVersion: 1,
 			};
 			const newContent = {
 				text: Result({ _yay: "new document\n" }),
@@ -2043,6 +2112,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				yjsSequence: 0,
 				textKind: "plain_text" as const,
 				yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				pendingContentVersion: 1,
 			};
 			const { rerenderWith } = renderNonCollabProposalReview({
 				committedAssetId: "asset_1",
@@ -2063,7 +2133,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 									...nonCollabPendingUpdate,
 									content: {
 										...nonCollabPendingUpdate.content!,
-										base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+										base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 									},
 									revision: 2,
 									updatedAt: 2,
@@ -2114,7 +2184,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			...nonCollabPendingUpdate,
 			content: {
 				...nonCollabPendingUpdate.content!,
-				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 			},
 			currentYjsLastSequenceId: "sequence_old",
 		};
@@ -2165,7 +2235,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 								...nonCollabPendingUpdate,
 								content: {
 									...nonCollabPendingUpdate.content!,
-									base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+									base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 								},
 								currentYjsLastSequenceId: "sequence_old",
 							};
@@ -2182,10 +2252,11 @@ describe("FileEditorDiff after a collaboration change", () => {
 					revision: 2,
 					updatedAt: 2,
 					content: {
+						rootKind: "plain_text",
 						base:
 							mode === "on"
-								? { kind: "yjs", sequence: 0, lineageGeneration: 0 }
-								: { kind: "asset", assetId: "asset_2" },
+								? { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 }
+								: { kind: "asset", assetId: "asset_2", pendingContentVersion: 1 },
 						baseStateId: "base_2",
 						stagedStateId: "staged_2",
 						unstagedStateId: "unstaged_2",
@@ -2248,13 +2319,15 @@ describe("FileEditorDiff after a collaboration change", () => {
 	);
 
 	test.each([true, false])("prepares once and waits for query and pages with a toggle marker: %s", async (marked) => {
-		const pending = { ...nonCollabPendingUpdate, contentNeedsRebase: marked || undefined } as const;
+		const pending = { ...nonCollabPendingUpdate, currentPendingContentVersion: marked ? 2 : 1 } as const;
 		const prepared = {
 			...nonCollabPendingUpdate,
+			currentPendingContentVersion: marked ? 2 : 1,
 			revision: 2,
 			updatedAt: 2,
 			content: {
-				base: { kind: "asset", assetId: "asset_2" },
+				rootKind: "plain_text",
+				base: { kind: "asset", assetId: "asset_2", pendingContentVersion: marked ? 2 : 1 },
 				baseStateId: "base_2",
 				stagedStateId: "staged_2",
 				unstagedStateId: "unstaged_2",
@@ -2308,7 +2381,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 	});
 
 	test.each([true, false])("a conflict keeps both copies and Retry with a toggle marker: %s", async (marked) => {
-		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: marked || undefined });
+		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, currentPendingContentVersion: marked ? 2 : 1 });
 		resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
 		convexActionMock.mockResolvedValue({ _nay: { message: "These changes overlap newer file text." } });
 		convexMutationMock.mockResolvedValue({ _yay: null });
@@ -2352,7 +2425,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 					getPanes().modified.setValue("unsent typing\n");
 					monacoHarness.changeListeners.forEach((listener) => listener());
 				});
-				useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: marked || undefined });
+				useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, currentPendingContentVersion: marked ? 2 : 1 });
 				rerenderWith({ committedAssetId: "asset_2" });
 				await flushNonCollabProposalMount();
 				await act(async () => {
@@ -2361,10 +2434,12 @@ describe("FileEditorDiff after a collaboration change", () => {
 				expect(convexMutationMock).not.toHaveBeenCalled();
 				const prepared = {
 					...nonCollabPendingUpdate,
+					currentPendingContentVersion: marked ? 2 : 1,
 					revision: 2,
 					updatedAt: 2,
 					content: {
-						base: { kind: "asset", assetId: "asset_2" },
+						rootKind: "plain_text",
+						base: { kind: "asset", assetId: "asset_2", pendingContentVersion: marked ? 2 : 1 },
 						baseStateId: "base_2",
 						stagedStateId: "staged_2",
 						unstagedStateId: "unstaged_2",
@@ -2458,7 +2533,8 @@ describe("FileEditorDiff after a collaboration change", () => {
 			revision: 2,
 			updatedAt: 2,
 			content: {
-				base: { kind: "asset", assetId: "asset_2" },
+				rootKind: "plain_text",
+				base: { kind: "asset", assetId: "asset_2", pendingContentVersion: 1 },
 				baseStateId: "new_base",
 				stagedStateId: "new_staged",
 				unstagedStateId: "new_unstaged",
@@ -2506,7 +2582,8 @@ describe("FileEditorDiff after a collaboration change", () => {
 				revision: 3,
 				updatedAt: 3,
 				content: {
-					base: { kind: "asset", assetId: "asset_2" },
+					rootKind: "plain_text",
+					base: { kind: "asset", assetId: "asset_2", pendingContentVersion: 1 },
 					baseStateId: "new_base",
 					stagedStateId: "new_staged",
 					unstagedStateId: "new_unstaged",
@@ -2551,7 +2628,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			...nonCollabPendingUpdate,
 			content: {
 				...nonCollabPendingUpdate.content!,
-				base: { kind: "yjs", sequence: 0, lineageGeneration: 0 },
+				base: { kind: "yjs", sequence: 0, lineageGeneration: 0, pendingContentVersion: 1 },
 			},
 			currentYjsLastSequenceId: "sequence_old",
 		};
@@ -2933,7 +3010,8 @@ describe("FileEditorDiff with collaboration off", () => {
 			revision: 2,
 			updatedAt: 2,
 			content: {
-				base: { kind: "asset", assetId: "asset_2" },
+				rootKind: "plain_text",
+				base: { kind: "asset", assetId: "asset_2", pendingContentVersion: 1 },
 				baseStateId: "state_base_2",
 				stagedStateId: "state_staged_2",
 				unstagedStateId: "state_unstaged_2",
@@ -2970,7 +3048,10 @@ describe("FileEditorDiff with collaboration off", () => {
 			isDirty: false,
 			pendingUpdate: {
 				revision: 2,
-				content: { base: { kind: "asset", assetId: "asset_2" }, unstagedStateId: "state_unstaged_2" },
+				content: {
+					base: { kind: "asset", assetId: "asset_2", pendingContentVersion: 1 },
+					unstagedStateId: "state_unstaged_2",
+				},
 			},
 		});
 		await act(async () => {
@@ -3002,7 +3083,8 @@ describe("FileEditorDiff with collaboration off", () => {
 			revision: 2,
 			updatedAt: 2,
 			content: {
-				base: { kind: "asset", assetId: "asset_2" },
+				rootKind: "plain_text",
+				base: { kind: "asset", assetId: "asset_2", pendingContentVersion: 1 },
 				baseStateId: "state_base_2",
 				stagedStateId: "state_staged_2",
 				unstagedStateId: "state_unstaged_2",
@@ -3046,7 +3128,8 @@ describe("FileEditorDiff with collaboration off", () => {
 			revision: 2,
 			updatedAt: 2,
 			content: {
-				base: { kind: "asset", assetId: "asset_2" },
+				rootKind: "plain_text",
+				base: { kind: "asset", assetId: "asset_2", pendingContentVersion: 1 },
 				baseStateId: "state_base_2",
 				stagedStateId: "state_staged_2",
 				unstagedStateId: "state_unstaged_2",

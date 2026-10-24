@@ -1,16 +1,78 @@
 import { describe, expect, test } from "vitest";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_media_validation_db_advance_content_version,
 	files_media_validation_db_advance_version,
 	files_media_validation_db_capture_versions,
+	files_media_validation_db_can_back_media,
 	files_media_validation_db_versions_match,
 	files_media_validation_is_media_version,
 } from "./files_media_validation.ts";
 import { files_db_advance_pending_review_version } from "../server/files.ts";
 
 describe("media validation versions", () => {
+	test.each([false, true])("checks replacement presence without reading other drafts: %s", async (hasReplacement) => {
+		const t = test_convex({ transactionLimits: { documentsRead: 128 } });
+		const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const node = await t.run(async (ctx) => {
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				createdBy: scope.userId,
+				updatedBy: scope.userId,
+				kind: "file",
+				textKind: "plain_text",
+				contentType: "text/plain",
+			});
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: scope.userId,
+				updatedAt: Date.now(),
+			});
+			for (let index = 0; index < 256; index++) {
+				const userId = await ctx.db.insert("users", { clerkUserId: null });
+				await ctx.db.insert("files_pending_updates", {
+					organizationId: scope.organizationId,
+					workspaceId: scope.workspaceId,
+					userId,
+					target: { kind: "saved", id: nodeId },
+					revision: 1,
+					size: 0,
+					updatedAt: Date.now(),
+					expiresAt: Date.now() + 60_000,
+					...(hasReplacement && index === 255
+						? {
+								pendingReplacement: {
+									assetId,
+									size: 0,
+									contentType: "text/plain",
+									baseAssetId: assetId,
+									baseContentVersion: {
+										kind: "asset",
+										assetId,
+										contentType: "text/plain",
+										textKind: "plain_text",
+										collaborationEnabled: false,
+									},
+								},
+							}
+						: {}),
+				});
+			}
+			return (await ctx.db.get("files_nodes", nodeId))!;
+		});
+		await expect(
+			t.run((ctx) => files_media_validation_db_can_back_media(ctx, node)),
+			"replacement lookup stays within the read limit",
+		).resolves.toBe(hasReplacement);
+	});
+
 	test("keeps organization and workspace versions separate", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

@@ -18,6 +18,7 @@ import {
 	files_pending_nodes_db_resolve_read_target,
 } from "./files_pending_nodes_db.ts";
 import { files_db_get_pending_update, files_DRAFT_IDLE_EXPIRY_MS } from "../server/files.ts";
+import { files_saved_placement_db_get_proposal } from "../server/files-saved-placement.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
@@ -310,7 +311,10 @@ export async function files_pending_target_db_get_view(
 	if (readable._nay) return null;
 	const node = readable._yay.fileNode;
 
-	const pendingUpdate = await files_db_get_pending_update(ctx, { ...scope, target });
+	const physicalPendingUpdate = await files_db_get_pending_update(ctx, { ...scope, target });
+	const pendingUpdate = physicalPendingUpdate
+		? await files_saved_placement_db_get_proposal(ctx.db, physicalPendingUpdate._id)
+		: null;
 	const writable = await access_control_db_authorize_membership(ctx, {
 		userAuth,
 		membership,
@@ -501,6 +505,7 @@ export const get_file_pending_update = query({
 		v.object({
 			...doc(app_convex_schema, "files_pending_updates").fields,
 			currentYjsLastSequenceId: v.union(v.id("files_yjs_docs_last_sequences"), v.null()),
+			currentPendingContentVersion: v.union(v.number(), v.null()),
 		}),
 		v.null(),
 	),
@@ -526,7 +531,11 @@ export const get_file_pending_update = query({
 			});
 			return data._nay
 				? null
-				: { ...(await files_pending_target_db_redact_copy_source(ctx, data._yay.pendingUpdate)), currentYjsLastSequenceId: null };
+				: {
+						...(await files_pending_target_db_redact_copy_source(ctx, data._yay.pendingUpdate)),
+						currentYjsLastSequenceId: null,
+						currentPendingContentVersion: null,
+					};
 		}
 		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
@@ -538,19 +547,23 @@ export const get_file_pending_update = query({
 			return null;
 		}
 
-		const pendingUpdate = await files_db_get_pending_update(ctx, {
+		const physicalPendingUpdate = await files_db_get_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			target: args.target,
 			pendingUpdateId: args.pendingUpdateId,
 		});
+		const pendingUpdate = physicalPendingUpdate
+			? await files_saved_placement_db_get_proposal(ctx.db, physicalPendingUpdate._id)
+			: null;
 		if (!pendingUpdate) {
 			return null;
 		}
 		return {
 			...(await files_pending_target_db_redact_copy_source(ctx, pendingUpdate)),
 			currentYjsLastSequenceId: authorized._yay.fileNode.yjsLastSequenceId ?? null,
+			currentPendingContentVersion: authorized._yay.fileNode.pendingContentVersion,
 		};
 	},
 });

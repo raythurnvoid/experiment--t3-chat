@@ -126,7 +126,7 @@ import {
 	files_metadata_preflight_frontmatter,
 	type files_metadata_Entry,
 } from "../shared/files-metadata.ts";
-import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE, files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE, files_pending_update_db_replace_chunks, files_pending_updates_db_drop_content_for_node, files_pending_updates_db_mark_content_for_rebase, type files_pending_updates_stage_trusted_yjs_update_Result } from "./files_pending_updates.ts";
+import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE, files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE, files_pending_update_db_replace_chunks, type files_pending_updates_stage_trusted_yjs_update_Result } from "./files_pending_updates.ts";
 import {
 	files_pending_update_db_delete_chunks,
 	files_pending_update_db_release_replacement_asset,
@@ -1347,7 +1347,7 @@ export const get_transfer_copy_pending_text = internalMutation({
 		try {
 			const text = files_yjs_doc_get_text({
 				yjsDoc: document,
-				rootKind: pending.contentRebaseRootKind ?? version.textKind,
+				rootKind: pending.content.rootKind,
 			});
 			if (text._nay) return text;
 			if (files_get_utf8_byte_size(text._yay) > files_MAX_TEXT_CONTENT_BYTES)
@@ -1936,6 +1936,7 @@ export const finalize_transfer_file_copy = internalMutation({
 									: collaborationEnabled === true,
 						},
 						content: {
+							rootKind: textKind,
 							base: { kind: "new" },
 							baseStateId: base._yay,
 							stagedStateId: staged._yay,
@@ -2066,8 +2067,6 @@ export const finalize_transfer_file_copy = internalMutation({
 					value: {
 						...changes,
 						content: undefined,
-						contentNeedsRebase: undefined,
-						contentRebaseRootKind: undefined,
 					},
 				});
 			} else {
@@ -2152,7 +2151,6 @@ export const finalize_transfer_file_copy = internalMutation({
 				billedUser: billed._yay,
 				fileNode,
 				previousAssetId: fileNode.assetId,
-				pendingContent: "preserve",
 				contentAssetId: contentAsset._id,
 				contentSize: contentAsset.size,
 				publishContentAsset: false,
@@ -3033,6 +3031,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 			materializationState: v.union(file_content_materialization_state_validator, v.null()),
+			pendingContentVersion: v.union(v.number(), v.null()),
 		}),
 		v.null(),
 	),
@@ -3076,6 +3075,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				pendingUpdateId: pendingUpdate._id,
 				pendingUpdateBaseStateId: content.baseStateId,
 				materializationState: null,
+				pendingContentVersion: null,
 			};
 		}
 		const fileNode = entry.node;
@@ -3100,6 +3100,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				pendingUpdateId: null,
 				pendingUpdateBaseStateId: undefined,
 				materializationState: null,
+				pendingContentVersion: fileNode.pendingContentVersion,
 			};
 		}
 
@@ -3156,6 +3157,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					pendingUpdateId: pendingUpdate._id,
 					pendingUpdateBaseStateId: pendingUpdate.content?.baseStateId,
 					materializationState: null,
+					pendingContentVersion: fileNode.pendingContentVersion,
 				};
 			}
 		}
@@ -3244,6 +3246,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				pendingUpdateId: pendingUpdate._id,
 				pendingUpdateBaseStateId: pendingUpdateContent.baseStateId,
 				materializationState: null,
+				pendingContentVersion: fileNode.pendingContentVersion,
 			};
 		}
 
@@ -3285,6 +3288,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					pendingUpdateId: pendingUpdate?._id ?? null,
 					pendingUpdateBaseStateId: pendingUpdate?.content?.baseStateId,
 					materializationState: null,
+					pendingContentVersion: fileNode.pendingContentVersion,
 				};
 			}
 		}
@@ -3295,6 +3299,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			pendingUpdateId: pendingUpdate?._id ?? null,
 			pendingUpdateBaseStateId: pendingUpdate?.content?.baseStateId,
 			materializationState,
+			pendingContentVersion: fileNode.pendingContentVersion,
 		};
 	},
 });
@@ -3341,6 +3346,7 @@ async function files_can_finish_agent_read(args: {
 
 type get_file_last_available_text_content_by_path_Result = {
 	content: string;
+	pendingContentVersion: number | null;
 	target: files_PendingTarget;
 	pendingUpdateId: Id<"files_pending_updates"> | null;
 	pendingUpdateBaseStateId?: Id<"files_pending_update_yjs_states">;
@@ -3364,6 +3370,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 		v.object({
 			content: v.string(),
 			target: files_pending_target_validator,
+			pendingContentVersion: v.union(v.number(), v.null()),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 		}),
@@ -3440,6 +3447,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 		return {
 			content,
 			target: contentState.target,
+			pendingContentVersion: contentState.pendingContentVersion,
 			pendingUpdateId: contentState.pendingUpdateId,
 			pendingUpdateBaseStateId: contentState.pendingUpdateBaseStateId,
 		};
@@ -5481,7 +5489,6 @@ async function db_install_file_content_replacement(
 		billedUser: Doc<"users">;
 		fileNode: Doc<"files_nodes">;
 		previousAssetId: Id<"files_r2_assets">;
-		pendingContent: "preserve" | "drop";
 		backup?: { assetId: Id<"files_r2_assets">; size: number };
 		contentAssetId: Id<"files_r2_assets">;
 		contentSize: number;
@@ -5556,20 +5563,12 @@ async function db_install_file_content_replacement(
 	) {
 		return Result({ _nay: { message: "Replacement assets do not match" } });
 	}
-	const pendingUpdates = await ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
-		.collect();
-	// Check every affected owner before changing assets or collaboration history.
-	for (const pendingUpdate of pendingUpdates) {
-		if (!files_pending_update_content_of(pendingUpdate)) continue;
-		const writable = await files_move_reservations_db_check_node_write(ctx.db, {
-			target: pendingUpdate.target,
-			pendingUpdate,
-			membership: args.pendingContent === "drop" && !pendingUpdate.pendingMove && !pendingUpdate.pendingArchive,
-		});
-		if (writable._nay) return writable;
-	}
+	const writable = await files_move_reservations_db_check_node_write(ctx.db, {
+		target: { kind: "saved", id: nodeId },
+		pendingUpdate: null,
+		membership: false,
+	});
+	if (writable._nay) return writable;
 
 	// A new document starts at sequence zero. Retire the old cleanup before publishing it.
 	if (
@@ -5586,7 +5585,7 @@ async function db_install_file_content_replacement(
 		});
 	}
 
-	// Read this before the proposals change below. Only a file that can back media can break a proof.
+	// Check the old content before replacing it. Only a file that can back media can break a proof.
 	const canBreakMediaProof = await files_media_validation_db_can_back_media(ctx, fileNode);
 
 	const now = Date.now();
@@ -5647,22 +5646,6 @@ async function db_install_file_content_replacement(
 		supersededYjsAssetId: Id<"files_r2_assets">;
 		expectedActiveYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
 	} | null = null;
-	// Restore keeps every owner's branches in their old shape until preparation rebuilds them.
-	// Accepting a whole-file copy still removes the old text proposals.
-	if (args.pendingContent === "preserve") {
-		await files_pending_updates_db_mark_content_for_rebase(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId,
-			rootKind: fileNode.textKind ?? undefined,
-		});
-	} else {
-		await files_pending_updates_db_drop_content_for_node(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId,
-		});
-	}
 
 	if (files_node_has_editable_yjs_state(fileNode)) {
 		// Stop the queued materialization of the old document. It would work on content that is
@@ -5788,6 +5771,8 @@ async function db_install_file_content_replacement(
 	// this same text.
 	await ctx.db.patch("files_nodes", nodeId, {
 		assetId: args.contentAssetId,
+		// Keep every owner's draft intact until that owner prepares it.
+		pendingContentVersion: fileNode.pendingContentVersion + 1,
 		contentByteSize: args.contentSize,
 		contentType: args.contentType,
 		...files_content_type_index_fields(args.contentType),
@@ -5916,6 +5901,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 	nodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates">;
 	expectedRevision: number;
+	expectedPendingContentVersion: number;
 	stagedAssetId: Id<"files_r2_assets">;
 	expectedYjsLastSequence?: { id: Id<"files_yjs_docs_last_sequences">; lastSequence: number };
 	backup?: { assetId: Id<"files_r2_assets">; size: number };
@@ -5999,6 +5985,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 	// the reviewer never saw.
 	if (
 		fileNode.assetId !== replacement.baseAssetId ||
+		fileNode.pendingContentVersion !== args.expectedPendingContentVersion ||
 		!files_transfer_source_versions_equal(
 			await files_nodes_db_get_content_version(ctx, fileNode),
 			replacement.baseContentVersion,
@@ -6033,6 +6020,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 			batch.cohortContentId !== undefined || (batch.expiresAt !== undefined && batch.expiresAt <= Date.now()) ||
 			batch.expectedPendingUpdateId !== args.pendingUpdateId ||
 			batch.expectedRevision !== args.expectedRevision ||
+			batch.expectedPendingContentVersion !== args.expectedPendingContentVersion ||
 			batch.publication.contentAssetId !== args.contentAssetId ||
 			batch.publication.yjsSnapshotAssetId !== args.yjsSnapshot?.assetId ||
 			batch.publication.backupAssetId !== args.backup?.assetId
@@ -6112,7 +6100,6 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 		billedUser,
 		fileNode,
 		previousAssetId,
-		pendingContent: "drop",
 		backup: args.backup,
 		contentAssetId: args.contentAssetId,
 		contentSize: args.contentSize,
@@ -6200,6 +6187,7 @@ export const restore_snapshot = internalMutation({
 		restoreUpdateStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		expectedLastSequence: v.number(),
+		expectedPendingContentVersion: v.number(),
 		currentSnapshotAssetId: v.id("files_r2_assets"),
 		currentSnapshotSize: v.number(),
 		restoredSnapshotAssetId: v.id("files_r2_assets"),
@@ -6270,6 +6258,7 @@ export const restore_snapshot = internalMutation({
 		const currentLastSequence = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
 		if (
 			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
+			fileNode.pendingContentVersion !== args.expectedPendingContentVersion ||
 			currentLastSequence?.lastSequence !== args.expectedLastSequence
 		) {
 			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
@@ -6294,6 +6283,12 @@ export const restore_snapshot = internalMutation({
 			});
 			return writable;
 		}
+		const reservation = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: args.nodeId },
+			pendingUpdate: null,
+			membership: false,
+		});
+		if (reservation._nay) return reservation;
 
 		const userDoc = await ctx.db.get("users", userAuth.id);
 		if (!userDoc) {
@@ -6360,13 +6355,6 @@ export const restore_snapshot = internalMutation({
 			restoreUpdate = consumed._yay;
 		}
 
-		await files_pending_updates_db_mark_content_for_rebase(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: args.nodeId,
-			rootKind: fileNode.textKind,
-		});
-
 		const now = Date.now();
 		const userId = userAuth.id;
 		// The version brings its own type back.
@@ -6421,6 +6409,7 @@ export const restore_snapshot = internalMutation({
 				// Point the node at the restored snapshot: it now holds the file's current bytes.
 				// The queued materialization will later point it at its own fresh snapshot.
 				assetId: args.restoredSnapshotAssetId,
+				pendingContentVersion: fileNode.pendingContentVersion + 1,
 				contentByteSize: args.restoredSnapshotSize,
 				contentType: restoredContentType,
 				...files_content_type_index_fields(restoredContentType),
@@ -6575,7 +6564,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		 * The document's last-sequence token the action read. Present for a collaborative file.
 		 */
 		expectedYjsLastSequence: v.optional(
-			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
+			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number(), pendingContentVersion: v.number() }),
 		),
 		/**
 		 * A fresh copy of the current text, made for a collaborative file. See `db_install_file_content_replacement`.
@@ -6650,6 +6639,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
 			if (
 				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
+				fileNode.pendingContentVersion !== args.expectedYjsLastSequence.pendingContentVersion ||
 				yjsLastSequenceDoc?.lastSequence !== args.expectedYjsLastSequence.lastSequence
 			) {
 				return Result({ _nay: { message: SNAPSHOT_RESTORE_FILE_CHANGED_MESSAGE } });
@@ -6693,7 +6683,6 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			billedUser,
 			fileNode,
 			previousAssetId: fileNode.assetId,
-			pendingContent: "preserve",
 			backup: args.backup,
 			contentAssetId: args.contentAssetId,
 			contentSize: args.contentSize,
@@ -6991,7 +6980,11 @@ async function action_restore_snapshot_as_replacement(
 	// The document's last-sequence token the query read. The final mutation refuses when an edit
 	// moved it, because that edit would be in neither the backup nor the history.
 	const expectedYjsLastSequence = yjsState
-		? { id: yjsState.yjsLastSequenceDoc._id, lastSequence: yjsState.yjsLastSequenceDoc.lastSequence }
+		? {
+				id: yjsState.yjsLastSequenceDoc._id,
+				lastSequence: yjsState.yjsLastSequenceDoc.lastSequence,
+				pendingContentVersion: yjsState.fileNode.pendingContentVersion,
+			}
 		: undefined;
 
 	const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
@@ -7247,6 +7240,7 @@ export const restore_snapshot_r2 = action({
 			restoreUpdateStageId,
 			expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
 			expectedLastSequence: materializationState.yjsLastSequenceDoc.lastSequence,
+			expectedPendingContentVersion: materializationState.fileNode.pendingContentVersion,
 			currentSnapshotAssetId,
 			currentSnapshotSize: files_get_utf8_byte_size(currentContent._yay.text),
 			restoredSnapshotAssetId,
@@ -7542,6 +7536,7 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 			acknowledgeDiscardUnmaterialized: args.acknowledgeDiscardUnmaterialized ?? false,
 			targetSequence: data.throughSequence,
 			expectedYjsLastSequenceId: data.yjsLastSequenceDoc._id,
+			expectedPendingContentVersion: fileNode.pendingContentVersion,
 			text: visibleText,
 			textByteSize,
 			yjsSnapshotAssetId,
@@ -7581,6 +7576,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		acknowledgeDiscardUnmaterialized: v.boolean(),
 		targetSequence: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+		expectedPendingContentVersion: v.number(),
 		/**
 		 * One bounded text value; every other input travels as ids/scalars.
 		 */
@@ -7630,11 +7626,20 @@ export const finalize_file_yjs_repair = internalMutation({
 			});
 			return writable;
 		}
+		const reservation = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: args.nodeId },
+			pendingUpdate: null,
+			membership: false,
+		});
+		if (reservation._nay) return reservation;
 
 		if (state.yjsLastSequenceDoc.lastSequence !== args.targetSequence) {
 			return Result({ _nay: { message: "Stale repair: the file advanced" } });
 		}
-		if (state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId) {
+		if (
+			state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
+			state.fileNode.pendingContentVersion !== args.expectedPendingContentVersion
+		) {
 			return Result({ _nay: { message: "Stale repair: the lineage advanced" } });
 		}
 		// Same eligibility as the action: the frontmatter markers qualify for latest_state.
@@ -7745,6 +7750,7 @@ export const finalize_file_yjs_repair = internalMutation({
 				}),
 				ctx.db.patch("files_nodes", args.nodeId, {
 					assetId: args.contentSnapshotAssetId,
+					pendingContentVersion: state.fileNode.pendingContentVersion + 1,
 					contentByteSize: args.textByteSize,
 					yjsLastSequenceId: nextYjsLastSequenceId,
 					contentTooLargeByteSize: null,
@@ -8093,6 +8099,12 @@ export const set_file_non_collaborative = mutation({
 		if (writable._nay) {
 			return writable;
 		}
+		const reservation = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: args.nodeId },
+			pendingUpdate: null,
+			membership: false,
+		});
+		if (reservation._nay) return reservation;
 
 		const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
@@ -8144,6 +8156,7 @@ export const set_file_non_collaborative = mutation({
 			// toggle discards a marked newer document and keeps an older committed snapshot.
 			ctx.db.patch("files_nodes", args.nodeId, {
 				collaborationEnabled: false,
+				pendingContentVersion: fileNode.pendingContentVersion + 1,
 				yjsSnapshotId: null,
 				yjsLastSequenceId: null,
 				contentShapeMismatchAt: null,
@@ -8157,11 +8170,6 @@ export const set_file_non_collaborative = mutation({
 					: {}),
 				updatedBy: userAuth.id,
 				updatedAt: now,
-			}),
-			files_pending_updates_db_mark_content_for_rebase(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
 			}),
 		]);
 		await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
@@ -8593,6 +8601,12 @@ export const finalize_file_collaboration_enable = internalMutation({
 		if (writable._nay) {
 			return writable;
 		}
+		const reservation = await files_move_reservations_db_check_node_write(ctx.db, {
+			target: { kind: "saved", id: args.nodeId },
+			pendingUpdate: null,
+			membership: false,
+		});
+		if (reservation._nay) return reservation;
 
 		// Two toggles running at once would otherwise both insert a snapshot doc, and the second
 		// node patch would orphan the first pair. The flag is the gate: only one call can find it
@@ -8668,6 +8682,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 				// rewritten from this same text.
 				ctx.db.patch("files_nodes", args.nodeId, {
 					collaborationEnabled: true,
+					pendingContentVersion: fileNode.pendingContentVersion + 1,
 					yjsSnapshotId,
 					yjsLastSequenceId,
 					assetId: args.contentSnapshotAssetId,
@@ -8730,13 +8745,6 @@ export const finalize_file_collaboration_enable = internalMutation({
 			throw convex_error({ message: errorMessage, cause: enableWriteResult._nay });
 		}
 		await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
-
-		// Review rebuilds the kept branches on this new document before they can be accepted.
-		await files_pending_updates_db_mark_content_for_rebase(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: args.nodeId,
-		});
 
 		return Result({ _yay: null });
 	},

@@ -75,6 +75,7 @@ describe("tenant deletion with many direct file grants", () => {
 							updatedAt: Date.now(),
 							contentType: null,
 							assetId: null,
+							pendingContentVersion: 1,
 							contentByteSize: null,
 							textKind: null,
 							collaborationEnabled: null,

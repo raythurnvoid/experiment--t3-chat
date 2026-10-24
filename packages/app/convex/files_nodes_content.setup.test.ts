@@ -432,9 +432,11 @@ export async function create_pending_proposal(args: {
 
 	const { t, scope, nodeId } = fixture;
 	const ownerScope = { ...scope, userId };
+	const node = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
 	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 		...ownerScope,
 		target: { kind: "saved", id: nodeId },
+		expectedPendingContentVersion: node.pendingContentVersion,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	for (const [role, text] of [

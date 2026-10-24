@@ -52,6 +52,7 @@ export const files_node_public_doc_fields = {
 	lowercaseExtension: doc(app_convex_schema, "files_nodes").fields.lowercaseExtension,
 	contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 	assetId: doc(app_convex_schema, "files_nodes").fields.assetId,
+	pendingContentVersion: doc(app_convex_schema, "files_nodes").fields.pendingContentVersion,
 	contentByteSize: doc(app_convex_schema, "files_nodes").fields.contentByteSize,
 	textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
 	collaborationEnabled: doc(app_convex_schema, "files_nodes").fields.collaborationEnabled,

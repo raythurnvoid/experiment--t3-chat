@@ -448,6 +448,7 @@ describe("full metadata reads", () => {
 		const fixture = await create_file_fixture("rich_text", "---\nsummary: saved snapshot\n---\n\nBody\n");
 		const draft = "---\nsummary: owner draft\n---\n\nBody\n";
 		const pending = await create_pending_proposal({ fixture, texts: { staged: draft, unstaged: draft } });
+		const before = (await fixture.t.run((ctx) => ctx.db.get("files_nodes", fixture.nodeId)))!;
 		expect(page(await read_path(fixture, "frontmatter.summary")).sourceKind).toBe("pending");
 		expect(
 			(
@@ -459,9 +460,10 @@ describe("full metadata reads", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(await fixture.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toMatchObject({
-			contentNeedsRebase: true,
-		});
+		expect(await fixture.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
+		expect((await fixture.t.run((ctx) => ctx.db.get("files_nodes", fixture.nodeId)))?.pendingContentVersion).toBe(
+			before.pendingContentVersion + 1,
+		);
 		const restored = page(await read_path(fixture, "frontmatter.summary"));
 		expect(restored.sourceKind, "A stale draft uses saved content until it is prepared").toBe("committed");
 		expect(full_values([restored])).toEqual(["saved snapshot"]);

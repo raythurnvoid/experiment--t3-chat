@@ -47,6 +47,7 @@ describe("review job content", () => {
 		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId: f.db.membershipId,
 			target: draft.target,
+			expectedPendingContentVersion: null,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const partial = await stage_text({
@@ -121,6 +122,7 @@ describe("review job content", () => {
 		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId: f.db.membershipId,
 			target: draft.target,
+			expectedPendingContentVersion: null,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const partial = await stage_text({
@@ -511,6 +513,11 @@ describe("review job content", () => {
 			const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 				membershipId: f.db.membershipId,
 				target: document.target,
+				expectedPendingContentVersion: await f.asUser.run(async (ctx) =>
+					document.target.kind === "saved"
+						? (await ctx.db.get("files_nodes", document.target.id))!.pendingContentVersion
+						: null,
+				),
 			});
 			if (batch._nay) throw new Error(batch._nay.message);
 			for (const role of ["staged", "unstaged"] as const) {
@@ -822,6 +829,7 @@ describe("review job content", () => {
 		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId: f.db.membershipId,
 			target,
+			expectedPendingContentVersion: saved.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		await stage_text({ f, target, operationBatchId: batch._yay.operationBatchId, text: "two\n" });
@@ -864,6 +872,7 @@ describe("review job content", () => {
 		const batch = await f.asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 			membershipId: f.db.membershipId,
 			target,
+			expectedPendingContentVersion: savedChild.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const edited = await stage_text({ f, target, operationBatchId: batch._yay.operationBatchId, text: "after\n" });

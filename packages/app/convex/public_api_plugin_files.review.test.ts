@@ -140,6 +140,7 @@ describe("ensure_plugin_folder", () => {
 					updatedAt: now,
 					contentType: null,
 					assetId: null,
+					pendingContentVersion: 1,
 					contentByteSize: null,
 					textKind: null,
 					collaborationEnabled: null,

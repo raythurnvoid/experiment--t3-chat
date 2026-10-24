@@ -94,6 +94,7 @@ const createTreeItem = (args: {
 		contentByteSize: null,
 		textKind: null,
 		collaborationEnabled: null,
+		pendingContentVersion: 1,
 		yjsSnapshotId: null,
 		yjsLastSequenceId: null,
 		statsId: null,
@@ -277,7 +278,10 @@ describe("files_save_private_file_pending_text", () => {
 		expect((await files_save_private_file_pending_text(args))._yay).toEqual(queued);
 		expect(args.onUpserted).toHaveBeenCalledExactlyOnceWith(5);
 		expect(convexMutationMock.mock.calls).toEqual([
-			["create_file_pending_update_operation_batch", { membershipId: args.membershipId, target: args.target }],
+			[
+				"create_file_pending_update_operation_batch",
+				{ membershipId: args.membershipId, target: args.target, expectedPendingContentVersion: null },
+			],
 			[
 				"stage_file_pending_update_text_input",
 				{ membershipId: args.membershipId, operationBatchId: "batch", role: "staged", text: args.text },
@@ -325,11 +329,18 @@ describe("files_save_private_file_pending_text", () => {
 			})
 			.mockResolvedValueOnce({ _yay: { kind: "queued", runId: "parent-run", activityId: "activity" } });
 
-		expect((await files_save_private_file_pending_text(args))._yay).toEqual({ kind: "queued", runId: "parent-run", activityId: "activity" });
+		expect((await files_save_private_file_pending_text(args))._yay).toEqual({
+			kind: "queued",
+			runId: "parent-run",
+			activityId: "activity",
+		});
 		expect(args.onUpserted).toHaveBeenCalledExactlyOnceWith(5);
 		expect(convexQueryMock).not.toHaveBeenCalled();
 		expect(args.openReviewRun).toHaveBeenCalledExactlyOnceWith("parent-run");
-		expect(convexActionMock.mock.calls.map(([name]) => name)).toEqual(["upsert_file_pending_update", "save_file_pending_update"]);
+		expect(convexActionMock.mock.calls.map(([name]) => name)).toEqual([
+			"upsert_file_pending_update",
+			"save_file_pending_update",
+		]);
 	});
 
 	test("leaves a draft whose parent folders cannot be saved yet to the direct save and its refusal", async () => {
@@ -375,7 +386,11 @@ describe("files_save_private_file_pending_text", () => {
 			.mockResolvedValueOnce({ _yay: { kind: "queued", runId: "retry-run", activityId: "activity" } });
 
 		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe("Save the copied media first.");
-		expect((await files_save_private_file_pending_text({ ...args, reviewedRevision }))._yay).toEqual({ kind: "queued", runId: "retry-run", activityId: "activity" });
+		expect((await files_save_private_file_pending_text({ ...args, reviewedRevision }))._yay).toEqual({
+			kind: "queued",
+			runId: "retry-run",
+			activityId: "activity",
+		});
 		expect(args.onUpserted.mock.calls).toEqual([[5], [6]]);
 		expect(convexActionMock).toHaveBeenNthCalledWith(
 			3,

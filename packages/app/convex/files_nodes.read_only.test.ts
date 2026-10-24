@@ -1484,6 +1484,8 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 	const blocked = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
+		expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", db.files.file_root_1._id)))!
+			.pendingContentVersion,
 		expectedYjsLastSequenceId: restoreAssets.expectedYjsLastSequenceId,
 		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
@@ -4591,6 +4593,7 @@ describe("apply_file_pending_move", () => {
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 			...scope,
 			target,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		expect(
@@ -5911,6 +5914,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 		const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
+			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			expectedLastSequence: 0,
 			snapshotId: seeded.snapshotId,
@@ -5958,6 +5962,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 				membershipId: db.membershipId,
 				nodeId: seeded.nodeId,
+				expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
 				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 				expectedLastSequence: 0,
 				snapshotId: seeded.snapshotId,
@@ -6034,6 +6039,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 		const restored = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
+			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			expectedLastSequence: 0,
 			snapshotId: seeded.snapshotId,
@@ -6215,6 +6221,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId: seeded.nodeId,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
 			authorUserId: db.userId,
 			source: "latest_state",
 			acknowledgeDiscardUnmaterialized: false,

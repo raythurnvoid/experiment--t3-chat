@@ -1004,6 +1004,7 @@ export function ai_chat_tool_create_edit_file(
 					workspaceId,
 					userId: ctxData.userId,
 					target,
+					expectedPendingContentVersion: currentFileContent.pendingContentVersion,
 					pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 					expectedBaseStateId: currentFileContent.pendingUpdateBaseStateId ?? null,
 					unstagedText: modifiedText,

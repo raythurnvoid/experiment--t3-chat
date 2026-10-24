@@ -997,6 +997,7 @@ describe("/api/chat workspace instructions", () => {
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 			...scope,
 			target: { kind: "saved", id: rootId },
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", rootId)))!.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {

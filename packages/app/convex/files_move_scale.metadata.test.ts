@@ -110,6 +110,8 @@ describe("public Move scale", () => {
 				const batch = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
 					membershipId: db.membershipId,
 					target: { kind: "saved", id: item.nodeId },
+					expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", item.nodeId)))!
+						.pendingContentVersion,
 				});
 				if (batch._nay) throw new Error(batch._nay.message);
 				expect(

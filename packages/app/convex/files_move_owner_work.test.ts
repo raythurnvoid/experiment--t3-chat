@@ -248,6 +248,7 @@ async function native_pending_scope(
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 			...scope,
 			target: { kind: "saved", id: nodeId },
+			expectedPendingContentVersion: 1,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const frontmatter = Array.from({ length: 12 }, (_, index) => `key${index}: value${index}`).join("\n");
@@ -721,7 +722,7 @@ test("an edit of a big draft drains its old chunks while a Move holds another fi
 	async function save(text: string) {
 		const batch = await f.t.mutation(
 			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
-			{ ...scope, target },
+			{ ...scope, target, expectedPendingContentVersion: 1 },
 		);
 		if (batch._nay) throw new Error(batch._nay.message);
 		const operationBatchId = batch._yay.operationBatchId;
@@ -798,6 +799,7 @@ test("draft expiry runs while another user's Move holds the workspace, and waits
 	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 		...scope,
 		target,
+		expectedPendingContentVersion: 1,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	expect(
@@ -890,6 +892,7 @@ test("draft expiry waits for a draft another user's Move holds only through its 
 	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 		...scope,
 		target,
+		expectedPendingContentVersion: 1,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	expect(
@@ -1005,6 +1008,7 @@ test("the drain removes old metadata docs of a draft while a Move holds another 
 	const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 		...scope,
 		target,
+		expectedPendingContentVersion: 1,
 	});
 	if (batch._nay) throw new Error(batch._nay.message);
 	expect(

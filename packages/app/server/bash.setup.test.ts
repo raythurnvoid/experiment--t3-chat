@@ -772,6 +772,9 @@ export async function upsert_pending_update_for_test(
 			workspaceId: runner.seeded.workspaceId,
 			userId: runner.seeded.userId,
 			target: args.target,
+			expectedPendingContentVersion: await runner.t.run(async (ctx) =>
+				args.target.kind === "saved" ? (await ctx.db.get("files_nodes", args.target.id))!.pendingContentVersion : null,
+			),
 		},
 	);
 	if (batch._nay) {

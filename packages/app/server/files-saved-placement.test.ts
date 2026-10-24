@@ -42,6 +42,18 @@ afterEach(() => {
 });
 
 describe("saved placement foundation", () => {
+	test("selects the pending content version with its saved header before and after publication", async () => {
+		const f = await fixture();
+		await f.t.run(async (ctx) => {
+			const record = (await ctx.db.get("files_move_cohort_nodes", f.recordId))!;
+			await ctx.db.patch("files_saved_places", record.afterPlaceId!, { pendingContentVersion: 2 });
+			await ctx.db.patch("files_nodes", f.nodeId, { pendingContentVersion: 7 });
+		});
+		expect((await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion).toBe(1);
+		await f.publish();
+		expect((await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion).toBe(2);
+	});
+
 	test("keeps the old saved identity and content at the normal name before publication", async () => {
 		const f = await fixture();
 		// A cleanup write may already hold the other header. The selected candidate is authoritative.
@@ -295,6 +307,7 @@ describe("saved placement foundation", () => {
 					baseYjsSequence: sequence.lastSequence,
 					baseLineageGeneration: sequence.lineageGeneration,
 					expectedYjsLastSequenceId: sequence._id,
+					expectedPendingContentVersion: f.saved.pendingContentVersion,
 				},
 				beforeContentVersion: null,
 				afterContentVersion: null,
@@ -334,7 +347,7 @@ describe("saved placement foundation", () => {
 		});
 		expect(await f.asUser.query(api.files_yjs_load.get_file_last_yjs_sequence, {
 			membershipId: f.db.membershipId, nodeId: f.nodeId,
-		}), "the editor sees the selected sequence head").toEqual({ yjsLastSequenceId: sequence._id, lastSequence: 7 });
+		}), "the editor sees the selected sequence head").toEqual({ yjsLastSequenceId: sequence._id, lastSequence: 7, pendingContentVersion: f.saved.pendingContentVersion });
 		expect((await f.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", sequence._id)))?.lastSequence).toBe(
 			sequence.lastSequence,
 		);
