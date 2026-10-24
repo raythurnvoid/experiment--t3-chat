@@ -2910,11 +2910,11 @@ describe("pending content version reads", () => {
 		).toContain("/mark.txt");
 		await t.run(async ctx => {
 			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
-			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion! + 1 });
+			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
 		});
 		await t.run(async ctx => {
 			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
-			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion! + 1 });
+			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
 		});
 		expect((await t.query(internal.files_nodes.text_search_files, searchArgs)).items).toEqual([]);
 		const content = await t.query(internal.files_nodes.read_file_content_from_chunks, {

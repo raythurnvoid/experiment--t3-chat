@@ -19,7 +19,6 @@ import {
 } from "./files_pending_nodes_db.ts";
 import { files_db_get_pending_update, files_DRAFT_IDLE_EXPIRY_MS } from "../server/files.ts";
 import { files_saved_placement_db_get_proposal } from "../server/files-saved-placement.ts";
-import { files_pending_content_migration_db_family } from "./files_pending_content_migration.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
@@ -395,16 +394,6 @@ async function db_get_public_pending_target_view(
 ) {
 	const { entry } = view;
 	const pendingUpdate = entry.pendingUpdate;
-	const projected: app_convex_Doc<"files_pending_updates"> | null = pendingUpdate
-		? {
-				...(await files_pending_target_db_redact_copy_source(ctx, pendingUpdate)),
-				content: await files_pending_content_migration_db_family(
-					ctx,
-					pendingUpdate,
-					entry.kind === "saved" ? entry.node : null,
-				),
-			}
-		: null;
 	const organization = pendingUpdate?.copiedFrom
 		? await ctx.db.get("organizations", pendingUpdate.organizationId)
 		: null;
@@ -419,10 +408,10 @@ async function db_get_public_pending_target_view(
 		...view,
 		entry:
 			entry.kind === "private"
-				? { ...entry, pendingUpdate: projected! }
+				? { ...entry, pendingUpdate: await files_pending_target_db_redact_copy_source(ctx, entry.pendingUpdate) }
 				: {
 						...entry,
-						pendingUpdate: projected,
+						pendingUpdate: pendingUpdate ? await files_pending_target_db_redact_copy_source(ctx, pendingUpdate) : null,
 					},
 		...(copyDestination ? { copyDestination } : {}),
 	};
@@ -544,7 +533,6 @@ export const get_file_pending_update = query({
 				? null
 				: {
 						...(await files_pending_target_db_redact_copy_source(ctx, data._yay.pendingUpdate)),
-						content: await files_pending_content_migration_db_family(ctx, data._yay.pendingUpdate, null),
 						currentYjsLastSequenceId: null,
 						currentPendingContentVersion: null,
 					};
@@ -574,9 +562,8 @@ export const get_file_pending_update = query({
 		}
 		return {
 			...(await files_pending_target_db_redact_copy_source(ctx, pendingUpdate)),
-			content: await files_pending_content_migration_db_family(ctx, pendingUpdate, authorized._yay.fileNode),
 			currentYjsLastSequenceId: authorized._yay.fileNode.yjsLastSequenceId ?? null,
-			currentPendingContentVersion: authorized._yay.fileNode.pendingContentVersion ?? 1,
+			currentPendingContentVersion: authorized._yay.fileNode.pendingContentVersion,
 		};
 	},
 });

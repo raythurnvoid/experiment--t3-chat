@@ -52,7 +52,7 @@ export const files_node_public_doc_fields = {
 	lowercaseExtension: doc(app_convex_schema, "files_nodes").fields.lowercaseExtension,
 	contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 	assetId: doc(app_convex_schema, "files_nodes").fields.assetId,
-	pendingContentVersion: v.number(),
+	pendingContentVersion: doc(app_convex_schema, "files_nodes").fields.pendingContentVersion,
 	contentByteSize: doc(app_convex_schema, "files_nodes").fields.contentByteSize,
 	textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
 	collaborationEnabled: doc(app_convex_schema, "files_nodes").fields.collaborationEnabled,
@@ -142,7 +142,6 @@ export function files_tree_db_get_public_node_fields(
 
 	return {
 		...rest,
-		pendingContentVersion: fileNode.pendingContentVersion ?? 1,
 		canWrite: writeBlockedReason === null,
 		writeBlockedReason,
 		writePolicyState,

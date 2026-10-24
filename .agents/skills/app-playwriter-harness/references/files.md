@@ -1181,10 +1181,11 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 
 ### Pending Copy Onto A Collaborative File
 
-Use this after changing bash `cp`, `pendingReplacement` accept, or the version rows a replacement writes. Verified 2026-09-06.
+Use this after changing bash `cp`, `pendingReplacement` accept, or the version rows a replacement writes. Verified 2026-09-06. Copy output and draft preservation rechecked 2026-10-24.
 
 - Fixture: create an `aaa-pw-qa-*` folder with `files_nodes.create_folder_node` from page context, open it, and upload `qa-plain.json` (the source) and `r2-upload-markdown-sample.md` (a collaborative Markdown target) through `.FilesSidebar input[type=file]:not([webkitdirectory])`. For a second Markdown target call `files_nodes_content.create_text_node({ membershipId, parentId: <folderId>, path: "/target-b.md" })` — the `path` is relative to `parentId` (see the hazard in `known-hazards.md`).
-- Copy through the Agent chat with the "Run exactly these Bash commands" prompt and one `cp /home/cloud-usr/w/personal/home/<folder>/qa-plain.json /home/cloud-usr/w/personal/home/<folder>/<target>.md`. The Bash output must end with `replaces the existing file's content and type when accepted; review in Files`; a line that ends with only `review in Files` means the destination did not exist and the copy created a new file.
+- Copy through the Agent chat with the "Run exactly these Bash commands" prompt and one `cp /home/cloud-usr/w/personal/home/<folder>/qa-plain.json /home/cloud-usr/w/personal/home/<folder>/<target>.md`. Require `Transfer <id>: 1 ready for review, 0 skipped, 0 failed.` and exit 0. This line also serves new copies. To prove replacement, require the Pending row's `Replaced` label and its saved target id to match the existing destination.
+- Preserve another member's draft: make their draft on the target first, then record its raw header and full Yjs states/pages, including IDs, bytes, revision and expiry. Keep their Review closed. Accept the copy through the native `Accept changes to /<path>` button. Require `Changes saved.`, `1 saved` and `0 failed`. Read the other member's draft back before opening Review; every recorded value must stay exact. Only then open their Review and require the kept draft text.
 - Write refusal: a following `echo edited > <same target>` must exit 1 with `This file has a pending copy. Accept or discard the copy in Files before writing to the file.`, and the Pending tab row keeps `Replaced`.
 - Versions: read `files_nodes.get_file_snapshots_list({ membershipId, nodeId, showArchived: false })` before and after. Each snapshot has required `contentType`, nullable `yjsRootKind`, and positive `collaborationEnabled`; stored-byte snapshots use `null` and `false`. Use the returned order to match UI rows; an unarchived version can lead the list. Accepting the copy on a file with no unsaved edit adds exactly one row (the copy); with an unsaved edit it adds two (a Markdown row for the edit, then the copy). `files_nodes.create_file_snapshot_content_url({ membershipId, nodeId, snapshotId })` returns a URL that `fetch` reads from page context, which is how to prove the backup row holds the typed text.
 - Unsaved-edit timing: `cp` first, then type in `.FileEditorRichText-editor-content`, wait about 3 s for the push, and click `Accept changes to <path>` in the Pending tab within 30 s of the last keystroke. The materializer runs 30 s after the last update and moves the file's asset, after which the accept refuses with `The file changed after this copy was proposed. Discard the copy and copy again.` — discard, `cp` again, type again.
@@ -1671,7 +1672,8 @@ A fixture that produces every conflict shape in one paste: `/<run>/a/report`, `/
 an empty `/<run>/target`. Copying both `report` folders into `target` makes the first item a free
 name and the second a same-paste name claim, which has no destination document.
 
-Drive it from the tree:
+Drive it from the tree. For row-menu Copy, click the exact `Copy` menu item. Focusing the item and
+pressing Enter does not set the menu's active item.
 
 ```js
 const rowFor = (id) => page.locator(`[data-file-id="${id}"][role="treeitem"]`).first();
@@ -1685,6 +1687,9 @@ await page.keyboard.press("Control+v");
 Filter the tree first with `#app_files_sidebar_search input`, then press `Escape` — see the
 suggestions-popover hazard. Scope the modal to `.FilesTransferRunModal`; `getByRole("dialog")`
 matches the always-mounted organization switcher instead.
+
+The modal has two buttons named `Close`. Click its footer text with
+`await modal.getByText("Close", { exact: true }).click({ timeout: 4000 });`.
 
 Dismiss search suggestions before Cut. An Escape after Cut can clear the Files clipboard.
 For root Paste, focus the `Files` tree and press Control+V. Keep the page loaded between Cut and Paste.

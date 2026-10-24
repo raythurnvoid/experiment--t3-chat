@@ -5621,7 +5621,7 @@ export const read_file_content_from_chunks = internalQuery({
 
 		const fileNode = entry.kind === "saved" ? entry.node : null;
 		const target = entry.kind === "saved" ? { kind: "saved" as const, id: entry.node._id } : entry.pendingUpdate.target;
-		const pendingContentVersion = fileNode ? (fileNode.pendingContentVersion ?? 1) : null;
+		const pendingContentVersion = fileNode?.pendingContentVersion ?? null;
 
 		const requestedOrganizationId = args.organizationId;
 		const requestedWorkspaceId = args.workspaceId;

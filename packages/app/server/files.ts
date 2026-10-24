@@ -269,13 +269,6 @@ export async function files_db_patch_pending_update(args: {
 
 	const proposal = await ctx.db.get("files_pending_updates", pendingUpdateId);
 	if (!proposal) throw should_never_happen("Pending update disappeared before its write", { pendingUpdateId });
-	if (
-		value.content?.rootKind &&
-		(value.content.base.kind === "new" || value.content.base.pendingContentVersion !== undefined)
-	) {
-		value.contentNeedsRebase = undefined;
-		value.contentRebaseRootKind = undefined;
-	}
 	await files_db_advance_pending_review_version(ctx, proposal);
 	// Every edit writes `updatedAt` and so restarts the idle time. The expiry only moves later, so
 	// the owner's expiry check already runs early enough and needs no change.

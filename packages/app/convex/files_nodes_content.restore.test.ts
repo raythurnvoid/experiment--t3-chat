@@ -1154,7 +1154,7 @@ describe("restore_snapshot_r2", () => {
 			const before = await readProposals();
 			expect(before.pending).toHaveLength(2);
 			expect(before.pending.every((pending) => pending.content?.rootKind === sourceRootKind)).toBe(true);
-			let pendingContentVersion = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion!;
+			let pendingContentVersion = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion;
 			const restoredText = "Restored text\n";
 
 			const versionId = await t.run(async (ctx) => {
@@ -1243,7 +1243,7 @@ describe("restore_snapshot_r2", () => {
 			updates: await ctx.db.query("files_yjs_updates").collect(),
 			pending: await ctx.db.get("files_pending_updates", pending._id),
 		}));
-		expect(after.node.pendingContentVersion).toBe(before.node.pendingContentVersion! + 1);
+		expect(after.node.pendingContentVersion).toBe(before.node.pendingContentVersion + 1);
 		expect(after.node.yjsLastSequenceId).toBe(before.node.yjsLastSequenceId);
 		expect(after.node.yjsSnapshotId).toBe(before.node.yjsSnapshotId);
 		expect(after.sequence).toEqual(before.sequence);
@@ -1300,7 +1300,7 @@ describe("restore_snapshot_r2", () => {
 		expect(restoredDuringRead).toBe(true);
 		expect(outer._nay, "the earlier read must not receive the newer Restore's version").toBeDefined();
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
-			pendingContentVersion: before.pendingContentVersion! + 1,
+			pendingContentVersion: before.pendingContentVersion + 1,
 			yjsLastSequenceId: pointers.yjsLastSequenceId,
 			yjsSnapshotId: pointers.yjsSnapshotId,
 		});

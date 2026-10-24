@@ -472,7 +472,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 			content,
 			proposal,
 			nextSequence,
-			pendingContentVersion: (node.pendingContentVersion ?? 1) + (prepared.kind === "replacement" ? 1 : 0),
+			pendingContentVersion: node.pendingContentVersion + (prepared.kind === "replacement" ? 1 : 0),
 			rootKind: shape.rootKind,
 			operationTime: cohort.operationTime,
 		});
@@ -562,7 +562,14 @@ function db_after_proposal(args: {
 	const family = content.partialFamily;
 	const unchanged = prepared.kind === "saved_asset" && prepared.unchanged;
 	if (!family && !unchanged) return null;
-	const { _id: _id, _creationTime: _time, moveCohortId: _cohortId, ...header } = proposal;
+	const {
+		_id: _id,
+		_creationTime: _time,
+		moveCohortId: _cohortId,
+		contentNeedsRebase: _marked,
+		contentRebaseRootKind: _root,
+		...header
+	} = proposal;
 	return {
 		...header,
 		target: { kind: "saved" as const, id: content.nodeId },
@@ -618,7 +625,7 @@ async function db_seal(
 	const { content, cohort, proposal, node } = args;
 	const prepared = content.prepared!;
 	const shape = content_shape(content, proposal, node);
-	const pendingContentVersion = (node.pendingContentVersion ?? 1) + (prepared.kind === "replacement" ? 1 : 0);
+	const pendingContentVersion = node.pendingContentVersion + (prepared.kind === "replacement" ? 1 : 0);
 	const accepted = await db_input(ctx, content, "staged");
 	const remainder = await db_input(ctx, content, "unstaged");
 	const changed = node.kind === "file" && changes_saved_content(prepared);

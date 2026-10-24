@@ -6,10 +6,6 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import {
-	files_pending_content_migration_db_cohort_page,
-	files_pending_content_migration_db_extend_deadline,
-} from "./files_pending_content_migration.ts";
 import { files_metadata_maps_db_delete, files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import app_convex_schema from "./schema.ts";
 import {
@@ -138,7 +134,7 @@ function placement_header(node: Doc<"files_nodes">) {
 		scopeOpId: _scopeOpId,
 		...header
 	} = node;
-	return { ...header, pendingContentVersion: node.pendingContentVersion ?? 1 };
+	return header;
 }
 
 function placement_header_from_place(place: Doc<"files_saved_places">) {
@@ -157,7 +153,6 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 	// Explicit optional fields clear values from the other view.
 	return {
 		...header,
-		pendingContentVersion: place.pendingContentVersion ?? 1,
 		archivedPathLength: place.archivedPathLength,
 		parentScopeNodeId: place.parentScopeNodeId,
 		extendedScopeNodeId: place.extendedScopeNodeId,
@@ -931,7 +926,14 @@ async function db_items(
 	const afterProposal =
 		!settlementOnly && !proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
 			? (() => {
-					const { _id: _id, _creationTime: _time, moveCohortId: _marker, ...header } = proposal;
+					const {
+						_id: _id,
+						_creationTime: _time,
+						moveCohortId: _marker,
+						contentNeedsRebase: _marked,
+						contentRebaseRootKind: _root,
+						...header
+					} = proposal;
 					return { ...header, pendingMove: undefined, pendingArchive: undefined, revision: proposal.revision + 1 };
 				})()
 			: null;
@@ -2165,8 +2167,6 @@ async function db_validate(
 }
 
 async function db_publish(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, organization: Doc<"organizations">) {
-	if (!cohort.pendingContentVersionReady)
-		throw should_never_happen("Move content facts are not ready", { cohortId: cohort._id });
 	if (cohort.validatedItemCount !== cohort.itemCount || cohort.pendingWorkCount !== 0)
 		throw should_never_happen("Move has unfinished work at publication", { cohortId: cohort._id });
 	if (billing_pick_billed_user_id({ userId: cohort.userId, organization }) !== cohort.billedUserId)
@@ -2263,8 +2263,9 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			if (proposal) {
 				if (!finish) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: undefined });
 				else if (item.afterProposal) {
+					const { contentNeedsRebase: _marked, contentRebaseRootKind: _root, ...afterProposal } = item.afterProposal;
 					await files_db_advance_pending_review_version(ctx, proposal);
-					await ctx.db.replace("files_pending_updates", proposal._id, item.afterProposal);
+					await ctx.db.replace("files_pending_updates", proposal._id, afterProposal);
 					if (item.target.kind === "private")
 						await files_metadata_maps_db_delete(ctx.db, { kind: "pending", id: proposal._id });
 					if (cohort.origin.kind === "review" && item.target.kind === "private") {
@@ -2581,7 +2582,7 @@ async function db_advance_step(
 	membershipReads: MembershipReads,
 	stageContent?: typeof files_move_content_db_stage,
 ) {
-	let cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
+	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (
 		!cohort ||
 		cohort.phase === "complete" ||
@@ -2589,16 +2590,6 @@ async function db_advance_step(
 		(cohort.runJob?.generation ?? null) !== args.runGeneration
 	)
 		return null;
-	if (!cohort.pendingContentVersionReady && !cohort.pendingContentMigration) {
-		await ctx.db.patch("files_move_cohorts", cohort._id, {
-			pendingContentMigration: { cursor: null, updatedAt: Date.now() },
-		});
-		cohort = (await ctx.db.get("files_move_cohorts", cohort._id))!;
-	}
-	if (cohort.pendingContentMigration) {
-		await files_pending_content_migration_db_extend_deadline(ctx, cohort);
-		cohort = (await ctx.db.get("files_move_cohorts", cohort._id))!;
-	}
 	if (
 		args.stage &&
 		(cohort.phase !== "staging" ||
@@ -2650,21 +2641,6 @@ async function db_advance_step(
 			})
 		: await files_pending_overlay_db_set_cohort_staging(ctx, call);
 	if (entered._nay) return null;
-	if (
-		!cohort.pendingContentVersionReady &&
-		(["content", "media", "sides", "owners_stage", "validate", "publish"].includes(cohort.workPhase) || repairing)
-	) {
-		const migrated = await files_pending_content_migration_db_cohort_page(ctx, cohort);
-		if (migrated === "needs_review") {
-			await db_abort(ctx, cohort, {
-				name: "needs_review",
-				message: "This draft needs Review on the current file. Open Review and try again.",
-			});
-			return null;
-		}
-		await db_save_step(ctx, cohort, {}, 0, false);
-		return { kind: "next" as const, step: cohort.step + 1, yield: true };
-	}
 	let result:
 		| { _yay: { done: boolean; paged?: boolean; parentPage?: boolean }; _nay?: undefined }
 		| { _nay: { name?: string; message: string }; _yay?: undefined } = Result({ _yay: { done: false } });
@@ -3115,11 +3091,7 @@ export const recover_page = internalMutation({
 					.lte("deadlineAt", args.phase === "complete" ? args.now : args.now + RUN_TIMEOUT_MS - RECOVER_IDLE_MS),
 			)
 			.paginate({ cursor: args.cursor, numItems: WAKE_PAGE_SIZE });
-		for (let cohort of page.page) {
-			if (cohort.pendingContentMigration) {
-				await files_pending_content_migration_db_extend_deadline(ctx, cohort);
-				cohort = (await ctx.db.get("files_move_cohorts", cohort._id))!;
-			}
+		for (const cohort of page.page) {
 			if (cohort.phase === "complete") await db_start_cleanup(ctx, cohort._id);
 			else if (cohort.deadlineAt <= args.now && cohort.publishedAt === null && cohort.phase !== "aborting")
 				await db_abort(ctx, cohort, { name: "timeout", message: "This Move stopped before it was saved." });

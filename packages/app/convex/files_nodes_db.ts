@@ -95,7 +95,7 @@ export async function files_nodes_db_get_content_version(
 
 	return {
 		kind: "yjs",
-		pendingContentVersion: fileNode.pendingContentVersion ?? 1,
+		pendingContentVersion: fileNode.pendingContentVersion,
 		lastSequenceId: sequenceDoc._id,
 		lineageGeneration: sequenceDoc.lineageGeneration,
 		sequence: sequenceDoc.lastSequence,

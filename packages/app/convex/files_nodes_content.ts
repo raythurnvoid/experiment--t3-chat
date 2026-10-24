@@ -56,12 +56,7 @@ import {
 	type files_SpecialFileName,
 	type files_YjsRootKind,
 } from "../server/files.ts";
-import {
-	files_content_type_index_fields,
-	files_pending_update_content_of,
-	files_ROOT_ID,
-	files_YJS_DOC_KEYS,
-} from "../shared/files.ts";
+import { files_content_type_index_fields, files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
 import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import {
@@ -165,7 +160,6 @@ import {
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_nodes_db_copied_from_policy_fields } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
-import { files_pending_content_migration_db_require_ready } from "./files_pending_content_migration.ts";
 import {
 	files_transfer_db_complete_copy_item,
 	files_transfer_db_fail_copy_item,
@@ -1351,23 +1345,9 @@ export const get_transfer_copy_pending_text = internalMutation({
 		if (bytes._nay) return bytes;
 		const document = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(bytes._yay));
 		try {
-			const plain = document.share.has(files_YJS_DOC_KEYS.plainText);
-			const rich = document.share.has(files_YJS_DOC_KEYS.richText);
-			if (plain && rich) return Result({ _nay: { message: "The source draft has two text shapes." } });
-			const rootKind =
-				pending.content.rootKind ??
-				pending.contentRebaseRootKind ??
-				(pending.createIntent?.kind === "text"
-					? pending.createIntent.textKind
-					: plain
-						? "plain_text"
-						: rich
-							? "rich_text"
-							: undefined);
-			if (!rootKind) return Result({ _yay: "" });
 			const text = files_yjs_doc_get_text({
 				yjsDoc: document,
-				rootKind,
+				rootKind: pending.content.rootKind,
 			});
 			if (text._nay) return text;
 			if (files_get_utf8_byte_size(text._yay) > files_MAX_TEXT_CONTENT_BYTES)
@@ -2182,13 +2162,7 @@ export const finalize_transfer_file_copy = internalMutation({
 				text: args.text,
 			});
 
-			if (installed._nay) {
-				if (installed._nay.name === "migration_pending") {
-					await files_transfer_db_wait_copy_item(ctx, { run, item });
-					return Result({ _yay: null });
-				}
-				return installed;
-			}
+			if (installed._nay) return installed;
 
 			for (const asset of [
 				contentAsset,
@@ -3126,7 +3100,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				pendingUpdateId: null,
 				pendingUpdateBaseStateId: undefined,
 				materializationState: null,
-				pendingContentVersion: fileNode.pendingContentVersion ?? 1,
+				pendingContentVersion: fileNode.pendingContentVersion,
 			};
 		}
 
@@ -3183,7 +3157,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					pendingUpdateId: pendingUpdate._id,
 					pendingUpdateBaseStateId: pendingUpdate.content?.baseStateId,
 					materializationState: null,
-					pendingContentVersion: fileNode.pendingContentVersion ?? 1,
+					pendingContentVersion: fileNode.pendingContentVersion,
 				};
 			}
 		}
@@ -3272,7 +3246,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				pendingUpdateId: pendingUpdate._id,
 				pendingUpdateBaseStateId: pendingUpdateContent.baseStateId,
 				materializationState: null,
-				pendingContentVersion: fileNode.pendingContentVersion ?? 1,
+				pendingContentVersion: fileNode.pendingContentVersion,
 			};
 		}
 
@@ -3314,7 +3288,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					pendingUpdateId: pendingUpdate?._id ?? null,
 					pendingUpdateBaseStateId: pendingUpdate?.content?.baseStateId,
 					materializationState: null,
-					pendingContentVersion: fileNode.pendingContentVersion ?? 1,
+					pendingContentVersion: fileNode.pendingContentVersion,
 				};
 			}
 		}
@@ -3325,7 +3299,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			pendingUpdateId: pendingUpdate?._id ?? null,
 			pendingUpdateBaseStateId: pendingUpdate?.content?.baseStateId,
 			materializationState,
-			pendingContentVersion: fileNode.pendingContentVersion ?? 1,
+			pendingContentVersion: fileNode.pendingContentVersion,
 		};
 	},
 });
@@ -5568,9 +5542,6 @@ async function db_install_file_content_replacement(
 		throw should_never_happen(errorMessage, errorData);
 	}
 
-	const ready = await files_pending_content_migration_db_require_ready(ctx, fileNode);
-	if (ready._nay) return ready;
-
 	// The assets must be this caller's own objects in this tenant.
 	const owned = (asset: Doc<"files_r2_assets"> | null): asset is Doc<"files_r2_assets"> =>
 		asset !== null &&
@@ -5801,7 +5772,7 @@ async function db_install_file_content_replacement(
 	await ctx.db.patch("files_nodes", nodeId, {
 		assetId: args.contentAssetId,
 		// Keep every owner's draft intact until that owner prepares it.
-		pendingContentVersion: (fileNode.pendingContentVersion ?? 1) + 1,
+		pendingContentVersion: fileNode.pendingContentVersion + 1,
 		contentByteSize: args.contentSize,
 		contentType: args.contentType,
 		...files_content_type_index_fields(args.contentType),
@@ -5930,7 +5901,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 	nodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates">;
 	expectedRevision: number;
-	expectedPendingContentVersion?: number;
+	expectedPendingContentVersion: number;
 	stagedAssetId: Id<"files_r2_assets">;
 	expectedYjsLastSequence?: { id: Id<"files_yjs_docs_last_sequences">; lastSequence: number };
 	backup?: { assetId: Id<"files_r2_assets">; size: number };
@@ -6014,7 +5985,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 	// the reviewer never saw.
 	if (
 		fileNode.assetId !== replacement.baseAssetId ||
-		(fileNode.pendingContentVersion ?? 1) !== args.expectedPendingContentVersion ||
+		fileNode.pendingContentVersion !== args.expectedPendingContentVersion ||
 		!files_transfer_source_versions_equal(
 			await files_nodes_db_get_content_version(ctx, fileNode),
 			replacement.baseContentVersion,
@@ -6216,7 +6187,7 @@ export const restore_snapshot = internalMutation({
 		restoreUpdateStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		expectedLastSequence: v.number(),
-		expectedPendingContentVersion: v.optional(v.number()),
+		expectedPendingContentVersion: v.number(),
 		currentSnapshotAssetId: v.id("files_r2_assets"),
 		currentSnapshotSize: v.number(),
 		restoredSnapshotAssetId: v.id("files_r2_assets"),
@@ -6287,7 +6258,7 @@ export const restore_snapshot = internalMutation({
 		const currentLastSequence = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
 		if (
 			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			(fileNode.pendingContentVersion ?? 1) !== args.expectedPendingContentVersion ||
+			fileNode.pendingContentVersion !== args.expectedPendingContentVersion ||
 			currentLastSequence?.lastSequence !== args.expectedLastSequence
 		) {
 			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
@@ -6365,8 +6336,6 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
-		const ready = await files_pending_content_migration_db_require_ready(ctx, fileNode);
-		if (ready._nay) return ready;
 		// Consume the staged restore update. The delete commits even when a later step throws is
 		// not a concern here (a throw rolls the whole transaction back), and a refused consume
 		// happens before any other write.
@@ -6440,7 +6409,7 @@ export const restore_snapshot = internalMutation({
 				// Point the node at the restored snapshot: it now holds the file's current bytes.
 				// The queued materialization will later point it at its own fresh snapshot.
 				assetId: args.restoredSnapshotAssetId,
-				pendingContentVersion: (fileNode.pendingContentVersion ?? 1) + 1,
+				pendingContentVersion: fileNode.pendingContentVersion + 1,
 				contentByteSize: args.restoredSnapshotSize,
 				contentType: restoredContentType,
 				...files_content_type_index_fields(restoredContentType),
@@ -6595,11 +6564,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		 * The document's last-sequence token the action read. Present for a collaborative file.
 		 */
 		expectedYjsLastSequence: v.optional(
-			v.object({
-				id: v.id("files_yjs_docs_last_sequences"),
-				lastSequence: v.number(),
-				pendingContentVersion: v.optional(v.number()),
-			}),
+			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number(), pendingContentVersion: v.number() }),
 		),
 		/**
 		 * A fresh copy of the current text, made for a collaborative file. See `db_install_file_content_replacement`.
@@ -6674,7 +6639,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
 			if (
 				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
-				(fileNode.pendingContentVersion ?? 1) !== args.expectedYjsLastSequence.pendingContentVersion ||
+				fileNode.pendingContentVersion !== args.expectedYjsLastSequence.pendingContentVersion ||
 				yjsLastSequenceDoc?.lastSequence !== args.expectedYjsLastSequence.lastSequence
 			) {
 				return Result({ _nay: { message: SNAPSHOT_RESTORE_FILE_CHANGED_MESSAGE } });
@@ -6794,10 +6759,8 @@ export const get_data_for_restore_snapshot = internalQuery({
 		const organization = await ctx.db.get("organizations", membership.organizationId);
 		if (!organization) return null;
 		const billedUserId = billing_pick_billed_user_id({ userId: args.userId, organization });
-		const ready = await files_pending_content_migration_db_require_ready(ctx, authorized._yay.fileNode);
-		const uploadAdmission = ready._nay
-			? ready
-			: snapshotContent?.yjsRootKind === null
+		const uploadAdmission =
+			snapshotContent?.yjsRootKind === null
 				? await files_stored_uploads_db_admit(ctx, {
 						organization,
 						actorUserId: args.userId,
@@ -7020,7 +6983,7 @@ async function action_restore_snapshot_as_replacement(
 		? {
 				id: yjsState.yjsLastSequenceDoc._id,
 				lastSequence: yjsState.yjsLastSequenceDoc.lastSequence,
-				pendingContentVersion: yjsState.fileNode.pendingContentVersion ?? 1,
+				pendingContentVersion: yjsState.fileNode.pendingContentVersion,
 			}
 		: undefined;
 
@@ -7277,7 +7240,7 @@ export const restore_snapshot_r2 = action({
 			restoreUpdateStageId,
 			expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
 			expectedLastSequence: materializationState.yjsLastSequenceDoc.lastSequence,
-			expectedPendingContentVersion: materializationState.fileNode.pendingContentVersion ?? 1,
+			expectedPendingContentVersion: materializationState.fileNode.pendingContentVersion,
 			currentSnapshotAssetId,
 			currentSnapshotSize: files_get_utf8_byte_size(currentContent._yay.text),
 			restoredSnapshotAssetId,
@@ -7573,7 +7536,7 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 			acknowledgeDiscardUnmaterialized: args.acknowledgeDiscardUnmaterialized ?? false,
 			targetSequence: data.throughSequence,
 			expectedYjsLastSequenceId: data.yjsLastSequenceDoc._id,
-			expectedPendingContentVersion: fileNode.pendingContentVersion ?? 1,
+			expectedPendingContentVersion: fileNode.pendingContentVersion,
 			text: visibleText,
 			textByteSize,
 			yjsSnapshotAssetId,
@@ -7613,7 +7576,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		acknowledgeDiscardUnmaterialized: v.boolean(),
 		targetSequence: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		expectedPendingContentVersion: v.optional(v.number()),
+		expectedPendingContentVersion: v.number(),
 		/**
 		 * One bounded text value; every other input travels as ids/scalars.
 		 */
@@ -7675,7 +7638,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		}
 		if (
 			state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			(state.fileNode.pendingContentVersion ?? 1) !== args.expectedPendingContentVersion
+			state.fileNode.pendingContentVersion !== args.expectedPendingContentVersion
 		) {
 			return Result({ _nay: { message: "Stale repair: the lineage advanced" } });
 		}
@@ -7712,8 +7675,6 @@ export const finalize_file_yjs_repair = internalMutation({
 		}
 
 		const now = Date.now();
-		const ready = await files_pending_content_migration_db_require_ready(ctx, state.fileNode);
-		if (ready._nay) return ready;
 		const nextLineageGeneration = state.yjsLastSequenceDoc.lineageGeneration + 1;
 		// Rotate the exact token even though the numeric sequence stays the same. Every writer and
 		// worker that started before this repair then fails its existing exact-id check.
@@ -7789,7 +7750,7 @@ export const finalize_file_yjs_repair = internalMutation({
 				}),
 				ctx.db.patch("files_nodes", args.nodeId, {
 					assetId: args.contentSnapshotAssetId,
-					pendingContentVersion: (state.fileNode.pendingContentVersion ?? 1) + 1,
+					pendingContentVersion: state.fileNode.pendingContentVersion + 1,
 					contentByteSize: args.textByteSize,
 					yjsLastSequenceId: nextYjsLastSequenceId,
 					contentTooLargeByteSize: null,
@@ -8176,8 +8137,6 @@ export const set_file_non_collaborative = mutation({
 			return Result({ _nay: { message: "This file is still saving. Try again in a moment." } });
 		}
 
-		const ready = await files_pending_content_migration_db_require_ready(ctx, fileNode);
-		if (ready._nay) return ready;
 		await cancel_file_content_materialization(ctx, { nodeId: args.nodeId });
 
 		const now = Date.now();
@@ -8197,7 +8156,7 @@ export const set_file_non_collaborative = mutation({
 			// toggle discards a marked newer document and keeps an older committed snapshot.
 			ctx.db.patch("files_nodes", args.nodeId, {
 				collaborationEnabled: false,
-				pendingContentVersion: (fileNode.pendingContentVersion ?? 1) + 1,
+				pendingContentVersion: fileNode.pendingContentVersion + 1,
 				yjsSnapshotId: null,
 				yjsLastSequenceId: null,
 				contentShapeMismatchAt: null,
@@ -8694,8 +8653,6 @@ export const finalize_file_collaboration_enable = internalMutation({
 		const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
 
 		const now = Date.now();
-		const ready = await files_pending_content_migration_db_require_ready(ctx, fileNode);
-		if (ready._nay) return ready;
 		const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
 			ctx.db.insert("files_yjs_snapshots", {
 				organizationId: membership.organizationId,
@@ -8725,7 +8682,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 				// rewritten from this same text.
 				ctx.db.patch("files_nodes", args.nodeId, {
 					collaborationEnabled: true,
-					pendingContentVersion: (fileNode.pendingContentVersion ?? 1) + 1,
+					pendingContentVersion: fileNode.pendingContentVersion + 1,
 					yjsSnapshotId,
 					yjsLastSequenceId,
 					assetId: args.contentSnapshotAssetId,

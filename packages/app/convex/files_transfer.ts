@@ -298,7 +298,7 @@ export function files_transfer_source_versions_equal(
 	if (left.kind === "asset" && right.kind === "asset") return left.assetId === right.assetId;
 	if (left.kind === "yjs" && right.kind === "yjs")
 		return (
-			(left.pendingContentVersion ?? 1) === (right.pendingContentVersion ?? 1) &&
+			left.pendingContentVersion === right.pendingContentVersion &&
 			left.lastSequenceId === right.lastSequenceId &&
 			left.lineageGeneration === right.lineageGeneration &&
 			left.sequence === right.sequence

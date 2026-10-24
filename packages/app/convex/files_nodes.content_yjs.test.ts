@@ -3304,7 +3304,7 @@ describe("non-collaborative files", () => {
 			});
 			expect(off._nay).toBeUndefined();
 			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.pendingContentVersion).toBe(
-				before.pendingContentVersion! + 1,
+				before.pendingContentVersion + 1,
 			);
 			expect(
 				await asUser.query(api.files_pending_updates.get_file_pending_update_last_sequence_saved, {
@@ -3418,7 +3418,7 @@ describe("non-collaborative files", () => {
 			});
 			expect(on._nay).toBeUndefined();
 			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.pendingContentVersion).toBe(
-				before.pendingContentVersion! + 1,
+				before.pendingContentVersion + 1,
 			);
 		}
 

@@ -632,7 +632,7 @@ describe("ai_chat_context_create", () => {
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
 				target: { kind: "saved", id: nodeId },
-				expectedPendingContentVersion: pendingContentVersion!,
+				expectedPendingContentVersion: pendingContentVersion,
 				unstagedText: skillText.replace("Saved description", "Pending description"),
 			}),
 		);
@@ -689,7 +689,7 @@ describe("ai_chat_context_create", () => {
 				workspaceId: f.db.workspaceId,
 				userId: f.db.userId,
 				target: { kind: "saved", id: rootId },
-				expectedPendingContentVersion: pendingContentVersion!,
+				expectedPendingContentVersion: pendingContentVersion,
 				unstagedText: "PENDING-ROOT\n",
 			}),
 		);
