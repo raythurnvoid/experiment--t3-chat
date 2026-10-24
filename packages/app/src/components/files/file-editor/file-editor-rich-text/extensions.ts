@@ -244,6 +244,7 @@ const extensionsAfterStarterKit = [
 	sharedExtensions.superscript,
 	sharedExtensions.kbd,
 	sharedExtensions.htmlEntity,
+	sharedExtensions.markdownEscape,
 	sharedExtensions.htmlTag,
 	sharedExtensions.htmlComment,
 	sharedExtensions.htmlBlock,

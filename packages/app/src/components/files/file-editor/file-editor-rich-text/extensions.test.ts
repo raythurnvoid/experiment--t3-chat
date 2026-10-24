@@ -278,10 +278,9 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(normalize(input)).toBe(input);
 	});
 
-	test("un-escapes a backslash-escaped date once, then holds still", () => {
-		const once = normalize("Meeting on 2026\\-08\\-30\n");
-		expect(once).toContain("2026-08-30");
-		expect(normalize(once)).toBe(once);
+	test("keeps a backslash-escaped date as written", () => {
+		const input = "Meeting on 2026\\-08\\-30\n";
+		expect(normalize(input)).toBe(input);
 	});
 
 	test("settles headings, lists, code fences, task lists and frontmatter after one pass", () => {

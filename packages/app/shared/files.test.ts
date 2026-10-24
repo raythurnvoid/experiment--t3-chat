@@ -1221,6 +1221,9 @@ describe("files_tiptap_markdown_to_json", () => {
 			            "type": "text",
 			          },
 			          {
+			            "attrs": {
+			              "markdownSource": "<br>",
+			            },
 			            "type": "hardBreak",
 			          },
 			          {
@@ -1421,7 +1424,7 @@ describe("files_tiptap_markdown_to_plain_text", () => {
 
 	test("keeps underlined and highlighted text searchable", () => {
 		const result = files_tiptap_markdown_to_plain_text({
-			markdown: "++**A & B**++ and ==*C & D*==",
+			markdown: "<u>**A & B**</u> and ==*C & D*==",
 		});
 
 		expect(result._nay).toBeUndefined();
@@ -1431,10 +1434,11 @@ describe("files_tiptap_markdown_to_plain_text", () => {
 
 describe("files_parse_markdown_to_html", () => {
 	test.each([
-		["underline", "++**A & B**++", "<p><u><strong>A &amp; B</strong></u></p>\n"],
 		["highlight", "==*C & D*==", "<p><mark><em>C &amp; D</em></mark></p>\n"],
-		["nested marks", "++==Both==++", "<p><u><mark>Both</mark></u></p>\n"],
-	])("renders %s tokens from the editor Markdown parser", (_name, markdown, expectedHtml) => {
+		// Other Markdown apps have no `++` underline.
+		["`++` as plain text", "++**A & B**++ and C++", "<p>++<strong>A &amp; B</strong>++ and C++</p>\n"],
+		["`==` with a space inside as plain text", "a == b == c", "<p>a == b == c</p>\n"],
+	])("renders %s like the editor Markdown parser", (_name, markdown, expectedHtml) => {
 		const result = files_parse_markdown_to_html(markdown);
 
 		expect(result._nay).toBeUndefined();
@@ -1566,32 +1570,27 @@ describe("files_parse_markdown_to_html", () => {
 		expect(html._nay?.message).toBe("Markdown needs too much work to parse");
 	});
 
-	test("keeps paragraphs full of `=` or `+` under the limit", () => {
-		// The highlight and underline search stops at the next `<`, so it does not read the rest of the
-		// paragraph at each step like Tiptap's own search.
+	test("keeps paragraphs full of `=` under the limit", () => {
+		// The highlight search stops at the next `<`, so it does not read the rest of the paragraph at
+		// each step like Tiptap's own search.
 		const highlight = files_parse_markdown_to_html(("x" + "=<".repeat(1_000) + "\n\n").repeat(40), {
-			cache: false,
-			workLimit: 150_000_000,
-		});
-		const underline = files_parse_markdown_to_html(("x" + "+<".repeat(1_000) + "\n\n").repeat(40), {
 			cache: false,
 			workLimit: 150_000_000,
 		});
 
 		expect(highlight._nay).toBeUndefined();
-		expect(underline._nay).toBeUndefined();
 	});
 
 	test.each([
 		[
 			"after other marks and code",
-			"*a* ==b== _c_ ++d++ `e` ==f==",
-			"<em>a</em> <mark>b</mark> <em>c</em> <u>d</u> <code>e</code> <mark>f</mark>",
+			"*a* ==b== _c_ `e` ==f==",
+			"<em>a</em> <mark>b</mark> <em>c</em> <code>e</code> <mark>f</mark>",
 		],
-		["after a leading `~~` run", "~~a ++b++", "~~a <u>b</u>"],
+		["after a leading `~~` run", "~~a ==b==", "~~a <mark>b</mark>"],
 		["inside an email-like word", "a b!c==d==@e", "a b!c<mark>d</mark>@e"],
 		["inside a code span", "``==a==``", "<code>==a==</code>"],
-	])("finds highlight and underline %s", (_name, markdown, paragraph) => {
+	])("finds highlight %s", (_name, markdown, paragraph) => {
 		const html = files_parse_markdown_to_html(markdown, { cache: false, workLimit: 150_000_000 });
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
 
@@ -2406,6 +2405,84 @@ describe("HTML entities round-trip through Yjs", () => {
 	});
 });
 
+describe("Markdown escapes and line breaks round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected escape markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	function edit_and_save(markdown: string, edit: (editor: Editor) => void) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+
+		edit(editor._yay);
+		const saved = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+		return saved + "\n";
+	}
+
+	test("keeps each escape and the plain `++` and `==` text as the file writes it", () => {
+		const input = "# C\\# \\(a+b\\)\n\n2026\\-08\\-30, \\*a\\*, \\&copy;, I know C++ and C++17, x == 1 or y == 2\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("escapes typed text only where it would read as Markdown", () => {
+		const typed = edit_and_save("## Issue\n\na\n", (editor) => {
+			// Type at the paragraph end first, so the heading edit does not move its position.
+			const tr = editor.state.tr.insertText(" snake_case C:\\Users 5 * 3 x == y *b* [c] `d` ==e==", 9);
+			tr.insertText(" #", 6);
+			editor.view.dispatch(tr);
+		});
+		expect(typed).toBe("## Issue \\#\n\na snake_case C:\\Users 5 * 3 x == y \\*b\\* \\[c\\] \\`d\\` \\=\\=e==\n");
+
+		const json = files_tiptap_markdown_to_json({ markdown: typed });
+		expect(JSON.stringify(json._yay)).not.toMatch(/"type":"(italic|code|highlight)"/);
+		expect(files_tiptap_markdown_to_plain_text({ markdown: typed })._yay).toContain("Issue #");
+	});
+
+	test("escapes a `*` whose space moves outside the bold marks", () => {
+		// Save moves the space at the end of the bold text outside the `**`, so `* ` is not between spaces.
+		const bold = edit_and_save("a\n", (editor) => {
+			const { schema } = editor.state;
+			editor.view.dispatch(
+				editor.state.tr.insert(2, [schema.text(" x * ", [schema.marks.bold.create()]), schema.text("y")]),
+			);
+		});
+		expect(bold).toBe("a **x \\*** y\n");
+	});
+
+	test("keeps each line break style, and writes a new break with a backslash", () => {
+		const input = "a  \nb\\\nc<br>d\n";
+		expect(round_trip_markdown(input)).toBe(input);
+
+		const typed = edit_and_save("a\n", (editor) => {
+			const { schema } = editor.state;
+			editor.view.dispatch(editor.state.tr.insert(2, [schema.nodes.hardBreak.create(), schema.text("b")]));
+		});
+		expect(typed).toBe("a\\\nb\n");
+	});
+});
+
 describe("HTML blocks round-trip through Yjs", () => {
 	function round_trip_markdown(markdown: string) {
 		const yjsDoc = new YDoc();
@@ -2481,6 +2558,7 @@ describe("HTML blocks round-trip through Yjs", () => {
 			"kbd",
 			"link",
 			"liveblocksCommentMark",
+			"markdownEscape",
 			"strike",
 			"subscript",
 			"superscript",
@@ -2497,7 +2575,8 @@ describe("HTML blocks round-trip through Yjs", () => {
 		const content: TiptapJSONContent[] = [
 			{ type: "htmlTag", attrs: { html: "<div>\n" } },
 			...Object.keys(schema.marks)
-				.filter((markType) => markType !== "htmlEntity")
+				// HTML has no backslash escapes, so an escape mark writes plain text there and does not come back.
+				.filter((markType) => markType !== "htmlEntity" && markType !== "markdownEscape")
 				.map((markType) => ({
 					type: "text",
 					text: `${markType} `,
@@ -2794,8 +2873,8 @@ describe("GFM tables round-trip through Yjs", () => {
 	});
 
 	test("keeps a backslash right before a hard break in a cell, stable", () => {
-		// The newline join must not eat the member's own backslash: a hard break renders as spaces
-		// plus a newline, never as a backslash, so any backslash next to it belongs to the text.
+		// The newline join must not eat the member's own backslash. In a cell a hard break is
+		// written as `<br>`, so any backslash next to it belongs to the text.
 		const markdown = build_markdown_from_json({
 			type: "doc",
 			content: [
@@ -3317,10 +3396,16 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(normalize(input)).toBe(input);
 	});
 
-	test("un-escapes a backslash-escaped date once, then holds still", () => {
-		const once = normalize("Meeting on 2026\\-08\\-30\n");
-		expect(once).toContain("2026-08-30");
-		expect(normalize(once)).toBe(once);
+	test("keeps backslash escapes as written", () => {
+		const fixtures = [
+			"Meeting on 2026\\-08\\-30\n",
+			"C\\# and \\(a+b\\)\n",
+			"\\=\\=x\\=\\= and \\&copy;\n",
+			"\\*not italic\\* and snake\\_case\n",
+		];
+		for (const fixture of fixtures) {
+			expect(normalize(fixture)).toBe(fixture);
+		}
 	});
 
 	test("settles headings, lists, code fences, task lists and frontmatter after one pass", () => {

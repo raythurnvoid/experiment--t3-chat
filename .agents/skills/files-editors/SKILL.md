@@ -49,9 +49,15 @@ Also keep the Markdown save patches:
   joins its lines with a space.
 - Bullet and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
 - A list with `loose: true` puts a blank line between its items.
-- A mark can write the text it covers with `markdownOptions.renderText`. The HTML entity mark uses it.
+- A mark can write the text it covers with `markdownOptions.renderText`. The HTML entity and backslash
+  escape marks use it.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and
   `escapeBlockStarts` escapes a `>` that starts a line. So `R&D` and `a < b` save as written.
+- `escapeMarkdownSyntax` escapes `*`, `_`, `~`, `=` and `\` only where they would read as Markdown, so
+  `snake_case` and `C:\Users` save as written. The rules are in the
+  [editable text spec](../files-editable-text/SKILL.md).
+- A hard break saves with its `markdownSource` (two spaces or `<br>`). A new break saves as `\`.
+- A `#` run at the end of a `#` heading saves escaped (`\#`), so it does not read as closing marks.
 
 Without them a save can break a code block open, grow its indent on every save, turn text such as
 `\# not a heading` into a heading, or split a heading in two when the file opens again.

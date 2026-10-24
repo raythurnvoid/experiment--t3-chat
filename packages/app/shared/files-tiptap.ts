@@ -73,6 +73,7 @@ const TRAILING_NEWLINES_REGEX = /(?<!\n)\n+$/;
 const STRUCTURAL_HTML_WHITESPACE_REGEX = />(?:\n[ \t]*)+</g;
 const TRAILING_HARD_BREAKS_REGEX = /(?<!\\\n)(?:\\\n)+$/;
 const HARD_BREAK_REGEX = /\\\n/g;
+const HIGHLIGHT_SPACE_INSIDE_REGEX = /^==\s|\s==$/;
 const CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX = /\n<\/code><\/pre>\n$/;
 const LIST_MARKER_REGEX = /^ {0,3}(?:([*+])|\d{1,9}(\)))/;
 const VIDEO_BLOCK_START_REGEX = /^<video[\s>]/m;
@@ -342,12 +343,6 @@ function configure_marked(instance: Marked | typeof marked) {
 			},
 			// Tiptap's inline tokens also need HTML renderers for standalone parsing and search.
 			{
-				name: "underline",
-				renderer(token) {
-					return `<u>${this.parser.parseInline(token.tokens as Parameters<typeof this.parser.parseInline>[0])}</u>`;
-				},
-			},
-			{
 				name: "highlight",
 				renderer(token) {
 					return `<mark>${this.parser.parseInline(token.tokens as Parameters<typeof this.parser.parseInline>[0])}</mark>`;
@@ -421,6 +416,11 @@ function configure_marked(instance: Marked | typeof marked) {
 				return `<p>${bodyHtml}${"<br>".repeat(hardBreakCount)}</p>`;
 			},
 
+			// Keep a break written with two spaces as it is. A plain `<br>` saves as a backslash.
+			br(token) {
+				return token.raw.startsWith("\\") ? false : `<br data-markdown-break="${encodeURIComponent(token.raw)}">`;
+			},
+
 			// Marked ends the code with a `\n` before `</code>`. The code block keeps every character of
 			// `<pre>`, so that `\n` became part of the code. The save then wrote it as an empty line before
 			// the closing fence. So drop it here.
@@ -456,10 +456,15 @@ function configure_marked(instance: Marked | typeof marked) {
 			// address on a shared page. So always escape text. `WorkCountingTokenizer.escape` already charges for
 			// this escaping.
 			//
-			// Also mark each HTML entity, so save writes it back as the file wrote it (`files_html_entity_mark`).
+			// Also mark each HTML entity and each backslash escape, so save writes them back as the file wrote
+			// them (`files_html_entity_mark`, `files_markdown_escape_mark`). Marked renders an escape with
+			// this renderer too.
 			text(token) {
 				if ("tokens" in token && token.tokens) {
 					return false;
+				}
+				if (token.type === "escape") {
+					return `<span data-markdown-escape>${Renderer.prototype.text.call(this, { ...token, escaped: false })}</span>`;
 				}
 
 				return html_entities_wrap(token.text, (text) =>
@@ -482,6 +487,10 @@ function configure_marked(instance: Marked | typeof marked) {
 				}
 
 				const name = INLINE_HTML_TAG_NAME_REGEX.exec(token.text)?.[1]?.toLowerCase();
+				// A `<br>` tag stays a tag on save, like the file wrote it.
+				if (name === "br") {
+					return `<br data-markdown-break="${encodeURIComponent(token.text)}">`;
+				}
 				if (name !== undefined && INLINE_HTML_SUPPORTED_TAGS.has(name)) {
 					return false;
 				}
@@ -636,7 +645,7 @@ const EMAIL_CHAR_RUN_REGEX = ((/* iife */) => {
 })();
 
 /**
- * The characters where Marked's inline text step always stops, and `=` and `+`. Taken from Marked's
+ * The characters where Marked's inline text step always stops, and `=`. Taken from Marked's
  * text pattern. The step also stops before `http`, `www.`, an email address, or two spaces at a line
  * end, but those stops read only a few characters or the email characters after them.
  */
@@ -647,17 +656,16 @@ const MARKER_START_SEARCH_REGEX = ((/* iife */) => {
 		throw should_never_happen("Marked's inline text pattern changed");
 	}
 
-	return new RegExp(`[=+${stopChars}]`, "g");
+	return new RegExp(`[=${stopChars}]`, "g");
 })();
 
 /**
- * The last answer of `find_marker_starts`. Marked asks the highlight and the underline `start` with the
- * same text, so one search answers both.
+ * The last answer of `find_marker_starts`.
  */
-let marker_starts: { src: string; highlight: number; underline: number } | null = null;
+let marker_starts: { src: string; highlight: number } | null = null;
 
 /**
- * Find where Tiptap's highlight (`==`) and underline (`++`) text can start, for Marked's inline `start`.
+ * Find where Tiptap's highlight (`==`) text can start, for Marked's inline `start`.
  * Tiptap's own `start` reads the rest of the paragraph with `indexOf` at every inline step. That is slow
  * on long text, and even slower on text in some alphabets, where `indexOf` stops at many letters.
  *
@@ -678,59 +686,45 @@ function find_marker_starts(src: string) {
 	}
 
 	let highlight = -1;
-	let underline = -1;
 	let stop = -1;
 	let scanned = src.length;
 	let candidates = 0;
 	MARKER_START_SEARCH_REGEX.lastIndex = index;
 	for (let match = MARKER_START_SEARCH_REGEX.exec(src); match; match = MARKER_START_SEARCH_REGEX.exec(src)) {
-		const char = match[0];
-		if (char !== "=" && char !== "+") {
+		if (match[0] !== "=") {
 			stop = match.index;
 			scanned = stop;
 			break;
 		}
 
 		candidates += 1;
-		if (src[match.index + 1] === char) {
-			if (char === "=" && highlight === -1) {
-				highlight = match.index;
-			} else if (char === "+" && underline === -1) {
-				underline = match.index;
-			}
-		}
-		if (highlight !== -1 && underline !== -1) {
+		if (src[match.index + 1] === "=") {
+			highlight = match.index;
 			scanned = match.index;
 			break;
 		}
 	}
-	// Each `=` or `+` costs one more search call.
+	// Each `=` costs one more search call.
 	markdown_work_add(
 		scanned * MARKDOWN_WORK_MARKER_SEARCH_PER_CHAR + candidates * MARKDOWN_WORK_MARKER_SEARCH_PER_CANDIDATE,
 	);
 
 	// A marker after the stop character counts only inside the email characters that follow it.
-	if (stop !== -1 && (highlight === -1 || underline === -1)) {
+	if (stop !== -1) {
 		EMAIL_CHAR_RUN_REGEX.lastIndex = stop;
 		const emailRun = EMAIL_CHAR_RUN_REGEX.exec(src)?.[0] ?? "";
 		markdown_work_add(emailRun.length * MARKDOWN_WORK_INLINE_EMAIL_SCAN_PER_CHAR);
-		if (highlight === -1) {
-			const runIndex = emailRun.indexOf("==");
-			highlight = runIndex === -1 ? -1 : stop + runIndex;
-		}
-		if (underline === -1) {
-			const runIndex = emailRun.indexOf("++");
-			underline = runIndex === -1 ? -1 : stop + runIndex;
-		}
+		const runIndex = emailRun.indexOf("==");
+		highlight = runIndex === -1 ? -1 : stop + runIndex;
 	}
 
-	marker_starts = { src, highlight, underline };
+	marker_starts = { src, highlight };
 	return marker_starts;
 }
 
 /**
  * Wrap Tiptap's tokenizers while Tiptap registers them on Marked. List tokenizers get `cut_list_block`,
- * and the highlight and underline `start` searches use `find_marker_starts`.
+ * and the highlight `start` search uses `find_marker_starts`.
  */
 function bound_tiptap_tokenizers(extension: MarkedExtension): MarkedExtension {
 	return {
@@ -741,33 +735,31 @@ function bound_tiptap_tokenizers(extension: MarkedExtension): MarkedExtension {
 			if (tokenizerExtension.name === "table") return [];
 			// Tiptap's details nodes read a Pandoc `:::details` block. GitHub shows that text as it is, so keep it.
 			if (DETAILS_NODE_NAMES.has(tokenizerExtension.name)) return [];
+			// GitHub and the other Markdown apps have no `++` underline, so `C++ and C++17` is plain text.
+			// Underline still saves as `<u>`, which every reader shows.
+			if (tokenizerExtension.name === "underline") return [];
 
-			const marker =
-				tokenizerExtension.name === "highlight"
-					? "highlight"
-					: tokenizerExtension.name === "underline"
-						? "underline"
-						: null;
-			if (marker && "start" in tokenizerExtension && tokenizerExtension.start) {
-				// `find_marker_starts` gives the same parse only while Tiptap's `start` returns the first
-				// `==` or `++`.
-				const probe = "a *b ==c ++d";
-				if (
-					tokenizerExtension.start.call({ lexer: new Lexer() }, probe) !==
-					probe.indexOf(marker === "highlight" ? "==" : "++")
-				) {
-					throw should_never_happen("Tiptap's highlight or underline start changed");
+			if (tokenizerExtension.name === "highlight" && "start" in tokenizerExtension && tokenizerExtension.start) {
+				// `find_marker_starts` gives the same parse only while Tiptap's `start` returns the first `==`.
+				const probe = "a *b ==c";
+				if (tokenizerExtension.start.call({ lexer: new Lexer() }, probe) !== probe.indexOf("==")) {
+					throw should_never_happen("Tiptap's highlight start changed");
 				}
 
 				const markerTokenizer = tokenizerExtension.tokenizer;
 				return {
 					...tokenizerExtension,
-					start: (src) => find_marker_starts(src)[marker],
+					start: (src) => find_marker_starts(src).highlight,
 					tokenizer(src, tokens) {
 						const token = markerTokenizer.call(this, src, tokens);
-						// Tiptap's `++` and `==` can pair across a link, as in `C++ <p> [Bob C++ x](...)`. A typed
-						// block tag inside the pair then splits the line, and the public page would show the start of
-						// the hidden name. So a public parse keeps a pair that holds a `<` as plain text.
+						// A space just inside the markers keeps them plain text, like `*` emphasis. So `a == b == c`
+						// stays a comparison.
+						if (token && HIGHLIGHT_SPACE_INSIDE_REGEX.test(token.raw)) {
+							return undefined;
+						}
+						// Tiptap's `==` can pair across a link, as in `a== <p> [Bob ==x](...)`. A typed block tag
+						// inside the pair then splits the line, and the public page would show the start of the
+						// hidden name. So a public parse keeps a pair that holds a `<` as plain text.
 						if (token && markdown_hidden_link_text !== null && token.raw.includes("<")) {
 							return undefined;
 						}
@@ -2525,6 +2517,55 @@ export const files_html_entity_mark = Mark.create({
 });
 // #endregion html entities
 
+// #region markdown escapes
+/**
+ * ASCII punctuation, the characters a Markdown backslash can escape. A table writes its own `\|`, so a
+ * `|` is left out: the mark would give the table writer a backslash to double.
+ */
+const MARKDOWN_ESCAPABLE_REGEX = /^[!-/:-@[-`{}~]+$/;
+
+/**
+ * The text that save writes for `text` under an escape mark: each character with its backslash. It is
+ * `null` after the user typed a letter or a space inside, because `\a` is not an escape.
+ */
+function markdown_escape_render_text(text: string) {
+	if (!MARKDOWN_ESCAPABLE_REGEX.test(text)) {
+		return null;
+	}
+
+	return text.replace(/./g, "\\$&");
+}
+
+/**
+ * Remember a backslash escape that the file wrote, like `\*`, `C\#` or `\$5`. The editor shows the
+ * character, and save writes the backslash back. Without it, a save dropped every escape that the writer
+ * did not need, so `\(a+b\)` lost the math markers that MathJax reads.
+ *
+ * The `text` renderer in `configure_marked` wraps each Marked escape in a `<span data-markdown-escape>`.
+ */
+export const files_markdown_escape_mark = Mark.create({
+	name: "markdownEscape",
+	// Text typed next to an escape is new text, so it does not take the mark.
+	inclusive: false,
+
+	parseHTML() {
+		return [{ tag: "span[data-markdown-escape]" }];
+	},
+
+	renderHTML() {
+		return ["span", { "data-markdown-escape": "" }, 0];
+	},
+
+	renderMarkdown(node, helpers) {
+		return helpers.renderChildren(node.content || []);
+	},
+
+	markdownOptions: {
+		renderText: markdown_escape_render_text,
+	},
+});
+// #endregion markdown escapes
+
 // #region hidden html tags
 /**
  * Inline HTML tags that the editor reads as formatting, a link, an image, a video, or a line break.
@@ -2913,8 +2954,10 @@ function html_mark_tags(mark: NonNullable<TiptapJSONContent["marks"]>[number]): 
 			return ["<sup>", "</sup>"];
 		case "kbd":
 			return ["<kbd>", "</kbd>"];
-		// `html_render_inline` writes the entity itself.
+		// `html_render_inline` writes the entity itself. HTML has no backslash escapes, so an escaped
+		// character is plain text there.
 		case "htmlEntity":
+		case "markdownEscape":
 			return ["", ""];
 		case "link": {
 			const href = typeof attrs.href === "string" ? attrs.href : "";
@@ -3273,6 +3316,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			}),
 			kbd: files_kbd_mark,
 			htmlEntity: files_html_entity_mark,
+			markdownEscape: files_markdown_escape_mark,
 			htmlTag: files_html_tag_node,
 			htmlComment: files_html_comment_node,
 			htmlBlock: files_html_block_node,
