@@ -46,8 +46,7 @@ import {
 import { files_yjs_doc_create_from_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../shared/files-yjs.ts";
 import { delay } from "../shared/async-utils.ts";
-import { r2_server_side_copy } from "./r2_client.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key, r2_server_side_copy } from "./r2_client.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_metadata_MAX_FRONTMATTER_FIELDS } from "../shared/files-metadata.ts";
 import {
@@ -1654,7 +1653,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 			return { mountId, assetId };
 		});
 
-		const result = await t.mutation(internal.files_nodes_create.create_file_node, {
+		const result = await t.mutation(internal.files_nodes_content.create_file_node, {
 			userId: users_SYSTEM_AUTHOR,
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -2036,7 +2035,7 @@ describe("producer shape pairs", () => {
 			return { assetId, yjsSnapshotAssetId };
 		});
 
-		const created = await t.mutation(internal.files_nodes_create.create_file_node, {
+		const created = await t.mutation(internal.files_nodes_content.create_file_node, {
 			userId: db.userId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,

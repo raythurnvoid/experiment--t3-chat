@@ -142,15 +142,13 @@ import {
 } from "../shared/files-metadata.ts";
 import {
 	r2,
-	r2_fetch_object_from_bucket,
-	r2_put_object,
-} from "./r2_client.ts";
-import {
 	r2_UNFINALIZED_ASSET_TTL_MS,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
-} from "./r2_assets.ts";
+	r2_fetch_object_from_bucket,
+	r2_put_object,
+} from "./r2_client.ts";
 import { files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";

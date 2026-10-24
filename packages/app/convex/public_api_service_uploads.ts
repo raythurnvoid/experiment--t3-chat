@@ -33,14 +33,12 @@ import { files_nodes_db_require_write_policy_management } from "./files_write_po
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
-	r2,
-} from "./r2_client.ts";
-import {
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
+	r2,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
-} from "./r2_assets.ts";
+} from "./r2_client.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {
 	files_MAX_UPLOADS_BYTES,

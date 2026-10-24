@@ -21,8 +21,7 @@ import type { access_control_Permission } from "../shared/access-control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
-import { r2_confirmed_object_delete } from "./r2_client.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key, r2_confirmed_object_delete } from "./r2_client.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,

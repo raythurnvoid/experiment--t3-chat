@@ -24,7 +24,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import type { Editor } from "@tiptap/core";
 import { vWorkId } from "@convex-dev/workpool";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { path_join, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { ConvexError, v, type Infer } from "convex/values";
 import {
 	files_INITIAL_CONTENT,
@@ -77,9 +77,12 @@ import {
 } from "../shared/files-tiptap.ts";
 import { files_COMMENT_MARK_TYPE } from "../shared/files-tiptap-comments.ts";
 import { files_pending_text_merge } from "../shared/files-pending-text-merge.ts";
+import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import { path_extract_segments_from } from "../shared/paths.ts";
 import {
 	organizations_is_global_organization_id,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -90,6 +93,7 @@ import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { plugins_MAX_FILE_BYTES } from "../shared/plugins.ts";
 import app_convex_schema, {
 	ai_chat_workspaces_source_validator,
+	files_metadata_entries_validator,
 	files_pending_target_validator,
 	files_content_version_validator,
 	files_transfer_scope_validator,
@@ -105,6 +109,7 @@ import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
+	access_control_db_authorize_file_write,
 	access_control_db_authorize_node,
 	access_control_subject_validator,
 	type access_control_Subject,
@@ -119,6 +124,7 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import {
 	files_metadata_db_delete_committed_frontmatter,
+	files_metadata_db_insert_committed,
 	files_metadata_db_read_entries,
 } from "./files_metadata.ts";
 import {
@@ -138,25 +144,20 @@ import {
 } from "../server/files-move-reservations.ts";
 import {
 	r2,
+	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+	r2_UNFINALIZED_ASSET_TTL_MS,
 	r2_copy_object_to_immutable_key,
+	r2_create_asset_key,
+	r2_enqueue_object_deletion_job,
 	r2_fetch_object_from_bucket,
 	r2_fetch_object_range_from_bucket,
 	r2_put_object,
 } from "./r2_client.ts";
-import {
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
-	r2_UNFINALIZED_ASSET_TTL_MS,
-	r2_create_asset_key,
-	r2_enqueue_object_deletion_job,
-} from "./r2_assets.ts";
 import { cancel_file_content_materialization, db_get_file_snapshot_content, enqueue_file_content_materialization, files_READ_RANGE_MAX_LINES, files_line_range_from_text, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, type files_nodes_get_visible_entry_by_path_Result, files_tail_lines_from_text, yjs_reserve_and_increment_last_sequence, type files_nodes_read_committed_file_chunk_stats_Result, type files_nodes_read_committed_file_chunks_line_range_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_header_Result, type get_file_content_materialization_state_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
-import type { files_nodes_create_preflight_Result } from "./files_nodes_create_preflight.ts";
 import {
-	db_insert_file_text_content,
-	files_nodes_db_insert_file_content_docs,
-	type files_nodes_create_Result,
-} from "./files_nodes_create.ts";
+	files_nodes_db_upsert_file_stats as db_upsert_file_stats,
+	files_nodes_db_create_node_recursively_at_path,
+} from "./files_nodes_create_db.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_nodes_db_copied_from_policy_fields } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
@@ -192,6 +193,7 @@ import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
+	files_nodes_db_insert_committed_text_chunks,
 	files_nodes_db_hand_unpublished_assets_to_deletion_ledger,
 	files_nodes_db_finalize_editable_text_node_creation,
 	files_compute_wc_counts,
@@ -227,6 +229,75 @@ async function db_get_active_membership_in_workspace(
 				.eq("active", true),
 		)
 		.first();
+}
+
+export async function db_insert_file_text_content(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		nodeId: Id<"files_nodes">;
+		path: string;
+		archiveOperationId?: string;
+		yjsSequence?: number;
+		/**
+		 * The chunker shape for this content. This argument REPLACES the old `contentType`
+		 * derivation — the branch below is exhaustive on the closed union and on nothing else, so
+		 * an unrecognized content type can never reach a throw inside the infinite-retry workpool.
+		 * Editable nodes read it from `files_nodes.textKind`; read-only mounts pass the
+		 * `"plain_text"` literal because a mount has no Yjs document to have a shape.
+		 */
+		rootKind: files_YjsRootKind;
+		textContent: string;
+		/**
+		 * Repair-only escape: commit the chunks of a text whose frontmatter is over the index
+		 * caps without inserting metadata docs, so the insert helper's over-cap backstop cannot
+		 * throw mid-repair. The caller keeps the frontmatter marker pair set instead.
+		 */
+		skipFrontmatterIndex?: boolean;
+	},
+) {
+	const chunks =
+		args.rootKind === "rich_text"
+			? await files_chunk_markdown(args.textContent)
+			: Result({ _yay: files_chunk_plain_text(args.textContent) });
+	if (chunks._nay) {
+		return chunks;
+	}
+
+	await files_nodes_db_insert_committed_text_chunks(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.nodeId,
+		path: args.path,
+		archiveOperationId: args.archiveOperationId ?? undefined,
+		yjsSequence: args.yjsSequence,
+		chunks: chunks._yay,
+	});
+
+	// Frontmatter is a rich-text (Markdown) concept only: a `.yaml` opening with `---` is plain
+	// text and must not be frontmatter-indexed.
+	if (args.rootKind === "rich_text" && !args.skipFrontmatterIndex) {
+		await files_metadata_db_insert_committed(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			yjsSequence: args.yjsSequence,
+			markdownContent: args.textContent,
+		});
+	}
+
+	const counts = files_compute_wc_counts(args.textContent);
+	await db_upsert_file_stats(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.nodeId,
+		lineCount: counts.lineCount,
+		wordCount: counts.wordCount,
+		charCount: counts.charCount,
+	});
+
+	return Result({ _yay: null });
 }
 
 export async function db_replace_file_chunks(
@@ -346,6 +417,642 @@ export function files_nodes_create_yjs_snapshot_update_from_text(args: {
 	});
 }
 
+/**
+ * Insert the content docs for a just-created file node, in the same mutation that inserted the
+ * node (`db_insert_node` in files_nodes.ts with `expectsTextContent: true`). Read-only files get
+ * committed chunks + real stats only; editable files also get their Yjs snapshot doc, the
+ * last-sequence doc, and the node patch linking both. This is the former `db_insert_node` text
+ * branch; it lives here because chunking needs mastra. Failures throw so Convex rolls back the
+ * node and every related doc created in the mutation.
+ */
+export async function files_nodes_db_insert_file_content_docs(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		nodeId: Id<"files_nodes">;
+		path: string;
+		/** Only used for error logging when the editable content docs fail to insert. */
+		parentId?: Doc<"files_nodes">["parentId"];
+		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
+		contentType: Doc<"files_nodes">["contentType"];
+		/**
+		 * The shape of this node's text. The writable and non-collaborative branches both write it
+		 * as `files_nodes.textKind`; the read-only branch ignores it, because a mount has no Yjs
+		 * document and always chunks as plain text.
+		 */
+		rootKind: files_YjsRootKind;
+		textContent: string;
+		readOnly: boolean;
+		/**
+		 * Create the file with committed content only and no Yjs document. The caller then needs no
+		 * `yjsSnapshotAssetId`, because there is no snapshot to upload.
+		 */
+		nonCollaborative?: boolean;
+		yjsSnapshotAssetId?: Id<"files_r2_assets">;
+		userId: Doc<"files_nodes">["createdBy"];
+		now: number;
+	},
+) {
+	const initialYjsSequence = 0;
+
+	if (args.readOnly === true) {
+		await db_insert_file_text_content(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			path: args.path,
+			archiveOperationId: args.archiveOperationId ?? undefined,
+			// Read-only mounts chunk as plain text, to the same boundaries as before the chunker
+			// dispatched on this argument. `args.rootKind` is ignored here: a mount has no Yjs
+			// document to have a shape, so the literal is the mount branch's answer.
+			rootKind: "plain_text",
+			textContent: args.textContent,
+		}).then((chunks) => {
+			if (chunks._nay) {
+				throw convex_error({
+					message: "Failed to chunk",
+					cause: chunks._nay,
+				});
+			}
+
+			return chunks;
+		});
+
+		return;
+	}
+
+	// Editable files need a real tenant. External content stays read-only and has no Yjs state.
+	if (organizations_is_global_organization_id(args.organizationId)) {
+		const errorMessage = "Editable text content requires a real organizationId";
+		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId: args.nodeId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	const scope = files_db_resolve_scope(ctx, args.workspaceId);
+	if (scope.kind !== "workspace") {
+		const errorMessage = "Editable text content requires a real workspaceId";
+		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId: args.nodeId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	if (args.userId === users_SYSTEM_AUTHOR) {
+		const errorMessage = "Editable text content requires a real user id";
+		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId: args.nodeId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	const workspaceId = scope.workspaceId;
+
+	// A non-collaborative file gets committed chunks and nothing else: no Yjs snapshot, no sequence
+	// doc, no update log. It still stores `textKind`, so it chunks under its real shape and a
+	// Markdown file keeps its frontmatter index — unlike the read-only mount branch above, which
+	// forces plain text.
+	if (args.nonCollaborative === true) {
+		await db_insert_file_text_content(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			path: args.path,
+			archiveOperationId: args.archiveOperationId ?? undefined,
+			rootKind: args.rootKind,
+			textContent: args.textContent,
+		}).then((chunks) => {
+			if (chunks._nay) {
+				throw convex_error({
+					message: "Failed to chunk",
+					cause: chunks._nay,
+				});
+			}
+
+			return chunks;
+		});
+
+		await ctx.db.patch("files_nodes", args.nodeId, {
+			textKind: args.rootKind,
+			collaborationEnabled: false,
+		});
+
+		return;
+	}
+
+	if (!args.yjsSnapshotAssetId) {
+		const errorMessage = "fileNode.yjsSnapshotId asset is not set";
+		const errorData = {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	const yjsSnapshotAssetId = args.yjsSnapshotAssetId;
+
+	const [yjs_snapshot_id, yjs_last_sequence_id] = await Promise.all([
+		ctx.db.insert("files_yjs_snapshots", {
+			organizationId: args.organizationId,
+			workspaceId,
+			fileNodeId: args.nodeId,
+			sequence: 0,
+			assetId: yjsSnapshotAssetId,
+			createdBy: args.userId,
+			updatedBy: args.userId,
+			updatedAt: args.now,
+		}),
+		ctx.db.insert("files_yjs_docs_last_sequences", {
+			organizationId: args.organizationId,
+			workspaceId,
+			fileNodeId: args.nodeId,
+			lastSequence: initialYjsSequence,
+			unmaterializedUpdateCount: 0,
+			unmaterializedUpdateBytes: 0,
+			lineageGeneration: 0,
+		}),
+		db_insert_file_text_content(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			path: args.path,
+			archiveOperationId: args.archiveOperationId ?? undefined,
+			yjsSequence: initialYjsSequence,
+			rootKind: args.rootKind,
+			textContent: args.textContent,
+		}).then((chunks) => {
+			if (chunks._nay) {
+				throw convex_error({
+					message: "Failed to chunk",
+					cause: chunks._nay,
+				});
+			}
+
+			return chunks;
+		}),
+	] as const).catch((error) => {
+		const errorMessage = "Failed to create file content docs";
+		console.error(errorMessage, {
+			error,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			parentId: args.parentId,
+			nodeId: args.nodeId,
+			yjsSequence: initialYjsSequence,
+		});
+		// Throw so Convex rolls back the node and all related file docs created in this mutation.
+		throw convex_error({
+			message: errorMessage,
+			cause: error,
+		});
+	});
+
+	await ctx.db.patch("files_nodes", args.nodeId, {
+		yjsLastSequenceId: yjs_last_sequence_id,
+		yjsSnapshotId: yjs_snapshot_id,
+		// Record the shape beside the other Yjs pointers, in the same mutation that created the
+		// document, so the node and its document can never be born disagreeing.
+		textKind: args.rootKind,
+		collaborationEnabled: true,
+	});
+}
+
+/**
+ * Find the current lock for a new file path.
+ * Walk active children under `parentId`, like the create function does.
+ *
+ * - `anchorNode` is the deepest existing parent. It stores the nearest lock.
+ * - `targetNode` is the active node at the final path, if one exists.
+ * - `prefixPaths` contains every path part from root to the final path.
+ *
+ * Return null when the parent is missing or archived, or the path is empty. The create would also fail.
+ */
+async function db_resolve_create_destination_read_only_state(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		parentId: Doc<"files_nodes">["parentId"];
+		path: string;
+	},
+) {
+	const pathSegments = path_extract_segments_from(args.path);
+	if (pathSegments.length === 0) {
+		return null;
+	}
+
+	let anchorNode: Doc<"files_nodes"> | null = null;
+	let currentParentPath: string;
+	if (args.parentId === files_ROOT_ID) {
+		currentParentPath = "/";
+	} else {
+		const parentNode = await ctx.db.get("files_nodes", args.parentId);
+		if (
+			!parentNode ||
+			parentNode.organizationId !== args.organizationId ||
+			parentNode.workspaceId !== args.workspaceId ||
+			parentNode.kind !== "folder" ||
+			parentNode.archiveOperationId !== null
+		) {
+			return null;
+		}
+		anchorNode = parentNode;
+		currentParentPath = parentNode.path;
+	}
+
+	let currentParentId: Doc<"files_nodes">["parentId"] = args.parentId;
+	const prefixPaths: string[] = [];
+	let targetNode: Doc<"files_nodes"> | null = null;
+
+	// After one path part is missing, every deeper part is also missing.
+	// Only build their paths after that.
+	let missingSegments = false;
+
+	for (const [i, name] of pathSegments.entries()) {
+		const isLeaf = i === pathSegments.length - 1;
+		let existing: Doc<"files_nodes"> | null = null;
+		if (!missingSegments) {
+			existing = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+						.eq("parentId", currentParentId)
+						.eq("name", name)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+		}
+
+		if (existing) {
+			prefixPaths.push(existing.path);
+			currentParentPath = existing.path;
+			if (isLeaf) {
+				targetNode = existing;
+			} else if (existing.kind === "folder") {
+				anchorNode = existing;
+				currentParentId = existing._id;
+			} else {
+				// This path part is a file. Nothing can exist below it, so the create will fail.
+				missingSegments = true;
+			}
+		} else {
+			missingSegments = true;
+			currentParentPath = path_join(currentParentPath, name);
+			prefixPaths.push(currentParentPath);
+		}
+	}
+
+	return { anchorNode, targetNode, prefixPaths };
+}
+
+/**
+ * Check the destination before the action writes R2 files.
+ * `create_file_node` checks the destination and its lock again in the final transaction.
+ */
+export const get_create_file_node_write_preflight = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		path: v.string(),
+	},
+	returns: v.union(
+		v.null(),
+		v.object({
+			canWrite: v.boolean(),
+			targetNodeId: v.union(v.id("files_nodes"), v.null()),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) {
+			return null;
+		}
+
+		// Check access on the parent before reading deeper path data.
+		// Do not reveal the read-only state of a child the caller cannot open.
+		const authorized = await access_control_db_authorize_file_write(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			nodeId: args.parentId,
+		});
+		if (authorized._nay) {
+			return null;
+		}
+
+		const destination = await db_resolve_create_destination_read_only_state(ctx, args);
+		if (!destination) {
+			return null;
+		}
+
+		// Check access on every existing path part before returning lock or conflict data.
+		// The final create walks the same path again.
+		for (const prefixPath of destination.prefixPaths) {
+			const segment = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+						.eq("path", prefixPath)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			if (!segment) {
+				break;
+			}
+			const segmentAuthorized = await access_control_db_authorize_file_write(ctx, {
+				userAuth: { id: args.userId },
+				membership,
+				nodeId: segment._id,
+			});
+			if (segmentAuthorized._nay) {
+				return null;
+			}
+		}
+
+		return {
+			canWrite:
+				destination.anchorNode === null ||
+				!(
+					await files_nodes_db_require_user_writable(ctx, {
+						node: destination.anchorNode,
+						userId: args.userId,
+					})
+				)._nay,
+			targetNodeId: destination.targetNode?._id ?? null,
+		};
+	},
+});
+
+type get_create_file_node_write_preflight_Result =
+	typeof get_create_file_node_write_preflight extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const create_file_node = internalMutation({
+	args: {
+		userId: doc(app_convex_schema, "files_nodes").fields.createdBy,
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		path: v.string(),
+		contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+		assetId: v.id("files_r2_assets"),
+		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
+		archiveOperationId: v.optional(v.string()),
+		textContent: v.string(),
+		/**
+		 * The document shape written on the node for writable files. Read-only mount files have
+		 * no Yjs document, so their callers pass the mount literal and the insert ignores it.
+		 */
+		rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
+		readOnly: v.boolean(),
+		mountId: v.optional(v.id("github_mounts")),
+		syncRunId: v.optional(v.string()),
+		/** Tenant assets already uploaded to R2. Add deletion jobs when this mutation refuses them. */
+		unpublishedAssetIds: v.optional(v.array(v.id("files_r2_assets"))),
+		/** Source metadata for files created by reserved-scope mirrors. */
+		metadata: v.optional(files_metadata_entries_validator),
+	},
+	returns: v_result({
+		_yay: v.object({
+			nodeId: v.id("files_nodes"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const authorUserId = args.userId === users_SYSTEM_AUTHOR ? null : args.userId;
+		const authorOrganizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+		const authorWorkspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
+		let authorMembership: Doc<"organizations_workspaces_users"> | null = null;
+
+		// Reserved scopes use other cleanup and never pass tenant asset ids.
+		if (args.unpublishedAssetIds && (!authorOrganizationId || !authorWorkspaceId)) {
+			const errorMessage = "create_file_node unpublishedAssetIds requires a tenant scope";
+			const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, path: args.path };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		// The action uploaded the R2 files before this mutation.
+		// If this mutation refuses them, save their deletion jobs before deleting their asset docs.
+		// A later crash cannot lose those jobs.
+		const refuse = async (nay: { name?: string; message: string }) => {
+			if (args.unpublishedAssetIds && authorOrganizationId && authorWorkspaceId) {
+				await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+					organizationId: authorOrganizationId,
+					workspaceId: authorWorkspaceId,
+					assetIds: args.unpublishedAssetIds,
+					reason: "read_only_create",
+				});
+			}
+			return Result({ _nay: nay });
+		};
+
+		if ((args.mountId == null) !== (args.syncRunId == null)) {
+			return await refuse({ message: "External mount sync run requires mountId and syncRunId" });
+		}
+		if (args.mountId != null && args.syncRunId != null) {
+			// Recheck inside the node-creation transaction. The mount may be replaced
+			// after the action's first check.
+			const mount = await ctx.db.get("github_mounts", args.mountId);
+			if (
+				!mount ||
+				mount.status !== "running" ||
+				mount.syncRunId !== args.syncRunId ||
+				mount.pendingCommitSha == null ||
+				!args.path.startsWith(`/${mount.name}/${mount.pendingCommitSha}/`)
+			) {
+				return await refuse({ message: "External mount sync was superseded" });
+			}
+		}
+		// Every caller here is an action: it proved this permission in an earlier transaction and then
+		// went off to write R2 objects. A role taken away in that gap would still land a file. So ask
+		// again, here, in the transaction that writes. SYSTEM writes come from trusted server flows and
+		// have no user to ask about.
+		//
+		// The reserved global scopes (mount mirrors, plugin sources) have no memberships to ask about,
+		// so they are skipped here the same way the node check skips them.
+		if (authorUserId && authorOrganizationId && authorWorkspaceId) {
+			authorMembership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", authorUserId)
+						.eq("organizationId", authorOrganizationId)
+						.eq("workspaceId", authorWorkspaceId),
+				)
+				.first();
+			if (!authorMembership) {
+				return await refuse({ message: "Permission denied" });
+			}
+
+			const authorized = await access_control_db_authorize_file_write(ctx, {
+				userAuth: { id: authorUserId },
+				membership: authorMembership,
+				nodeId: args.parentId,
+			});
+			if (authorized._nay) {
+				return await refuse({ message: "Permission denied" });
+			}
+		}
+
+		// Check the current destination again before the first insert.
+		if (args.unpublishedAssetIds && authorOrganizationId && authorWorkspaceId) {
+			const destination = await db_resolve_create_destination_read_only_state(ctx, {
+				organizationId: authorOrganizationId,
+				workspaceId: authorWorkspaceId,
+				parentId: args.parentId,
+				path: args.path,
+			});
+			if (!destination) {
+				return await refuse({ message: "Not found" });
+			}
+
+			// Check access on every existing path part again.
+			// A path part may have become restricted during the upload. Refuse with "Permission denied".
+			if (!authorUserId || !authorMembership) {
+				return await refuse({ message: "Permission denied" });
+			}
+			for (const prefixPath of destination.prefixPaths) {
+				const segment = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", authorOrganizationId)
+							.eq("workspaceId", authorWorkspaceId).eq("moveCohortId", undefined)
+							.eq("path", prefixPath)
+							.eq("archiveOperationId", null),
+					)
+					.first();
+				if (!segment) {
+					break;
+				}
+				const segmentAuthorized = await access_control_db_authorize_file_write(ctx, {
+					userAuth: { id: authorUserId },
+					membership: authorMembership,
+					nodeId: segment._id,
+				});
+				if (segmentAuthorized._nay) {
+					return await refuse({ message: "Permission denied" });
+				}
+			}
+
+			const anchorWritable =
+				destination.anchorNode === null
+					? Result({ _yay: null })
+					: await files_nodes_db_require_user_writable(ctx, { node: destination.anchorNode, userId: authorUserId });
+			if (anchorWritable._nay) {
+				return await refuse(anchorWritable._nay);
+			}
+
+			// A normal create needs an empty target path.
+			// An archived replacement may share its path with an active node.
+			if (destination.targetNode !== null && args.archiveOperationId === undefined) {
+				return await refuse({ name: "nay", message: "This file already exists." });
+			}
+		}
+
+		const now = Date.now();
+		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			userId: args.userId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			parentId: args.parentId,
+			path: args.path,
+			kind: "file",
+			contentType: args.contentType,
+			assetId: args.assetId,
+			archiveOperationId: args.archiveOperationId ?? undefined,
+			expectsTextContent: true,
+			metadata: args.metadata,
+			now,
+		});
+		// The walk finds any conflict, access error, or lock before its first insert.
+		// The refusal cannot leave part of a new folder tree behind.
+		if (nodeIdResult._nay) {
+			return await refuse(nodeIdResult._nay);
+		}
+
+		// The leaf's stored path can differ from `args.path` (segments resolved under `parentId`),
+		// so read it back from the created node before inserting the content docs.
+		const insertedNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
+		if (!insertedNode) {
+			const errorMessage = "created file node is missing right after insert";
+			const errorData = { nodeId: nodeIdResult._yay };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		// Same mutation as the node insert: a content-docs failure throws and rolls back the node.
+		await files_nodes_db_insert_file_content_docs(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: insertedNode._id,
+			path: insertedNode.path,
+			parentId: args.parentId,
+			archiveOperationId: insertedNode.archiveOperationId ?? undefined,
+			contentType: args.contentType,
+			rootKind: args.rootKind,
+			textContent: args.textContent,
+			readOnly: args.readOnly,
+			yjsSnapshotAssetId: args.yjsSnapshotAssetId,
+			userId: args.userId,
+			now,
+		});
+
+		// Publish all editable-file data in the same transaction that creates the node.
+		// A crash leaves either no file or one complete file with its first version snapshot.
+		if (!args.readOnly) {
+			if (!args.yjsSnapshotAssetId || !authorOrganizationId || !authorWorkspaceId || !authorUserId) {
+				const errorMessage = "Editable file creation requires tenant asset ids and author";
+				const errorData = { nodeId: insertedNode._id, yjsSnapshotAssetId: args.yjsSnapshotAssetId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			const [yjsSnapshotAsset, versionSnapshotAsset] = await Promise.all([
+				ctx.db.get("files_r2_assets", args.yjsSnapshotAssetId),
+				ctx.db.get("files_r2_assets", args.assetId),
+			]);
+			if (!yjsSnapshotAsset || !versionSnapshotAsset) {
+				const errorMessage = "Editable file creation asset id points to a missing files_r2_assets doc";
+				const errorData = {
+					nodeId: insertedNode._id,
+					yjsSnapshotAssetId: args.yjsSnapshotAssetId,
+					versionSnapshotAssetId: args.assetId,
+				};
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			await files_nodes_db_finalize_editable_text_node_creation(ctx, {
+				organizationId: authorOrganizationId,
+				workspaceId: authorWorkspaceId,
+				nodeId: insertedNode._id,
+				userId: authorUserId,
+				yjsSnapshot: { assetId: args.yjsSnapshotAssetId, size: yjsSnapshotAsset.size },
+				versionSnapshotAssetId: args.assetId,
+				versionSnapshotSize: versionSnapshotAsset.size,
+			});
+		}
+
+		return Result({
+			_yay: {
+				nodeId: nodeIdResult._yay,
+			},
+		});
+	},
+});
+
 
 export const cleanup_file_node_creation_assets = internalMutation({
 	args: {
@@ -452,7 +1159,7 @@ export const create_file_node_internal = internalAction({
 			});
 		}
 
-		const assetId = await ctx.runMutation(internal.r2_assets.insert_asset, {
+		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: args.workspaceId,
 			kind: "content",
@@ -485,11 +1192,11 @@ export const create_file_node_internal = internalAction({
 		// files_nodes_db_create_node_recursively_at_path), which Convex surfaces as a commit-time write conflict.
 		// Retry the node-creation mutation a few times — the conflicting writer commits the folder, so a
 		// retry reads it and proceeds — reusing the same asset so a transient conflict leaks no orphan.
-		let created: files_nodes_create_Result | null = null;
+		let created: create_file_node_Result | null = null;
 		let lastCreateError: unknown = null;
 		for (let attempt = 0; attempt < 5 && created === null; attempt++) {
 			try {
-				created = (await ctx.runMutation(internal.files_nodes_create.create_file_node, {
+				created = (await ctx.runMutation(internal.files_nodes_content.create_file_node, {
 					userId: users_SYSTEM_AUTHOR,
 					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 					workspaceId: args.workspaceId,
@@ -505,7 +1212,7 @@ export const create_file_node_internal = internalAction({
 					mountId: args.mountId,
 					syncRunId: args.syncRunId,
 					metadata,
-				})) as files_nodes_create_Result;
+				})) as create_file_node_Result;
 			} catch (error) {
 				lastCreateError = error;
 			}
@@ -549,12 +1256,17 @@ export const create_file_node_internal = internalAction({
 	},
 });
 
+type create_file_node_Result =
+	typeof create_file_node extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export type files_nodes_create_file_node_internal_Result =
 	typeof create_file_node_internal extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
-type action_files_nodes_create_Result =
+type action_create_file_node_Result =
 	| {
 			_yay: {
 				nodeId: Id<"files_nodes">;
@@ -588,15 +1300,15 @@ async function action_create_file_node(
 		rootKind: files_YjsRootKind;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	},
-): Promise<action_files_nodes_create_Result> {
+): Promise<action_create_file_node_Result> {
 	// Check the destination before writing any asset doc or R2 file.
-	const preflight = (await ctx.runQuery(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
+	const preflight = (await ctx.runQuery(internal.files_nodes_content.get_create_file_node_write_preflight, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
 		parentId: args.parentId,
 		path: args.path,
-	})) as files_nodes_create_preflight_Result;
+	})) as get_create_file_node_write_preflight_Result;
 	if (!preflight) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -620,14 +1332,14 @@ async function action_create_file_node(
 	}
 
 	const [yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
-		ctx.runMutation(internal.r2_assets.insert_asset, {
+		ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			kind: "yjs_snapshot",
 			size: snapshotUpdate._yay.byteLength,
 			createdBy: args.userId,
 		}),
-		ctx.runMutation(internal.r2_assets.insert_asset, {
+		ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			kind: "content_snapshot",
@@ -688,7 +1400,7 @@ async function action_create_file_node(
 		return Result({ _nay: { message: "Failed to create file" } });
 	}
 
-	const created = (await ctx.runMutation(internal.files_nodes_create.create_file_node, {
+	const created = (await ctx.runMutation(internal.files_nodes_content.create_file_node, {
 		userId: args.userId,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -702,7 +1414,7 @@ async function action_create_file_node(
 		readOnly: false,
 		archiveOperationId: args.archiveOperationId ?? undefined,
 		unpublishedAssetIds: assetIds,
-	})) as files_nodes_create_Result;
+	})) as create_file_node_Result;
 	// The mutation already added deletion jobs and deleted both asset docs when it refused.
 	// Do not start the same cleanup again here.
 	if (created._nay) {
@@ -4828,14 +5540,14 @@ export const materialize_file_content = internalAction({
 		}
 
 		const [yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				kind: "yjs_snapshot",
 				size: snapshotUpdate.byteLength,
 				createdBy: args.userId,
 			}),
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				kind: "content_snapshot",
@@ -5045,7 +5757,7 @@ async function action_replace_file_content(
 		}
 	}
 
-	const versionSnapshotAssetId = (await ctx.runMutation(internal.r2_assets.insert_asset, {
+	const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		kind: "content_snapshot",
@@ -6831,7 +7543,7 @@ async function action_restore_snapshot_as_replacement(
 	// hands them to the deletion ledger right away.
 	const uploadedAssets: Array<{ assetId: Id<"files_r2_assets">; r2Key: string }> = [];
 	const insert_asset = async (upload: { kind: "content" | "yjs_snapshot" | "content_snapshot"; size: number }) => {
-		const assetId = (await ctx.runMutation(internal.r2_assets.insert_asset, {
+		const assetId = (await ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			kind: upload.kind,
@@ -7190,14 +7902,14 @@ export const restore_snapshot_r2 = action({
 		}
 
 		const [currentSnapshotAssetId, restoredSnapshotAssetId] = (await Promise.all([
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				kind: "content_snapshot",
 				size: files_get_utf8_byte_size(currentContent._yay.text),
 				createdBy: userAuth.id,
 			}),
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				kind: "content_snapshot",
@@ -7493,14 +8205,14 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 		// Upload both replacements to fresh unfinalized assets and keys. A stale or refused
 		// final mutation deletes them below; a crash leaves them to the unfinalized-asset sweeper.
 		const [yjsSnapshotAssetId, contentSnapshotAssetId] = (await Promise.all([
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				kind: "yjs_snapshot",
 				size: replacementState.byteLength,
 				createdBy: args.authorUserId,
 			}),
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				kind: "content_snapshot",
@@ -8470,14 +9182,14 @@ export const set_file_collaborative = action({
 		// Upload both objects to fresh unfinalized assets. A refused final mutation deletes them
 		// below; a crash leaves them to the unfinalized-asset sweeper.
 		const [yjsSnapshotAssetId, contentSnapshotAssetId] = (await Promise.all([
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: preflight.organizationId,
 				workspaceId: preflight.workspaceId,
 				kind: "yjs_snapshot",
 				size: snapshotUpdate.byteLength,
 				createdBy: userAuth.id,
 			}),
-			ctx.runMutation(internal.r2_assets.insert_asset, {
+			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: preflight.organizationId,
 				workspaceId: preflight.workspaceId,
 				kind: "content_snapshot",

@@ -16,7 +16,7 @@ import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import {
 	runnerQueue,
 	runnerCalls,

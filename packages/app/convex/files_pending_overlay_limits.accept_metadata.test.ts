@@ -9,7 +9,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { advance as advance_review, start as start_review, seal as seal_review } from "./files_pending_update_runs.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
-import { files_metadata_db_insert_committed } from "./files_metadata_db.ts";
+import { files_metadata_db_insert_committed } from "./files_metadata.ts";
 import {
 	test_convex,
 	test_finish_pending_update_run,

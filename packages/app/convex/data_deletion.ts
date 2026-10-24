@@ -65,7 +65,7 @@ import { files_type_query_db_delete_batch } from "../server/files-type-query.ts"
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
-import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_assets.ts";
+import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
