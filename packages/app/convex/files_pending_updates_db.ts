@@ -14,7 +14,7 @@ import { organizations_membership_lifetimes_db_get } from "./organizations_membe
 import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
 import { access_control_db_authorize_node } from "./access_control.ts";
 import { files_pending_update_index_revision } from "../shared/files.ts";
-import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_assets.ts";
+import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
 import { files_metadata_db_delete_pending } from "./files_metadata.ts";
 import type { files_pending_updates_CohortContentContext } from "./files_pending_updates.ts";
 

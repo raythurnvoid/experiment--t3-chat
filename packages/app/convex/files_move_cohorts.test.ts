@@ -2,7 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import { test_create_saved_placement_fixture as fixture } from "../server/files-saved-placement.test-fixtures.ts";
 import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";

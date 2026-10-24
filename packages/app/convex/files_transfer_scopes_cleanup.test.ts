@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 

@@ -10,7 +10,7 @@ import type { ActionCtx, MutationCtx } from "../convex/_generated/server.js";
 import { ai_chat_runs_db_begin, ai_chat_runs_db_insert_node } from "../convex/ai_chat_runs.ts";
 import { organizations_membership_lifetimes_db_ensure } from "../convex/organizations_membership_lifetimes.ts";
 import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
-import { db_insert_file_text_content } from "../convex/files_nodes_create.ts";
+import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
 import { r2_confirmed_object_delete } from "../convex/r2_client.ts";
 import {
 	test_save_file_pending_update,

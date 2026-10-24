@@ -11,7 +11,7 @@ import { organizations_GLOBAL_PLUGINS_WORKSPACE_ID } from "../shared/organizatio
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 
 const model = vi.hoisted(() => ({ streamText: vi.fn() }));
 vi.mock("ai", async (importOriginal) => ({

@@ -86,24 +86,20 @@ import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	files_nodes_create_yjs_snapshot_update_from_text,
 	files_nodes_db_fill_text_node_content,
+	files_nodes_db_insert_file_content_docs,
 	type files_nodes_get_file_byte_read_source_Result,
 } from "./files_nodes_content.ts";
-import {
-	files_nodes_db_insert_file_content_docs,
-} from "./files_nodes_create.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
 import {
+	r2_create_asset_key,
+	r2_enqueue_object_deletion_job,
 	r2,
 	r2_put_object,
 	r2_fetch_object_range_from_bucket,
-} from "./r2_client.ts";
-import {
-	r2_create_asset_key,
-	r2_enqueue_object_deletion_job,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
-} from "./r2_assets.ts";
+} from "./r2_client.ts";
 import {
 	public_api_PLUGIN_RUN_TOKEN_REGEX,
 	public_api_PLUGIN_SERVICE_TOKEN_REGEX,
