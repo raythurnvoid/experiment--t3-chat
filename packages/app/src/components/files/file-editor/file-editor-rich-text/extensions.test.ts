@@ -65,6 +65,12 @@ describe("browser extension list schema", () => {
 
 		expect(Object.keys(sharedSchema.marks).filter((name) => !browserSchema.marks[name])).toEqual([]);
 		expect(Object.keys(sharedSchema.nodes).filter((name) => !browserSchema.nodes[name])).toEqual([]);
+		// A browser mark that excludes more marks drops them when the browser opens the file.
+		expect(
+			Object.keys(sharedSchema.marks).filter(
+				(name) => browserSchema.marks[name]?.spec.excludes !== sharedSchema.marks[name].spec.excludes,
+			),
+		).toEqual([]);
 	});
 });
 

@@ -5,6 +5,7 @@
 // `shared/files-yjs.ts`.
 
 import { StarterKit } from "@tiptap/starter-kit";
+import { Code } from "@tiptap/extension-code";
 import { Markdown, MarkdownManager, type MarkdownExtensionOptions } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
 import { TaskItem } from "@tiptap/extension-task-item";
@@ -3529,7 +3530,17 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 
 				horizontalRule: false,
 				link: { isAllowedUri: files_tiptap_link_is_allowed_uri },
+				code: false,
 			}),
+			// Markdown puts links, bold, and other marks around a code span, like `` [`a`](url) ``. Tiptap's code
+			// excludes every other mark, so the link was dropped on load and lost on save.
+			//
+			// Keep excluding the entity and escape marks. They say how text inside the span was written, and the
+			// code mark writes that text itself.
+			//
+			// Keep excluding `code` too. Yjs stores a mark that can overlap itself under a hash of its attributes,
+			// and that hash needs Node's `Buffer`, which Convex does not have. So every code span failed to save there.
+			code: Code.extend({ excludes: "code htmlEntity markdownEscape" }),
 			taskList: TaskList.configure({
 				HTMLAttributes: {
 					class: "not-prose pl-2",

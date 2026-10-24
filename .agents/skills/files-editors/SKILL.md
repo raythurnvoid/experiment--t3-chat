@@ -62,6 +62,9 @@ Also keep the Markdown save patches:
   whole `<a …>` tag there and writes it back while its `href` and `title` still match the tag.
 - The server `generateJSON` (`@tiptap/html/server`) lower-cases attribute names. Linkedom keeps `HREF`
   as written, so the parse missed the address and `<A HREF="u">x</A>` lost its link.
+- The writer opens a `code: true` mark innermost, and `splitCodeMarkRuns` gives each code run a number
+  that changes where another mark starts or ends. So a mark inside a code span closes and reopens the
+  span (`` `a`**`b`**`c` ``). This matters only when code shares marks, like the app's code mark.
 - An inline atom with `markdownOptions.staysInsideMarks` is written inside the marks around it, like
   text. The app's hidden HTML tag and image set it. Other atoms close the marks before them.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and

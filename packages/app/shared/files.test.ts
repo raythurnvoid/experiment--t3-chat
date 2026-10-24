@@ -2615,6 +2615,27 @@ describe("mark syntax round-trip through Yjs", () => {
 		});
 		expect(saved).toBe("`a*b` ~~x\\~~~\n");
 	});
+
+	test("keeps links and other marks around a code span", () => {
+		const input = "[`a`](https://e.com) **x `b` y** *`c`* ~~`d`~~ <u>`e`</u>\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("closes a code span where a mark starts inside it", () => {
+		const saved = edit_and_save("`abc`\n", (editor) => {
+			editor.view.dispatch(editor.state.tr.addMark(2, 3, editor.state.schema.marks.bold.create()));
+		});
+		expect(saved).toBe("`a`**`b`**`c`\n");
+	});
+
+	test("saves a code span to Yjs without Node's Buffer, like Convex", () => {
+		vi.stubGlobal("Buffer", undefined);
+		try {
+			expect(round_trip_markdown("a `b` c\n")).toBe("a `b` c\n");
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 });
 
 describe("HTML blocks round-trip through Yjs", () => {

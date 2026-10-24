@@ -45,6 +45,8 @@ const starterKitSharedOptions = {
 	},
 	horizontalRule: false,
 	codeBlock: false,
+	// The shared code mark lets links and bold sit around a code span.
+	code: false,
 	// Same address check as the shared set, so the browser and Convex keep the same links.
 	link: { isAllowedUri: files_tiptap_link_is_allowed_uri },
 } as const;
@@ -236,6 +238,7 @@ const extensionsAfterStarterKit = [
 	details,
 	sharedExtensions.detailsSummary,
 	sharedExtensions.detailsContent,
+	sharedExtensions.code,
 	sharedExtensions.highlight,
 	sharedExtensions.textStyle,
 	Color,

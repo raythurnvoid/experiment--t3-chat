@@ -123,6 +123,9 @@ const ChannelsComposerControl = memo(function ChannelsComposerControl(props: Cha
 				undoRedo: {},
 				listKeymap: {},
 				link: { openOnClick: false },
+				// Turn Tiptap's code mark back on. The shared set swaps it for its own, which names marks
+				// this editor does not load.
+				code: {},
 			}),
 			file_quote_extension,
 			channels_composer_mention_create_extension({
