@@ -8,7 +8,7 @@ import { applyUpdate, Doc as YjsDoc, encodeStateAsUpdate, encodeStateVector } fr
 import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import { files_db_yjs_push_update, files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
-import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
+import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	test_apply_file_pending_move,
@@ -35,8 +35,7 @@ import {
 } from "../shared/files-tiptap.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../shared/files-yjs.ts";
 import { delay } from "../shared/async-utils.ts";
-import { r2_confirmed_object_delete } from "./r2_client.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { files_metadata_MAX_FRONTMATTER_FIELDS } from "../shared/files-metadata.ts";
@@ -3535,7 +3534,7 @@ describe("non-collaborative files", () => {
 				expect(saved._nay).toBeUndefined();
 			}
 			const currentAssetId = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId);
-			const contentAssetId = await t.mutation(internal.r2_assets.insert_asset, {
+			const contentAssetId = await t.mutation(internal.r2.insert_asset, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				kind: "content_snapshot",

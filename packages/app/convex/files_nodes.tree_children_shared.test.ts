@@ -7,7 +7,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_table_Filter } from "../shared/files-table.ts";
-import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
+import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import { insert_tree_node, seed_tree_access_fixture, seed_folder_table } from "./files_nodes.setup.test.ts";
 import type { files_DirectoryView } from "../shared/files.ts";
 

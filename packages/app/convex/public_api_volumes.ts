@@ -15,13 +15,12 @@ import {
 	billing_pick_billed_user_id,
 } from "./billing_db.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
-import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
+import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { plugins_volumes_db_retire_generation, plugins_volumes_db_schedule_volume_drain } from "./plugins_volumes.ts";
 import { public_api_db_revalidate_live_plugin_run } from "./public_api.ts";
 import { public_api_authorize_request, public_api_settle_plugin_call_best_effort } from "./public_api_http_auth.ts";
 import { rate_limiter_get_plugin_volume_daily_files_left, rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { r2, r2_put_object } from "./r2_client.ts";
-import { r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_assets.ts";
+import { r2, r2_create_asset_key, r2_put_object, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_get_utf8_byte_size, files_ROOT_ID } from "../server/files.ts";

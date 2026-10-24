@@ -8,7 +8,7 @@ import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { api, internal } from "./_generated/api.js";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
-import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
+import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { r2 } from "./r2_client.ts";
 import { test_convex, test_create_saved_text_file, test_meta_search, test_mocks_fill_db_with } from "./setup.test.ts";
 

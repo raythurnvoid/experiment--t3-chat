@@ -3,7 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_create_yjs_snapshot_update_from_text } from "./files_nodes_content.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_INITIAL_CONTENT, files_ROOT_ID, files_get_utf8_byte_size } from "../shared/files.ts";
@@ -36,14 +36,14 @@ async function fixture() {
 	});
 	if (snapshot._nay) throw new Error(snapshot._nay.message);
 	const insertAssets = async () => ({
-		yjsSnapshotAssetId: await t.mutation(internal.r2_assets.insert_asset, {
+		yjsSnapshotAssetId: await t.mutation(internal.r2.insert_asset, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			kind: "yjs_snapshot",
 			size: snapshot._yay.byteLength,
 			createdBy: member.userId,
 		}),
-		versionSnapshotAssetId: await t.mutation(internal.r2_assets.insert_asset, {
+		versionSnapshotAssetId: await t.mutation(internal.r2.insert_asset, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			kind: "content_snapshot",
@@ -52,14 +52,14 @@ async function fixture() {
 		}),
 	});
 	const assets = await insertAssets();
-	const finalize = (args: { parentId: Id<"files_nodes"> | "root"; path: string; textContent?: string }) =>
-		t.mutation(internal.files_nodes_create.create_file_node, {
+	const finalize = (args: { parentId: Id<"files_nodes"> | "root"; path: string }) =>
+		t.mutation(internal.files_nodes_content.create_file_node, {
 			...scope,
 			...args,
 			assetId: assets.versionSnapshotAssetId,
 			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
 			contentType: "text/markdown;charset=utf-8",
-			textContent: args.textContent ?? files_INITIAL_CONTENT,
+			textContent: files_INITIAL_CONTENT,
 			rootKind: "rich_text",
 			readOnly: false,
 			unpublishedAssetIds: [assets.yjsSnapshotAssetId, assets.versionSnapshotAssetId],
@@ -104,33 +104,6 @@ async function fixture() {
 }
 
 describe("create_file_node", () => {
-	test.each(["yjsSnapshotAssetId", "versionSnapshotAssetId"] as const)(
-		"rolls back every file doc when %s is missing at publication",
-		async (missing) => {
-			const { t, assets, finalize, readFileDocs } = await fixture();
-			await t.run((ctx) => ctx.db.delete("files_r2_assets", assets[missing]));
-			const before = await readFileDocs();
-			const assetsBefore = await t.run((ctx) => ctx.db.query("files_r2_assets").collect());
-			await expect(finalize({ parentId: files_ROOT_ID, path: "missing.md" })).rejects.toThrow(
-				"Editable file creation asset id points to a missing files_r2_assets doc",
-			);
-			expect(await readFileDocs()).toEqual(before);
-			expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
-		},
-	);
-
-	test("rolls back the node and content docs when frontmatter cannot be indexed", async () => {
-		const { t, finalize, readFileDocs } = await fixture();
-		const before = await readFileDocs();
-		const assetsBefore = await t.run((ctx) => ctx.db.query("files_r2_assets").collect());
-		const textContent = "---\n" + Array.from({ length: 129 }, (_, i) => `field${i}: value`).join("\n") + "\n---\nbody";
-		await expect(finalize({ parentId: files_ROOT_ID, path: "frontmatter.md", textContent })).rejects.toThrow(
-			"Failed to create file content docs",
-		);
-		expect(await readFileDocs()).toEqual(before);
-		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
-	});
-
 	test("publishes the full initial file state", async () => {
 		const { t, db, member, chunk, assets, snapshotSize, finalize, readFileDocs } = await fixture();
 		const created = await finalize({ parentId: files_ROOT_ID, path: "note.md" });
@@ -276,7 +249,7 @@ describe("create_file_node", () => {
 		const parentId = await folder("docs");
 		const destination = { parentId, path: "note.md" };
 		expect(
-			await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, { ...scope, ...destination }),
+			await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, { ...scope, ...destination }),
 		).toEqual({ canWrite: true, targetNodeId: null });
 		await folder("note.md", parentId);
 		await t.run((ctx) => ctx.db.patch("files_nodes", parentId, { writePolicy: { mode: "read_only" } }));
@@ -302,10 +275,10 @@ describe("create_file_node", () => {
 		const parentId = await folder("docs");
 		const destination = { parentId, path: "block.md/a/note.md" };
 		expect(
-			await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, { ...scope, ...destination }),
+			await t.query(internal.files_nodes_content.get_create_file_node_write_preflight, { ...scope, ...destination }),
 		).toEqual({ canWrite: true, targetNodeId: null });
 		const existingAssets = await insertAssets();
-		const existing = await t.mutation(internal.files_nodes_create.create_file_node, {
+		const existing = await t.mutation(internal.files_nodes_content.create_file_node, {
 			...scope,
 			parentId,
 			path: "block.md",

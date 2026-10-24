@@ -5,7 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
-import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
+import { files_metadata_db_write_entries } from "./files_metadata.ts";
 import {
 	advance as advance_transfer,
 	accept_input as accept_transfer_input,
@@ -13,8 +13,7 @@ import {
 } from "./files_transfer.ts";
 import { test_convex, test_mocks_fill_db_with, test_run_with_flush, test_spy_handler } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
-import { r2_confirmed_object_delete } from "./r2_client.ts";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_confirmed_object_delete, r2_create_asset_key } from "./r2_client.ts";
 import { files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 
 // Each test file calls this in `beforeEach`.

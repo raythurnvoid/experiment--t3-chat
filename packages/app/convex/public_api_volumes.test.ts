@@ -12,12 +12,12 @@ import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
-import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
+import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
 import { public_api_http_read_file } from "./public_api.ts";
 import { public_api_files_list_http_routes } from "./public_api_files_list_http.ts";
 import { getFunctionName } from "convex/server";
 import * as server from "./_generated/server.js";
-import { r2_create_asset_key } from "./r2_assets.ts";
+import { r2_create_asset_key } from "./r2_client.ts";
 import { plugins_data_http_write } from "./plugins_data_http.ts";
 
 const objects = new Map<string, string>();

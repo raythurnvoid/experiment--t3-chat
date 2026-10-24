@@ -22,8 +22,7 @@ import {
 	files_resolve_upload_content_type,
 } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { r2, r2_get_object_metadata } from "./r2_client.ts";
-import { r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_assets.ts";
+import { r2, r2_create_asset_key, r2_get_object_metadata, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 import type { settle_channel_upload_asset } from "./r2.ts";
 
 // Make Convex reuse the loaded module between calls. No mutable module state is allowed here.
