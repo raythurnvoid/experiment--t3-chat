@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 import { Editor, getSchema } from "@tiptap/core";
 import { defaultExtensions, nonCollaborativeExtensions } from "./extensions.ts";
-import { files_tiptap_markdown_to_json } from "../../../../../shared/files-tiptap.ts";
+import {
+	files_get_tiptap_shared_extensions,
+	files_tiptap_markdown_to_json,
+} from "../../../../../shared/files-tiptap.ts";
 import {
 	table_canonical_2x2,
 	table_alignments,
@@ -46,6 +49,22 @@ describe("browser code block language label", () => {
 		} finally {
 			editor.destroy();
 		}
+	});
+});
+
+describe("browser extension list schema", () => {
+	// Convex writes the Yjs doc with the shared schema. When the browser opens it, y-prosemirror
+	// deletes every element its own schema cannot build, and syncs that delete back to the server.
+	// So a shared mark or node missing from the browser list deletes file content.
+	test.each([
+		["collaborative", defaultExtensions],
+		["non-collaborative", nonCollaborativeExtensions],
+	])("has every shared mark and node in the %s list", (_name, extensions) => {
+		const browserSchema = getSchema(extensions);
+		const sharedSchema = getSchema(Object.values(files_get_tiptap_shared_extensions()));
+
+		expect(Object.keys(sharedSchema.marks).filter((name) => !browserSchema.marks[name])).toEqual([]);
+		expect(Object.keys(sharedSchema.nodes).filter((name) => !browserSchema.nodes[name])).toEqual([]);
 	});
 });
 

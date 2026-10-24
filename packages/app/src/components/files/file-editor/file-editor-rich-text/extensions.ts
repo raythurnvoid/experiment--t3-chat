@@ -243,6 +243,7 @@ const extensionsAfterStarterKit = [
 	sharedExtensions.subscript,
 	sharedExtensions.superscript,
 	sharedExtensions.kbd,
+	sharedExtensions.htmlEntity,
 	sharedExtensions.htmlTag,
 	sharedExtensions.htmlComment,
 	sharedExtensions.htmlBlock,

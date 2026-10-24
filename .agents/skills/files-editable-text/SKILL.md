@@ -91,6 +91,16 @@ Known changes, with no lost content, all stable after one save:
 - The blank line between an item's first line and a list inside it is dropped. A blank line in a list nested inside an item saves as a line of spaces.
 - The indent before a top-level list is dropped.
 
+HTML entities keep the spelling the file uses. The `text` renderer in `configure_marked` wraps each entity (`&copy;`, `&#169;`, `&nbsp;`, `&amp;`) in a span that `files_html_entity_mark` reads. The mark stores the source and the character it shows. Save writes the source back while the text under the mark is still that character. A typed or changed character saves as plain text. The same entity twice in a row, like `&nbsp;&nbsp;`, is one text node under one mark, and it also saves as written.
+
+A raw `&`, `<` or `>` stays raw. Save escapes `&` only before `word;` or `#123;`, `<` only before a letter, `/`, `!`, `?` or an autolink, and `>` only at the start of a line (`\>`). Before, every save turned `R&D` into `R&amp;D`, `&copy;` into `©`, `&nbsp;` into a raw no-break space, and `a < b` into `a &lt; b`.
+
+Known limits, with no lost content:
+
+- Entities in a link address or an image's alt text are attributes, so save writes the decoded character.
+- Typing between two merged identical entities (`&nbsp;|&nbsp;`) saves both as raw characters.
+- A typed `&copy;` saves as `&amp;copy;`, and an escaped `\&copy;` in the file saves the same way.
+
 Links keep any address scheme except `javascript:`, `vbscript:` and `data:` (`files_tiptap_link_is_allowed_uri` in `packages/app/shared/files-tiptap.ts`). Tiptap's own list keeps only a few schemes (`http`, `mailto`, ...), so a `bonobo-file://` or `obsidian://` link lost its address on the next save. Both browser lists and the shared set use this one check, so the browser and Convex keep the same links. The scheme must start the address with no tab, newline or control character inside it, so a hidden `java<tab>script:` is refused. The public link page keeps its own stricter rule: only checked `http(s)` links (see "Public Link Reader").
 
 `<sub>`, `<sup>` and `<kbd>` are real marks (`subscript`, `superscript`, and `files_kbd_mark`). Markdown has no syntax for them, so save writes the same tags back, like `<u>` for underline. Before, the editor showed only the text inside and the next save dropped the tags. The public link page has the same three marks, so it shows them like the editor. Two known spelling changes, with no lost content, are stable after one save: a mark around a whole link moves inside the link (`<sup>[1](#n)</sup>` saves as `[<sup>1</sup>](#n)`), and a space at the edge of a mark moves outside it. Inline code still drops every mark around it (`` [`x`](url) `` saves as `` `x` ``), because Tiptap's `code` mark excludes all other marks.

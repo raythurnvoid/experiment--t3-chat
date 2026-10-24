@@ -36,12 +36,14 @@ import {
 	files_pending_update_has_yjs_content,
 	type files_VisibleTreeNode,
 } from "./files.ts";
-import { getSchema, type JSONContent as TiptapJSONContent } from "@tiptap/core";
+import { getSchema, type Editor, type JSONContent as TiptapJSONContent } from "@tiptap/core";
+import { generateHTML as tiptap_generateHTML_server } from "@tiptap/html/server";
 import {
 	files_get_tiptap_shared_extensions,
 	files_headless_tiptap_editor_create,
 	files_headless_tiptap_editor_get_markdown,
 	files_parse_markdown_to_html,
+	files_tiptap_html_to_json,
 	files_tiptap_markdown_to_json,
 	files_tiptap_markdown_to_plain_text,
 	files_yjs_doc_create_from_text,
@@ -2310,6 +2312,91 @@ describe("hidden HTML tags round-trip through Yjs", () => {
 	});
 });
 
+describe("HTML entities round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected entity markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	function edit_and_save(markdown: string, edit: (editor: Editor) => void) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+
+		edit(editor._yay);
+		const saved = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+		return saved + "\n";
+	}
+
+	test("keeps each entity as the file writes it", () => {
+		const input =
+			"# Q&amp;A &copy;\n\nTom &amp; Jerry, &copy; 2026 &mdash; a&nbsp;b, a&nbsp;&nbsp;b, &#169; &#x2014;, say &quot;hi&quot;, use &lt;div&gt; here, a &foo; b.\n\n**R&amp;D** and [R&amp;D](https://e.com) and <kbd>Ctrl&amp;</kbd>\n\n- &nbsp;\n\n| a | b |\n| --- | --- |\n| R&amp;D | &copy; |\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("keeps a raw &, < and > unless they would read as markup", () => {
+		const input =
+			"# Q&A\n\nTom & Jerry, AT&T, a < b > c, a <= b, 1 > 0 and trailing &\n\n**R&D** and [R&D](https://e.com/?a=1&b=2)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+
+		const typed = edit_and_save("a\n", (editor) => {
+			const { schema } = editor.state;
+			const tr = editor.state.tr.insertText(" &copy; <div> a<b c < d R&D x> <1@b.co>", 2);
+			tr.insert(tr.doc.content.size, schema.nodes.paragraph.create(null, schema.text("> not a quote")));
+			editor.view.dispatch(tr);
+		});
+		expect(typed).toBe("a &amp;copy; &lt;div> a&lt;b c < d R&D x> &lt;1@b.co>\n\n\\> not a quote\n");
+	});
+
+	test("writes a changed entity character as plain text", () => {
+		const saved = edit_and_save("&copy; a&nbsp;b\n", (editor) => {
+			// Type right after and right before the ©, then replace the no-break space.
+			editor.view.dispatch(editor.state.tr.insertText("x", 2));
+			editor.view.dispatch(editor.state.tr.insertText("y", 1));
+			editor.view.dispatch(editor.state.tr.insertText("-", 6, 7));
+		});
+		expect(saved).toBe("y&copy;x a-b\n");
+	});
+
+	test("keeps entities through the editor's own HTML, like a copy and paste", () => {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: "a&nbsp;&nbsp;b &copy;\n" } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+		const html = tiptap_generateHTML_server(editor._yay.getJSON(), Object.values(files_get_tiptap_shared_extensions()));
+		editor._yay.destroy();
+
+		const pasted = files_headless_tiptap_editor_create({
+			initialContent: { json: files_tiptap_html_to_json({ html }) },
+		});
+		if (pasted._nay) {
+			throw new Error("Expected the editor to load the HTML", { cause: pasted._nay });
+		}
+		expect(files_headless_tiptap_editor_get_markdown({ mut_editor: pasted._yay })).toBe("a&nbsp;&nbsp;b &copy;");
+		pasted._yay.destroy();
+	});
+});
+
 describe("HTML blocks round-trip through Yjs", () => {
 	function round_trip_markdown(markdown: string) {
 		const yjsDoc = new YDoc();
@@ -2380,6 +2467,7 @@ describe("HTML blocks round-trip through Yjs", () => {
 			"bold",
 			"code",
 			"highlight",
+			"htmlEntity",
 			"italic",
 			"kbd",
 			"link",
@@ -2399,11 +2487,15 @@ describe("HTML blocks round-trip through Yjs", () => {
 		};
 		const content: TiptapJSONContent[] = [
 			{ type: "htmlTag", attrs: { html: "<div>\n" } },
-			...Object.keys(schema.marks).map((markType) => ({
-				type: "text",
-				text: `${markType} `,
-				marks: [{ type: markType, attrs: markAttrs[markType] ?? {} }],
-			})),
+			...Object.keys(schema.marks)
+				.filter((markType) => markType !== "htmlEntity")
+				.map((markType) => ({
+					type: "text",
+					text: `${markType} `,
+					marks: [{ type: markType, attrs: markAttrs[markType] ?? {} }],
+				})),
+			// An entity mark is on its own character only.
+			{ type: "text", text: "©", marks: [{ type: "htmlEntity", attrs: { source: "&copy;", text: "©" } }] },
 			{ type: "text", text: "both", marks: [{ type: "bold" }, { type: "italic" }] },
 			{ type: "hardBreak" },
 			{ type: "image", attrs: { src: "https://example.com/x.png", alt: "x" } },

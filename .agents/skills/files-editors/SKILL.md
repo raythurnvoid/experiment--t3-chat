@@ -49,6 +49,9 @@ Also keep the Markdown save patches:
   joins its lines with a space.
 - Bullet and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
 - A list with `loose: true` puts a blank line between its items.
+- A mark can write the text it covers with `markdownOptions.renderText`. The HTML entity mark uses it.
+- `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and
+  `escapeBlockStarts` escapes a `>` that starts a line. So `R&D` and `a < b` save as written.
 
 Without them a save can break a code block open, grow its indent on every save, turn text such as
 `\# not a heading` into a heading, or split a heading in two when the file opens again.
@@ -63,6 +66,16 @@ Upstream now owns the drag-handle portal fix. The rich editor sets `pluginKey="b
 to match its visibility and position requests; upstream otherwise creates a key per instance.
 React node views flush when they are created. Shared-page content updates run in a cancellable
 microtask after React commits, so an effect does not call `flushSync` during React's own work.
+
+# Keep The Browser Schema A Superset Of The Shared One
+
+Add every mark and node of the shared set (`files_get_tiptap_shared_extensions`) to the browser
+lists in `file-editor-rich-text/extensions.ts`. Convex writes the Yjs doc with the shared schema.
+When the browser opens it, y-prosemirror deletes each element its schema cannot build, and syncs
+that delete back to the server. So a missing mark deletes file text. `extensions.test.ts` checks it.
+
+Ship the browser first. The published sites build on a push to `main`, and Convex is pushed by hand.
+So after a new mark or node, push `main`, wait for both site builds, then push Convex.
 
 # Keep Editor View And File Mode Separate
 

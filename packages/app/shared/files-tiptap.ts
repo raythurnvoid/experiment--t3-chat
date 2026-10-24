@@ -435,7 +435,11 @@ function configure_marked(instance: Marked | typeof marked) {
 			// other stay two lists.
 			list(token) {
 				const marker = LIST_MARKER_REGEX.exec(token.raw);
-				let attributes = marker?.[1] ? ` data-bullet="${marker[1]}"` : marker?.[2] ? ` data-delimiter="${marker[2]}"` : "";
+				let attributes = marker?.[1]
+					? ` data-bullet="${marker[1]}"`
+					: marker?.[2]
+						? ` data-delimiter="${marker[2]}"`
+						: "";
 				if (list_has_blank_line_between_items(token)) {
 					attributes += " data-loose";
 				}
@@ -451,10 +455,16 @@ function configure_marked(instance: Marked | typeof marked) {
 			// typed text like `a<b` becomes a tag. It takes in the next link, and the file name shows without its
 			// address on a shared page. So always escape text. `WorkCountingTokenizer.escape` already charges for
 			// this escaping.
+			//
+			// Also mark each HTML entity, so save writes it back as the file wrote it (`files_html_entity_mark`).
 			text(token) {
-				return "escaped" in token && token.escaped
-					? Renderer.prototype.text.call(this, { ...token, escaped: false })
-					: false;
+				if ("tokens" in token && token.tokens) {
+					return false;
+				}
+
+				return html_entities_wrap(token.text, (text) =>
+					Renderer.prototype.text.call(this, { ...token, text, escaped: false }),
+				);
 			},
 
 			// Turn an inline tag that the editor cannot show, or an inline comment, into a hidden tag node
@@ -2423,6 +2433,98 @@ export const files_kbd_mark = Mark.create({
 });
 // #endregion keyboard keys
 
+// #region html entities
+/**
+ * An HTML entity in the file text, like `&copy;`, `&nbsp;` or `&amp;`. Markdown reads `&#?\w+;` as an
+ * entity, and so does Marked when it decides what to escape.
+ */
+const HTML_ENTITY_REGEX = /&#?\w+;/g;
+
+/**
+ * Turn `text` into HTML. Each entity becomes a `<span data-html-entity>` that `files_html_entity_mark`
+ * reads. `escape` writes the text between the entities.
+ */
+function html_entities_wrap(text: string, escape: (text: string) => string) {
+	if (!text.includes("&")) {
+		return escape(text);
+	}
+
+	let html = "";
+	let textStart = 0;
+	for (const match of text.matchAll(HTML_ENTITY_REGEX)) {
+		html += escape(text.slice(textStart, match.index));
+		html += `<span data-html-entity="${encodeURIComponent(match[0])}">${match[0]}</span>`;
+		textStart = match.index + match[0].length;
+	}
+	return html + escape(text.slice(textStart));
+}
+
+/**
+ * The text that save writes for `text` under an entity mark. It is the entity while the text is still
+ * its character, and `null` after the user changed it.
+ */
+function html_entity_render_text(text: string, attributes: Record<string, unknown>) {
+	const { source, text: entityText } = attributes;
+	if (typeof source !== "string" || typeof entityText !== "string" || !source || !entityText) {
+		return null;
+	}
+
+	// The same entity twice in a row, like `&nbsp;&nbsp;`, is one text node under one mark.
+	const count = text.length / entityText.length;
+	return Number.isInteger(count) && text === entityText.repeat(count) ? source.repeat(count) : null;
+}
+
+/**
+ * Remember how the file wrote an HTML entity. The editor shows the character, and save writes the entity
+ * back. Without it, a save turned `&copy;` into `©` and `&nbsp;` into an invisible no-break space.
+ *
+ * The `text` renderer in `configure_marked` wraps each entity in a `<span data-html-entity>`. The DOM gives
+ * the span the entity's character, and the mark keeps the character in `text`. When the user changes the
+ * character, the text no longer matches, and save writes the new text with the usual escaping.
+ */
+export const files_html_entity_mark = Mark.create({
+	name: "htmlEntity",
+	// Text typed next to an entity is new text, so it does not take the mark.
+	inclusive: false,
+
+	addAttributes() {
+		return {
+			source: {
+				default: "",
+				parseHTML: (element) => html_attribute_decode(element.getAttribute("data-html-entity") ?? ""),
+				renderHTML: (attributes) => ({ "data-html-entity": encodeURIComponent(String(attributes.source)) }),
+			},
+			// Marked's span holds one entity, so its text is the character. A copied editor span can hold
+			// the same entity more than once, so it carries the character in an attribute.
+			text: {
+				default: "",
+				parseHTML: (element) => {
+					const text = element.getAttribute("data-html-entity-text");
+					return text === null ? (element.textContent ?? "") : html_attribute_decode(text);
+				},
+				renderHTML: (attributes) => ({ "data-html-entity-text": encodeURIComponent(String(attributes.text)) }),
+			},
+		};
+	},
+
+	parseHTML() {
+		return [{ tag: "span[data-html-entity]" }];
+	},
+
+	renderHTML({ HTMLAttributes }) {
+		return ["span", HTMLAttributes, 0];
+	},
+
+	renderMarkdown(node, helpers) {
+		return helpers.renderChildren(node.content || []);
+	},
+
+	markdownOptions: {
+		renderText: html_entity_render_text,
+	},
+});
+// #endregion html entities
+
 // #region hidden html tags
 /**
  * Inline HTML tags that the editor reads as formatting, a link, an image, a video, or a line break.
@@ -2623,7 +2725,7 @@ function html_inline_to_editor_html(source: string) {
 			piece.kind === "hidden"
 				? `<span data-html-tag="${encodeURIComponent(piece.html)}"></span>`
 				: piece.kind === "text"
-					? piece.html.replaceAll("<", "&lt;")
+					? html_entities_wrap(piece.html, (text) => text.replaceAll("<", "&lt;"))
 					: piece.html,
 		)
 		.join("");
@@ -2811,6 +2913,9 @@ function html_mark_tags(mark: NonNullable<TiptapJSONContent["marks"]>[number]): 
 			return ["<sup>", "</sup>"];
 		case "kbd":
 			return ["<kbd>", "</kbd>"];
+		// `html_render_inline` writes the entity itself.
+		case "htmlEntity":
+			return ["", ""];
 		case "link": {
 			const href = typeof attrs.href === "string" ? attrs.href : "";
 			const title =
@@ -2876,9 +2981,12 @@ function html_render_inline(content: TiptapJSONContent[], escapeRegex: RegExp) {
 	for (const node of content) {
 		writeMarks(node.marks ?? []);
 		switch (node.type) {
-			case "text":
-				html += html_escape_text(node.text ?? "", escapeRegex);
+			case "text": {
+				const entity = node.marks?.find((mark) => mark.type === "htmlEntity");
+				const entityText = entity ? html_entity_render_text(node.text ?? "", entity.attrs ?? {}) : null;
+				html += entityText ?? html_escape_text(node.text ?? "", escapeRegex);
 				break;
+			}
 			case "hardBreak":
 				html += "<br>";
 				break;
@@ -3164,6 +3272,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 				renderMarkdown: (node, helpers) => `<sup>${helpers.renderChildren(node.content || [])}</sup>`,
 			}),
 			kbd: files_kbd_mark,
+			htmlEntity: files_html_entity_mark,
 			htmlTag: files_html_tag_node,
 			htmlComment: files_html_comment_node,
 			htmlBlock: files_html_block_node,
