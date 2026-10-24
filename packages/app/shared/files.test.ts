@@ -3306,6 +3306,23 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(json).not.toMatch(/"type":"(link|codeBlock)"/);
 	});
 
+	test("keeps a heading with more lines one heading", () => {
+		const fixtures = [
+			// A `#` heading is one line, so a line break saves as a tag.
+			["# a<br>b\n", "# a<br>b\n"],
+			["### a<br>b\n", "### a<br>b\n"],
+			["a\\\nb\n===\n", "# a<br>b\n"],
+			// An underlined heading keeps its lines, and they start like paragraph lines.
+			["Title\nmore\n---\n", "Title\nmore\n---\n"],
+			["\\- Title\n\\---\n===\n", "\\- Title\n\\---\n===\n"],
+		] as const;
+		for (const [fixture, expected] of fixtures) {
+			const once = normalize(fixture);
+			expect(once).toBe(expected);
+			expect(normalize(once)).toBe(once);
+		}
+	});
+
 	test("settles trailing-newline variants", () => {
 		for (const fixture of ["text", "text\n", "text\n\n\n"]) {
 			const once = normalize(fixture);

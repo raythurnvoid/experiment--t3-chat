@@ -43,10 +43,13 @@ Also keep the Markdown save patches:
 - A code block's fence is longer than any backtick run in its code.
 - Ordered-list continuation lines strip the full `1. ` width.
 - `escapeBlockStarts` adds a backslash before `#`, `-`, `+`, `1.`, `1)`, a `===` line, or a table divider
-  row when one starts a line of paragraph text.
+  row when one starts a line of paragraph text, or a line of an underlined heading.
+- A line break inside a `#` heading saves as `<br>`, because a `#` heading is one line.
+- A level 1 or 2 heading with more lines saves underlined (`===` or `---`). A level 3 to 6 heading
+  joins its lines with a space.
 
-Without them a save can break a code block open, grow its indent on every save, or turn text such as
-`\# not a heading` into a heading when the file opens again.
+Without them a save can break a code block open, grow its indent on every save, turn text such as
+`\# not a heading` into a heading, or split a heading in two when the file opens again.
 
 The app's own marked `code` renderer in `shared/files-tiptap.ts` drops the `\n` that marked writes
 before `</code>`, so a code block keeps its text exactly and gains no empty line before its closing
