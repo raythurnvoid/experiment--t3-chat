@@ -1175,9 +1175,6 @@ export const files_pending_update_header_validator = v.object({
 			unstagedStateId: v.id("files_pending_update_yjs_states"),
 		}),
 	),
-	// Read only during the final strip. Runtime writers omit these old keys.
-	contentNeedsRebase: v.optional(v.boolean()),
-	contentRebaseRootKind: v.optional(v.union(v.literal("plain_text"), v.literal("rich_text"))),
 	/**
 	 * Pending move or rename proposal. Ids are authoritative. `fromPath` is display and conflict metadata only.
 	 */
@@ -1284,8 +1281,6 @@ export const files_pending_review_header_validator = v.object({
 	createIntent: files_pending_update_header_validator.fields.createIntent,
 	preparation: files_pending_update_header_validator.fields.preparation,
 	content: files_pending_update_header_validator.fields.content,
-	contentNeedsRebase: files_pending_update_header_validator.fields.contentNeedsRebase,
-	contentRebaseRootKind: files_pending_update_header_validator.fields.contentRebaseRootKind,
 	pendingMove: files_pending_update_header_validator.fields.pendingMove,
 	pendingArchive: files_pending_update_header_validator.fields.pendingArchive,
 	copiedFrom: files_pending_update_header_validator.fields.copiedFrom,
@@ -2304,8 +2299,6 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspace", ["organizationId", "workspaceId"]),
 
 	files_move_cohorts: defineTable({
-		pendingContentMigration: v.optional(v.object({ cursor: v.union(v.string(), v.null()), updatedAt: v.number() })),
-		pendingContentVersionReady: v.optional(v.literal(true)),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
