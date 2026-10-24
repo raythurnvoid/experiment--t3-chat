@@ -710,6 +710,7 @@ async function create_editor_content_state_from_pending_update(args: {
 		return Result({ _nay: { message: "Pending update has no content" } });
 	}
 	const rootKind = pendingUpdate.content.rootKind;
+	if (!rootKind) return Result({ _nay: { message: "Files update is preparing this draft. Try again." } });
 
 	const [baseBytes, stagedBytes, unstagedBytes] = await Promise.all([
 		files_fetch_file_pending_update_yjs_state({

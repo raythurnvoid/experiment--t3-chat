@@ -942,7 +942,10 @@ export function files_node_has_editable_yjs_state<
 	return files_node_has_editable_text_content(node) && node.yjsSnapshotId !== null && node.yjsLastSequenceId !== null;
 }
 
-type FilePendingUpdateFieldsForContent = Pick<app_convex_Doc<"files_pending_updates">, "content">;
+type FilePendingUpdateFieldsForContent = Pick<app_convex_Doc<"files_pending_updates">, "content"> &
+	Partial<
+		Pick<app_convex_Doc<"files_pending_updates">, "contentNeedsRebase" | "contentRebaseRootKind" | "createIntent">
+	>;
 type FilePendingUpdateContent = NonNullable<FilePendingUpdateFieldsForContent["content"]>;
 
 /**
@@ -1023,11 +1026,24 @@ export function files_pending_update_content_is_stale(
 ) {
 	const base = row.content?.base;
 	return (
-		base !== undefined &&
-		base.kind !== "new" &&
-		(base.pendingContentVersion !== node.pendingContentVersion ||
-			(base.kind === "asset" && base.assetId !== node.assetId))
+		(row.contentNeedsRebase === true && base?.kind !== "new" && base?.pendingContentVersion === undefined) ||
+		(base !== undefined &&
+			base.kind !== "new" &&
+			(base.pendingContentVersion === undefined ||
+				base.pendingContentVersion !== (node.pendingContentVersion ?? 1) ||
+				(base.kind === "asset" && base.assetId !== node.assetId)))
 	);
+}
+
+/**
+ * Old families keep their recorded shape until the one-time backfill ends.
+ */
+export function files_pending_update_content_root_kind(row: FilePendingUpdateFieldsForContent) {
+	if (!row.content) return undefined;
+	if (row.content.rootKind) return row.content.rootKind;
+	if (row.contentRebaseRootKind) return row.contentRebaseRootKind;
+	if (row.createIntent?.kind === "text") return row.createIntent.textKind;
+	return undefined;
 }
 
 // #region file name normalization

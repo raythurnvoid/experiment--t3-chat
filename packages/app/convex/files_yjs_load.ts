@@ -94,7 +94,7 @@ export const get_file_last_yjs_sequence = query({
 		return {
 			yjsLastSequenceId: lastYjsSequenceDoc._id,
 			lastSequence: lastYjsSequenceDoc.lastSequence,
-			pendingContentVersion: fileNode.pendingContentVersion,
+			pendingContentVersion: fileNode.pendingContentVersion ?? 1,
 		};
 	},
 });
@@ -165,7 +165,7 @@ export const yjs_get_incremental_updates = query({
 		// log separately, so they need this token to refuse a mixed-lineage read.
 		return {
 			yjsLastSequenceId: fileNode.yjsLastSequenceId,
-			pendingContentVersion: fileNode.pendingContentVersion,
+			pendingContentVersion: fileNode.pendingContentVersion ?? 1,
 			updates,
 		};
 	},
@@ -261,7 +261,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 				expiresIn: 15 * 60,
 			}),
 			yjsLastSequenceId: data.yjsLastSequenceDoc._id,
-			pendingContentVersion: data.fileNode.pendingContentVersion,
+			pendingContentVersion: data.fileNode.pendingContentVersion ?? 1,
 			textKind: data.fileNode.textKind,
 		};
 	},

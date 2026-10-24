@@ -377,6 +377,7 @@ async function decode_staged_unstaged(args: {
 		return Result({ _nay: { message: "Pending update has no content to decode" } });
 	}
 	const rootKind = pendingUpdate.content.rootKind;
+	if (!rootKind) return Result({ _nay: { message: "Files update is preparing this draft. Try again." } });
 
 	const [stagedBytes, unstagedBytes] = await Promise.all([
 		files_fetch_file_pending_update_yjs_state({

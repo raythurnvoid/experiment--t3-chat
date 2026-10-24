@@ -50,6 +50,7 @@ import {
 	type get_file_pending_update_state_page_internal_Result,
 } from "./files_pending_updates.ts";
 import { files_pending_target_db_get_view } from "./files_pending_target.ts";
+import { files_pending_content_migration_db_extend_review_deadline } from "./files_pending_content_migration.ts";
 import {
 	files_pending_update_plans_db_get,
 	files_pending_update_plans_db_delete_run_batch,
@@ -2284,6 +2285,7 @@ export const advance = internalMutation({
 		const run = await ctx.db.get("files_pending_update_runs", args.runId);
 		if (!run || run.step !== "running") return null;
 
+		await files_pending_content_migration_db_extend_review_deadline(ctx, run._id);
 		const activity = await activities_db_require_by_source_id(ctx, run._id);
 		if (!activities_is_active(activity.status)) return null;
 
@@ -2964,6 +2966,7 @@ export const recover = internalMutation({
 						await files_pending_update_runs_db_resume_parked(ctx, { runId: run._id, fence: run.fence });
 					continue;
 				}
+				await files_pending_content_migration_db_extend_review_deadline(ctx, run._id);
 				const activity = await activities_db_require_by_source_id(ctx, run._id);
 				if (activity.deadlineAt <= now || !(await db_get_run_membership(ctx, run))) {
 					await files_pending_update_runs_db_request_stop(ctx, {

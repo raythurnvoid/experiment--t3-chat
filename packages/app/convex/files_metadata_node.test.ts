@@ -462,7 +462,7 @@ describe("full metadata reads", () => {
 		).toBeUndefined();
 		expect(await fixture.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
 		expect((await fixture.t.run((ctx) => ctx.db.get("files_nodes", fixture.nodeId)))?.pendingContentVersion).toBe(
-			before.pendingContentVersion + 1,
+			before.pendingContentVersion! + 1,
 		);
 		const restored = page(await read_path(fixture, "frontmatter.summary"));
 		expect(restored.sourceKind, "A stale draft uses saved content until it is prepared").toBe("committed");

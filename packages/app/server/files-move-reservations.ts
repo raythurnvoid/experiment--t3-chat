@@ -331,6 +331,63 @@ export function files_move_reservations_db_enter_security(ctx: MutationCtx, args
 }
 
 /**
+ * The bridge may add facts under a hold. It cannot change content or an existing fact.
+ */
+export async function files_move_reservations_db_add_migration_facts<
+	Table extends
+		| "files_nodes"
+		| "files_pending_updates"
+		| "files_pending_updates_last_sequence_saved"
+		| "files_pending_update_operation_batches",
+>(
+	ctx: MutationCtx,
+	args: {
+		cohortId: Id<"files_move_cohorts">;
+		table: Table;
+		id: Id<Table>;
+		patch: Partial<WithoutSystemFields<Doc<Table>>>;
+	},
+) {
+	const state = (ctx.db as GuardedDb)[STATE];
+	if (!state || state.capability?.cohortId !== args.cohortId)
+		throw new Error("Migration facts need the exact Move hold.");
+	const old = await state.raw.get(args.table, args.id);
+	if (!old) return;
+	const fields = old as Fields;
+	const source: Source =
+		args.table === "files_nodes"
+			? { kind: "saved", id: args.id as Id<"files_nodes"> }
+			: args.table === "files_pending_updates_last_sequence_saved"
+				? { kind: "saved", id: fields.fileNodeId as Id<"files_nodes"> }
+				: (fields.target as Extract<Source, { kind: "saved" | "private" }>);
+	const held = await files_move_reservations_db_get_source(state.raw, source);
+	if (held?.cohortId !== args.cohortId) throw new Error("Migration facts do not have this source's hold.");
+	function unchanged(before: unknown, after: unknown, key = ""): boolean {
+		if (JSON.stringify(before) === JSON.stringify(after)) return true;
+		if (before === undefined && ["pendingContentVersion", "expectedPendingContentVersion", "rootKind"].includes(key))
+			return after === null || typeof after === "number" || after === "plain_text" || after === "rich_text";
+		if (
+			!before ||
+			!after ||
+			typeof before !== "object" ||
+			typeof after !== "object" ||
+			before instanceof ArrayBuffer ||
+			after instanceof ArrayBuffer ||
+			Array.isArray(before) !== Array.isArray(after)
+		)
+			return false;
+		const left = before as Record<string, unknown>;
+		const right = after as Record<string, unknown>;
+		return [...new Set([...Object.keys(left), ...Object.keys(right)])].every((field) =>
+			unchanged(left[field], right[field], field),
+		);
+	}
+	if (!unchanged(old, { ...old, ...args.patch })) throw new Error("Migration facts would change existing data.");
+	const write = Reflect.get(state.raw, "patch") as (...args: unknown[]) => Promise<void>;
+	await Reflect.apply(write, state.raw, [args.table, args.id, args.patch]);
+}
+
+/**
  * Reuse a known scope while its fields stay unchanged. Active workspace guards still apply.
  */
 export function files_move_reservations_db_note_source(

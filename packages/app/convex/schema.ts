@@ -459,7 +459,7 @@ export const files_content_version_validator = v.union(
 	v.object({
 		kind: v.literal("yjs"),
 		lastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		pendingContentVersion: v.number(),
+		pendingContentVersion: v.optional(v.number()),
 		lineageGeneration: v.number(),
 		sequence: v.number(),
 		contentType: v.string(),
@@ -583,7 +583,7 @@ const files_saved_placement_fields = {
 	contentTypeEssence: v.optional(v.union(v.string(), v.null())),
 	contentTypeFamily: v.optional(v.union(v.string(), v.null())),
 	assetId: v.union(v.id("files_r2_assets"), v.null()),
-	pendingContentVersion: v.number(),
+	pendingContentVersion: v.optional(v.number()),
 	contentByteSize: v.union(v.number(), v.null()),
 	textKind: v.union(v.literal("rich_text"), v.literal("plain_text"), v.null()),
 	collaborationEnabled: v.union(v.boolean(), v.null()),
@@ -1066,7 +1066,7 @@ export const files_pending_prepared_content_validator = v.union(
 		...files_pending_prepared_content_fields,
 		kind: v.literal("saved_yjs"),
 		nodeId: v.id("files_nodes"),
-		expectedPendingContentVersion: v.number(),
+		expectedPendingContentVersion: v.optional(v.number()),
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
@@ -1083,7 +1083,7 @@ export const files_pending_prepared_content_validator = v.union(
 		...files_pending_prepared_content_fields,
 		kind: v.literal("saved_asset"),
 		nodeId: v.id("files_nodes"),
-		expectedPendingContentVersion: v.number(),
+		expectedPendingContentVersion: v.optional(v.number()),
 		unchanged: v.optional(v.literal(true)),
 		publish: v.union(
 			v.object({
@@ -1120,7 +1120,7 @@ export const files_pending_prepared_content_validator = v.union(
 		...files_pending_prepared_content_fields,
 		kind: v.literal("replacement"),
 		nodeId: v.id("files_nodes"),
-		expectedPendingContentVersion: v.number(),
+		expectedPendingContentVersion: v.optional(v.number()),
 		stagedAssetId: v.id("files_r2_assets"),
 		expectedYjsLastSequence: v.optional(
 			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
@@ -1155,19 +1155,19 @@ export const files_pending_update_header_validator = v.object({
 	 */
 	content: v.optional(
 		v.object({
-			rootKind: v.union(v.literal("plain_text"), v.literal("rich_text")),
+			rootKind: v.optional(v.union(v.literal("plain_text"), v.literal("rich_text"))),
 			base: v.union(
 				v.object({ kind: v.literal("new") }),
 				v.object({
 					kind: v.literal("yjs"),
 					sequence: v.number(),
 					lineageGeneration: v.number(),
-					pendingContentVersion: v.number(),
+					pendingContentVersion: v.optional(v.number()),
 				}),
 				v.object({
 					kind: v.literal("asset"),
 					assetId: v.id("files_r2_assets"),
-					pendingContentVersion: v.number(),
+					pendingContentVersion: v.optional(v.number()),
 				}),
 			),
 			baseStateId: v.id("files_pending_update_yjs_states"),
@@ -1175,6 +1175,9 @@ export const files_pending_update_header_validator = v.object({
 			unstagedStateId: v.id("files_pending_update_yjs_states"),
 		}),
 	),
+	// Kept only while old draft roots are copied into their content family.
+	contentNeedsRebase: v.optional(v.boolean()),
+	contentRebaseRootKind: v.optional(v.union(v.literal("plain_text"), v.literal("rich_text"))),
 	/**
 	 * Pending move or rename proposal. Ids are authoritative. `fromPath` is display and conflict metadata only.
 	 */
@@ -1281,6 +1284,8 @@ export const files_pending_review_header_validator = v.object({
 	createIntent: files_pending_update_header_validator.fields.createIntent,
 	preparation: files_pending_update_header_validator.fields.preparation,
 	content: files_pending_update_header_validator.fields.content,
+	contentNeedsRebase: files_pending_update_header_validator.fields.contentNeedsRebase,
+	contentRebaseRootKind: files_pending_update_header_validator.fields.contentRebaseRootKind,
 	pendingMove: files_pending_update_header_validator.fields.pendingMove,
 	pendingArchive: files_pending_update_header_validator.fields.pendingArchive,
 	copiedFrom: files_pending_update_header_validator.fields.copiedFrom,
@@ -2299,6 +2304,8 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspace", ["organizationId", "workspaceId"]),
 
 	files_move_cohorts: defineTable({
+		pendingContentMigration: v.optional(v.object({ cursor: v.union(v.string(), v.null()), updatedAt: v.number() })),
+		pendingContentVersionReady: v.optional(v.literal(true)),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -3675,6 +3682,7 @@ const app_convex_schema = defineSchema({
 		.index("by_user_target", ["userId", "target.kind", "target.id"])
 		.index("by_target", ["target.kind", "target.id"])
 		.index("by_target_replacement", ["target.kind", "target.id", "pendingReplacement.assetId"])
+		.index("by_target_root_base", ["target.kind", "target.id", "content.rootKind", "content.base.kind"])
 		// A root parent has no id, so the workspace must come first to keep root claims in one workspace.
 		.index("by_org_ws_user_pendingMove_destParent_destName", [
 			"organizationId",
@@ -3693,7 +3701,7 @@ const app_convex_schema = defineSchema({
 		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 		lastSequenceSaved: v.number(),
-		pendingContentVersion: v.number(),
+		pendingContentVersion: v.optional(v.number()),
 		updatedAt: v.number(),
 	})
 		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
@@ -3823,7 +3831,7 @@ const app_convex_schema = defineSchema({
 		target: files_pending_target_validator,
 		expectedPendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 		expectedRevision: v.union(v.number(), v.null()),
-		expectedPendingContentVersion: v.union(v.number(), v.null()),
+		expectedPendingContentVersion: v.optional(v.union(v.number(), v.null())),
 		expectedPrivateVersion: v.union(
 			v.object({ creationGeneration: v.number(), structuralRevision: v.number() }),
 			v.null(),
@@ -4903,7 +4911,7 @@ const app_convex_schema = defineSchema({
 		 * Restore, replacement and history resets advance this without changing other users'
 		 * drafts. Each saved draft base captures it. New nodes start at 1; folders leave it unused.
 		 */
-		pendingContentVersion: v.number(),
+		pendingContentVersion: v.optional(v.number()),
 		/**
 		 * Byte size of the `assetId` asset, copied here so the folder table can sort by size. Every
 		 * write that changes `assetId` sets it too. Null for folders and for files whose bytes are not

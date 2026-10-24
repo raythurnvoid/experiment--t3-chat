@@ -169,7 +169,7 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		contentByteSize: place.contentByteSize,
 		textKind: place.textKind,
 		collaborationEnabled: place.collaborationEnabled,
-		pendingContentVersion: place.pendingContentVersion,
+		pendingContentVersion: place.pendingContentVersion ?? 1,
 		yjsSnapshotId: place.yjsSnapshotId,
 		yjsLastSequenceId: place.yjsLastSequenceId,
 		statsId: place.statsId,
@@ -191,7 +191,7 @@ export async function files_saved_placement_db_get_node(
 	fixedView?: files_saved_placement_FixedView,
 ): Promise<Doc<"files_nodes"> | null> {
 	const node = await db.get("files_nodes", nodeId);
-	if (!node?.moveCohortId) return node;
+	if (!node?.moveCohortId) return node ? { ...node, pendingContentVersion: node.pendingContentVersion ?? 1 } : null;
 	const { cohort, view } = await get_cohort(db, node.moveCohortId, fixedView);
 	if (cohort.organizationId !== node.organizationId || cohort.workspaceId !== node.workspaceId)
 		throw should_never_happen("Saved placement has another workspace", { nodeId, cohortId: cohort._id });
