@@ -12,7 +12,7 @@ Every editable text file has a Yjs document in one of two shapes (`files_YjsRoot
 
 The root names live in `files_YJS_DOC_KEYS` (`packages/app/shared/files.ts`). Markdown keeps the rich text editor. Every other editable text type opens in the Monaco "Code" editor.
 
-Each Markdown editor gets its own Marked parser in the shared extension's `onBeforeCreate` hook (`packages/app/shared/files-tiptap.ts`). Tiptap adds tokenizers when it creates an editor. Reusing one parser adds those callbacks again for every editor and search chunk, which can make a valid text write exceed Convex's CPU limit. Standalone Markdown-to-HTML parsing keeps a separate parser and registers the shared Tiptap tokenizers once. Keep frontmatter, task lists, inline marks, and media parsing equal in both paths. Every custom Tiptap token needs a matching HTML renderer: `taskList`, `underline` (`++text++`), and `highlight` (`==text==`). Missing a renderer can make a file fail during search indexing, even when its full Markdown page parses.
+Each Markdown editor gets its own Marked parser in the shared extension's `onBeforeCreate` hook (`packages/app/shared/files-tiptap.ts`). Tiptap adds tokenizers when it creates an editor. Reusing one parser adds those callbacks again for every editor and search chunk, which can make a valid text write exceed Convex's CPU limit. Standalone Markdown-to-HTML parsing keeps a separate parser and registers the shared Tiptap tokenizers once. Keep frontmatter, task lists, inline marks, and media parsing equal in both paths. Every custom Tiptap token needs a matching HTML renderer: `taskList` and `highlight` (`==text==`). Missing a renderer can make a file fail during search indexing, even when its full Markdown page parses.
 
 The standalone parser gives each parse a new Marked lexer and its own tokenizer. Tiptap's list and
 task tokenizers parse item text with that running lexer, so link definitions and open HTML state
@@ -24,7 +24,7 @@ a list item was lost. The vendored copy also changes two things for block tokeni
 - It reads nested blocks as top-level blocks, like Marked's blockquote. So more lines of an ordered
   item inside a `-` item become a paragraph.
 
-Inline tokenizers (`==`, `++`) keep Marked's normal order, so a close tag inside them still counts.
+The inline highlight tokenizer (`==`) keeps Marked's normal order, so a close tag inside it still counts.
 A plain `-` item or a paragraph still carries an unclosed `<a>` forward, as in Marked.
 
 Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>`. Then a typed
@@ -44,7 +44,7 @@ space inside a tag). Then the address is lost, and without this the file name wo
 Every standalone parse runs through faster copies of some Marked and Tiptap steps in
 `shared/files-tiptap.ts`. `PARAGRAPH_REGEX` is Marked's paragraph rule with a shorter table check.
 `bound_tiptap_tokenizers` wraps Tiptap's list tokenizers with `cut_list_block`, and its highlight
-and underline `start` with `find_marker_starts`. These copies were tuned against Marked 17.0.6 and the
+`start` with `find_marker_starts`. These copies were tuned against Marked 17.0.6 and the
 vendored Tiptap 3.32.0. The standalone parser skips Tiptap's extra table tokenizer and keeps Marked's
 GFM table parser. Tiptap's pipe scan reads the whole remaining document at each line, outside our
 work counter. The shared serializer already escapes pipes. Guards check the patterns they copy,
@@ -99,7 +99,28 @@ Known limits, with no lost content:
 
 - Entities in a link address or an image's alt text are attributes, so save writes the decoded character.
 - Typing between two merged identical entities (`&nbsp;|&nbsp;`) saves both as raw characters.
-- A typed `&copy;` saves as `&amp;copy;`, and an escaped `\&copy;` in the file saves the same way.
+- A typed `&copy;` saves as `&amp;copy;`.
+
+Backslash escapes keep the spelling the file uses too. The `text` renderer wraps each Marked escape (`\#`, `\*`, `\(`) in a span that `files_markdown_escape_mark` reads. Save writes the backslash back while the text under the mark is still ASCII punctuation. A typed or changed character saves as plain text. So `2026\-08\-30`, `\&copy;` and MathJax's `\(a+b\)` save as written. Before, every save dropped these backslashes.
+
+Typed text gets a backslash only where it would read as Markdown (`escapeMarkdownSyntax` in the tiptap fork). So `snake_case`, `C:\Users`, `5 * 3` and `x == y` save as written. Before, save escaped every `_`, `*`, `~`, `\` and `=`. The rules:
+
+- A `\` gets a backslash before ASCII punctuation, at a line end, and at the end of a text.
+- A `*` or `~` run between two spaces stays bare. A `_` run between two spaces, or between two letters or digits, stays bare.
+- A `=` run before a space or at the end of the block stays bare.
+- `` ` ``, `[` and `]` always get a backslash, because they can pair with text far away.
+- The characters next to another node or a mark edge count as unknown. A run next to one gets the backslash.
+
+`++` is plain text, like on GitHub and in other Markdown apps. So `C++ and C++17` stays as written, and underline saves as `<u>`. A `==` highlight needs text right inside its markers, like `*` emphasis, so `a == b == c` stays plain text. A `#` run at the end of a `#` heading would read as its closing marks, so save escapes it: `## Issue \#`.
+
+Line breaks keep the style the file uses: a backslash, two spaces, or a `<br>` tag. The hard break node stores it in `markdownSource`. A new break saves as a backslash, because editors often delete two trailing spaces. A break inside a `#` heading still saves as `<br>`.
+
+Known limits, with no lost content:
+
+- `\|` outside a table saves as `|`, because the table writer doubles the backslashes before a pipe.
+- Typed text at the start of a line or next to a mark edge can get a backslash it does not need.
+- Highlight text that holds a `=` does not read back as highlight. Tiptap's `==` rule allows no `=` inside.
+- Bold or italic text that starts or ends with punctuation right next to a letter (`a**;**b`) cannot be written with `*` and reads back as plain text. This was true before too.
 
 Links keep any address scheme except `javascript:`, `vbscript:` and `data:` (`files_tiptap_link_is_allowed_uri` in `packages/app/shared/files-tiptap.ts`). Tiptap's own list keeps only a few schemes (`http`, `mailto`, ...), so a `bonobo-file://` or `obsidian://` link lost its address on the next save. Both browser lists and the shared set use this one check, so the browser and Convex keep the same links. The scheme must start the address with no tab, newline or control character inside it, so a hidden `java<tab>script:` is refused. The public link page keeps its own stricter rule: only checked `http(s)` links (see "Public Link Reader").
 
