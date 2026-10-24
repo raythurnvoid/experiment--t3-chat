@@ -129,6 +129,9 @@ with private proposals. `files_pending_updates.ts` and
 - Rename starts the same Move Activity. Parent segments use the fixed relative path and source
   pins. Missing folders are after-only candidates, created one at a time. Archived Rename keeps
   its archive identity and does not claim a normal active file's name.
+
+  Ready Rename may start during acceptance under the shared transaction budget. Blocked work
+  waits in its queue. Physical repair still runs later.
 - Ready Renames run in order before the next bulk group. The active Move group finishes repair
   first. In-flight Copy workers finish and dispose their callbacks first; progress alone does
   not prove that they have stopped. New Copy workers wait. The two user/workspace/kind/inFlight

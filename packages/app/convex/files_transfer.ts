@@ -1769,7 +1769,7 @@ export async function files_transfer_db_start_rename(
 			return Result({ _nay: { name: "nay", message: "Path already exists" } });
 		}
 	}
-	// Parent segments are resolved by the worker. The accepted source stays pinned.
+	// The Move steps resolve parent segments. The accepted source stays pinned.
 	const started = await db_start(ctx, {
 		membership,
 		sourceMembership: membership,
@@ -1817,7 +1817,11 @@ export async function files_transfer_db_start_rename(
 	});
 	const activity = await files_transfer_status_db_require_activity(ctx, started._yay.runId);
 	await ctx.db.patch("activities", activity._id, { progress: { ...activity.progress, discovered: 1, total: 1 } });
-	await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: started._yay.runId });
+	if (await files_pending_overlay_db_can_join_step(ctx)) {
+		await db_advance(ctx, { runId: started._yay.runId });
+	} else {
+		await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: started._yay.runId });
+	}
 	return started;
 }
 

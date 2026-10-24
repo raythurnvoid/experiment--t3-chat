@@ -4,9 +4,16 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import * as move_pages from "./files_move_pages.ts";
+import { rename_node } from "./files_nodes.ts";
 import { accept_input, advance as advance_transfer } from "./files_transfer.ts";
-import { create_folder_fixture } from "./files_transfer.setup.test.ts";
-import { test_convex, test_finish_transfer_run, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import { create_folder_fixture, mock_transfer_storage } from "./files_transfer.setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_transfer_run,
+	test_mocks_fill_db_with,
+	test_spy_handler,
+} from "./setup.test.ts";
 import { budget_recorder, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -72,6 +79,218 @@ function expect_move_phases(phases: ReturnType<typeof observe_move_phases>, runI
 		"A saved Move stages its item without entering content or media.",
 	).toEqual([]);
 }
+
+describe("initial Rename publication", () => {
+	beforeEach(mock_transfer_storage);
+	afterEach(() => vi.unstubAllGlobals());
+
+	test.each(["file", "folder"] as const)("publishes a ready %s before acceptance returns", async (kind) => {
+		const { t, db, asUser, folders } = await create_folder_fixture(kind === "folder" ? ["/source"] : []);
+		const sourceId =
+			kind === "folder"
+				? folders.get("/source")!
+				: await test_create_saved_text_file(t, {
+						membershipId: db.membershipId,
+						path: "/source.md",
+						textContent: "Keep this saved text.\n",
+					});
+		const before = (await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))!;
+		const fixtureJobs = new Set(
+			(await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).map((job) => job._id),
+		);
+		const unchanged = {
+			_id: sourceId,
+			kind,
+			contentType: before.contentType,
+			textKind: before.textKind,
+			yjsSnapshotId: before.yjsSnapshotId,
+			yjsLastSequenceId: before.yjsLastSequenceId,
+			updatedAt: before.updatedAt,
+			updatedBy: before.updatedBy,
+		};
+
+		const costs: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>[] = [];
+		test_spy_handler(rename_node, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			// Include the registered wrapper's final derived writes.
+			costs.push(await ctx.meta.getTransactionMetrics());
+			return result;
+		});
+
+		const args = {
+			membershipId: db.membershipId,
+			requestId: "inline-rename",
+			nodeId: sourceId,
+			path: "renamed",
+		};
+		const accepted = await asUser.mutation(api.files_nodes.rename_node, args);
+		if (!accepted._yay) throw new Error("Expected an accepted Rename");
+		const { runId, activityId } = accepted._yay;
+		const cohort = await t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohorts")
+				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+				.unique(),
+		);
+		expect(cohort, "a ready Rename publishes before acceptance returns").toMatchObject({
+			phase: "published",
+			visibleView: "after",
+			workPhase: "finish_content",
+			publishedAt: expect.any(Number),
+		});
+		if (!cohort?.runJob) throw new Error("Expected the current repair owner");
+		expect(await asUser.query(api.files_tree.get_workspace_move_view, { membershipId: db.membershipId })).toMatchObject({
+			cohortId: cohort._id,
+			view: "after",
+			generation: cohort.slotGeneration,
+		});
+		const selected = await asUser.query(api.files_tree.list_tree_children, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			kind,
+			archived: false,
+			restricted: false,
+			stream: "cohort",
+			paginationOpts: { cursor: null, numItems: 100 },
+		});
+		expect(selected.page).toContainEqual(expect.objectContaining({ _id: sourceId, name: "renamed", path: "/renamed" }));
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId)), "physical repair still waits").toMatchObject({
+			...unchanged,
+			name: before.name,
+			path: before.path,
+			moveCohortId: cohort._id,
+		});
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			progress: { total: 1, completed: 1, failed: 0, canceled: 0 },
+		});
+		expect(await t.run((ctx) => ctx.db.system.get(cohort.runJob!.id))).toMatchObject({
+			name: "files_move_run:run",
+			state: { kind: "pending" },
+			args: [{ cohortId: cohort._id, step: cohort.step, runGeneration: 1, mode: "chain" }],
+		});
+		const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		const renameJobs = scheduled.filter((job) => !fixtureJobs.has(job._id));
+		expect(renameJobs.filter((job) => job.name === "files_move_run:run" && job.state.kind === "pending")).toHaveLength(1);
+		expect(renameJobs.some((job) => job.name === "files_transfer:advance")).toBe(false);
+		expect(costs).toHaveLength(1);
+		expect(Object.keys(costs[0]!)).toHaveLength(7);
+		for (const [key, metric] of Object.entries(costs[0]!))
+			expect(metric.used, `${kind}: ${key} leaves 25% free`).toBeLessThan((metric.used + metric.remaining) * 0.75);
+
+		expect(await asUser.mutation(api.files_nodes.rename_node, args)).toEqual(accepted);
+		expect(
+			await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect()),
+			"replay adds no job",
+		).toEqual(scheduled);
+
+		await test_finish_transfer_run(asUser, runId);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({
+			...unchanged,
+			name: "renamed",
+			path: "/renamed",
+		});
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))?.moveCohortId).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_move_cohorts", cohort._id))).toMatchObject({ phase: "complete" });
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1, failed: 0, canceled: 0 },
+		});
+	});
+
+	test("keeps Rename queued when the intake budget yields", async () => {
+		const { t, db, asUser, folders } = await create_folder_fixture(["/source"]);
+		const sourceId = folders.get("/source")!;
+
+		const overlay = await import("../server/files-pending-overlay.ts");
+		const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockResolvedValueOnce(false);
+
+		const accepted = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			requestId: "rename-budget-yield",
+			nodeId: sourceId,
+			path: "renamed",
+		});
+		join.mockRestore();
+		if (!accepted._yay) throw new Error("Expected an accepted Rename");
+		const { runId, activityId } = accepted._yay;
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({ status: "queued" });
+		expect(await t.run((ctx) => ctx.db.query("files_move_cohorts").collect())).toEqual([]);
+		expect(await asUser.query(api.files_tree.get_workspace_move_view, { membershipId: db.membershipId })).toMatchObject({
+			cohortId: null,
+		});
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))?.path).toBe("/source");
+		expect(
+			(await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).filter(
+				(job) => job.name === "files_transfer:advance",
+			),
+		).toMatchObject([{ state: { kind: "pending" }, args: [{ runId }] }]);
+
+		await test_finish_transfer_run(asUser, runId);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({ _id: sourceId, path: "/renamed" });
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({ status: "succeeded" });
+	});
+
+	test("keeps reserve while starting a Rename with children", async () => {
+		const paths = Array.from({ length: 16 }, (_, index) => `/source/child-${index}`);
+		const { t, db, asUser, folders } = await create_folder_fixture(["/source", ...paths]);
+
+		const costs: ReturnType<typeof transaction_cost>[] = [];
+		test_spy_handler(rename_node, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			costs.push(transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+
+		const accepted = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			requestId: "rename-reserve",
+			nodeId: folders.get("/source")!,
+			path: "renamed",
+		});
+		if (!accepted._yay) throw new Error("Expected an accepted Rename");
+		expect(costs).toHaveLength(1);
+		const { record } = budget_recorder();
+		record("public folder Rename reserve", costs[0]!);
+
+		await test_finish_transfer_run(asUser, accepted._yay.runId);
+		for (const path of ["/source", ...paths])
+			expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get(path)!))).toMatchObject({
+				path: path.replace("/source", "/renamed"),
+			});
+		expect(await t.run((ctx) => ctx.db.get("activities", accepted._yay!.activityId))).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1, failed: 0, canceled: 0 },
+		});
+	});
+
+	test("rolls back intake if joined Rename throws", async () => {
+		const { t, db, asUser, folders } = await create_folder_fixture(["/source"]);
+		const sourceId = folders.get("/source")!;
+		const before = await t.run((ctx) => ctx.db.get("files_nodes", sourceId));
+
+		const cohorts = await import("./files_move_cohorts.ts");
+		const begin = vi.spyOn(cohorts, "files_move_cohorts_db_begin_transfer_item").mockImplementationOnce(async (ctx) => {
+			expect(await ctx.db.query("files_transfer_runs").collect(), "intake wrote its run before the failure").toHaveLength(
+				1,
+			);
+			throw new Error("Joined Rename failed");
+		});
+
+		await expect(
+			asUser.mutation(api.files_nodes.rename_node, {
+				membershipId: db.membershipId,
+				requestId: "rename-rollback",
+				nodeId: sourceId,
+				path: "renamed",
+			}),
+		).rejects.toThrow("Joined Rename failed");
+		expect(begin).toHaveBeenCalledOnce();
+		for (const table of ["files_transfer_runs", "files_transfer_items", "activities", "files_move_cohorts"] as const)
+			expect(await t.run((ctx) => ctx.db.query(table).collect()), `${table} rolls back with intake`).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toEqual(before);
+	});
+});
 
 describe("initial Move publication", () => {
 	test.each([

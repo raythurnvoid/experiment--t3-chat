@@ -208,6 +208,9 @@ describe("Rename at a group boundary", () => {
 	test("keeps a Rename-only queue visible to current-run and busy checks", async () => {
 		const fixture = await create_folder_fixture(["/one", "/two", "/source"]);
 		const { db, asUser, folders } = fixture;
+		// Hold the first intake at its budget so this test has a real queue.
+		const overlay = await import("../server/files-pending-overlay.ts");
+		vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockResolvedValueOnce(false);
 		const first = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			requestId: "first-visible-rename",
@@ -413,6 +416,8 @@ describe("Rename at a group boundary", () => {
 			path: "renamed",
 		});
 		if (!renamed._yay) throw new Error(renamed._nay?.message ?? "Expected Rename");
+		expect((await t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId)))?.status).toBe("queued");
+		expect((await get_node(fixture, "/other"))?._id).toBe(folders.get("/other"));
 		const first = workers[0]!;
 		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: first._id, attempt: first.attempt });
 		await t.mutation(internal.files_transfer.advance, { runId: renamed._yay.runId });
@@ -508,6 +513,8 @@ describe("Rename at a group boundary", () => {
 				path: "renamed",
 			});
 			if (!rename._yay) throw new Error(rename._nay?.message ?? "Expected Rename");
+			expect((await t.run((ctx) => ctx.db.get("activities", rename._yay!.activityId)))?.status).toBe("queued");
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", other._yay!.nodeId)))?.path).toBe("/other");
 			await t.mutation(internal.files_transfer.advance, { runId: rename._yay.runId });
 			expect((await t.run((ctx) => ctx.db.get("activities", rename._yay!.activityId)))?.status).toBe("queued");
 			await finish_copy_worker(fixture, item);
@@ -527,6 +534,9 @@ describe("Rename at a group boundary", () => {
 		const { t, db, asUser, folders } = fixture;
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await finish_discovery(fixture, runId);
+		// Leave the first Rename queued before accepting the conflicting name.
+		const overlay = await import("../server/files-pending-overlay.ts");
+		vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockResolvedValueOnce(false);
 		const first = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			requestId: "first-rename",
@@ -583,6 +593,9 @@ describe("Rename at a group boundary", () => {
 	test("lets a new Copy start while a Rename waits on a conflict", async () => {
 		const fixture = await create_folder_fixture(["/source", "/one", "/two"]);
 		const { db, asUser, folders } = fixture;
+		// Leave the first Rename queued before accepting the conflicting name.
+		const overlay = await import("../server/files-pending-overlay.ts");
+		vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockResolvedValueOnce(false);
 		const first = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			requestId: "paused-first-rename",
@@ -619,6 +632,9 @@ describe("Rename at a group boundary", () => {
 		const { t, db, asUser, folders } = fixture;
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await finish_discovery(fixture, runId);
+		// Stop must reach a Rename whose initial budget yielded.
+		const overlay = await import("../server/files-pending-overlay.ts");
+		vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockResolvedValueOnce(false);
 		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			requestId: "stopped-rename",
@@ -626,6 +642,7 @@ describe("Rename at a group boundary", () => {
 			path: "renamed",
 		});
 		if (!renamed._yay) throw new Error(renamed._nay?.message ?? "Expected Rename");
+		expect((await t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId)))?.status).toBe("queued");
 		expect(
 			await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId: renamed._yay.runId }),
 		).toEqual({ _yay: null });
@@ -652,6 +669,9 @@ describe("Rename at a group boundary", () => {
 		const fixture = await create_folder_fixture(["/one", "/two"]);
 		const { t, folders } = fixture;
 		const member = await add_member(fixture);
+		// Keep the first Rename queued while the second waits for its turn.
+		const overlay = await import("../server/files-pending-overlay.ts");
+		vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockResolvedValueOnce(false);
 		const first = await member.asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: member.membershipId,
 			requestId: "first-member-rename",
