@@ -44,6 +44,15 @@ From `plugins/bonobo-plugin-gmail`, all through `vp env exec`: `pnpm run typeche
 - The Gmail page card has `data-gmail-push="on"` while the watch is live.
 - Do not send CDP commands to a tab that has a plugin frame (see known-hazards).
 
+## Connect another account
+
+- Two plugin env values set the limits: `GMAIL_MAX_CONNECTED_ACCOUNTS` (3 on dev) and `GMAIL_BACKFILL_MAX_DAYS` (30 on dev). Read them with `convex env get <name>`, never `convex env list`.
+- On the Gmail page, choose "Old mail to save" and press **Connect Gmail**. Bring the tab to the front first. A click in a background tab does nothing.
+- An agent can do the Google step alone when the account is already signed in to the QA browser. Open the consent link from the page in a new tab, pick the account in the chooser, then press "Advanced" and "Go to … (unsafe)" on the unverified-app warning. Never type a password; if the account is not in the chooser, ask the user.
+- Google lists both scopes as checkboxes. For a sync-only account, tick only "View your email messages and settings".
+- The callback page shows a 64-character finish code. Read the element whose text has exactly 64 characters; another element on that page has 32. Compare the two IDs with the Gmail page, paste the code, and press **Finish connection**.
+- Check the account's `backfillAfter` with the safe script. It is the Finish time minus the chosen days. After backfill ends, the oldest `internalDate` in `messages_ledger` for that account must be newer than it.
+
 ## Push setup for another Google account
 
 Follow "Push notifications" in the plugin README, and the private notes for the exact field values. Each OAuth client's project needs its own topic, Publisher grant, subscription and token. The topic must be in the same Google Cloud project as the OAuth client.
