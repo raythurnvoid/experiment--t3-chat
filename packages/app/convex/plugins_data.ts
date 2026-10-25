@@ -4179,8 +4179,9 @@ export async function plugins_data_db_apply_file_access_binding(
 	let accessChanged = false;
 	// Restrict the node on itself and start a scope op for the items inside, like the member share door does.
 	if (args.node.restrictedScopeNodeId !== args.node._id) {
-		// Restricting starts with only its readers, so accounts added here lose access, like `restrict_node`.
-		// The account writer keeps the plugin folders in sync. Added people go in the reader loop below.
+		// The plugin's readers are the whole list, so accounts added here lose access. `restrict_node` keeps
+		// them instead, because there a person chose the list. The account writer keeps the plugin folders
+		// in sync. Added people go in the reader loop below.
 		if (args.node.parentExtendedScopeNodeId !== undefined) {
 			const grants = await db_binding_file_grants(ctx, {
 				organizationId: args.installation.organizationId,

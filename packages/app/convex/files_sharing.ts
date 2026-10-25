@@ -29,6 +29,8 @@ import {
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
 	access_control_db_resolve_live_restricted_scope,
+	access_control_db_resolve_role_permissions,
+	access_control_db_resolve_role_refs,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import {
@@ -36,7 +38,10 @@ import {
 	files_nodes_db_set_public,
 	files_nodes_db_set_restricted_scope,
 } from "./files_nodes.ts";
-import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
+import {
+	files_nodes_db_get_plugin_binding_installation_id,
+	files_nodes_db_has_plugin_binding,
+} from "./files_nodes_db.ts";
 import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 import {
 	files_share_links_db_check_live_file,
@@ -306,6 +311,25 @@ const share_entry_validator = v.object({
 	servicePluginName: v.union(v.string(), v.null()),
 });
 
+/**
+ * What a person, role, or app gets from somewhere other than its own row on this list. Each field is
+ * the best level from one source, or null.
+ */
+const share_coverage_validator = v.object({
+	/** From the access the item has without its own list: workspace roles, or the restricted folder above. */
+	base: v.union(share_level_validator, v.null()),
+	/** From the folders above with added people. These give view or edit only. */
+	folder: v.union(v.null(), v.object({ level: share_level_validator, name: v.string() })),
+	/** From a role row on this same list that the person or app has. */
+	role: v.union(
+		v.null(),
+		v.object({
+			level: share_level_validator,
+			role: doc(app_convex_schema, "access_control_role_assignments").fields.role,
+		}),
+	),
+});
+
 /** A folder above the node whose people also reach it. `entries` is null when the caller may not see them. */
 const share_inherited_validator = v.object({
 	nodeId: v.id("files_nodes"),
@@ -497,7 +521,7 @@ async function db_set_principal_level(
  *
  * The owner is never stopped by this. The rule exists to keep the node repairable, and the owner is
  * the repair: without the exemption they could not take the last person off a folder they restricted
- * themselves, and the only way back would be to unrestrict it and lose the whole list.
+ * themselves.
  *
  * It counts rows, not people. A manager row for a role nobody holds counts as a manager, and a role
  * everybody loses tomorrow still counts today. Making it count real people would not close the hole
@@ -635,8 +659,40 @@ export const get_node_share_state = query({
 			access: v.union(v.literal("restricted_root"), v.literal("extended_root"), v.literal("inherits")),
 			/** Whether the caller may add people here. Any item can get added people. */
 			canAddPeople: v.boolean(),
-			/** The people on this node itself. Empty for an item that only inherits. */
-			entries: v.array(share_entry_validator),
+			/**
+			 * The people on this node itself. Empty for an item that only inherits. `coverage` is null when
+			 * the caller cannot manage the node.
+			 */
+			entries: v.array(
+				v.object({ ...share_entry_validator.fields, coverage: v.union(share_coverage_validator, v.null()) }),
+			),
+			callerUserId: v.id("users"),
+			/** What the caller gets from somewhere other than their own row. Null when they cannot manage. */
+			callerCoverage: v.union(share_coverage_validator, v.null()),
+			/**
+			 * The caller's roles here, so the dialog can tell when a role row is their own access. Empty when
+			 * they cannot manage.
+			 */
+			callerRoles: v.array(doc(app_convex_schema, "access_control_role_assignments").fields.role),
+			/**
+			 * The access the node has without its own list: `null` for the workspace roles, or the restricted
+			 * folder above. For a restricted root this is where an unrestrict falls back to.
+			 */
+			baseScope: v.union(
+				v.null(),
+				v.object({
+					nodeId: v.id("files_nodes"),
+					name: v.string(),
+					path: v.string(),
+				}),
+			),
+			/** Whether a file inside this restricted folder has a public link. An unrestrict ends it. */
+			linksInside: v.boolean(),
+			/**
+			 * The plugin that decides who reads this node's area. `isSelf` is true when the plugin keeps
+			 * this node's own list: a change here then stops the plugin updating it.
+			 */
+			pluginArea: v.union(v.null(), v.object({ pluginName: v.string(), isSelf: v.boolean() })),
 			/**
 			 * Where the rest of the access comes from. `restricted` null means everyone in the workspace.
 			 * `extended` lists the folders with added people above the node, nearest first.
@@ -881,6 +937,185 @@ export const get_node_share_state = query({
 			extended: await Promise.all(extendedFolders.map(inherited)),
 		};
 
+		// The access the node has without its own list. A restricted root falls back to the scope of its
+		// parent, like `unrestrict_node` does.
+		const baseScopeNodeId =
+			access === "restricted_root"
+				? await access_control_db_resolve_live_restricted_scope(ctx, {
+						organizationId: organization._id,
+						workspaceId: membership.workspaceId,
+						restrictedScopeNodeId: await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+							parentId: node.parentId,
+						}),
+					})
+				: scopeNode && scopeIsLive
+					? scopeNode._id
+					: null;
+		const baseScopeNode = baseScopeNodeId ? await ctx.db.get("files_nodes", baseScopeNodeId) : null;
+		const baseScope = baseScopeNode
+			? { nodeId: baseScopeNode._id, name: baseScopeNode.name, path: baseScopeNode.path }
+			: null;
+
+		// What each row and the caller get from somewhere else, so the dialog can say "Can manage through
+		// workspace role" and warn before a change takes access away. Only a manager can change the list,
+		// so only a manager gets it. The reads are bounded: at most 50 entries, each with 2 role reads and 3
+		// permission checks, plus the folders above, which are already read.
+		const baseResource = baseScopeNodeId
+			? { kind: "file" as const, id: String(baseScopeNodeId), restrictedScopeNodeId: baseScopeNodeId }
+			: { kind: "workspace" as const, id: String(membership.workspaceId) };
+		// A manager of a restricted folder inside another one may not open the outer folder. Then send no
+		// levels from it: otherwise they could add a person, read the level, and learn the outer list.
+		const seesBaseLevels =
+			canManage &&
+			(access !== "restricted_root" ||
+				!baseScopeNodeId ||
+				(await access_control_db_has_permission(ctx, {
+					organizationId: organization._id,
+					workspaceId: membership.workspaceId,
+					defaultWorkspaceId,
+					organizationOwnerUserId: organization.ownerUserId,
+					resource: baseResource,
+					permission: "content.read",
+					userId: userAuth.id,
+				})));
+		const baseRoleEntries =
+			baseScopeNodeId && seesBaseLevels
+				? group_grants_into_entries(
+						await db_list_scope_grants(ctx, {
+							organizationId: organization._id,
+							workspaceId: membership.workspaceId,
+							scopeNodeId: baseScopeNodeId,
+						}),
+					)
+				: [];
+		const level_from = async (has: (permission: access_control_GrantPermission) => Promise<boolean>) => {
+			const permissions = new Set<access_control_GrantPermission>();
+			for (const permission of access_control_FILE_SHARE_PERMISSIONS) {
+				// No read means no level, so skip the other checks.
+				if (permission !== "content.read" && !permissions.has("content.read")) break;
+				if (await has(permission)) permissions.add(permission);
+			}
+			return access_control_file_share_level_from_permissions(permissions);
+		};
+		const level_rank = (level: access_control_FileShareLevel | null) =>
+			level ? access_control_FILE_SHARE_LEVEL_KEYS.indexOf(level) : -1;
+		const coverage_of = async (principal: FileSharePrincipal) => {
+			const checkArgs = {
+				organizationId: organization._id,
+				workspaceId: membership.workspaceId,
+				defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				resource: baseResource,
+			};
+			let roleRefs: access_control_RoleRef[] = [];
+			let base: access_control_FileShareLevel | null;
+			if (principal.kind === "user") {
+				roleRefs = await access_control_db_resolve_role_refs(ctx, {
+					organizationId: organization._id,
+					workspaceId: membership.workspaceId,
+					defaultWorkspaceId,
+					userId: principal.userId,
+				});
+				base = seesBaseLevels
+					? await level_from((permission) =>
+							access_control_db_has_permission(ctx, { ...checkArgs, permission, userId: principal.userId }),
+						)
+					: null;
+			} else if (principal.kind === "service_account") {
+				const account = await ctx.db.get("access_control_service_accounts", principal.serviceAccountId);
+				roleRefs = account?.role !== undefined ? [account.role] : [];
+				base = seesBaseLevels
+					? await level_from((permission) =>
+							access_control_db_has_permission(ctx, {
+								...checkArgs,
+								permission,
+								serviceAccountId: principal.serviceAccountId,
+							}),
+						)
+					: null;
+			} else if (baseScopeNodeId) {
+				base =
+					baseRoleEntries.find((entry) => share_principal_key(entry.principal) === share_principal_key(principal))
+						?.level ?? null;
+			} else {
+				const permissions = await access_control_db_resolve_role_permissions(ctx, {
+					organizationId: organization._id,
+					role: principal.role,
+				});
+				base = access_control_file_share_level_from_permissions(
+					new Set(access_control_FILE_SHARE_PERMISSIONS.filter((permission) => permissions?.includes(permission))),
+				);
+			}
+
+			// A row matches its own key, and a person or app also matches the rows of their roles.
+			const keys = new Set([
+				share_principal_key(principal),
+				...roleRefs.map((role) => share_principal_key({ kind: "role", role })),
+			]);
+			let folder: { level: access_control_FileShareLevel; name: string } | null = null;
+			for (const extendedFolder of inheritedFrom.extended) {
+				for (const entry of extendedFolder.entries ?? []) {
+					if (
+						keys.has(share_principal_key(entry.principal)) &&
+						level_rank(entry.level) > level_rank(folder?.level ?? null)
+					) {
+						folder = { level: entry.level, name: extendedFolder.name };
+					}
+				}
+			}
+			let role: { level: access_control_FileShareLevel; role: access_control_RoleRef } | null = null;
+			for (const entry of entries) {
+				if (
+					entry.principal.kind === "role" &&
+					roleRefs.includes(entry.principal.role) &&
+					level_rank(entry.level) > level_rank(role?.level ?? null)
+				) {
+					role = { level: entry.level, role: entry.principal.role };
+				}
+			}
+			return { base, folder, role };
+		};
+		const listedEntries = await Promise.all(
+			entries.map(async (entry) => ({ ...entry, coverage: canManage ? await coverage_of(entry.principal) : null })),
+		);
+		const callerCoverage = canManage ? await coverage_of({ kind: "user", userId: userAuth.id }) : null;
+		const callerRoles = canManage
+			? await access_control_db_resolve_role_refs(ctx, {
+					organizationId: organization._id,
+					workspaceId: membership.workspaceId,
+					defaultWorkspaceId,
+					userId: userAuth.id,
+				})
+			: [];
+
+		// An unrestrict ends the links of the files inside, so the dialog asks first. One read.
+		const linksInside =
+			canManage &&
+			access === "restricted_root" &&
+			node.kind === "folder" &&
+			(await ctx.db
+				.query("files_share_links")
+				.withIndex("by_organization_workspace_scope", (q) =>
+					q
+						.eq("organizationId", organization._id)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("restrictedScopeNodeId", node._id),
+				)
+				.first()) !== null;
+
+		// A plugin decides who reads a bound area. On the bound folder a change stops that, and an item
+		// inside it cannot be restricted, like `restrict_node` refuses.
+		const pluginInstallationId =
+			scopeNode && scopeIsLive ? await files_nodes_db_get_plugin_binding_installation_id(ctx, scopeNode._id) : null;
+		const pluginInstallation = pluginInstallationId
+			? await ctx.db.get("plugins_workspace_installations", pluginInstallationId)
+			: null;
+		const pluginVersion = pluginInstallation
+			? await ctx.db.get("plugins_versions", pluginInstallation.pluginVersionId)
+			: null;
+		const pluginArea =
+			scopeNode && pluginVersion ? { pluginName: pluginVersion.displayName, isSelf: scopeNode._id === node._id } : null;
+
 		if (!scopeNode || !scopeIsLive) {
 			return {
 				nodeId: node._id,
@@ -894,7 +1129,13 @@ export const get_node_share_state = query({
 				serviceGrantableLevels,
 				access,
 				canAddPeople: canManage,
-				entries,
+				entries: listedEntries,
+				callerUserId: userAuth.id,
+				callerCoverage,
+				callerRoles,
+				baseScope,
+				linksInside,
+				pluginArea,
 				inheritedFrom,
 				organizationOwnerUserId: organization.ownerUserId,
 				link,
@@ -919,7 +1160,13 @@ export const get_node_share_state = query({
 			serviceGrantableLevels,
 			access,
 			canAddPeople: canManage,
-			entries,
+			entries: listedEntries,
+			callerUserId: userAuth.id,
+			callerCoverage,
+			callerRoles,
+			baseScope,
+			linksInside,
+			pluginArea,
 			inheritedFrom,
 			organizationOwnerUserId: organization.ownerUserId,
 			link,
@@ -1329,32 +1576,26 @@ export const restrict_node = mutation({
 			}
 		}
 
-		// Restricting starts with only the person restricting it, so people added here lose access.
-		// Account grants go through the account writer, so the plugin folders stay in sync.
-		if (node.parentExtendedScopeNodeId !== undefined) {
-			const grants = await db_list_scope_grants(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				scopeNodeId: node._id,
+		// Restricting keeps the people, roles, and service accounts added here, so the list stays the one
+		// the dialog showed. The person restricting it joins the list below, so a full list has no room
+		// for them.
+		const grants = await db_list_scope_grants(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			scopeNodeId: node._id,
+		});
+		const entries = group_grants_into_entries(grants);
+		const callerKey = share_principal_key({ kind: "user", userId: userAuth.id });
+		if (
+			!isOwner &&
+			entries.length >= MAX_FILE_SHARE_PRINCIPALS &&
+			!entries.some((entry) => share_principal_key(entry.principal) === callerKey)
+		) {
+			return Result({
+				_nay: {
+					message: `This list already has ${MAX_FILE_SHARE_PRINCIPALS} people, roles, and apps, the most it can hold. Remove one first.`,
+				},
 			});
-			const accountIds = new Set<Id<"access_control_service_accounts">>();
-			for (const grant of grants) {
-				if (grant.principalKind === "service_account" && grant.serviceAccountId) {
-					accountIds.add(grant.serviceAccountId);
-				} else {
-					await ctx.db.delete("access_control_permission_grants", grant._id);
-				}
-			}
-			for (const serviceAccountId of accountIds) {
-				const removed = await access_control_db_set_service_account_grant(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					serviceAccountId,
-					resource: { kind: "file", nodeId: node._id },
-					level: null,
-				});
-				if (removed._nay) throw convex_error(removed._nay);
-			}
 		}
 
 		const now = Date.now();
@@ -1397,7 +1638,8 @@ export const restrict_node = mutation({
 				scopeNodeId: node._id,
 				principal: { kind: "user", userId: userAuth.id },
 				level: "manage",
-				grants: [],
+				// Pass the kept grants, so a caller who was already listed gets no second copy of a permission.
+				grants,
 				now,
 			});
 		}
@@ -1462,29 +1704,29 @@ export const unrestrict_node = mutation({
 			workspaceId: membership.workspaceId,
 			scopeNodeId: node._id,
 		});
-		for (const grant of grants) {
-			if (grant.principalKind !== "service_account") {
-				await ctx.db.delete("access_control_permission_grants", grant._id);
-			}
-		}
-		// Account grants stay, so the item keeps its accounts as added people: it becomes an extended
-		// root. Added people can view or edit only, so a kept manage becomes edit. A revoked account
-		// cannot get a new level, so its grant goes.
-		const accountGrants = grants.filter((grant) => grant.principalKind === "service_account");
-		if (accountGrants.length > 0) {
+		// The list stays, so the item keeps its people, roles, and service accounts as added people: it
+		// becomes an extended root. Added people can view or edit only, so a kept manage becomes edit.
+		if (group_grants_into_entries(grants).length > 0) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 		}
-		for (const grant of accountGrants) {
-			if (grant.permission !== "content.permissions.manage" || !grant.serviceAccountId) continue;
-			const account = await ctx.db.get("access_control_service_accounts", grant.serviceAccountId);
-			const lowered = await access_control_db_set_service_account_grant(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				serviceAccountId: grant.serviceAccountId,
-				resource: { kind: "file", nodeId: node._id },
-				level: account?.revokedAt === null ? "write" : null,
-			});
-			if (lowered._nay) throw convex_error(lowered._nay);
+		for (const grant of grants) {
+			if (grant.permission !== "content.permissions.manage") continue;
+			// Service account grants go through the account writer, so the plugin folders stay in sync.
+			// A revoked account cannot get a new level, so its grant goes.
+			if (grant.principalKind === "service_account" && grant.serviceAccountId) {
+				const account = await ctx.db.get("access_control_service_accounts", grant.serviceAccountId);
+				const lowered = await access_control_db_set_service_account_grant(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					serviceAccountId: grant.serviceAccountId,
+					resource: { kind: "file", nodeId: node._id },
+					level: account?.revokedAt === null ? "write" : null,
+				});
+				if (lowered._nay) throw convex_error(lowered._nay);
+				continue;
+			}
+			// A manage level is the edit docs plus this one, so deleting it leaves edit.
+			await ctx.db.delete("access_control_permission_grants", grant._id);
 		}
 
 		// One op gives the items inside both the new scope and the new chain.

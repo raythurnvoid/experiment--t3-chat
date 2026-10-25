@@ -243,13 +243,28 @@ export async function db_get_file_content_materialization_header(
  * binding. A public link or a restricted folder inside its area would go around that list. Reads 2 docs.
  */
 export async function files_nodes_db_has_plugin_binding(ctx: QueryCtx | MutationCtx, nodeId: Id<"files_nodes">) {
+	return (await files_nodes_db_get_plugin_binding_installation_id(ctx, nodeId)) !== null;
+}
+
+/**
+ * The installation of the plugin that decides who reads this node, or `null`. Same bindings as
+ * `files_nodes_db_has_plugin_binding`.
+ */
+export async function files_nodes_db_get_plugin_binding_installation_id(
+	ctx: QueryCtx | MutationCtx,
+	nodeId: Id<"files_nodes">,
+) {
 	const binding = await ctx.db
 		.query("plugins_file_access_bindings")
 		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
 		.first();
+	if (binding) {
+		return binding.installationId;
+	}
+
 	const externalBinding = await ctx.db
 		.query("plugins_external_file_bindings")
 		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
 		.first();
-	return binding !== null || (externalBinding !== null && externalBinding.detachedAt === null);
+	return externalBinding && externalBinding.detachedAt === null ? externalBinding.installationId : null;
 }

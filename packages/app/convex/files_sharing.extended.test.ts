@@ -85,6 +85,19 @@ function account_levels(f: Fixture, nodeId: Id<"files_nodes">) {
 	);
 }
 
+function member_levels(f: Fixture, nodeId: Id<"files_nodes">) {
+	return f.t.run(async (ctx) =>
+		(
+			await ctx.db
+				.query("access_control_permission_grants")
+				.filter((q) => q.and(q.eq(q.field("resourceId"), nodeId), q.eq(q.field("userId"), f.memberId)))
+				.collect()
+		)
+			.map((grant) => grant.permission)
+			.sort(),
+	);
+}
+
 function can(
 	f: Fixture,
 	subject: access_control_Subject,
@@ -243,7 +256,7 @@ test("removing the last added person un-extends the folder after the job", async
 	expect((await get_node(f, fileId)).extendedScopeNodeId).toBe(null);
 });
 
-test("restricting an extended folder starts with only the restricter", async () => {
+test("restricting an extended folder keeps its people and apps", async () => {
 	const f = await fixture();
 	const folderId = await seed_folder(f, "/open");
 	const serviceAccountId = await create_account(f);
@@ -252,17 +265,25 @@ test("restricting an extended folder starts with only the restricter", async () 
 
 	await set_restricted(f, folderId, true);
 
-	const grants = await f.t.run((ctx) =>
-		ctx.db
-			.query("access_control_permission_grants")
-			.filter((q) => q.eq(q.field("resourceId"), folderId))
-			.collect(),
-	);
-	// The owner restricted it and holds no grants.
-	expect(grants).toEqual([]);
 	expect(await get_node(f, folderId)).toMatchObject({ restrictedScopeNodeId: folderId, extendedScopeNodeId: null });
-	expect(await can(f, member(f), folderId)).toBe(false);
-	expect(await can(f, { kind: "service_account", serviceAccountId }, folderId)).toBe(false);
+	expect(await can(f, member(f), folderId, "content.write")).toBe(true);
+	expect(await can(f, { kind: "service_account", serviceAccountId }, folderId, "content.write")).toBe(true);
+	expect(await account_levels(f, folderId)).toEqual(["content.read", "content.write"]);
+});
+
+test("an admin who is already listed restricts and gets each manage permission once", async () => {
+	const f = await fixture({ memberRole: "admin" });
+	const folderId = await seed_folder(f, "/open");
+	expect((await share_with(f, folderId, "write"))._nay).toBeUndefined();
+
+	await reset_rate_limits(f.t, [f.memberId]);
+	const restricted = await f.asMember.mutation(api.files_sharing.restrict_node, {
+		membershipId: f.memberMembershipId,
+		nodeId: folderId,
+	});
+
+	expect(restricted._nay).toBeUndefined();
+	expect(await member_levels(f, folderId)).toEqual(["content.permissions.manage", "content.read", "content.write"]);
 });
 
 test("an extended folder appears in Shared with you for the added person, and follows its changes", async () => {
@@ -331,6 +352,32 @@ test("the share dialog says where access comes from", async () => {
 		{ kind: "user", userId: f.memberId },
 	]);
 	expect(asReader?.inheritedFrom.extended.map((line) => line.entries?.length)).toEqual([1]);
+});
+
+test("a manager of a restricted folder inside another one learns no levels from the outer list", async () => {
+	const f = await fixture();
+	const { restrictedId, folderId } = await seed_restricted(f);
+	await set_restricted(f, folderId, true);
+	expect((await share_with(f, folderId, "manage"))._nay).toBeUndefined();
+	for (const nodeId of [restrictedId, folderId]) {
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const shared = await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId,
+			principal: { kind: "role", role: "admin" },
+			level: "read",
+		});
+		expect(shared._nay).toBeUndefined();
+	}
+	const admin_base = async (as: typeof f.asOwner, membershipId: Id<"organizations_workspaces_users">) =>
+		(await as.query(api.files_sharing.get_node_share_state, { membershipId, nodeId: folderId }))?.entries.find(
+			(entry) => entry.principal.kind === "role",
+		)?.coverage?.base;
+
+	// The owner reads `/r`, so the admin row shows its level there.
+	expect(await admin_base(f.asOwner, f.db.membershipId)).toBe("read");
+	// The member manages `/r/d` but cannot open `/r`.
+	expect(await admin_base(f.asMember, f.memberMembershipId)).toBe(null);
 });
 
 test("a public link survives adding people", async () => {
@@ -531,7 +578,7 @@ test("an account grant on an item inside a restricted folder makes it an extende
 	expect(await can(f, subject, otherId)).toBe(false);
 });
 
-test("binding a folder with added people to a private space needs a restrict first, which removes them", async () => {
+test("binding a restricted folder to a private space replaces its people and keeps its apps", async () => {
 	const f = await fixture();
 	const folderId = await seed_folder(f, "/b");
 	const serviceAccountId = await create_account(f);
@@ -539,12 +586,12 @@ test("binding a folder with added people to a private space needs a restrict fir
 	expect((await share_with_account(f, folderId, serviceAccountId, "write"))._nay).toBeUndefined();
 	const installationId = await insert_installation(f);
 
-	// A plugin binds only a restricted folder.
+	// A plugin binds only a restricted folder. The restrict keeps the list.
 	await set_restricted(f, folderId, true);
 	await apply_binding(f, { installationId, folderId, readScopeId: "team" });
 
-	// The private space has no members yet, so nobody is left on the folder.
-	expect(await account_levels(f, folderId)).toEqual([]);
+	// The private space has no members yet, so no person is left on the folder. Updating readers keeps apps.
+	expect(await account_levels(f, folderId)).toEqual(["content.read", "content.write"]);
 	expect(await can(f, member(f), folderId)).toBe(false);
 	expect(await get_node(f, folderId)).toMatchObject({ restrictedScopeNodeId: folderId, extendedScopeNodeId: null });
 });
@@ -603,16 +650,18 @@ test("unrestrict keeps service account grants as an extended root", async () => 
 	expect(await account_levels(f, folderId)).toEqual(["content.read"]);
 });
 
-test("unrestrict lowers a kept account manage grant to edit", async () => {
+test("unrestrict keeps people and lowers every kept manage grant to edit", async () => {
 	const f = await fixture();
 	const folderId = await seed_folder(f, "/a");
 	const serviceAccountId = await create_account(f);
 	await set_restricted(f, folderId, true);
 	expect((await share_with_account(f, folderId, serviceAccountId, "manage"))._nay).toBeUndefined();
+	expect((await share_with(f, folderId, "manage"))._nay).toBeUndefined();
 
 	await set_restricted(f, folderId, false);
 
 	expect(await account_levels(f, folderId)).toEqual(["content.read", "content.write"]);
+	expect(await member_levels(f, folderId)).toEqual(["content.read", "content.write"]);
 	expect((await get_node(f, folderId)).parentExtendedScopeNodeId).toBe(null);
 });
 

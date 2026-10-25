@@ -13326,7 +13326,8 @@ describe("files_sharing.unrestrict_node", () => {
 		});
 		expect(unrestricted._nay).toBeUndefined();
 		expect(await read_bindings(t, fixture)).toEqual([]);
-		expect(await read_node_read_grants({ t, fixture, nodeId: innerId })).toEqual([]);
+		// The plugin's readers stay as added people.
+		expect(await read_node_read_grants({ t, fixture, nodeId: innerId })).toEqual([`${fixture.userId}:content.read`]);
 		for (const nodeId of [innerId, childId]) {
 			expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.restrictedScopeNodeId)).toBe(
 				outerId,

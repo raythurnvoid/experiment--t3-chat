@@ -1441,7 +1441,7 @@ describe("files_share_rows", () => {
 		await f.expect_share_rows_true();
 	});
 
-	test("rows live only while their node is a restricted root", async () => {
+	test("rows live only while their node is a restricted or extended root", async () => {
 		const f = await fixture();
 		const s = await f.saved(null, "s", "folder");
 		await f.restrict(s);
@@ -1462,7 +1462,8 @@ describe("files_share_rows", () => {
 		await f.as_u(() =>
 			f.asU.mutation(api.files_sharing.unrestrict_node, { membershipId: f.db.membershipId, nodeId: s._id }),
 		);
-		expect(await share_keys(f, s._id)).toEqual([]);
+		// Unrestrict keeps the list as added people, so the rows stay.
+		expect(await share_keys(f, s._id)).toEqual(["role:member", `user:${f.v.userId}`]);
 		await f.expect_share_rows_true();
 	});
 

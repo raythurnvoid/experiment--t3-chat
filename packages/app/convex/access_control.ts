@@ -111,7 +111,7 @@ const permission_validator = doc(app_convex_schema, "access_control_roles").fiel
  * database. A reference to a custom role that was deleted gives nothing; it does not fall back to
  * any other role.
  */
-async function resolve_role_permissions(
+export async function access_control_db_resolve_role_permissions(
 	ctx: QueryCtx | MutationCtx,
 	args: { organizationId: Id<"organizations">; role: access_control_RoleRef },
 ): Promise<readonly access_control_Permission[] | null> {
@@ -145,10 +145,10 @@ async function resolve_role_permissions(
  * The first file or plugin management grant the caller cannot hand out.
  *
  * A role is not only its permission list. A share list can name a role, and from then on holding
- * that role opens the restricted node. `resolve_role_permissions` never sees those grants, so the
- * permission ceiling in `set_user_role` cannot see them either: without this, somebody whose role
- * only manages members could hand out a payroll folder they cannot open themselves, just by
- * assigning the role it was shared with.
+ * that role opens the restricted node. `access_control_db_resolve_role_permissions` never sees those
+ * grants, so the permission ceiling in `set_user_role` cannot see them either: without this,
+ * somebody whose role only manages members could hand out a payroll folder they cannot open
+ * themselves, just by assigning the role it was shared with.
  *
  * `reach` says where this role will really reach the target, and the scan covers exactly that. Both
  * spellings are words on purpose: the narrow one fails open if it is used where the wide one belongs,
@@ -322,7 +322,7 @@ export async function access_control_db_caller_cannot_share_with_role(
 		return { message: "You cannot share with a role. Share with the people instead." };
 	}
 
-	const rolePermissions = await resolve_role_permissions(ctx, {
+	const rolePermissions = await access_control_db_resolve_role_permissions(ctx, {
 		organizationId: args.organization._id,
 		role: args.role,
 	});
@@ -460,7 +460,7 @@ export async function access_control_db_resolve_effective_permissions(
 	const permissions = new Set<access_control_Permission>();
 
 	if (workspaceAssignment) {
-		const workspacePermissions = await resolve_role_permissions(ctx, {
+		const workspacePermissions = await access_control_db_resolve_role_permissions(ctx, {
 			organizationId: args.organizationId,
 			role: workspaceAssignment.role,
 		});
@@ -473,7 +473,7 @@ export async function access_control_db_resolve_effective_permissions(
 	}
 
 	if (defaultAssignment) {
-		const defaultPermissions = await resolve_role_permissions(ctx, {
+		const defaultPermissions = await access_control_db_resolve_role_permissions(ctx, {
 			organizationId: args.organizationId,
 			role: defaultAssignment.role,
 		});
@@ -977,8 +977,8 @@ const DEAD_SCOPE_MAX_HOPS = 8;
  *
  * A folder above can be opened too before its own job reaches the dead folder, so the chain can be
  * longer than one hop. Past `DEAD_SCOPE_MAX_HOPS`, keep the node's stored scope. The unrestrict
- * deleted the people and role grants of that folder, so only the owner and the service accounts it
- * still names get in until the job rewrites the node.
+ * kept that folder's list at view or edit, so its people get in, as they will once the job rewrites
+ * the node.
  *
  * A pointer at a deleted node, or at a node of another organization or workspace, is open. We
  * compare organization and workspace, so a pointer that somehow crossed into another workspace is
@@ -1796,7 +1796,7 @@ export async function access_control_db_has_permission(
 			userId,
 		});
 		if (assignment) {
-			const permissions = await resolve_role_permissions(ctx, {
+			const permissions = await access_control_db_resolve_role_permissions(ctx, {
 				organizationId: args.organizationId,
 				role: assignment.role,
 			});
@@ -1820,7 +1820,7 @@ export async function access_control_db_has_permission(
 		return false;
 	}
 
-	const defaultPermissions = await resolve_role_permissions(ctx, {
+	const defaultPermissions = await access_control_db_resolve_role_permissions(ctx, {
 		organizationId: args.organizationId,
 		role: defaultAssignment.role,
 	});
@@ -3542,7 +3542,7 @@ async function db_caller_cannot_assign_role(
 	},
 ) {
 	// Look the role up first, so even the owner cannot store a deleted role or one from another organization.
-	const rolePermissions = await resolve_role_permissions(ctx, {
+	const rolePermissions = await access_control_db_resolve_role_permissions(ctx, {
 		organizationId: args.organization._id,
 		role: args.role,
 	});
@@ -3709,7 +3709,7 @@ export const set_user_role = mutation({
 			return Result({ _yay: null });
 		}
 
-		const rolePermissions = await resolve_role_permissions(ctx, {
+		const rolePermissions = await access_control_db_resolve_role_permissions(ctx, {
 			organizationId: organization._id,
 			role: args.role,
 		});

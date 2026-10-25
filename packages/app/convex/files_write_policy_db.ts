@@ -22,7 +22,7 @@ import {
  * So this is one read and never a walk up the tree.
  */
 export async function files_nodes_db_resolve_parent_restricted_scope(
-	ctx: MutationCtx,
+	ctx: QueryCtx | MutationCtx,
 	args: {
 		parentId: Doc<"files_nodes">["parentId"];
 	},

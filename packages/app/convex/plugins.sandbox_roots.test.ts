@@ -310,7 +310,7 @@ describe("plugin sandbox roots", () => {
 		});
 	});
 
-	test("detaching an output folder makes its account grant a root, and restricting it removes the account", async () => {
+	test("detaching an output folder makes its account grant a root, and restricting it keeps the account", async () => {
 		const f = await fixture();
 		const installation = await f.install([]);
 		const output = await f.folder("transcripts");
@@ -333,7 +333,7 @@ describe("plugin sandbox roots", () => {
 			{ target: { kind: "folder", nodeId: output }, level: "write" },
 		]);
 
-		// A restrict starts with only the person restricting it.
+		// A restrict keeps the list, so the account keeps its folder.
 		vi.advanceTimersByTime(60_000);
 		expect(
 			await f.asOwner.mutation(api.files_sharing.restrict_node, {
@@ -341,7 +341,9 @@ describe("plugin sandbox roots", () => {
 				nodeId: output,
 			}),
 		).toEqual({ _yay: null });
-		expect((await f.sandbox(installation._id))?.roots).toEqual([]);
+		expect((await f.sandbox(installation._id))?.roots).toEqual([
+			{ target: { kind: "folder", nodeId: output }, level: "write" },
+		]);
 	});
 
 	test("detaching an output folder when the plugin has 20 folders keeps the share and skips the root", async () => {
