@@ -109,6 +109,8 @@ A block written right under the one before it, with no blank line, stays there: 
 
 Inside a list item, `renderNestedMarkdownContent` in the fork core writes a marked block with one newline. It has no `readsAsTwoBlocks`, so a marked paragraph stays tight only right under a heading, a rule or a fence, where it cannot join the block above. A marked block also skips the blank line that a loose item puts before its blocks. The `listitem` renderer writes text after a block as a paragraph, and that paragraph keeps the text's mark.
 
+Quotes keep a `>` with no space after it, before text like `>a`, or before a nested quote like the email style `> a` then `>> b`. The `blockquote` renderer writes `data-markdown-text-marker=">"` when every text line of the quote has no space after its `>`, and `data-markdown-nested-marker=">"` when every line that starts a nested quote has none. A quote with no line of a kind keeps the default for it, and a quote that mixes both writes a space. The fork's quote keeps them in `markdownTextMarker` and `markdownNestedMarker`, and reads them from the source the same way. A line that starts with a space, like indented code, always gets `> `, because the reader drops the one space after `>`. Before, save wrote `> a` and `> > b`.
+
 Known changes, with no lost content, all stable after one save:
 
 - A list with blank lines between only some items gets one between all of them. Two blank lines become one.

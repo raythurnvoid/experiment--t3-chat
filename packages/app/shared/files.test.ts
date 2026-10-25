@@ -2820,6 +2820,10 @@ describe("block syntax round-trip through Yjs", () => {
 		["a list right under text", "Intro:\n- a\n- b\n"],
 		["a fence right under text, and text under it", "text\n```\ncode\n```\nmore\n"],
 		["text right under a heading in a quote", "> # h\n> text\n"],
+		// Before, a save put a space after each quote's `>`.
+		["no space after a quote's marker", ">a\n>\n># h\n>- b\n"],
+		["email style nested quotes", "> a\n>> b\n>>> c\n"],
+		["an indented code block in a quote with no space after its marker", ">a\n>\n>     code\n"],
 		// Before, a save put a blank line before the text, and before each block of a loose item.
 		["text right under a heading in a list item", "- # a\n  text\n"],
 		["a blank line between a heading and its text in a list item", "- # a\n\n  text\n"],
@@ -2851,6 +2855,22 @@ describe("block syntax round-trip through Yjs", () => {
 		}
 		expect(files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay })).toBe("h\n\ntext");
 		editor._yay.destroy();
+	});
+
+	test("keeps a quote's marker with no space only when all its lines of that kind have none", () => {
+		const quoteAttrs = (markdown: string) => {
+			const json = files_tiptap_markdown_to_json({ markdown });
+			if (json._nay) {
+				throw new Error("Expected markdown to parse", { cause: json._nay });
+			}
+			const { markdownTextMarker, markdownNestedMarker } = json._yay.content?.[0]?.attrs ?? {};
+			return { markdownTextMarker, markdownNestedMarker };
+		};
+
+		// A quote with one kind of line has no style for the other kind.
+		expect(quoteAttrs(">a\n")).toEqual({ markdownTextMarker: ">", markdownNestedMarker: null });
+		expect(quoteAttrs(">>a\n")).toEqual({ markdownTextMarker: null, markdownNestedMarker: ">" });
+		expect(quoteAttrs("> a\n>b\n")).toEqual({ markdownTextMarker: null, markdownNestedMarker: null });
 	});
 
 	test("puts a blank line back when an edit would join two blocks in a list item", () => {

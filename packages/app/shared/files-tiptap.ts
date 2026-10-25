@@ -633,6 +633,24 @@ function configure_marked(instance: Marked | typeof marked) {
 				return html.replace(/^<pre/, `<pre${attributes}`);
 			},
 
+			// Keep a `>` with no space after it, before text like `>a` or before a nested quote like `>> b`. The fork's
+			// quote reads the same from the source. Before, save wrote `> a` and `> > b`.
+			blockquote(token) {
+				const markerLines = token.raw
+					.split("\n")
+					.map((line) => /^ {0,3}>( ?)(\S)/.exec(line))
+					.filter((match) => match !== null);
+				const spaceless = (lines: RegExpExecArray[]) => lines.length > 0 && lines.every((match) => match[1] === "");
+				let attributes = spaceless(markerLines.filter((match) => match[2] !== ">"))
+					? ' data-markdown-text-marker=">"'
+					: "";
+				if (spaceless(markerLines.filter((match) => match[2] === ">"))) {
+					attributes += ' data-markdown-nested-marker=">"';
+				}
+
+				return Renderer.prototype.blockquote.call(this, token).replace(/^<blockquote/, `<blockquote${attributes}`);
+			},
+
 			// A one-word footnote in a quote or a list, like `> [^1]: note`, which Marked reads as a link
 			// definition. Marked shows nothing for it, so keep it as the same source text block.
 			def(token) {
