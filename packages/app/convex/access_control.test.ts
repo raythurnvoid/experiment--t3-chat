@@ -8717,6 +8717,8 @@ describe("file sharing", () => {
 				level: "manage",
 				serviceAccountName: null,
 				servicePluginName: null,
+				// Their admin role gives manage again only if the workspace access comes back.
+				coverage: { base: "manage", folder: null, role: null },
 			},
 		]);
 
@@ -9003,7 +9005,7 @@ describe("file sharing", () => {
 		expect(archived._yay?.refusedItems).toEqual([]);
 	});
 
-	test("unrestricting gives the node back and drops the grants", async () => {
+	test("unrestricting gives the node back and keeps its people as added people", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "unrestrict-org",
@@ -9026,14 +9028,17 @@ describe("file sharing", () => {
 		expect(unrestricted._nay).toBeUndefined();
 
 		const member = { membershipId: fixture.memberMembershipId };
-		const [rootChildren, folderChildren, state, grantCount] = await Promise.all([
+		const [rootChildren, folderChildren, state, folderState] = await Promise.all([
 			access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: files_ROOT_ID }),
 			access_control_test_read_tree_child_ids(fixture.asMember, { ...member, parentId: folderId }),
 			fixture.asOwner.query(api.files_sharing.get_node_share_state, {
 				membershipId: fixture.ownerMembershipId,
 				nodeId: childId,
 			}),
-			t.run(async (ctx) => (await ctx.db.query("access_control_permission_grants").collect()).length),
+			fixture.asOwner.query(api.files_sharing.get_node_share_state, {
+				membershipId: fixture.ownerMembershipId,
+				nodeId: folderId,
+			}),
 		]);
 
 		// The member is back to reading it through their role. `state?.scope` being null shows that the
@@ -9041,8 +9046,11 @@ describe("file sharing", () => {
 		expect(rootChildren).toContain(folderId);
 		expect(folderChildren).toContain(childId);
 		expect(state?.scope).toBeNull();
-		// Leaving the grants behind would silently bring them back the next time somebody restricts it.
-		expect(grantCount).toBe(0);
+		// The list stays and shows as added people, so a later restrict starts from the same visible list.
+		expect(folderState).toMatchObject({
+			access: "extended_root",
+			entries: [{ principal: { kind: "user", userId: fixture.memberId }, level: "read" }],
+		});
 	});
 
 	test("a path-like rename carries the restriction to the node it moves", async () => {

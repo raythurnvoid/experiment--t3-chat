@@ -978,7 +978,7 @@ scalar sample. Do not assume a Status field exists. No new fixture is needed for
 Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restricted_scope`, or anything about restricted scopes.
 
 - Build the fixture so the two cases differ: the folder must carry its **own** restriction (`restrictedScopeNodeId === its own _id`, which the restore loop deliberately skips) and the child must **inherit** it (`restrictedScopeNodeId === the folder's _id`). Only the inheriting child exercises the leaving check. Read both with `files_tree.get_file_node_for_membership({ membershipId, fileNodeId })` — the sidebar shows neither.
-- Restrict through the row menu `Share` → `Restrict access` (toast `Access restricted`), then `Done`.
+- Restrict through the row menu `Share` → the `Remove workspace access` button on the `Everyone in this workspace` row → `Restrict` (toast `Access restricted`), then `Done`.
 - Archive from the row menu opens the confirm dialog first (`getByRole("dialog", { name: /^Archive / })`); confirm with its `Archive` button. Restore is still direct.
 - To make a restore behave as a **move**, archive the parent folder and then restore the child alone: its parent is still archived, so the restore relocates it to root. That is the only in-app route to the leaving check. Ground truth is the child's `path`, `parentId` and `restrictedScopeNodeId` from `get_file_node_for_membership`; a successful owner restore moves it to root and clears the scope pointer.
 - Reveal archived rows with the sidebar `More options` → `Show archived items` (`menuitemcheckbox`). It does **not** close the menu on click, so press `Escape` after, and it is **not persisted** — any route load resets it to off, so re-read `aria-checked` instead of assuming your earlier toggle survived. Archived rows inside a collapsed folder stay hidden until you expand that folder, so expand it before counting them.
@@ -1029,7 +1029,7 @@ Verified through native UI and HTTP on 2026-09-08. This checks a script account 
 plugin installations, runs, service grants, or upload targets. Use only a unique QA folder, two new
 accounts, and their own keys. Keep the existing signed-in identity.
 
-1. Create and rename the QA folder through Files. Restrict it through Share → `Restrict access`.
+1. Create and rename the QA folder through Files. Restrict it through Share → `Remove workspace access` → `Restrict`.
    On `/w/<org>/<workspace>/service-accounts`, use `Create account`, textbox `Name`, and `Save account`.
    Confirm new accounts have no grants. Scope repeated row actions with `data-service-account-id`.
 2. On account A, choose `Manage grants`. In `Access for <name>`, select Resource `File or folder`,

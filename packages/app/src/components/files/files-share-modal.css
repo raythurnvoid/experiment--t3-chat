@@ -111,7 +111,7 @@
 		flex: none;
 	}
 
-	/* The yes or no before a restrict, under the button that asked for it. */
+	/* The yes or no before a change that takes access away, under the list. */
 	.FilesShareModal-confirm {
 		display: flex;
 		flex-direction: column;
@@ -131,17 +131,12 @@
 
 		overflow-wrap: anywhere;
 	}
+	/* #endregion section */
 
-	/* One folder above that gives access here: its line, and its people when the server sent them. */
-	.FilesShareModal-inherited {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
-
-	/* The general access row lines up with the people rows above it: same padding, same icon box. The
-	   text grows, and the button drops below it when the folder name is long. */
-	.FilesShareModal-general {
+	/* #region source row */
+	/* The workspace row and the folder rows line up with the people rows: same padding, same icon box.
+	   The text grows, and the actions drop below it when a folder name is long. */
+	.FilesShareModalSourceRow {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -150,7 +145,7 @@
 		padding: 8px 10px;
 	}
 
-	.FilesShareModal-general-icon {
+	.FilesShareModalSourceRow-icon {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -169,7 +164,7 @@
 		}
 	}
 
-	.FilesShareModal-general-main {
+	.FilesShareModalSourceRow-main {
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
@@ -178,21 +173,29 @@
 		flex: 1 1 18rem;
 	}
 
-	/* A folder name or path can be one long word, so it has to be allowed to break. */
-	.FilesShareModal-general-name {
+	/* A folder name can be one long word, so it has to be allowed to break. */
+	.FilesShareModalSourceRow-name {
 		font-size: 16px;
 		font-weight: 500;
 		color: var(--color-fg-11);
 		overflow-wrap: anywhere;
 	}
 
-	.FilesShareModal-general-meta {
+	.FilesShareModalSourceRow-meta,
+	.FilesShareModalSourceRow-note {
 		font-size: 15px;
 		line-height: 1.4;
 		color: var(--color-fg-08);
 		overflow-wrap: anywhere;
 	}
-	/* #endregion section */
+
+	.FilesShareModalSourceRow-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: none;
+	}
+	/* #endregion source row */
 
 	/* #region link */
 	.FilesShareModalMedia {
@@ -379,7 +382,8 @@
 		overflow-wrap: anywhere;
 	}
 
-	.FilesShareModalEntry-meta {
+	.FilesShareModalEntry-meta,
+	.FilesShareModalEntry-hint {
 		font-size: 15px;
 		line-height: 1.4;
 		color: var(--color-fg-08);

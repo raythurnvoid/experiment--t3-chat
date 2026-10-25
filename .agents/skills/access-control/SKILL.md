@@ -29,8 +29,8 @@ Membership says where you are. Access control says what you may do there.
 - Changing a folder's write policy needs `content.permissions.manage` on that folder only. A locked
   restricted child keeps its own rule, but the folder's rule still blocks its rename and move-out.
 - Human/role sharing changes detach the node's `plugins_file_access_bindings` only when they
-  change sharing. Service-account grant edits preserve that reader binding. Unrestricting clears
-  human/role grants and keeps independent service grants at their stored node.
+  change sharing. Service-account grant edits preserve that reader binding. Unrestricting keeps
+  every grant, lowered to view or edit (see "Add people").
 - Plugin reader refreshes preserve service-account grants. Editable metadata and plugin names
   never grant authority.
 - Plugin-managed file grants may carry `externalPluginMembershipLifetime`. The human grant
@@ -1086,7 +1086,8 @@ The model:
   to the next restricted folder above. So during the job a child of `/outer/closed` still answers to
   `/outer`'s grants, not to workspace read. A folder above can be unrestricted too before its own
   job reaches the dead folder, so the reader follows up to 8 dead folders. Past that it keeps the
-  stored scope, which stays closed: the unrestrict deleted its people and role grants. A pointer
+  stored scope. Its list was kept at view or edit, so it lets in the people it will let in after the
+  job. A pointer
   chain that ends at `null`, at a deleted node, or in another workspace means open. Every reader of
   the stored pointer uses this one helper: the permission check, the list filter,
   `access_control_db_can_act_on_file_node`, the service account grant state, and
@@ -1124,11 +1125,15 @@ inside it. Everybody who had access before keeps it: added people only add acces
 - Levels: added people get **Can view** or **Can edit** only. `manage` is only on a restricted root
   or from the workspace, so `content.permissions.manage` never comes from the chain. Message:
   `access_control_ADDED_PEOPLE_LEVEL_MESSAGE`.
-- **Restrict starts alone.** `restrict_node` on an extended root deletes its grants first (accounts
-  through the account writer with `level: null`, so plugin folders stay in sync), then gives the
-  caller `manage`. The plugin binding restrict does the same for accounts.
-- **Unrestrict keeps accounts.** `unrestrict_node` deletes people and role grants. Account grants stay,
-  so the item becomes an extended root, and a kept `manage` is lowered to `write`.
+- **Restrict keeps the list.** `restrict_node` on an extended root keeps its people, roles, and
+  apps: the person restricting chose that list, and the dialog shows it. Then it gives the caller
+  `manage`, without a second copy of a permission they already hold. Before any write it refuses a
+  non-owner caller who is not listed when the list already has `MAX_FILE_SHARE_PRINCIPALS` entries.
+  The plugin binding restrict is different: the plugin's readers become the whole list, so people
+  and accounts added there lose access.
+- **Unrestrict keeps the list too.** `unrestrict_node` keeps every grant, so an item with any grant
+  becomes an extended root. Added people hold only view or edit, so each kept `manage` drops to
+  `write` (an account through the account writer, a user or role by deleting its manage doc).
 - A Move keeps an item's added people: an extended root moved into a restricted folder still gives
   its people that item. Items inside it take the chain of their new place.
 - `get_node_share_state` returns `access` (`restricted_root`, `extended_root` or `inherits`),
@@ -1136,12 +1141,22 @@ inside it. Everybody who had access before keeps it: added people only add acces
   (`null` means everyone in the workspace) and the extended roots above, nearest first. Inherited
   names are sent only to a caller who manages the node or reads the whole area (its restricted root,
   or the workspace when it is open). A person who gets in only through added people must not learn
-  who reads the folders above. The dialog has one "People with access" section, like Google Drive: the add
-  row, one line per folder above (with its names and "Manage on <name>" only when they were sent),
-  this node's entries, and last a "General access" row with Restrict access, Restrict separately, or
-  Stop restricting. It offers "Can manage" only on a restricted root. Restrict and Stop restricting
-  both delete grants, so both ask first and say who loses access. Google can switch without asking
-  because its switch deletes nothing.
+  who reads the folders above.
+- For the dialog it also returns `baseScope` (the restricted folder whose people reach this item, or
+  `null` for the workspace), `callerUserId`, and, only for a manager, `callerRoles`, `callerCoverage`,
+  and a `coverage` per entry: the level the person already gets from the base (`base`), from an
+  added-people folder above (`folder`), or from a role row in the same list (`role`). `linksInside`
+  says a restricted folder holds public links (one `.first()` read), and `pluginArea` names the
+  plugin that owns the folder's list.
+- The dialog has one "People with access" list. The first row is the base: "Everyone in this
+  workspace" (view and edit follow each person's workspace role) or "People with access to <folder>".
+  Removing that row restricts the item, and the list then starts with "You". Adding "Everyone in this
+  workspace" back from the add picker unrestricts it. The picker can also add people who are already
+  in the workspace, so a user can add people and then remove workspace access in one pass. Roles read
+  "Everyone with this workspace role". "Can manage" shows only on a restricted root. A change asks
+  first only when it costs something: who loses access, public links that turn off (any access change
+  turns them off), the caller lowering their own only manage, or a plugin folder. A plugin folder
+  hides the remove button, and a caller without edit cannot restrict.
 - History: one-time migrations moved every old file grant onto a scope root. A
   grant on an open item made it an extended root; a grant on a plain item inside a restricted folder
   gave nothing (a dormant grant) and was deleted; a `manage` grant on an extended root was lowered to

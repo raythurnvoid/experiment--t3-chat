@@ -69,7 +69,15 @@ const SHARE = {
 		level: "read";
 		serviceAccountName: string | null;
 		servicePluginName: string | null;
+		coverage: { base: string | null; folder: null; role: null } | null;
 	}[],
+	// The owner is looking, so a restrict or an unrestrict never asks about their own access.
+	callerUserId: "owner_1",
+	callerCoverage: { base: "manage", folder: null, role: null },
+	callerRoles: [] as string[],
+	baseScope: null as { nodeId: string; name: string; path: string } | null,
+	linksInside: false,
+	pluginArea: null,
 	access: "restricted_root",
 	canAddPeople: true,
 	inheritedFrom: { restricted: null, extended: [] },
@@ -104,6 +112,7 @@ const INSIDE_SHARE = {
 	nodeName: "notes.md",
 	nodeKind: "file",
 	scope: { nodeId: "node_0", name: "Team", path: "/Team", isSelf: false },
+	baseScope: { nodeId: "node_0", name: "Team", path: "/Team" },
 	access: "inherits",
 	inheritedFrom: {
 		restricted: {
@@ -175,7 +184,7 @@ describe("FilesShareModal", () => {
 	test("adds an active service account with a permitted level", async () => {
 		renderModal();
 		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or service account to add" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Report bot" }));
 		fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
@@ -197,9 +206,9 @@ describe("FilesShareModal", () => {
 	test("disables levels above the service grant ceiling", async () => {
 		renderModal();
 		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or service account to add" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Report bot" }));
-		fireEvent.click(screen.getByRole("combobox", { name: "Access level for the new person, role, or account" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Access level for the new person, role, or app" }));
 
 		expect((await screen.findByRole("option", { name: "Can manage" })).getAttribute("aria-disabled")).toBe("true");
 	});
@@ -225,9 +234,9 @@ describe("FilesShareModal", () => {
 
 		renderModal();
 		const row = document.querySelector('[data-share-principal="service_account:account_1"]') as HTMLElement;
-		expect(row.textContent).toContain("Service account unavailable");
+		expect(row.textContent).toContain("App unavailable");
 
-		fireEvent.click(within(row).getByRole("button", { name: "Remove Service account unavailable" }));
+		fireEvent.click(within(row).getByRole("button", { name: "Remove App unavailable" }));
 
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("remove_grant", {
@@ -257,29 +266,6 @@ describe("FilesShareModal", () => {
 		expect(row.textContent).toContain("Used by plugin chitchat: this also changes the folders the plugin can use.");
 	});
 
-	test("lists the restricted folder's people on an item inside it", () => {
-		const entry = {
-			principal: { kind: "service_account", serviceAccountId: "account_1" },
-			level: "read",
-			serviceAccountName: "Report bot",
-			servicePluginName: null,
-		};
-		mockShareState({
-			...SHARE,
-			scope: { nodeId: "node_0", name: "Reports", path: "/Reports", isSelf: false },
-			access: "inherits",
-			entries: [],
-			inheritedFrom: {
-				restricted: { nodeId: "node_0", name: "Reports", path: "/Reports", entries: [entry] },
-				extended: [],
-			},
-		});
-
-		renderModal();
-		const row = document.querySelector('[data-share-principal="service_account:account_1"]') as HTMLElement;
-		expect(row.textContent).toContain("Report bot");
-	});
-
 	test("add people is available on an open folder", () => {
 		mockShareState(OPEN_SHARE);
 		renderModal();
@@ -302,7 +288,7 @@ describe("FilesShareModal", () => {
 		).toBeNull();
 	});
 
-	test("restrict asks before removing people added here", async () => {
+	test("removing the workspace row asks first, then restricts", async () => {
 		mockShareState({
 			...OPEN_SHARE,
 			access: "extended_root",
@@ -312,79 +298,113 @@ describe("FilesShareModal", () => {
 					level: "read",
 					serviceAccountName: null,
 					servicePluginName: null,
+					coverage: { base: "write", folder: null, role: null },
 				},
 			],
 		});
 		renderModal();
-		fireEvent.click(screen.getByRole("button", { name: "Restrict access" }));
+		fireEvent.click(screen.getByRole("button", { name: "Remove workspace access" }));
 
-		expect(screen.getByRole("alert").textContent).toBe(
-			"Only you will have access. People added here (1) will lose access. You can add people again after.",
-		);
+		const confirmBox = document.querySelector('[data-share-confirm="restrict"]') as HTMLElement;
+		expect([...within(confirmBox).getByRole("alert").querySelectorAll("p")].map((line) => line.textContent)).toEqual([
+			"Only you and the 1 person listed will have access.",
+			"Everyone else in this workspace loses access, including apps with workspace access.",
+			"Any public links in this folder turn off. You can turn them on again after.",
+		]);
 		expect(mutationMock).not.toHaveBeenCalled();
 
-		fireEvent.click(screen.getByRole("button", { name: "Restrict" }));
+		fireEvent.click(within(confirmBox).getByRole("button", { name: "Restrict" }));
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("restrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
 		);
 	});
 
-	test("stop restricting asks before removing people and roles added here", async () => {
+	test("adding the workspace back asks first when someone loses manage", async () => {
 		mockShareState({
 			...SHARE,
 			entries: [
 				{
 					principal: { kind: "user", userId: "user_1" },
-					level: "read",
+					level: "manage",
 					serviceAccountName: null,
 					servicePluginName: null,
-				},
-				{
-					principal: { kind: "service_account", serviceAccountId: "account_1" },
-					level: "read",
-					serviceAccountName: "Report bot",
-					servicePluginName: null,
+					// The workspace role gives edit only, so Ada can no longer change access after.
+					coverage: { base: "write", folder: null, role: null },
 				},
 			],
 		});
 		renderModal();
-		fireEvent.click(screen.getByRole("button", { name: "Stop restricting" }));
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Everyone in this workspace" }));
+		fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
-		// Unrestrict keeps service account grants, so only the person is counted.
-		expect(screen.getByRole("alert").textContent).toBe(
-			"This folder will get its access from the folder it is in. People and roles added here (1) will be removed.",
-		);
+		const confirmBox = document.querySelector('[data-share-confirm="unrestrict"]') as HTMLElement;
+		expect([...within(confirmBox).getByRole("alert").querySelectorAll("p")].map((line) => line.textContent)).toEqual([
+			"Ada can no longer change who has access.",
+		]);
 		expect(mutationMock).not.toHaveBeenCalled();
 
-		fireEvent.click(
-			within(document.querySelector(".FilesShareModal-confirm") as HTMLElement).getByRole("button", {
-				name: "Stop restricting",
-			}),
-		);
+		fireEvent.click(within(confirmBox).getByRole("button", { name: "Add workspace access" }));
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("unrestrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
 		);
 	});
 
-	test("restrict separately is disabled when the caller cannot restrict", () => {
+	test("lowering your own only manage asks first and says where you land", async () => {
+		mockShareState({
+			...SHARE,
+			callerUserId: "user_1",
+			callerCoverage: { base: "write", folder: null, role: null },
+			entries: [
+				{
+					principal: { kind: "user", userId: "user_1" },
+					level: "manage",
+					serviceAccountName: null,
+					servicePluginName: null,
+					coverage: { base: "write", folder: null, role: null },
+				},
+			],
+		});
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Access level for You" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Can edit" }));
+
+		// The item is restricted, so the workspace role gives nothing and the row is all you have.
+		const confirmBox = document.querySelector('[data-share-confirm="set"]') as HTMLElement;
+		expect(within(confirmBox).getByRole("alert").textContent).toBe("You'll only be able to edit this.");
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		fireEvent.click(within(confirmBox).getByRole("button", { name: "Change" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_grant", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				principal: { kind: "user", userId: "user_1" },
+				level: "write",
+			}),
+		);
+	});
+
+	test("the workspace row says why it cannot be removed when the caller cannot restrict", () => {
 		mockShareState({ ...INSIDE_SHARE, canRestrict: false });
 		renderModal();
 
-		expect((screen.getByRole("button", { name: "Restrict separately" }) as HTMLButtonElement).disabled).toBe(true);
+		const row = document.querySelector('[data-share-source="base"]') as HTMLElement;
+		expect(row.textContent).toContain("You need Can edit here to restrict this.");
+		expect(within(row).queryByRole("button", { name: "Remove access from Team" })).toBeNull();
 	});
 
-	test("inherited access names the folder it comes from", async () => {
+	test("the folder row names the folder and its people", async () => {
 		mockShareState(INSIDE_SHARE);
 		renderModal();
 
-		const line = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
-		expect(within(line).getByRole("heading", { name: 'From "Team" (restricted)' })).toBeTruthy();
-		const row = line.querySelector('[data-share-principal="user:user_1"]') as HTMLElement;
-		expect(row.textContent).toContain("Ada");
-		// A row from the folder above is read-only here.
-		expect(within(row).queryByRole("combobox")).toBeNull();
+		const row = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
+		expect(row.textContent).toContain("People with access to Team");
+		expect(row.textContent).toContain("Ada (Can view)");
 
-		fireEvent.click(within(line).getByRole("button", { name: "Manage on Team" }));
+		fireEvent.click(within(row).getByRole("button", { name: "Manage on Team" }));
 		await waitFor(() =>
 			expect(queryMock).toHaveBeenCalledWith("sharing", { membershipId: "membership_1", nodeId: "node_0" }),
 		);
@@ -399,18 +419,19 @@ describe("FilesShareModal", () => {
 		});
 		renderModal();
 
-		const line = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
-		expect(within(line).getByRole("heading", { name: 'From "Team" (restricted)' })).toBeTruthy();
-		expect(line.querySelector("[data-share-principal]")).toBeNull();
+		const row = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
+		expect(row.textContent).toContain("Change on Team.");
+		expect(row.textContent).not.toContain("Ada");
 		expect(screen.queryByRole("button", { name: "Manage on Team" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
+		expect(screen.getByText("Only people who can manage this can change access.")).toBeTruthy();
 	});
 
 	test("the level select has no manage on an Add-people item", async () => {
 		mockShareState(OPEN_SHARE);
 		renderModal();
 		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Access level for the new person, role, or account" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Access level for the new person, role, or app" }));
 
 		expect(await screen.findByRole("option", { name: "Can edit" })).toBeTruthy();
 		expect(screen.getByRole("option", { name: "Can view" })).toBeTruthy();
@@ -427,7 +448,7 @@ describe("FilesShareModal", () => {
 		);
 
 		renderModal();
-		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or service account to add" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
 
 		expect(screen.queryByRole("option", { name: "Report bot" })).toBeNull();
 		expect(await screen.findByRole("option", { name: "Ada" })).toBeTruthy();

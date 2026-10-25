@@ -2,7 +2,7 @@ import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { Lock, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -102,6 +102,7 @@ type FilesShareModalEntry_ClassNames =
 	| "FilesShareModalEntry-main"
 	| "FilesShareModalEntry-name"
 	| "FilesShareModalEntry-meta"
+	| "FilesShareModalEntry-hint"
 	| "FilesShareModalEntry-actions"
 	| "FilesShareModalEntry-level-trigger";
 
@@ -110,6 +111,8 @@ type FilesShareModalEntry_Props = {
 	name: string;
 	/** Shown under the name, e.g. what the level means or why this row cannot change. */
 	meta: string;
+	/** Says when another source gives more than this row, e.g. "Can manage through workspace role". */
+	hint: string | null;
 	level: access_control_FileShareLevel | null;
 	/** `false` renders the row read-only, with no select and no Remove. */
 	editable: boolean;
@@ -134,6 +137,7 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 		principal,
 		name,
 		meta,
+		hint,
 		level,
 		editable,
 		pending,
@@ -168,6 +172,9 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 			<div className={"FilesShareModalEntry-main" satisfies FilesShareModalEntry_ClassNames}>
 				<span className={"FilesShareModalEntry-name" satisfies FilesShareModalEntry_ClassNames}>{name}</span>
 				<span className={"FilesShareModalEntry-meta" satisfies FilesShareModalEntry_ClassNames}>{meta}</span>
+				{hint ? (
+					<span className={"FilesShareModalEntry-hint" satisfies FilesShareModalEntry_ClassNames}>{hint}</span>
+				) : null}
 			</div>
 
 			<div className={"FilesShareModalEntry-actions" satisfies FilesShareModalEntry_ClassNames}>
@@ -241,6 +248,65 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 	);
 });
 // #endregion entry row
+
+// #region source row
+type FilesShareModalSourceRow_ClassNames =
+	| "FilesShareModalSourceRow"
+	| "FilesShareModalSourceRow-icon"
+	| "FilesShareModalSourceRow-main"
+	| "FilesShareModalSourceRow-name"
+	| "FilesShareModalSourceRow-meta"
+	| "FilesShareModalSourceRow-note"
+	| "FilesShareModalSourceRow-actions";
+
+type FilesShareModalSourceRow_CustomAttributes = {
+	/** `base` is the workspace or the restricted folder above. `added` is a folder above with added people. */
+	"data-share-source": "base" | "added";
+	/** The folder this row is about. Missing on the workspace row. */
+	"data-share-inherited": app_convex_Id<"files_nodes"> | undefined;
+};
+
+type FilesShareModalSourceRow_Props = {
+	source: FilesShareModalSourceRow_CustomAttributes["data-share-source"];
+	/** The folder this row is about, or null for the workspace. */
+	folderNodeId: app_convex_Id<"files_nodes"> | null;
+	name: string;
+	meta: string;
+	/** Why this row cannot change, shown as text so it is not only in a tooltip. */
+	note: string | null;
+	children: ReactNode;
+};
+
+/**
+ * A row for access that comes from somewhere else: the workspace, or a folder above. It sits in the
+ * same list as the people, so removing the workspace row is how an item gets restricted.
+ */
+const FilesShareModalSourceRow = memo(function FilesShareModalSourceRow(props: FilesShareModalSourceRow_Props) {
+	const { source, folderNodeId, name, meta, note, children } = props;
+
+	return (
+		<li
+			className={"FilesShareModalSourceRow" satisfies FilesShareModalSourceRow_ClassNames}
+			{...({
+				"data-share-source": source,
+				"data-share-inherited": folderNodeId ?? undefined,
+			} satisfies FilesShareModalSourceRow_CustomAttributes)}
+		>
+			<div className={"FilesShareModalSourceRow-icon" satisfies FilesShareModalSourceRow_ClassNames} aria-hidden>
+				{folderNodeId ? <Lock /> : <Users />}
+			</div>
+			<div className={"FilesShareModalSourceRow-main" satisfies FilesShareModalSourceRow_ClassNames}>
+				<span className={"FilesShareModalSourceRow-name" satisfies FilesShareModalSourceRow_ClassNames}>{name}</span>
+				<span className={"FilesShareModalSourceRow-meta" satisfies FilesShareModalSourceRow_ClassNames}>{meta}</span>
+				{note ? (
+					<span className={"FilesShareModalSourceRow-note" satisfies FilesShareModalSourceRow_ClassNames}>{note}</span>
+				) : null}
+			</div>
+			<div className={"FilesShareModalSourceRow-actions" satisfies FilesShareModalSourceRow_ClassNames}>{children}</div>
+		</li>
+	);
+});
+// #endregion source row
 
 // #region link
 type FilesShareModalMedia_Props = {
@@ -630,17 +696,31 @@ type FilesShareModal_ClassNames =
 	| "FilesShareModal-section-actions"
 	| "FilesShareModal-confirm"
 	| "FilesShareModal-subheading"
-	| "FilesShareModal-inherited"
 	| "FilesShareModal-add"
 	| "FilesShareModal-add-principal-trigger"
 	| "FilesShareModal-add-level-trigger"
 	| "FilesShareModal-list"
-	| "FilesShareModal-general"
-	| "FilesShareModal-general-icon"
-	| "FilesShareModal-general-main"
-	| "FilesShareModal-general-name"
-	| "FilesShareModal-general-meta"
 	| "FilesShareModal-loading";
+
+/**
+ * One change the dialog can make. Removing the workspace row restricts the item, and adding it back
+ * from the picker unrestricts it.
+ */
+type FilesShareModalChange =
+	| { kind: "restrict" }
+	| { kind: "unrestrict" }
+	| {
+			kind: "set";
+			principal: FilesSharePrincipal;
+			level: access_control_FileShareLevel;
+			/** The add picker started it, so a yes clears the picker. */
+			fromPicker: boolean;
+	  }
+	| { kind: "remove"; principal: FilesSharePrincipal };
+
+type FilesShareModal_CustomAttributes = {
+	"data-share-confirm": FilesShareModalChange["kind"];
+};
 
 export type FilesShareModal_Props = {
 	/** The node the dialog is about. `null` keeps it closed. */
@@ -648,11 +728,40 @@ export type FilesShareModal_Props = {
 	onClose: () => void;
 };
 
+/** One row the server sends, on this node or on a folder above. */
+type FilesShareModalServerEntry = NonNullable<
+	NonNullable<
+		app_convex_FunctionReturnType<typeof app_convex_api.files_sharing.get_node_share_state>
+	>["inheritedFrom"]["extended"][number]["entries"]
+>[number];
+
+/** The picker value of the workspace row, or of the restricted folder above, when it can be added back. */
+const FILES_SHARE_BASE_VALUE = "base";
+
 /** A name that has not arrived, or that failed to load, reads the same way the file tree writes it. */
 function read_display_name(
 	value: app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error,
 ) {
 	return value == null || value instanceof Error ? "Unknown" : value.displayName;
+}
+
+/** Higher means more access. No access is -1. */
+function level_rank(level: access_control_FileShareLevel | null) {
+	return level === null ? -1 : access_control_FILE_SHARE_LEVEL_KEYS.indexOf(level);
+}
+
+/** "Ana", "Ana and you", "Ana, Bo, and you". */
+function join_names(names: string[]) {
+	return names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
+}
+
+function count_noun(count: number, one: string, many: string) {
+	return `${count} ${count === 1 ? one : many}`;
+}
+
+/** Capitalize the first letter, for a sentence that starts with "you". */
+function sentence_case(text: string) {
+	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 export const FilesShareModal = memo(function FilesShareModal(props: FilesShareModal_Props) {
@@ -679,10 +788,10 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const [publicError, setPublicError] = useState<{ nodeId: app_convex_Id<"files_nodes">; message: string } | null>(
 		null,
 	);
-	/** The restrict or unrestrict waiting for a yes. Both remove grants. Keyed by node, like `linkError`. */
-	const [accessConfirm, setAccessConfirm] = useState<{
+	/** The change waiting for a yes, because it takes access away. Keyed by node, like `linkError`. */
+	const [changeConfirm, setChangeConfirm] = useState<{
 		nodeId: app_convex_Id<"files_nodes">;
-		action: "restrict" | "unrestrict";
+		change: FilesShareModalChange;
 	} | null>(null);
 	const listRef = useRef<HTMLUListElement>(null);
 	/** Where focus goes when the write a button started replaces the branch that button lived in. */
@@ -755,12 +864,18 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
 	>;
 
+	// The workspace row, or the row of the restricted folder above. It is missing exactly when this item
+	// is restricted itself.
+	const hasBaseRow = shareState?.access !== "restricted_root";
+	const baseScope = shareState?.baseScope ?? null;
+	const baseLabel = baseScope ? `People with access to ${baseScope.name}` : "Everyone in this workspace";
+	const baseAddLabel = baseScope ? `Add access from ${baseScope.name}` : "Add workspace access";
+
 	// Added people get view or edit only. "Can manage" is for a restricted root, so a choice kept from
 	// one falls back to "Can view" when the node stops being one.
-	const shareLevels =
-		shareState?.access === "restricted_root"
-			? access_control_FILE_SHARE_LEVEL_KEYS
-			: access_control_FILE_SHARE_LEVEL_KEYS.filter((levelKey) => levelKey !== "manage");
+	const shareLevels = !hasBaseRow
+		? access_control_FILE_SHARE_LEVEL_KEYS
+		: access_control_FILE_SHARE_LEVEL_KEYS.filter((levelKey) => levelKey !== "manage");
 	const addLevelValue = shareLevels.includes(addLevel) ? addLevel : "read";
 
 	const handleClose = useFn(() => {
@@ -773,7 +888,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		setAddLevel("read");
 		setLinkError(null);
 		setPublicError(null);
-		setAccessConfirm(null);
+		setChangeConfirm(null);
 		onClose();
 	});
 
@@ -824,99 +939,73 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		},
 	);
 
-	const handleRestrict = useFn(() => {
+	/** Send one change. `fromConfirm` says the yes button of the confirm box started it. */
+	const runChange = useFn((change: FilesShareModalChange, fromConfirm: boolean) => {
 		if (!viewNodeId || pendingKey) {
 			return;
 		}
 
-		runShareWrite({
-			key: "restrict",
-			request: app_convex.mutation(app_convex_api.files_sharing.restrict_node, { membershipId, nodeId: viewNodeId }),
-			successMessage: "Access restricted",
-			// This button goes away with the branch the new state replaces, so focus would fall to the page.
-			// The dialog is the one part always there, and it reads out the name and the state that changed.
-			onDone: () => {
-				setAccessConfirm(null);
-				dialogRef.current?.focus();
-			},
-		});
-	});
+		// The button that started the change goes away with the confirm box, or with the branch the new
+		// state replaces, so focus would fall to the page. Put it somewhere that is always there.
+		const focusDialog = () => {
+			setChangeConfirm(null);
+			dialogRef.current?.focus();
+		};
+		// Clearing the picker disables Add, so focus would fall to the page. The picker is where the next
+		// one is chosen, and somebody sharing a file usually adds more than one.
+		const resetPicker = () => {
+			setChangeConfirm(null);
+			setAddPrincipalValue("");
+			addPrincipalTriggerRef.current?.focus();
+		};
 
-	const handleUnrestrict = useFn(() => {
-		if (!viewNodeId || pendingKey) {
-			return;
+		if (change.kind === "restrict") {
+			runShareWrite({
+				key: "restrict",
+				request: app_convex.mutation(app_convex_api.files_sharing.restrict_node, { membershipId, nodeId: viewNodeId }),
+				successMessage: "Access restricted",
+				onDone: focusDialog,
+			});
+		} else if (change.kind === "unrestrict") {
+			runShareWrite({
+				key: "add",
+				request: app_convex.mutation(app_convex_api.files_sharing.unrestrict_node, {
+					membershipId,
+					nodeId: viewNodeId,
+				}),
+				successMessage: baseScope ? "Access added" : "Workspace access added",
+				onDone: resetPicker,
+			});
+		} else if (change.kind === "set") {
+			runShareWrite({
+				key: change.fromPicker ? "add" : files_share_principal_value(change.principal),
+				request: app_convex.mutation(app_convex_api.files_sharing.set_node_share_grant, {
+					membershipId,
+					nodeId: viewNodeId,
+					principal: change.principal,
+					level: change.level,
+				}),
+				successMessage: change.fromPicker ? "Access granted" : "Access updated",
+				onDone: change.fromPicker ? resetPicker : fromConfirm ? focusDialog : undefined,
+			});
+		} else {
+			runShareWrite({
+				key: files_share_principal_value(change.principal),
+				request: app_convex.mutation(app_convex_api.files_sharing.remove_node_share_grant, {
+					membershipId,
+					nodeId: viewNodeId,
+					principal: change.principal,
+				}),
+				successMessage: "Access removed",
+				// The row holding the focused button is gone now, so focus would fall to the page and a
+				// keyboard user would be left outside the dialog. The list is the nearest thing still there,
+				// and it announces itself by its label.
+				onDone: () => {
+					setChangeConfirm(null);
+					listRef.current?.focus();
+				},
+			});
 		}
-
-		runShareWrite({
-			key: "unrestrict",
-			request: app_convex.mutation(app_convex_api.files_sharing.unrestrict_node, { membershipId, nodeId: viewNodeId }),
-			successMessage: "Restriction removed",
-			onDone: () => {
-				setAccessConfirm(null);
-				dialogRef.current?.focus();
-			},
-		});
-	});
-
-	const handleAdd = useFn(() => {
-		const principal = files_share_principal_from_value(addPrincipalValue);
-		if (!viewNodeId || !principal || pendingKey) {
-			return;
-		}
-
-		runShareWrite({
-			key: "add",
-			request: app_convex.mutation(app_convex_api.files_sharing.set_node_share_grant, {
-				membershipId,
-				nodeId: viewNodeId,
-				principal,
-				level: addLevelValue,
-			}),
-			successMessage: "Access granted",
-			// Clearing the selection disables Add, so focus would fall to the page. The picker is where the
-			// next one is chosen, and somebody sharing a file usually adds more than one.
-			onDone: () => {
-				setAddPrincipalValue("");
-				addPrincipalTriggerRef.current?.focus();
-			},
-		});
-	});
-
-	const handleLevelChange = useFn((principal: FilesSharePrincipal, level: access_control_FileShareLevel) => {
-		if (!viewNodeId || pendingKey) {
-			return;
-		}
-
-		runShareWrite({
-			key: files_share_principal_value(principal),
-			request: app_convex.mutation(app_convex_api.files_sharing.set_node_share_grant, {
-				membershipId,
-				nodeId: viewNodeId,
-				principal,
-				level,
-			}),
-			successMessage: "Access updated",
-		});
-	});
-
-	const handleRemove = useFn((principal: FilesSharePrincipal) => {
-		if (!viewNodeId || pendingKey) {
-			return;
-		}
-
-		runShareWrite({
-			key: files_share_principal_value(principal),
-			request: app_convex.mutation(app_convex_api.files_sharing.remove_node_share_grant, {
-				membershipId,
-				nodeId: viewNodeId,
-				principal,
-			}),
-			successMessage: "Access removed",
-			// The row holding the focused button is gone now, so focus would fall to the page and a
-			// keyboard user would be left outside the dialog. The list is the nearest thing still there,
-			// and it announces itself by its label.
-			onDone: () => listRef.current?.focus(),
-		});
 	});
 
 	const handleLinkEnabledChange = useFn((enabled: boolean) => {
@@ -966,15 +1055,17 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		// The add form belongs to the node it was filled on. Kept, it would add that pick to the folder.
 		setAddPrincipalValue("");
 		setAddLevel("read");
+		setChangeConfirm(null);
 		// The step points the dialog at the folder and drops this button with the branch it was in, so park
 		// focus on the dialog itself.
 		dialogRef.current?.focus();
 	});
 
-	const scope = shareState?.scope ?? null;
 	const canEditList = Boolean(shareState?.canAddPeople);
-	const confirmAction = accessConfirm?.nodeId === viewNodeId ? accessConfirm.action : null;
+	const confirmChange = changeConfirm?.nodeId === viewNodeId ? changeConfirm.change : null;
 	const nodeKindText = shareState?.nodeKind === "folder" ? "folder" : "file";
+	const isOwner = Boolean(shareState && shareState.callerUserId === shareState.organizationOwnerUserId);
+	const pluginName = shareState?.pluginArea?.pluginName ?? null;
 	/** One write at a time. Every control says so, so nothing here is clickable but does nothing. */
 	const busy = pendingKey !== null;
 
@@ -991,58 +1082,239 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			? access_control_SYSTEM_ROLE_MATRIX[role].label
 			: (customRoles?.find((candidate) => candidate._id === role)?.name ?? "Deleted role");
 
-	/** Rows with names, people first. The same for this node's list and for the folders above it. */
-	const nameEntries = (list: NonNullable<typeof shareState>["entries"]) =>
+	/** Rows with names: the caller first, then people, roles, and apps, each kind by name. */
+	const nameEntries = <T extends FilesShareModalServerEntry>(list: T[]) =>
 		list
 			.map((entry) => ({
+				...entry,
 				principal: entry.principal as FilesSharePrincipal,
-				level: entry.level,
-				servicePluginName: entry.servicePluginName,
+				isCaller: entry.principal.kind === "user" && entry.principal.userId === shareState?.callerUserId,
 				name:
 					entry.principal.kind === "user"
 						? read_display_name(userAnagraphicDict[entry.principal.userId])
 						: entry.principal.kind === "role"
 							? roleName(entry.principal.role)
-							: (entry.serviceAccountName ?? "Service account unavailable"),
+							: (entry.serviceAccountName ?? "App unavailable"),
 			}))
-			// Keep people first, then roles and service accounts; sort each kind by name.
 			.sort((a, b) =>
-				a.principal.kind === b.principal.kind
-					? a.name.localeCompare(b.name)
-					: a.principal.kind === "user"
+				a.isCaller !== b.isCaller
+					? a.isCaller
 						? -1
-						: b.principal.kind === "user"
-							? 1
-							: a.principal.kind.localeCompare(b.principal.kind),
+						: 1
+					: a.principal.kind === b.principal.kind
+						? a.name.localeCompare(b.name)
+						: a.principal.kind === "user"
+							? -1
+							: b.principal.kind === "user"
+								? 1
+								: a.principal.kind.localeCompare(b.principal.kind),
 			);
 	const entries = nameEntries(shareState?.entries ?? []);
-	const entryMeta = (entry: (typeof entries)[number]) =>
-		entry.principal.kind === "role"
-			? `Everyone with the ${entry.name} role`
-			: entry.servicePluginName
-				? `Used by plugin ${entry.servicePluginName}: this also changes the folders the plugin can use.`
-				: access_control_FILE_SHARE_LEVELS[entry.level].description;
-	// The folders above that give access here: the restricted one first, then those with added people.
-	const inheritedFolders = shareState
-		? [shareState.inheritedFrom.restricted, ...shareState.inheritedFrom.extended].filter((folder) => folder !== null)
-		: [];
+	/** "Ada (Can view), Admin (Can edit)" for the people of a folder above. */
+	const folderPeopleText = (folder: { name: string; entries: FilesShareModalServerEntry[] | null }) =>
+		folder.entries
+			? folder.entries.length === 0
+				? "Nobody yet."
+				: nameEntries(folder.entries)
+						.map((entry) => `${entry.name} (${access_control_FILE_SHARE_LEVELS[entry.level].label})`)
+						.join(", ")
+			: `Change on ${folder.name}.`;
 
-	// Restrict deletes this node's grants, and on an item inside a restricted folder it also shuts out
-	// that folder's people.
-	const restrictConfirmText = [
-		"Only you will have access.",
-		scope && !scope.isSelf ? `People who open it through ${scope.name} will lose access.` : null,
-		entries.length > 0 ? `People added here (${entries.length}) will lose access.` : null,
-		"You can add people again after.",
-	]
-		.filter((sentence) => sentence !== null)
-		.join(" ");
-	// Unrestrict deletes the people and role grants on this node. Service account grants stay.
-	const removedOnUnrestrict = entries.filter((entry) => entry.principal.kind !== "service_account").length;
-	const unrestrictConfirmText =
-		removedOnUnrestrict > 0
-			? `This ${nodeKindText} will get its access from the folder it is in. People and roles added here (${removedOnUnrestrict}) will be removed.`
-			: `This ${nodeKindText} will get its access from the folder it is in.`;
+	const entryMeta = (entry: (typeof entries)[number]) =>
+		entry.isCaller
+			? "Your own access"
+			: entry.principal.kind === "role"
+				? "Everyone with this workspace role"
+				: entry.servicePluginName
+					? `Used by plugin ${entry.servicePluginName}: this also changes the folders the plugin can use.`
+					: access_control_FILE_SHARE_LEVELS[entry.level].description;
+
+	/**
+	 * Where a row's other access comes from, in words. Workspace and folder sources count only while
+	 * the base row is there.
+	 */
+	const coverageSources = (
+		coverage: NonNullable<NonNullable<typeof shareState>["callerCoverage"]>,
+		principal: FilesSharePrincipal,
+		baseRow: boolean,
+	) =>
+		[
+			baseRow && coverage.base
+				? {
+						level: coverage.base,
+						through: baseScope?.name ?? (principal.kind === "service_account" ? "workspace access" : "workspace role"),
+					}
+				: null,
+			baseRow && coverage.folder ? { level: coverage.folder.level, through: coverage.folder.name } : null,
+			coverage.role ? { level: coverage.role.level, through: roleName(coverage.role.role) } : null,
+		].filter((source) => source !== null);
+
+	const entryHint = (entry: (typeof entries)[number]) => {
+		if (!entry.coverage) return null;
+		const best = coverageSources(entry.coverage, entry.principal, hasBaseRow).reduce<{
+			level: access_control_FileShareLevel;
+			through: string;
+		} | null>(
+			(result, source) => (level_rank(source.level) > level_rank(result?.level ?? null) ? source : result),
+			null,
+		);
+		return best && level_rank(best.level) > level_rank(entry.level)
+			? `${access_control_FILE_SHARE_LEVELS[best.level].label} through ${best.through}`
+			: null;
+	};
+
+	/**
+	 * The caller's best level after `change` (or today, for null), and where it comes from. `through` is
+	 * null for their own row. The owner always has full access and is never asked.
+	 */
+	const callerAccessAfter = (change: FilesShareModalChange | null) => {
+		const baseRow = change?.kind === "restrict" ? false : change?.kind === "unrestrict" ? true : hasBaseRow;
+		// Added people cannot manage, so an unrestrict turns every manage on the list into edit.
+		const listLevel = (principal: FilesSharePrincipal, level: access_control_FileShareLevel | null) => {
+			const changed =
+				(change?.kind === "set" || change?.kind === "remove") &&
+				files_share_principal_value(change.principal) === files_share_principal_value(principal);
+			const next = changed ? (change.kind === "set" ? change.level : null) : level;
+			return change?.kind === "unrestrict" && next === "manage" ? "write" : next;
+		};
+		const callerPrincipal: FilesSharePrincipal = { kind: "user", userId: shareState!.callerUserId };
+		const sources: Array<{ level: access_control_FileShareLevel | null; through: string | null }> = [
+			{
+				level: listLevel(callerPrincipal, entries.find((entry) => entry.isCaller)?.level ?? null),
+				through: null,
+			},
+			...entries
+				.filter((entry) => entry.principal.kind === "role" && shareState!.callerRoles.includes(entry.principal.role))
+				.map((entry) => ({ level: listLevel(entry.principal, entry.level), through: entry.name })),
+			...(shareState!.callerCoverage
+				? coverageSources({ ...shareState!.callerCoverage, role: null }, callerPrincipal, baseRow)
+				: []),
+		];
+		return sources.reduce((result, source) => (level_rank(source.level) > level_rank(result.level) ? source : result), {
+			level: null,
+			through: null,
+		});
+	};
+
+	/** The confirm text for a change, or null when the change takes nothing away and can go at once. */
+	const confirmTextFor = (change: FilesShareModalChange) => {
+		if (!shareState) return null;
+
+		const lines: string[] = [];
+		const linkLine =
+			shareState.nodeKind === "file"
+				? shareState.link
+					? "The public link turns off. Changing who can open this always turns it off. You can turn it on again after."
+					: null
+				: change.kind === "restrict" || shareState.linksInside
+					? "Any public links in this folder turn off. You can turn them on again after."
+					: null;
+		const pluginLine =
+			shareState.pluginArea?.isSelf && change.kind !== "restrict"
+				? `${pluginName} keeps this list up to date. If you change it here, ${pluginName} stops updating it.`
+				: null;
+
+		if (change.kind === "restrict") {
+			const listed = entries.filter((entry) => !entry.isCaller);
+			const counts = [
+				[listed.filter((entry) => entry.principal.kind === "user").length, "person", "people"],
+				[listed.filter((entry) => entry.principal.kind === "role").length, "role", "roles"],
+				[listed.filter((entry) => entry.principal.kind === "service_account").length, "app", "apps"],
+			] as const;
+			const parts = counts.filter(([count]) => count > 0).map(([count, one, many]) => count_noun(count, one, many));
+			const listedText = parts.length > 0 ? `the ${join_names(parts)} listed` : null;
+			lines.push(
+				isOwner
+					? listedText
+						? `Only you and ${listedText} will have access.`
+						: "Only you will have access."
+					: listedText
+						? `Only you, the owner, and ${listedText} will have access. You keep Can manage.`
+						: "Only you and the owner will have access. You keep Can manage.",
+			);
+			lines.push(
+				baseScope
+					? `People from ${baseScope.name} lose access, unless they are listed.`
+					: "Everyone else in this workspace loses access, including apps with workspace access.",
+			);
+			for (const folder of shareState.inheritedFrom.extended) {
+				lines.push(`People added to ${folder.name} lose access.`);
+			}
+			if (linkLine) lines.push(linkLine);
+			return { title: "Restrict access?", lines, action: "Restrict" };
+		}
+
+		if (change.kind === "unrestrict") {
+			// Name everyone who can manage today and cannot after: added people get edit at most, and only
+			// the workspace roles or the folder above can still give manage.
+			const people: string[] = [];
+			const apps: string[] = [];
+			for (const entry of entries) {
+				if (entry.isCaller || !entry.coverage) continue;
+				const managesToday = entry.level === "manage" || entry.coverage.role?.level === "manage";
+				const managesAfter = entry.coverage.base === "manage" || entry.coverage.folder?.level === "manage";
+				if (managesToday && !managesAfter) {
+					(entry.principal.kind === "service_account" ? apps : people).push(entry.name);
+				}
+			}
+			if (!isOwner && callerAccessAfter(null).level === "manage" && callerAccessAfter(change).level !== "manage") {
+				people.push("you");
+			}
+			if (people.length > 0) lines.push(sentence_case(`${join_names(people)} can no longer change who has access.`));
+			if (apps.length > 0) lines.push(`${join_names(apps)} can no longer manage this ${nodeKindText}.`);
+			if (linkLine) lines.push(linkLine);
+			if (pluginLine) lines.push(pluginLine);
+			return lines.length > 0 ? { title: `${baseAddLabel}?`, lines, action: baseAddLabel } : null;
+		}
+
+		// A change of your own access asks first and says where you land.
+		if (!isOwner) {
+			const today = callerAccessAfter(null);
+			const after = callerAccessAfter(change);
+			if (level_rank(after.level) < level_rank(today.level)) {
+				lines.push(
+					after.level === null
+						? "You'll lose access to this."
+						: `You'll only be able to ${after.level === "read" ? "view" : "edit"} this${after.through ? `, through ${after.through}` : ""}.`,
+				);
+			}
+		}
+		if (pluginLine) lines.push(pluginLine);
+		return lines.length > 0
+			? {
+					title: pluginLine ? "Change access?" : "Change your access?",
+					lines,
+					action: pluginLine ? "Change anyway" : change.kind === "remove" ? "Remove" : "Change",
+				}
+			: null;
+	};
+
+	/** Ask first when the change takes access away, otherwise send it now. */
+	const requestChange = (change: FilesShareModalChange) => {
+		if (!viewNodeId || pendingKey) {
+			return;
+		}
+
+		if (confirmTextFor(change)) {
+			setChangeConfirm({ nodeId: viewNodeId, change });
+		} else {
+			runChange(change, false);
+		}
+	};
+
+	const handleAdd = () => {
+		if (addPrincipalValue === FILES_SHARE_BASE_VALUE) {
+			requestChange({ kind: "unrestrict" });
+			return;
+		}
+
+		const principal = files_share_principal_from_value(addPrincipalValue);
+		if (principal) {
+			requestChange({ kind: "set", principal, level: addLevelValue, fromPicker: true });
+		}
+	};
+
+	const confirmText = confirmChange ? confirmTextFor(confirmChange) : null;
 
 	const takenPrincipalValues = new Set(entries.map((entry) => files_share_principal_value(entry.principal)));
 	// The owner is left out: they already pass every check and hold no grant, so a row for them would
@@ -1055,8 +1327,8 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		)
 		.map((userId) => ({ userId, name: read_display_name(userAnagraphicDict[userId]) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	// Hide new role choices unless the caller can manage roles. Existing role shares can still
-	// be lowered or removed because those changes grant no new access.
+	// Offer roles only to a caller who can manage roles. Existing role rows can still be lowered or
+	// removed, because those changes grant no new access.
 	const candidateRoles = (
 		!shareState?.canShareWithRoles
 			? []
@@ -1069,20 +1341,34 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		.map((candidate) => ({ role: candidate.role, name: roleName(candidate.role) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
 
+	const baseSelected = addPrincipalValue === FILES_SHARE_BASE_VALUE;
 	const selectedPrincipal = files_share_principal_from_value(addPrincipalValue);
 	const addDisabled =
 		addPrincipalValue === "" ||
 		busy ||
 		(selectedPrincipal?.kind === "service_account" &&
 			(!shareState?.canShareWithServiceAccounts || !shareState.serviceGrantableLevels.includes(addLevelValue)));
-	const selectedCandidateName = !selectedPrincipal
+	const selectedCandidateName = baseSelected
+		? baseLabel
+		: !selectedPrincipal
+			? null
+			: selectedPrincipal.kind === "user"
+				? read_display_name(userAnagraphicDict[selectedPrincipal.userId])
+				: selectedPrincipal.kind === "role"
+					? roleName(selectedPrincipal.role)
+					: (serviceAccounts.results.find((account) => account._id === selectedPrincipal.serviceAccountId)?.name ??
+						"App unavailable");
+
+	// Removing the base row restricts the item. A plugin area and a missing edit permission block it,
+	// and the row says why in text, not only in a tooltip.
+	const baseRowNote = !shareState?.canManage
 		? null
-		: selectedPrincipal.kind === "user"
-			? read_display_name(userAnagraphicDict[selectedPrincipal.userId])
-			: selectedPrincipal.kind === "role"
-				? roleName(selectedPrincipal.role)
-				: (serviceAccounts.results.find((account) => account._id === selectedPrincipal.serviceAccountId)?.name ??
-					"Service account unavailable");
+		: shareState.pluginArea && !shareState.pluginArea.isSelf
+			? `${pluginName} decides who can open this folder.`
+			: !shareState.canRestrict
+				? "You need Can edit here to restrict this."
+				: null;
+	const canRemoveBaseRow = Boolean(shareState?.canManage && shareState.canRestrict && !shareState.pluginArea);
 
 	return (
 		<MyModal open={nodeId !== null} setOpen={(open) => !open && handleClose()}>
@@ -1097,11 +1383,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			>
 				<MyModalHeader>
 					<MyModalHeading>{shareState ? `Share ${shareState.nodeName}` : "Share"}</MyModalHeading>
-					<MyModalDescription>
-						{scope
-							? `Only the people, roles, and service accounts below can open this ${nodeKindText}.`
-							: `Choose who can open this ${nodeKindText}.`}
-					</MyModalDescription>
+					<MyModalDescription>{`Only the people below can open this ${nodeKindText}.`}</MyModalDescription>
 				</MyModalHeader>
 
 				<MyModalScrollableArea>
@@ -1121,59 +1403,62 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						</div>
 					) : (
 						<div className={"FilesShareModal-body" satisfies FilesShareModal_ClassNames}>
-							{/* One section for everybody who can open this: the people added, and the general access
-							    row at the end, like the share dialogs of Google Drive and Notion. Every item can get
-							    added people, so the section is always there. `data-share-scope` says which of the
-							    three general access states this is, so a browser test never has to read the
-							    wording. */}
+							{/* One list for everybody who can open this: the workspace (or the folder above), the
+							    folders above with added people, the owner, and the people added here. Removing
+							    the workspace row restricts the item, and the picker can add it back.
+							    `data-share-scope` says which of the three states this is, so a browser test never
+							    has to read the wording. */}
 							<section
 								aria-label="People with access"
 								className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
-								data-share-scope={scope ? (scope.isSelf ? "self" : "inherited") : "open"}
+								data-share-scope={shareState.scope ? (shareState.scope.isSelf ? "self" : "inherited") : "open"}
 								data-share-access={shareState.access}
 							>
 								<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
 									People with access
 								</h3>
 
+								{!shareState.canManage ? (
+									<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+										Only people who can manage this can change access.
+									</p>
+								) : null}
+
 								{canEditList ? (
 									<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>
 										<MySelect value={addPrincipalValue} setValue={(value) => setAddPrincipalValue(value as string)}>
 											{/* Stays enabled while its own add runs, same reason as a row's level trigger:
-											    `handleAdd` puts focus back here, and a disabled button cannot take it. */}
+											    the add puts focus back here, and a disabled button cannot take it. */}
 											<MySelectTrigger disabled={busy && pendingKey !== "add"}>
 												<MyButton
 													ref={addPrincipalTriggerRef}
 													type="button"
 													variant="outline"
 													className={"FilesShareModal-add-principal-trigger" satisfies FilesShareModal_ClassNames}
-													aria-label="Person, role, or service account to add"
+													aria-label="Person, role, or app to add"
 													data-share-add-principal={addPrincipalValue}
 												>
-													<span>{selectedCandidateName ?? "Add a person, role, or account"}</span>
+													<span>{selectedCandidateName ?? "Add a person, role, or app"}</span>
 													<MySelectOpenIndicator />
 												</MyButton>
 											</MySelectTrigger>
 											<MySelectPopover unmountOnHide sameWidth>
 												<MySelectPopoverScrollableArea>
 													<MySelectPopoverContent>
-														{shareState.canShareWithServiceAccounts ? (
+														{/* The base row comes back from the same picker it was removed from. */}
+														{!hasBaseRow ? (
 															<MySelectItemsGroup>
-																<MySelectItemsGroupText>Service accounts</MySelectItemsGroupText>
-																{serviceAccounts.results
-																	.filter((account) => !takenPrincipalValues.has(`service_account:${account._id}`))
-																	.map((account) => (
-																		<MySelectItem
-																			key={account._id}
-																			value={`service_account:${account._id}`}
-																			data-share-principal={`service_account:${account._id}`}
-																		>
-																			{account.name}
-																		</MySelectItem>
-																	))}
+																<MySelectItemsGroupText>{baseScope ? "Folder" : "Workspace"}</MySelectItemsGroupText>
+																<MySelectItem
+																	value={FILES_SHARE_BASE_VALUE}
+																	data-share-principal={FILES_SHARE_BASE_VALUE}
+																>
+																	{baseLabel}
+																	{baseSelected ? <MySelectItemIndicator /> : null}
+																</MySelectItem>
 															</MySelectItemsGroup>
 														) : null}
-														<MySelectItemsGroup>
+														<MySelectItemsGroup separator={!hasBaseRow}>
 															<MySelectItemsGroupText>People</MySelectItemsGroupText>
 															{candidateUsers.length === 0 ? (
 																<MySelectItem value="" disabled>
@@ -1195,32 +1480,46 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 																})
 															)}
 														</MySelectItemsGroup>
-														<MySelectItemsGroup separator>
-															<MySelectItemsGroupText>Roles</MySelectItemsGroupText>
-															{candidateRoles.length === 0 ? (
-																<MySelectItem value="" disabled>
-																	{/* Empty for two different reasons. A caller who does not manage roles is offered no
-																	    role at all, so the "already on the list" wording would be untrue for them. */}
-																	{shareState.canShareWithRoles
-																		? "Every role is already on the list"
-																		: "Only people who manage roles can share with a role"}
-																</MySelectItem>
-															) : (
-																candidateRoles.map((candidate) => {
-																	const value = files_share_principal_value({
-																		kind: "role",
-																		role: candidate.role,
-																	});
+														{shareState.canShareWithRoles ? (
+															<MySelectItemsGroup separator>
+																<MySelectItemsGroupText>Workspace roles</MySelectItemsGroupText>
+																{candidateRoles.length === 0 ? (
+																	<MySelectItem value="" disabled>
+																		Every role is already on the list
+																	</MySelectItem>
+																) : (
+																	candidateRoles.map((candidate) => {
+																		const value = files_share_principal_value({
+																			kind: "role",
+																			role: candidate.role,
+																		});
 
-																	return (
-																		<MySelectItem key={value} value={value} data-share-principal={value}>
-																			{candidate.name}
-																			{addPrincipalValue === value ? <MySelectItemIndicator /> : null}
+																		return (
+																			<MySelectItem key={value} value={value} data-share-principal={value}>
+																				{candidate.name}
+																				{addPrincipalValue === value ? <MySelectItemIndicator /> : null}
+																			</MySelectItem>
+																		);
+																	})
+																)}
+															</MySelectItemsGroup>
+														) : null}
+														{shareState.canShareWithServiceAccounts ? (
+															<MySelectItemsGroup separator>
+																<MySelectItemsGroupText>Apps</MySelectItemsGroupText>
+																{serviceAccounts.results
+																	.filter((account) => !takenPrincipalValues.has(`service_account:${account._id}`))
+																	.map((account) => (
+																		<MySelectItem
+																			key={account._id}
+																			value={`service_account:${account._id}`}
+																			data-share-principal={`service_account:${account._id}`}
+																		>
+																			{account.name}
 																		</MySelectItem>
-																	);
-																})
-															)}
-														</MySelectItemsGroup>
+																	))}
+															</MySelectItemsGroup>
+														) : null}
 													</MySelectPopoverContent>
 												</MySelectPopoverScrollableArea>
 											</MySelectPopover>
@@ -1233,44 +1532,47 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 												disabled={serviceAccounts.status === "LoadingMore"}
 												onClick={() => serviceAccounts.loadMore(50)}
 											>
-												Load more accounts
+												Load more apps
 											</MyButton>
 										) : null}
-										<MySelect
-											value={addLevelValue}
-											setValue={(value) => setAddLevel(value as access_control_FileShareLevel)}
-										>
-											<MySelectTrigger disabled={busy}>
-												<MyButton
-													type="button"
-													variant="outline"
-													className={"FilesShareModal-add-level-trigger" satisfies FilesShareModal_ClassNames}
-													aria-label="Access level for the new person, role, or account"
-													data-share-level={addLevelValue}
-												>
-													<span>{access_control_FILE_SHARE_LEVELS[addLevelValue].label}</span>
-													<MySelectOpenIndicator />
-												</MyButton>
-											</MySelectTrigger>
-											<MySelectPopover unmountOnHide>
-												<MySelectPopoverContent>
-													{shareLevels.map((levelKey) => (
-														<MySelectItem
-															key={levelKey}
-															value={levelKey}
-															data-share-level={levelKey}
-															disabled={
-																selectedPrincipal?.kind === "service_account" &&
-																!shareState.serviceGrantableLevels.includes(levelKey)
-															}
-														>
-															{access_control_FILE_SHARE_LEVELS[levelKey].label}
-															{addLevelValue === levelKey ? <MySelectItemIndicator /> : null}
-														</MySelectItem>
-													))}
-												</MySelectPopoverContent>
-											</MySelectPopover>
-										</MySelect>
+										{/* The workspace row has no level of its own: each person's role decides. */}
+										{!baseSelected ? (
+											<MySelect
+												value={addLevelValue}
+												setValue={(value) => setAddLevel(value as access_control_FileShareLevel)}
+											>
+												<MySelectTrigger disabled={busy}>
+													<MyButton
+														type="button"
+														variant="outline"
+														className={"FilesShareModal-add-level-trigger" satisfies FilesShareModal_ClassNames}
+														aria-label="Access level for the new person, role, or app"
+														data-share-level={addLevelValue}
+													>
+														<span>{access_control_FILE_SHARE_LEVELS[addLevelValue].label}</span>
+														<MySelectOpenIndicator />
+													</MyButton>
+												</MySelectTrigger>
+												<MySelectPopover unmountOnHide>
+													<MySelectPopoverContent>
+														{shareLevels.map((levelKey) => (
+															<MySelectItem
+																key={levelKey}
+																value={levelKey}
+																data-share-level={levelKey}
+																disabled={
+																	selectedPrincipal?.kind === "service_account" &&
+																	!shareState.serviceGrantableLevels.includes(levelKey)
+																}
+															>
+																{access_control_FILE_SHARE_LEVELS[levelKey].label}
+																{addLevelValue === levelKey ? <MySelectItemIndicator /> : null}
+															</MySelectItem>
+														))}
+													</MySelectPopoverContent>
+												</MySelectPopover>
+											</MySelect>
+										) : null}
 
 										<MyButton disabled={addDisabled} aria-busy={pendingKey === "add" || undefined} onClick={handleAdd}>
 											<Plus aria-hidden />
@@ -1285,89 +1587,86 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									</p>
 								) : null}
 
-								{/* A restricted root has no folders above that give access. */}
-								{shareState.access !== "restricted_root" ? (
-									<>
-										{/* Names come only when the server sent them: the caller manages this item or reads
-										    the whole area. Otherwise the line says only where the access comes from. */}
-										{inheritedFolders.map((folder) => (
-											<div
-												key={folder.nodeId}
-												className={"FilesShareModal-inherited" satisfies FilesShareModal_ClassNames}
-												data-share-inherited={folder.nodeId}
-											>
-												<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
-													<h4 className={"FilesShareModal-subheading" satisfies FilesShareModal_ClassNames}>
-														{`From "${folder.name}" (${folder === shareState.inheritedFrom.restricted ? "restricted" : "added people"})`}
-													</h4>
+								<ul
+									ref={listRef}
+									// Not reachable by Tab, but a remove can put focus here once the row a user was
+									// standing on is gone.
+									tabIndex={-1}
+									className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
+									aria-label="People, roles, and apps with access"
+								>
+									{hasBaseRow ? (
+										<FilesShareModalSourceRow
+											source="base"
+											folderNodeId={baseScope?.nodeId ?? null}
+											name={baseLabel}
+											meta={
+												shareState.inheritedFrom.restricted
+													? folderPeopleText(shareState.inheritedFrom.restricted)
+													: "View and edit access depend on each person's workspace role."
+											}
+											note={baseRowNote}
+										>
+											{!shareState.inheritedFrom.restricted ? (
+												<MyBadge variant="outline">Based on role</MyBadge>
+											) : shareState.inheritedFrom.restricted.entries ? (
+												<MyButton
+													variant="outline"
+													disabled={busy}
+													onClick={() => handleStepInto(shareState.inheritedFrom.restricted!.nodeId)}
+												>
+													Manage on {shareState.inheritedFrom.restricted.name}
+												</MyButton>
+											) : null}
+											{canRemoveBaseRow ? (
+												<MyIconButton
+													variant="ghost_destructive"
+													tooltip={baseScope ? `Remove access from ${baseScope.name}` : "Remove workspace access"}
+													disabled={busy && pendingKey !== "restrict"}
+													aria-busy={pendingKey === "restrict" || undefined}
+													onClick={() => requestChange({ kind: "restrict" })}
+												>
+													<Trash2 aria-hidden />
+												</MyIconButton>
+											) : null}
+										</FilesShareModalSourceRow>
+									) : null}
+
+									{/* Folders above with added people. Their people reach this item too, but are
+									    changed on that folder. */}
+									{hasBaseRow
+										? shareState.inheritedFrom.extended.map((folder) => (
+												<FilesShareModalSourceRow
+													key={folder.nodeId}
+													source="added"
+													folderNodeId={folder.nodeId}
+													name={`People added to ${folder.name}`}
+													meta={folderPeopleText(folder)}
+													note={null}
+												>
 													{folder.entries ? (
 														<MyButton variant="outline" disabled={busy} onClick={() => handleStepInto(folder.nodeId)}>
 															Manage on {folder.name}
 														</MyButton>
 													) : null}
-												</div>
-												{folder.entries ? (
-													<ul
-														className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
-														aria-label={`People with access from ${folder.name}`}
-													>
-														{nameEntries(folder.entries).map((entry) => (
-															<FilesShareModalEntry
-																key={files_share_principal_value(entry.principal)}
-																principal={entry.principal}
-																name={entry.name}
-																meta={entryMeta(entry)}
-																level={entry.level}
-																editable={false}
-																pending={false}
-																busy={busy}
-																canRaiseRoleLevel={shareState.canShareWithRoles}
-																onLevelChange={handleLevelChange}
-																onRemove={handleRemove}
-															/>
-														))}
-													</ul>
-												) : null}
-											</div>
-										))}
+												</FilesShareModalSourceRow>
+											))
+										: null}
 
-										{/* The heading only tells this item's people apart from the folders' people above. */}
-										{inheritedFolders.length > 0 ? (
-											<>
-												<h4 className={"FilesShareModal-subheading" satisfies FilesShareModal_ClassNames}>
-													Added here
-												</h4>
-												{entries.length === 0 ? (
-													<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-														Nobody yet.
-													</p>
-												) : null}
-											</>
-										) : null}
-									</>
-								) : null}
-
-								<ul
-									ref={listRef}
-									// Not reachable by Tab, but `handleRemove` can put focus here once the row a user
-									// was standing on is removed.
-									tabIndex={-1}
-									className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
-									aria-label="People, roles, and service accounts with access"
-								>
-									{/* The owner always gets in and holds no grant, so a restricted root shows a fixed row. */}
-									{shareState.access === "restricted_root" ? (
+									{/* The owner always gets in and holds no grant, so a restricted item shows a fixed row. */}
+									{!hasBaseRow ? (
 										<FilesShareModalEntry
 											principal={{ kind: "user", userId: shareState.organizationOwnerUserId }}
-											name={read_display_name(userAnagraphicDict[shareState.organizationOwnerUserId])}
-											meta="Organization owner"
+											name={isOwner ? "You" : read_display_name(userAnagraphicDict[shareState.organizationOwnerUserId])}
+											meta={isOwner ? "Owner" : "Organization owner"}
+											hint={null}
 											level={null}
 											editable={false}
 											pending={false}
 											busy={busy}
 											canRaiseRoleLevel={shareState.canShareWithRoles}
-											onLevelChange={handleLevelChange}
-											onRemove={handleRemove}
+											onLevelChange={() => {}}
+											onRemove={() => {}}
 										/>
 									) : null}
 
@@ -1375,8 +1674,9 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 										<FilesShareModalEntry
 											key={files_share_principal_value(entry.principal)}
 											principal={entry.principal}
-											name={entry.name}
+											name={entry.isCaller ? "You" : entry.name}
 											meta={entryMeta(entry)}
+											hint={entryHint(entry)}
 											level={entry.level}
 											editable={
 												canEditList &&
@@ -1389,103 +1689,54 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											pending={pendingKey === files_share_principal_value(entry.principal)}
 											busy={busy}
 											canRaiseRoleLevel={shareState.canShareWithRoles}
-											onLevelChange={handleLevelChange}
-											onRemove={handleRemove}
+											onLevelChange={(principal, level) =>
+												requestChange({ kind: "set", principal, level, fromPicker: false })
+											}
+											onRemove={(principal) => requestChange({ kind: "remove", principal })}
 										/>
 									))}
 								</ul>
 
-								<h4 className={"FilesShareModal-subheading" satisfies FilesShareModal_ClassNames}>General access</h4>
-								<div className={"FilesShareModal-general" satisfies FilesShareModal_ClassNames}>
-									<div className={"FilesShareModal-general-icon" satisfies FilesShareModal_ClassNames} aria-hidden>
-										{scope ? <Lock /> : <Users />}
-									</div>
-									<div className={"FilesShareModal-general-main" satisfies FilesShareModal_ClassNames}>
-										<span className={"FilesShareModal-general-name" satisfies FilesShareModal_ClassNames}>
-											{!scope
-												? "Everyone in this workspace"
-												: scope.isSelf
-													? "Only people with access"
-													: `Restricted by ${scope.name}`}
-										</span>
-										<span className={"FilesShareModal-general-meta" satisfies FilesShareModal_ClassNames}>
-											{!scope
-												? `Anybody whose role lets them read workspace content can open this ${nodeKindText}.`
-												: scope.isSelf
-													? "A workspace role does not open this on its own. Only the people, roles, and service accounts above can open it."
-													: `The folder ${scope.path} decides who can open this ${nodeKindText}.`}
-										</span>
-									</div>
-
-									{shareState.canManage ? (
-										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
-											{/* `canRestrict`, not `canManage`: restricting gives the caller a `manage` grant, and
-											    the mutation refuses somebody who could not hand that level to anybody else. */}
-											{!scope ? (
-												<MyButton
-													disabled={busy || !shareState.canRestrict}
-													onClick={() => setAccessConfirm({ nodeId: shareState.nodeId, action: "restrict" })}
-												>
-													<Lock aria-hidden />
-													Restrict access
-												</MyButton>
-											) : scope.isSelf ? (
-												<MyButton
-													variant="outline_destructive"
-													disabled={busy}
-													onClick={() => setAccessConfirm({ nodeId: shareState.nodeId, action: "unrestrict" })}
-												>
-													Stop restricting
-												</MyButton>
-											) : (
-												<MyButton
-													variant="outline"
-													disabled={busy || !shareState.canRestrict}
-													onClick={() => setAccessConfirm({ nodeId: shareState.nodeId, action: "restrict" })}
-												>
-													Restrict separately
-												</MyButton>
-											)}
+								{/* A change that takes access away asks first and says who loses what. */}
+								{confirmChange && confirmText ? (
+									<div
+										className={"FilesShareModal-confirm" satisfies FilesShareModal_ClassNames}
+										{...({ "data-share-confirm": confirmChange.kind } satisfies FilesShareModal_CustomAttributes)}
+									>
+										<h4 className={"FilesShareModal-subheading" satisfies FilesShareModal_ClassNames}>
+											{confirmText.title}
+										</h4>
+										<div role="alert">
+											{confirmText.lines.map((line) => (
+												<p key={line} className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+													{line}
+												</p>
+											))}
 										</div>
-									) : null}
-								</div>
-
-								{/* Restrict and unrestrict both remove grants, so ask first and say who loses access. */}
-								{confirmAction ? (
-									<div className={"FilesShareModal-confirm" satisfies FilesShareModal_ClassNames}>
-										<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames} role="alert">
-											{confirmAction === "restrict" ? restrictConfirmText : unrestrictConfirmText}
-										</p>
 										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
 											<MyButton
 												variant="outline"
 												disabled={busy}
 												onClick={() => {
-													setAccessConfirm(null);
+													setChangeConfirm(null);
 													// The box with this button goes away, so focus would fall to the page.
 													dialogRef.current?.focus();
 												}}
 											>
 												Cancel
 											</MyButton>
-											{confirmAction === "restrict" ? (
-												<MyButton
-													disabled={busy}
-													aria-busy={pendingKey === "restrict" || undefined}
-													onClick={handleRestrict}
-												>
-													{pendingKey === "restrict" ? "Restricting..." : "Restrict"}
-												</MyButton>
-											) : (
-												<MyButton
-													variant="destructive"
-													disabled={busy}
-													aria-busy={pendingKey === "unrestrict" || undefined}
-													onClick={handleUnrestrict}
-												>
-													{pendingKey === "unrestrict" ? "Removing..." : "Stop restricting"}
-												</MyButton>
-											)}
+											<MyButton
+												variant={
+													confirmChange.kind === "restrict" || confirmChange.kind === "unrestrict"
+														? undefined
+														: "destructive"
+												}
+												disabled={busy}
+												aria-busy={busy || undefined}
+												onClick={() => runChange(confirmChange, true)}
+											>
+												{busy ? "Saving..." : confirmText.action}
+											</MyButton>
 										</div>
 									</div>
 								) : null}
