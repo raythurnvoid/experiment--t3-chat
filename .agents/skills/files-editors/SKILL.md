@@ -65,6 +65,8 @@ Also keep the Markdown save patches:
 - The writer opens a `code: true` mark innermost, and `splitCodeMarkRuns` gives each code run a number
   that changes where another mark starts or ends. So a mark inside a code span closes and reopens the
   span (`` `a`**`b`**`c` ``). This matters only when code shares marks, like the app's code mark.
+- y-tiptap's `hashOfJSON` encodes with `btoa`, not lib0's `toBase64`, which uses Node's `Buffer` outside
+  a browser. Convex has no `Buffer`, so a server write with a comment mark failed. The hash value is the same.
 - An inline atom with `markdownOptions.staysInsideMarks` is written inside the marks around it, like
   text. The app's hidden HTML tag and image set it. Other atoms close the marks before them.
 - `escapeHtml` escapes `&` and `<` only where they would read as an entity, a tag or an autolink, and

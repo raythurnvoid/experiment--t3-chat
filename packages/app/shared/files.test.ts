@@ -2628,10 +2628,11 @@ describe("mark syntax round-trip through Yjs", () => {
 		expect(saved).toBe("`a`**`b`**`c`\n");
 	});
 
-	test("saves a code span to Yjs without Node's Buffer, like Convex", () => {
+	test("saves a comment to Yjs without Node's Buffer, like Convex", () => {
+		const input = 'a <span data-type="comment" data-lb-thread-id="t1">c</span>\n';
 		vi.stubGlobal("Buffer", undefined);
 		try {
-			expect(round_trip_markdown("a `b` c\n")).toBe("a `b` c\n");
+			expect(round_trip_markdown(input)).toBe(input);
 		} finally {
 			vi.unstubAllGlobals();
 		}

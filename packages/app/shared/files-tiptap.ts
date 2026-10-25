@@ -3538,8 +3538,8 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			// Keep excluding the entity and escape marks. They say how text inside the span was written, and the
 			// code mark writes that text itself.
 			//
-			// Keep excluding `code` too. Yjs stores a mark that can overlap itself under a hash of its attributes,
-			// and that hash needs Node's `Buffer`, which Convex does not have. So every code span failed to save there.
+			// Keep excluding `code` too. Yjs stores a mark that can overlap itself as `code--<hash>`, not `code`, so
+			// every saved code span would change its stored name.
 			code: Code.extend({ excludes: "code htmlEntity markdownEscape" }),
 			taskList: TaskList.configure({
 				HTMLAttributes: {
