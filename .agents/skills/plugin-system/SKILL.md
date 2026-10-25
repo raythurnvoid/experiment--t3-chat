@@ -1092,6 +1092,20 @@ checks": 11,680 calls (2.9% of 400,000), Node 0.26 GB-hours (6.6% of 4), Convex 
 I/O 0.024 GB (6.0% of 0.4), egress 0.010 GB (2.5% of 0.4). This is idle only. It leaves out new mail,
 backfill, attachments, the 12-hour grant renewal, and open pages (about 220 calls per hour each).
 
+Gmail 0.4.1 was published and installed in `personal/home` on 2026-10-25 (plugin commit
+`cf654d7da8bf75cca9d193aa7b8395de36e1f78e`, version doc `hn7v5x78g2cny4rn8xwva09hk58gzamb`). Before
+Connect or Reconnect, the member picks how much old mail to save: 7, 30, 90 or 365 days, or all
+(default 30). The plugin env `GMAIL_BACKFILL_MAX_DAYS` caps the choice (30 on dev). Finish saves a
+fixed `backfillAfter` on the account, and backfill lists Gmail with `after:<epoch seconds>`. Two
+fields were added in two deploys. 504 tests passed, and removing the filter, the cap or the date each
+failed its test.
+
+After the publish, the Update button stayed disabled for a moment. A second press opened the consent,
+which asked for nothing new. Live check: the page listed only 7 and 30 days. Two more accounts were
+connected with 30 days and the read-only scope only. Their backfills saved 111 and 30 emails in about
+40 minutes, and none was older than the saved date. The older account kept syncing after the update,
+and all three got a push watch.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
