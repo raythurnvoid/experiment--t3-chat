@@ -150,7 +150,7 @@ The portable client guide is `../press-api/SKILL.md`, with skill-local resources
 
 ## External plugin identity and access
 
-`plugins_service_access_http_routes.ts` registers three server contracts. Identity exchange takes
+`plugins_service_access_http_routes.ts` registers four server contracts. Identity exchange takes
 `{exchangeId,requestedExpiresAt}`, the current `plu_` bearer, and the registered service-secret
 header. It returns only a signed ES256 JWT. Its issuer is `<Bonobo Senate HTTP origin>/plugins-services`;
 audience is `bonobo-plugin:<registered plugin name>`. The installation, version, account, session,
@@ -159,17 +159,29 @@ Expiry is capped by the requested deadline, page expiry, and validation time plu
 
 `/api/v1/plugins/members/list` takes `{installationId,cursor,startRevision}` and returns at most 50
 member facts. `/api/v1/plugins/access/changes` takes `{installationId,afterRevision,limit}` (1–100)
-and returns ordered access events with continuation revisions. Both use the service-secret header
+and returns ordered access events with continuation revisions. The page holds only this
+installation's events: its own installation, workspace, organization, plugin, and service account
+scopes, each read from its own `by_scopeKey_revision` range. Revisions have gaps. `continueRevision`
+promises that every event of the installation up to it is in the page. Both use the service-secret header
 and an existing connection pinned by a valid page exchange. They require declared and accepted
 `plugin.service.connect` and `workspace.members.read`. Registration may have `scopes: []`; identity
 does not grant file or plugin-data access. A secret alone cannot attach to a workspace or refresh
-retired registration/version/account pins. Unrelated events return no private member details.
+retired registration/version/account pins.
 
 These routes return `Cache-Control: no-store`. Bad credentials use the failed-auth rate bucket;
-authenticated member/change reads also use the principal bucket. Stale history returns 410 and
-requires a new snapshot. A removed installation returns terminal access information only. The
-owning backend must enforce lease expiry on live queries as well as new calls. Bonobo Senate never calls
-product-specific access webhooks. See the [auth spec](../auth-system/SKILL.md#identity-for-external-plugin-backends).
+authenticated member/change reads also use the principal bucket. Feed docs are deleted after 30
+days, and only after the notice dispatcher passed them. A cursor older than retention returns
+`410 { code: "snapshot_required" }` when this installation had a deleted change. When none of its
+scope heads moved after the cursor, it gets an empty page that skips to the head instead. A removed
+installation returns terminal access information only. The owning backend must enforce lease expiry
+on live queries as well as new calls.
+
+`POST /api/v1/plugins/service-events/key` takes `{ pluginName }` and only the service-secret header.
+It returns `{ key, createdAt }`, the `whsec_` key that signs `workspace.access.changed` notices, with
+`Cache-Control: no-store`. A wrong secret answers 401. It uses the principal bucket, keyed by the
+registration. Bonobo Senate calls no product-specific access webhooks: the one push is the general
+signed notice in `../plugin-system/SKILL.md#access-change-notices-workspaceaccesschanged`.
+See the [auth spec](../auth-system/SKILL.md#identity-for-external-plugin-backends).
 
 Service-grant exchange, renew, seal-processing, verify-live, and saved-response recovery use
 `/api/v1/plugins/service-grants/*`. Their existing credential, scope, and destination rules remain

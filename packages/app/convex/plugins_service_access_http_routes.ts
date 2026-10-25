@@ -7,6 +7,7 @@ import type {
 	plugins_service_access_http_lease_Body,
 	plugins_service_access_http_snapshot_Body,
 	plugins_service_access_http_events_Body,
+	plugins_service_access_http_signing_key_Body,
 } from "./plugins_service_access_http.ts";
 
 export function plugins_service_access_http_routes(router: { route: HttpRouter["route"] }) {
@@ -101,6 +102,38 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 							body: Body;
 							response: api_schemas_BuildResponseSpecFromHandler<
 								typeof import("./plugins_service_access_http.ts").plugins_service_access_http_events
+							>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+		...((/* iife */ path = "/api/v1/plugins/service-events/key" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = { "X-Bonobo-Service-Authorization": string };
+						type Body = plugins_service_access_http_signing_key_Body;
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const { plugins_service_access_http_signing_key } = await import("./plugins_service_access_http.ts");
+								const result = await plugins_service_access_http_signing_key(ctx, request);
+								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<
+								typeof import("./plugins_service_access_http.ts").plugins_service_access_http_signing_key
 							>;
 						};
 					})(),

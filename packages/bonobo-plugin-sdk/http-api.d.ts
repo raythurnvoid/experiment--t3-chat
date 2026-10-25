@@ -2584,11 +2584,16 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
+						events: never[];
+						currentRevision: number;
+						continueRevision: number;
+						isDone: true;
+					} | {
 						events: {
 							revision: number;
 							event: {
 								kind: "refresh";
-								reason: "installation" | "permissions" | "account" | "members";
+								reason: "installation" | "permissions" | "account";
 							} | {
 								kind: "member";
 								member: {
@@ -2614,6 +2619,89 @@ export type BonoboHttpApi = {
 						currentRevision: number;
 						continueRevision: number;
 						isDone: boolean;
+					};
+				};
+				400: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						code: "invalid_request";
+						message: string;
+					};
+				};
+				403: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						code: "permission_denied";
+						message: "Permission denied";
+					};
+				};
+				409: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						code: "expired_lease";
+						message: "Lease has expired";
+					} | {
+						code: "unavailable";
+						message: "Installation is unavailable";
+					};
+				};
+				401: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						code: "unauthorized";
+						message: "Unauthorized";
+					};
+				};
+				429: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						code: "rate_limited";
+						message: "Rate limit exceeded";
+					};
+				};
+				410: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						code: "snapshot_required";
+						message: "Snapshot required";
+					} | {
+						code: "revoked";
+						message: "Installation has been removed";
+					};
+				};
+			};
+		};
+	};
+	"/api/v1/plugins/service-events/key": {
+		POST: {
+			pathParams: never;
+			searchParams: never;
+			headers: {
+				"X-Bonobo-Service-Authorization": string;
+			};
+			body: {
+				pluginName: string;
+			};
+			response: {
+				200: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						key: string;
+						createdAt: number;
 					};
 				};
 				400: {

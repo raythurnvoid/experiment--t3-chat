@@ -47,6 +47,14 @@ function server_key(serverId: string, destinationFingerprint: string) {
 }
 
 /**
+ * Where a version sends access notices, as the origins the plugin entry stores. Empty for a version
+ * without `serviceEventsUrl`.
+ */
+function version_service_events_origins(version: Doc<"plugins_versions">) {
+	return version.serviceEventsUrl === undefined ? [] : [new URL(version.serviceEventsUrl).origin];
+}
+
+/**
  * The plugin entry for a version. An entry names one plugin by name, publisher, and source
  * repository, because a name can be taken by another publisher after a registry delete.
  */
@@ -63,8 +71,8 @@ function find_plugin_entry(policy: IntegrationPolicy, version: Doc<"plugins_vers
  * Whether a plugin version fits a custom organization's policy.
  *
  * The plugin entry's ceiling is everything the owner approved. A version that asks for anything
- * outside it (a capability, an origin, an MCP server or a new destination for one) waits for the
- * owner. No doc means nothing is allowed.
+ * outside it (a capability, an origin, an access notice origin, an MCP server or a new destination for
+ * one) waits for the owner. No doc means nothing is allowed.
  */
 async function plugin_version_status(policy: IntegrationPolicy | null, version: Doc<"plugins_versions">) {
 	if (policy?.plugins.mode === "allow_all") {
@@ -79,6 +87,7 @@ async function plugin_version_status(policy: IntegrationPolicy | null, version: 
 	const capabilities = new Set(entry.capabilities);
 	const outboundOrigins = new Set(entry.outboundOrigins);
 	const uiOutboundOrigins = new Set(entry.uiOutboundOrigins);
+	const serviceEventsOrigins = new Set(entry.serviceEventsOrigins ?? []);
 	const servers = new Set(entry.mcpServers.map((server) => server_key(server.serverId, server.destinationFingerprint)));
 	const versionServerKeys = await Promise.all(
 		version.mcpServers.map(async (server) => server_key(server.id, await plugins_mcp_destination_fingerprint(server))),
@@ -87,6 +96,10 @@ async function plugin_version_status(policy: IntegrationPolicy | null, version: 
 		version.capabilities.every((capability) => capabilities.has(capability)) &&
 		version.outboundOrigins.every((origin) => outboundOrigins.has(origin)) &&
 		version.uiOutboundOrigins.every((origin) => uiOutboundOrigins.has(origin)) &&
+		// A notice holds less than the data an approved outbound origin may already get, so either list covers it.
+		version_service_events_origins(version).every(
+			(origin) => serviceEventsOrigins.has(origin) || outboundOrigins.has(origin) || uiOutboundOrigins.has(origin),
+		) &&
 		versionServerKeys.every((key) => servers.has(key));
 	return fits ? ("allowed" as const) : ("needs_approval" as const);
 }
@@ -407,6 +420,9 @@ export const update_policy = mutation({
 				capabilities: [...new Set([...(previous?.capabilities ?? []), ...version.capabilities])],
 				outboundOrigins: [...new Set([...(previous?.outboundOrigins ?? []), ...version.outboundOrigins])],
 				uiOutboundOrigins: [...new Set([...(previous?.uiOutboundOrigins ?? []), ...version.uiOutboundOrigins])],
+				serviceEventsOrigins: [
+					...new Set([...(previous?.serviceEventsOrigins ?? []), ...version_service_events_origins(version)]),
+				],
 				mcpServers: [...servers.values()],
 				addedBy: previous?.addedBy ?? userAuth.id,
 				addedAt: previous?.addedAt ?? now,

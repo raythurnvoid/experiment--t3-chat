@@ -139,6 +139,23 @@ export const preview_content_heads = internalMutation({
 	},
 });
 
+// One-time: remove with the optional schema field once every policy entry has the field.
+export const backfill_policy_service_events_origins = app_migrations.define({
+	table: "organizations_integration_policies",
+	migrateOne: async (ctx, doc) => {
+		if (doc.plugins.allowlist.every((entry) => entry.serviceEventsOrigins !== undefined)) return;
+		await ctx.db.patch("organizations_integration_policies", doc._id, {
+			plugins: {
+				...doc.plugins,
+				allowlist: doc.plugins.allowlist.map((entry) => ({
+					...entry,
+					serviceEventsOrigins: entry.serviceEventsOrigins ?? [],
+				})),
+			},
+		});
+	},
+});
+
 /**
  * Run from packages/app: `vp env exec pnpm exec convex run migrations:run_<migration_name>`.
  */
@@ -153,3 +170,7 @@ export const run_backfill_content_heads = app_migrations.runner([
 	internal.migrations.backfill_content_head_updates,
 	internal.migrations.backfill_content_head_metadata,
 ]);
+
+export const run_backfill_policy_service_events_origins = app_migrations.runner(
+	internal.migrations.backfill_policy_service_events_origins,
+);

@@ -2434,6 +2434,18 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 				)}
 			</section>
 
+			{plugin.serviceEventsUrl ? (
+				<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+					<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+						Access change notices
+					</h3>
+					<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
+						Bonobo Senate will notify {new URL(plugin.serviceEventsUrl).origin} when workspace access changes. The
+						notice holds no member data.
+					</p>
+				</section>
+			) : null}
+
 			{activeEvents ? (
 				<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 					<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
@@ -2760,6 +2772,7 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		capabilities: version.capabilities,
 		outboundOrigins: version.outboundOrigins,
 		uiOutboundOrigins: version.uiOutboundOrigins,
+		serviceEventsUrl: version.serviceEventsUrl,
 		pages: version.pages,
 		fileViews: version.fileViews,
 		mcpServers: version.mcpServers,
@@ -3367,6 +3380,7 @@ function RoutePluginsPlugin() {
 					skills: installedVersion.skills,
 					mounts: installedVersion.mounts,
 					events: installedVersion.events,
+					serviceEventsUrl: installedVersion.serviceEventsUrl,
 				}
 			: null,
 		target: {
@@ -3377,6 +3391,7 @@ function RoutePluginsPlugin() {
 			skills: plugin.skills,
 			mounts: plugin.mounts,
 			events: plugin.events,
+			serviceEventsUrl: plugin.serviceEventsUrl,
 		},
 	});
 	// A current installation can be disabled or uninstalled. Enable asks for consent again.
@@ -3436,6 +3451,7 @@ function RoutePluginsPlugin() {
 				capabilities: installedVersion.capabilities,
 				outboundOrigins: installedVersion.outboundOrigins,
 				uiOutboundOrigins: installedVersion.uiOutboundOrigins,
+				serviceEventsUrl: installedVersion.serviceEventsUrl,
 				pages: installedVersion.pages,
 				fileViews: installedVersion.fileViews,
 				mcpServers: installedVersion.mcpServers,
@@ -4044,6 +4060,23 @@ function RoutePluginsPlugin() {
 											) : null}
 										</li>
 									))}
+								</ul>
+							</>
+						) : null}
+
+						{plugin.serviceEventsUrl ? (
+							<>
+								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+									Access change notices
+								</div>
+								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+									<li className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}>
+										Bonobo Senate will notify {new URL(plugin.serviceEventsUrl).origin} when workspace access changes.
+										The notice holds no member data.
+										{installedVersion && consentDiff.serviceEventsOriginChanged ? (
+											<MyBadge variant="secondary">new</MyBadge>
+										) : null}
+									</li>
 								</ul>
 							</>
 						) : null}

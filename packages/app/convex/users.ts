@@ -11,7 +11,6 @@ import { internalMutation } from "./functions.ts";
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";
-import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { type RegisteredMutation } from "convex/server";
 import app_convex_schema from "./schema.ts";
@@ -339,12 +338,10 @@ async function db_upsert_anagraphic(
 			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.first();
 		if (member) {
-			await access_control_changes_db_record(ctx, [
-				{
-					scope: { kind: "user", userId: args.userId },
-					event: { kind: "refresh", reason: "members" },
-				},
-			]);
+			await ctx.scheduler.runAfter(0, internal.organizations_membership_lifetimes.record_display_name_change, {
+				userId: args.userId,
+				cursor: null,
+			});
 		}
 	}
 }

@@ -60,6 +60,20 @@ tenant deletion append scoped facts in the same transaction as their source writ
 mutation must be sequential so they share one ordered counter. Bonobo Senate has no named plugin consumer
 or remote wait in this path.
 
+Each feed doc has one scope: a plugin (by name), an organization, a workspace, an installation, or a
+service account. `access_control_changes_scope_key` turns it into `scopeKey`, and the
+`by_scopeKey_revision` index serves one installation's feed as a merge of its five ranges. There is
+no per-user scope. A display-name change starts `record_display_name_change`, which pages the user's
+membership lifetimes 50 at a time and writes one workspace `member` feed doc for each active one.
+
+The writer also keeps `access_control_change_scope_heads` (the newest revision of each scope key) and
+wakes the notice dispatcher (`plugins_service_events.dispatch`). The head doc
+`access_control_change_state` holds only the revision. `access_control_change_retention` holds
+`oldestRevision` and `scopeHeadsFromRevision`; a pull or snapshot creates it at the head when it is
+missing, so a stale cursor takes one new snapshot. A daily cron deletes feed docs older than 30 days,
+500 per transaction, and keeps every doc the dispatcher has not passed yet. Deleting an entity deletes
+its scope heads. That is safe, because no live installation reads the key of a deleted entity.
+
 The public member and access-change APIs use `plugins_service_connections`. A live connection needs
 the exact registration, installation version, service account, and accepted member capability.
 An old or removed connection gets control events only. Another plugin's secret never authenticates
