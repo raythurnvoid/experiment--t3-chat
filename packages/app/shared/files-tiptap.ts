@@ -615,14 +615,22 @@ function configure_marked(instance: Marked | typeof marked) {
 			// the closing fence. So drop it here.
 			//
 			// Also keep a `~~~` or longer fence, and an indented block, so save writes the block as the file did.
+			//
+			// Marked keeps only the first word of the info string, the language. Keep the rest too, like
+			// ` title="a"` in ```` ```ts title="a" ````. Before, a save dropped it.
 			code(token) {
-				const opening = /^ {0,3}(`{3,}|~{3,})([ \t]*)/.exec(token.raw);
+				const opening = /^ {0,3}(`{3,}|~{3,})([ \t]*)\S*(.*)/.exec(token.raw);
 				const fence =
 					token.codeBlockStyle === "indented" ? "indented" : opening && `${opening[1]}${token.lang ? opening[2] : ""}`;
+				const meta = token.codeBlockStyle === "indented" ? "" : (opening?.[3] ?? "");
 				const html = Renderer.prototype.code
 					.call(this, token)
 					.replace(CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX, "</code></pre>\n");
-				return fence && fence !== "```" ? html.replace(/^<pre/, `<pre data-markdown-fence="${fence}"`) : html;
+				let attributes = fence && fence !== "```" ? ` data-markdown-fence="${fence}"` : "";
+				if (meta) {
+					attributes += ` data-markdown-meta="${html_escape_attribute(meta)}"`;
+				}
+				return html.replace(/^<pre/, `<pre${attributes}`);
 			},
 
 			// A one-word footnote in a quote or a list, like `> [^1]: note`, which Marked reads as a link
