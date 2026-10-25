@@ -708,6 +708,11 @@ function configure_marked(instance: Marked | typeof marked) {
 				if (startsWithBlock && /^ *\S+[ \t]+\S/.test(item.raw)) {
 					attributes += " data-block-on-marker";
 				}
+				// Keep text that the file put on the line under the marker, like `-` then `  a`. Save writes it there
+				// while the item's first paragraph has text.
+				if (/^ *\S+[ \t]*\n/.test(item.raw)) {
+					attributes += " data-text-below-marker";
+				}
 				const [firstLine = "", ...lines] = item.raw.split("\n");
 				const markerIndent = /^ */.exec(firstLine)?.[0].length ?? 0;
 				// Read the nested list's first line, past any wrapped lines of the item's text.

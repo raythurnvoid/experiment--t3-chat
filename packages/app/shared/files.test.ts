@@ -2797,6 +2797,9 @@ describe("block syntax round-trip through Yjs", () => {
 		["a list that starts a list item", "- - a\n"],
 		["a list under an empty list item", "-\n  - a\n"],
 		["a heading under an empty list item", "-\n  # a\n"],
+		// Before, a save moved the text up to the marker line.
+		["text on the line under a list item's marker", "-\n  a\n  b\n-\n  c\n"],
+		["text on the line under a wide number", "10.\n    a\n"],
 		// Before, the heading became text, and a fence changed on every save.
 		["a heading that starts a numbered item", "1. # a\n2. b\n"],
 		["a fence that starts a numbered item", "1. ```\n   code\n   ```\n"],
