@@ -680,7 +680,7 @@ function configure_marked(instance: Marked | typeof marked) {
 				}
 				// Keep a list that numbers every item the same, like `1.` `1.` `1.`.
 				const numbers = token.ordered ? token.items.map((item) => /^ *(\d+)/.exec(item.raw)?.[1]) : [];
-				if (numbers.length > 1 && numbers.every((number) => Number(number) === (token.start || 1))) {
+				if (numbers.length > 1 && numbers.every((number) => Number(number) === token.start)) {
 					attributes += " data-same-number";
 				}
 
@@ -2690,7 +2690,7 @@ function html_render_blocks(content: TiptapJSONContent[]): string {
 				case "bulletList":
 					return `<ul>${html_render_blocks(children)}</ul>`;
 				case "orderedList": {
-					const start = Number(node.attrs?.start) || 1;
+					const start = Number(node.attrs?.start ?? 1);
 					return `<ol${start === 1 ? "" : ` start="${start}"`}>${html_render_blocks(children)}</ol>`;
 				}
 				case "listItem":

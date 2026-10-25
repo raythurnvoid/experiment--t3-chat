@@ -2772,6 +2772,9 @@ describe("block syntax round-trip through Yjs", () => {
 
 	test.each([
 		["the same number on every item", "1. a\n1. b\n"],
+		// Before, a list that started at 0 saved from 1.
+		["a list that starts at 0", "0. a\n1. b\n"],
+		["a list that numbers every item 0", "0) a\n0) b\n"],
 		["a `*` task bullet", "* [ ] a\n* [x] b\n"],
 		// Before, a save wrote `[X]` as `[x]`.
 		["an upper-case `[X]`", "- [X] a\n- [x] b\n  - [X] c\n"],
@@ -3650,7 +3653,7 @@ describe("HTML tables round-trip through Yjs", () => {
 			{ type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "h" }] },
 			{ type: "blockquote", content: [paragraph("q")] },
 			{ type: "bulletList", content: [{ type: "listItem", content: [paragraph("b1"), paragraph("b2")] }] },
-			{ type: "orderedList", attrs: { start: 3 }, content: [{ type: "listItem", content: [paragraph("o")] }] },
+			{ type: "orderedList", attrs: { start: 0 }, content: [{ type: "listItem", content: [paragraph("o")] }] },
 			{ type: "taskList", content: [{ type: "taskItem", attrs: { checked: true }, content: [paragraph("t")] }] },
 			{ type: "codeBlock", attrs: { language: "js" }, content: [{ type: "text", text: "a <\n\nb" }] },
 			{ type: "horizontalRule" },
@@ -3671,6 +3674,8 @@ describe("HTML tables round-trip through Yjs", () => {
 		const saved = edit_and_save("| a |\n| --- |\n| 1 |\n", (mut_content) => {
 			mut_content[0]!.content![1]!.content![0]!.content = content;
 		});
+		// Before, a list that starts at 0 saved with no start, so it showed 1.
+		expect(saved).toContain('<ol start="0">');
 
 		const parsed = files_tiptap_markdown_to_json({ markdown: saved });
 		if (parsed._nay) {
