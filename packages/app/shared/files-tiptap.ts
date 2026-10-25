@@ -551,8 +551,19 @@ function configure_marked(instance: Marked | typeof marked) {
 			// under `- `. Save used the smallest indent before. A nested paragraph keeps its own extra spaces,
 			// so it does not take the indent. Count from the marker, because a nested item's raw keeps the
 			// spaces before it.
+			//
+			// A list item must start with a paragraph. When the file starts it with another block, like `- # Title`
+			// or a fence, put an empty paragraph first. Without it the editor moved the block out of the list.
+			// `data-block-on-marker` lets save write the block back on the marker line.
 			listitem(item) {
-				let attributes = item.tokens.some((child) => child.type === "space") ? " data-loose" : "";
+				// The first space token only means the item's text starts on the next line.
+				let attributes = item.tokens.some((child, index) => index > 0 && child.type === "space") ? " data-loose" : "";
+				const firstBlock = item.tokens.find((child) => child.type !== "space");
+				const startsWithBlock =
+					firstBlock !== undefined && firstBlock.type !== "text" && firstBlock.type !== "paragraph";
+				if (startsWithBlock && /^ *\S+[ \t]+\S/.test(item.raw)) {
+					attributes += " data-block-on-marker";
+				}
 				const [firstLine = "", ...lines] = item.raw.split("\n");
 				const markerIndent = /^ */.exec(firstLine)?.[0].length ?? 0;
 				const indent = (lines.find((line) => line.trim())?.match(/^ */)?.[0].length ?? 0) - markerIndent;
@@ -561,8 +572,18 @@ function configure_marked(instance: Marked | typeof marked) {
 					attributes += ` data-indent="${indent}"`;
 				}
 
-				const html = Renderer.prototype.listitem.call(this, item);
-				return attributes ? html.replace(/^<li/, `<li${attributes}`) : html;
+				// Marked writes a text after the block bare, like `<h1>h</h1>\ntext`, and the editor kept that `\n`
+				// in the text. Write it as a paragraph, like Marked does in a loose list.
+				const html = Renderer.prototype.listitem.call(
+					this,
+					startsWithBlock
+						? {
+								...item,
+								tokens: item.tokens.map((child) => (child.type === "text" ? { ...child, type: "paragraph" } : child)),
+							}
+						: item,
+				);
+				return html.replace(/^<li>/, `<li${attributes}>${startsWithBlock ? "<p></p>" : ""}`);
 			},
 
 			// Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>` tag. Then

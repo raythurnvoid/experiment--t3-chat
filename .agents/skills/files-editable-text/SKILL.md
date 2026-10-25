@@ -82,7 +82,6 @@ Link definitions like `[x]: https://e.com "Title"` use the same block. Marked sh
 
 - A reference link like `[a][x]`, `[x][]` or `[x]` saves as an inline link `[a](https://e.com)`. The definition stays.
 - A paragraph right after a definition, with no blank line between them, gets a blank line before it.
-- A definition, a heading, a code block or a comment that starts a list item, like `- [x]: https://e.com`, moves out of the list. The list item must start with a paragraph.
 
 Lists keep the marker the file uses: a `*` or `+` bullet, and a `)` after the number (`1)`). The `list` renderer in `configure_marked` writes it as `data-bullet` or `data-delimiter`, and the `taskList` renderer writes a task list's bullet as `data-bullet`. The fork's lists keep it as the `bullet` or `delimiter` attribute, and the list item writer uses it. Without a marker, save writes `-` and `1.`. A new list made in the editor has no marker.
 
@@ -91,6 +90,8 @@ A list that numbers every item the same, like `1.` `1.` `1.`, keeps it. The `lis
 A list nested deeper than the item's text, like 4 spaces under `- `, keeps its indent. The `listitem` renderer adds `data-indent` with the indent counted from the item's marker, the item gets `indent`, and save indents the nested list by it. Save uses the normal indent when the kept one is narrower than the item's marker or would make a code block (4 or more spaces past the marker). Only a nested list takes it: a nested paragraph keeps its own extra spaces.
 
 This keeps a save from rewriting every list in a file. It also keeps two lists apart: `- a`, a blank line, then `* b` is two lists, and writing both with `-` made them one list.
+
+A list item can start with another block, like `- # Title`, a fence, `- > quote`, `- <!-- c -->`, `- [x]: url` or `- - nested`. The list item node must start with a paragraph, so the `listitem` renderer puts an empty `<p></p>` first. Without it the editor moved the block out of the list, and `- # a` then `- b` became two lists. The renderer also adds `data-block-on-marker` when the block is on the marker line, the item gets `blockOnMarker`, and save writes the block back there while the empty paragraph is still empty. Once the user types in that paragraph, the block saves on its own line under it. The fork's numbered list reader starts the item with the block too (`splitItemContent`). Before, `1. # a` became the text `\# a`, and a fence there changed on every save. Known change: a paragraph right after the first block, like `- # a` then `  text`, gets a blank line before it.
 
 Lists also keep blank lines between their items. When a blank line comes after any item but the last, the renderer adds `data-loose`, the list gets `loose: true`, and save puts one blank line between every two items. A blank line inside an item does not count. `list_has_blank_line_between_items` reads only the end of each item's text, so it stays cheap in a long list.
 

@@ -2711,8 +2711,21 @@ describe("block syntax round-trip through Yjs", () => {
 		["an indented code block", "a\n\n    code\n\n    more\n"],
 		["heading closing marks", "## a ##\n"],
 		["a heading underline", "a\n=\n"],
+		// Before, the block moved out of the list, and `- # a` split the list in two.
+		["a heading that starts a list item", "- # a\n- b\n"],
+		["a fence that starts a list item", "- ```\n  code\n  ```\n"],
+		["a list that starts a list item", "- - a\n"],
+		["a list under an empty list item", "-\n  - a\n"],
+		["a heading under an empty list item", "-\n  # a\n"],
+		// Before, the heading became text, and a fence changed on every save.
+		["a heading that starts a numbered item", "1. # a\n2. b\n"],
+		["a fence that starts a numbered item", "1. ```\n   code\n   ```\n"],
 	])("keeps %s", (_name, input) => {
 		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("keeps the text after a block that starts a list item as a paragraph", () => {
+		expect(round_trip_markdown("- # a\n  text\n")).toBe("- # a\n\n  text\n");
 	});
 });
 
