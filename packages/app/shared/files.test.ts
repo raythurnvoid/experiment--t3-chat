@@ -1712,7 +1712,7 @@ describe("files_parse_markdown_to_html", () => {
 		const html = files_parse_markdown_to_html("a\n|x|y|\n|-|-|\n|1|2|\nb\n");
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
 
-		expect(html._yay).toMatch(/^<p>a<\/p>\n<table>/);
+		expect(html._yay).toMatch(/^<p>a<\/p>\n<table[\s>]/);
 		expect(html._yay).toContain("<td>1</td>");
 	});
 
@@ -2992,28 +2992,43 @@ describe("GFM tables round-trip through Yjs", () => {
 		expect(flat).toContain('"type":"code"');
 	});
 
-	test("normalizes a ragged table once, then holds still", () => {
-		const expected = "| A | B |\n| --- | :---: |\n| 1 | 2 |\n";
-		const output = round_trip_markdown(table_ragged);
-		expect(output).toBe(expected);
+	// Before, save rewrote every row and the divider as `| a | b |` and `| --- |`.
+	test.each([
+		["a ragged table", table_ragged],
+		["a table without outer pipes", table_no_outer_pipes],
+		["column padding", table_padded_cells],
+		["a short divider", "| a |\n| - |\n| b |\n"],
+		["compact rows", "|a|b|\n|-|-|\n|c|d|\n"],
+		["a row with fewer cells", "| a | b |\n|-|-|\n| c |\n"],
+		["an escaped pipe in a compact row", "|a|\n|-|\n|x \\| y|\n"],
+	])("keeps %s as written", (_name, input) => {
+		const output = round_trip_markdown(input);
+		expect(output).toBe(input);
 		expect_still_a_table(output);
-		expect(round_trip_markdown(output)).toBe(output);
 	});
 
-	test("adds outer pipes once, then holds still", () => {
-		const expected = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
-		const output = round_trip_markdown(table_no_outer_pipes);
-		expect(output).toBe(expected);
-		expect_still_a_table(output);
-		expect(round_trip_markdown(output)).toBe(output);
-	});
+	test("rewrites only the edited row and keeps the divider while the alignments stay", () => {
+		const json = files_tiptap_markdown_to_json({ markdown: "| a  | b |\n|:-|-|\n| c  | d |\n| e  | f |\n" });
+		if (json._nay) {
+			throw new Error("Expected table markdown to parse", { cause: json._nay });
+		}
 
-	test("drops column padding once, then holds still", () => {
-		const expected = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
-		const output = round_trip_markdown(table_padded_cells);
-		expect(output).toBe(expected);
-		expect_still_a_table(output);
-		expect(round_trip_markdown(output)).toBe(output);
+		const table = json._yay.content?.[0];
+		const cell = table?.content?.[1]?.content?.[0]?.content?.[0]?.content?.[0];
+		if (!cell) {
+			throw new Error("Expected a body cell");
+		}
+		cell.text = "edited";
+
+		expect(build_markdown_from_json(json._yay)).toBe("| a  | b |\n|:-|-|\n| edited | d |\n| e  | f |");
+
+		for (const row of table?.content ?? []) {
+			const firstCell = row.content?.[0];
+			if (firstCell) {
+				firstCell.attrs = { ...firstCell.attrs, align: "center" };
+			}
+		}
+		expect(build_markdown_from_json(json._yay)).toBe("| a  | b |\n| :---: | --- |\n| edited | d |\n| e  | f |");
 	});
 
 	test("keeps a table inside a list item", () => {

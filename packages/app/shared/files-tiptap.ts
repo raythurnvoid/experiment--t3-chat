@@ -493,6 +493,21 @@ function configure_marked(instance: Marked | typeof marked) {
 				return source === "---" ? false : `<hr data-markdown-source="${source}">\n`;
 			},
 
+			// Keep each row and the divider line as the file wrote them, with their padding and pipes. Save writes
+			// a row back while its cells give the same text. The HTML matches Marked's own table renderer.
+			table(token) {
+				const lines = token.raw.replace(TRAILING_NEWLINES_REGEX, "").split("\n");
+				if (lines.length !== token.rows.length + 2) {
+					return false;
+				}
+
+				const row = (cells: Tokens.TableCell[], line: string) =>
+					`<tr data-markdown-source="${encodeURIComponent(line)}">\n${cells.map((cell) => this.tablecell(cell)).join("")}</tr>\n`;
+				const body = token.rows.map((cells, index) => row(cells, lines[index + 2])).join("");
+
+				return `<table data-markdown-divider="${encodeURIComponent(lines[1])}">\n<thead>\n${row(token.header, lines[0])}</thead>\n${body && `<tbody>${body}</tbody>`}</table>\n`;
+			},
+
 			// Marked ends the code with a `\n` before `</code>`. The code block keeps every character of
 			// `<pre>`, so that `\n` became part of the code. The save then wrote it as an empty line before
 			// the closing fence. So drop it here.
@@ -1870,6 +1885,8 @@ const files_table_row_node = TableRow.extend({
 			},
 			htmlBefore: html_data_attribute("data-html-before"),
 			htmlAttributes: html_kept_attributes_attribute(() => false),
+			// The pipe table line the file wrote for this row
+			markdownSource: html_data_attribute("data-markdown-source"),
 		};
 	},
 });
@@ -1948,6 +1965,15 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 			const cell = rows[rowIndex]?.content?.[column];
 			cells.push(cell ? files_render_table_cell_markdown(cell, helpers) : "");
 		}
+
+		// Write the row as the file did while its cells give the same text. Marked fills a short row with
+		// empty cells, so those may be missing from the source.
+		const source = rows[rowIndex]?.attrs?.markdownSource;
+		const sourceCells = typeof source === "string" ? table_line_cells(source) : null;
+		if (sourceCells && cells.every((cell, column) => cell === (sourceCells[column] ?? ""))) {
+			return source;
+		}
+
 		return `| ${cells.join(" | ")} |`;
 	};
 
@@ -1978,12 +2004,44 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 		}
 	});
 
+	// Write the divider as the file did while it has the same columns and alignments.
+	const dividerSource = node.attrs?.markdownDivider;
+	const dividerSourceCells = typeof dividerSource === "string" ? table_line_cells(dividerSource) : null;
+	const dividerLine =
+		dividerSourceCells?.length === columnCount &&
+		dividerSourceCells.every(
+			(cell, index) =>
+				(cell.startsWith(":") ? (cell.endsWith(":") ? "center" : "left") : cell.endsWith(":") ? "right" : null) ===
+				(alignments[index] ?? null),
+		)
+			? dividerSource
+			: `| ${delimiterCells.join(" | ")} |`;
+
 	const firstBodyRow = firstRowIsHeader ? 1 : 0;
 	const bodyLines = rows.slice(firstBodyRow).map((_row, index) => renderRow(firstBodyRow + index));
 
 	// No leading and no trailing newline: the `doc` node already joins blocks with `\n\n`, and
 	// `files_yjs_doc_get_text` adds the file's final newline.
-	return [headerLine, `| ${delimiterCells.join(" | ")} |`, ...bodyLines].join("\n");
+	return [headerLine, dividerLine, ...bodyLines].join("\n");
+}
+
+/**
+ * Split a pipe table line into its cells, like Marked does. A `\|` stays inside its cell, and the pipes at the
+ * line's start and end only close the row.
+ */
+function table_line_cells(line: string) {
+	const cells = line
+		.trim()
+		.replace(/\\.|\|/g, (match) => (match === "|" ? "\u0000" : match))
+		.split("\u0000");
+	if (cells[0]?.trim() === "") {
+		cells.shift();
+	}
+	if (cells.at(-1)?.trim() === "") {
+		cells.pop();
+	}
+
+	return cells.map((cell) => cell.trim());
 }
 
 /**
@@ -2481,6 +2539,8 @@ const files_table_node = Table.extend({
 			htmlSourceContent: { default: null, rendered: false, parseHTML: () => null },
 			htmlAfterRows: html_data_attribute("data-html-after"),
 			htmlAttributes: html_kept_attributes_attribute(() => false),
+			// The pipe table divider line the file wrote, like `|:-|-:|`
+			markdownDivider: html_data_attribute("data-markdown-divider"),
 		};
 	},
 
