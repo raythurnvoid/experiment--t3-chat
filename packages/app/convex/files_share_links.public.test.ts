@@ -933,49 +933,6 @@ describe("Move", () => {
 	});
 });
 
-describe("Sharing list", () => {
-	test("names only readable images, gives every other ref one answer, and agrees with the public page", async () => {
-		const f = await fixture();
-		const teamId = await insert_restricted_folder(f, "team");
-		const secretId = await insert_media_file(f, {
-			parentId: teamId,
-			path: "/team/secret.png",
-			contentType: "image/png",
-		});
-		await patch_node(f, secretId, { restrictedScopeNodeId: teamId });
-		const goneId = await insert_media_file(f, { parentId: "root", path: "/gone.png", contentType: "image/png" });
-		await f.t.run((ctx) => ctx.db.delete("files_nodes", goneId));
-		// Only a restricted item can have a person added, so the page and the view-only image each sit in one.
-		const pagesId = await insert_restricted_folder(f, "pages");
-		const mediaId = await insert_restricted_folder(f, "media");
-		const viewOnlyId = await insert_media_file(f, {
-			parentId: mediaId,
-			path: "/media/view.png",
-			contentType: "image/png",
-		});
-		await patch_node(f, viewOnlyId, { restrictedScopeNodeId: mediaId });
-		await set_public(f, viewOnlyId);
-		const plainId = await insert_media_file(f, { parentId: "root", path: "/plain.png", contentType: "image/png" });
-		const { pageId, link } = await linked_page(f, "/pages/page.md", [secretId, goneId, viewOnlyId, plainId]);
-		// The member manages the page and only views one image. The member role edits open files.
-		await add_person(f, pagesId, f.memberId, "manage");
-		await add_person(f, mediaId, f.memberId, "read");
-
-		const list = await f.asMember.query(api.files_share_links.get_media_to_share, {
-			membershipId: f.memberMembershipId,
-			nodeId: pageId,
-		});
-		const hidden = { available: false, kind: "image", isPublic: false };
-		expect(list?.media).toEqual([
-			hidden,
-			hidden,
-			{ available: true, kind: "image", isPublic: true, nodeId: viewOnlyId, name: "view.png", canEdit: false },
-			{ available: true, kind: "image", isPublic: false, nodeId: plainId, name: "plain.png", canEdit: true },
-		]);
-		expect(list?.media.map((item) => item.isPublic)).toEqual(await shown(f, link.token));
-	});
-});
-
 describe("tree rows", () => {
 	test("a tree row of a public file has no isPublic", async () => {
 		const f = await fixture();

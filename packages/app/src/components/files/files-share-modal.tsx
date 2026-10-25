@@ -2,7 +2,7 @@ import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { Lock, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
-import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -309,182 +309,8 @@ const FilesShareModalSourceRow = memo(function FilesShareModalSourceRow(props: F
 // #endregion source row
 
 // #region link
-type FilesShareModalMedia_Props = {
-	nodeId: app_convex_Id<"files_nodes">;
-	busy: boolean;
-};
-
-type FilesShareModalMedia_CustomAttributes = {
-	"data-share-media": "public" | "not_public";
-};
-
-/**
- * The images and videos of a linked file, and whether the public page shows them. Loaded on request,
- * because the check reads the whole file.
- */
-const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShareModalMedia_Props) {
-	const { nodeId, busy } = props;
-	const { membershipId } = AppTenantProvider.useContext();
-	const [review, setReview] = useState<
-		app_convex_FunctionReturnType<typeof app_convex_api.files_share_links.get_media_to_share> | undefined
-	>();
-	const [pending, setPending] = useState<string | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const rootRef = useRef<HTMLDivElement>(null);
-	const listRef = useRef<HTMLUListElement>(null);
-
-	// This box goes away when the link ends or changes, for example from another tab. The browser then
-	// puts focus on `<body>` and a keyboard user loses their place, so this cleanup gives focus to the
-	// link section. The section carries `tabIndex={-1}` so it can take it.
-	useLayoutEffect(() => {
-		const root = rootRef.current;
-		return () => {
-			if (!root?.contains(document.activeElement)) return;
-			const section = root.closest<HTMLElement>(".FilesShareModalLink");
-			// Wait for the box removal to finish. Keep any focus that moved somewhere else.
-			queueMicrotask(() => {
-				if (document.activeElement === document.body) section?.focus();
-			});
-		};
-	}, []);
-
-	const handleReview = useFn(async () => {
-		if (busy || pending) return;
-		setPending("review");
-		setError(null);
-		try {
-			setReview(await app_convex.query(app_convex_api.files_share_links.get_media_to_share, { membershipId, nodeId }));
-		} catch (error) {
-			console.error("[FilesShareModalMedia.handleReview] Failed to read media", { error });
-			setError("Could not load the images and videos. Try again.");
-		}
-		setPending(null);
-	});
-
-	const handleMakePublic = useFn(async (index: number) => {
-		const item = review?.media[index];
-		if (busy || pending || !item?.available) return;
-		setPending(String(index));
-		setError(null);
-		try {
-			const result = await app_convex.mutation(app_convex_api.files_sharing.set_node_public, {
-				membershipId,
-				nodeId: item.nodeId,
-				enabled: true,
-			});
-			if (result._nay) {
-				setError(result._nay.message);
-			} else {
-				const next = await app_convex.query(app_convex_api.files_share_links.get_media_to_share, {
-					membershipId,
-					nodeId,
-				});
-				setReview(next);
-				// The file is public now, but the page checks more: a finished upload, and no plugin deciding
-				// who reads its folder.
-				// Find the row by id: the list can change order while the page is open.
-				const nextItem = next?.media.find((m) => m.available && m.nodeId === item.nodeId);
-				if (nextItem?.available && !nextItem.isPublic) {
-					setError("Turned on, but the page cannot show this file yet. It may still be uploading.");
-				} else {
-					// The row's button is gone now, so keep focus in the dialog. No answer or an empty one removes the list too.
-					(next && next.media.length > 0 ? listRef : rootRef).current?.focus();
-				}
-			}
-		} catch (error) {
-			console.error("[FilesShareModalMedia.handleMakePublic] Failed to make media public", { error });
-			setError("Could not show this file. Try again.");
-		}
-		setPending(null);
-	});
-
-	return (
-		<div
-			ref={rootRef}
-			// Not reachable by Tab. `handleMakePublic` focuses it when the new answer has no list.
-			tabIndex={-1}
-			// A role, so the name below is allowed and a screen reader says where focus landed.
-			role="group"
-			aria-label="Images and videos"
-			className={"FilesShareModalMedia" satisfies FilesShareModalLink_ClassNames}
-		>
-			<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-				Turning the link on shows the images and videos you can edit. Check the others here.
-			</p>
-			<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
-				<MyButton
-					variant="outline"
-					disabled={busy || (pending !== null && pending !== "review")}
-					aria-busy={pending === "review" || undefined}
-					onClick={handleReview}
-				>
-					{pending === "review" ? "Loading..." : review === undefined ? "Check images and videos" : "Refresh list"}
-				</MyButton>
-			</div>
-			{review === null ? (
-				<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-					This public link is no longer available.
-				</p>
-			) : null}
-			{review?.media.length === 0 ? (
-				<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-					This file has no saved images or videos.
-				</p>
-			) : null}
-			{review && review.media.length > 0 ? (
-				<ul
-					ref={listRef}
-					// Not reachable by Tab. `handleMakePublic` focuses it when the row's button goes away.
-					tabIndex={-1}
-					className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
-					aria-label="Images and videos in the public link"
-				>
-					{review.media.map((item, index) => (
-						<li
-							key={index}
-							className={"FilesShareModalMedia-row" satisfies FilesShareModalLink_ClassNames}
-							{...({
-								"data-share-media": item.isPublic ? "public" : "not_public",
-							} satisfies FilesShareModalMedia_CustomAttributes)}
-						>
-							{/* The file can embed any file id, so a file the caller cannot open stays unnamed. */}
-							<span>
-								{item.available
-									? item.name
-									: item.isPublic
-										? `This ${item.kind} is shown.`
-										: `This ${item.kind} is not shown, and you cannot open it.`}
-							</span>
-							{item.available && item.isPublic ? <span>Shown</span> : null}
-							{item.available && !item.isPublic && item.canEdit ? (
-								<MyButton
-									variant="outline"
-									disabled={busy || (pending !== null && pending !== String(index))}
-									aria-label={`Show ${item.name}`}
-									aria-busy={pending === String(index) || undefined}
-									onClick={() => handleMakePublic(index)}
-								>
-									{pending === String(index) ? "Saving..." : "Show"}
-								</MyButton>
-							) : null}
-							{item.available && !item.isPublic && !item.canEdit ? <span>Not shown</span> : null}
-						</li>
-					))}
-				</ul>
-			) : null}
-			{error ? (
-				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
-					{error}
-				</p>
-			) : null}
-		</div>
-	);
-});
-
 type FilesShareModalLink_ClassNames =
 	| "FilesShareModalLink"
-	| "FilesShareModalMedia"
-	| "FilesShareModalMedia-row"
 	| "FilesShareModalLink-created"
 	| "FilesShareModalLink-error"
 	| "FilesShareModalLink-level-trigger"
@@ -497,7 +323,6 @@ type FilesShareModalLink_CustomAttributes = {
 };
 
 type FilesShareModalLink_Props = {
-	nodeId: app_convex_Id<"files_nodes">;
 	/** The file's link. `hidden` when the caller does not manage the file, so they get no link select. */
 	link: { token: string; createdAt: number; creatorName: string } | null | "hidden";
 	/** The public flag of an image or video file, with its kind. Null for any other file. */
@@ -521,26 +346,13 @@ type FilesShareModalLink_Props = {
  * it. Folders have neither, so they get no section.
  */
 const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareModalLink_Props) {
-	const {
-		nodeId,
-		link,
-		publicFlag,
-		pending,
-		publicPending,
-		busy,
-		error,
-		publicError,
-		onEnabledChange,
-		onPublicChange,
-	} = props;
+	const { link, publicFlag, pending, publicPending, busy, error, publicError, onEnabledChange, onPublicChange } = props;
 
 	const linkOn = link !== null && link !== "hidden";
 	const levelLabel = linkOn ? access_control_FILE_SHARE_LEVELS.read.label : "No access";
 
 	return (
 		<section
-			// Not reachable by Tab, but focus lands here when the media box it held goes away.
-			tabIndex={-1}
 			aria-label="Public link"
 			className={cn(
 				"FilesShareModal-section" satisfies FilesShareModal_ClassNames,
@@ -612,7 +424,6 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 					Link created by {link.creatorName} on {format_time(link.createdAt)}.
 				</p>
 			) : null}
-			{linkOn ? <FilesShareModalMedia key={`${nodeId}:${link.token}`} nodeId={nodeId} busy={busy} /> : null}
 
 			{error ? (
 				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
@@ -1614,9 +1425,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											}
 											note={baseRowNote}
 										>
-											{!shareState.inheritedFrom.restricted ? (
-												<MyBadge variant="outline">Based on role</MyBadge>
-											) : shareState.inheritedFrom.restricted.entries ? (
+											{shareState.inheritedFrom.restricted?.entries ? (
 												<MyButton
 													variant="outline"
 													disabled={busy}
@@ -1753,7 +1562,6 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 							    image or video also shows its public flag to anybody who may edit it. */}
 							{shareState.nodeKind === "file" && (shareState.canManage || shareState.public?.canChange) ? (
 								<FilesShareModalLink
-									nodeId={shareState.nodeId}
 									link={
 										!shareState.canManage
 											? "hidden"

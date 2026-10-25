@@ -1493,8 +1493,8 @@ flag. Folders never do, so nothing is public by inheritance.
   editor from showing an image they cannot edit. On also needs `content.read`, and a signed-in
   user, not an anonymous one ("Sign in to make files public").
 - Three doors set the flag on:
-  - `files_sharing.set_node_public({ membershipId, nodeId, enabled })`, the select in Sharing and
-    the Show button in "Check images and videos". The public API (`POST /api/v1/files/public/set`,
+  - `files_sharing.set_node_public({ membershipId, nodeId, enabled })`, the `Inside public
+    documents` select in the image's own Sharing. The public API (`POST /api/v1/files/public/set`,
     see `../public-api/SKILL.md`) shares `files_sharing_db_set_node_public` with it.
   - Turning a link on (`set_node_share_link`). It flags each image and video of the linked file that
     the caller can edit and read (`files_share_links_db_list_media_nodes`, one page preparation). A
@@ -1502,8 +1502,8 @@ flag. Folders never do, so nothing is public by inheritance.
   - An upload into a document with a live link. `create_upload_node` takes the document's id
     (`documentNodeId`) from the rich text editor. When the document has a selected link and the
     caller can read it, the new image or video starts public. The uploader can edit the new file.
-- A save never sets the flag. Images that a save adds later (not uploads) get a Show button in
-  Sharing.
+- A save never sets the flag. Images that a save adds later (not uploads) stay gray until an editor
+  of each image sets `Inside public documents` to `Shown` in that image's Sharing.
 - `files_sharing_db_set_node_public` refuses a folder (`not_a_file`). Repeating On or Off writes
   nothing. It charges `files_sharing_write` first (app and API).
 - On also needs: a file that is not archived and a live workspace; no Move mark on the file and no
@@ -1514,10 +1514,6 @@ flag. Folders never do, so nothing is public by inheritance.
 - `get_node_share_state` returns `public: null` for a folder and for a file that is not an image or
   video. Otherwise it returns `{ isPublic, canChange, mediaKind }`, where `canChange` is the edit
   check above.
-- `files_share_links.get_media_to_share` feeds Sharing → "Check images and videos" on a file with a
-  live link (manage and read needed). Each item has `isPublic`, from the same check as the public
-  page. Only items the caller can read get `nodeId`, `name`, and `canEdit`. The rest stay
-  unnamed, because the file can embed any file id.
 
 **Writers.** Every writer uses one rule: a file keeps its flag only while its restricted area does
 not change. New nodes start not public, copies included. Writers: `files_nodes_db_set_restricted_scope`,
