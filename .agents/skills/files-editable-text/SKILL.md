@@ -126,6 +126,10 @@ Known changes, with no lost content, all stable after one save:
 - A lazy line in a list item, like `- a` then `b` with no indent, gets the item's indent: `  b`.
 - An indented code block inside a list item saves with a ``` fence. A tab before an indented code line becomes 4 spaces.
 - The indent before a heading's `#`, like `  # a`, is dropped.
+- A tab after a list marker, like `-` and a tab then `a`, becomes one space: `- a`.
+- Leading zeros in a list number are dropped: `00. a` then `01. b` saves as `0. a` then `1. b`.
+- A task list writes one space after each marker: `-   [ ] a` saves as `- [ ] a`.
+- Extra spaces after a quote's `>` before a list are dropped: `>   -   a` saves as `> -   a`.
 
 HTML entities keep the spelling the file uses. The `text` renderer in `configure_marked` wraps each entity (`&copy;`, `&#169;`, `&nbsp;`, `&amp;`) in a span that `files_html_entity_mark` reads. The mark stores the source and the character it shows. Save writes the source back while the text under the mark is still that character. A typed or changed character saves as plain text. The same entity twice in a row, like `&nbsp;&nbsp;`, is one text node under one mark, and it also saves as written.
 
