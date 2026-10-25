@@ -70,7 +70,11 @@ async function remove_head_fields(t: ReturnType<typeof test_convex>) {
 				if ("contentHeadId" in row && row.contentHeadId)
 					await ctx.db.patch(table, row._id, { contentHeadId: undefined });
 		for (const row of await ctx.db.query("files_move_cohort_content").collect())
-			await ctx.db.patch("files_move_cohort_content", row._id, { beforeHeadId: undefined, afterHeadId: undefined });
+			await ctx.db.patch("files_move_cohort_content", row._id, {
+				beforeHeadId: undefined,
+				afterHeadId: undefined,
+				consumedResources: undefined,
+			});
 		for (const row of await ctx.db.query("files_saved_content_heads").collect())
 			await ctx.db.delete("files_saved_content_heads", row._id);
 	});
@@ -111,11 +115,13 @@ async function semantic_state(t: ReturnType<typeof test_convex>) {
 						contentHeadId: _head,
 						beforeHeadId: _before,
 						afterHeadId: _after,
+						consumedResources: _consumed,
 						...value
 					} = row as typeof row & {
 						contentHeadId?: unknown;
 						beforeHeadId?: unknown;
 						afterHeadId?: unknown;
+						consumedResources?: unknown;
 					};
 					return value;
 				}),
@@ -236,14 +242,15 @@ async function check_current_owner(f: Awaited<ReturnType<typeof fixture>>) {
 	});
 }
 
-test.each(["before", "after old content cleanup", "abort"] as const)(
+test.each(["before", "after old content cleanup", "abort", "unchanged"] as const)(
 	"migrates content alongside Review cleanup: %s",
 	async (when) => {
 		const f = await fixture();
+		const selectedText = when === "unchanged" ? originalText : acceptedText;
 		const edited = await upsert_file_pending_update_public_for_test(f.asUser, {
 			membershipId: f.db.membershipId,
 			nodeId: f.nodeId,
-			stagedMarkdown: acceptedText,
+			stagedMarkdown: selectedText,
 			unstagedMarkdown: remainderText,
 		});
 		if (edited._nay) throw new Error(edited._nay.message);
@@ -309,11 +316,27 @@ test.each(["before", "after old content cleanup", "abort"] as const)(
 			const ready =
 				when === "before"
 					? !!before.cohort && before.cohort.publishedAt === null
-					: when === "abort"
+					: when === "abort" || when === "unchanged"
 						? before.content?.sealed && before.cohort?.publishedAt === null
 						: before.content?.phaseCursor === "finish:1|";
 			if (!startedMigration && ready) {
-				await remove_head_fields(f.t);
+				if (when === "unchanged") {
+					// Keep the native sealed Review. Reproduce only the former bridge's shared owner.
+					await f.t.run(async (dbCtx) => {
+						const content = before.content!;
+						if (!content.beforeHeadId || !content.afterHeadId) throw new Error("Missing native Review owners");
+						for (const table of ["files_text_chunks", "files_plain_text_chunks", "files_yjs_updates"] as const)
+							for (const row of await dbCtx.db.query(table).collect())
+								if (row.contentHeadId === content.afterHeadId)
+									await dbCtx.db.patch(table, row._id, { contentHeadId: content.beforeHeadId });
+						await dbCtx.db.patch("files_move_cohort_content", content._id, {
+							afterHeadId: content.beforeHeadId,
+							consumedResources: undefined,
+						});
+						if (content.afterHeadId !== content.beforeHeadId)
+							await dbCtx.db.delete("files_saved_content_heads", content.afterHeadId);
+					});
+				} else await remove_head_fields(f.t);
 				startedMigration = true;
 				if (when === "abort")
 					await f.asUser.mutation(api.activities.request_stop, { membershipId: f.db.membershipId, activityId });
@@ -321,7 +344,12 @@ test.each(["before", "after old content cleanup", "abort"] as const)(
 				for (let page = 0; page < 30; page++) {
 					await backfill.step();
 					const rows = await owned_rows(f.t);
+					const migratedReview =
+						when === "unchanged"
+							? await f.t.run((dbCtx) => dbCtx.db.get("files_move_cohort_content", before.content!._id))
+							: null;
 					if (
+						(when !== "unchanged" || migratedReview?.consumedResources !== undefined) &&
 						rows.some(
 							(row) =>
 								row.headId &&
@@ -351,6 +379,18 @@ test.each(["before", "after old content cleanup", "abort"] as const)(
 				: null;
 			if (content?.afterHeadId && content.afterHeadId !== content.beforeHeadId) candidateHeadId = content.afterHeadId;
 			if (content?.sealed && cohort && cohort.phase !== "aborting" && content.phaseCursor !== "abort:done") {
+				expect(content.consumedResources, "Sealing or backfill captures the original draft states").toEqual(
+					[proposal.content!.baseStateId, proposal.content!.stagedStateId, proposal.content!.unstagedStateId].map(
+						(id) => ({ kind: "state", id }),
+					),
+				);
+				if (when === "unchanged") {
+					expect(content.prepared?.kind).toBe("saved_yjs");
+					expect(content.trustedStageId, "The native Review has no accepted byte change").toBeNull();
+					expect(content.afterHeadId, "Unchanged Review copies have a distinct candidate owner").not.toBe(
+						content.beforeHeadId,
+					);
+				}
 				await f.t.run(async (dbCtx) => {
 					if (!content.afterHeadId) throw new Error("Missing candidate head");
 					const place = await files_saved_placement_db_get_node(dbCtx.db, f.nodeId, {
@@ -387,7 +427,7 @@ test.each(["before", "after old content cleanup", "abort"] as const)(
 			const phase = `${cohort?.phase}:${content?.phaseCursor}`;
 			if (!checked.has(phase)) {
 				checked.add(phase);
-				await check_saved_content(f, cohort?.publishedAt != null ? acceptedText : originalText);
+				await check_saved_content(f, cohort?.publishedAt != null ? selectedText : originalText);
 			}
 			return result;
 		});
@@ -431,7 +471,7 @@ test.each(["before", "after old content cleanup", "abort"] as const)(
 				}
 			});
 		}
-		await check_saved_content(f, when === "abort" ? originalText : acceptedText);
+		await check_saved_content(f, when === "abort" ? originalText : selectedText);
 		await check_current_owner(f);
 		const remaining = await f.t.run((ctx) => files_saved_placement_db_get_proposal(ctx.db, proposal._id));
 		expect(remaining?.content, "The remaining draft keeps a complete family").toBeDefined();
@@ -586,6 +626,19 @@ test("a plain Move keeps the migrated content owner", async () => {
 	await remove_head_fields(f.t);
 	await migration(f.t).finish();
 	const headId = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))!.contentHeadId;
+	const listed = await f.asUser.query(api.files_tree.list_tree_children, {
+		membershipId: f.db.membershipId,
+		stream: "normal",
+		parentId: "root",
+		kind: "file",
+		archived: false,
+		restricted: false,
+		paginationOpts: { cursor: null, numItems: 10 },
+	});
+	expect(listed.page.map((node) => node._id), "The public tree still accepts migrated file rows").toEqual([f.nodeId]);
+	expect(listed.page[0], "Internal content ownership stays out of public tree rows").not.toHaveProperty(
+		"contentHeadId",
+	);
 	const folder = await f.asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: f.db.membershipId,
 		parentId: "root",

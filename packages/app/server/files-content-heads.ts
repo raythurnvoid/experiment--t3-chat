@@ -46,7 +46,7 @@ type Head = Doc<"files_saved_content_heads">;
 type Fields = Record<string, unknown>;
 type Bridge = {
 	db: MutationCtx["db"];
-	backfill: (table: TableNames, id: Id<TableNames>) => Promise<void>;
+	backfill: (table: TableNames, id: Id<TableNames>, repair?: boolean) => Promise<void>;
 	flush: () => Promise<void>;
 };
 type ContentDoc = {
@@ -93,7 +93,7 @@ function header(node: Doc<"files_nodes"> | Doc<"files_saved_places">) {
 export async function files_content_heads_db_backfill(ctx: MutationCtx, table: TableNames, id: Id<TableNames>) {
 	const bridge = Reflect.get(ctx.db, BRIDGE) as Bridge | undefined;
 	if (!bridge) throw should_never_happen("Content backfill needs the mutation wrapper", { table, id });
-	await bridge.backfill(table, id);
+	await bridge.backfill(table, id, true);
 }
 
 /**
@@ -178,18 +178,13 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 					return null;
 				const before = content.beforeHeadId ?? (await ensure_node(content.nodeId));
 				if (!before) return null;
-				const prepared = content.prepared;
-				const changed =
-					prepared &&
-					(prepared.kind === "saved_yjs"
-						? !!prepared.trustedStageId
-						: prepared.kind === "saved_asset"
-							? !!prepared.publish
-							: true);
+				// Review copies committed docs even when its accepted text is unchanged.
+				// Each copy needs its own owner; public Yjs IDs stay the same.
+				const prepared = content.prepared !== null;
 				let after = content.afterHeadId ?? before;
 				// Late migration keeps only the accepted head once content cleanup is complete.
 				if (
-					changed &&
+					prepared &&
 					after === before &&
 					content.phaseCursor !== "finish:done" &&
 					content.phaseCursor !== "abort:done"
@@ -234,10 +229,10 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 		return await ensure_node(nodeId);
 	}
 
-	async function tag(table: TableNames, id: Id<TableNames>, doc: ContentDoc, inserted = false) {
-		if (!has_content(table, doc) || (!inserted && doc.contentHeadId)) return;
+	async function tag(table: TableNames, id: Id<TableNames>, doc: ContentDoc, assign = false) {
+		if (!has_content(table, doc) || (!assign && doc.contentHeadId)) return;
 		const contentHeadId = await owner(doc);
-		if (contentHeadId) await raw.patch(table, id, { contentHeadId } as never);
+		if (contentHeadId && contentHeadId !== doc.contentHeadId) await raw.patch(table, id, { contentHeadId } as never);
 	}
 
 	async function sync_place(place: Doc<"files_saved_places">) {
@@ -263,7 +258,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 		if (retired !== kept) await raw.patch("files_saved_content_heads", retired, { ready: false, retired: true });
 	}
 
-	async function backfill(table: TableNames, id: Id<TableNames>) {
+	async function backfill(table: TableNames, id: Id<TableNames>, repair = false) {
 		if (!WATCHED_TABLES.has(table)) return;
 		const doc = await raw.get(table, id);
 		if (!doc) return;
@@ -277,7 +272,11 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 			await ensure_content(content._id);
 			if (content.phaseCursor === "finish:done" || content.phaseCursor === "abort:done")
 				await complete_content(content);
-		} else if (CONTENT_TABLES.has(table)) await tag(table, id, doc as ContentDoc);
+		} else if (CONTENT_TABLES.has(table)) {
+			// Old bridge writes shared an owner for unchanged Review copies.
+			// Only migration rechecks those tags; normal promotion keeps its owner.
+			await tag(table, id, doc as ContentDoc, repair);
+		}
 		else dirty.add((doc as ContentDoc).fileNodeId!);
 	}
 

@@ -234,7 +234,7 @@ export function files_move_content_consumed_resources(
 	proposal: Doc<"files_pending_updates">,
 	retained: Set<Id<"files_pending_update_yjs_states">>,
 ) {
-	const resources: Doc<"files_private_storage_reservations">["resource"][] = [];
+	const resources: NonNullable<Doc<"files_move_cohort_content">["consumedResources"]> = [];
 	if (proposal.content)
 		for (const id of [proposal.content.baseStateId, proposal.content.stagedStateId, proposal.content.unstagedStateId]) {
 			if (!retained.has(id)) resources.push({ kind: "state", id });

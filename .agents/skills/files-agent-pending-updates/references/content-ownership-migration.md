@@ -9,10 +9,14 @@ Do not remove Restore guards or switch readers based only on this bridge.
 This reaches tagged staging writes and cleanup writes too. It sets ownership at the write and
 copies final content fields after the pending overlay flush. Worker budget checks include that flush.
 
-One ordinary file has a current content head. A Review that changes content has a separate
-candidate. Plain Move uses the same head on both location sides. A candidate becomes ready only
+One ordinary file has a current content head. Every prepared file Review has a separate
+candidate, even when its accepted bytes are unchanged. Review copies need separate owners.
+Plain Move uses the same head on both location sides. A candidate becomes ready only
 after its content seals. Published Review cleanup may already have deleted old content. Migration
 must preserve the surviving accepted docs without rebuilding the deleted old docs.
+
+Backfill also repairs ownership tags written by an older bridge for unchanged Review copies.
+Normal writes keep an existing tag when cleanup clears its Move side.
 
 The bridge keeps public `yjsLastSequenceId` values unchanged. It copies candidate sequence counters
 into the head. Changing an ordinary Review's public sequence ID would reconnect editors. The later
@@ -23,6 +27,10 @@ ownership. Pending docs and user-written `metadata.*` stay untouched. Promotion 
 head ID when it clears a Move side. File identity, draft state IDs and bytes, expiry, billing, quota,
 and history receipts must not change during backfill.
 
+Sealing also captures the small list of original private resources that Review will consume.
+Backfill adds this list to old sealed work before cleanup finishes. It checks the original
+proposal revision first. Completed history gets an empty list and does not claim current drafts.
+
 Completed Review history must not borrow today's content owner during backfill. History cleanup
 may remove its already-mapped old heads, but it must never change the file's current head. File
 deletion removes that one current head. Prior and candidate heads stay with the existing paged
@@ -31,6 +39,7 @@ cohort cleanup. Do not scan all heads for a file: retained Review history can gr
 ## Rollout order
 
 1. Deploy the optional schema and matching write support together.
+   Keep the old side-tag readers, write guards, and physical-field flush in this phase.
 2. Run `migrations:run_backfill_content_heads` only after the live migration is authorized.
    It runs nodes, Review content, saved places, text, search, Yjs updates, and metadata in order.
 3. Audit every selected content owner and its docs. A runner returning does not prove completion.

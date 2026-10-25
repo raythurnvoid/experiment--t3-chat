@@ -2562,6 +2562,17 @@ const app_convex_schema = defineSchema({
 		// Existing jobs acquire these during the content ownership backfill.
 		beforeHeadId: v.optional(v.id("files_saved_content_heads")),
 		afterHeadId: v.optional(v.id("files_saved_content_heads")),
+		// At most three states, two assets, and one private node. Captured before publication.
+		// Optional while existing sealed Review work is backfilled.
+		consumedResources: v.optional(
+			v.array(
+				v.union(
+					v.object({ kind: v.literal("state"), id: v.id("files_pending_update_yjs_states") }),
+					v.object({ kind: v.literal("asset"), id: v.id("files_r2_assets"), r2Key: v.string() }),
+					v.object({ kind: v.literal("node"), id: v.id("files_pending_nodes") }),
+				),
+			),
+		),
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
@@ -4635,6 +4646,7 @@ const app_convex_schema = defineSchema({
 		),
 	)
 		.index("by_contentHead_fieldPath", ["contentHeadId", "fieldPath"])
+		.index("by_contentHead_view_fieldPath", ["contentHeadId", "moveView.cohortId", "moveView.view", "fieldPath"])
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		// Whole-file staging needs short cursors even when a metadata key is very long.
 		.index("by_organization_workspace_source_fileNode", [
@@ -4837,8 +4849,8 @@ const app_convex_schema = defineSchema({
 		retired: v.boolean(),
 	})
 		.index("by_fileNode", ["fileNodeId"])
-		.index("by_asset", ["assetId"])
-		.index("by_snapshotAsset", ["snapshotAssetId"]),
+		.index("by_asset_retired", ["assetId", "retired"])
+		.index("by_snapshotAsset_retired", ["snapshotAssetId", "retired"]),
 
 	files_nodes: defineTable({
 		moveCohortId: v.optional(v.id("files_move_cohorts")),
@@ -5595,6 +5607,13 @@ const app_convex_schema = defineSchema({
 		),
 	)
 		.index("by_contentHead_yjsSeq_chunk", ["contentHeadId", "yjsSequence", "chunkIndex"])
+		.index("by_contentHead_view_yjsSeq_chunk", [
+			"contentHeadId",
+			"moveView.cohortId",
+			"moveView.view",
+			"yjsSequence",
+			"chunkIndex",
+		])
 		// `sourceKind` and `userId` let a search read committed chunks only, or one user's pending chunks
 		// only. Committed chunks have no `userId`.
 		.searchIndex("search_by_plainTextChunk", {

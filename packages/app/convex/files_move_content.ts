@@ -873,7 +873,8 @@ async function db_add_private_accounting(
 	let privateByteDelta = 0;
 	let privateNodeDelta = 0;
 	const retained = retained_state_ids(afterProposal);
-	for (const resource of consumed_resources(proposal, retained)) {
+	const consumedResources = consumed_resources(proposal, retained);
+	for (const resource of consumedResources) {
 		const reservation = await db_reservation(ctx, resource);
 		if (!reservation || reservation.settlement.kind !== "held" || reservation.cohortContentId)
 			throw should_never_happen("Move lost an original private hold", { contentId: content._id, resource });
@@ -887,6 +888,7 @@ async function db_add_private_accounting(
 		if (reservation.cohortContentId === content._id) privateByteDelta += reservation.byteCount;
 	}
 	await ctx.db.patch("files_move_cohort_content", content._id, {
+		consumedResources,
 		privateByteDelta,
 		privateNodeDelta,
 		privateAccountingAdded: true,

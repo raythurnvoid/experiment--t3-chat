@@ -122,6 +122,7 @@ export function files_tree_db_get_public_node_fields(
 		parentExtendedScopeNodeId: _parentExtendedScopeNodeId,
 		isPublic: _isPublic,
 		moveCohortId: _moveCohortId,
+		contentHeadId: _contentHeadId,
 		contentTypeEssence: _contentTypeEssence,
 		contentTypeFamily: _contentTypeFamily,
 		archivedPathLength: _archivedPathLength,

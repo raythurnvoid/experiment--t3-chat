@@ -3,6 +3,11 @@ import { components, internal } from "./_generated/api.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
 import { files_content_heads_db_backfill } from "../server/files-content-heads.ts";
+import {
+	files_move_content_consumed_resources,
+	files_move_content_retained_state_ids,
+} from "./files_move_content_db.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 
 const CONTENT_HEAD_BATCH_SIZE = 20;
 
@@ -25,6 +30,23 @@ export const backfill_content_head_review = app_migrations.define({
 	batchSize: CONTENT_HEAD_BATCH_SIZE,
 	migrateOne: async (ctx, doc) => {
 		await files_content_heads_db_backfill(ctx, "files_move_cohort_content", doc._id);
+		if (doc.consumedResources !== undefined || !doc.sealed) return;
+		if (doc.phaseCursor === "finish:done" || doc.phaseCursor === "abort:done") {
+			await ctx.db.patch("files_move_cohort_content", doc._id, { consumedResources: [] });
+			return;
+		}
+		const [proposal, item] = await Promise.all([
+			ctx.db.get("files_pending_updates", doc.pendingUpdateId),
+			ctx.db.get("files_move_cohort_items", doc.itemId),
+		]);
+		if (!proposal || proposal.revision !== doc.reviewedRevision || !item)
+			throw should_never_happen("Content migration lost the reviewed proposal", { contentId: doc._id });
+		await ctx.db.patch("files_move_cohort_content", doc._id, {
+			consumedResources: files_move_content_consumed_resources(
+				proposal,
+				files_move_content_retained_state_ids(item.afterProposal),
+			),
+		});
 	},
 });
 
