@@ -2780,6 +2780,9 @@ describe("block syntax round-trip through Yjs", () => {
 		["2 spaces after each number", "1.  a\n2.  b\n"],
 		["a paragraph under a wide bullet", "-   a\n\n    more\n"],
 		["a wide space next to text under the marker", "-\n    a\n-   b\n"],
+		// Before, a save wrote `\[ ]`, so other apps stopped showing a checkbox.
+		["a task box in a numbered item", "1. [ ] a\n2. [x] b\n"],
+		["a task box at the start of a paragraph", "[ ] a\n"],
 		["a `*` task bullet", "* [ ] a\n* [x] b\n"],
 		// Before, a save wrote `[X]` as `[x]`.
 		["an upper-case `[X]`", "- [X] a\n- [x] b\n  - [X] c\n"],
