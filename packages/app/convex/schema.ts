@@ -3908,15 +3908,7 @@ const app_convex_schema = defineSchema({
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
 		kind: v.union(v.literal("folder"), v.literal("file")),
 		name: v.string(),
-		/**
-		 * Legacy: no longer written. `strip_files_pending_hides_time_fields` removes it.
-		 */
-		updatedAt: v.optional(v.number()),
 		lowercaseExtension: v.union(v.string(), v.null()),
-		/**
-		 * Legacy: no longer written. `strip_files_pending_hides_time_fields` removes it.
-		 */
-		nodeCreationTime: v.optional(v.number()),
 		treePath: v.string(),
 	})
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])

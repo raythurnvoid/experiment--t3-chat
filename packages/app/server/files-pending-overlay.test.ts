@@ -415,7 +415,7 @@ describe("files_pending_overlay_list", () => {
 		await f.saved("d/z");
 		await f.t.run(async (ctx) => {
 			const owner = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
-			const hide = { ...owner, parentId: d, updatedAt: 1, nodeCreationTime: 1 };
+			const hide = { ...owner, parentId: d };
 			await ctx.db.insert("files_pending_hides", {
 				...hide,
 				savedNodeId: m,
@@ -462,9 +462,7 @@ describe("files_pending_overlay_list", () => {
 				parentId: s,
 				kind: "folder",
 				name: "a",
-				updatedAt: 1,
 				lowercaseExtension: null,
-				nodeCreationTime: 1,
 				treePath: "/s/a/",
 			}),
 		);
@@ -500,9 +498,7 @@ describe("files_pending_overlay_list", () => {
 					parentId: s,
 					kind: "folder",
 					name,
-					updatedAt: 1,
 					lowercaseExtension: null,
-					nodeCreationTime: 1,
 					treePath: `/s/${name}/`,
 				});
 			}
