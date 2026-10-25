@@ -1,4 +1,5 @@
 import { Migrations } from "@convex-dev/migrations";
+import { ConvexError, v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
@@ -88,6 +89,45 @@ export const backfill_content_head_metadata = app_migrations.define({
 	batchSize: CONTENT_HEAD_BATCH_SIZE,
 	migrateOne: async (ctx, doc) => {
 		await files_content_heads_db_backfill(ctx, "files_metadata_docs", doc._id);
+	},
+});
+
+// The component's dryRun logs private docs. Roll back a real batch with a counts-only error instead.
+export const preview_content_heads = internalMutation({
+	args: {
+		migration: v.union(
+			v.literal("nodes"),
+			v.literal("review"),
+			v.literal("places"),
+			v.literal("text"),
+			v.literal("search"),
+			v.literal("updates"),
+			v.literal("metadata"),
+		),
+		cursor: v.union(v.string(), v.null()),
+		batchSize: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const migrations = {
+			nodes: internal.migrations.backfill_content_head_nodes,
+			review: internal.migrations.backfill_content_head_review,
+			places: internal.migrations.backfill_content_head_places,
+			text: internal.migrations.backfill_content_head_text,
+			search: internal.migrations.backfill_content_head_search,
+			updates: internal.migrations.backfill_content_head_updates,
+			metadata: internal.migrations.backfill_content_head_metadata,
+		};
+		const result: { processed: number; isDone: boolean; continueCursor: string } | undefined = await ctx.runMutation(
+			migrations[args.migration],
+			{ oneBatchOnly: true, dryRun: false, cursor: args.cursor, batchSize: args.batchSize },
+		);
+		if (!result) throw should_never_happen("Content preview returned no batch result");
+		throw new ConvexError({
+			processed: result.processed,
+			isDone: result.isDone,
+			continueCursor: result.continueCursor,
+		});
 	},
 });
 

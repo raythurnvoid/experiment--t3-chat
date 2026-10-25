@@ -56,8 +56,8 @@ No live migration is part of the local support tests.
 
 ## Checks
 
-`convex/migrations.content_heads.test.ts` starts real file, Review, and Move operations. It strips
-only new ownership fields to represent old data. It interleaves migration pages with cleanup and
+`convex/migrations.content_heads.test.ts` starts real file, Review, and Move operations. It represents
+old data by removing new ownership fields or restoring the old shared-owner mapping. It interleaves migration pages with cleanup and
 checks exact public text and editor bytes. It also checks draft state, receipts, page retries,
 frontmatter ownership, and cancellation. Keep these fixtures small. Large scale probes belong
 outside the default suite.

@@ -24,6 +24,7 @@ import {
 } from "../server/files-saved-placement.ts";
 import { files_YJS_DOC_KEYS } from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
+import { backfill_content_head_nodes } from "./migrations.ts";
 
 const originalText = "Original line\n".repeat(220);
 const acceptedText = "Accepted line\n".repeat(220);
@@ -242,6 +243,34 @@ async function check_current_owner(f: Awaited<ReturnType<typeof fixture>>) {
 	});
 }
 
+test("content preview rolls back the node patch and its new head", async () => {
+	const f = await fixture();
+	await remove_head_fields(f.t);
+	const before = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
+	let sawInsertedHead = false;
+	test_spy_handler(backfill_content_head_nodes, async (handler, ctx, args) => {
+		const result = await handler(ctx, args);
+		const node = await ctx.db.get("files_nodes", f.nodeId);
+		if (!node?.contentHeadId) throw new Error("Preview did not patch the saved file");
+		expect(await ctx.db.get("files_saved_content_heads", node.contentHeadId)).toMatchObject({ fileNodeId: f.nodeId });
+		sawInsertedHead = true;
+		return result;
+	});
+	let error: unknown;
+	try {
+		await f.t.mutation(internal.migrations.preview_content_heads, { migration: "nodes", cursor: null, batchSize: 1 });
+	} catch (caught) {
+		error = caught;
+	}
+	expect(sawInsertedHead, "The preview made a real cross-table write before rollback").toBe(true);
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)), "Preview rolls back the source patch").toEqual(before);
+	expect(
+		await f.t.run((ctx) => ctx.db.query("files_saved_content_heads").collect()),
+		"Preview rolls back the inserted head too",
+	).toEqual([]);
+	expect(error).toMatchObject({ data: { processed: 1, isDone: false, continueCursor: expect.any(String) } });
+});
+
 test.each(["before", "after old content cleanup", "abort", "unchanged"] as const)(
 	"migrates content alongside Review cleanup: %s",
 	async (when) => {
@@ -327,7 +356,7 @@ test.each(["before", "after old content cleanup", "abort", "unchanged"] as const
 						if (!content.beforeHeadId || !content.afterHeadId) throw new Error("Missing native Review owners");
 						for (const table of ["files_text_chunks", "files_plain_text_chunks", "files_yjs_updates"] as const)
 							for (const row of await dbCtx.db.query(table).collect())
-								if (row.contentHeadId === content.afterHeadId)
+								if ("contentHeadId" in row && row.contentHeadId === content.afterHeadId)
 									await dbCtx.db.patch(table, row._id, { contentHeadId: content.beforeHeadId });
 						await dbCtx.db.patch("files_move_cohort_content", content._id, {
 							afterHeadId: content.beforeHeadId,
