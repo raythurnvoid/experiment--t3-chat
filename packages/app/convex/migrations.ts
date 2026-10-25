@@ -92,7 +92,7 @@ export const backfill_content_head_metadata = app_migrations.define({
 	},
 });
 
-// The component's dryRun logs private docs. Roll back a real batch with a counts-only error instead.
+// The component's dryRun logs private docs. Roll back with only counts, cost, and the next cursor.
 export const preview_content_heads = internalMutation({
 	args: {
 		migration: v.union(
@@ -123,10 +123,18 @@ export const preview_content_heads = internalMutation({
 			{ oneBatchOnly: true, dryRun: false, cursor: args.cursor, batchSize: args.batchSize },
 		);
 		if (!result) throw should_never_happen("Content preview returned no batch result");
+		const metrics = await ctx.meta.getTransactionMetrics();
 		throw new ConvexError({
 			processed: result.processed,
 			isDone: result.isDone,
 			continueCursor: result.continueCursor,
+			metrics: {
+				bytesRead: { used: metrics.bytesRead.used, remaining: metrics.bytesRead.remaining },
+				bytesWritten: { used: metrics.bytesWritten.used, remaining: metrics.bytesWritten.remaining },
+				documentsRead: { used: metrics.documentsRead.used, remaining: metrics.documentsRead.remaining },
+				documentsWritten: { used: metrics.documentsWritten.used, remaining: metrics.documentsWritten.remaining },
+				databaseQueries: { used: metrics.databaseQueries.used, remaining: metrics.databaseQueries.remaining },
+			},
 		});
 	},
 });

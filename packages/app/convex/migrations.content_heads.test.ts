@@ -248,12 +248,17 @@ test("content preview rolls back the node patch and its new head", async () => {
 	await remove_head_fields(f.t);
 	const before = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
 	let sawInsertedHead = false;
+	let bytesWritten = 0;
+	let documentsWritten = 0;
 	test_spy_handler(backfill_content_head_nodes, async (handler, ctx, args) => {
 		const result = await handler(ctx, args);
 		const node = await ctx.db.get("files_nodes", f.nodeId);
 		if (!node?.contentHeadId) throw new Error("Preview did not patch the saved file");
 		expect(await ctx.db.get("files_saved_content_heads", node.contentHeadId)).toMatchObject({ fileNodeId: f.nodeId });
 		sawInsertedHead = true;
+		const metrics = await ctx.meta.getTransactionMetrics();
+		bytesWritten = metrics.bytesWritten.used;
+		documentsWritten = metrics.documentsWritten.used;
 		return result;
 	});
 	let error: unknown;
@@ -268,7 +273,23 @@ test("content preview rolls back the node patch and its new head", async () => {
 		await f.t.run((ctx) => ctx.db.query("files_saved_content_heads").collect()),
 		"Preview rolls back the inserted head too",
 	).toEqual([]);
-	expect(error).toMatchObject({ data: { processed: 1, isDone: false, continueCursor: expect.any(String) } });
+	expect(bytesWritten).toBeGreaterThan(0);
+	expect(documentsWritten).toBeGreaterThan(0);
+	const metric = { used: expect.any(Number), remaining: expect.any(Number) };
+	expect(error, "Preview includes safe transaction metrics").toMatchObject({
+		data: {
+			processed: 1,
+			isDone: false,
+			continueCursor: expect.any(String),
+			metrics: {
+				bytesRead: metric,
+				bytesWritten: { used: bytesWritten, remaining: expect.any(Number) },
+				documentsRead: metric,
+				documentsWritten: { used: documentsWritten, remaining: expect.any(Number) },
+				databaseQueries: metric,
+			},
+		},
+	});
 });
 
 test.each(["before", "after old content cleanup", "abort", "unchanged"] as const)(
