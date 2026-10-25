@@ -2816,6 +2816,13 @@ describe("block syntax round-trip through Yjs", () => {
 		["a list right under text", "Intro:\n- a\n- b\n"],
 		["a fence right under text, and text under it", "text\n```\ncode\n```\nmore\n"],
 		["text right under a heading in a quote", "> # h\n> text\n"],
+		// Before, a save put a blank line before the text, and before each block of a loose item.
+		["text right under a heading in a list item", "- # a\n  text\n"],
+		["a blank line between a heading and its text in a list item", "- # a\n\n  text\n"],
+		["text right under a fence in a list item", "- a\n  ```\n  x\n  ```\n  more\n"],
+		["text right under a heading in a task item", "- [ ] a\n  # h\n  text\n"],
+		["text right under a rule in a loose list item", "- a\n\n  ***\n  text\n"],
+		["a heading right under text in a loose list item", "- a\n\n  b\n  # h\n"],
 	])("keeps %s", (_name, input) => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
@@ -2842,8 +2849,27 @@ describe("block syntax round-trip through Yjs", () => {
 		editor._yay.destroy();
 	});
 
-	test("keeps the text after a block that starts a list item as a paragraph", () => {
-		expect(round_trip_markdown("- # a\n  text\n")).toBe("- # a\n\n  text\n");
+	test("puts a blank line back when an edit would join two blocks in a list item", () => {
+		const json = files_tiptap_markdown_to_json({ markdown: "- # h\n  text\n" });
+		if (json._nay) {
+			throw new Error("Expected markdown to parse", { cause: json._nay });
+		}
+
+		// Turn the heading into a paragraph. Right under it, `text` would join it. The item starts with an empty
+		// paragraph, so the heading is its second block.
+		const heading = json._yay.content?.[0]?.content?.[0]?.content?.[1];
+		if (!heading) {
+			throw new Error("Expected a heading");
+		}
+		heading.type = "paragraph";
+		heading.attrs = {};
+
+		const editor = files_headless_tiptap_editor_create({ initialContent: { json: json._yay } });
+		if (editor._nay) {
+			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+		}
+		expect(files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay })).toBe("- h\n\n  text");
+		editor._yay.destroy();
 	});
 });
 

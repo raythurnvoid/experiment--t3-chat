@@ -208,8 +208,7 @@ function markdown_work_add(units: number) {
 
 /**
  * Mark each block that the file wrote right under the block before it, with no blank line between them, like
- * `# Title` then `text`. Save keeps it there (`markdownTight`). Blocks inside a quote count too. A list item
- * keeps its own blank lines (`loose`), so its blocks are not marked.
+ * `# Title` then `text`. Save keeps it there (`markdownTight`). Blocks inside a quote or a list item count too.
  *
  * Marked moves a single newline after a block into that block's `raw`, and keeps a blank line as a `space`
  * token or as a second newline at the end of `raw`.
@@ -227,6 +226,17 @@ function markdown_mark_tight_blocks(mut_tokens: Token[]) {
 		}
 		if (token.type === "blockquote" && token.tokens) {
 			markdown_mark_tight_blocks(token.tokens);
+		}
+		if (token.type === "list") {
+			for (const item of token.items) {
+				markdown_mark_tight_blocks(item.tokens);
+			}
+		}
+		// Tiptap's `taskList` token keeps an item's blocks in `nestedTokens`.
+		if (token.type === "taskList") {
+			for (const item of token["items"] as Array<{ nestedTokens?: Token[] }>) {
+				markdown_mark_tight_blocks(item.nestedTokens ?? []);
+			}
 		}
 		previous = token;
 	}
@@ -682,17 +692,24 @@ function configure_marked(instance: Marked | typeof marked) {
 					attributes += ` data-indent="${indent}"`;
 				}
 
-				// Marked writes a text after the block bare, like `<h1>h</h1>\ntext`, and the editor kept that `\n`
-				// in the text. Write it as a paragraph, like Marked does in a loose list.
-				const html = Renderer.prototype.listitem.call(
-					this,
-					startsWithBlock
-						? {
-								...item,
-								tokens: item.tokens.map((child) => (child.type === "text" ? { ...child, type: "paragraph" } : child)),
-							}
-						: item,
-				);
+				// Marked writes a text after a block bare, like `<h1>h</h1>\ntext`, and the editor kept that `\n`
+				// in the text. Write it as a paragraph, like Marked does in a loose list. The paragraph keeps the
+				// text's tight mark.
+				const html = Renderer.prototype.listitem.call(this, {
+					...item,
+					tokens: item.tokens.map((child, index) => {
+						const afterBlock = item.tokens.slice(0, index).some((before) => before.type !== "space");
+						if (child.type !== "text" || !afterBlock) {
+							return child;
+						}
+
+						const paragraph = { ...child, type: "paragraph" };
+						if (markdown_tight_blocks.has(child)) {
+							markdown_tight_blocks.add(paragraph);
+						}
+						return paragraph;
+					}),
+				});
 				return html.replace(/^<li>/, `<li${attributes}>${startsWithBlock ? "<p></p>" : ""}`);
 			},
 
