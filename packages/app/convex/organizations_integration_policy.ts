@@ -87,7 +87,7 @@ async function plugin_version_status(policy: IntegrationPolicy | null, version: 
 	const capabilities = new Set(entry.capabilities);
 	const outboundOrigins = new Set(entry.outboundOrigins);
 	const uiOutboundOrigins = new Set(entry.uiOutboundOrigins);
-	const serviceEventsOrigins = new Set(entry.serviceEventsOrigins ?? []);
+	const serviceEventsOrigins = new Set(entry.serviceEventsOrigins);
 	const servers = new Set(entry.mcpServers.map((server) => server_key(server.serverId, server.destinationFingerprint)));
 	const versionServerKeys = await Promise.all(
 		version.mcpServers.map(async (server) => server_key(server.id, await plugins_mcp_destination_fingerprint(server))),

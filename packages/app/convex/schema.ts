@@ -9665,8 +9665,7 @@ const app_convex_schema = defineSchema({
 					outboundOrigins: v.array(v.string()),
 					uiOutboundOrigins: v.array(v.string()),
 					// The origins of `serviceEventsUrl` that may get access notices.
-					// Optional only until `migrations:backfill_policy_service_events_origins` has run.
-					serviceEventsOrigins: v.optional(v.array(v.string())),
+					serviceEventsOrigins: v.array(v.string()),
 					// The plugin's MCP servers are allowed with the plugin, pinned by where their data goes.
 					mcpServers: v.array(v.object({ serverId: v.string(), destinationFingerprint: v.string(), url: v.string() })),
 					addedBy: v.id("users"),
