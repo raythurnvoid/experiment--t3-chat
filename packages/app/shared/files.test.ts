@@ -2720,6 +2720,16 @@ describe("block syntax round-trip through Yjs", () => {
 		// Before, the heading became text, and a fence changed on every save.
 		["a heading that starts a numbered item", "1. # a\n2. b\n"],
 		["a fence that starts a numbered item", "1. ```\n   code\n   ```\n"],
+		// Before, a save changed the indent of a wrapped line in a list item.
+		["a wrapped line indented 4 spaces in an item", "- a\n    b\n"],
+		["a wrapped line indented 4 spaces in an ordered item", "1. a\n    b\n"],
+		["a wrapped line in a task item", "- [ ] a\n  b\n"],
+		["a wrapped line indented 6 spaces in a task item", "- [ ] a\n      b\n"],
+		["a wrapped line before a nested task item", "- [ ] a\n  b\n  - [ ] c\n"],
+		["a wrapped line in a nested task item", "- [ ] a\n  - [ ] b\n    c\n"],
+		["a wrapped line before a list nested with 4 spaces", "- a\n  b\n    - c\n"],
+		// Before, a save wrote `2\.`, but `2.` cannot start a list there.
+		["a line that starts with `2.` in a paragraph", "Version\n2. x\n"],
 	])("keeps %s", (_name, input) => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});

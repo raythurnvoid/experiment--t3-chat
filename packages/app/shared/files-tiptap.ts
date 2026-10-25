@@ -100,6 +100,7 @@ const HARD_BREAK_REGEX = /\\\n/g;
 const HIGHLIGHT_SPACE_INSIDE_REGEX = /^==\s|\s==$/;
 const CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX = /\n<\/code><\/pre>\n$/;
 const LIST_MARKER_REGEX = /^ {0,3}(?:([*+])|\d{1,9}(\)))/;
+const NESTED_LIST_LINE_REGEX = /^ *(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/;
 const VIDEO_BLOCK_START_REGEX = /^<video[\s>]/m;
 const VIDEO_BLOCK_REGEX = /^(<video\b[^>]*>(?:\s*<\/video>)?)[ \t]*(?:\n|$)/;
 const FOOTNOTE_DEFINITION_START_REGEX = /^ {0,3}\[\^[^\]\s]+\]:/;
@@ -566,7 +567,9 @@ function configure_marked(instance: Marked | typeof marked) {
 				}
 				const [firstLine = "", ...lines] = item.raw.split("\n");
 				const markerIndent = /^ */.exec(firstLine)?.[0].length ?? 0;
-				const indent = (lines.find((line) => line.trim())?.match(/^ */)?.[0].length ?? 0) - markerIndent;
+				// Read the nested list's first line, past any wrapped lines of the item's text.
+				const listLine = lines.find((line) => NESTED_LIST_LINE_REGEX.test(line));
+				const indent = (listLine?.match(/^ */)?.[0].length ?? 0) - markerIndent;
 				const textColumn = (/^ *\S+ /.exec(firstLine)?.[0].length ?? Infinity) - markerIndent;
 				if (item.tokens.slice(1).find((child) => child.type !== "space")?.type === "list" && indent > textColumn) {
 					attributes += ` data-indent="${indent}"`;
