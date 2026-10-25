@@ -47,7 +47,11 @@ Also keep the Markdown save patches:
 - A line break inside a `#` heading saves as `<br>`, because a `#` heading is one line.
 - A level 1 or 2 heading with more lines saves underlined (`===` or `---`). A level 3 to 6 heading
   joins its lines with a space.
-- Bullet and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
+- Bullet, task and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
+  An ordered list with `sameNumber: true` writes its start number on every item. An empty item writes
+  its marker with no space after it. The ordered list tokenizer reads an empty `2.` item after the first.
+- A list item's `indent` keeps how far the file indented its nested list (`indentWidth` in
+  `renderNestedMarkdownContent`), while that still nests and does not make a code block.
 - A list with `loose: true` puts a blank line between its items. A list or task item with `loose: true` puts one
   before each block inside it but a list (`blankLineBeforeBlocks` in `renderNestedMarkdownContent`). A
   `---` line inside an item always gets one, so it never turns the text above into a heading. Empty lines

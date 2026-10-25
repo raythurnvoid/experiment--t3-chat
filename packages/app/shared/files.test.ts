@@ -2693,6 +2693,19 @@ describe("block syntax round-trip through Yjs", () => {
 		const input = "- a\n  ```\n  x\n\n  y\n  ```\n";
 		expect(round_trip_markdown(input)).toBe(input);
 	});
+
+	test.each([
+		["the same number on every item", "1. a\n1. b\n"],
+		["a `*` task bullet", "* [ ] a\n* [x] b\n"],
+		["an empty bullet item", "- a\n-\n- c\n"],
+		// Before, the empty item ended the list, and `3. c` started a second list.
+		["an empty ordered item", "1. a\n2.\n3. c\n"],
+		["a list nested with 4 spaces", "- a\n    - b\n        - c\n"],
+		["an ordered list nested with 4 spaces", "1. a\n    1. b\n"],
+		["a paragraph indented 4 spaces in an item", "- a\n\n    more\n"],
+	])("keeps %s", (_name, input) => {
+		expect(round_trip_markdown(input)).toBe(input);
+	});
 });
 
 describe("HTML blocks round-trip through Yjs", () => {

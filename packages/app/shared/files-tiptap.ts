@@ -125,8 +125,9 @@ const PARAGRAPH_REGEX = ((/* iife */) => {
 		paragraph.flags,
 	);
 })();
-// The line patterns Tiptap's Markdown tokenizers use for ordered list items and task items.
-const ORDERED_LIST_ITEM_LINE_REGEX = /^(\s*)(\d+)\.\s+(.*)$/;
+// The line patterns Tiptap's Markdown tokenizers use for ordered list items and task items. An ordered
+// item may be empty, like `2.`.
+const ORDERED_LIST_ITEM_LINE_REGEX = /^(\s*)(\d+)\.(?:\s+(.*))?$/;
 const TASK_ITEM_LINE_REGEX = /^(\s*)([-+*])\s+\[([ xX])\]\s+(.*)$/;
 const INDENTED_LINE_REGEX = /^\s/;
 // A markdown link destination ends at the first space or unbalanced parenthesis, so a url
@@ -364,7 +365,9 @@ function configure_marked(instance: Marked | typeof marked) {
 							}"${loose ? " data-loose" : ""}><p>${itemTextHtml}</p>${nestedHtml}</li>`;
 						})
 						.join("");
-					return `<ul data-type="taskList">${itemsHtml}</ul>`;
+					// Keep a `*` or `+` bullet, like the `list` renderer.
+					const bullet = LIST_MARKER_REGEX.exec(token.raw)?.[1];
+					return `<ul data-type="taskList"${bullet ? ` data-bullet="${bullet}"` : ""}>${itemsHtml}</ul>`;
 				},
 			},
 			// Tiptap's inline tokens also need HTML renderers for standalone parsing and search.
@@ -475,6 +478,11 @@ function configure_marked(instance: Marked | typeof marked) {
 				if (list_has_blank_line_between_items(token)) {
 					attributes += " data-loose";
 				}
+				// Keep a list that numbers every item the same, like `1.` `1.` `1.`.
+				const numbers = token.ordered ? token.items.map((item) => /^ *(\d+)/.exec(item.raw)?.[1]) : [];
+				if (numbers.length > 1 && numbers.every((number) => Number(number) === (token.start || 1))) {
+					attributes += " data-same-number";
+				}
 
 				if (!attributes) {
 					return false;
@@ -485,9 +493,23 @@ function configure_marked(instance: Marked | typeof marked) {
 
 			// Keep a blank line between the blocks inside an item, like before a code block. Marked adds a `space`
 			// token for it. Before, save dropped the blank line.
+			//
+			// Also keep the indent of a nested list when the file put it past the item's text, like 4 spaces
+			// under `- `. Save used the smallest indent before. A nested paragraph keeps its own extra spaces,
+			// so it does not take the indent. Count from the marker, because a nested item's raw keeps the
+			// spaces before it.
 			listitem(item) {
+				let attributes = item.tokens.some((child) => child.type === "space") ? " data-loose" : "";
+				const [firstLine = "", ...lines] = item.raw.split("\n");
+				const markerIndent = /^ */.exec(firstLine)?.[0].length ?? 0;
+				const indent = (lines.find((line) => line.trim())?.match(/^ */)?.[0].length ?? 0) - markerIndent;
+				const textColumn = (/^ *\S+ /.exec(firstLine)?.[0].length ?? Infinity) - markerIndent;
+				if (item.tokens.slice(1).find((child) => child.type !== "space")?.type === "list" && indent > textColumn) {
+					attributes += ` data-indent="${indent}"`;
+				}
+
 				const html = Renderer.prototype.listitem.call(this, item);
-				return item.tokens.some((child) => child.type === "space") ? html.replace(/^<li/, "<li data-loose") : html;
+				return attributes ? html.replace(/^<li/, `<li${attributes}`) : html;
 			},
 
 			// Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>` tag. Then

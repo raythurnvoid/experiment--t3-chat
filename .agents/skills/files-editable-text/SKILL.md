@@ -78,7 +78,11 @@ Before, Marked read a one-word note as a link definition. Then `[^1]` became a l
 - In a rich table cell, the block saves as a paragraph with the same text.
 - The public link page shows a definition block as a code block with the same text.
 
-Lists keep the marker the file uses: a `*` or `+` bullet, and a `)` after the number (`1)`). The `list` renderer in `configure_marked` writes it as `data-bullet` or `data-delimiter`. The fork's lists keep it as the `bullet` or `delimiter` attribute, and the list item writer uses it. Without a marker, save writes `-` and `1.`. A new list made in the editor has no marker.
+Lists keep the marker the file uses: a `*` or `+` bullet, and a `)` after the number (`1)`). The `list` renderer in `configure_marked` writes it as `data-bullet` or `data-delimiter`, and the `taskList` renderer writes a task list's bullet as `data-bullet`. The fork's lists keep it as the `bullet` or `delimiter` attribute, and the list item writer uses it. Without a marker, save writes `-` and `1.`. A new list made in the editor has no marker.
+
+A list that numbers every item the same, like `1.` `1.` `1.`, keeps it. The `list` renderer adds `data-same-number`, the list gets `sameNumber: true`, and save writes the start number on every item. An empty item saves as its marker alone (`-`, `2.`). An empty numbered item like `2.` continues the list: `ORDERED_LIST_ITEM_LINE_REGEX` and the fork's ordered tokenizer accept it after the first item. Before, it ended the list, and the next item started a second list.
+
+A list nested deeper than the item's text, like 4 spaces under `- `, keeps its indent. The `listitem` renderer adds `data-indent` with the indent counted from the item's marker, the item gets `indent`, and save indents the nested list by it. Save uses the normal indent when the kept one is narrower than the item's marker or would make a code block (4 or more spaces past the marker). Only a nested list takes it: a nested paragraph keeps its own extra spaces.
 
 This keeps a save from rewriting every list in a file. It also keeps two lists apart: `- a`, a blank line, then `* b` is two lists, and writing both with `-` made them one list.
 
@@ -90,7 +94,6 @@ Rules keep the style the file uses: `***`, `___`, `- - -`. The `hr` renderer wri
 
 Known changes, with no lost content, all stable after one save:
 
-- A task list saves with `-`.
 - A list with blank lines between only some items gets one between all of them. Two blank lines become one.
 - The blank line between an item's first line and a list inside it is dropped.
 - Spaces before and after a rule are dropped.
