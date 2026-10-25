@@ -677,9 +677,9 @@ This describes existing pending-overlay code. Do not copy it as a scalable desig
 
 The existing read takes a saved page with `.paginate()`, reads the matching hide-key windows, and drops hidden saved node ids with a `Set`.
 
-- The hide table (`files_pending_hides`) mirrors each saved index the read uses, plus `userId`. The hide query uses the mirror of the saved page's index.
+- The hide table (`files_pending_hides`) mirrors each saved name and path index the read uses, plus `userId`. The hide query uses the mirror of the saved page's index. It mirrors no `updatedAt` index, because then every content Save would rewrite every user's hide. A page in update order reads each saved node's hide by `by_savedNode_user` instead.
 - Convex bounds one field per range, so a key of several fields needs a split. `files_pending_overlay_window_ranges` in `server/files-pending-overlay.ts` builds the ranges: at most `2k - 1` for `k` key fields. For a `desc` page, the first key is the larger one.
-- The current code reads these windows with `.collect()`. There is one hide per user and saved doc. A hide exists only while its saved doc is active, and the flush updates its copied fields with the saved write. Key ties and total candidate pages still need a bound; the window alone is not a proof of scalable reads.
+- The current code reads at most one hide per page row from these windows, then falls back to per-row reads. There is one hide per user and saved doc. A hide exists only while its saved doc is active, and the flush updates its copied fields with the saved write. Key ties and total candidate pages still need a bound; the window alone is not a proof of scalable reads.
 - Agent reads run once from an action and never rerun, so they need no split guard. A browser query with per-row reads still needs the split guard.
 
 ## Query cache and composition

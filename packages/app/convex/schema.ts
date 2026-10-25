@@ -3895,6 +3895,9 @@ const app_convex_schema = defineSchema({
 	 * Derived docs: only the overlay flush, its jobs and data deletion write them. One doc per (user,
 	 * saved node) while the saved node is active and a cause holds. The other fields copy the saved
 	 * node, so each index mirrors a saved index that an agent read subtracts from.
+	 *
+	 * They do not copy `updatedAt`, so a content Save or Restore never writes them. A read in update order
+	 * checks the hide of each saved node by `by_savedNode_user` instead.
 	 */
 	files_pending_hides: defineTable({
 		moveView: v.optional(files_move_view_tag_validator),
@@ -3905,12 +3908,15 @@ const app_convex_schema = defineSchema({
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
 		kind: v.union(v.literal("folder"), v.literal("file")),
 		name: v.string(),
-		updatedAt: v.number(),
+		/**
+		 * Legacy: no longer written. `strip_files_pending_hides_time_fields` removes it.
+		 */
+		updatedAt: v.optional(v.number()),
 		lowercaseExtension: v.union(v.string(), v.null()),
 		/**
-		 * The saved node's `_creationTime`.
+		 * Legacy: no longer written. `strip_files_pending_hides_time_fields` removes it.
 		 */
-		nodeCreationTime: v.number(),
+		nodeCreationTime: v.optional(v.number()),
 		treePath: v.string(),
 	})
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
@@ -3922,16 +3928,6 @@ const app_convex_schema = defineSchema({
 			"moveView.view",
 			"parentId",
 			"name",
-		])
-		.index("by_org_ws_user_parent_updatedAt", [
-			"organizationId",
-			"workspaceId",
-			"userId",
-			"moveView.cohortId",
-			"moveView.view",
-			"parentId",
-			"updatedAt",
-			"nodeCreationTime",
 		])
 		.index("by_org_ws_user_treePath", [
 			"organizationId",

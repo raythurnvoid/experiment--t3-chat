@@ -905,4 +905,74 @@ describe("content save", () => {
 		expect(rows.every((row) => row.treePath === "/p2/shared/")).toBe(true);
 		expect_under_convex_limits(cost);
 	}, 120_000);
+
+	// A claim job can give one saved file more hides than the 32-doc admission cap. Hides do not copy
+	// `updatedAt`, so a content Save leaves them alone, and `ls -t` still hides the right rows.
+	test("saves a file that drafts of 40 other users claim without rewriting their hides", async () => {
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId };
+		const owners: Id<"users">[] = [];
+		for (let index = 0; index < 40; index++) {
+			const userId = await t.run((ctx) => add_member(ctx, db, `claimant_${index}`));
+			const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+				...scope,
+				userId,
+				path: "/claimed.txt",
+				kind: "file",
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			owners.push(userId);
+		}
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/claimed.txt",
+			textContent: "Old\n",
+		});
+		const hides = () =>
+			t.run((ctx) =>
+				ctx.db
+					.query("files_pending_hides")
+					.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", nodeId))
+					.collect(),
+			);
+		await finish_scheduled(t, async () => (await hides()).length === 40);
+		const before = await hides();
+
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		if (off._nay) throw new Error(off._nay.message);
+		vi.advanceTimersByTime(1000);
+		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: "New\n",
+		});
+		if (saved._nay) throw new Error(saved._nay.message);
+		expect(await hides()).toEqual(before);
+
+		const node = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+		const ls_t = async (userId: Id<"users">) => {
+			const listed = await overlay.files_pending_overlay_list({ runQuery: t.query } as never, {
+				...scope,
+				visibilityUserId: userId,
+				overlayUserId: userId,
+				subject: { kind: "user", userId, plugin: null },
+				folderPath: "/",
+				mode: "children",
+				orderBy: "updatedAt",
+				order: "desc",
+				numItems: 10,
+				cursor: null,
+			});
+			if (listed._nay) throw new Error(listed._nay.message);
+			return listed._yay.items.map((item) => ({ kind: item.target.kind, updatedAt: item.updatedAt }));
+		};
+		expect(await ls_t(db.userId)).toEqual([{ kind: "saved", updatedAt: node.updatedAt }]);
+		expect((await ls_t(owners.at(-1)!)).map((item) => item.kind)).toEqual(["private"]);
+	}, 300_000);
 });

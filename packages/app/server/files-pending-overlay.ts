@@ -193,9 +193,10 @@ const PROPOSAL_FIELDS = [
 ];
 
 /**
- * A saved node write refreshes every user's hide and place of that node in the same transaction
- * (exact windows), so their number must stay small. A user's own write may add a hide or place of a
- * saved node only while other users hold fewer than this many of them.
+ * A saved node's move, rename or archive refreshes every user's hide and place of that node in the
+ * same transaction (exact windows), and a content write refreshes its places, so their number must
+ * stay small. A user's own write may add a hide or place of a saved node only while other users hold
+ * fewer than this many of them.
  */
 const MAX_OTHER_USERS_DOCS_PER_SAVED_NODE = 32;
 
@@ -1404,9 +1405,7 @@ export async function files_pending_overlay_db_compute_target(
 				parentId: node.parentId,
 				kind: node.kind,
 				name: node.name,
-				updatedAt: node.updatedAt,
 				lowercaseExtension: node.lowercaseExtension,
-				nodeCreationTime: node._creationTime,
 				treePath: node.treePath,
 			};
 
@@ -1669,7 +1668,7 @@ function flush_reader(flush: Flush, scope: Scope) {
 
 /**
  * A user's own write may add a hide or place of a saved node only while other users hold fewer
- * than the cap of them, because every saved write of the node refreshes all of them inline. Jobs and
+ * than the cap of them, because a saved write of the node refreshes them inline. Jobs and
  * side effects never refuse, so the count can pass the cap: a job adds a claim hide when the node
  * moves onto a name other users' drafts already hold, at most one per user with a draft at that
  * name. Once past the cap, every new draft write on the node is refused, so it grows slowly.
@@ -2712,8 +2711,11 @@ async function db_flush_ancestors(
 }
 
 /**
- * Saved index fields are copied to every hide and saved-node place in this transaction.
- * This grows with the copy count; hide keys must match the saved page's index window.
+ * Saved index fields are copied to every hide and saved-node place in this transaction, and hide
+ * keys must match the saved page's index window. Hides do not copy `updatedAt`, so a content Save or
+ * Restore reads none of them. Places copy `updatedAt` for the user's `ls -t` and `find -mmin`. Only a
+ * user's own move adds one, and the admission cap refuses it once other users hold
+ * `MAX_OTHER_USERS_DOCS_PER_SAVED_NODE` of them.
  */
 async function db_flush_saved_node(
 	flush: Flush,
@@ -2730,10 +2732,23 @@ async function db_flush_saved_node(
 	if (!organizationId || !workspaceId) return;
 	const scope = { organizationId, workspaceId };
 
-	const hides = await ctx.db
-		.query("files_pending_hides")
-		.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", nodeId))
-		.collect();
+	const active = node?.archiveOperationId === null;
+	// A claim job can give one node many hides, so read them only when a copied field changed.
+	const hideFieldsChanged =
+		!old ||
+		!node ||
+		old.parentId !== node.parentId ||
+		old.kind !== node.kind ||
+		old.name !== node.name ||
+		old.lowercaseExtension !== node.lowercaseExtension ||
+		old.treePath !== node.treePath ||
+		(old.archiveOperationId === null) !== active;
+	const hides = hideFieldsChanged
+		? await ctx.db
+				.query("files_pending_hides")
+				.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", nodeId))
+				.collect()
+		: [];
 	const places = await ctx.db
 		.query("files_pending_places")
 		.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
@@ -2744,7 +2759,6 @@ async function db_flush_saved_node(
 	const view_node = async (moveView: files_saved_placement_FixedView | undefined) =>
 		moveView ? await files_saved_placement_db_get_node(ctx.db, nodeId, moveView) : node;
 
-	const active = node?.archiveOperationId === null;
 	for (const { _id, _creationTime, ...hide } of hides) {
 		if (!active) {
 			await ctx.db.delete("files_pending_hides", _id);
@@ -2760,9 +2774,7 @@ async function db_flush_saved_node(
 				parentId: viewNode.parentId,
 				kind: viewNode.kind,
 				name: viewNode.name,
-				updatedAt: viewNode.updatedAt,
 				lowercaseExtension: viewNode.lowercaseExtension,
-				nodeCreationTime: viewNode._creationTime,
 				treePath: viewNode.treePath,
 			},
 		);

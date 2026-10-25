@@ -669,9 +669,7 @@ describe("Move owner views", () => {
 				parentId: f.after.parentId,
 				kind: f.after.kind,
 				name: f.after.name,
-				updatedAt: f.after.updatedAt,
 				lowercaseExtension: f.after.lowercaseExtension,
-				nodeCreationTime: f.after.nodeCreationTime,
 				treePath: f.after.treePath,
 			}),
 		);
@@ -686,7 +684,6 @@ describe("Move owner views", () => {
 			parentId: f.parentId,
 			name: "new.txt",
 			treePath: "/target/new.txt",
-			updatedAt: f.after.updatedAt,
 		});
 	});
 });

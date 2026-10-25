@@ -814,13 +814,7 @@ async function db_stream_decide<T>(
 }
 
 /**
- * Whether the user's hides remove a saved row of the page, from one window of hides with keys from
- * `first` to `last` on `index`. The window holds one hide per hidden row of the page, plus hides of
- * rows the stream skips: the user's own drafts, and rows a kind or extension filter skips when the
- * index has no such field.
- *
- * The window reads at most `limit` hides. Past it, each row reads its own hide when it is decided, so
- * a filter that skips many hidden rows cannot make this read unbounded.
+ * Whether the user has a hide of one saved node, in the normal view or the page's Move view.
  */
 async function db_stream_is_hidden(
 	ctx: QueryCtx,
@@ -847,12 +841,20 @@ async function db_stream_is_hidden(
 	return false;
 }
 
+/**
+ * Whether the user's hides remove a saved row of the page, from one window of hides with keys from
+ * `first` to `last` on `index`. The window holds one hide per hidden row of the page, plus hides of
+ * rows the stream skips: the user's own drafts, and rows a kind or extension filter skips when the
+ * index has no such field.
+ *
+ * The window reads at most `limit` hides. Past it, each row reads its own hide when it is decided, so
+ * a filter that skips many hidden rows cannot make this read unbounded.
+ */
 async function db_stream_hide_window(
 	ctx: QueryCtx,
 	args: {
 		index:
 			| "by_org_ws_user_parent_name"
-			| "by_org_ws_user_parent_updatedAt"
 			| "by_org_ws_user_treePath"
 			| "by_org_ws_user_kind_treePath"
 			| "by_org_ws_user_kind_ext_treePath";
@@ -1171,15 +1173,17 @@ function db_stream_places_under(
 }
 
 /**
- * Saved children of the listing folder, in name or update order. The user's hides in the page come
- * from one exact window. Every child is returned; one the caller cannot open is marked `locked`.
+ * Saved children of the listing folder, in name or update order. In name order the user's hides in
+ * the page come from one exact window; in update order each row reads its own hide (1 range, 2 in a
+ * Move view). Every child is returned; one the caller cannot open is marked `locked`.
  *
  * The read budget check in `db_stream_decide` runs before each row, so a call stops near 3,000
  * ranges. The room left under Convex's 4,096 must hold one more row. Under the owner's overlay the
  * worst row is a restricted child with no cached answer, 9 ranges (measured in the cost test "ls of a
- * folder with many restricted children stays under the Convex limits"). Outside it, the row that
- * starts a chunk checks all `STREAM_ACCESS_CHUNK` rows with a new checker, so it costs up to 25 such
- * rows, and more when the folder sits deep in an Add-people chain: that checker reads the chain again.
+ * folder with many restricted children stays under the Convex limits"), plus its hide read in update
+ * order. Outside it, the row that starts a chunk checks all `STREAM_ACCESS_CHUNK` rows with a new
+ * checker, so it costs up to 25 such rows, and more when the folder sits deep in an Add-people chain:
+ * that checker reads the chain again.
  */
 export const internal_list_children_saved = internalQuery({
 	args: {
@@ -1296,25 +1300,33 @@ export const internal_list_children_saved = internalQuery({
 		const indexKey = (node: Doc<"files_nodes">) =>
 			byTime ? [node.updatedAt, node._creationTime, node._id] : [node.name, node._creationTime, node._id];
 		const rows = stream_rows_after({ page: page.page, lastKey: args.position.lastKey, order: args.order, indexKey });
+		// Hides do not copy `updatedAt`, so update order checks each saved node's own hide.
 		const is_hidden =
-			reader && rows.length > 0
-				? await db_stream_hide_window(ctx, {
-						index: byTime ? "by_org_ws_user_parent_updatedAt" : "by_org_ws_user_parent_name",
-						eq: [
-							["organizationId", args.organizationId],
-							["workspaceId", args.workspaceId],
-							["userId", args.visibilityUserId],
-							["parentId", parentId],
-						],
-						fields: byTime ? ["updatedAt", "nodeCreationTime"] : ["name"],
-						first: byTime ? [rows[0]!.updatedAt, rows[0]!._creationTime] : [rows[0]!.name],
-						last: byTime ? [rows.at(-1)!.updatedAt, rows.at(-1)!._creationTime] : [rows.at(-1)!.name],
-						order: args.order,
-						userId: args.visibilityUserId,
-						limit: rows.length,
-						view: opened._yay.saved.view,
-					})
-				: null;
+			!reader || rows.length === 0
+				? null
+				: byTime
+					? async (savedNodeId: Id<"files_nodes">) =>
+							await db_stream_is_hidden(ctx, {
+								savedNodeId,
+								userId: args.visibilityUserId,
+								view: opened._yay.saved.view,
+							})
+					: await db_stream_hide_window(ctx, {
+							index: "by_org_ws_user_parent_name",
+							eq: [
+								["organizationId", args.organizationId],
+								["workspaceId", args.workspaceId],
+								["userId", args.visibilityUserId],
+								["parentId", parentId],
+							],
+							fields: ["name"],
+							first: [rows[0]!.name],
+							last: [rows.at(-1)!.name],
+							order: args.order,
+							userId: args.visibilityUserId,
+							limit: rows.length,
+							view: opened._yay.saved.view,
+						});
 		const can_read = db_stream_saved_access(ctx, args, reader, rows);
 		const parentPath = root.path === "/" ? "" : root.path;
 

@@ -62,13 +62,6 @@ describe("files_pending_overlay_window_ranges", () => {
 		);
 	});
 
-	test("by_org_ws_user_parent_updatedAt: many rows with the same updatedAt, as in `ls -t`", () => {
-		const rows = [];
-		for (const updatedAt of [100, 200, 200, 200, 300])
-			for (const nodeCreationTime of [1, 2, 3]) rows.push({ updatedAt, nodeCreationTime });
-		expect_exact_windows(["updatedAt", "nodeCreationTime"], rows);
-	});
-
 	test("by_org_ws_user_treePath, by_org_ws_user_kind_treePath: tree paths", () => {
 		const treePaths = ["/a/", "/a/b.md", "/a/c/", "/a/c/d.md", "/b.md"];
 		expect_exact_windows(
@@ -88,81 +81,6 @@ describe("files_pending_overlay_window_ranges", () => {
 		expect_exact_windows(["kind", "lowercaseExtension", "treePath"], rows);
 	});
 
-	test("reads exactly the window on the real `ls -t` hide index", async () => {
-		const t = test_convex();
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const owner = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-
-		const ids = await t.run(async (ctx) => {
-			const nodeId = await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				createdBy: db.userId,
-				updatedBy: db.userId,
-			});
-			const inserted = [];
-			for (const updatedAt of [100, 200, 200, 200, 300])
-				for (const nodeCreationTime of [1, 2])
-					inserted.push(
-						await ctx.db.insert("files_pending_hides", {
-							...owner,
-							savedNodeId: nodeId,
-							parentId: "root",
-							kind: "file",
-							name: `n${updatedAt}-${nodeCreationTime}`,
-							updatedAt,
-							lowercaseExtension: null,
-							nodeCreationTime,
-							treePath: `/n${updatedAt}-${nodeCreationTime}`,
-						}),
-					);
-			return inserted;
-		});
-
-		// A `desc` page from (300, 1) down to (200, 2), like `ls -t`.
-		const ranges = files_pending_overlay_window_ranges({
-			fields: ["updatedAt", "nodeCreationTime"],
-			first: [300, 1],
-			last: [200, 2],
-			order: "desc",
-		});
-		const read = await t.run(async (ctx) => {
-			const found = [];
-			for (const range of ranges)
-				found.push(
-					...(await ctx.db
-						.query("files_pending_hides")
-						.withIndex("by_org_ws_user_parent_updatedAt", (q) => {
-							let indexRange: any = q
-								.eq("organizationId", owner.organizationId)
-								.eq("workspaceId", owner.workspaceId)
-								.eq("userId", owner.userId)
-								.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)
-								.eq("parentId", "root");
-							for (const [field, value] of range.eq) indexRange = indexRange.eq(field, value);
-							if (range.lower)
-								indexRange = range.lower.inclusive
-									? indexRange.gte(range.lower.field, range.lower.value)
-									: indexRange.gt(range.lower.field, range.lower.value);
-							if (range.upper)
-								indexRange = range.upper.inclusive
-									? indexRange.lte(range.upper.field, range.upper.value)
-									: indexRange.lt(range.upper.field, range.upper.value);
-							return indexRange;
-						})
-						.collect()),
-				);
-			return found.map((hide) => [hide.updatedAt, hide.nodeCreationTime]).sort((a, b) => compareValues(a, b));
-		});
-		expect(ids).toHaveLength(10);
-		expect(read).toEqual([
-			[200, 2],
-			[200, 2],
-			[200, 2],
-			[300, 1],
-		]);
-	});
 });
 
 describe("files_pending_overlay_list", () => {

@@ -64,17 +64,13 @@ export async function expect_window_bound(t: ReturnType<typeof test_convex>) {
 			parentId: hide.parentId,
 			kind: hide.kind,
 			name: hide.name,
-			updatedAt: hide.updatedAt,
 			lowercaseExtension: hide.lowercaseExtension,
-			nodeCreationTime: hide.nodeCreationTime,
 			treePath: hide.treePath,
 		}).toEqual({
 			parentId: node!.parentId,
 			kind: node!.kind,
 			name: node!.name,
-			updatedAt: node!.updatedAt,
 			lowercaseExtension: node!.lowercaseExtension,
-			nodeCreationTime: node!._creationTime,
 			treePath: node!.treePath,
 		});
 	}
