@@ -65,13 +65,40 @@ claim that the new installed frame has passed these checks.
 - For each `POST /auth/lease` completion, group native log entries by `requestId`. A ready
   installation at the signed required revision should call `ensure_installation`, `get_installation`
   and `admit_lease`, with no `access:sync` child. First setup and newer revisions still need sync.
-- Check separate `access:sync` completions with `caller: "Scheduler"` during the same window.
-  Those polls must continue. A shortcut in the shared sync action can silently stop revocation.
+- Since 0.8.12 there is no scheduled `access:sync` poll. A sync runs only inside a lease request or
+  inside `POST /bonobo/access-events`. A `Scheduler` caller of `access:sync` is a regression.
 - Keep a local draft through the observed renewals, then clear it without sending. Assert the same
   textarea remains mounted, its draft stays, and Send becomes available after each renewal.
 - The route regression in `convex/http.test.ts` runs 50 test sessions through four renewals with
   signed test JWTs and mocked host replies. This proves request counts and refusal handling. It is
   not a live browser load test or a measurement of the real Bonobo Senate rate limiter.
+
+### Access notices (verified 2026-10-25 on 0.8.12)
+
+- Bonobo Senate posts a signed `workspace.access.changed` notice to
+  `https://<chitchat deployment>.convex.site/bonobo/access-events`. Chitchat then pulls the feed.
+- Read the receiver from main with `convex run --inline-query` (a handler body, see the
+  convex-admin-ops skill): `plugins_service_event_receivers` by `by_installation`. A healthy one has
+  `deliveredRevision == pendingRevision`, `lastStatus` 200, no `claim`, no `wakeJobId`. Read
+  Chitchat's side from its own deployment: `installations` by `by_hostInstallationId`, fields
+  `status` and `appliedAccessRevision`.
+- Make a reversible access change with no Chitchat tab open: switch `qa.perm.member` between Member
+  and Viewer on `/w/chitchat-qa/home/users`, then switch it back. A role change writes a `refresh`
+  feed doc, so Chitchat reads the whole member list (`bootstrapping`) before it is `ready` again.
+  Removing the member instead would drop the fixture from its private channels.
+- Time it from the role click to `appliedAccessRevision` reaching the new head. Read only
+  Completion rows from `convex logs --jsonl` on both deployments (time, function, caller), never log
+  text. On 2026-10-25 the notice reached Chitchat about 1 s after `set_user_role` committed.
+- **Another task's migration can make every mutation on dev wait.** On 2026-10-25 a running
+  `lib:migrate` made all mutations (presence heartbeats, crons, `get_events`, `get_snapshot`)
+  finish only in bursts right after each migrate batch, 7–8 s late. Chitchat's 8 s budget then ran
+  out, it answered 503, and the notice came back after the retry delay, so a change took 20–35 s
+  to apply. Before you blame the notice path for a slow result, look for `lib:migrate` completions
+  in the same window.
+- Forged or oversized notices: a POST with a made-up `webhook-signature` answers 401, and a body
+  over 4,096 bytes answers 413 before the signature check.
+- After an update, the first lease can answer 503 `syncing` once while Chitchat catches up, then
+  200. The frame retries by itself after 2 s. Seen once on the 0.8.11 to 0.8.12 update.
 
 ### Reader recovery across an update
 
