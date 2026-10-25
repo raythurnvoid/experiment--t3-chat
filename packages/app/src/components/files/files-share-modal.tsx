@@ -1,7 +1,7 @@
 import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
-import { Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { Lock, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -635,8 +635,12 @@ type FilesShareModal_ClassNames =
 	| "FilesShareModal-add-principal-trigger"
 	| "FilesShareModal-add-level-trigger"
 	| "FilesShareModal-list"
-	| "FilesShareModal-loading"
-	| "FilesShareModal-footer-spacer";
+	| "FilesShareModal-general"
+	| "FilesShareModal-general-icon"
+	| "FilesShareModal-general-main"
+	| "FilesShareModal-general-name"
+	| "FilesShareModal-general-meta"
+	| "FilesShareModal-loading";
 
 export type FilesShareModal_Props = {
 	/** The node the dialog is about. `null` keeps it closed. */
@@ -675,8 +679,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const [publicError, setPublicError] = useState<{ nodeId: app_convex_Id<"files_nodes">; message: string } | null>(
 		null,
 	);
-	/** The node whose restrict is waiting for a yes. Keyed by node, like `linkError`. */
-	const [restrictConfirmNodeId, setRestrictConfirmNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	/** The restrict or unrestrict waiting for a yes. Both remove grants. Keyed by node, like `linkError`. */
+	const [accessConfirm, setAccessConfirm] = useState<{
+		nodeId: app_convex_Id<"files_nodes">;
+		action: "restrict" | "unrestrict";
+	} | null>(null);
 	const listRef = useRef<HTMLUListElement>(null);
 	/** Where focus goes when the write a button started replaces the branch that button lived in. */
 	const dialogRef = useRef<HTMLDivElement>(null);
@@ -766,7 +773,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		setAddLevel("read");
 		setLinkError(null);
 		setPublicError(null);
-		setRestrictConfirmNodeId(null);
+		setAccessConfirm(null);
 		onClose();
 	});
 
@@ -829,7 +836,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			// This button goes away with the branch the new state replaces, so focus would fall to the page.
 			// The dialog is the one part always there, and it reads out the name and the state that changed.
 			onDone: () => {
-				setRestrictConfirmNodeId(null);
+				setAccessConfirm(null);
 				dialogRef.current?.focus();
 			},
 		});
@@ -844,7 +851,10 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			key: "unrestrict",
 			request: app_convex.mutation(app_convex_api.files_sharing.unrestrict_node, { membershipId, nodeId: viewNodeId }),
 			successMessage: "Restriction removed",
-			onDone: () => dialogRef.current?.focus(),
+			onDone: () => {
+				setAccessConfirm(null);
+				dialogRef.current?.focus();
+			},
 		});
 	});
 
@@ -963,7 +973,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 	const scope = shareState?.scope ?? null;
 	const canEditList = Boolean(shareState?.canAddPeople);
-	const confirmingRestrict = restrictConfirmNodeId === viewNodeId;
+	const confirmAction = accessConfirm?.nodeId === viewNodeId ? accessConfirm.action : null;
 	const nodeKindText = shareState?.nodeKind === "folder" ? "folder" : "file";
 	/** One write at a time. Every control says so, so nothing here is clickable but does nothing. */
 	const busy = pendingKey !== null;
@@ -1016,6 +1026,23 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const inheritedFolders = shareState
 		? [shareState.inheritedFrom.restricted, ...shareState.inheritedFrom.extended].filter((folder) => folder !== null)
 		: [];
+
+	// Restrict deletes this node's grants, and on an item inside a restricted folder it also shuts out
+	// that folder's people.
+	const restrictConfirmText = [
+		"Only you will have access.",
+		scope && !scope.isSelf ? `People who open it through ${scope.name} will lose access.` : null,
+		entries.length > 0 ? `People added here (${entries.length}) will lose access.` : null,
+		"You can add people again after.",
+	]
+		.filter((sentence) => sentence !== null)
+		.join(" ");
+	// Unrestrict deletes the people and role grants on this node. Service account grants stay.
+	const removedOnUnrestrict = entries.filter((entry) => entry.principal.kind !== "service_account").length;
+	const unrestrictConfirmText =
+		removedOnUnrestrict > 0
+			? `This ${nodeKindText} will get its access from the folder it is in. People and roles added here (${removedOnUnrestrict}) will be removed.`
+			: `This ${nodeKindText} will get its access from the folder it is in.`;
 
 	const takenPrincipalValues = new Set(entries.map((entry) => files_share_principal_value(entry.principal)));
 	// The owner is left out: they already pass every check and hold no grant, so a row for them would
@@ -1094,119 +1121,15 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						</div>
 					) : (
 						<div className={"FilesShareModal-body" satisfies FilesShareModal_ClassNames}>
-							{/* `data-share-scope` says which of the three states this is, so a browser test never has
-							    to read the wording. */}
-							<section
-								aria-label="Access"
-								className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
-								data-share-scope={scope ? (scope.isSelf ? "self" : "inherited") : "open"}
-							>
-								<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
-									<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
-										<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
-											{!scope
-												? "Everyone in this workspace"
-												: scope.isSelf
-													? "Restricted"
-													: `Shared through ${scope.name}`}
-										</h3>
-										<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-											{!scope
-												? `Anybody whose role lets them read workspace content can open this ${nodeKindText}.`
-												: scope.isSelf
-													? "A workspace role does not open this on its own. Only the people, roles, and service accounts listed below, plus the organization owner."
-													: `The folder ${scope.path} decides who can open this ${nodeKindText}.`}
-										</p>
-									</div>
-
-									{shareState.canManage ? (
-										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
-											{/* `canRestrict`, not `canManage`: restricting gives the caller a `manage` grant, and
-											    the mutation refuses somebody who could not hand that level to anybody else. */}
-											{!scope ? (
-												<MyButton
-													disabled={busy || !shareState.canRestrict}
-													onClick={() => setRestrictConfirmNodeId(viewNodeId)}
-												>
-													<Lock aria-hidden />
-													Restrict access
-												</MyButton>
-											) : !scope.isSelf ? (
-												<MyButton
-													variant="outline"
-													disabled={busy}
-													onClick={() => setRestrictConfirmNodeId(viewNodeId)}
-												>
-													Restrict separately
-												</MyButton>
-											) : null}
-										</div>
-									) : null}
-								</div>
-
-								{/* Restrict removes every grant on this node, so ask first and say how many go. */}
-								{confirmingRestrict ? (
-									<div className={"FilesShareModal-confirm" satisfies FilesShareModal_ClassNames}>
-										<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames} role="alert">
-											{shareState.entries.length > 0
-												? `Only you will have access. People added here (${shareState.entries.length}) will lose access. You can add people again after.`
-												: "Only you will have access. You can add people again after."}
-										</p>
-										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
-											<MyButton
-												variant="outline"
-												disabled={busy}
-												onClick={() => {
-													setRestrictConfirmNodeId(null);
-													// The box with this button goes away, so focus would fall to the page.
-													dialogRef.current?.focus();
-												}}
-											>
-												Cancel
-											</MyButton>
-											<MyButton
-												disabled={busy}
-												aria-busy={pendingKey === "restrict" || undefined}
-												onClick={handleRestrict}
-											>
-												{pendingKey === "restrict" ? "Restricting..." : "Restrict"}
-											</MyButton>
-										</div>
-									</div>
-								) : null}
-							</section>
-
-							{/* A link opens one file, never a folder, and only a manager may turn it on or off. An
-							    image or video also shows its public flag to anybody who may edit it. */}
-							{shareState.nodeKind === "file" && (shareState.canManage || shareState.public?.canChange) ? (
-								<FilesShareModalLink
-									nodeId={shareState.nodeId}
-									link={
-										!shareState.canManage
-											? "hidden"
-											: shareState.link
-												? {
-														token: shareState.link.token,
-														createdAt: shareState.link.createdAt,
-														creatorName: read_display_name(userAnagraphicDict[shareState.link.createdBy]),
-													}
-												: null
-									}
-									publicFlag={shareState.public}
-									pending={pendingKey === "link"}
-									publicPending={pendingKey === "public"}
-									busy={busy}
-									error={linkError?.nodeId === viewNodeId ? linkError.message : null}
-									publicError={publicError?.nodeId === viewNodeId ? publicError.message : null}
-									onEnabledChange={handleLinkEnabledChange}
-									onPublicChange={handlePublicEnabledChange}
-								/>
-							) : null}
-
-							{/* Every item can get added people, so this section is always there. */}
+							{/* One section for everybody who can open this: the people added, and the general access
+							    row at the end, like the share dialogs of Google Drive and Notion. Every item can get
+							    added people, so the section is always there. `data-share-scope` says which of the
+							    three general access states this is, so a browser test never has to read the
+							    wording. */}
 							<section
 								aria-label="People with access"
 								className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
+								data-share-scope={scope ? (scope.isSelf ? "self" : "inherited") : "open"}
 								data-share-access={shareState.access}
 							>
 								<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
@@ -1362,18 +1285,9 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									</p>
 								) : null}
 
-								{shareState.access === "restricted_root" ? (
-									<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-										Restricted. Only these people can open it:
-									</p>
-								) : (
+								{/* A restricted root has no folders above that give access. */}
+								{shareState.access !== "restricted_root" ? (
 									<>
-										{!shareState.inheritedFrom.restricted ? (
-											<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-												Everyone in this workspace can open this.
-											</p>
-										) : null}
-
 										{/* Names come only when the server sent them: the caller manages this item or reads
 										    the whole area. Otherwise the line says only where the access comes from. */}
 										{inheritedFolders.map((folder) => (
@@ -1417,12 +1331,21 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											</div>
 										))}
 
-										<h4 className={"FilesShareModal-subheading" satisfies FilesShareModal_ClassNames}>Added here</h4>
-										{entries.length === 0 ? (
-											<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>Nobody yet.</p>
+										{/* The heading only tells this item's people apart from the folders' people above. */}
+										{inheritedFolders.length > 0 ? (
+											<>
+												<h4 className={"FilesShareModal-subheading" satisfies FilesShareModal_ClassNames}>
+													Added here
+												</h4>
+												{entries.length === 0 ? (
+													<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+														Nobody yet.
+													</p>
+												) : null}
+											</>
 										) : null}
 									</>
-								)}
+								) : null}
 
 								<ul
 									ref={listRef}
@@ -1471,25 +1394,134 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 										/>
 									))}
 								</ul>
+
+								<h4 className={"FilesShareModal-subheading" satisfies FilesShareModal_ClassNames}>General access</h4>
+								<div className={"FilesShareModal-general" satisfies FilesShareModal_ClassNames}>
+									<div className={"FilesShareModal-general-icon" satisfies FilesShareModal_ClassNames} aria-hidden>
+										{scope ? <Lock /> : <Users />}
+									</div>
+									<div className={"FilesShareModal-general-main" satisfies FilesShareModal_ClassNames}>
+										<span className={"FilesShareModal-general-name" satisfies FilesShareModal_ClassNames}>
+											{!scope
+												? "Everyone in this workspace"
+												: scope.isSelf
+													? "Only people with access"
+													: `Restricted by ${scope.name}`}
+										</span>
+										<span className={"FilesShareModal-general-meta" satisfies FilesShareModal_ClassNames}>
+											{!scope
+												? `Anybody whose role lets them read workspace content can open this ${nodeKindText}.`
+												: scope.isSelf
+													? "A workspace role does not open this on its own. Only the people, roles, and service accounts above can open it."
+													: `The folder ${scope.path} decides who can open this ${nodeKindText}.`}
+										</span>
+									</div>
+
+									{shareState.canManage ? (
+										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+											{/* `canRestrict`, not `canManage`: restricting gives the caller a `manage` grant, and
+											    the mutation refuses somebody who could not hand that level to anybody else. */}
+											{!scope ? (
+												<MyButton
+													disabled={busy || !shareState.canRestrict}
+													onClick={() => setAccessConfirm({ nodeId: shareState.nodeId, action: "restrict" })}
+												>
+													<Lock aria-hidden />
+													Restrict access
+												</MyButton>
+											) : scope.isSelf ? (
+												<MyButton
+													variant="outline_destructive"
+													disabled={busy}
+													onClick={() => setAccessConfirm({ nodeId: shareState.nodeId, action: "unrestrict" })}
+												>
+													Stop restricting
+												</MyButton>
+											) : (
+												<MyButton
+													variant="outline"
+													disabled={busy || !shareState.canRestrict}
+													onClick={() => setAccessConfirm({ nodeId: shareState.nodeId, action: "restrict" })}
+												>
+													Restrict separately
+												</MyButton>
+											)}
+										</div>
+									) : null}
+								</div>
+
+								{/* Restrict and unrestrict both remove grants, so ask first and say who loses access. */}
+								{confirmAction ? (
+									<div className={"FilesShareModal-confirm" satisfies FilesShareModal_ClassNames}>
+										<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames} role="alert">
+											{confirmAction === "restrict" ? restrictConfirmText : unrestrictConfirmText}
+										</p>
+										<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+											<MyButton
+												variant="outline"
+												disabled={busy}
+												onClick={() => {
+													setAccessConfirm(null);
+													// The box with this button goes away, so focus would fall to the page.
+													dialogRef.current?.focus();
+												}}
+											>
+												Cancel
+											</MyButton>
+											{confirmAction === "restrict" ? (
+												<MyButton
+													disabled={busy}
+													aria-busy={pendingKey === "restrict" || undefined}
+													onClick={handleRestrict}
+												>
+													{pendingKey === "restrict" ? "Restricting..." : "Restrict"}
+												</MyButton>
+											) : (
+												<MyButton
+													variant="destructive"
+													disabled={busy}
+													aria-busy={pendingKey === "unrestrict" || undefined}
+													onClick={handleUnrestrict}
+												>
+													{pendingKey === "unrestrict" ? "Removing..." : "Stop restricting"}
+												</MyButton>
+											)}
+										</div>
+									</div>
+								) : null}
 							</section>
+
+							{/* A link opens one file, never a folder, and only a manager may turn it on or off. An
+							    image or video also shows its public flag to anybody who may edit it. */}
+							{shareState.nodeKind === "file" && (shareState.canManage || shareState.public?.canChange) ? (
+								<FilesShareModalLink
+									nodeId={shareState.nodeId}
+									link={
+										!shareState.canManage
+											? "hidden"
+											: shareState.link
+												? {
+														token: shareState.link.token,
+														createdAt: shareState.link.createdAt,
+														creatorName: read_display_name(userAnagraphicDict[shareState.link.createdBy]),
+													}
+												: null
+									}
+									publicFlag={shareState.public}
+									pending={pendingKey === "link"}
+									publicPending={pendingKey === "public"}
+									busy={busy}
+									error={linkError?.nodeId === viewNodeId ? linkError.message : null}
+									publicError={publicError?.nodeId === viewNodeId ? publicError.message : null}
+									onEnabledChange={handleLinkEnabledChange}
+									onPublicChange={handlePublicEnabledChange}
+								/>
+							) : null}
 						</div>
 					)}
 				</MyModalScrollableArea>
 
 				<MyModalFooter>
-					{shareState?.canManage && scope?.isSelf ? (
-						<>
-							<MyButton
-								variant="outline_destructive"
-								disabled={busy}
-								aria-busy={pendingKey === "unrestrict" || undefined}
-								onClick={handleUnrestrict}
-							>
-								{pendingKey === "unrestrict" ? "Removing..." : "Stop restricting"}
-							</MyButton>
-							<div className={"FilesShareModal-footer-spacer" satisfies FilesShareModal_ClassNames} />
-						</>
-					) : null}
 					<MyButton disabled={busy} onClick={handleClose}>
 						Done
 					</MyButton>

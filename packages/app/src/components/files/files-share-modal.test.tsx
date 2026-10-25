@@ -138,7 +138,7 @@ function linkSection() {
 
 /**
  * Wait until the dialog has moved focus inside itself. A list opened before that closes again when
- * the focus moves to the first control, such as "Restrict access".
+ * the focus moves to the first control, such as the add picker.
  */
 async function waitForDialogFocus() {
 	await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
@@ -288,8 +288,7 @@ describe("FilesShareModal", () => {
 		expect(
 			screen.getByText("They also get everything inside this folder, except restricted items inside it."),
 		).toBeTruthy();
-		expect(screen.getByText("Everyone in this workspace can open this.")).toBeTruthy();
-		expect(screen.getByText("Nobody yet.")).toBeTruthy();
+		expect(screen.getByText("Everyone in this workspace")).toBeTruthy();
 	});
 
 	test("add people is available on a file inside a restricted folder", () => {
@@ -328,6 +327,50 @@ describe("FilesShareModal", () => {
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("restrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
 		);
+	});
+
+	test("stop restricting asks before removing people and roles added here", async () => {
+		mockShareState({
+			...SHARE,
+			entries: [
+				{
+					principal: { kind: "user", userId: "user_1" },
+					level: "read",
+					serviceAccountName: null,
+					servicePluginName: null,
+				},
+				{
+					principal: { kind: "service_account", serviceAccountId: "account_1" },
+					level: "read",
+					serviceAccountName: "Report bot",
+					servicePluginName: null,
+				},
+			],
+		});
+		renderModal();
+		fireEvent.click(screen.getByRole("button", { name: "Stop restricting" }));
+
+		// Unrestrict keeps service account grants, so only the person is counted.
+		expect(screen.getByRole("alert").textContent).toBe(
+			"This folder will get its access from the folder it is in. People and roles added here (1) will be removed.",
+		);
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		fireEvent.click(
+			within(document.querySelector(".FilesShareModal-confirm") as HTMLElement).getByRole("button", {
+				name: "Stop restricting",
+			}),
+		);
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("unrestrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
+		);
+	});
+
+	test("restrict separately is disabled when the caller cannot restrict", () => {
+		mockShareState({ ...INSIDE_SHARE, canRestrict: false });
+		renderModal();
+
+		expect((screen.getByRole("button", { name: "Restrict separately" }) as HTMLButtonElement).disabled).toBe(true);
 	});
 
 	test("inherited access names the folder it comes from", async () => {
