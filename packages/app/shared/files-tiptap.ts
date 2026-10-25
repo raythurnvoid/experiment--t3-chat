@@ -735,13 +735,40 @@ function configure_marked(instance: Marked | typeof marked) {
 			//
 			// The editor marks a bare `https://…` or an `<https://…>` auto link, so save writes it back the same
 			// instead of as `[https://…](https://…)`.
+			//
+			// A `[text](…)` link keeps how the file wrote its address and title, like `<a b>` or `'Title'`. The
+			// link mark stores the source with the address and title it gave, and save writes the source back
+			// while the link still has them.
 			link(token) {
 				if (markdown_hidden_link_text === null) {
-					return token.raw.startsWith("[")
-						? false
-						: Renderer.prototype.link
-								.call(this, token)
-								.replace(/^<a /, `<a data-markdown-autolink="${token.raw.startsWith("<") ? "angle" : "bare"}" `);
+					if (!token.raw.startsWith("[")) {
+						return Renderer.prototype.link
+							.call(this, token)
+							.replace(/^<a /, `<a data-markdown-autolink="${token.raw.startsWith("<") ? "angle" : "bare"}" `);
+					}
+
+					// Marked unescapes `\[` and `\]` in `text`, so find where the label ends in the source.
+					let labelEnd = token.raw.indexOf("](");
+					while (labelEnd !== -1 && token.raw.slice(1, labelEnd).replace(/\\([[\]])/g, "$1") !== token.text) {
+						labelEnd = token.raw.indexOf("](", labelEnd + 1);
+					}
+					const source = token.raw.slice(labelEnd + 2, -1);
+					const html = Renderer.prototype.link.call(this, token);
+					const href = /^<a href="([^"]*)"/.exec(html)?.[1];
+					const title = token.title || null;
+					// Skip the spelling that save writes anyway. A line break inside would move with the text.
+					if (
+						href === undefined ||
+						labelEnd === -1 ||
+						source.includes("\n") ||
+						source === href ||
+						(title !== null && source === `${href} "${title}"`)
+					) {
+						return html;
+					}
+
+					const destination = encodeURIComponent(JSON.stringify({ source, href, title }));
+					return html.replace(/^<a /, `<a data-markdown-destination="${destination}" `);
 				}
 
 				const hiddenText = markdown_hidden_link_text(token.href);

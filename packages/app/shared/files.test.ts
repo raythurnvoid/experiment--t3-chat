@@ -2638,6 +2638,26 @@ describe("mark syntax round-trip through Yjs", () => {
 		expect(saved).toBe("`a*b` ~~x\\~~~\n");
 	});
 
+	test("keeps how a link writes its address and title", () => {
+		const input =
+			"[a](<https://e.com/a b> 'T') [b](https://e.com (T)) [c\\](d]( https://e.com/ä ) [e](https://e.com)\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("writes the default link form after the address changes", () => {
+		const saved = edit_and_save("[a](<https://e.com/a b> 'T')\n", (editor) => {
+			const { schema } = editor.state;
+			const link = editor.state.doc.nodeAt(1)?.marks.find((mark) => mark.type === schema.marks.link);
+			if (!link) {
+				throw new Error("Expected a link");
+			}
+			// Keep the other attributes, like changing the address in the link editor does.
+			const changed = schema.marks.link.create({ ...link.attrs, href: "https://f.com" });
+			editor.view.dispatch(editor.state.tr.removeMark(1, 2, link).addMark(1, 2, changed));
+		});
+		expect(saved).toBe('[a](https://f.com "T")\n');
+	});
+
 	test("keeps links and other marks around a code span", () => {
 		const input = "[`a`](https://e.com) **x `b` y** *`c`* ~~`d`~~ <u>`e`</u>\n";
 		expect(round_trip_markdown(input)).toBe(input);
