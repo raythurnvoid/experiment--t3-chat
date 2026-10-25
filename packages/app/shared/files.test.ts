@@ -2673,6 +2673,7 @@ describe("block syntax round-trip through Yjs", () => {
 		["a rule", "- a\n\n  ---\n"],
 		["a code block", "- a\n\n  ```\n  x\n  ```\n"],
 		["a code block in an ordered item", "1. a\n\n   ```\n   x\n   ```\n"],
+		["a code block in a task item", "- [ ] a\n\n  ```\n  x\n  ```\n"],
 	])("keeps a blank line before %s in a list item", (_name, input) => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});

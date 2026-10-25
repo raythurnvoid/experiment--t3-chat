@@ -48,7 +48,7 @@ Also keep the Markdown save patches:
 - A level 1 or 2 heading with more lines saves underlined (`===` or `---`). A level 3 to 6 heading
   joins its lines with a space.
 - Bullet and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
-- A list with `loose: true` puts a blank line between its items. A list item with `loose: true` puts one
+- A list with `loose: true` puts a blank line between its items. A list or task item with `loose: true` puts one
   before each block inside it but a list (`blankLineBeforeBlocks` in `renderNestedMarkdownContent`). A
   `---` line inside an item always gets one, so it never turns the text above into a heading. Empty lines
   inside an item get no indent. The ordered list tokenizer adds a `space` token for the blank line before

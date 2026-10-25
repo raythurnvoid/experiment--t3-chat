@@ -344,7 +344,7 @@ function configure_marked(instance: Marked | typeof marked) {
 							checked?: boolean;
 							text?: string;
 							tokens?: unknown[];
-							nestedTokens?: unknown[];
+							nestedTokens?: Array<{ type: string }>;
 						}>;
 					};
 					const itemsHtml = (taskListToken.items ?? [])
@@ -357,9 +357,11 @@ function configure_marked(instance: Marked | typeof marked) {
 								itemToken.nestedTokens && itemToken.nestedTokens.length > 0
 									? this.parser.parse(itemToken.nestedTokens as Parameters<typeof this.parser.parse>[0])
 									: "";
+							// Keep a blank line before the item's blocks, like the `listitem` renderer.
+							const loose = itemToken.nestedTokens?.some((child) => child.type === "space");
 							return `<li data-type="taskItem" data-checked="${
 								itemToken.checked ? "true" : "false"
-							}"><p>${itemTextHtml}</p>${nestedHtml}</li>`;
+							}"${loose ? " data-loose" : ""}><p>${itemTextHtml}</p>${nestedHtml}</li>`;
 						})
 						.join("");
 					return `<ul data-type="taskList">${itemsHtml}</ul>`;
