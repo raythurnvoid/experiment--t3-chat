@@ -2775,6 +2775,11 @@ describe("block syntax round-trip through Yjs", () => {
 		// Before, a list that started at 0 saved from 1.
 		["a list that starts at 0", "0. a\n1. b\n"],
 		["a list that numbers every item 0", "0) a\n0) b\n"],
+		// Before, a save wrote one space after each marker.
+		["3 spaces after each bullet", "-   a\n    -   b\n-\n-   c\n"],
+		["2 spaces after each number", "1.  a\n2.  b\n"],
+		["a paragraph under a wide bullet", "-   a\n\n    more\n"],
+		["a wide space next to text under the marker", "-\n    a\n-   b\n"],
 		["a `*` task bullet", "* [ ] a\n* [x] b\n"],
 		// Before, a save wrote `[X]` as `[x]`.
 		["an upper-case `[X]`", "- [X] a\n- [x] b\n  - [X] c\n"],
@@ -2880,6 +2885,11 @@ describe("block syntax round-trip through Yjs", () => {
 		expect(quoteAttrs(">a\n")).toEqual({ markdownTextMarker: ">", markdownNestedMarker: null });
 		expect(quoteAttrs(">>a\n")).toEqual({ markdownTextMarker: null, markdownNestedMarker: ">" });
 		expect(quoteAttrs("> a\n>b\n")).toEqual({ markdownTextMarker: null, markdownNestedMarker: null });
+	});
+
+	test("writes one space after each list marker when the items do not agree", () => {
+		// The numbers line up their text, so the space after them is not a style to keep.
+		expect(round_trip_markdown("9.  a\n10. b\n")).toBe("9. a\n10. b\n");
 	});
 
 	test("puts a blank line back when an edit would join two blocks in a list item", () => {

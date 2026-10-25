@@ -683,6 +683,20 @@ function configure_marked(instance: Marked | typeof marked) {
 				if (numbers.length > 1 && numbers.every((number) => Number(number) === token.start)) {
 					attributes += " data-same-number";
 				}
+				// Keep 2 to 4 spaces after the marker, like `-   a`, while every item with text on its marker line
+				// uses the same. A list that lines up its text, like `9.  a` then `10. b`, gets one space.
+				const markerSpaces = token.items
+					.map((item) => /^ *(?:[-+*]|\d+[.)])( +)\S/.exec(item.raw)?.[1].length)
+					.filter((spaces) => spaces !== undefined);
+				const markerSpace = markerSpaces[0];
+				if (
+					markerSpace !== undefined &&
+					markerSpace > 1 &&
+					markerSpace < 5 &&
+					markerSpaces.every((spaces) => spaces === markerSpace)
+				) {
+					attributes += ` data-marker-space="${markerSpace}"`;
+				}
 
 				if (!attributes) {
 					return false;
