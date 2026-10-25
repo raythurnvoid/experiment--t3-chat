@@ -14,6 +14,7 @@ import {
 import { files_pending_overlay_db_flush, files_pending_overlay_db_wrap } from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_wrap } from "../server/files-move-reservations.ts";
 import { files_access_version_db_wrap } from "../server/files-access-version.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 
 /**
  * One customization for both builders. It captures writes to the pending overlay's source tables
@@ -22,7 +23,8 @@ import { files_access_version_db_wrap } from "../server/files-access-version.ts"
 const customization = {
 	args: {},
 	input: async (ctx: MutationCtx) => {
-		const access = files_access_version_db_wrap(ctx);
+		const content = files_content_heads_db_wrap(ctx);
+		const access = files_access_version_db_wrap({ ...ctx, db: content.db });
 		const guarded = files_move_reservations_db_wrap({ ...ctx, db: access.db });
 		const wrapped = files_pending_overlay_db_wrap({ ...ctx, ...guarded });
 		return {

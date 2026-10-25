@@ -53,6 +53,7 @@ import {
 import { files_visible_resolve_db_create, type files_visible_resolve_Facts } from "./files-visible-resolve.ts";
 import { files_pending_types_compute } from "./files-pending-types.ts";
 import { files_metadata_maps_db_delete } from "./files-metadata-maps.ts";
+import { files_content_heads_db_flush } from "./files-content-heads.ts";
 import {
 	files_metadata_catalog_add_write,
 	files_metadata_catalog_db_insert_deltas,
@@ -3234,6 +3235,7 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 				{ organizationId: scope.organizationId, workspaceId: scope.workspaceId },
 				{ kind: "targets", userId: scope.userId, items: items.slice(index, index + JOB_LIST_ITEMS) },
 			);
+	await files_content_heads_db_flush(ctx);
 }
 
 // #endregion flush

@@ -31,6 +31,12 @@ file (see "Remaining saved-index cost").
 Version-history Restore stays in its current request flow. It does not need a new background job
 to handle drafts. Unarchive uses its existing job and is a separate operation.
 
+The temporary content migration bridge copies saved content fields to `files_saved_content_heads`.
+It tags committed text, Yjs updates, and frontmatter with `contentHeadId`. Pending docs and
+user-written `metadata.*` keep their current ownership. Current readers and Restore guards stay
+in place. See [Content ownership migration](references/content-ownership-migration.md) before
+changing its writers, cleanup, or migration order.
+
 A content proposal stores one `content` object. Its `base` is `{ kind: "yjs", sequence, lineageGeneration, pendingContentVersion }` for a collaborative file, `{ kind: "asset", assetId, pendingContentVersion }` for a file with collaboration off, or `{ kind: "new" }` for private new content. Its `rootKind` describes all three sealed states:
 
 - `base`: the live file state the pending update was built from.

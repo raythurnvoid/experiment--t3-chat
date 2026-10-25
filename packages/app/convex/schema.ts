@@ -813,6 +813,8 @@ const files_pending_create_intent_validator = v.union(
 // Saved indexes also cover read-only mounts. Pending indexes always belong to a real owner and tenant.
 const files_committed_index_fields = {
 	moveView: v.optional(files_move_view_tag_validator),
+	// Optional until the content ownership backfill is audited.
+	contentHeadId: v.optional(v.id("files_saved_content_heads")),
 	organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 	workspaceId: v.union(
 		v.id("organizations_workspaces"),
@@ -2557,6 +2559,9 @@ const app_convex_schema = defineSchema({
 		itemId: v.id("files_move_cohort_items"),
 		operationBatchId: v.union(v.id("files_pending_update_operation_batches"), v.null()),
 		nodeId: v.id("files_nodes"),
+		// Existing jobs acquire these during the content ownership backfill.
+		beforeHeadId: v.optional(v.id("files_saved_content_heads")),
+		afterHeadId: v.optional(v.id("files_saved_content_heads")),
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
@@ -2760,6 +2765,8 @@ const app_convex_schema = defineSchema({
 		cohortId: v.id("files_move_cohorts"),
 		view: files_move_view_validator,
 		nodeId: v.id("files_nodes"),
+		// Optional until the content ownership backfill is audited.
+		contentHeadId: v.optional(v.id("files_saved_content_heads")),
 		nodeCreationTime: v.number(),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -4627,6 +4634,7 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),
 	)
+		.index("by_contentHead_fieldPath", ["contentHeadId", "fieldPath"])
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		// Whole-file staging needs short cursors even when a metadata key is very long.
 		.index("by_organization_workspace_source_fileNode", [
@@ -4791,8 +4799,51 @@ const app_convex_schema = defineSchema({
 			"name",
 		]),
 
+	// The bridge copies content here while current readers still use nodes and Move places.
+	// Switch readers only after the ownership backfill and audit pass.
+	files_saved_content_heads: defineTable({
+		organizationId: files_committed_index_fields.organizationId,
+		workspaceId: files_committed_index_fields.workspaceId,
+		fileNodeId: v.id("files_nodes"),
+		contentType: files_saved_placement_fields.contentType,
+		assetId: files_saved_placement_fields.assetId,
+		pendingContentVersion: files_saved_placement_fields.pendingContentVersion,
+		contentByteSize: files_saved_placement_fields.contentByteSize,
+		textKind: files_saved_placement_fields.textKind,
+		collaborationEnabled: files_saved_placement_fields.collaborationEnabled,
+		yjsSnapshotId: files_saved_placement_fields.yjsSnapshotId,
+		// Keep the public sequence ID unchanged while the bridge copies its counters below.
+		yjsLastSequenceId: files_saved_placement_fields.yjsLastSequenceId,
+		statsId: files_saved_placement_fields.statsId,
+		contentTooLargeByteSize: files_saved_placement_fields.contentTooLargeByteSize,
+		contentShapeMismatchAt: files_saved_placement_fields.contentShapeMismatchAt,
+		contentYjsStateTooLargeByteSize: files_saved_placement_fields.contentYjsStateTooLargeByteSize,
+		contentFrontmatterTooLargeFieldCount: files_saved_placement_fields.contentFrontmatterTooLargeFieldCount,
+		contentFrontmatterTooLargeIndexDocumentCount:
+			files_saved_placement_fields.contentFrontmatterTooLargeIndexDocumentCount,
+		updatedAt: files_saved_placement_fields.updatedAt,
+		updatedBy: files_saved_placement_fields.updatedBy,
+		snapshotAssetId: v.union(v.id("files_r2_assets"), v.null()),
+		sequence: v.union(
+			v.object({
+				lastSequence: v.number(),
+				lineageGeneration: v.number(),
+				unmaterializedUpdateCount: v.number(),
+				unmaterializedUpdateBytes: v.number(),
+			}),
+			v.null(),
+		),
+		ready: v.boolean(),
+		retired: v.boolean(),
+	})
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_asset", ["assetId"])
+		.index("by_snapshotAsset", ["snapshotAssetId"]),
+
 	files_nodes: defineTable({
 		moveCohortId: v.optional(v.id("files_move_cohorts")),
+		// Optional until the content ownership backfill is audited.
+		contentHeadId: v.optional(v.id("files_saved_content_heads")),
 		// Tenant
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		workspaceId: v.union(
@@ -5465,6 +5516,9 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_text_chunk_fields }),
 		),
 	)
+		.index("by_contentHead_yjsSeq_chunk", ["contentHeadId", "yjsSequence", "chunkIndex"])
+		.index("by_contentHead_lineEnd_chunk", ["contentHeadId", "lineEnd", "chunkIndex"])
+		.index("by_contentHead_endIndex_chunk", ["contentHeadId", "endIndex", "chunkIndex"])
 		.index("by_organization_workspace_source_fileNode_yjsSeq_chunk", [
 			"organizationId",
 			"workspaceId",
@@ -5540,6 +5594,7 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_plain_text_chunk_fields }),
 		),
 	)
+		.index("by_contentHead_yjsSeq_chunk", ["contentHeadId", "yjsSequence", "chunkIndex"])
 		// `sourceKind` and `userId` let a search read committed chunks only, or one user's pending chunks
 		// only. Committed chunks have no `userId`.
 		.searchIndex("search_by_plainTextChunk", {
@@ -5601,6 +5656,8 @@ const app_convex_schema = defineSchema({
 
 	files_yjs_updates: defineTable({
 		moveView: v.optional(files_move_view_tag_validator),
+		// Optional until the content ownership backfill is audited.
+		contentHeadId: v.optional(v.id("files_saved_content_heads")),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
@@ -5626,6 +5683,7 @@ const app_convex_schema = defineSchema({
 		createdBy: v.id("users"),
 		createdAt: v.number(),
 	})
+		.index("by_contentHead_sequence", ["contentHeadId", "sequence"])
 		.index("by_organization_workspace_fileNode_sequence", [
 			"organizationId",
 			"workspaceId",
