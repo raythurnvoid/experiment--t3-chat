@@ -1166,8 +1166,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	/**
 	 * The caller's best level after `change` (or today, for null), and where it comes from. `through` is
 	 * null for their own row. The owner always has full access and is never asked.
+	 *
+	 * Take the loaded state as an argument. The React Compiler reads every `shareState.x` path a
+	 * closure uses on each render to check its cache, and `shareState` is undefined while it loads.
 	 */
-	const callerAccessAfter = (change: FilesShareModalChange | null) => {
+	const callerAccessAfter = (state: NonNullable<typeof shareState>, change: FilesShareModalChange | null) => {
 		const baseRow = change?.kind === "restrict" ? false : change?.kind === "unrestrict" ? true : hasBaseRow;
 		// Added people cannot manage, so an unrestrict turns every manage on the list into edit.
 		const listLevel = (principal: FilesSharePrincipal, level: access_control_FileShareLevel | null) => {
@@ -1177,17 +1180,17 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			const next = changed ? (change.kind === "set" ? change.level : null) : level;
 			return change?.kind === "unrestrict" && next === "manage" ? "write" : next;
 		};
-		const callerPrincipal: FilesSharePrincipal = { kind: "user", userId: shareState!.callerUserId };
+		const callerPrincipal: FilesSharePrincipal = { kind: "user", userId: state.callerUserId };
 		const sources: Array<{ level: access_control_FileShareLevel | null; through: string | null }> = [
 			{
 				level: listLevel(callerPrincipal, entries.find((entry) => entry.isCaller)?.level ?? null),
 				through: null,
 			},
 			...entries
-				.filter((entry) => entry.principal.kind === "role" && shareState!.callerRoles.includes(entry.principal.role))
+				.filter((entry) => entry.principal.kind === "role" && state.callerRoles.includes(entry.principal.role))
 				.map((entry) => ({ level: listLevel(entry.principal, entry.level), through: entry.name })),
-			...(shareState!.callerCoverage
-				? coverageSources({ ...shareState!.callerCoverage, role: null }, callerPrincipal, baseRow)
+			...(state.callerCoverage
+				? coverageSources({ ...state.callerCoverage, role: null }, callerPrincipal, baseRow)
 				: []),
 		];
 		return sources.reduce((result, source) => (level_rank(source.level) > level_rank(result.level) ? source : result), {
@@ -1257,7 +1260,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 					(entry.principal.kind === "service_account" ? apps : people).push(entry.name);
 				}
 			}
-			if (!isOwner && callerAccessAfter(null).level === "manage" && callerAccessAfter(change).level !== "manage") {
+			if (
+				!isOwner &&
+				callerAccessAfter(shareState, null).level === "manage" &&
+				callerAccessAfter(shareState, change).level !== "manage"
+			) {
 				people.push("you");
 			}
 			if (people.length > 0) lines.push(sentence_case(`${join_names(people)} can no longer change who has access.`));
@@ -1269,8 +1276,8 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 		// A change of your own access asks first and says where you land.
 		if (!isOwner) {
-			const today = callerAccessAfter(null);
-			const after = callerAccessAfter(change);
+			const today = callerAccessAfter(shareState, null);
+			const after = callerAccessAfter(shareState, change);
 			if (level_rank(after.level) < level_rank(today.level)) {
 				lines.push(
 					after.level === null

@@ -963,6 +963,7 @@ Vite runs the React Compiler over app source. The compiler may reuse values and 
 
 - Do not add `useMemo` or `useCallback` only to reduce recomputation or stabilize identities.
 - Add them only for a concrete semantic contract, such as a non-React API that stores an identity. Leave a short comment explaining the contract.
+- In a closure, do not reach a value that can be `undefined` with a non-null assertion (`shareState!.callerUserId`). The `!` disappears in JavaScript, and the compiler reads that path on every render to check its cache, so the render throws while a query is still loading. Pass the loaded value in as an argument instead. Tests that always mock loaded data do not catch this.
 - Do not read or mutate `ref.current` during ordinary component render. Keep audited infrastructure exceptions such as `useLiveRef` local; do not copy that pattern into feature components. Use state when a change must rerender. Use module-level keyed storage only for non-reactive values with complete scope keys and a clear cleanup policy.
 
 ### Component declaration style
