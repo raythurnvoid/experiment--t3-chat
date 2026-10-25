@@ -2162,6 +2162,29 @@ describe("media embeds round-trip through Yjs", () => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
+	// Before, a plain `<img>` saved as `![…](…)`, and the attributes moved to a fixed order.
+	test("keeps a file's img tag as written", () => {
+		const input =
+			'<img src="x.png" alt="a">\n\nA <img alt=\'a\' src=\'x.png\'/> b <IMG SRC="x.png" width="320"> c <image src="x.png">\n';
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("writes the image's own img tag after a resize", () => {
+		const editor = files_headless_tiptap_editor_create({
+			initialContent: { markdown: "<img alt='a' src='x.png' width='320'>\n" },
+		});
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+
+		const image = editor._yay.state.doc.nodeAt(1);
+		editor._yay.view.dispatch(editor._yay.state.tr.setNodeMarkup(1, undefined, { ...image?.attrs, width: 200 }));
+		expect(files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay })).toBe(
+			'<img src="x.png" alt="a" width="200">',
+		);
+		editor._yay.destroy();
+	});
+
 	test("preserves a video caption and alignment", () => {
 		const input = '<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>\n';
 		expect(round_trip_markdown(input)).toBe(input);

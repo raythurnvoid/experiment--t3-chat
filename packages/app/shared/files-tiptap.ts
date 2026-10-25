@@ -1782,11 +1782,14 @@ const files_image_node = Node.create({
 					attribute.name === "src" ||
 					attribute.name === "alt" ||
 					attribute.name === "title" ||
+					attribute.name === "data-markdown-syntax" ||
 					(attribute.name === "width" && IMAGE_PIXEL_WIDTH_REGEX.test(attribute.value)) ||
 					(attribute.name === "align" && (attribute.value === "center" || attribute.value === "right")),
 			),
 			// How the file wrote the address and title (`markdown_destination_attribute`).
 			markdownDestination: html_data_attribute("data-markdown-destination"),
+			// The file's `<img>` tag (`html_shown_tag_to_editor_html`).
+			markdownSyntax: markdownSyntaxAttribute(),
 			// Set while an upload runs, so the client can find its own placeholder node again
 			// after the upload mutations resolve. `rendered: false` keeps it out of the HTML,
 			// and `renderMarkdown` below ignores it, so it never reaches the saved markdown.
@@ -1813,6 +1816,13 @@ const files_image_node = Node.create({
 				? Math.round(node.attrs.width)
 				: null;
 		const align = node.attrs?.align === "center" || node.attrs?.align === "right" ? node.attrs.align : null;
+
+		// Keep the file's `<img>` tag, with its quotes and attribute order, while it holds the same attributes
+		// that the image would write now.
+		const tag = node.attrs?.markdownSyntax;
+		if (typeof tag === "string" && html_tag_attributes_text(tag) === html_tag_attributes_text(image_html_tag(node))) {
+			return tag;
+		}
 
 		// A sized or aligned image, or one with other attributes, rides through markdown as a raw `<img>`
 		// tag, the same way the video node below always does.
@@ -3060,6 +3070,18 @@ function html_inline_tag_is_modeled(tag: string, name: string) {
 }
 
 /**
+ * The attributes of an opening tag in name order, to compare two tags whatever order and quotes they use.
+ */
+function html_tag_attributes_text(tag: string) {
+	const name = INLINE_HTML_TAG_NAME_REGEX.exec(tag)?.[1] ?? "";
+	const attributes = Array.from(tag.slice(name.length + 1, -1).matchAll(HTML_TAG_ATTRIBUTE_REGEX), (match) => [
+		match[1].toLowerCase(),
+		match[2] ?? match[3] ?? match[4] ?? "",
+	]);
+	return JSON.stringify(attributes.sort());
+}
+
+/**
  * Read the inline tags of one block in order. The returned function says for each tag if the editor shows
  * it. A closing tag shows only when its opening tag shows. Otherwise it is hidden too, so save writes the
  * pair back. A closing tag with no opening tag is hidden as well, because the DOM would drop it.
@@ -3108,16 +3130,18 @@ const HTML_MARK_SYNTAX_TAG_REGEX = /^<(?:b|strong|i|em|s|del|strike|code|mark)>$
  * A bare formatting tag or a link tag gets `data-markdown-syntax`, so save writes `<b>` back instead of `**`.
  */
 function html_shown_tag_to_editor_html(tag: string, name: string) {
+	// Keep a link's or an image's own tag, so save writes `<a href>` back instead of `[text](href)`, and
+	// `<img>` with the file's quotes and attribute order. Quote it with the quote mark the tag does not use.
+	// Skip a tag with both quote marks or with `&`, because the DOM would decode an `&amp;` and save would
+	// change it.
+	const quote = tag.includes("'") ? '"' : "'";
+	const keepsTag = /^<(?:a|img|image)\s/i.test(tag) && !tag.includes("&") && !(tag.includes("'") && tag.includes('"'));
+	const syntax = keepsTag ? ` data-markdown-syntax=${quote}${tag}${quote}` : "";
 	if (name === "img" || name === "image") {
-		return html_tag_with_attributes(tag, name, " data-html-kept");
+		return html_tag_with_attributes(tag, name, ` data-html-kept${syntax}`);
 	}
-
-	// Keep a link's own tag, so save writes `<a href>` back instead of `[text](href)`. Quote it with the
-	// quote mark the tag does not use. Skip a tag with both quote marks or with `&`, because the DOM would
-	// decode an `&amp;` and save would change it.
-	if (name === "a" && /^<a\s/i.test(tag) && !tag.includes("&") && !(tag.includes("'") && tag.includes('"'))) {
-		const quote = tag.includes("'") ? '"' : "'";
-		return html_tag_with_attributes(tag, name, ` data-markdown-syntax=${quote}${tag}${quote}`);
+	if (name === "a" && syntax) {
+		return html_tag_with_attributes(tag, name, syntax);
 	}
 
 	// Write the tag unescaped. It has no quote or `&`, and happy-dom does not decode `&lt;` in attributes.
