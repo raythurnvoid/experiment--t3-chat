@@ -48,7 +48,13 @@ Also keep the Markdown save patches:
 - A level 1 or 2 heading with more lines saves underlined (`===` or `---`). A level 3 to 6 heading
   joins its lines with a space.
 - Bullet and ordered lists keep a `*`, `+` or `)` marker in their `bullet` and `delimiter` attributes.
-- A list with `loose: true` puts a blank line between its items.
+- A list with `loose: true` puts a blank line between its items. A list item with `loose: true` puts one
+  before each block inside it but a list (`blankLineBeforeBlocks` in `renderNestedMarkdownContent`). A
+  `---` line inside an item always gets one, so it never turns the text above into a heading. Empty lines
+  inside an item get no indent. The ordered list tokenizer adds a `space` token for the blank line before
+  an item's blocks, like Marked does for a bullet item.
+- A horizontal rule keeps a style like `***` or `- - -` in `markdownSource` and writes it back while it
+  is still a rule.
 - A mark can write the text it covers with `markdownOptions.renderText`. The HTML entity and backslash
   escape marks use it. It also gets the whole text of the mark run, and a mark's `renderMarkdown` gets
   `meta.markTextNodes`, the number of text nodes in that run. `meta.markWordBefore` and

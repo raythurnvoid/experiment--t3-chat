@@ -2639,6 +2639,50 @@ describe("mark syntax round-trip through Yjs", () => {
 	});
 });
 
+describe("block syntax round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	test.each(["***", "___", "* * *", "- - -"])("keeps a rule written as %j", (rule) => {
+		const input = `a\n\n${rule}\n\nb\n`;
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test.each([
+		// Without the blank line, the `---` turned the item's text into a heading on the next load.
+		["a rule", "- a\n\n  ---\n"],
+		["a code block", "- a\n\n  ```\n  x\n  ```\n"],
+		["a code block in an ordered item", "1. a\n\n   ```\n   x\n   ```\n"],
+	])("keeps a blank line before %s in a list item", (_name, input) => {
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("keeps a list item without blank lines tight", () => {
+		const input = "- a\n  ```\n  x\n\n  y\n  ```\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+});
+
 describe("HTML blocks round-trip through Yjs", () => {
 	function round_trip_markdown(markdown: string) {
 		const yjsDoc = new YDoc();
@@ -2917,7 +2961,7 @@ describe("GFM tables round-trip through Yjs", () => {
 	});
 
 	test("keeps a table inside a list item", () => {
-		const expected = "- item\n  | A | B |\n  | --- | --- |\n  | 1 | 2 |\n";
+		const expected = "- item\n\n  | A | B |\n  | --- | --- |\n  | 1 | 2 |\n";
 		const output = round_trip_markdown(table_in_list_item);
 		expect(output).toBe(expected);
 		expect_still_a_table(output);

@@ -84,11 +84,16 @@ This keeps a save from rewriting every list in a file. It also keeps two lists a
 
 Lists also keep blank lines between their items. When a blank line comes after any item but the last, the renderer adds `data-loose`, the list gets `loose: true`, and save puts one blank line between every two items. A blank line inside an item does not count. `list_has_blank_line_between_items` reads only the end of each item's text, so it stays cheap in a long list.
 
+An item also keeps blank lines between its own blocks, like before a code block. Marked adds a `space` token for such a line, the `listitem` renderer adds `data-loose`, the item gets `loose: true`, and save puts a blank line before each block in it but a list. A blank line inside a code block does not count. Before, save dropped the line, and `- a`, a blank line, then `  ---` came back as a `## a` heading on the next load, so the item was lost. Save also always puts a blank line before a `---` rule in an item, even one made in the editor.
+
+Rules keep the style the file uses: `***`, `___`, `- - -`. The `hr` renderer writes it as `data-markdown-source`, and the fork's rule writes it back while it is still a rule. A rule made in the editor saves as `---`.
+
 Known changes, with no lost content, all stable after one save:
 
 - A task list saves with `-`.
 - A list with blank lines between only some items gets one between all of them. Two blank lines become one.
-- The blank line between an item's first line and a list inside it is dropped. A blank line in a list nested inside an item saves as a line of spaces.
+- The blank line between an item's first line and a list inside it is dropped.
+- Spaces before and after a rule are dropped.
 - The indent before a top-level list is dropped.
 
 HTML entities keep the spelling the file uses. The `text` renderer in `configure_marked` wraps each entity (`&copy;`, `&#169;`, `&nbsp;`, `&amp;`) in a span that `files_html_entity_mark` reads. The mark stores the source and the character it shows. Save writes the source back while the text under the mark is still that character. A typed or changed character saves as plain text. The same entity twice in a row, like `&nbsp;&nbsp;`, is one text node under one mark, and it also saves as written.

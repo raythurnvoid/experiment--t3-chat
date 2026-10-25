@@ -445,6 +445,12 @@ function configure_marked(instance: Marked | typeof marked) {
 				return token.raw.startsWith("\\") ? false : `<br data-markdown-break="${encodeURIComponent(token.raw)}">`;
 			},
 
+			// Keep a rule written as `***`, `___` or `- - -`. Save writes `---` for a new rule.
+			hr(token) {
+				const source = token.raw.trim();
+				return source === "---" ? false : `<hr data-markdown-source="${source}">\n`;
+			},
+
 			// Marked ends the code with a `\n` before `</code>`. The code block keeps every character of
 			// `<pre>`, so that `\n` became part of the code. The save then wrote it as an empty line before
 			// the closing fence. So drop it here.
@@ -473,6 +479,13 @@ function configure_marked(instance: Marked | typeof marked) {
 				}
 
 				return Renderer.prototype.list.call(this, token).replace(/^<(ul|ol)/, `<$1${attributes}`);
+			},
+
+			// Keep a blank line between the blocks inside an item, like before a code block. Marked adds a `space`
+			// token for it. Before, save dropped the blank line.
+			listitem(item) {
+				const html = Renderer.prototype.listitem.call(this, item);
+				return item.tokens.some((child) => child.type === "space") ? html.replace(/^<li/, "<li data-loose") : html;
 			},
 
 			// Marked stops escaping text after an unclosed `<code>`, `<kbd>`, `<pre>`, or `<script>` tag. Then
