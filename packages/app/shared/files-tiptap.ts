@@ -257,6 +257,38 @@ class TightBlockParser extends Parser {
 }
 
 /**
+ * The ` data-markdown-destination` attribute for a `[text](…)` link or an `![alt](…)` image, or `""`. It keeps how
+ * the file wrote the address and title, like `<a b>` or `'Title'`, with the address and title they gave in `html`.
+ * The link mark and the image node store it, and save writes the source back while they still have that address
+ * and title.
+ *
+ * It is `""` for the spelling that save writes anyway, and for a source with a line break, which would move with the
+ * text around it.
+ */
+function markdown_destination_attribute(token: Tokens.Link | Tokens.Image, html: string) {
+	const labelStart = token.type === "image" ? 2 : 1;
+	// Marked unescapes `\[` and `\]` in `text`, so find where the label ends in the source.
+	let labelEnd = token.raw.indexOf("](");
+	while (labelEnd !== -1 && token.raw.slice(labelStart, labelEnd).replace(/\\([[\]])/g, "$1") !== token.text) {
+		labelEnd = token.raw.indexOf("](", labelEnd + 1);
+	}
+	const source = token.raw.slice(labelEnd + 2, -1);
+	const href = /^<(?:a href|img src)="([^"]*)"/.exec(html)?.[1];
+	const title = token.title || null;
+	if (
+		href === undefined ||
+		labelEnd === -1 ||
+		source.includes("\n") ||
+		source === href ||
+		(title !== null && source === `${href} "${title}"`)
+	) {
+		return "";
+	}
+
+	return ` data-markdown-destination="${encodeURIComponent(JSON.stringify({ source, href, title }))}"`;
+}
+
+/**
  * Configure Markdown parsing for files and editor instances.
  */
 function configure_marked(instance: Marked | typeof marked) {
@@ -736,9 +768,7 @@ function configure_marked(instance: Marked | typeof marked) {
 			// The editor marks a bare `https://…` or an `<https://…>` auto link, so save writes it back the same
 			// instead of as `[https://…](https://…)`.
 			//
-			// A `[text](…)` link keeps how the file wrote its address and title, like `<a b>` or `'Title'`. The
-			// link mark stores the source with the address and title it gave, and save writes the source back
-			// while the link still has them.
+			// A `[text](…)` link keeps how the file wrote its address and title (`markdown_destination_attribute`).
 			link(token) {
 				if (markdown_hidden_link_text === null) {
 					if (!token.raw.startsWith("[")) {
@@ -747,28 +777,8 @@ function configure_marked(instance: Marked | typeof marked) {
 							.replace(/^<a /, `<a data-markdown-autolink="${token.raw.startsWith("<") ? "angle" : "bare"}" `);
 					}
 
-					// Marked unescapes `\[` and `\]` in `text`, so find where the label ends in the source.
-					let labelEnd = token.raw.indexOf("](");
-					while (labelEnd !== -1 && token.raw.slice(1, labelEnd).replace(/\\([[\]])/g, "$1") !== token.text) {
-						labelEnd = token.raw.indexOf("](", labelEnd + 1);
-					}
-					const source = token.raw.slice(labelEnd + 2, -1);
 					const html = Renderer.prototype.link.call(this, token);
-					const href = /^<a href="([^"]*)"/.exec(html)?.[1];
-					const title = token.title || null;
-					// Skip the spelling that save writes anyway. A line break inside would move with the text.
-					if (
-						href === undefined ||
-						labelEnd === -1 ||
-						source.includes("\n") ||
-						source === href ||
-						(title !== null && source === `${href} "${title}"`)
-					) {
-						return html;
-					}
-
-					const destination = encodeURIComponent(JSON.stringify({ source, href, title }));
-					return html.replace(/^<a /, `<a data-markdown-destination="${destination}" `);
+					return html.replace(/^<a /, `<a${markdown_destination_attribute(token, html)} `);
 				}
 
 				const hiddenText = markdown_hidden_link_text(token.href);
@@ -779,6 +789,16 @@ function configure_marked(instance: Marked | typeof marked) {
 							title: null,
 							tokens: [{ type: "text", raw: hiddenText, text: hiddenText }],
 						});
+			},
+
+			// An `![alt](…)` image keeps how the file wrote its address and title (`markdown_destination_attribute`).
+			image(token) {
+				if (markdown_hidden_link_text !== null) {
+					return false;
+				}
+
+				const html = Renderer.prototype.image.call(this, token);
+				return html.replace(/^<img /, `<img${markdown_destination_attribute(token, html)} `);
 			},
 		},
 	});
@@ -1688,6 +1708,31 @@ function image_html_tag(node: TiptapJSONContent) {
 }
 
 /**
+ * Read the image's `markdownDestination` attribute. Pasted HTML can hold any value there.
+ */
+function image_markdown_destination(value: unknown) {
+	if (typeof value !== "string") {
+		return null;
+	}
+
+	try {
+		const destination: unknown = JSON.parse(value);
+		return typeof destination === "object" &&
+			destination !== null &&
+			"source" in destination &&
+			typeof destination.source === "string" &&
+			"href" in destination &&
+			typeof destination.href === "string" &&
+			"title" in destination &&
+			(destination.title === null || typeof destination.title === "string")
+			? { source: destination.source, href: destination.href, title: destination.title }
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Image embed.
  *
  * Inline because CommonMark images are inline. Marked wraps a standalone `![alt](src)` in
@@ -1740,6 +1785,8 @@ const files_image_node = Node.create({
 					(attribute.name === "width" && IMAGE_PIXEL_WIDTH_REGEX.test(attribute.value)) ||
 					(attribute.name === "align" && (attribute.value === "center" || attribute.value === "right")),
 			),
+			// How the file wrote the address and title (`markdown_destination_attribute`).
+			markdownDestination: html_data_attribute("data-markdown-destination"),
 			// Set while an upload runs, so the client can find its own placeholder node again
 			// after the upload mutations resolve. `rendered: false` keeps it out of the HTML,
 			// and `renderMarkdown` below ignores it, so it never reaches the saved markdown.
@@ -1771,6 +1818,12 @@ const files_image_node = Node.create({
 		// tag, the same way the video node below always does.
 		if (width !== null || align !== null || html_kept_attributes(node)) {
 			return image_html_tag(node);
+		}
+
+		// Keep how the file wrote the address and title while the image still has them.
+		const destination = image_markdown_destination(node.attrs?.markdownDestination);
+		if (destination?.href === src && destination.title === (title || null)) {
+			return `![${markdown_escape_image_alt(alt)}](${destination.source})`;
 		}
 
 		const image = `![${markdown_escape_image_alt(alt)}](${markdown_link_destination(src)}`;

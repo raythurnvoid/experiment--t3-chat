@@ -2081,6 +2081,27 @@ describe("media embeds round-trip through Yjs", () => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 
+	test("keeps how an image writes its address and title", () => {
+		const input = "![a](<x y.png> 'T') ![b\\](c](bonobo-file://k17abcdef (T))\n";
+		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test.each([
+		// The image moves to a workspace file, like an upload of a pasted image does.
+		["address", { src: "bonobo-file://k17abcdef" }, '![a](bonobo-file://k17abcdef "T")'],
+		["title", { title: "U" }, '![a](x%20y.png "U")'],
+	])("writes the default image form after the %s changes", (_name, change, expected) => {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: "![a](<x y.png> 'T')\n" } });
+		if (editor._nay) {
+			throw new Error("Expected the editor to load", { cause: editor._nay });
+		}
+
+		const image = editor._yay.state.doc.nodeAt(1);
+		editor._yay.view.dispatch(editor._yay.state.tr.setNodeMarkup(1, undefined, { ...image?.attrs, ...change }));
+		expect(files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay })).toBe(expected);
+		editor._yay.destroy();
+	});
+
 	test("preserves a video line without adding a blank line", () => {
 		const input = '<video src="bonobo-file://k17abcdef"></video>\n\nCaption text\n';
 		expect(round_trip_markdown(input)).toBe(input);
