@@ -175,7 +175,82 @@ takes `{installationId,afterRevision,limit}` (1–100) and returns ordered event
 revisions. These server calls need the service-secret header. They require the connection created by
 a valid page exchange. A secret alone cannot attach a service to a workspace. Version or account
 changes require a fresh exchange; a removed installation exposes only its terminal access result.
-Unrelated access events contain no private profile data. A stale cursor requires a new snapshot.
+A stale cursor requires a new snapshot.
+
+The feed holds only this installation's events, so revisions have gaps. `continueRevision` means:
+every event of this installation up to that revision is in the page. Store it and pass it as the next
+`afterRevision`. Bonobo Senate deletes access changes after 30 days. When a cursor is older than that and
+this installation had a deleted change, the route answers `410 { code: "snapshot_required" }`. Then
+read `members/list` again from the start.
+
+### Access change notices
+
+Declare `{ "type": "workspace.access.changed" }` in `events` and the URL of your server in
+`serviceEventsUrl`. Each needs the other, and the event needs `plugin.service.connect` and
+`workspace.members.read`. The URL follows the MCP server URL rules (https, port 443, a host name,
+no credentials, no fragment) and has no query, not even an empty `?`. Bonobo Senate stores it
+normalized. Members see the URL's origin on the install screen.
+
+When this installation's access changes, Bonobo Senate sends a signed POST to the URL. The notice
+holds no member data. Pull the changes with `access/changes`, then answer:
+
+- `2xx`: you applied everything up to `data.revision`, or there is nothing to do.
+- `503`, with an optional `Retry-After` in seconds: you are not caught up yet. The next try waits as
+  you ask, from 5 seconds to 1 hour.
+- anything else, a redirect, or no answer in 15 seconds: a failure. Tries wait 5 s, 30 s, 2 min,
+  10 min, 30 min, then every hour. After 3 days of failures the notices pause. The next lease or
+  pull of that installation starts them again.
+
+A disabled installation gets the notice of the disable, then only notices of its own installation changes (the enable, the uninstall) until it is enabled again.
+
+While the installation is disabled, and after an upgrade or a service account change until the next page lease exchange, `members/list` answers `409 unavailable`. Answer such a notice with 200: the next lease binds the new version and syncs to the head.
+
+Many changes can share one notice. `data.revision` is the newest one. The body is:
+
+```json
+{"type":"workspace.access.changed","timestamp":"2026-10-25T10:00:00.000Z","data":{"installationId":"...","revision":42}}
+```
+
+Notices follow [Standard Webhooks](https://www.standardwebhooks.com/) v1. The headers are
+`webhook-id` (`<installationId>:<revision>`), `webhook-timestamp` (Unix seconds), and
+`webhook-signature` (`v1,<base64 HMAC-SHA256>`). Get the key with
+`POST /api/v1/plugins/service-events/key`, the `X-Bonobo-Service-Authorization` header, and the body
+`{ pluginName }`. It answers `{ key: "whsec_...", createdAt }`. Store the key on your server. Rotating the
+service secret replaces the key, so on a signature mismatch fetch the key once more (at most once a
+minute) before you answer `401`.
+
+```ts
+async function verify_notice(request: Request, key: string) {
+	const id = request.headers.get("webhook-id") ?? "";
+	const timestamp = request.headers.get("webhook-timestamp") ?? "";
+	const body = await request.text();
+	// Refuse old notices, so a copied request cannot be sent again later.
+	if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return null;
+
+	const hmacKey = await crypto.subtle.importKey(
+		"raw",
+		Uint8Array.from(atob(key.slice("whsec_".length)), (char) => char.charCodeAt(0)),
+		{ name: "HMAC", hash: "SHA-256" },
+		false,
+		["verify"],
+	);
+	const message = new TextEncoder().encode(`${id}.${timestamp}.${body}`);
+	// The header may list several signatures. Any one of them is enough.
+	for (const entry of (request.headers.get("webhook-signature") ?? "").split(" ")) {
+		const [version, signature] = entry.split(",");
+		if (version !== "v1" || !signature) continue;
+		// Skip an entry that is not valid base64. Another entry may still match.
+		let bytes: Uint8Array;
+		try {
+			bytes = Uint8Array.from(atob(signature), (char) => char.charCodeAt(0));
+		} catch {
+			continue;
+		}
+		if (await crypto.subtle.verify("HMAC", hmacKey, bytes, message)) return JSON.parse(body);
+	}
+	return null;
+}
+```
 
 ## Public host APIs
 

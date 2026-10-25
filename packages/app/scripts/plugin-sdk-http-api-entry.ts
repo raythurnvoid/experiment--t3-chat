@@ -82,6 +82,7 @@ export const bonobo_http_api =
 			| "/api/v1/plugins/identity/exchange"
 			| "/api/v1/plugins/members/list"
 			| "/api/v1/plugins/access/changes"
+			| "/api/v1/plugins/service-events/key"
 			| "/api/v1/plugins/service-grants/exchange"
 			| "/api/v1/plugins/service-grants/recover"
 			| "/api/v1/plugins/service-grants/renew"

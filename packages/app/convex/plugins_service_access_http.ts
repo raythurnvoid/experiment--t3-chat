@@ -9,6 +9,7 @@ import type {
 	plugins_service_access_get_events_Result,
 	plugins_service_access_get_snapshot_Result,
 } from "./plugins_service_access.ts";
+import type { plugins_service_events_get_signing_key_Result } from "./plugins_service_events.ts";
 import { users_ANONYMOUS_JWT_DEFAULT_KID, users_get_anonymous_jwt_private_key } from "./users.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -163,3 +164,27 @@ export async function plugins_service_access_http_events(ctx: ActionCtx, request
 }
 
 // #endregion access changes
+
+// #region notice signing key
+
+const signing_key_body_validator = z.object({ pluginName: z.string().min(1).max(128) }).strict();
+
+export type plugins_service_access_http_signing_key_Body = z.infer<typeof signing_key_body_validator>;
+
+export async function plugins_service_access_http_signing_key(ctx: ActionCtx, request: Request) {
+	const parsed = await read_request(request, signing_key_body_validator);
+	if (parsed._nay) return await request_failure({ ctx, request, message: parsed._nay.message });
+
+	const result: plugins_service_events_get_signing_key_Result = await ctx.runMutation(
+		internal.plugins_service_events.get_signing_key,
+		{
+			...parsed._yay.body,
+			serviceSecretHash: parsed._yay.serviceSecretHash,
+		},
+	);
+	if (result._nay) return await request_failure({ ctx, request, message: result._nay.message });
+
+	return { status: 200, body: result._yay } as const;
+}
+
+// #endregion notice signing key

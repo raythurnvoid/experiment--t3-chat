@@ -287,6 +287,10 @@ export interface api_schemas_Main {
 		typeof plugins_service_access_http_routes
 	>["/api/v1/plugins/access/changes"];
 
+	"/api/v1/plugins/service-events/key": ReturnType<
+		typeof plugins_service_access_http_routes
+	>["/api/v1/plugins/service-events/key"];
+
 	"/api/files/contextual-prompt": ReturnType<typeof files_nodes_ai_http_routes>["/api/files/contextual-prompt"];
 
 	"/api/r2/event": ReturnType<typeof r2_http_routes>["/api/r2/event"];

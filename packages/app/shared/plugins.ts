@@ -25,7 +25,12 @@ export const plugins_RUNTIME_VERSION = "1";
 export const plugins_REVIEW_POLICY_VERSION = "19";
 
 const MANIFEST_SCHEMA_VERSION = 1;
-const EVENT_TYPES = ["files.upload.completed", "users.account.deleted", "schedule.interval.elapsed"] as const;
+const EVENT_TYPES = [
+	"files.upload.completed",
+	"users.account.deleted",
+	"schedule.interval.elapsed",
+	"workspace.access.changed",
+] as const;
 
 /**
  * The event that fires when a member's account is deleted, so a plugin holding that user's id in its
@@ -38,6 +43,15 @@ const EVENT_TYPES = ["files.upload.completed", "users.account.deleted", "schedul
  */
 const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted";
 const SCHEDULE_EVENT_TYPE = "schedule.interval.elapsed";
+
+/**
+ * The event a plugin's own server gets when the access feed of its installation moves. Bonobo Senate
+ * sends a signed notice to the manifest's `serviceEventsUrl`, and the server then pulls the changes.
+ *
+ * Like `users.account.deleted`, it carries no file, so content types and filters are refused on it.
+ */
+const ACCESS_CHANGED_EVENT_TYPE = "workspace.access.changed";
+const MAX_SERVICE_EVENTS_URL_LENGTH = 512;
 
 export type plugins_Capability = (typeof plugins_CAPABILITIES)[number];
 
@@ -425,50 +439,53 @@ export const plugins_MCP_SERVER_URL_SECRET_WORDS = [
 ];
 
 /**
- * Checks a remote MCP server URL. Plugin manifests and the servers members paste both use this rule.
+ * Checks a URL that Bonobo Senate calls: a remote MCP server URL, or a plugin's `serviceEventsUrl`.
+ * Plugin manifests and the servers members paste use this rule. `label` names the URL in the messages.
  *
  * The URL is not secret: the manifest is public, and policy managers see a pasted URL. So a query name
  * that looks like a key is refused. Such servers also accept the key in the `Authorization` header.
  */
-export function plugins_validate_mcp_server_url(raw: string) {
+export function plugins_validate_mcp_server_url(raw: string, label = "MCP server URL") {
 	if (raw.length > MAX_MCP_SERVER_URL_LENGTH) {
 		return Result({
-			_nay: { message: `MCP server URLs must be at most ${MAX_MCP_SERVER_URL_LENGTH} characters` },
+			_nay: { message: `${label} must be at most ${MAX_MCP_SERVER_URL_LENGTH} characters` },
 		});
 	}
 	let url: URL;
 	try {
 		url = new URL(raw);
 	} catch {
-		return Result({ _nay: { message: "MCP server URL must be a valid URL" } });
+		return Result({ _nay: { message: `${label} must be a valid URL` } });
 	}
 	if (url.protocol !== "https:") {
-		return Result({ _nay: { message: "MCP server URL must use https" } });
+		return Result({ _nay: { message: `${label} must use https` } });
 	}
 	// The URL parser drops `:443` for https, so any port left here is another port.
 	if (url.port) {
-		return Result({ _nay: { message: "MCP server URL must use the https port 443" } });
+		return Result({ _nay: { message: `${label} must use the https port 443` } });
 	}
 	if (url.username || url.password) {
-		return Result({ _nay: { message: "MCP server URL must not include credentials" } });
+		return Result({ _nay: { message: `${label} must not include credentials` } });
 	}
 	if (url.hash || raw.includes("#")) {
-		return Result({ _nay: { message: "MCP server URL must not include a fragment" } });
+		return Result({ _nay: { message: `${label} must not include a fragment` } });
 	}
+	// A host with one trailing dot is the same host ("localhost." is localhost), so drop it for the checks.
+	const hostname = url.hostname.replace(/\.$/u, "");
 	// The URL parser already turns every IPv4 form (decimal, hex, short) into dotted numbers, and IPv6
 	// is always in brackets. Bonobo Senate calls hosts by name only.
-	if (/^[0-9.]+$/u.test(url.hostname) || url.hostname.startsWith("[")) {
-		return Result({ _nay: { message: "MCP server URL must use a host name, not an IP address" } });
+	if (/^[0-9.]+$/u.test(hostname) || hostname.startsWith("[")) {
+		return Result({ _nay: { message: `${label} must use a host name, not an IP address` } });
 	}
-	if (url.hostname === "localhost" || url.hostname.endsWith(".localhost")) {
-		return Result({ _nay: { message: "MCP server URL must not point to localhost" } });
+	if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+		return Result({ _nay: { message: `${label} must not point to localhost` } });
 	}
 	for (const queryName of url.searchParams.keys()) {
 		const folded = queryName.toLowerCase().replaceAll(/[-_]/gu, "");
 		if (plugins_MCP_SERVER_URL_SECRET_WORDS.some((word) => folded.includes(word))) {
 			return Result({
 				_nay: {
-					message: "MCP server URL must not carry a key in its query. Send the key in the Authorization header instead",
+					message: `${label} must not carry a key in its query. Send the key in the Authorization header instead`,
 				},
 			});
 		}
@@ -485,6 +502,7 @@ export function plugins_consent_diff(args: {
 		skills: Array<{ name: string }>;
 		mounts: plugins_Mount[];
 		events: Array<{ type: plugins_Event["type"] }>;
+		serviceEventsUrl?: string;
 	} | null;
 	target: {
 		capabilities: plugins_Capability[];
@@ -494,6 +512,7 @@ export function plugins_consent_diff(args: {
 		skills: Array<{ name: string }>;
 		mounts: plugins_Mount[];
 		events: Array<{ type: plugins_Event["type"] }>;
+		serviceEventsUrl?: string;
 	};
 }) {
 	const currentCapabilities = new Set(args.current?.capabilities ?? []);
@@ -519,6 +538,8 @@ export function plugins_consent_diff(args: {
 	const currentSkillNames = new Set(args.current?.skills.map((skill) => skill.name) ?? []);
 	const currentMountIds = new Set(args.current?.mounts.map((mount) => mount.id) ?? []);
 	const targetMountIds = new Set(args.target.mounts.map((mount) => mount.id));
+	// The consent text names only the origin of the notice URL, so only a new origin needs new consent.
+	const serviceEventsOrigin = (url: string | undefined) => (url === undefined ? null : new URL(url).origin);
 	return {
 		newCapabilities: args.target.capabilities.filter((capability) => !currentCapabilities.has(capability)),
 		newOutboundOrigins: args.target.outboundOrigins.filter((origin) => !currentOrigins.has(origin)),
@@ -533,6 +554,9 @@ export function plugins_consent_diff(args: {
 		scheduleAdded:
 			args.target.events.some((event) => event.type === SCHEDULE_EVENT_TYPE) &&
 			!args.current?.events.some((event) => event.type === SCHEDULE_EVENT_TYPE),
+		serviceEventsOriginChanged:
+			args.target.serviceEventsUrl !== undefined &&
+			serviceEventsOrigin(args.target.serviceEventsUrl) !== serviceEventsOrigin(args.current?.serviceEventsUrl),
 	};
 }
 
@@ -901,12 +925,12 @@ const event_schema = z
 			}
 			return;
 		}
-		if (event.type === ACCOUNT_DELETED_EVENT_TYPE) {
+		if (event.type === ACCOUNT_DELETED_EVENT_TYPE || event.type === ACCESS_CHANGED_EVENT_TYPE) {
 			if (event.contentTypes.length > 0) {
 				ctx.addIssue({
 					code: "custom",
 					path: ["contentTypes"],
-					message: `${ACCOUNT_DELETED_EVENT_TYPE} carries no file, so it cannot declare content types`,
+					message: `${event.type} carries no file, so it cannot declare content types`,
 				});
 			}
 
@@ -914,7 +938,7 @@ const event_schema = z
 				ctx.addIssue({
 					code: "custom",
 					path: ["filters"],
-					message: `${ACCOUNT_DELETED_EVENT_TYPE} has one subject, so it cannot declare filters`,
+					message: `${event.type} has one subject, so it cannot declare filters`,
 				});
 			}
 
@@ -1250,6 +1274,15 @@ const manifest_schema = z
 			.array(z.string())
 			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} UI outbound origins`)
 			.default([]),
+		// The one URL of the plugin's own server that gets `workspace.access.changed` notices.
+		serviceEventsUrl: z
+			.string()
+			.max(
+				MAX_SERVICE_EVENTS_URL_LENGTH,
+				`serviceEventsUrl must be at most ${MAX_SERVICE_EVENTS_URL_LENGTH} characters`,
+			)
+			.nullable()
+			.default(null),
 		files: z.array(manifest_file_schema).max(MAX_FILES),
 	})
 	.strict();
@@ -1316,7 +1349,11 @@ export function plugins_validate_manifest(input: unknown) {
 	const eventSubscriptions = new Set<string>();
 	let expandedEventSubscriptionCount = 0;
 	for (const event of parsed.data.events) {
-		if (event.type === ACCOUNT_DELETED_EVENT_TYPE || event.type === SCHEDULE_EVENT_TYPE) {
+		if (
+			event.type === ACCOUNT_DELETED_EVENT_TYPE ||
+			event.type === SCHEDULE_EVENT_TYPE ||
+			event.type === ACCESS_CHANGED_EVENT_TYPE
+		) {
 			if (eventSubscriptions.has(event.type)) {
 				return Result({ _nay: { message: `Plugin manifest has duplicate ${event.type} subscriptions` } });
 			}
@@ -1369,6 +1406,29 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate UI outbound origin "${origin}"` } });
 		}
 		uiOutboundOrigins.add(origin);
+	}
+
+	// The access notice and its URL require each other, like ui.outbound.fetch and its origins. A URL
+	// alone would get nothing, and the event alone would have nowhere to go.
+	const hasAccessChanged = eventSubscriptions.has(ACCESS_CHANGED_EVENT_TYPE);
+	if (hasAccessChanged && parsed.data.serviceEventsUrl === null) {
+		return Result({ _nay: { message: `${ACCESS_CHANGED_EVENT_TYPE} requires a serviceEventsUrl` } });
+	}
+	if (!hasAccessChanged && parsed.data.serviceEventsUrl !== null) {
+		return Result({ _nay: { message: `serviceEventsUrl requires the ${ACCESS_CHANGED_EVENT_TYPE} event` } });
+	}
+	// Store the normalized URL, so the consent screens and the notices use the same text.
+	let serviceEventsUrl: string | null = null;
+	if (parsed.data.serviceEventsUrl !== null) {
+		// Check the raw text, so an empty query (`https://x/e?`) is refused too.
+		if (parsed.data.serviceEventsUrl.includes("?")) {
+			return Result({ _nay: { message: "serviceEventsUrl must not include a query" } });
+		}
+		const url = plugins_validate_mcp_server_url(parsed.data.serviceEventsUrl, "serviceEventsUrl");
+		if (url._nay) {
+			return Result({ _nay: { message: url._nay.message } });
+		}
+		serviceEventsUrl = url._yay;
 	}
 
 	const filePaths = new Set<string>();
@@ -1693,6 +1753,18 @@ export function plugins_validate_manifest(input: unknown) {
 			},
 		});
 	}
+	// The pull behind an access notice uses the service door and the member roster door.
+	if (
+		eventSubscriptions.has(ACCESS_CHANGED_EVENT_TYPE) &&
+		(!capabilities.has("plugin.service.connect" satisfies plugins_Capability) ||
+			!capabilities.has("workspace.members.read" satisfies plugins_Capability))
+	) {
+		return Result({
+			_nay: {
+				message: `${ACCESS_CHANGED_EVENT_TYPE} requires the plugin.service.connect and workspace.members.read capabilities`,
+			},
+		});
+	}
 	// The two must agree in both directions, unlike `plugin.secrets.read` above. The `connect-src` of
 	// every UI frame, page and file view alike, is built from this list. So a capability with an empty
 	// list consents to nothing, and a list without the capability would open the frame's egress with no
@@ -1786,7 +1858,7 @@ export function plugins_validate_manifest(input: unknown) {
 			_nay: { message: "User-writable collections require the plugin.data.user-write capability" },
 		});
 	}
-	return Result({ _yay: parsed.data });
+	return Result({ _yay: { ...parsed.data, serviceEventsUrl } });
 }
 
 // #endregion manifest

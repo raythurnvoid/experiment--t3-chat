@@ -43,6 +43,7 @@ Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts
 | Outbound origin length                                   | 255          | `plugins_validate_origin`                           |
 | MCP servers / headers per server / OAuth scopes          | 4/8/32       | `mcp_server_schema`                                 |
 | MCP server URL length / tool allowlist entries           | 2,048/200    | `plugins_validate_mcp_server_url`, `mcp_server_schema` |
+| Access notice URL length / access notice events         | 512/1        | `manifest_schema.serviceEventsUrl`, duplicate loop  |
 | Skills / skill `SKILL.md` bytes                          | 32/64 KiB    | `manifest_schema.skills`, publish                   |
 | Agent tools per page / tool description length           | 16/1,000     | `page_agent_tool_schema`, `page_schema.agent`       |
 | Agent tool input schema bytes                            | 8 KiB        | `plugins_validate_manifest` loop                    |
@@ -660,6 +661,60 @@ The installation owns the service connection. A valid page exchange binds its ex
 version, and account. A service secret alone cannot create or refresh that authority. The general
 access ledger and membership lifetime facts belong to Bonobo Senate; product membership remains native.
 
+## Access change notices (`workspace.access.changed`)
+
+A plugin service learns about access changes from a signed push, not from a timer. The notice only
+says "this installation has changes up to revision R". The service then pulls them through
+`access/changes`. So the notice holds no member data, and the pull stays the one source of truth.
+
+- **Manifest.** `{ "type": "workspace.access.changed" }` and `serviceEventsUrl` require each other.
+  The event needs `plugin.service.connect` and `workspace.members.read`, has no content types or
+  filters, and may appear once. The URL follows `plugins_validate_mcp_server_url` (label
+  `serviceEventsUrl`), has no query (not even an empty `?`), and is at most 512 characters. The
+  manifest stores it normalized. The event goes to the plugin's own server, never to the runner, so
+  install creates no event handler, run, or Activity for it.
+- **Consent.** The install screen and the consent dialog both say "Bonobo Senate will notify
+  <origin> when workspace access changes. The notice holds no member data." The upgrade dialog marks
+  a new origin as new. In a custom organization, the plugin entry's `serviceEventsOrigins` is part of
+  the owner's ceiling, so a version with a new origin needs the owner's approval. An origin the
+  entry already approves as an outbound or UI origin is enough, because a notice sends less than those.
+- **Receivers.** `plugins_service_event_receivers` holds one doc per installation whose version
+  declares the URL. Install and upgrade call `plugins_service_events_db_sync_receiver`; a version
+  without the URL deletes the doc. A new doc starts at the feed head, because older changes come from
+  the service's first snapshot. An upgrade or an enable wakes a paused doc at once. Uninstall does not delete it:
+  the `revoked` feed doc raises it one last time (`finalRevision`), and the doc deletes itself after
+  that notice, or after 3 days of failed tries. Only `revoked` is final. While the installation is
+  disabled, dispatch raises the doc only for installation-scope feed docs (the disable and the enable)
+  and for `revoked`, so a later uninstall or workspace deletion still reaches the service. A paused doc
+  that gets its `revoked` doc is deleted at once. The registry hard delete writes no `revoked` feed
+  doc, so it deletes the docs of that plugin name itself.
+- **Dispatcher.** Each feed write wakes one `dispatch` chain (`plugins_service_event_dispatcher`
+  holds its job and `dispatchedRevision`). A run reads at most 50 feed docs and 100 receivers. For
+  each doc it reads only the receivers that doc's scope names, through the matching index, and
+  raises their `pendingRevision`. A doc that reaches more receivers continues from a receiver cursor
+  in the next run. It reads the feed head at the end, so a write during the run conflicts and is not
+  lost. A run that reads fewer than 50 docs has seen every doc up to the head, so it moves
+  `dispatchedRevision` to the head even when the head revision has no doc. The cost: a feed writer and a dispatch run that overlap conflict, and one of them retries.
+  Retention keeps every doc after `dispatchedRevision`.
+- **Delivery.** `start_delivery` claims a receiver with a random token, arms a watchdog (itself
+  again after 15 s plus the retry delay, at least 30 s), and schedules `deliver`. The action
+  checks the URL again with `mcp_guarded_fetch_is_allowed_url` (it refuses Bonobo Senate's own
+  hosts; a refusal counts as no answer), signs the body with Standard Webhooks v1 (`webhook-id` = `<installationId>:<revision>`), POSTs with
+  `redirect: "manual"` and a 15 s timeout, and reads at most 4 KB of the reply. `record_delivery`
+  ignores an answer whose claim token no longer matches. Notices coalesce: one notice carries the newest
+  pending revision, and changes that arrive during a request get the next notice at once.
+- **Retries.** A failure waits 5 s, 30 s, 2 min, 10 min, 30 min, then every hour. A 503 with
+  `Retry-After` waits as asked, clamped to 5 s to 1 h, and resets the delay steps; that time still
+  counts toward the pause. After 3 days of failure the receiver pauses. The next lease or pull of
+  that installation wakes it and sends the waiting notice. A pull during a delivery changes nothing,
+  so a server that pulls and then fails still backs off. The key route wakes nothing: a caller with
+  only the service secret must not undo a pause.
+- **Signing key.** `eventsSigningKey` on `plugins_service_registrations` is a `whsec_` key,
+  encrypted with `PLUGIN_SECRETS_ENCRYPTION_KEY`. It is created the first time a notice or
+  `POST /api/v1/plugins/service-events/key` needs it. Rotating the service secret clears it, so the
+  next use creates a new one. There is no second key during rotation: the service fetches the new key
+  once when a signature fails.
+
 For reliable background work, send a persisted `requestId` on exchange, renew and seal-processing.
 Recover a lost response through `/api/v1/plugins/service-grants/recover` with the original
 bearer and service secret. Only that exact response can be recovered; current registration,
@@ -840,7 +895,7 @@ Git submodule with its own repo (`<owner>/bonobo-plugin-gallery`). `dist/` is co
 
 Chitchat is a separate Git repository and Convex project, embedded as one React 19 page in Bonobo Senate. Its own `convex/` schema and functions own channels, private membership, messages/replies, reactions, read states, request receipts, and transcript work. Bonobo Senate keeps identity, tenancy, installation, service accounts, and Files. See the plugin README for its data model, environment values, recovery, build, and release steps.
 
-The frame uses its own authenticated Convex client. The SDK client stays pointed at Bonobo Senate. There is no second login. Chitchat uses the general public identity exchange and member/change pages. Its server polls access every 30 seconds. Before admitting a lease, it catches up to the fresh signed required revision. A ready installation already at that revision or later skips the immediate feed read; admission still checks current local access. Keep this shortcut in the lease route, since the scheduled poll must discover later changes. The signed lease expires within 30 seconds; native expiry jobs also invalidate idle subscriptions. Failed renewal closes access. Internet is required; keep drafts and exact uncertain request IDs, but do not queue new offline sends.
+The frame uses its own authenticated Convex client. The SDK client stays pointed at Bonobo Senate. There is no second login. Chitchat uses the general public identity exchange and member/change pages. Its server does not poll: it declares `workspace.access.changed` and pulls the feed when a signed notice arrives (see [Access change notices](#access-change-notices-workspaceaccesschanged)). Before admitting a lease, it catches up to the fresh signed required revision. A ready installation already at that revision or later skips the immediate feed read; admission still checks current local access. Keep this shortcut in the lease route, since the notices bring later changes. The signed lease expires within 30 seconds; native expiry jobs also invalidate idle subscriptions. Failed renewal closes access. Internet is required; keep drafts and exact uncertain request IDs, but do not queue new offline sends.
 
 The manifest has no generic store or invoke capability and no backend runner artifact. It declares `plugin.service.connect`, `ui.outbound.fetch`, Files read/write/own-write/own-access, and workspace members read. Its exact HTTPS cloud, HTTPS action, and WSS cloud origins require install consent.
 

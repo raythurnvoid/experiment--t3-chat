@@ -895,6 +895,7 @@ describe("/api/chat MCP organization policy", () => {
 			capabilities: version.capabilities,
 			outboundOrigins: [],
 			uiOutboundOrigins: [],
+			serviceEventsOrigins: [],
 			mcpServers,
 			addedBy: membership.userId,
 			addedAt: Date.now(),

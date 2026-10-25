@@ -3,7 +3,10 @@ import { Workpool } from "@convex-dev/workpool";
 import type { RegisteredMutation } from "convex/server";
 import { components, internal } from "./_generated/api.js";
 import { access_control_db_ensure_owner_memberships } from "./access_control.ts";
-import { access_control_changes_db_record } from "./access_control_changes.ts";
+import {
+	access_control_changes_db_delete_scope_heads,
+	access_control_changes_db_record,
+} from "./access_control_changes.ts";
 import { plugins_scheduled_runs_workpool } from "./plugins_schedules_db.ts";
 import {
 	activities_db_delete,
@@ -1279,6 +1282,9 @@ async function db_purge_organization_workspace_content_batch(
 			await ctx.db.delete("plugins_volume_usage", volumeUsage._id);
 			return { done: false, deletedCount: 1 };
 		}
+		await access_control_changes_db_delete_scope_heads(ctx, [
+			{ kind: "installation", installationId: pluginInstallation._id },
+		]);
 		await ctx.db.delete("plugins_workspace_installations", pluginInstallation._id);
 		return { done: false, deletedCount: 1 };
 	}
@@ -1555,6 +1561,10 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.take(batchSize);
 	if (serviceAccounts.length > 0) {
+		await access_control_changes_db_delete_scope_heads(
+			ctx,
+			serviceAccounts.map((doc) => ({ kind: "service_account" as const, serviceAccountId: doc._id })),
+		);
 		await Promise.all(serviceAccounts.map((doc) => ctx.db.delete("access_control_service_accounts", doc._id)));
 		return { done: false, deletedCount: serviceAccounts.length };
 	}
@@ -1655,6 +1665,7 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.unique();
 	if (accessVersion) await ctx.db.delete("files_access_versions", accessVersion._id);
+	await access_control_changes_db_delete_scope_heads(ctx, [{ kind: "workspace", organizationId, workspaceId }]);
 	const reviewFactState = await files_pending_review_facts_db_get_state(ctx.db, { organizationId, workspaceId });
 	if (reviewFactState) await ctx.db.delete("files_pending_review_fact_state", reviewFactState._id);
 	return {
@@ -1960,6 +1971,9 @@ async function db_delete_organization_batch(
 			)
 			.unique();
 		if (accessVersion) await ctx.db.delete("files_access_versions", accessVersion._id);
+		await access_control_changes_db_delete_scope_heads(ctx, [
+			{ kind: "organization", organizationId: args.organizationId },
+		]);
 		await ctx.db.delete("organizations", args.organizationId);
 		return { done: true, deletedCount: 1 };
 	}

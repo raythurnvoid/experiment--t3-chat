@@ -20,8 +20,8 @@ An older installed bundle may still use the old backend even when the working tr
   member removal/reinvite, and read-only behavior. Do not sign the user's QA profile in or out.
 - Check ordinary token renewal, a brief disconnect, and a lease that expires while the frame is idle.
   Drafts and uncertain request IDs must stay. New sends must stop without a live lease and socket.
-  Permission changes may take up to the 30-second lease to close native access. Chitchat polls the
-  public access-change feed; Bonobo Senate does not call a Chitchat callback.
+  Permission changes may take up to the 30-second lease to close native access. Bonobo Senate sends a
+  signed `workspace.access.changed` notice, and Chitchat then pulls the access-change feed. It does not poll.
 - Use the new transcript status controls. Read the exact fresh `/chitchat-<generation>` root shown in
   Transcript details. Verify raw Markdown markers, edits, replies, reactions, and rollover bytes there.
   Leave all old `/chitchat` output untouched. Inspect separate channel-copy and README-index status.

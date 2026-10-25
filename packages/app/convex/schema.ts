@@ -7003,6 +7003,7 @@ const app_convex_schema = defineSchema({
 					v.literal("files.upload.completed"),
 					v.literal("users.account.deleted"),
 					v.literal("schedule.interval.elapsed"),
+					v.literal("workspace.access.changed"),
 				),
 				// Empty for an event that carries no file. The manifest validator decides which events
 				// may leave it empty.
@@ -7085,6 +7086,11 @@ const app_convex_schema = defineSchema({
 		 * know which installation is looking at it.
 		 */
 		uiOutboundOrigins: v.array(v.string()),
+		/**
+		 * The URL of the plugin's own server that gets `workspace.access.changed` notices; consented at
+		 * install. Missing means the version declares no such event.
+		 */
+		serviceEventsUrl: v.optional(v.string()),
 		/**
 		 * Remote MCP servers from the manifest, stored as declared. Each header value is the value of the
 		 * named secret. An empty array means the chat agent gets no tools from this plugin.
@@ -8177,9 +8183,95 @@ const app_convex_schema = defineSchema({
 		pluginName: v.string(),
 		exchangeSecretHash: v.string(),
 		scopes: v.array(v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write"))),
+		/**
+		 * The Standard Webhooks key that signs access notices, encrypted with `PLUGIN_SECRETS_ENCRYPTION_KEY`.
+		 * Missing means no notice was signed and the service never fetched the key. The key route or the
+		 * first notice creates it. Rotating the service secret removes it, so the next use creates a new one.
+		 */
+		eventsSigningKey: v.optional(v.object({ ciphertext: v.bytes(), nonce: v.bytes(), createdAt: v.number() })),
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
 	}).index("by_pluginName", ["pluginName"]),
+
+	/**
+	 * One doc per installation whose version declares `workspace.access.changed`. It sends a signed
+	 * notice to the version's `serviceEventsUrl` when the installation's access feed moves.
+	 *
+	 * It is an outbox. It outlives the installation until the plugin got the notice of the `revoked` feed
+	 * doc, or until it failed for 3 days. So workspace and organization purges do not delete it. A disable
+	 * ends it the same way, and the enable creates it again.
+	 */
+	plugins_service_event_receivers: defineTable({
+		installationId: v.id("plugins_workspace_installations"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		pluginName: v.string(),
+		/**
+		 * The installation's current account, so feed docs of that account find this receiver.
+		 */
+		serviceAccountId: v.id("access_control_service_accounts"),
+		/**
+		 * The `serviceEventsUrl` of the installed version.
+		 */
+		url: v.string(),
+		/**
+		 * The newest feed revision of this installation the plugin was not told about yet.
+		 */
+		pendingRevision: v.number(),
+		deliveredRevision: v.number(),
+		/**
+		 * The revision of the last notice: the `revoked` feed doc, or the installation doc of a disable. Null
+		 * while the installation is enabled. No later revision is sent.
+		 */
+		finalRevision: v.union(v.number(), v.null()),
+		/**
+		 * Failed tries in a row. It picks the retry delay.
+		 */
+		attempt: v.number(),
+		/**
+		 * The token of the delivery in flight. Null when no delivery runs.
+		 */
+		claim: v.union(v.string(), v.null()),
+		/**
+		 * The next `start_delivery` job: a retry, or the watchdog of the delivery in flight.
+		 */
+		wakeJobId: v.union(v.id("_scheduled_functions"), v.null()),
+		/**
+		 * HTTP status of the last answer. 0 means no answer (network error, timeout, no key).
+		 */
+		lastStatus: v.union(v.number(), v.null()),
+		failingSince: v.union(v.number(), v.null()),
+		/**
+		 * Set after 3 days of failure. A paused receiver has no job until a lease or pull of its installation
+		 * wakes it. It is deleted when its installation is removed or disabled.
+		 */
+		pausedAt: v.union(v.number(), v.null()),
+	})
+		.index("by_installation", ["installationId"])
+		.index("by_organization", ["organizationId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_pluginName", ["pluginName"])
+		.index("by_serviceAccount", ["serviceAccountId"]),
+
+	/**
+	 * One doc (key `"main"`) for the job that maps feed docs to receivers. It is not the hot feed head.
+	 *
+	 * Still, every feed writer reads this doc and its job, and every dispatch run writes it and reads the
+	 * head. So a writer and a dispatch run that overlap conflict, and one of them retries. That is the
+	 * cost of never losing a wake-up. Writing the doc only when a chain starts or ends would not remove
+	 * it: the writer also reads the job, and the job changes on every run.
+	 */
+	plugins_service_event_dispatcher: defineTable({
+		key: v.literal("main"),
+		/**
+		 * The running dispatch job. Null when the job caught up with the feed head.
+		 */
+		jobId: v.union(v.id("_scheduled_functions"), v.null()),
+		/**
+		 * Every feed doc up to this revision reached its receivers. Retention deletes only those.
+		 */
+		dispatchedRevision: v.number(),
+	}).index("by_key", ["key"]),
 
 	/**
 	 * Bearer grant for a service that acts for one installation (`psg_` tokens, stored hashed). It is
@@ -9161,8 +9253,31 @@ const app_convex_schema = defineSchema({
 	access_control_change_state: defineTable({
 		key: v.literal("main"),
 		revision: v.number(),
-		oldestRevision: v.number(),
 	}).index("by_key", ["key"]),
+
+	/**
+	 * One doc (key `"main"`) that says which part of the change feed still exists. After it is created,
+	 * only the retention job writes it, so feed writers never conflict with it.
+	 *
+	 * `oldestRevision` is the oldest revision that may still exist. Scope heads cover every change after
+	 * `scopeHeadsFromRevision`, so a pull older than that cannot trust a missing head. The first lease
+	 * creates the doc with 0. A doc created later, when the head already moved, starts at the head:
+	 * older feed docs and scope heads may be gone.
+	 **/
+	access_control_change_retention: defineTable({
+		key: v.literal("main"),
+		oldestRevision: v.number(),
+		scopeHeadsFromRevision: v.number(),
+	}).index("by_key", ["key"]),
+
+	/**
+	 * The newest feed revision of one scope key. A pull older than retention reads these to know if its
+	 * installation lost a change. Deleted with the scope's entity.
+	 **/
+	access_control_change_scope_heads: defineTable({
+		scopeKey: v.string(),
+		revision: v.number(),
+	}).index("by_scopeKey", ["scopeKey"]),
 
 	/**
 	 * Permission pins for saved Files resolver work. Null workspace covers organization roles.
@@ -9176,12 +9291,16 @@ const app_convex_schema = defineSchema({
 	/**
 	 * Ordered feed of access-control events. Remote plugin hosts replay it by `revision` to refresh
 	 * their cached permission, installation, and member state after a lease gap.
+	 *
+	 * Revisions are global. One installation reads only its own scope keys, so its feed has gaps.
+	 * `scopeKey` is `<scope kind>:<id or plugin name>`, written by `access_control_changes_db_record`.
 	 **/
 	access_control_changes: defineTable({
 		revision: v.number(),
 		createdAt: v.number(),
+		scopeKey: v.string(),
 		scope: v.union(
-			v.object({ kind: v.literal("all") }),
+			v.object({ kind: v.literal("plugin"), pluginName: v.string() }),
 			v.object({ kind: v.literal("organization"), organizationId: v.id("organizations") }),
 			v.object({
 				kind: v.literal("workspace"),
@@ -9189,18 +9308,12 @@ const app_convex_schema = defineSchema({
 				workspaceId: v.id("organizations_workspaces"),
 			}),
 			v.object({ kind: v.literal("installation"), installationId: v.id("plugins_workspace_installations") }),
-			v.object({ kind: v.literal("user"), userId: v.id("users") }),
 			v.object({ kind: v.literal("service_account"), serviceAccountId: v.id("access_control_service_accounts") }),
 		),
 		event: v.union(
 			v.object({
 				kind: v.literal("refresh"),
-				reason: v.union(
-					v.literal("permissions"),
-					v.literal("installation"),
-					v.literal("account"),
-					v.literal("members"),
-				),
+				reason: v.union(v.literal("permissions"), v.literal("installation"), v.literal("account")),
 			}),
 			v.object({
 				kind: v.literal("member"),
@@ -9223,7 +9336,7 @@ const app_convex_schema = defineSchema({
 		),
 	})
 		.index("by_revision", ["revision"])
-		.index("by_createdAt", ["createdAt"]),
+		.index("by_scopeKey_revision", ["scopeKey", "revision"]),
 
 	/**
 	 * Service identities scoped to an organization + workspace. Plugin installations act through
@@ -9540,6 +9653,8 @@ const app_convex_schema = defineSchema({
 					capabilities: v.array(plugins_capability_validator),
 					outboundOrigins: v.array(v.string()),
 					uiOutboundOrigins: v.array(v.string()),
+					// The origins of `serviceEventsUrl` that may get access notices.
+					serviceEventsOrigins: v.array(v.string()),
 					// The plugin's MCP servers are allowed with the plugin, pinned by where their data goes.
 					mcpServers: v.array(v.object({ serverId: v.string(), destinationFingerprint: v.string(), url: v.string() })),
 					addedBy: v.id("users"),

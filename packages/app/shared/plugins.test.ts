@@ -439,7 +439,11 @@ describe("plugins_validate_manifest", () => {
 		args: {
 			configuration?: { description: string; defaultYaml: string } | null;
 			events?: Array<{
-				type: "files.upload.completed" | "users.account.deleted" | "schedule.interval.elapsed";
+				type:
+					| "files.upload.completed"
+					| "users.account.deleted"
+					| "schedule.interval.elapsed"
+					| "workspace.access.changed";
 				contentTypes?: string[];
 				schedule?: { configurationPath: string[] };
 				filters?: Array<{
@@ -450,6 +454,7 @@ describe("plugins_validate_manifest", () => {
 			}>;
 			outboundOrigins?: string[];
 			uiOutboundOrigins?: string[];
+			serviceEventsUrl?: string;
 			capabilities?: string[];
 			/**
 			 * Declare one file view and no `pages` key at all, the way bonobo-plugin-video-player ships.
@@ -476,6 +481,7 @@ describe("plugins_validate_manifest", () => {
 			capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 			outboundOrigins: args.outboundOrigins ?? [],
 			...(args.uiOutboundOrigins === undefined ? {} : { uiOutboundOrigins: args.uiOutboundOrigins }),
+			...(args.serviceEventsUrl === undefined ? {} : { serviceEventsUrl: args.serviceEventsUrl }),
 			files: [
 				{
 					path: args.nonDistFilePath ? "src/backend/worker.js" : "dist/backend/worker.js",
@@ -829,6 +835,61 @@ describe("plugins_validate_manifest", () => {
 				manifest_json({ events: [{ type: "users.account.deleted" }, { type: "users.account.deleted" }] }),
 			),
 		).toEqual({ _nay: { message: "Plugin manifest has duplicate users.account.deleted subscriptions" } });
+	});
+
+	test("pairs the access notice with its serviceEventsUrl and the pull capabilities", () => {
+		const accessEvent = { type: "workspace.access.changed" as const };
+		const capabilities = ["plugin.service.connect", "workspace.members.read"];
+		const url = "https://chat.example.com/bonobo/events";
+
+		expect(
+			plugins_validate_manifest(manifest_json({ events: [accessEvent], capabilities, serviceEventsUrl: url })),
+		).toMatchObject({ _yay: { serviceEventsUrl: url, events: [{ ...accessEvent, contentTypes: [], filters: [] }] } });
+
+		// The event and the URL require each other. A URL alone would get nothing.
+		expect(plugins_validate_manifest(manifest_json({ events: [accessEvent], capabilities }))).toEqual({
+			_nay: { message: "workspace.access.changed requires a serviceEventsUrl" },
+		});
+		expect(plugins_validate_manifest(manifest_json({ capabilities, serviceEventsUrl: url }))).toEqual({
+			_nay: { message: "serviceEventsUrl requires the workspace.access.changed event" },
+		});
+
+		// The service pulls the changes through the service door and the member roster door.
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: [accessEvent],
+					capabilities: ["plugin.service.connect", "plugin.data.read"],
+					serviceEventsUrl: url,
+				}),
+			),
+		).toEqual({
+			_nay: {
+				message: "workspace.access.changed requires the plugin.service.connect and workspace.members.read capabilities",
+			},
+		});
+
+		// The URL follows the MCP server URL rules. It has no query at all, not even an empty one, and it
+		// is stored normalized.
+		for (const serviceEventsUrl of ["https://chat.example.com/events?tenant=1", "https://chat.example.com/events?"]) {
+			expect(
+				plugins_validate_manifest(manifest_json({ events: [accessEvent], capabilities, serviceEventsUrl })),
+			).toEqual({ _nay: { message: "serviceEventsUrl must not include a query" } });
+		}
+		expect(
+			plugins_validate_manifest(
+				manifest_json({ events: [accessEvent], capabilities, serviceEventsUrl: "https://CHAT.example.com/events" }),
+			),
+		).toMatchObject({ _yay: { serviceEventsUrl: "https://chat.example.com/events" } });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: [{ ...accessEvent, contentTypes: ["image/png"] }],
+					capabilities,
+					serviceEventsUrl: url,
+				}),
+			),
+		).toEqual({ _nay: { message: "workspace.access.changed carries no file, so it cannot declare content types" } });
 	});
 
 	test("bounds the whole stored manifest payload", () => {
@@ -1807,6 +1868,7 @@ describe("plugins_validate_manifest", () => {
 			["https://[::1]/mcp", "MCP server URL must use a host name, not an IP address"],
 			["https://localhost/mcp", "MCP server URL must not point to localhost"],
 			["https://tools.localhost/mcp", "MCP server URL must not point to localhost"],
+			["https://localhost./mcp", "MCP server URL must not point to localhost"],
 			[
 				"https://mcp.example.com/mcp?tavilyApiKey=x",
 				"MCP server URL must not carry a key in its query. Send the key in the Authorization header instead",
@@ -1964,7 +2026,9 @@ describe("plugin event schema", () => {
 			app_convex_schema.tables.activities.validator.fields.source.members[0].fields.event.members.map(
 				(member) => member.value,
 			);
-		expect(versionTypes).toEqual(eventTypes);
+		// The access notice goes to the plugin's own server, never to the runner. So it has no handler,
+		// run, or Activity.
+		expect(versionTypes).toEqual([...eventTypes, "workspace.access.changed"]);
 		expect(handlerTypes).toEqual(eventTypes);
 		expect(runTypes).toEqual(expect.arrayContaining(eventTypes));
 		expect(activityTypes).toEqual(expect.arrayContaining(eventTypes));
@@ -2123,6 +2187,7 @@ describe("plugins_consent_diff", () => {
 			newMounts: [],
 			droppedMounts: [],
 			scheduleAdded: false,
+			serviceEventsOriginChanged: false,
 		});
 	});
 
@@ -2157,6 +2222,7 @@ describe("plugins_consent_diff", () => {
 			newMounts: [],
 			droppedMounts: [],
 			scheduleAdded: false,
+			serviceEventsOriginChanged: false,
 		});
 	});
 
@@ -2171,6 +2237,7 @@ describe("plugins_consent_diff", () => {
 					skills: [],
 					mounts: [],
 					events: [],
+					serviceEventsUrl: "https://chat.example.com/events",
 				},
 				target: {
 					capabilities: ["plugin.secrets.read", "outbound.fetch"],
@@ -2180,6 +2247,7 @@ describe("plugins_consent_diff", () => {
 					skills: [],
 					mounts: [],
 					events: [],
+					serviceEventsUrl: "https://hooks.example.com/events",
 				},
 			}),
 		).toEqual({
@@ -2191,6 +2259,7 @@ describe("plugins_consent_diff", () => {
 			newMounts: [],
 			droppedMounts: [],
 			scheduleAdded: false,
+			serviceEventsOriginChanged: true,
 		});
 	});
 
@@ -2225,6 +2294,7 @@ describe("plugins_consent_diff", () => {
 			newMounts: [],
 			droppedMounts: [],
 			scheduleAdded: false,
+			serviceEventsOriginChanged: false,
 		});
 	});
 
@@ -2282,6 +2352,7 @@ describe("plugins_consent_diff", () => {
 			newMounts: [],
 			droppedMounts: [],
 			scheduleAdded: false,
+			serviceEventsOriginChanged: false,
 		});
 	});
 });

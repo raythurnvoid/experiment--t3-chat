@@ -56,6 +56,21 @@ Load each companion skill that owns the affected boundary:
   reuses it.
 - `ai_model_call_receipts` are billing records. No user, organization, workspace, or thread deletion path touches them. Their only deletion path is the daily retention cron, which deletes a receipt 396 days after admission once its usage is final and no charge is `queued`. A deleted user's id stays in those docs until then.
 - `billing_usage_event_outbox` and its one `billing_usage_event_outbox_drainers` marker are billing records on their way to Polar, like the jobs in the usage pool. No user, organization, or workspace deletion path touches them: deleting them would drop charges for saves that already happened. The drainer sends each doc within seconds and then deletes it. The docs hold ids and amounts only, no names or paths.
+- `access_control_changes` (the access feed) is not deleted by any user or tenant path. Its feed
+  docs hold ids, permission flags, and display names. The daily `delete_old_changes` cron deletes
+  feed docs older than 30 days, but only once the notice dispatcher passed them. So a display name in
+  a `member` feed doc stays about 30 days after the source change while the dispatcher keeps up. If
+  the dispatcher stalls, the cron keeps the docs it has not passed. `access_control_change_state`,
+  `access_control_change_retention`, and `plugins_service_event_dispatcher` are one-doc markers.
+- `access_control_change_scope_heads` docs are deleted with their entity: the installation in its
+  purge step and in the registry hard delete, the service account before the service accounts, the
+  workspace at the end of its purge, the organization before its doc, and the plugin with its
+  registration. No live installation reads the key of a deleted entity, so this hides no change.
+- `plugins_service_event_receivers` is a self-ending outbox, like `files_browser_profile_wipes`. A
+  doc holds ids, a URL, and retry state, no member data. Uninstall and tenant deletion write a
+  `revoked` feed doc, and the receiver deletes itself after that last notice, or after 3 days of
+  failed tries. A paused receiver is deleted at once. The registry hard delete deletes it directly,
+  because that path writes no `revoked` feed doc.
 - `billing_usage_event_rejected` holds usage events Polar refused (422), with Polar's trimmed error text. No deletion path touches it either, for the same reason: each doc is a charge for work that already happened and waits for a resend after a fix. Unlike the outbox, a doc can stay until an operator acts, but it still holds only ids, amounts, and Polar's validation message, no names, paths, or content. So no purge pass is needed; the operator resends or deletes the docs.
 
 # Primary Files

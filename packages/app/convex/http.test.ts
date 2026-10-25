@@ -132,6 +132,8 @@ describe("http routes", () => {
 				"OPTIONS /api/v1/plugins/members/list",
 				"POST /api/v1/plugins/access/changes",
 				"OPTIONS /api/v1/plugins/access/changes",
+				"POST /api/v1/plugins/service-events/key",
+				"OPTIONS /api/v1/plugins/service-events/key",
 				"POST /api/v1/plugins/service-grants/exchange",
 				"OPTIONS /api/v1/plugins/service-grants/exchange",
 				"POST /api/v1/plugins/service-grants/recover",

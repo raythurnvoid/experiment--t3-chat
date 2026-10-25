@@ -14,8 +14,17 @@ import type { bash_ReviewScratch } from "./bash.ts";
 import { action, internalAction, internalQuery, query, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import { components, internal } from "./_generated/api.js";
-import { access_control_changes_db_record } from "./access_control_changes.ts";
+import {
+	access_control_changes_db_delete_scope_heads,
+	access_control_changes_db_record,
+} from "./access_control_changes.ts";
 import { activities_db_delete, activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
+import {
+	plugins_service_events_db_delete_installation_receiver,
+	plugins_service_events_db_delete_plugin_receivers,
+	plugins_service_events_db_set_receiver_account,
+	plugins_service_events_db_sync_receiver,
+} from "./plugins_service_events.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
@@ -293,6 +302,7 @@ export const register_plugin_version = internalAction({
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
+		serviceEventsUrl: doc(app_convex_schema, "plugins_versions").fields.serviceEventsUrl,
 		mcpServers: doc(app_convex_schema, "plugins_versions").fields.mcpServers,
 		mcpServersFingerprint: doc(app_convex_schema, "plugins_versions").fields.mcpServersFingerprint,
 		skills: doc(app_convex_schema, "plugins_versions").fields.skills,
@@ -380,6 +390,7 @@ export const upsert_plugin = internalMutation({
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
+		serviceEventsUrl: doc(app_convex_schema, "plugins_versions").fields.serviceEventsUrl,
 		mcpServers: doc(app_convex_schema, "plugins_versions").fields.mcpServers,
 		mcpServersFingerprint: doc(app_convex_schema, "plugins_versions").fields.mcpServersFingerprint,
 		skills: doc(app_convex_schema, "plugins_versions").fields.skills,
@@ -2732,6 +2743,7 @@ async function publish_version_from_github(
 		capabilities: manifest._yay.capabilities,
 		outboundOrigins: manifest._yay.outboundOrigins,
 		uiOutboundOrigins: manifest._yay.uiOutboundOrigins,
+		serviceEventsUrl: manifest._yay.serviceEventsUrl ?? undefined,
 		mcpServers: manifest._yay.mcpServers,
 		// Install compares this value to what the member accepted. The parsed manifest always lists
 		// keys in schema order, so the same servers always give the same text.
@@ -3482,9 +3494,11 @@ export const set_plugin_service_registration = mutation({
 			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
 			.first();
 		if (existing) {
+			// A new secret also gets a new notice signing key. The service fetches it again with the new secret.
 			await ctx.db.patch("plugins_service_registrations", existing._id, {
 				exchangeSecretHash,
 				scopes,
+				eventsSigningKey: undefined,
 				updatedAt: now,
 			});
 		} else {
@@ -3498,7 +3512,7 @@ export const set_plugin_service_registration = mutation({
 		}
 
 		await access_control_changes_db_record(ctx, [
-			{ scope: { kind: "all" }, event: { kind: "refresh", reason: "installation" } },
+			{ scope: { kind: "plugin", pluginName: args.pluginName }, event: { kind: "refresh", reason: "installation" } },
 		]);
 		return Result({ _yay: { exchangeSecret } });
 	},
@@ -3542,7 +3556,7 @@ export const remove_plugin_service_registration = mutation({
 		if (existing) {
 			await ctx.db.delete("plugins_service_registrations", existing._id);
 			await access_control_changes_db_record(ctx, [
-				{ scope: { kind: "all" }, event: { kind: "refresh", reason: "installation" } },
+				{ scope: { kind: "plugin", pluginName: args.pluginName }, event: { kind: "refresh", reason: "installation" } },
 			]);
 		}
 		return Result({ _yay: null });
@@ -4135,19 +4149,22 @@ export const install_version = mutation({
 			existingMounts: preparedMounts._yay,
 		});
 		await Promise.all(
-			pluginVersion.events.flatMap((event) =>
+			pluginVersion.events.flatMap((event) => {
+				const eventType = event.type;
+				// The access notice goes to the plugin's own server through its receiver, not to a runner handler.
+				if (eventType === "workspace.access.changed") return [];
 				// An event that declares no content type still needs one handler row, or dispatch would
 				// find nothing to run. That row leaves `contentType` unset, which is the value its
 				// dispatch looks for.
-				(event.contentTypes.length > 0 ? event.contentTypes : [undefined]).map((contentType) =>
+				return (event.contentTypes.length > 0 ? event.contentTypes : [undefined]).map((contentType) =>
 					ctx.db.insert("plugins_workspace_event_handlers", {
 						organizationId: installationScope.organizationId,
 						workspaceId: installationScope.workspaceId,
 						installationId,
 						pluginVersionId: pluginVersion._id,
 						pluginName: pluginVersion.name,
-						event: event.type,
-						...(event.type === "schedule.interval.elapsed"
+						event: eventType,
+						...(eventType === "schedule.interval.elapsed"
 							? {
 									nextRunAt:
 										previousScheduleDueAt ??
@@ -4162,9 +4179,17 @@ export const install_version = mutation({
 						installationCreatedAt,
 						updatedAt: now,
 					}),
-				),
-			),
+				);
+			}),
 		);
+		await plugins_service_events_db_sync_receiver(ctx, {
+			installationId,
+			organizationId: installationScope.organizationId,
+			workspaceId: installationScope.workspaceId,
+			pluginName: pluginVersion.name,
+			serviceAccountId,
+			serviceEventsUrl: pluginVersion.serviceEventsUrl,
+		});
 		await plugins_mcp_db_sync_installation_servers(ctx, {
 			organizationId: installationScope.organizationId,
 			workspaceId: installationScope.workspaceId,
@@ -4268,6 +4293,10 @@ export const set_installation_service_account = mutation({
 		});
 		if (installation.serviceAccountId !== account._id) {
 			await ctx.db.patch("plugins_workspace_installations", installation._id, { serviceAccountId: account._id });
+			await plugins_service_events_db_set_receiver_account(ctx, {
+				installationId: installation._id,
+				serviceAccountId: account._id,
+			});
 			await plugins_db_schedule_sandbox_rebuild(ctx, { installationId: installation._id });
 			await access_control_changes_db_record(ctx, [
 				{
@@ -4558,6 +4587,10 @@ export const uninstall_version = mutation({
 				event: { kind: "revoked", reason: "uninstalled" },
 			},
 		]);
+		// The `revoked` feed doc above wrote this head again, so delete the head after it.
+		await access_control_changes_db_delete_scope_heads(ctx, [
+			{ kind: "installation", installationId: installation._id },
+		]);
 
 		return Result({ _yay: null });
 	},
@@ -4715,6 +4748,7 @@ export const list_installations = query({
 				capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 				outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 				uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
+				serviceEventsUrl: doc(app_convex_schema, "plugins_versions").fields.serviceEventsUrl,
 				pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 				fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 				mcpServers: doc(app_convex_schema, "plugins_versions").fields.mcpServers,
@@ -4783,6 +4817,7 @@ export const list_installations = query({
 						capabilities: version.capabilities,
 						outboundOrigins: version.outboundOrigins,
 						uiOutboundOrigins: version.uiOutboundOrigins,
+						serviceEventsUrl: version.serviceEventsUrl,
 						pages: version.pages,
 						fileViews: version.fileViews,
 						mcpServers: version.mcpServers,
@@ -4828,6 +4863,7 @@ export const list_published_plugins = query({
 			capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 			outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 			uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
+			serviceEventsUrl: doc(app_convex_schema, "plugins_versions").fields.serviceEventsUrl,
 			pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 			fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 			mcpServers: doc(app_convex_schema, "plugins_versions").fields.mcpServers,
@@ -4915,6 +4951,7 @@ export const list_published_plugins = query({
 					capabilities: version.capabilities,
 					outboundOrigins: version.outboundOrigins,
 					uiOutboundOrigins: version.uiOutboundOrigins,
+					serviceEventsUrl: version.serviceEventsUrl,
 					pages: version.pages,
 					fileViews: version.fileViews,
 					mcpServers: version.mcpServers,
@@ -6765,7 +6802,7 @@ export const hard_delete_plugin_from_registry = internalMutation({
 				createdAt: Date.now(),
 			});
 			await access_control_changes_db_record(ctx, [
-				{ scope: { kind: "all" }, event: { kind: "refresh", reason: "installation" } },
+				{ scope: { kind: "plugin", pluginName: args.pluginName }, event: { kind: "refresh", reason: "installation" } },
 			]);
 		}
 		// Stop every producer before the first drain pass. The disabled status is durable, and every
@@ -6929,6 +6966,10 @@ export const hard_delete_plugin_from_registry = internalMutation({
 					)
 					.unique();
 				if (volumeUsage) await ctx.db.delete("plugins_volume_usage", volumeUsage._id);
+				await access_control_changes_db_delete_scope_heads(ctx, [
+					{ kind: "installation", installationId: installation._id },
+				]);
+				await plugins_service_events_db_delete_installation_receiver(ctx, installation._id);
 				await ctx.db.delete("plugins_workspace_installations", installation._id);
 				return { done: false, deleted: mounts.length + (volumeUsage ? 1 : 0) + 1 };
 			}
@@ -7029,6 +7070,17 @@ export const hard_delete_plugin_from_registry = internalMutation({
 			await ctx.db.delete("plugins_publish_artifact_cleanup_attempts", cleanupAttempt._id);
 			return { done: false, deleted: Math.max(1, keys.length) };
 		}
+
+		// Every installation is gone here, so no pull reads the plugin's feed head any more.
+		await access_control_changes_db_delete_scope_heads(ctx, [{ kind: "plugin", pluginName: args.pluginName }]);
+
+		// A receiver of an uninstalled installation waits for its final notice. Delete it with the name, or a
+		// plugin that reuses the name would sign that notice with its own key.
+		const receiversDeleted = await plugins_service_events_db_delete_plugin_receivers(ctx, {
+			pluginName: args.pluginName,
+			limit: budget,
+		});
+		if (receiversDeleted > 0) return { done: false, deleted: receiversDeleted };
 
 		// The service registration is name-scoped and dies with the name. Left behind, its old
 		// secret would exchange tokens for a future plugin that reuses this name.

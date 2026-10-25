@@ -7,11 +7,13 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import schema from "./schema.ts";
+import { access_control_changes_scope_key } from "./access_control_changes.ts";
 import {
 	organizations_membership_lifetimes_db_ensure as db_ensure_lifetime,
 	organizations_membership_lifetimes_db_member_facts as db_member_facts,
 } from "./organizations_membership_lifetimes.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_service_events_db_wake_installation } from "./plugins_service_events.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -63,6 +65,24 @@ async function db_live_installation(
 	}
 
 	return { installation, registration, workspace, organization, defaultWorkspaceId: organization.defaultWorkspaceId };
+}
+
+/**
+ * Return the retention doc, and create it when it is missing.
+ *
+ * The first lease creates it with the head. If it is missing later, for example after a partial data
+ * reset, older feed docs and scope heads may be gone. So it starts at the current head. A cursor below
+ * the head then takes one new snapshot, instead of getting "Snapshot required" forever.
+ */
+async function db_ensure_retention(ctx: MutationCtx, headRevision: number) {
+	const retention = await ctx.db
+		.query("access_control_change_retention")
+		.withIndex("by_key", (q) => q.eq("key", "main"))
+		.first();
+	if (retention) return retention;
+
+	const fields = { key: "main" as const, oldestRevision: headRevision + 1, scopeHeadsFromRevision: headRevision };
+	return { _id: await ctx.db.insert("access_control_change_retention", fields), ...fields };
 }
 
 // Only a live page exchange may bind a registration, version or account to this connection.
@@ -196,7 +216,8 @@ export const create_lease_facts = internalMutation({
 			.first();
 		// The first valid exchange starts the ledger on a new deployment.
 		if (!state) {
-			await ctx.db.insert("access_control_change_state", { key: "main", revision: 0, oldestRevision: 1 });
+			await ctx.db.insert("access_control_change_state", { key: "main", revision: 0 });
+			await db_ensure_retention(ctx, 0);
 		}
 
 		const lifetime = await db_ensure_lifetime(ctx, membership);
@@ -204,6 +225,7 @@ export const create_lease_facts = internalMutation({
 			installation: live.installation,
 			registrationId: live.registration._id,
 		});
+		await plugins_service_events_db_wake_installation(ctx, live.installation._id);
 
 		return Result({
 			_yay: {
@@ -315,9 +337,10 @@ export const get_snapshot = internalMutation({
 			.withIndex("by_key", (q) => q.eq("key", "main"))
 			.first();
 		if (!state) return Result({ _nay: { message: "Snapshot required" } });
+		const retention = await db_ensure_retention(ctx, state.revision);
 		const startRevision = args.startRevision ?? state.revision;
 		if (args.cursor !== null && args.startRevision === null) return Result({ _nay: { message: "Snapshot required" } });
-		if (startRevision < state.oldestRevision - 1 || startRevision > state.revision)
+		if (startRevision < retention.oldestRevision - 1 || startRevision > state.revision)
 			return Result({ _nay: { message: "Snapshot required" } });
 
 		const page = await ctx.db
@@ -389,17 +412,21 @@ export const get_events = internalMutation({
 			key: `plugin-access:${installationId}`,
 		});
 		if (limited) return Result({ _nay: { message: limited.message } });
+		await plugins_service_events_db_wake_installation(ctx, installationId);
 
 		const state = await ctx.db
 			.query("access_control_change_state")
 			.withIndex("by_key", (q) => q.eq("key", "main"))
 			.first();
-		if (!state || args.afterRevision < state.oldestRevision - 1 || args.afterRevision > state.revision)
-			return Result({ _nay: { message: "Snapshot required" } });
+		if (!state || args.afterRevision > state.revision) return Result({ _nay: { message: "Snapshot required" } });
+		const retention = await db_ensure_retention(ctx, state.revision);
 		if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100 || !Number.isInteger(args.afterRevision))
 			return Result({ _nay: { message: "Invalid event page" } });
 
-		const installation = await ctx.db.get("plugins_workspace_installations", installationId);
+		const [installation, registration] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", installationId),
+			ctx.db.get("plugins_service_registrations", connection.registrationId),
+		]);
 		const current = await db_live_installation(ctx, installationId);
 		const live =
 			current &&
@@ -408,49 +435,76 @@ export const get_events = internalMutation({
 				? current
 				: null;
 
-		const docs = await ctx.db
-			.query("access_control_changes")
-			.withIndex("by_revision", (q) => q.gt("revision", args.afterRevision))
-			.take(args.limit);
-		const events = await Promise.all(
-			docs.map(async (eventDoc) => {
-				const scope = eventDoc.scope;
-				let matches: boolean;
-				switch (scope.kind) {
-					case "all":
-						matches = true;
-						break;
-					case "organization":
-						matches = scope.organizationId === connection.organizationId;
-						break;
-					case "workspace":
-						matches =
-							scope.organizationId === connection.organizationId && scope.workspaceId === connection.workspaceId;
-						break;
-					case "installation":
-						matches = scope.installationId === installationId;
-						break;
-					case "service_account":
-						matches = scope.serviceAccountId === installation?.serviceAccountId;
-						break;
-					case "user": {
-						const member = await ctx.db
-							.query("organizations_membership_lifetimes")
-							.withIndex("by_workspace_user", (q) =>
-								q.eq("workspaceId", connection.workspaceId).eq("userId", scope.userId),
-							)
-							.first();
-						matches = member !== null;
-						break;
-					}
-				}
-				// A retired connection may receive control events, never new member profile facts.
-				const canDeliver = matches && (live !== null || eventDoc.event.kind !== "member");
-				return { revision: eventDoc.revision, event: canDeliver ? eventDoc.event : { kind: "noop" as const } };
+		// The installation's feed is the merge of these ranges. Each one is an index range of its own.
+		const scopeKeys = [
+			access_control_changes_scope_key({ kind: "installation", installationId }),
+			access_control_changes_scope_key({
+				kind: "workspace",
+				organizationId: connection.organizationId,
+				workspaceId: connection.workspaceId,
 			}),
-		);
+			access_control_changes_scope_key({ kind: "organization", organizationId: connection.organizationId }),
+			// The connection check above loaded this registration, so it exists.
+			access_control_changes_scope_key({ kind: "plugin", pluginName: registration!.pluginName }),
+			...(installation
+				? [
+						access_control_changes_scope_key({
+							kind: "service_account",
+							serviceAccountId: installation.serviceAccountId,
+						}),
+					]
+				: []),
+		];
 
-		const continueRevision = docs.at(-1)?.revision ?? args.afterRevision;
+		// A cursor older than retention may have lost changes. The scope heads say whether any of them was ours.
+		if (args.afterRevision < retention.oldestRevision - 1) {
+			if (!installation || args.afterRevision < retention.scopeHeadsFromRevision)
+				return Result({ _nay: { message: "Snapshot required" } });
+			const heads = await Promise.all(
+				scopeKeys.map((scopeKey) =>
+					ctx.db
+						.query("access_control_change_scope_heads")
+						.withIndex("by_scopeKey", (q) => q.eq("scopeKey", scopeKey))
+						.first(),
+				),
+			);
+			if (heads.some((head) => head !== null && head.revision > args.afterRevision))
+				return Result({ _nay: { message: "Snapshot required" } });
+			// No change of this installation ever came after the cursor, so nothing was lost.
+			return Result({
+				_yay: { events: [], currentRevision: state.revision, continueRevision: state.revision, isDone: true },
+			});
+		}
+
+		const ranges = await Promise.all(
+			scopeKeys.map((scopeKey) =>
+				ctx.db
+					.query("access_control_changes")
+					.withIndex("by_scopeKey_revision", (q) => q.eq("scopeKey", scopeKey).gt("revision", args.afterRevision))
+					.take(args.limit),
+			),
+		);
+		// A full range may have more docs after its last one. Cut at the smallest such end, so every doc
+		// at or below the cut is in this page. A short range returned all of its docs, and every doc up
+		// to the head exists because the head moves in the same transaction as its docs.
+		let continueRevision = state.revision;
+		for (const range of ranges) {
+			if (range.length === args.limit) continueRevision = Math.min(continueRevision, range.at(-1)!.revision);
+		}
+		let docs = ranges
+			.flat()
+			.filter((eventDoc) => eventDoc.revision <= continueRevision)
+			.sort((a, b) => a.revision - b.revision);
+		if (docs.length > args.limit) {
+			docs = docs.slice(0, args.limit);
+			continueRevision = docs.at(-1)!.revision;
+		}
+
+		const events = docs.map((eventDoc) => ({
+			revision: eventDoc.revision,
+			// A retired connection may receive control events, never new member profile facts.
+			event: live !== null || eventDoc.event.kind !== "member" ? eventDoc.event : { kind: "noop" as const },
+		}));
 		return Result({
 			_yay: { events, currentRevision: state.revision, continueRevision, isDone: continueRevision === state.revision },
 		});

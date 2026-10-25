@@ -1,10 +1,14 @@
+import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { internalMutation } from "./functions.ts";
 import { plugins_schedules_db_cancel } from "./plugins_schedules_db.ts";
+
+const DISPLAY_NAME_BATCH_SIZE = 50;
 
 export async function organizations_membership_lifetimes_db_get(
 	ctx: QueryCtx | MutationCtx,
@@ -188,3 +192,67 @@ export async function organizations_membership_lifetimes_db_record(
 	}
 	await access_control_changes_db_record(ctx, events);
 }
+
+/**
+ * Tell plugin services about a new display name. Write one `member` feed doc with fresh facts for each
+ * active membership of the user, in pages of 50.
+ *
+ * A user can belong to many workspaces, so this runs in the background and no user waits on it.
+ */
+export const record_display_name_change = internalMutation({
+	args: {
+		userId: v.id("users"),
+		cursor: v.union(v.string(), v.null()),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const state = await ctx.db
+			.query("access_control_change_state")
+			.withIndex("by_key", (q) => q.eq("key", "main"))
+			.first();
+		// Before the first lease no plugin service reads the feed.
+		if (!state) return null;
+
+		const page = await ctx.db
+			.query("organizations_membership_lifetimes")
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.paginate({ numItems: args._test_batchSize ?? DISPLAY_NAME_BATCH_SIZE, cursor: args.cursor });
+
+		const events = [];
+		// Background job: it may read and skip ended memberships. Their services already got the removal.
+		for (const lifetime of page.page) {
+			if (!lifetime.active || !lifetime.membershipId) continue;
+			const [membership, organization] = await Promise.all([
+				ctx.db.get("organizations_workspaces_users", lifetime.membershipId),
+				ctx.db.get("organizations", lifetime.organizationId),
+			]);
+			if (!membership?.active || !organization?.defaultWorkspaceId) continue;
+
+			const member = await organizations_membership_lifetimes_db_member_facts(ctx, {
+				membership,
+				lifetime: lifetime.lifetime,
+				organization,
+				defaultWorkspaceId: organization.defaultWorkspaceId,
+			});
+			events.push({
+				scope: {
+					kind: "workspace" as const,
+					organizationId: lifetime.organizationId,
+					workspaceId: lifetime.workspaceId,
+				},
+				event: { kind: "member" as const, member },
+			});
+		}
+		await access_control_changes_db_record(ctx, events);
+
+		if (!page.isDone) {
+			await ctx.scheduler.runAfter(0, internal.organizations_membership_lifetimes.record_display_name_change, {
+				userId: args.userId,
+				cursor: page.continueCursor,
+				_test_batchSize: args._test_batchSize,
+			});
+		}
+		return null;
+	},
+});

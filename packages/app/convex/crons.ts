@@ -118,6 +118,9 @@ crons.cron(
 	{},
 );
 
+// Once daily at 06:42 UTC — delete access feed docs older than 30 days, once the notice dispatcher passed them.
+crons.cron("cleanup old access changes", "42 6 * * *", internal.access_control_changes.delete_old_changes, {});
+
 // Once daily at 06:45 UTC — delete expired plugin UI page sessions.
 crons.cron("cleanup expired plugin ui sessions", "45 6 * * *", internal.plugins_ui.cleanup_expired_ui_sessions, {});
 

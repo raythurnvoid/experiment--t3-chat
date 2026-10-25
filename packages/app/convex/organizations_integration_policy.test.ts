@@ -62,6 +62,8 @@ async function register_version(args: {
 	sourceRepositoryUrl?: string;
 	capabilities?: plugins_Capability[];
 	mcpServers?: Doc<"plugins_versions">["mcpServers"];
+	uiOutboundOrigins?: string[];
+	serviceEventsUrl?: string;
 }) {
 	const { t, userId } = args;
 
@@ -114,7 +116,8 @@ async function register_version(args: {
 		fileViews: [],
 		capabilities: args.capabilities ?? ["workspace.files.read"],
 		outboundOrigins: [],
-		uiOutboundOrigins: [],
+		uiOutboundOrigins: args.uiOutboundOrigins ?? [],
+		serviceEventsUrl: args.serviceEventsUrl,
 		mcpServers: args.mcpServers ?? [],
 		mcpServersFingerprint: args.mcpServers?.length ? "sha256:tracker" : "mcp-servers-hash",
 		skills: [],
@@ -152,7 +155,7 @@ async function install(args: {
 		pluginVersionId,
 		acceptedCapabilities: version.capabilities,
 		acceptedOutboundOrigins: [],
-		acceptedUiOutboundOrigins: [],
+		acceptedUiOutboundOrigins: version.uiOutboundOrigins,
 		acceptedMcpServersFingerprint: version.mcpServersFingerprint,
 		acceptedSkillNames: [],
 		serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }],
@@ -299,6 +302,55 @@ describe("install_version", () => {
 		expect(await install({ t, membership: owner, pluginVersionId: moved })).toEqual({
 			_nay: { message: "This version needs approval from your organization owner" },
 		});
+	});
+
+	test("an upgrade that sends access notices to another origin needs approval", async () => {
+		const t = test_convex();
+		const owner = await custom_organization(t);
+		const first = await register_version({
+			t,
+			userId: owner.userId,
+			version: "0.1.0",
+			serviceEventsUrl: "https://board.example.com/events",
+		});
+		await update_policy({
+			t,
+			userId: owner.userId,
+			organizationId: owner.organizationId,
+			change: { kind: "allow_plugin", pluginVersionId: first },
+		});
+
+		const moved = await register_version({
+			t,
+			userId: owner.userId,
+			version: "0.2.0",
+			serviceEventsUrl: "https://other.example.com/events",
+		});
+		expect(await install({ t, membership: owner, pluginVersionId: moved })).toEqual({
+			_nay: { message: "This version needs approval from your organization owner" },
+		});
+	});
+
+	test("an upgrade that sends access notices to an approved UI origin installs without approval", async () => {
+		const t = test_convex();
+		const owner = await custom_organization(t);
+		const uiOutboundOrigins = ["https://board.example.com"];
+		const first = await register_version({ t, userId: owner.userId, version: "0.1.0", uiOutboundOrigins });
+		await update_policy({
+			t,
+			userId: owner.userId,
+			organizationId: owner.organizationId,
+			change: { kind: "allow_plugin", pluginVersionId: first },
+		});
+
+		const next = await register_version({
+			t,
+			userId: owner.userId,
+			version: "0.2.0",
+			uiOutboundOrigins,
+			serviceEventsUrl: "https://board.example.com/events",
+		});
+		expect((await install({ t, membership: owner, pluginVersionId: next }))._nay).toBeUndefined();
 	});
 
 	test("a version of the same name from another repository is not allowed", async () => {
@@ -540,6 +592,7 @@ describe("update_policy", () => {
 						capabilities: [],
 						outboundOrigins: [],
 						uiOutboundOrigins: [],
+						serviceEventsOrigins: [],
 						mcpServers: [],
 						addedBy: owner.userId,
 						addedAt: Date.now(),
