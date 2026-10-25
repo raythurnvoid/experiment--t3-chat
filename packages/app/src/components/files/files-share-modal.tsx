@@ -25,6 +25,7 @@ import {
 	MySelectItem,
 	MySelectItemIndicator,
 	MySelectItemsGroup,
+	MySelectItemsGroupEmpty,
 	MySelectItemsGroupText,
 	MySelectOpenIndicator,
 	MySelectPopover,
@@ -1279,9 +1280,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 														<MySelectItemsGroup separator={!hasBaseRow}>
 															<MySelectItemsGroupText>People</MySelectItemsGroupText>
 															{candidateUsers.length === 0 ? (
-																<MySelectItem value="" disabled>
-																	Everyone is already on the list
-																</MySelectItem>
+																<MySelectItemsGroupEmpty>Everyone is already on the list</MySelectItemsGroupEmpty>
 															) : (
 																candidateUsers.map((candidate) => {
 																	const value = files_share_principal_value({
@@ -1302,9 +1301,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 															<MySelectItemsGroup separator>
 																<MySelectItemsGroupText>Workspace roles</MySelectItemsGroupText>
 																{candidateRoles.length === 0 ? (
-																	<MySelectItem value="" disabled>
-																		Every role is already on the list
-																	</MySelectItem>
+																	<MySelectItemsGroupEmpty>Every role is already on the list</MySelectItemsGroupEmpty>
 																) : (
 																	candidateRoles.map((candidate) => {
 																		const value = files_share_principal_value({

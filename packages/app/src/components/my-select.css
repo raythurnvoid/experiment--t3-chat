@@ -75,7 +75,9 @@
 		gap: 8px;
 
 		width: 100%;
-		padding: 6px;
+		/* Indent the text past the group headings (12px), so a heading reads as the title of its items.
+		   The padding sits inside the row, so the click area and the highlight keep the full width. */
+		padding: 6px 20px;
 		border-radius: 4px;
 
 		color: var(--color-fg-11);
@@ -139,6 +141,20 @@
 		min-height: 30px;
 	}
 	/* #endregion items group text */
+
+	/* #region items group empty */
+	.MySelectItemsGroupEmpty {
+		cursor: default;
+
+		/* Same box as a .MySelectItem row, so the note sits where an option would. */
+		padding: 6px 20px;
+
+		font-size: 0.9375rem;
+		line-height: 1.25;
+
+		color: var(--color-fg-08);
+	}
+	/* #endregion items group empty */
 
 	/* #region items group */
 	.MySelectItemsGroup-separator {

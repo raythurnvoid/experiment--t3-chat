@@ -43,6 +43,29 @@ export const MySelectItemsGroupText = memo(function MySelectItemsGroupText(props
 });
 // #endregion items group text
 
+// #region items group empty
+export type MySelectItemsGroupEmpty_ClassNames = "MySelectItemsGroupEmpty";
+
+export type MySelectItemsGroupEmpty_Props = {
+	children?: React.ReactNode;
+	className?: string;
+};
+
+/**
+ * A quiet note for a group with no options, for example "Everyone is already on the list". It is plain
+ * text, not a disabled option, so it never looks chosen or highlighted and the keyboard skips it.
+ */
+export const MySelectItemsGroupEmpty = memo(function MySelectItemsGroupEmpty(props: MySelectItemsGroupEmpty_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<div className={cn("MySelectItemsGroupEmpty" satisfies MySelectItemsGroupEmpty_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+});
+// #endregion items group empty
+
 // #region item content primary
 export type MySelectItemContentPrimary_ClassNames = "MySelectItemContentPrimary";
 
