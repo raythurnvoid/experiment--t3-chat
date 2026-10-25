@@ -297,44 +297,72 @@ function configure_marked(instance: Marked | typeof marked) {
 				// definitions right after it. So a list of notes stays one block, and save adds no blank lines
 				// between them.
 				//
+				// The block also takes link definitions, like `[x]: http://e.com`. Marked shows nothing for them,
+				// so save lost them, and lost every definition that no link used. The block registers each one,
+				// like Marked does, so `[a][x]` still finds its link.
+				//
 				// It has no `start`: like a link definition, it cannot end a paragraph.
 				//
-				// It runs only in the document's own token list, like the frontmatter tokenizer. In a list, save
-				// drops the blank line before the block, and in a numbered list the next read no longer finds the
-				// definition. `state.top` is not enough, because Tiptap's numbered list reads its items with it set.
+				// It takes footnotes only in the document's own token list, like the frontmatter tokenizer. In a
+				// list, save drops the blank line before a footnote block, and in a numbered list the next read no
+				// longer finds the footnote. `state.top` is not enough, because Tiptap's numbered list reads its
+				// items with it set. Link definitions keep their place in a list, so it takes them everywhere.
 				name: "footnoteDefinition",
 				level: "block",
-				tokenizer(this: { lexer: { tokens: unknown } }, src, tokens) {
-					if (tokens !== this.lexer.tokens || !FOOTNOTE_DEFINITION_START_REGEX.test(src)) {
-						return undefined;
-					}
+				tokenizer(this: { lexer: { tokens: Token[] & { links: Links }; tokenizer: Tokenizer } }, src, tokens) {
+					const nested = tokens !== this.lexer.tokens;
 
-					// Take the first definition line with the lines Marked's paragraph rule adds to it. Then take each
-					// later part that is indented or that starts another definition, with its own added lines.
-					let end = PARAGRAPH_REGEX.exec(src)?.[0].length ?? 0;
+					// Take a link definition, or a footnote definition with the lines Marked's paragraph rule adds
+					// to it. After a footnote definition, an indented part belongs to the note too.
+					let end = 0;
+					let hasFootnote = false;
+					let afterFootnote = false;
 					for (;;) {
-						const gap = FOOTNOTE_DEFINITION_GAP_REGEX.exec(src.slice(end))?.[0] ?? "";
+						const gap = end === 0 ? "" : (FOOTNOTE_DEFINITION_GAP_REGEX.exec(src.slice(end))?.[0] ?? "");
 						const next = src.slice(end + gap.length);
-						if (
-							!gap ||
-							!(FOOTNOTE_DEFINITION_START_REGEX.test(next) || FOOTNOTE_DEFINITION_INDENTED_LINE_REGEX.test(next))
-						) {
+						if (end > 0 && !gap) {
 							break;
 						}
 
-						end += gap.length + (PARAGRAPH_REGEX.exec(next)?.[0].length ?? 0);
+						const linkDefinition = FOOTNOTE_DEFINITION_START_REGEX.test(next)
+							? undefined
+							: this.lexer.tokenizer.def(next);
+						if (linkDefinition) {
+							this.lexer.tokens.links[linkDefinition.tag] ??= {
+								href: linkDefinition.href,
+								title: linkDefinition.title,
+							};
+							end += gap.length + linkDefinition.raw.replace(TRAILING_NEWLINES_REGEX, "").length;
+							afterFootnote = false;
+						} else if (
+							!nested &&
+							(FOOTNOTE_DEFINITION_START_REGEX.test(next) ||
+								(afterFootnote && FOOTNOTE_DEFINITION_INDENTED_LINE_REGEX.test(next)))
+						) {
+							end += gap.length + (PARAGRAPH_REGEX.exec(next)?.[0].length ?? 0);
+							hasFootnote = true;
+							afterFootnote = true;
+						} else {
+							break;
+						}
+					}
+					if (end === 0) {
+						return undefined;
 					}
 					markdown_work_add(end * MARKDOWN_WORK_FOOTNOTE_SCAN_PER_CHAR);
 
 					const raw = src.slice(0, end);
-					return { type: "footnoteDefinition", raw, text: raw };
+					return { type: "footnoteDefinition", raw, text: raw, hasFootnote };
 				},
-				// A public parse writes a code block, which the share page can show.
+				// A public parse writes footnotes as a code block, which the share page can show. Like Marked, it
+				// shows nothing for link definitions alone.
 				renderer(token) {
-					const text = (token as { text?: string }).text ?? "";
-					return markdown_hidden_link_text !== null
-						? `<pre><code>${html_escape_text(text, HTML_TEXT_ESCAPE_REGEX)}</code></pre>`
-						: `<div data-footnote-definition="${encodeURIComponent(text)}"></div>`;
+					const { text = "", hasFootnote } = token as { text?: string; hasFootnote?: boolean };
+					if (markdown_hidden_link_text !== null) {
+						return hasFootnote ? `<pre><code>${html_escape_text(text, HTML_TEXT_ESCAPE_REGEX)}</code></pre>` : "";
+					}
+
+					return `<div data-footnote-definition="${encodeURIComponent(text)}"></div>`;
 				},
 			},
 			{
@@ -477,6 +505,17 @@ function configure_marked(instance: Marked | typeof marked) {
 					.call(this, token)
 					.replace(CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX, "</code></pre>\n");
 				return fence && fence !== "```" ? html.replace(/^<pre/, `<pre data-markdown-fence="${fence}"`) : html;
+			},
+
+			// A one-word footnote in a quote or a list, like `> [^1]: note`, which Marked reads as a link
+			// definition. Marked shows nothing for it, so keep it as the same source text block.
+			def(token) {
+				if (markdown_hidden_link_text !== null) {
+					return false;
+				}
+
+				const text = token.raw.replace(TRAILING_NEWLINES_REGEX, "");
+				return `<div data-footnote-definition="${encodeURIComponent(text)}"></div>`;
 			},
 
 			// Keep a `*` or `+` bullet, a `1)` number, and blank lines between the items, so a save does not
@@ -2674,10 +2713,10 @@ export const files_html_entity_mark = Mark.create({
 
 // #region markdown escapes
 /**
- * ASCII punctuation, the characters a Markdown backslash can escape. A table writes its own `\|`, so a
- * `|` is left out: the mark would give the table writer a backslash to double.
+ * ASCII punctuation, the characters a Markdown backslash can escape. The table writer keeps a `\|` that is
+ * already escaped, so a `|` under the mark does not get a second backslash in a table.
  */
-const MARKDOWN_ESCAPABLE_REGEX = /^[!-/:-@[-`{}~]+$/;
+const MARKDOWN_ESCAPABLE_REGEX = /^[!-/:-@[-`{-~]+$/;
 
 /**
  * The text that save writes for `text` under an escape mark: each character with its backslash. It is
@@ -3152,9 +3191,9 @@ const files_html_comment_node = Node.create({
 });
 
 /**
- * Footnote definitions, like `[^1]: The note.` and the indented lines under it. The editor cannot show
- * footnotes, so the definitions show as a block of source text, like a comment block. Save writes the
- * text back as it is.
+ * Footnote definitions, like `[^1]: The note.` and the indented lines under it, and link definitions,
+ * like `[x]: http://e.com`. The editor cannot show them, so they show as a block of source text, like a
+ * comment block. Save writes the text back as it is.
  */
 const files_footnote_definition_node = Node.create({
 	name: "footnoteDefinition",

@@ -73,10 +73,16 @@ Footnotes keep their text. The editor cannot show them like GitHub does, so it s
 
 Before, Marked read a one-word note as a link definition. Then `[^1]` became a link to that word, the definition line disappeared, and the indented lines became code. Known limits, with no lost content:
 
-- Only definitions in the document's own block list become a block. A definition in a list or a quote still reads as Marked does, because the list writer drops the blank line before it.
+- Only definitions in the document's own block list become a block. A definition in a list or a quote still reads as Marked does, because the list writer drops the blank line before it. A one-word note there, like `> [^1]: note`, reads as a link definition and so becomes a block (see below).
 - A heading right after a definition gets a blank line before it on save.
 - In a rich table cell, the block saves as a paragraph with the same text.
 - The public link page shows a definition block as a code block with the same text.
+
+Link definitions like `[x]: https://e.com "Title"` use the same block. Marked shows nothing for them, so before, save dropped every definition, and one that no link used was lost. The `footnoteDefinition` tokenizer takes them too, also in lists and quotes, and groups the ones right after each other. It registers each one in Marked's link list, like Marked does, so `[a][x]` still finds its address. The `def` renderer keeps a definition the tokenizer did not take. The public link page shows nothing for a block of link definitions only, like Marked. Known changes and limits, with no lost content:
+
+- A reference link like `[a][x]`, `[x][]` or `[x]` saves as an inline link `[a](https://e.com)`. The definition stays.
+- A paragraph right after a definition, with no blank line between them, gets a blank line before it.
+- A definition, a heading, a code block or a comment that starts a list item, like `- [x]: https://e.com`, moves out of the list. The list item must start with a paragraph.
 
 Lists keep the marker the file uses: a `*` or `+` bullet, and a `)` after the number (`1)`). The `list` renderer in `configure_marked` writes it as `data-bullet` or `data-delimiter`, and the `taskList` renderer writes a task list's bullet as `data-bullet`. The fork's lists keep it as the `bullet` or `delimiter` attribute, and the list item writer uses it. Without a marker, save writes `-` and `1.`. A new list made in the editor has no marker.
 
@@ -115,7 +121,7 @@ Known limits, with no lost content:
 - Typing between two merged identical entities (`&nbsp;|&nbsp;`) saves both as raw characters.
 - A typed `&copy;` saves as `&amp;copy;`.
 
-Backslash escapes keep the spelling the file uses too. The `text` renderer wraps each Marked escape (`\#`, `\*`, `\(`) in a span that `files_markdown_escape_mark` reads. Save writes the backslash back while the text under the mark is still ASCII punctuation. A typed or changed character saves as plain text. So `2026\-08\-30`, `\&copy;` and MathJax's `\(a+b\)` save as written. Before, every save dropped these backslashes.
+Backslash escapes keep the spelling the file uses too. The `text` renderer wraps each Marked escape (`\#`, `\*`, `\(`) in a span that `files_markdown_escape_mark` reads. Save writes the backslash back while the text under the mark is still ASCII punctuation. A typed or changed character saves as plain text. So `2026\-08\-30`, `\&copy;`, `a \| b` and MathJax's `\(a+b\)` save as written. Before, every save dropped these backslashes. The table writer keeps a `\` that already escapes the next character, so a `\|` in a cell does not get a second backslash.
 
 Typed text gets a backslash only where it would read as Markdown (`escapeMarkdownSyntax` in the tiptap fork). So `snake_case`, `C:\Users`, `5 * 3` and `x == y` save as written. Before, save escaped every `_`, `*`, `~`, `\` and `=`. The rules:
 
@@ -133,7 +139,6 @@ Line breaks keep the style the file uses: a backslash, two spaces, or a `<br>` t
 
 Known limits, with no lost content:
 
-- `\|` outside a table saves as `|`, because the table writer doubles the backslashes before a pipe.
 - Typed text at the start of a line or next to a mark edge can get a backslash it does not need.
 - `==` highlight text that holds a `=` does not read back as highlight. Tiptap's `==` rule allows no `=` inside. A `<mark>` tag from the file keeps it.
 - Bold or italic text that starts or ends with punctuation right next to a letter (`a**;**b`) cannot be written with `*` and reads back as plain text. This was true before too.
@@ -141,6 +146,8 @@ Known limits, with no lost content:
 Links keep any address scheme except `javascript:`, `vbscript:` and `data:` (`files_tiptap_link_is_allowed_uri` in `packages/app/shared/files-tiptap.ts`). Tiptap's own list keeps only a few schemes (`http`, `mailto`, ...), so a `bonobo-file://` or `obsidian://` link lost its address on the next save. Both browser lists and the shared set use this one check, so the browser and Convex keep the same links. The scheme must start the address with no tab, newline or control character inside it, so a hidden `java<tab>script:` is refused. The public link page keeps its own stricter rule: only checked `http(s)` links (see "Public Link Reader").
 
 An auto link saves the way the file wrote it: a bare `https://e.com/a_b`, `www.e.com` or `me@e.com`, or an angle `<https://e.com>`. Before, every save rewrote it as `[https://e.com/a_b](https://e.com/a_b)` and escaped its `_` and `*`. The Marked `link` renderer marks these links with `data-markdown-autolink`, and the tiptap fork's link mark keeps it in `markdownAutolink` (`bare` or `angle`). Save writes the bare or angle form, with the text as written, only while the link text still gives the same address and is one text node. Once the user changes the text, or puts bold or a comment on part of it, save writes `[text](address)`, because the other mark's syntax inside a bare address would change the link. A link typed or pasted in the editor has no mark and saves as `[text](address)`, as before. Known limit: text typed right after a bare link with no space or punctuation reads back as part of the address.
+
+A link title saves in `"…"`, with `\"` for a quote inside it. Before, a quote inside the title ended it, and the next read lost the link. Known changes, with no lost content: a title in `'…'` or `(…)` saves in `"…"`, and an `<address>` saves without the angle brackets (a space in it saves as `%20`).
 
 Bold, italic, strikethrough, code, highlight and HTML links save with the syntax the file used: `__x__`, `_x_`, `~x~`, or a bare `<b>`, `<strong>`, `<i>`, `<em>`, `<s>`, `<del>`, `<strike>`, `<code>` or `<mark>` tag (the tag name keeps its case, so `<B>` stays `<B>`), or an `<a href>` tag. Before, every save rewrote them as `**x**`, `*x*`, `~~x~~`, `` `x` ``, `==x==` and `[x](url)`. The Marked `strong`, `em` and `del` renderers mark the underscore and single `~` forms with `data-markdown-syntax`, and `html_shown_tag_to_editor_html` marks a bare tag the same way. The marks keep it in `markdownSyntax`: the tiptap fork's bold, italic, strike, code and link marks, and the app's highlight mark. The rules on save:
 

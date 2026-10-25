@@ -3693,7 +3693,7 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 			["a\n\\===\n", "a\n\\===\n"],
 			["a\n\\## b\n", "a\n\\## b\n"],
 			["a  \n\\- b\n", "a  \n\\- b\n"],
-			["a \\| b\n\\--- \\| ---\n", "a | b\n\\--- | ---\n"],
+			["a \\| b\n\\--- \\| ---\n", "a \\| b\n\\--- \\| ---\n"],
 			// A line without a dash is no table divider, so it needs no escape.
 			["a\n:::\n", "a\n:::\n"],
 		] as const;
@@ -3723,6 +3723,22 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		const json = JSON.stringify(files_tiptap_markdown_to_json({ markdown: fixtures[0] })._yay);
 		expect(json).toContain('"type":"footnoteDefinition"');
 		expect(json).not.toMatch(/"type":"(link|codeBlock)"/);
+	});
+
+	test("keeps link definitions", () => {
+		const fixtures = [
+			// Before, save dropped a definition that no link used.
+			'[x]: http://e.com\n[y]: http://f.com "T"\n',
+			"> [x]: http://e.com\n> [y]: http://f.com\n",
+			// Marked reads a one-word footnote in a quote as a link definition.
+			"> [^1]: note\n",
+		];
+		for (const fixture of fixtures) {
+			expect(normalize(fixture)).toBe(fixture);
+		}
+
+		// A reference still finds its definition. Save writes the link inline.
+		expect(normalize("[a][x]\n\n[x]: http://e.com\n")).toBe("[a](http://e.com)\n\n[x]: http://e.com\n");
 	});
 
 	test("keeps a heading with more lines one heading", () => {

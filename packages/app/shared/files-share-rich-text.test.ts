@@ -414,6 +414,13 @@ describe("files_share_rich_text_prepare", () => {
 		expect(json).not.toContain('"link"');
 	});
 
+	test("hides link definitions like Marked", () => {
+		const json = rich_json(publish("[a][x]\n\n[x]: http://e.com\n").content);
+
+		expect(json).toContain('"link"');
+		expect(json).not.toContain("[x]:");
+	});
+
 	test("drops out-of-range table spans and list attributes", () => {
 		const json = rich_json(
 			publish(
