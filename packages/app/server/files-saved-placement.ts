@@ -4,6 +4,7 @@ import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import type { files_DirectoryView } from "../shared/files.ts";
+import { files_saved_content_apply_header, files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 
 export type files_saved_placement_FixedView = {
 	cohortId: Id<"files_move_cohorts">;
@@ -162,22 +163,6 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		ancestor10: place.ancestor10,
 		ancestor11: place.ancestor11,
 		ancestor12: place.ancestor12,
-		contentType: place.contentType,
-		contentTypeEssence: place.contentTypeEssence,
-		contentTypeFamily: place.contentTypeFamily,
-		assetId: place.assetId,
-		contentByteSize: place.contentByteSize,
-		textKind: place.textKind,
-		collaborationEnabled: place.collaborationEnabled,
-		pendingContentVersion: place.pendingContentVersion,
-		yjsSnapshotId: place.yjsSnapshotId,
-		yjsLastSequenceId: place.yjsLastSequenceId,
-		statsId: place.statsId,
-		contentTooLargeByteSize: place.contentTooLargeByteSize,
-		contentShapeMismatchAt: place.contentShapeMismatchAt,
-		contentYjsStateTooLargeByteSize: place.contentYjsStateTooLargeByteSize,
-		contentFrontmatterTooLargeFieldCount: place.contentFrontmatterTooLargeFieldCount,
-		contentFrontmatterTooLargeIndexDocumentCount: place.contentFrontmatterTooLargeIndexDocumentCount,
 		publishedFromPrivateNodeId: place.publishedFromPrivateNodeId,
 	};
 }
@@ -191,7 +176,9 @@ export async function files_saved_placement_db_get_node(
 	fixedView?: files_saved_placement_FixedView,
 ): Promise<Doc<"files_nodes"> | null> {
 	const node = await db.get("files_nodes", nodeId);
-	if (!node?.moveCohortId) return node;
+	if (!node) return null;
+	if (!node.moveCohortId)
+		return files_saved_content_apply_header(node, await files_saved_content_db_get_head(db, node, fixedView));
 	const { cohort, view } = await get_cohort(db, node.moveCohortId, fixedView);
 	if (cohort.organizationId !== node.organizationId || cohort.workspaceId !== node.workspaceId)
 		throw should_never_happen("Saved placement has another workspace", { nodeId, cohortId: cohort._id });
@@ -213,7 +200,10 @@ export async function files_saved_placement_db_get_node(
 		place.nodeCreationTime !== node._creationTime
 	)
 		throw should_never_happen("Saved placement candidate does not match its node", { nodeId, placeId: place._id });
-	return apply_place(node, place);
+	return files_saved_content_apply_header(
+		apply_place(node, place),
+		await files_saved_content_db_get_head(db, node, { cohortId: cohort._id, view }),
+	);
 }
 
 /**
@@ -272,7 +262,7 @@ export async function files_saved_placement_db_get_slot(
 		)
 		.unique();
 	if (node?.moveCohortId) throw should_never_happen("Reserved saved slot has no claim", { nodeId: node._id });
-	return node;
+	return node ? files_saved_content_apply_header(node, await files_saved_content_db_get_head(db, node)) : null;
 }
 
 /**
@@ -313,7 +303,7 @@ export async function files_saved_placement_db_get_path(
 		return node;
 	}
 	// Reserved physical nodes stay out of this index, including a selected empty claim.
-	return await db
+	const node = await db
 		.query("files_nodes")
 		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
@@ -324,6 +314,7 @@ export async function files_saved_placement_db_get_path(
 				.eq("archiveOperationId", null),
 		)
 		.unique();
+	return node ? files_saved_content_apply_header(node, await files_saved_content_db_get_head(db, node)) : null;
 }
 
 /**
@@ -505,28 +496,20 @@ export async function files_saved_placement_db_get_sequence(
 	node: Doc<"files_nodes">,
 	fixedView?: files_saved_placement_FixedView,
 ) {
-	if (!node.yjsLastSequenceId) return null;
-	const sequence = await db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
+	const head = await files_saved_content_db_get_head(db, node, fixedView);
+	if (!head?.yjsLastSequenceId) return null;
+	const sequence = await db.get("files_yjs_docs_last_sequences", head.yjsLastSequenceId);
 	if (
 		!sequence ||
 		sequence.organizationId !== node.organizationId ||
 		sequence.workspaceId !== node.workspaceId ||
-		sequence.fileNodeId !== node._id
+		sequence.fileNodeId !== node._id ||
+		!head.sequence
 	)
 		throw should_never_happen("Saved sequence does not match its node", {
 			nodeId: node._id,
-			sequenceId: node.yjsLastSequenceId,
+			sequenceId: head.yjsLastSequenceId,
 		});
-	if (!node.moveCohortId) return sequence;
-	const { cohort, view } = await get_cohort(db, node.moveCohortId, fixedView);
-	if (view === "before") return sequence;
-	const content = await db
-		.query("files_move_cohort_content")
-		.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", node._id))
-		.unique();
-	if (!content) return sequence;
-	if (!content.sealed || !content.afterSequence || content.afterSequence.lastSequenceId !== sequence._id)
-		throw should_never_happen("Saved content sequence is not sealed", { contentId: content._id, nodeId: node._id });
-	const { lastSequenceId: _lastSequenceId, ...after } = content.afterSequence;
-	return { ...sequence, ...after };
+	// Ordinary Review Save keeps this public ID. Only the selected head owns its counters.
+	return { ...sequence, ...head.sequence };
 }

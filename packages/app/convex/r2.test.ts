@@ -9,6 +9,7 @@ import {
 	test_get_file_yjs_pointers,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import {
 	r2,
@@ -2446,7 +2447,7 @@ describe("r2 asset content", () => {
 			throw new Error(upload._nay.message);
 		}
 
-		const existingGeneratedId = await t.run(async (ctx) =>
+		const existingGeneratedId = await test_run_with_flush(t, async (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: db.organizationId,
@@ -2722,6 +2723,40 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(swept.deletedCount).toBe(1);
 		expect(orphanAsset).toBeNull();
 		expect(finalizedAsset).not.toBeNull();
+	});
+
+	test.each(["assetId", "snapshotAssetId"] as const)("keeps an asset owned by preparing content through %s", async (field) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId, parentId: "root", filename: "saved.png", contentType: "image/png", size: 128,
+		});
+		if (upload._nay) throw new Error(upload._nay.message);
+		const now = Date.now();
+		const assetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1, r2Key: "test/preparing-content" });
+		const headId = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			if (!node?.contentHeadId) throw new Error("Expected the saved content owner");
+			const head = await ctx.db.get("files_saved_content_heads", node.contentHeadId);
+			if (!head) throw new Error("Expected the saved content header");
+			const { _id, _creationTime, ...values } = head;
+			// Only the candidate owns this asset. It has no physical snapshot or Move asset claim.
+			await ctx.db.insert("files_saved_content_heads", { ...values, [field]: assetId, ready: false, retired: true });
+			return await ctx.db.insert("files_saved_content_heads", { ...values, [field]: assetId, ready: false, retired: false });
+		});
+		const sweep = () => t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+			_test_now: now, _test_disableReschedule: true,
+		});
+		expect((await sweep()).deletedCount, "A preparing head keeps its owned asset").toBe(0);
+		expect(await get_deletion_job_by_key(t, "test/preparing-content")).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).not.toBeNull();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_saved_content_heads", headId, { retired: true });
+			await ctx.db.patch("files_r2_assets", assetId, { unfinalizedExpiresAt: now - 1 });
+		});
+		expect((await sweep()).deletedCount, "Retired heads do not keep unused assets").toBe(1);
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
 	});
 
 	test("a batched sweep reschedules itself until the backlog is drained", async () => {

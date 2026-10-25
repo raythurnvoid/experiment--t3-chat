@@ -37,6 +37,7 @@ import {
 	files_saved_placement_db_get_view,
 } from "./files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "./files-saved-content.ts";
+import { files_saved_content_apply_header, files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 
 export * from "../shared/files.ts";
 
@@ -351,10 +352,10 @@ export async function files_db_get_visible_node_by_path(
 			if (!node) return null;
 			parentId = node._id;
 		}
-		return node;
+		return node ? files_saved_content_apply_header(node, await files_saved_content_db_get_head(ctx.db, node)) : null;
 	}
 
-	return await ctx.db
+	const node = await ctx.db
 		.query("files_nodes")
 		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
@@ -364,6 +365,7 @@ export async function files_db_get_visible_node_by_path(
 				.eq("archiveOperationId", null),
 		)
 		.first();
+	return node ? files_saved_content_apply_header(node, await files_saved_content_db_get_head(ctx.db, node)) : null;
 }
 
 /**
@@ -426,6 +428,7 @@ export async function files_db_create_path_lookups(
 							.eq("archiveOperationId", null),
 					)
 					.first();
+				if (node) node = files_saved_content_apply_header(node, await files_saved_content_db_get_head(ctx.db, node));
 				nodes.set(path, node);
 			}
 			if (!node) break;
@@ -460,6 +463,8 @@ export async function files_db_create_path_lookups(
 								.eq("archiveOperationId", null),
 						)
 						.first();
+			if (node && !fixedView)
+				node = files_saved_content_apply_header(node, await files_saved_content_db_get_head(ctx.db, node));
 			nodes.set(path, node);
 		}
 		return node;

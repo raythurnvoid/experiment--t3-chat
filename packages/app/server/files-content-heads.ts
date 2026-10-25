@@ -1,4 +1,4 @@
-// Temporary ownership bridge. Existing content readers stay authoritative until the backfill audit.
+// Saved content ownership for file writes and Review publication.
 // Keep this module a leaf: every mutation loads it through functions.ts.
 
 import type { WithoutSystemFields } from "convex/server";
@@ -6,8 +6,9 @@ import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx } from "../convex/_generated/server.js";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 
-const BRIDGE = Symbol("files_content_heads");
+const WRITES = Symbol("files_content_heads");
 const CONTENT_TABLES = new Set<TableNames>([
 	"files_text_chunks",
 	"files_plain_text_chunks",
@@ -44,9 +45,8 @@ const HEADER_FIELDS = [
 
 type Head = Doc<"files_saved_content_heads">;
 type Fields = Record<string, unknown>;
-type Bridge = {
+type ContentWrites = {
 	db: MutationCtx["db"];
-	backfill: (table: TableNames, id: Id<TableNames>, repair?: boolean) => Promise<void>;
 	flush: () => Promise<void>;
 };
 type ContentDoc = {
@@ -88,26 +88,18 @@ function header(node: Doc<"files_nodes"> | Doc<"files_saved_places">) {
 }
 
 /**
- * Backfill only the doc that still exists in this transaction. Cleanup may have removed or retagged it.
- */
-export async function files_content_heads_db_backfill(ctx: MutationCtx, table: TableNames, id: Id<TableNames>) {
-	const bridge = Reflect.get(ctx.db, BRIDGE) as Bridge | undefined;
-	if (!bridge) throw should_never_happen("Content backfill needs the mutation wrapper", { table, id });
-	await bridge.backfill(table, id, true);
-}
-
-/**
  * Include copied head writes before a worker checks its transaction budget.
  */
 export async function files_content_heads_db_flush(ctx: MutationCtx) {
-	const bridge = Reflect.get(ctx.db, BRIDGE) as Bridge | undefined;
-	await bridge?.flush();
+	const writes = Reflect.get(ctx.db, WRITES) as ContentWrites | undefined;
+	await writes?.flush();
 }
 
-export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
+export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	const raw = ctx.db;
 	const dirty = new Set<Id<"files_nodes">>();
 	const nodes = new Map<Id<"files_nodes">, Promise<Id<"files_saved_content_heads"> | null>>();
+	const owners = new Map<string, Promise<Id<"files_saved_content_heads"> | null>>();
 	const contents = new Map<
 		Id<"files_move_cohort_content">,
 		Promise<{
@@ -145,24 +137,15 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 			pending = (async () => {
 				const node = await raw.get("files_nodes", nodeId);
 				if (!node || node.kind !== "file") return null;
-				if (node.contentHeadId) return node.contentHeadId;
-				const id = await raw.insert("files_saved_content_heads", {
-					organizationId: node.organizationId,
-					workspaceId: node.workspaceId,
-					fileNodeId: node._id,
-					...(await values(node)),
-					ready: true,
-					retired: false,
-				});
-				await raw.patch("files_nodes", nodeId, { contentHeadId: id });
-				return id;
+				if (!node.contentHeadId) throw should_never_happen("Saved file has no content head", { nodeId });
+				return node.contentHeadId;
 			})();
 			nodes.set(nodeId, pending);
 		}
 		return pending;
 	}
 
-	function ensure_content(contentId: Id<"files_move_cohort_content">) {
+	function ensure_content(contentId: Id<"files_move_cohort_content">, inserted = false) {
 		let pending = contents.get(contentId);
 		if (!pending) {
 			pending = (async () => {
@@ -170,35 +153,39 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 				if (!content) return null;
 				const node = await raw.get("files_nodes", content.nodeId);
 				if (!node) return null;
+				const completed = content.phaseCursor === "finish:done" || content.phaseCursor === "abort:done";
 				// Completed history cannot borrow today's content owner.
 				if (
-					(content.phaseCursor === "finish:done" || content.phaseCursor === "abort:done") &&
-					node.moveCohortId !== content.cohortId
+					completed &&
+					(node.moveCohortId !== content.cohortId || !content.beforeHeadId || !content.afterHeadId)
 				)
 					return null;
-				const before = content.beforeHeadId ?? (await ensure_node(content.nodeId));
+				if (!inserted && (!content.beforeHeadId || !content.afterHeadId))
+					throw should_never_happen("Review content has no owners", { contentId });
+				const before = inserted ? await ensure_node(content.nodeId) : content.beforeHeadId!;
 				if (!before) return null;
-				// Review copies committed docs even when its accepted text is unchanged.
-				// Each copy needs its own owner; public Yjs IDs stay the same.
+				// Review copies committed rows even when its accepted text is unchanged.
+				// Each copy needs its own owner; its public Yjs identity can stay the same.
 				const prepared = content.prepared !== null;
-				let after = content.afterHeadId ?? before;
-				// Late migration keeps only the accepted head once content cleanup is complete.
-				if (
-					prepared &&
-					after === before &&
-					content.phaseCursor !== "finish:done" &&
-					content.phaseCursor !== "abort:done"
-				) {
+				let after = inserted ? before : content.afterHeadId!;
+				if (prepared && after === before && !completed) {
+					const place = await raw.query("files_saved_places")
+						.withIndex("by_cohort_view_node", (q) =>
+							q.eq("cohortId", content.cohortId).eq("view", "after").eq("nodeId", node._id),
+						)
+						.unique();
+					const { lastSequenceId: _id, ...sequence } = content.afterSequence ?? { lastSequenceId: null };
 					after = await raw.insert("files_saved_content_heads", {
 						organizationId: node.organizationId,
 						workspaceId: node.workspaceId,
 						fileNodeId: node._id,
-						...(await values(node)),
-						ready: false,
+						...(await values(place ?? node, content.afterSequence ? (sequence as NonNullable<Head["sequence"]>) : null)),
+						ready: content.sealed,
 						retired: false,
 					});
 				}
-				await raw.patch("files_move_cohort_content", contentId, { beforeHeadId: before, afterHeadId: after });
+				if (content.beforeHeadId !== before || content.afterHeadId !== after)
+					await raw.patch("files_move_cohort_content", contentId, { beforeHeadId: before, afterHeadId: after });
 				dirty.add(content.nodeId);
 				return { before, after };
 			})();
@@ -207,32 +194,45 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 		return pending;
 	}
 
-	async function owner(doc: ContentDoc) {
+	function owner(doc: ContentDoc) {
 		const nodeId = doc.fileNodeId!;
-		const node = await raw.get("files_nodes", nodeId);
-		if (!node || node.kind !== "file") return null;
-		const cohortId = doc.moveView?.cohortId ?? node.moveCohortId;
-		if (cohortId) {
-			const content = await raw
-				.query("files_move_cohort_content")
-				.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohortId).eq("nodeId", nodeId))
-				.unique();
-			if (content) {
-				const heads = await ensure_content(content._id);
-				if (heads) {
-					const cohort = await raw.get("files_move_cohorts", cohortId);
-					const view = doc.moveView?.view ?? cohort?.visibleView;
-					return view === "after" ? heads.after : heads.before;
+		const cohortId = doc.moveView?.cohortId;
+		// A page can insert many chunks for one side. Read its owner once until that mapping changes.
+		const key = cohortId ? `${nodeId}:${cohortId}:${doc.moveView!.view}` : null;
+		let pending = key ? owners.get(key) : undefined;
+		if (!pending) {
+			pending = (async () => {
+				const node = await raw.get("files_nodes", nodeId);
+				if (!node || node.kind !== "file") return null;
+				const currentId = await ensure_node(nodeId);
+				// Staged rows name their side. Ordinary writes follow today's selected content.
+				if (cohortId) {
+					const content = await raw
+						.query("files_move_cohort_content")
+						.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohortId).eq("nodeId", nodeId))
+						.unique();
+					if (content) {
+						const heads = await ensure_content(content._id);
+						return heads ? (doc.moveView?.view === "after" ? heads.after : heads.before) : null;
+					}
 				}
-			}
+				if (!currentId) return null;
+				return (await files_saved_content_db_get_head(raw, { ...node, contentHeadId: currentId }))!._id;
+			})();
+			if (key) owners.set(key, pending);
 		}
-		return await ensure_node(nodeId);
+		return pending;
 	}
 
-	async function tag(table: TableNames, id: Id<TableNames>, doc: ContentDoc, assign = false) {
-		if (!has_content(table, doc) || (!assign && doc.contentHeadId)) return;
+	async function tag(table: TableNames, id: Id<TableNames>, doc: ContentDoc, inserted = false) {
+		if (!has_content(table, doc)) return;
+		if (!inserted) {
+			if (!doc.contentHeadId) throw should_never_happen("Saved content row has no owner", { table, id });
+			return doc.contentHeadId;
+		}
 		const contentHeadId = await owner(doc);
-		if (contentHeadId && contentHeadId !== doc.contentHeadId) await raw.patch(table, id, { contentHeadId } as never);
+		if (contentHeadId) await raw.patch(table, id, { contentHeadId } as never);
+		return contentHeadId;
 	}
 
 	async function sync_place(place: Doc<"files_saved_places">) {
@@ -251,14 +251,71 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 		const heads = await ensure_content(content._id);
 		if (!heads) return;
 		const kept = content.phaseCursor === "finish:done" ? heads.after : heads.before;
-		await raw.patch("files_nodes", node._id, { contentHeadId: kept });
-		nodes.set(node._id, Promise.resolve(kept));
+		// A later write may already own the file. Cleanup must not select old content again.
+		if (node.contentHeadId === heads.before) {
+			await raw.patch("files_nodes", node._id, { contentHeadId: kept });
+			nodes.set(node._id, Promise.resolve(kept));
+			owners.clear();
+		}
 		dirty.add(node._id);
 		const retired = kept === heads.after ? heads.before : heads.after;
-		if (retired !== kept) await raw.patch("files_saved_content_heads", retired, { ready: false, retired: true });
+		const currentId = node.contentHeadId === heads.before ? kept : node.contentHeadId;
+		if (retired !== kept && retired !== currentId)
+			await raw.patch("files_saved_content_heads", retired, { ready: false, retired: true });
 	}
 
-	async function backfill(table: TableNames, id: Id<TableNames>, repair = false) {
+	async function sync_write(table: TableNames, id: Id<TableNames>, patch: Fields) {
+		if (table !== "files_nodes" && table !== "files_yjs_snapshots" && table !== "files_yjs_docs_last_sequences") return;
+		if (table === "files_nodes" && !HEADER_FIELDS.some((key) => key in patch)) return;
+		if (table === "files_yjs_snapshots" && !("assetId" in patch)) return;
+		if (
+			table === "files_yjs_docs_last_sequences" &&
+			!["lastSequence", "lineageGeneration", "unmaterializedUpdateCount", "unmaterializedUpdateBytes"].some((key) => key in patch)
+		) return;
+		const doc = await raw.get(table, id as Id<typeof table>);
+		if (!doc) return;
+		const nodeId = table === "files_nodes" ? (id as Id<"files_nodes">) : (doc as ContentDoc).fileNodeId!;
+		const headId =
+			table === "files_nodes" && typeof patch.contentHeadId === "string"
+				? (patch.contentHeadId as Id<"files_saved_content_heads">)
+				: await owner({ fileNodeId: nodeId });
+		if (!headId) return;
+		const head = await raw.get("files_saved_content_heads", headId);
+		if (!head) throw should_never_happen("Content owner is missing", { headId });
+		const next: Partial<WithoutSystemFields<Head>> = {};
+		if (table === "files_nodes") {
+			for (const key of HEADER_FIELDS) if (key in patch) Object.assign(next, { [key]: patch[key] });
+			if ("yjsSnapshotId" in patch && patch.yjsSnapshotId !== head.yjsSnapshotId) {
+				const snapshot = patch.yjsSnapshotId
+					? await raw.get("files_yjs_snapshots", patch.yjsSnapshotId as Id<"files_yjs_snapshots">)
+					: null;
+				next.snapshotAssetId = snapshot?.assetId ?? null;
+			}
+			if ("yjsLastSequenceId" in patch && patch.yjsLastSequenceId !== head.yjsLastSequenceId) {
+				const sequence = patch.yjsLastSequenceId
+					? await raw.get("files_yjs_docs_last_sequences", patch.yjsLastSequenceId as Id<"files_yjs_docs_last_sequences">)
+					: null;
+				next.sequence = sequence
+					? {
+							lastSequence: sequence.lastSequence,
+							lineageGeneration: sequence.lineageGeneration,
+							unmaterializedUpdateCount: sequence.unmaterializedUpdateCount,
+							unmaterializedUpdateBytes: sequence.unmaterializedUpdateBytes,
+						}
+					: null;
+			}
+		} else if (table === "files_yjs_snapshots" && head.yjsSnapshotId === id && "assetId" in patch) {
+			next.snapshotAssetId = (doc as Doc<"files_yjs_snapshots">).assetId;
+		} else if (table === "files_yjs_docs_last_sequences" && head.yjsLastSequenceId === id && head.sequence) {
+			const sequence = { ...head.sequence };
+			for (const key of Object.keys(sequence) as Array<keyof typeof sequence>)
+				if (key in patch) sequence[key] = (doc as Doc<"files_yjs_docs_last_sequences">)[key];
+			next.sequence = sequence;
+		}
+		if (Object.keys(next).length > 0) await sync_head(head, next);
+	}
+
+	async function sync_doc(table: TableNames, id: Id<TableNames>, inserted = false) {
 		if (!WATCHED_TABLES.has(table)) return;
 		const doc = await raw.get(table, id);
 		if (!doc) return;
@@ -269,25 +326,35 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 		} else if (table === "files_saved_places") await sync_place(doc as Doc<"files_saved_places">);
 		else if (table === "files_move_cohort_content") {
 			const content = doc as Doc<"files_move_cohort_content">;
-			await ensure_content(content._id);
+			await ensure_content(content._id, inserted);
 			if (content.phaseCursor === "finish:done" || content.phaseCursor === "abort:done")
 				await complete_content(content);
-		} else if (CONTENT_TABLES.has(table)) {
-			// Old bridge writes shared an owner for unchanged Review copies.
-			// Only migration rechecks those tags; normal promotion keeps its owner.
-			await tag(table, id, doc as ContentDoc, repair);
-		}
+		} else if (CONTENT_TABLES.has(table)) await tag(table, id, doc as ContentDoc);
 		else dirty.add((doc as ContentDoc).fileNodeId!);
 	}
 
 	const db = new Proxy(raw, {
 		get(target, property) {
-			if (property === BRIDGE) return bridge;
+			if (property === WRITES) return writes;
 			if (property === "insert")
 				return async (table: TableNames, value: Fields) => {
 					const id = await target.insert(table, value as never);
+					if (table === "files_nodes" || table === "files_move_cohort_content") owners.clear();
+					if (table === "files_nodes" && value.kind === "file") {
+						const node = (await raw.get("files_nodes", id as Id<"files_nodes">))!;
+						const headId = await raw.insert("files_saved_content_heads", {
+							organizationId: node.organizationId,
+							workspaceId: node.workspaceId,
+							fileNodeId: node._id,
+							...(await values(node)),
+							ready: true,
+							retired: false,
+						});
+						await raw.patch("files_nodes", node._id, { contentHeadId: headId });
+						nodes.set(node._id, Promise.resolve(headId));
+					}
 					if (CONTENT_TABLES.has(table)) await tag(table, id, value as ContentDoc, true);
-					else await backfill(table, id);
+					else await sync_doc(table, id, true);
 					return id;
 				};
 			if (property === "patch" || property === "replace" || property === "delete")
@@ -303,11 +370,14 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 					const table = args[0] as TableNames;
 					const id = args[1] as Id<TableNames>;
 					const patch = property === "delete" ? null : (args[2] as Fields);
+					if (table === "files_nodes" || table === "files_move_cohort_content") owners.clear();
 					if (
 						!WATCHED_TABLES.has(table) ||
 						(property === "patch" && Object.keys(patch!).every((key) => key === "contentHeadId"))
-					)
+					) {
+						if (table === "files_nodes") nodes.delete(id as Id<"files_nodes">);
 						return await Reflect.apply(write, target, args);
+					}
 					// Deleted content needs no new ownership tag.
 					if (CONTENT_TABLES.has(table) && property === "delete") return await Reflect.apply(write, target, args);
 					if (
@@ -319,12 +389,9 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 						return await Reflect.apply(write, target, args);
 					const old = await raw.get(table, id);
 					if (old && CONTENT_TABLES.has(table)) {
-						// Assign from the old side before promotion clears its Move tag.
-						await tag(table, id, old as ContentDoc);
-						if (property === "replace") {
-							const tagged = (await raw.get(table, id)) as ContentDoc;
-							if (tagged.contentHeadId) args[2] = { ...patch, contentHeadId: tagged.contentHeadId };
-						}
+						// Promotion keeps the same owner when it clears the Move tag.
+						const contentHeadId = await tag(table, id, old as ContentDoc);
+						if (property === "replace" && contentHeadId) args[2] = { ...patch, contentHeadId };
 					}
 					if (old && table === "files_move_cohort_content" && property === "delete") {
 						const content = old as Doc<"files_move_cohort_content">;
@@ -334,6 +401,12 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 							if (headId && headId !== node?.contentHeadId) await raw.delete("files_saved_content_heads", headId);
 					}
 					await Reflect.apply(write, target, args);
+					// Location and text edits keep the owner assigned above. Do not read each chunk twice.
+					if (
+						CONTENT_TABLES.has(table) && property === "patch" &&
+						!["fileNodeId", "sourceKind", "fieldPath"].some((key) => key in patch!)
+					) return;
+					if (table === "files_nodes" && patch && "contentHeadId" in patch) nodes.delete(id as Id<"files_nodes">);
 					if (table === "files_move_cohort_content") contents.delete(id as Id<"files_move_cohort_content">);
 					if (property === "delete") {
 						if (table === "files_nodes") {
@@ -344,30 +417,27 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 						} else if (old && "fileNodeId" in old) dirty.add(old.fileNodeId as Id<"files_nodes">);
 						return;
 					}
-					await backfill(table, id);
+					await sync_doc(table, id);
+					if (patch) await sync_write(table, id, patch);
 				};
 			const value: unknown = Reflect.get(target, property);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
 
-	async function sync_head(id: Id<"files_saved_content_heads">, next: Partial<WithoutSystemFields<Head>>) {
-		const old = await raw.get("files_saved_content_heads", id);
-		if (!old) throw should_never_happen("Content owner is missing", { headId: id });
+	async function sync_head(old: Head, next: Partial<WithoutSystemFields<Head>>) {
 		if (Object.entries(next).some(([key, value]) => JSON.stringify(old[key as keyof Head]) !== JSON.stringify(value)))
-			await raw.patch("files_saved_content_heads", id, next);
+			await raw.patch("files_saved_content_heads", old._id, next);
 	}
 
-	const bridge = {
+	const writes = {
 		db,
-		backfill,
 		async flush() {
 			for (const nodeId of dirty) {
 				const node = await raw.get("files_nodes", nodeId);
 				if (!node || node.kind !== "file") continue;
 				const currentId = await ensure_node(nodeId);
 				if (!currentId) continue;
-				await sync_head(currentId, { ...(await values(node)), ready: true, retired: false });
 				if (!node.moveCohortId) continue;
 				const content = await raw
 					.query("files_move_cohort_content")
@@ -388,19 +458,25 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): Bridge {
 				);
 				for (const place of places) if (place) await sync_place(place);
 				const after = places[1];
-				if (heads.after !== heads.before && content.phaseCursor !== "abort:done" && after) {
+				const cohort = (await raw.get("files_move_cohorts", node.moveCohortId))!;
+				const candidate = heads.after !== heads.before ? await raw.get("files_saved_content_heads", heads.after) : null;
+				// A published head owns later edits. Its copied place must never overwrite them.
+				if (
+					candidate &&
+					cohort.publishedAt === null &&
+					content.phaseCursor !== "abort:done" &&
+					after
+				) {
 					const { lastSequenceId: _id, ...sequence } = content.afterSequence ?? { lastSequenceId: null };
-					await sync_head(heads.after, {
+					await sync_head(candidate, {
 						...(await values(after, content.afterSequence ? (sequence as NonNullable<Head["sequence"]>) : null)),
 						ready: content.sealed,
 						retired: false,
 					});
-					const cohort = (await raw.get("files_move_cohorts", node.moveCohortId))!;
-					if (cohort.visibleView === "after") await sync_head(heads.before, { ready: false, retired: true });
 				}
 			}
 			dirty.clear();
 		},
 	};
-	return bridge;
+	return writes;
 }

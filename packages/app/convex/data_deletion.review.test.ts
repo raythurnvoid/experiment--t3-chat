@@ -18,6 +18,7 @@ import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_insert_pending_update } from "../server/files.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -106,6 +107,7 @@ async function data_deletion_test_seed_page(
 		tag: string;
 	},
 ) {
+	ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 	const nodeId = await ctx.db.insert("files_nodes", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -743,6 +745,7 @@ const review_workspace_tables = [
 	"files_folder_sorts",
 	"files_updated_by_docs",
 	"files_content_materialization_jobs",
+	"files_saved_content_heads",
 	"files_r2_assets",
 	"access_control_permission_grants",
 	"files_nodes",
@@ -757,6 +760,7 @@ async function review_seed_all_workspace_content(
 		tag: string;
 	},
 ) {
+	ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 	await data_deletion_test_seed_workspace_content_bulk(ctx, { ...args, count: 2 });
 	const now = Date.now();
 	const tenant = { organizationId: args.organizationId, workspaceId: args.workspaceId };

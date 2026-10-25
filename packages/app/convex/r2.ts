@@ -22,6 +22,7 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { files_upload_content_from_bytes } from "../server/files-upload-content.ts";
+import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
 import {
 	r2,
 	r2_get_object_metadata,
@@ -1860,7 +1861,7 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 				workspaceId: asset.workspaceId,
 				assetId: asset._id,
 			});
-			const [referencingNode, referencingYjsSnapshot, referencingSnapshot, cohortClaim] = await Promise.all([
+			const [referencingNode, referencingYjsSnapshot, referencingSnapshot, cohortClaim, contentHead] = await Promise.all([
 				ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_asset", (q) =>
@@ -1876,8 +1877,9 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
 					.first(),
 				ctx.db.query("files_move_asset_claims").withIndex("by_asset", (q) => q.eq("assetId", asset._id)).first(),
+				files_content_retention_db_uses_asset(ctx.db, asset._id),
 			]);
-			if (referencingNode || referencingYjsSnapshot || referencingSnapshot || cohortClaim) {
+			if (referencingNode || referencingYjsSnapshot || referencingSnapshot || cohortClaim || contentHead) {
 				// Another doc uses this asset. If its R2 object exists, clear the old deadline. Never
 				// delete an asset that is still used.
 				if (asset.r2Key !== undefined) {

@@ -2191,12 +2191,39 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 	const finish = cohort.publishedAt !== null;
 	const placeId = finish ? record.afterPlaceId : record.beforePlaceId;
 	const place = placeId ? await ctx.db.get("files_saved_places", placeId) : null;
-	if (place)
+	if (place) {
+		const current = await files_saved_placement_db_get_node(ctx.db, record.nodeId);
+		if (!current) throw should_never_happen("Move lost its current node", { nodeId: record.nodeId });
+		const {
+			contentHeadId: _contentHeadId,
+			contentType: _contentType,
+			contentTypeEssence: _contentTypeEssence,
+			contentTypeFamily: _contentTypeFamily,
+			assetId: _assetId,
+			pendingContentVersion: _pendingContentVersion,
+			contentByteSize: _contentByteSize,
+			textKind: _textKind,
+			collaborationEnabled: _collaborationEnabled,
+			yjsSnapshotId: _yjsSnapshotId,
+			yjsLastSequenceId: _yjsLastSequenceId,
+			statsId: _statsId,
+			contentTooLargeByteSize: _contentTooLargeByteSize,
+			contentShapeMismatchAt: _contentShapeMismatchAt,
+			contentYjsStateTooLargeByteSize: _contentYjsStateTooLargeByteSize,
+			contentFrontmatterTooLargeFieldCount: _contentFrontmatterTooLargeFieldCount,
+			contentFrontmatterTooLargeIndexDocumentCount: _contentFrontmatterTooLargeIndexDocumentCount,
+			updatedAt,
+			updatedBy,
+			...location
+		} = placement_header_from_place(place);
+		// Content cleanup owns file headers. Moving the file must not restore an old header.
 		await ctx.db.patch("files_nodes", record.nodeId, {
-			...placement_header_from_place(place),
+			...location,
+			updatedAt: Math.max(current.updatedAt, updatedAt),
+			updatedBy: updatedAt > current.updatedAt ? updatedBy : current.updatedBy,
 			moveCohortId: undefined,
 		});
-	else await ctx.db.delete("files_nodes", record.nodeId);
+	} else await ctx.db.delete("files_nodes", record.nodeId);
 	// A share change while the node was held wrote tagged rows only. Rebuild the rows from the final node.
 	await files_share_rows_db_sync_node(ctx.db, {
 		...cohort,

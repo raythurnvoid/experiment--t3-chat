@@ -16,6 +16,7 @@ import {
 	files_pending_overlay_list,
 } from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_wrap } from "../server/files-move-reservations.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import {
 	organizations_db_create,
@@ -54,7 +55,8 @@ export { test_convex };
  */
 export async function test_run_with_flush<T>(t: TestConvexRoot<DataModel>, fn: (ctx: MutationCtx) => Promise<T>) {
 	return await t.run(async (ctx) => {
-		const guarded = { ...ctx, ...files_move_reservations_db_wrap(ctx) };
+		const content = { ...ctx, ...files_content_heads_db_wrap(ctx) };
+		const guarded = { ...content, ...files_move_reservations_db_wrap(content) };
 		const wrapped = { ...guarded, ...files_pending_overlay_db_wrap(guarded) };
 		const result = await fn(wrapped);
 		await files_pending_overlay_db_flush(wrapped);

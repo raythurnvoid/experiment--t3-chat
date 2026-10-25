@@ -31,11 +31,22 @@ file (see "Remaining saved-index cost").
 Version-history Restore stays in its current request flow. It does not need a new background job
 to handle drafts. Unarchive uses its existing job and is a separate operation.
 
-The temporary content migration bridge copies saved content fields to `files_saved_content_heads`.
-It tags committed text, Yjs updates, and frontmatter with `contentHeadId`. Pending docs and
-user-written `metadata.*` keep their current ownership. Current readers and Restore guards stay
-in place. See [Content ownership migration](references/content-ownership-migration.md) before
-changing its writers, cleanup, or migration order.
+Saved content belongs to `files_saved_content_heads`. The file points to its current head.
+Review prepares a separate head, even when it accepts unchanged text. Publication selects that
+head. Ordinary Save keeps the public Yjs sequence ID, so open editors stay connected.
+Text and Yjs reads use the selected head. Search chunks and `frontmatter.*` docs also use the
+selected location view, because Move and Archive copy them. Pending docs and user-written
+`metadata.*` keep their own owners.
+
+The content write wrapper assigns owners when docs are created. Existing committed docs must
+already have one. It updates only the content fields a write changes. Location cleanup cannot
+copy an old content header over the current head. Review captures the exact draft states and
+assets it consumes before publication. Cleanup retires those resources, not a later draft family.
+Preparing and current heads keep their assets alive until their owner retires.
+
+Restore still uses the existing Move and Review guards. Whole-file replacement keeps the current
+head and the existing version and Yjs lineage checks. Removing these guards needs the separate
+copied-field refresh work and overlap tests first.
 
 A content proposal stores one `content` object. Its `base` is `{ kind: "yjs", sequence, lineageGeneration, pendingContentVersion }` for a collaborative file, `{ kind: "asset", assetId, pendingContentVersion }` for a file with collaboration off, or `{ kind: "new" }` for private new content. Its `rootKind` describes all three sealed states:
 

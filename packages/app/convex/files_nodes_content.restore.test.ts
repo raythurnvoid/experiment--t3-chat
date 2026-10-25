@@ -10,6 +10,7 @@ import {
 	test_finish_pending_update_run,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 	test_spy_move_ranges,
 } from "./setup.test.ts";
 import { r2_confirmed_object_delete, r2_server_side_copy } from "./r2_client.ts";
@@ -50,7 +51,7 @@ describe("cleanup_file_yjs_task", () => {
 
 	test("bounded cleanup retires before new history and a late task cannot delete the next OFF history", async () => {
 		const { t, db, asUser, nodeId, pointers } = await create_file_fixture();
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			await ctx.db.patch("files_yjs_snapshots", pointers.yjsSnapshotId, { sequence: 64 });
 			await ctx.db.patch("files_yjs_docs_last_sequences", pointers.yjsLastSequenceId, { lastSequence: 64 });
 			await Promise.all(
@@ -885,7 +886,7 @@ describe("restore_snapshot_r2", () => {
 		vi.useFakeTimers();
 		const { t, db, asUser, nodeId, snapshotId, pointers } = await create_file_fixture();
 		const originalSnapshot = await t.run((ctx) => ctx.db.get("files_snapshots", snapshotId));
-		await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { contentType: "application/json" }));
+		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", nodeId, { contentType: "application/json" }));
 
 		const getUrl = vi.spyOn(R2.prototype, "getUrl");
 		getUrl.mockClear();

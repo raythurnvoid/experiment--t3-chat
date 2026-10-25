@@ -223,6 +223,8 @@ test("reports content pages, including an empty update page", async () => {
 test("staging preserves saved content, then publishes exact partial content and quota once", async () => {
 	const f = await fixture();
 	const old = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
+	const originalProposal = (await f.t.run((ctx) => ctx.db.get("files_pending_updates", f.proposal._id)))!;
+	const originalStates = [originalProposal.content!.baseStateId, originalProposal.content!.stagedStateId, originalProposal.content!.unstagedStateId];
 	const initial = await f.t.run((ctx) =>
 		ctx.db
 			.query("quotas")
@@ -238,6 +240,9 @@ test("staging preserves saved content, then publishes exact partial content and 
 		"staging does not patch the physical content head",
 	).toEqual(old);
 	const content = (await f.t.run((ctx) => ctx.db.get("files_move_cohort_content", f.context.contentId)))!;
+	expect(content.consumedResources, "Review captures only the original draft family before publication").toEqual(
+		originalStates.map((id) => ({ kind: "state", id })),
+	);
 	expect(content.afterSequence?.lastSequenceId, "ordinary Save keeps the sequence identity").toBe(
 		old!.yjsLastSequenceId,
 	);
@@ -283,6 +288,12 @@ test("staging preserves saved content, then publishes exact partial content and 
 	expect((await balance())!.usedCount, "physical repair cannot change the published private balance").toBe(
 		initial!.usedCount + content.privateByteDelta,
 	);
+	await f.t.run(async (ctx) => {
+		for (const id of originalStates)
+			expect((await ctx.db.get("files_pending_update_yjs_states", id))?.owner.kind, "Cleanup retires its captured original states").toBe("retired");
+		for (const id of [proposal!.content!.baseStateId, proposal!.content!.stagedStateId, proposal!.content!.unstagedStateId])
+			expect((await ctx.db.get("files_pending_update_yjs_states", id))?.owner.kind, "Cleanup keeps the partial remainder active").toBe("active");
+	});
 	expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.pendingContentVersion).toBe(old!.pendingContentVersion);
 	expect(await test_run_with_flush(f.t, (ctx) => files_move_content_db_finish(ctx, f.context))).toEqual({
 		_yay: { done: true, paged: false },

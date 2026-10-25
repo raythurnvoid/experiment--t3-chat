@@ -45,9 +45,9 @@ import { files_index_range_apply } from "../server/files-index-range.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { files_saved_content_db_get_tags } from "../server/files-saved-content.ts";
+import { files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import {
-	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_apply_set_and_remove,
 	files_metadata_catalog_lower,
@@ -97,11 +97,7 @@ export const experimental_reuseContext = true;
 // #region indexed doc writes
 
 /**
- * Delete only the frontmatter docs of a file, so re-indexing its content leaves the file metadata
- * a user or an agent wrote alone. Content materialization calls this before it re-inserts.
- *
- * The bound stops at `frontmatter/` because `/` is the next character after `.`, so the range
- * covers every `frontmatter.` field and nothing else.
+ * One content head owns its write-bounded frontmatter docs. User metadata stays with the file.
  */
 export async function files_metadata_db_delete_committed_frontmatter(
 	ctx: MutationCtx,
@@ -111,19 +107,11 @@ export async function files_metadata_db_delete_committed_frontmatter(
 		nodeId: Id<"files_nodes">;
 	},
 ) {
+	const head = await files_saved_content_db_get_head(ctx.db, args.nodeId);
+	if (!head || head.organizationId !== args.organizationId || head.workspaceId !== args.workspaceId) return;
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", args.nodeId)
-				.eq("moveView.cohortId", undefined)
-				.eq("moveView.view", undefined)
-				.gte("fieldPath", files_metadata_FRONTMATTER_FIELD_PREFIX)
-				.lt("fieldPath", "frontmatter/"),
-		)
+		.withIndex("by_contentHead_fieldPath", (q) => q.eq("contentHeadId", head._id))
 		.collect();
 	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
 }
@@ -1428,16 +1416,31 @@ export const get_index_values_by_path = internalQuery({
 				? entry.pendingUpdate
 				: null;
 
-		// Each range owns one write-bounded file or proposal. Merge its normal and selected docs.
+		// Frontmatter copies belong to a content head and a location view. User metadata follows the file.
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
-		const committedTags =
-			entry.kind === "private" ? [] : await files_saved_content_db_get_tags(ctx.db, { nodeId: entry.node._id });
+		const view =
+			entry.kind === "private" ? undefined : await files_saved_placement_db_get_node_view(ctx.db, entry.node._id);
+		const committedTags = entry.kind === "private" ? [] : view ? [undefined, view] : [undefined];
+		const head = entry.kind === "private" ? null : await files_saved_content_db_get_head(ctx.db, entry.node);
 		const committedDocs =
 			entry.kind === "private"
 				? []
 				: (
-						await Promise.all(
-							committedTags.map((tag) =>
+						await Promise.all([
+							...(head
+								? committedTags.map((tag) =>
+										ctx.db
+											.query("files_metadata_docs")
+											.withIndex("by_contentHead_view_fieldPath", (q) =>
+												q
+													.eq("contentHeadId", head._id)
+													.eq("moveView.cohortId", tag?.cohortId)
+													.eq("moveView.view", tag?.view),
+											)
+											.collect(),
+									)
+								: []),
+							...committedTags.map((tag) =>
 								ctx.db
 									.query("files_metadata_docs")
 									.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
@@ -1447,11 +1450,13 @@ export const get_index_values_by_path = internalQuery({
 											.eq("sourceKind", "committed")
 											.eq("fileNodeId", entry.node._id)
 											.eq("moveView.cohortId", tag?.cohortId)
-											.eq("moveView.view", tag?.view),
+											.eq("moveView.view", tag?.view)
+											.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
+											.lt("fieldPath", "metadata/"),
 									)
 									.collect(),
 							),
-						)
+						])
 					).flat();
 		const pendingTags = pendingUpdate
 			? await files_saved_content_db_get_tags(ctx.db, { pendingUpdateId: pendingUpdate._id })

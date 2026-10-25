@@ -11,6 +11,7 @@ import {
 	files_saved_placement_db_get_sequence,
 } from "../server/files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "../server/files-saved-content.ts";
+import { files_saved_content_apply_header, files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
 import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { components, internal } from "./_generated/api.js";
 
@@ -54,6 +55,7 @@ export async function files_nodes_db_get_content_version(
 	ctx: QueryCtx | MutationCtx,
 	fileNode: Doc<"files_nodes">,
 ): Promise<Infer<typeof files_content_version_validator> | null> {
+	fileNode = files_saved_content_apply_header(fileNode, await files_saved_content_db_get_head(ctx.db, fileNode));
 	if (fileNode.kind !== "file" || fileNode.assetId === null || fileNode.contentType === null) {
 		return null;
 	}

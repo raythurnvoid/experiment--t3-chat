@@ -813,7 +813,7 @@ const files_pending_create_intent_validator = v.union(
 // Saved indexes also cover read-only mounts. Pending indexes always belong to a real owner and tenant.
 const files_committed_index_fields = {
 	moveView: v.optional(files_move_view_tag_validator),
-	// Optional until the content ownership backfill is audited.
+	// The write wrapper assigns content owners. User metadata has no content owner.
 	contentHeadId: v.optional(v.id("files_saved_content_heads")),
 	organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 	workspaceId: v.union(
@@ -2559,20 +2559,16 @@ const app_convex_schema = defineSchema({
 		itemId: v.id("files_move_cohort_items"),
 		operationBatchId: v.union(v.id("files_pending_update_operation_batches"), v.null()),
 		nodeId: v.id("files_nodes"),
-		// Existing jobs acquire these during the content ownership backfill.
+		// File Review captures both owners. Folders and completed unowned history have none.
 		beforeHeadId: v.optional(v.id("files_saved_content_heads")),
 		afterHeadId: v.optional(v.id("files_saved_content_heads")),
 		// At most three states, two assets, and one private node. Captured before publication.
-		// Optional while existing sealed Review work is backfilled.
-		consumedResources: v.optional(
-			v.array(
-				v.union(
-					v.object({ kind: v.literal("state"), id: v.id("files_pending_update_yjs_states") }),
-					v.object({ kind: v.literal("asset"), id: v.id("files_r2_assets"), r2Key: v.string() }),
-					v.object({ kind: v.literal("node"), id: v.id("files_pending_nodes") }),
-				),
-			),
-		),
+		// Present once preparation seals.
+		consumedResources: v.optional(v.array(v.union(
+			v.object({ kind: v.literal("state"), id: v.id("files_pending_update_yjs_states") }),
+			v.object({ kind: v.literal("asset"), id: v.id("files_r2_assets"), r2Key: v.string() }),
+			v.object({ kind: v.literal("node"), id: v.id("files_pending_nodes") }),
+		))),
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
@@ -2776,7 +2772,7 @@ const app_convex_schema = defineSchema({
 		cohortId: v.id("files_move_cohorts"),
 		view: files_move_view_validator,
 		nodeId: v.id("files_nodes"),
-		// Optional until the content ownership backfill is audited.
+		// Files keep their content owner across location views. Folders have none.
 		contentHeadId: v.optional(v.id("files_saved_content_heads")),
 		nodeCreationTime: v.number(),
 		organizationId: v.id("organizations"),
@@ -4811,8 +4807,7 @@ const app_convex_schema = defineSchema({
 			"name",
 		]),
 
-	// The bridge copies content here while current readers still use nodes and Move places.
-	// Switch readers only after the ownership backfill and audit pass.
+	// Current and prepared content owners. Location copies never choose their content fields.
 	files_saved_content_heads: defineTable({
 		organizationId: files_committed_index_fields.organizationId,
 		workspaceId: files_committed_index_fields.workspaceId,
@@ -4824,7 +4819,7 @@ const app_convex_schema = defineSchema({
 		textKind: files_saved_placement_fields.textKind,
 		collaborationEnabled: files_saved_placement_fields.collaborationEnabled,
 		yjsSnapshotId: files_saved_placement_fields.yjsSnapshotId,
-		// Keep the public sequence ID unchanged while the bridge copies its counters below.
+		// Review keeps the public sequence ID stable and stores each owner's counters below.
 		yjsLastSequenceId: files_saved_placement_fields.yjsLastSequenceId,
 		statsId: files_saved_placement_fields.statsId,
 		contentTooLargeByteSize: files_saved_placement_fields.contentTooLargeByteSize,
@@ -4854,7 +4849,7 @@ const app_convex_schema = defineSchema({
 
 	files_nodes: defineTable({
 		moveCohortId: v.optional(v.id("files_move_cohorts")),
-		// Optional until the content ownership backfill is audited.
+		// The write wrapper creates the head for each file. Folders have no head.
 		contentHeadId: v.optional(v.id("files_saved_content_heads")),
 		// Tenant
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
@@ -5607,13 +5602,7 @@ const app_convex_schema = defineSchema({
 		),
 	)
 		.index("by_contentHead_yjsSeq_chunk", ["contentHeadId", "yjsSequence", "chunkIndex"])
-		.index("by_contentHead_view_yjsSeq_chunk", [
-			"contentHeadId",
-			"moveView.cohortId",
-			"moveView.view",
-			"yjsSequence",
-			"chunkIndex",
-		])
+		.index("by_contentHead_view_yjsSeq_chunk", ["contentHeadId", "moveView.cohortId", "moveView.view", "yjsSequence", "chunkIndex"])
 		// `sourceKind` and `userId` let a search read committed chunks only, or one user's pending chunks
 		// only. Committed chunks have no `userId`.
 		.searchIndex("search_by_plainTextChunk", {
@@ -5675,7 +5664,7 @@ const app_convex_schema = defineSchema({
 
 	files_yjs_updates: defineTable({
 		moveView: v.optional(files_move_view_tag_validator),
-		// Optional until the content ownership backfill is audited.
+		// Assigned by the content write wrapper at insertion.
 		contentHeadId: v.optional(v.id("files_saved_content_heads")),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),

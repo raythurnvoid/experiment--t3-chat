@@ -21,9 +21,9 @@ Load each companion skill that owns the affected boundary:
 - Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
-- During the content ownership migration, node deletion removes its current head. Existing paged
-  cohort cleanup removes prior and candidate heads. Old history must never select current content.
-  See [Content ownership migration](../files-agent-pending-updates/references/content-ownership-migration.md).
+- Node deletion removes its current content head. Existing paged cohort cleanup removes prior
+  and candidate heads. Old history must never select or delete the current content owner.
+  Preparing and current heads retain their content and Yjs snapshot assets until they retire.
 - MIME search cleanup deletes stream, page-receipt and resolver-work docs before `files_type_queries`. Account and workspace purge also drain sparse pending type entries and pending resolver work. The expiry cron retries partial search cleanup; each search lives at most 24 hours before cleanup becomes eligible.
 - Private storage counters survive deletion while held resources still await cleanup. `quotas_db_delete` marks them retired; cleanup indexes skip those counters. Final resource settlement releases by quota ID and deletes the last retired counter. R2 outages must neither erase accounting nor block account or tenant deletion. See the quotas spec for recovery and zero-byte holds.
 - Tenant, workspace, and account purge are named file-policy exceptions. These flows delete the whole

@@ -321,6 +321,11 @@ Each materialization uploads a fresh Yjs snapshot asset and a fresh version asse
 
 Materialization starts bounded cleanup of covered update and job docs immediately. It keeps the old Yjs object for 15 minutes for readers that already loaded its header, then checks its references before deleting it. The separate `putMayArriveUntil` used by OFF, repair, and replacement is a deletion-job settlement deadline: DELETE starts immediately, but a successful early delete keeps the job for another attempt after the deadline. The hourly recovery schedules due jobs. It is not a promise that the first DELETE waits 15 minutes.
 
+Saved text and Yjs updates belong to a content head. Exact reads and covered-update cleanup use
+that head's index range. Cleanup also keeps its sequence and lineage checks. A preparing or current
+head retains both its content asset and Yjs snapshot asset. Review preserves the editor's public
+sequence ID; each content head stores its own counters until cleanup adopts the selected head.
+
 The two toggles answer a permission refusal with different words, and that is not an oversight: the mutation asks the permission question itself and bubbles the shared helper's `Permission denied`, while the action only learns that its preflight query said no and answers `Not found` for every reason, exactly like `restore_snapshot_r2`.
 
 ## Where the mode comes from

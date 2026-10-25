@@ -2,6 +2,7 @@ import { compareValues, type Value } from "convex/values";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 import {
 	files_saved_placement_db_get_node_view,
 	type files_saved_placement_FixedView,
@@ -14,34 +15,31 @@ type Source =
 
 export async function files_saved_content_db_get_tags(
 	db: QueryCtx["db"],
-	args: Source & { fixedView?: files_saved_placement_FixedView },
+	args: { pendingUpdateId: Id<"files_pending_updates">; fixedView?: files_saved_placement_FixedView },
 ) {
 	let tag: files_saved_placement_FixedView | undefined;
-	if (args.nodeId !== undefined) tag = await files_saved_placement_db_get_node_view(db, args.nodeId, args.fixedView);
-	else {
-		const proposal = await db.get("files_pending_updates", args.pendingUpdateId);
-		// Unselected proposals keep their header while their scope docs move.
-		const reservation =
-			proposal && !proposal.moveCohortId
-				? await db
-						.query("files_move_source_reservations")
-						.withIndex("by_source", (q) => q.eq("source.kind", "proposal").eq("source.id", proposal._id))
-						.unique()
-				: null;
-		const cohortId = proposal?.moveCohortId ?? reservation?.cohortId;
-		if (proposal && cohortId) {
-			const cohort = await db.get("files_move_cohorts", cohortId);
-			if (
-				!cohort ||
-				cohort.organizationId !== proposal.organizationId ||
-				cohort.workspaceId !== proposal.workspaceId ||
-				(args.fixedView && args.fixedView.cohortId !== cohort._id)
-			)
-				throw should_never_happen("Pending content cohort is missing or changed", {
-					pendingUpdateId: args.pendingUpdateId,
-				});
-			tag = { cohortId: cohort._id, view: args.fixedView?.view ?? cohort.visibleView };
-		}
+	const proposal = await db.get("files_pending_updates", args.pendingUpdateId);
+	// Unselected proposals keep their header while their scope docs move.
+	const reservation =
+		proposal && !proposal.moveCohortId
+			? await db
+					.query("files_move_source_reservations")
+					.withIndex("by_source", (q) => q.eq("source.kind", "proposal").eq("source.id", proposal._id))
+					.unique()
+			: null;
+	const cohortId = proposal?.moveCohortId ?? reservation?.cohortId;
+	if (proposal && cohortId) {
+		const cohort = await db.get("files_move_cohorts", cohortId);
+		if (
+			!cohort ||
+			cohort.organizationId !== proposal.organizationId ||
+			cohort.workspaceId !== proposal.workspaceId ||
+			(args.fixedView && args.fixedView.cohortId !== cohort._id)
+		)
+			throw should_never_happen("Pending content cohort is missing or changed", {
+				pendingUpdateId: args.pendingUpdateId,
+			});
+		tag = { cohortId: cohort._id, view: args.fixedView?.view ?? cohort.visibleView };
 	}
 	return tag ? [undefined, tag] : [undefined];
 }
@@ -58,7 +56,7 @@ function compare_keys(left: Array<Value | undefined>, right: Array<Value | undef
  * Before reads merge original normal/before docs. After reads merge promoted normal/after docs.
  * Replaced docs leave normal before the switch. Unchanged docs can serve both views.
  * Every after doc must seal before the switch.
- * Both ranges belong to one file or proposal. Selected docs win a duplicate stable key.
+ * Both ranges belong to one proposal or selected content head. Selected docs win a duplicate stable key.
  */
 async function* merge<T>(
 	sources: AsyncIterable<T>[],
@@ -118,10 +116,36 @@ export async function* files_saved_content_db_text_chunks(
 		},
 ): AsyncGenerator<Doc<"files_text_chunks">> {
 	const order = args.order ?? "asc";
-	const tags = await files_saved_content_db_get_tags(db, args);
+	if (args.nodeId !== undefined) {
+		const head = await files_saved_content_db_get_head(db, args.nodeId, args.fixedView);
+		if (!head || head.organizationId !== args.organizationId || head.workspaceId !== args.workspaceId) return;
+		const chunks =
+			args.startLine !== undefined
+				? db
+						.query("files_text_chunks")
+						.withIndex("by_contentHead_lineEnd_chunk", (q) =>
+							q.eq("contentHeadId", head._id).gte("lineEnd", args.startLine!),
+						)
+				: args.startIndex !== undefined
+					? db
+							.query("files_text_chunks")
+							.withIndex("by_contentHead_endIndex_chunk", (q) =>
+								q.eq("contentHeadId", head._id).gte("endIndex", args.startIndex!),
+							)
+					: db.query("files_text_chunks").withIndex("by_contentHead_yjsSeq_chunk", (q) => {
+							const source = q.eq("contentHeadId", head._id);
+							return args.yjsSequence === undefined ? source : source.eq("yjsSequence", args.yjsSequence);
+						});
+		yield* chunks.order(order);
+		return;
+	}
+	const tags = await files_saved_content_db_get_tags(db, {
+		pendingUpdateId: args.pendingUpdateId,
+		fixedView: args.fixedView,
+	});
 	const sources = tags.map((tag) => {
-		const chunks = args.pendingUpdateId
-			? args.startLine !== undefined
+		const chunks =
+			args.startLine !== undefined
 				? db
 						.query("files_text_chunks")
 						.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
@@ -148,43 +172,7 @@ export async function* files_saved_content_db_text_chunks(
 									.eq("pendingUpdateId", args.pendingUpdateId)
 									.eq("moveView.cohortId", tag?.cohortId)
 									.eq("moveView.view", tag?.view),
-							)
-			: args.startLine !== undefined
-				? db
-						.query("files_text_chunks")
-						.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", args.nodeId)
-								.eq("moveView.cohortId", tag?.cohortId)
-								.eq("moveView.view", tag?.view)
-								.gte("lineEnd", args.startLine!),
-						)
-				: args.startIndex !== undefined
-					? db
-							.query("files_text_chunks")
-							.withIndex("by_organization_workspace_source_fileNode_endIndex_chunk", (q) =>
-								q
-									.eq("organizationId", args.organizationId)
-									.eq("workspaceId", args.workspaceId)
-									.eq("sourceKind", "committed")
-									.eq("fileNodeId", args.nodeId)
-									.eq("moveView.cohortId", tag?.cohortId)
-									.eq("moveView.view", tag?.view)
-									.gte("endIndex", args.startIndex!),
-							)
-					: db.query("files_text_chunks").withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) => {
-							const source = q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", args.nodeId)
-								.eq("moveView.cohortId", tag?.cohortId)
-								.eq("moveView.view", tag?.view);
-							return args.yjsSequence === undefined ? source : source.eq("yjsSequence", args.yjsSequence);
-						});
+							);
 		// One proposal's text is bounded on write. Keep its existing revision check.
 		return (
 			args.proposalRevision === undefined
@@ -199,9 +187,7 @@ export async function* files_saved_content_db_text_chunks(
 				? [doc.lineEnd, doc.chunkIndex]
 				: args.startIndex !== undefined
 					? [doc.endIndex, doc.chunkIndex]
-					: doc.sourceKind === "pending"
-						? [doc.chunkIndex]
-						: [doc.yjsSequence, doc.chunkIndex],
+					: [doc.chunkIndex],
 		order,
 	);
 }
@@ -210,20 +196,28 @@ export async function* files_saved_content_db_plain_text_chunks(
 	db: QueryCtx["db"],
 	args: Scope & Source & { fixedView?: files_saved_placement_FixedView; proposalRevision?: number },
 ): AsyncGenerator<Doc<"files_plain_text_chunks">> {
-	const tags = await files_saved_content_db_get_tags(db, args);
+	if (args.nodeId !== undefined) {
+		const head = await files_saved_content_db_get_head(db, args.nodeId, args.fixedView);
+		if (!head || head.organizationId !== args.organizationId || head.workspaceId !== args.workspaceId) return;
+		// Search copies belong to both a content head and a location view.
+		const view = await files_saved_placement_db_get_node_view(db, args.nodeId, args.fixedView);
+		const tags = view ? [undefined, view] : [undefined];
+		const sources = tags.map((tag) =>
+			db.query("files_plain_text_chunks").withIndex("by_contentHead_view_yjsSeq_chunk", (q) =>
+				q
+					.eq("contentHeadId", head._id)
+					.eq("moveView.cohortId", tag?.cohortId)
+					.eq("moveView.view", tag?.view),
+			),
+		);
+		yield* merge(sources, (doc) => [doc.sourceKind === "committed" ? doc.yjsSequence : undefined, doc.chunkIndex], "asc");
+		return;
+	}
+	const tags = await files_saved_content_db_get_tags(db, {
+		pendingUpdateId: args.pendingUpdateId,
+		fixedView: args.fixedView,
+	});
 	const sources = tags.map((tag) => {
-		if (!args.pendingUpdateId)
-			return db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", args.nodeId)
-						.eq("moveView.cohortId", tag?.cohortId)
-						.eq("moveView.view", tag?.view),
-				);
 		const chunks = db
 			.query("files_plain_text_chunks")
 			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
@@ -237,11 +231,7 @@ export async function* files_saved_content_db_plain_text_chunks(
 			? chunks
 			: chunks.filter((q) => q.eq(q.field("proposalRevision"), args.proposalRevision));
 	});
-	yield* merge(
-		sources,
-		(doc) => (doc.sourceKind === "pending" ? [doc.chunkIndex] : [doc.yjsSequence, doc.chunkIndex]),
-		"asc",
-	);
+	yield* merge(sources, (doc) => [doc.chunkIndex], "asc");
 }
 
 export async function* files_saved_content_db_yjs_updates(
@@ -257,22 +247,14 @@ export async function* files_saved_content_db_yjs_updates(
 	const organizationId = db.normalizeId("organizations", args.organizationId);
 	const workspaceId = db.normalizeId("organizations_workspaces", args.workspaceId);
 	if (!organizationId || !workspaceId) return;
-	const order = args.order ?? "asc";
-	const tags = await files_saved_content_db_get_tags(db, args);
-	const sources = tags.map((tag) =>
-		db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) => {
-				const source = q
-					.eq("organizationId", organizationId)
-					.eq("workspaceId", workspaceId)
-					.eq("fileNodeId", args.nodeId)
-					.eq("moveView.cohortId", tag?.cohortId)
-					.eq("moveView.view", tag?.view);
-				const after = args.afterSequence === undefined ? source : source.gt("sequence", args.afterSequence);
-				return args.throughSequence === undefined ? after : after.lte("sequence", args.throughSequence);
-			})
-			.order(order),
-	);
-	yield* merge(sources, (doc) => [doc.sequence], order);
+	const head = await files_saved_content_db_get_head(db, args.nodeId, args.fixedView);
+	if (!head || head.organizationId !== organizationId || head.workspaceId !== workspaceId) return;
+	yield* db
+		.query("files_yjs_updates")
+		.withIndex("by_contentHead_sequence", (q) => {
+			const source = q.eq("contentHeadId", head._id);
+			const after = args.afterSequence === undefined ? source : source.gt("sequence", args.afterSequence);
+			return args.throughSequence === undefined ? after : after.lte("sequence", args.throughSequence);
+		})
+		.order(args.order ?? "asc");
 }

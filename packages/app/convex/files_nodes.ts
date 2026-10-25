@@ -89,6 +89,7 @@ import {
 	files_saved_placement_db_get_sequence,
 } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
 import {
 	files_saved_content_collect,
 	files_saved_content_db_plain_text_chunks,
@@ -8067,7 +8068,7 @@ export async function yjs_reserve_and_increment_last_sequence(
 		return Result({ _nay: { message: "Update too large" } });
 	}
 
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.organizationId ||
@@ -8089,7 +8090,7 @@ export async function yjs_reserve_and_increment_last_sequence(
 		return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
 	}
 
-	const lastSequenceData = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequenceId);
+	const lastSequenceData = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 	if (
 		!lastSequenceData ||
 		lastSequenceData.organizationId !== args.organizationId ||
@@ -8286,7 +8287,7 @@ export const yjs_push_update = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (!fileNode) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -8515,6 +8516,7 @@ export const cleanup_old_snapshots = internalMutation({
 			if (node?.assetId === snapshot.assetId) {
 				continue;
 			}
+			if (await files_content_retention_db_uses_asset(ctx.db, snapshot.assetId)) continue;
 			const claim = await ctx.db
 				.query("files_move_asset_claims")
 				.withIndex("by_asset", (q) => q.eq("assetId", snapshot.assetId))

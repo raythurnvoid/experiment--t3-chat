@@ -42,7 +42,7 @@ afterEach(() => {
 });
 
 describe("saved placement foundation", () => {
-	test("selects the pending content version with its saved header before and after publication", async () => {
+	test("keeps the content head version when Move copies stale content fields", async () => {
 		const f = await fixture();
 		await f.t.run(async (ctx) => {
 			const record = (await ctx.db.get("files_move_cohort_nodes", f.recordId))!;
@@ -51,12 +51,15 @@ describe("saved placement foundation", () => {
 		});
 		expect((await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion).toBe(1);
 		await f.publish();
-		expect((await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion).toBe(2);
+		expect(
+			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion,
+			"the published location cannot replace the content version",
+		).toBe(1);
 	});
 
 	test("keeps the old saved identity and content at the normal name before publication", async () => {
 		const f = await fixture();
-		// A cleanup write may already hold the other header. The selected candidate is authoritative.
+		// Location and content have separate owners, even while physical cleanup is unfinished.
 		await f.t.run((ctx) =>
 			ctx.db.patch("files_nodes", f.nodeId, {
 				name: f.after.name,
@@ -82,11 +85,12 @@ describe("saved placement foundation", () => {
 			name: "new.txt",
 			path: "/target/new.txt",
 			ancestor1: f.parentId,
-			contentTooLargeByteSize: 1,
-			contentShapeMismatchAt: 2,
-			contentYjsStateTooLargeByteSize: 3,
-			contentFrontmatterTooLargeFieldCount: 4,
-			contentFrontmatterTooLargeIndexDocumentCount: 5,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			updatedAt: f.after.updatedAt,
 		});
 	});
 
@@ -269,13 +273,27 @@ describe("saved placement foundation", () => {
 			"another saved target cannot replace the allocated output").rejects.toThrow("Saved after proposal changes its owner or target");
 	});
 
-	test("reads the staged sequence head without changing the physical head", async () => {
+	test("reads staged counters until a newer content head replaces them", async () => {
 		const f = await fixture();
 		const sequenceId = f.saved.yjsLastSequenceId;
 		if (!sequenceId) throw new Error("Expected the public Save sequence");
 		const sequence = await f.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", sequenceId));
 		if (!sequence) throw new Error("Expected sequence head");
 		await f.t.run(async (ctx) => {
+			const beforeHead = f.saved.contentHeadId
+				? await ctx.db.get("files_saved_content_heads", f.saved.contentHeadId)
+				: null;
+			if (!beforeHead) throw new Error("Expected the saved content head");
+			const { _id: beforeHeadId, _creationTime: _headTime, ...header } = beforeHead;
+			const afterHeadId = await ctx.db.insert("files_saved_content_heads", {
+				...header,
+				sequence: {
+					lastSequence: 7,
+					lineageGeneration: sequence.lineageGeneration,
+					unmaterializedUpdateCount: 1,
+					unmaterializedUpdateBytes: 20,
+				},
+			});
 			const itemId = await ctx.db.insert("files_move_cohort_items", {
 				cohortId: f.cohortId, order: 0, origin: { kind: "transfer", itemId: f.itemId },
 				pendingUpdateId: f.proposal._id, reviewedRevision: f.proposal.revision, selectedContentStateId: null,
@@ -285,6 +303,8 @@ describe("saved placement foundation", () => {
 			});
 			return await ctx.db.insert("files_move_cohort_content", {
 				cohortId: f.cohortId,
+				beforeHeadId,
+				afterHeadId,
 				itemId,
 				operationBatchId: null,
 				phase: "sealed", phaseCursor: null, nextChunkIndex: 0, acceptedTextInputId: null,
@@ -351,6 +371,17 @@ describe("saved placement foundation", () => {
 		expect((await f.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", sequence._id)))?.lastSequence).toBe(
 			sequence.lastSequence,
 		);
+		await f.t.run(async (ctx) => {
+			const beforeHead = await ctx.db.get("files_saved_content_heads", f.saved.contentHeadId!);
+			if (!beforeHead?.sequence) throw new Error("Expected the original content counters");
+			const { _id: _headId, _creationTime: _headTime, ...header } = beforeHead;
+			const replacementHeadId = await ctx.db.insert("files_saved_content_heads", {
+				...header,
+				sequence: { ...beforeHead.sequence, lastSequence: 9 },
+			});
+			await ctx.db.patch("files_nodes", f.nodeId, { contentHeadId: replacementHeadId });
+		});
+		expect((await read())?.lastSequence, "the old Review candidate cannot hide a later content head").toBe(9);
 	});
 
 	test("leaves a workspace without a slot on its normal saved view", async () => {

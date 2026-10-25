@@ -59,6 +59,8 @@ import {
 import { files_content_type_index_fields, files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
 import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
+import { files_saved_content_apply_header, files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
+import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
 import {
 	files_yjs_create_empty_state_update,
 	files_yjs_doc_apply_array_buffer_update,
@@ -244,7 +246,7 @@ export async function db_replace_file_chunks(
 		skipFrontmatterIndex?: boolean;
 	},
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.organizationId ||
@@ -261,27 +263,16 @@ export async function db_replace_file_chunks(
 		throw should_never_happen(errorMessage);
 	}
 
-	// Delete existing committed chunk/metadata docs.
+	const head = (await files_saved_content_db_get_head(ctx.db, fileNode))!;
+	// Only replace this content owner's chunks. Another Review side may still need its own rows.
 	await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", args.nodeId),
-			)
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id))
 			.collect(),
 		ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", args.nodeId),
-			)
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id))
 			.collect(),
 		files_metadata_db_delete_committed_frontmatter(ctx, args),
 	]).then(([plainTextChunkDocs, textChunkDocs]) =>
@@ -3965,6 +3956,10 @@ export async function files_nodes_db_fill_text_node_content(
 ) {
 	const now = Date.now();
 	const { organizationId, workspaceId } = args;
+	const fileNode = files_saved_content_apply_header(
+		args.fileNode,
+		await files_saved_content_db_get_head(ctx.db, args.fileNode),
+	);
 
 	await Promise.all([
 		ctx.db.patch("files_r2_assets", args.contentSnapshotAssetId, {
@@ -3981,7 +3976,7 @@ export async function files_nodes_db_fill_text_node_content(
 			nodeId: args.fileNode._id,
 			assetId: args.contentSnapshotAssetId,
 			userId: args.userId,
-			...files_nodes_snapshot_fields(args.fileNode),
+			...files_nodes_snapshot_fields(fileNode),
 		}),
 		ctx.db.patch("files_nodes", args.fileNode._id, {
 			assetId: args.contentSnapshotAssetId,
@@ -4054,13 +4049,13 @@ export async function files_nodes_db_fill_text_node_content(
 		});
 
 		yjsSequence = newSequenceData.lastSequence;
-	} else if (files_node_has_editable_yjs_state(args.fileNode)) {
-		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.fileNode.yjsLastSequenceId);
+	} else if (files_node_has_editable_yjs_state(fileNode)) {
+		const yjsLastSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 		if (!yjsLastSequenceDoc) {
 			const errorMessage = "fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc";
 			const errorData = {
 				fileNodeId: args.fileNode._id,
-				yjsLastSequenceId: args.fileNode.yjsLastSequenceId,
+				yjsLastSequenceId: fileNode.yjsLastSequenceId,
 			};
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
@@ -4089,16 +4084,12 @@ async function db_delete_covered_file_content_docs(
 		throughSequence: number;
 	},
 ) {
+	const head = await files_saved_content_db_get_head(ctx.db, args.nodeId);
+	if (!head) return false;
 	const coveredUpdateDocs = await ctx.db
 		.query("files_yjs_updates")
-		.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("fileNodeId", args.nodeId)
-				.eq("moveView.cohortId", undefined)
-				.eq("moveView.view", undefined)
-				.lte("sequence", args.throughSequence),
+		.withIndex("by_contentHead_sequence", (q) =>
+			q.eq("contentHeadId", head._id).lte("sequence", args.throughSequence),
 		)
 		.take(FILE_CONTENT_CLEANUP_BATCH_SIZE);
 	await Promise.all(coveredUpdateDocs.map((doc) => ctx.db.delete("files_yjs_updates", doc._id)));
@@ -4333,7 +4324,7 @@ export const cleanup_file_materialization_covered_rows = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -4942,7 +4933,7 @@ export const get_replace_file_content_preflight = internalQuery({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -5235,7 +5226,10 @@ export async function files_nodes_db_commit_text_replacement(
 		versionSnapshotAssetId: Id<"files_r2_assets">;
 	},
 ) {
-	const { fileNode } = args;
+	const fileNode = files_saved_content_apply_header(
+		args.fileNode,
+		await files_saved_content_db_get_head(ctx.db, args.fileNode),
+	);
 	const now = Date.now();
 	const dbWriteResult = Result_all(
 		await Promise.all([
@@ -5321,7 +5315,7 @@ export const finalize_file_content_replacement = internalMutation({
 			return authorized;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
@@ -5430,39 +5424,23 @@ async function db_delete_committed_text_docs(
 		nodeId: Id<"files_nodes">;
 	},
 ) {
-	const [plainTextChunkDocs, textChunkDocs, statsDocs] = await Promise.all([
+	const head = await files_saved_content_db_get_head(ctx.db, args.nodeId);
+	if (!head) return;
+	const [plainTextChunkDocs, textChunkDocs] = await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", args.nodeId),
-			)
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id))
 			.collect(),
 		ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", args.nodeId),
-			)
-			.collect(),
-		ctx.db
-			.query("file_stats")
-			.withIndex("by_organization_workspace_fileNode", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-			)
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id))
 			.collect(),
 		files_metadata_db_delete_committed_frontmatter(ctx, args),
 	]);
 	await Promise.all([
 		...plainTextChunkDocs.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
 		...textChunkDocs.map((doc) => ctx.db.delete("files_text_chunks", doc._id)),
-		...statsDocs.map((doc) => ctx.db.delete("file_stats", doc._id)),
+		head.statsId ? ctx.db.delete("file_stats", head.statsId) : null,
 		ctx.db.patch("files_nodes", args.nodeId, { statsId: null }),
 	]);
 }
@@ -5512,7 +5490,11 @@ async function db_install_file_content_replacement(
 		text?: string;
 	},
 ) {
-	const { membership, user, billedUser, fileNode } = args;
+	const { membership, user, billedUser } = args;
+	const fileNode = files_saved_content_apply_header(
+		args.fileNode,
+		await files_saved_content_db_get_head(ctx.db, args.fileNode),
+	);
 	const nodeId = fileNode._id;
 	// A repeated publication must not count the same stored content twice.
 	if (fileNode.assetId === args.contentAssetId) return Result({ _yay: null });
@@ -5654,7 +5636,7 @@ async function db_install_file_content_replacement(
 
 		const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
-			ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
+			files_saved_placement_db_get_sequence(ctx.db, fileNode),
 		]);
 		if (!yjsSnapshotDoc || !yjsLastSequenceDoc) {
 			const errorMessage = "A Yjs pointer on the file node points to a missing doc";
@@ -5945,7 +5927,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 		return authorized;
 	}
 
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.organizationId ||
@@ -5997,7 +5979,7 @@ export async function files_nodes_content_db_finalize_pending_replacement(args: 
 	// An edit that reached the document while the action ran is in neither the backup nor the
 	// history. Refuse, so the next accept reads the document again.
 	if (args.expectedYjsLastSequence) {
-		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
+		const yjsLastSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 		if (
 			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
 			yjsLastSequenceDoc?.lastSequence !== args.expectedYjsLastSequence.lastSequence
@@ -6233,7 +6215,7 @@ export const restore_snapshot = internalMutation({
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
 			}),
-			ctx.db.get("files_nodes", args.nodeId).then((fileNode) => {
+			files_saved_placement_db_get_node(ctx.db, args.nodeId).then((fileNode) => {
 				if (
 					!fileNode ||
 					fileNode.organizationId !== membership.organizationId ||
@@ -6255,7 +6237,7 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
-		const currentLastSequence = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+		const currentLastSequence = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 		if (
 			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
 			fileNode.pendingContentVersion !== args.expectedPendingContentVersion ||
@@ -6443,7 +6425,7 @@ export const restore_snapshot = internalMutation({
 			restoredYjsSequence = restoredYjsSequenceResult._yay;
 		}
 
-		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
+		const yjsLastSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 		if (!yjsLastSequenceDoc) {
 			const errorMessage = "fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc";
 			const errorData = {
@@ -6602,7 +6584,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		}
 
 		const [fileNode, snapshot] = await Promise.all([
-			ctx.db.get("files_nodes", args.nodeId),
+			files_saved_placement_db_get_node(ctx.db, args.nodeId),
 			ctx.db.get("files_snapshots", args.snapshotId),
 		]);
 		if (
@@ -6636,7 +6618,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		// An edit that reached the document while the action ran is in neither the backup nor the
 		// history. Refuse, so the next restore reads the document again.
 		if (args.expectedYjsLastSequence) {
-			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
+			const yjsLastSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 			if (
 				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
 				fileNode.pendingContentVersion !== args.expectedYjsLastSequence.pendingContentVersion ||
@@ -7817,6 +7799,7 @@ async function db_delete_superseded_yjs_asset(
 ) {
 	const asset = await ctx.db.get("files_r2_assets", args.supersededYjsAssetId);
 	if (!asset) return;
+	if (await files_content_retention_db_uses_asset(ctx.db, asset._id)) return;
 	const cohortClaim = await ctx.db.query("files_move_asset_claims")
 		.withIndex("by_asset", (q) => q.eq("assetId", asset._id)).first();
 	if (cohortClaim) return;
@@ -7857,7 +7840,7 @@ export const cleanup_file_yjs_task = internalMutation({
 			check: { source: { kind: "saved", id: task.fileNodeId } },
 		})) return null;
 
-		const fileNode = await ctx.db.get("files_nodes", task.fileNodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, task.fileNodeId);
 
 		// Read the task in this transaction. A retired task cannot touch a new document's history.
 		if (
@@ -7948,7 +7931,7 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 			},
 			check: { source: { kind: "saved", id: args.nodeId } },
 		})) return null;
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		const sameTenant = fileNode?.organizationId === args.organizationId && fileNode.workspaceId === args.workspaceId;
 		const canDeleteCoveredRows =
 			sameTenant &&
@@ -8077,7 +8060,7 @@ export const set_file_non_collaborative = mutation({
 			return authorized;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -8108,7 +8091,7 @@ export const set_file_non_collaborative = mutation({
 
 		const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
-			ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
+			files_saved_placement_db_get_sequence(ctx.db, fileNode),
 		]);
 		if (!yjsSnapshotDoc || !yjsLastSequenceDoc) {
 			const errorMessage = "A Yjs pointer on the file node points to a missing doc";
@@ -8332,7 +8315,7 @@ export const get_set_file_collaborative_preflight = internalQuery({
 			return null;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
@@ -8586,7 +8569,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 			return authorized;
 		}
 
-		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||

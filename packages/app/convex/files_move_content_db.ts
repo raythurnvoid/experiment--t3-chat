@@ -23,13 +23,13 @@ import {
 	files_private_storage_db_set_cohort_owner,
 } from "./files_private_storage.ts";
 import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
-import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_can_join_step,
 	files_pending_overlay_db_set_cohort_materialization,
 } from "../server/files-pending-overlay.ts";
 import { files_content_type_index_fields } from "../shared/files.ts";
+import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { quotas } from "../shared/quotas.ts";
 
@@ -273,6 +273,7 @@ async function db_remove_asset(
 		reservation.resource.kind !== "asset"
 	)
 		return;
+	// This exact hold owns the discarded asset. Skipping deletion would strand that hold.
 	const asset = await ctx.db.get("files_r2_assets", assetId);
 	await r2_enqueue_object_deletion_job(ctx, {
 		...reservation,
@@ -426,7 +427,16 @@ async function db_cleanup_part_page(
 	const numItems = kind === 2 ? 1 : files_move_content_PAGE_SIZE;
 	const rows = await query.take(numItems);
 	for (const row of rows) {
-		if (remove) await ctx.db.delete(table, row._id);
+		const ownsContent =
+			kind < 3 ||
+			(kind === 3 && "fieldPath" in row && row.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX));
+		const headId = view === "before" ? content.beforeHeadId : content.afterHeadId;
+		const rowHeadId = "contentHeadId" in row ? row.contentHeadId : undefined;
+		if (ownsContent && rowHeadId === undefined && headId !== undefined)
+			await ctx.db.patch(table, row._id, { contentHeadId: headId });
+		// A later write can keep its bytes while this worker drains the old Move tags.
+		const ownsRow = !ownsContent || (headId !== undefined && (rowHeadId === undefined || rowHeadId === headId));
+		if (remove && ownsRow) await ctx.db.delete(table, row._id);
 		else await ctx.db.patch(table, row._id, { moveView: undefined });
 	}
 	return rows.length < numItems;
@@ -479,10 +489,9 @@ async function db_finish_resources(
 	const retained =
 		mode === "finish" ? files_move_content_retained_state_ids(item.afterProposal) : new Set<Id<"files_pending_update_yjs_states">>();
 	if (mode === "finish") {
-		const proposal = await ctx.db.get("files_pending_updates", content.pendingUpdateId);
-		if (!proposal || proposal.revision !== content.reviewedRevision)
-			throw should_never_happen("Move settled its proposal before content", { contentId: content._id });
-		for (const resource of files_move_content_consumed_resources(proposal, retained)) {
+		if (!content.consumedResources)
+			throw should_never_happen("Move lost its captured draft resources", { contentId: content._id });
+		for (const resource of content.consumedResources) {
 			const reservation = await files_move_content_db_reservation(ctx, resource);
 			if (!reservation || reservation.settlement.kind !== "held") continue;
 			const transferred = await files_private_storage_db_set_cohort_owner(ctx, {
@@ -509,15 +518,22 @@ async function db_finish_resources(
 				} else await db_remove_asset(ctx, content, resource.id);
 			}
 		}
-		// An active proposal has exactly one three-state family.
-		const original = await ctx.db
-			.query("files_pending_update_yjs_states")
-			.withIndex("by_owner_pendingUpdate", (q) => q.eq("owner.pendingUpdateId", content.pendingUpdateId))
-			.collect();
+		// Only retire the family whose bytes were debited at publication.
+		const original = await Promise.all(
+			content.consumedResources.flatMap((resource) =>
+				resource.kind === "state" ? [ctx.db.get("files_pending_update_yjs_states", resource.id)] : [],
+			),
+		);
 		await db_retire_states(
 			ctx,
 			content,
-			original.filter((state) => !retained.has(state._id)),
+			original.filter(
+				(state): state is Doc<"files_pending_update_yjs_states"> =>
+					state !== null &&
+					state.owner.kind === "active" &&
+					state.owner.pendingUpdateId === content.pendingUpdateId &&
+					!retained.has(state._id),
+			),
 		);
 	}
 	const batch = content.operationBatchId
@@ -611,40 +627,63 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: files
 	const cleaned = await db_cleanup_page(ctx, content, "finish");
 	if (!cleaned.done) return Result({ _yay: cleaned });
 	const node = await ctx.db.get("files_nodes", content.nodeId);
-	const place = await files_saved_placement_db_get_node(ctx.db, content.nodeId, {
-		cohortId: cohort._id,
-		view: "after",
-	});
-	if (!node || !place) throw should_never_happen("Move lost its accepted content header", args);
-	if (content.afterSequence) {
-		const { lastSequenceId, ...sequence } = content.afterSequence;
-		await ctx.db.patch("files_yjs_docs_last_sequences", lastSequenceId, { ...sequence, moveView: undefined });
+	if (!node) throw should_never_happen("Move lost its accepted content header", args);
+	if (node.kind === "file") {
+		const before = content.beforeHeadId ? await ctx.db.get("files_saved_content_heads", content.beforeHeadId) : null;
+		const after = content.afterHeadId ? await ctx.db.get("files_saved_content_heads", content.afterHeadId) : null;
+		if (!before || !after) throw should_never_happen("Move lost its content owners", args);
+		const adopt = node.contentHeadId === before._id || node.contentHeadId === after._id;
+		// The accepted head may already contain later edits. Never restore its sealed counters.
+		if (adopt) {
+			if (after.yjsLastSequenceId && after.sequence)
+				await ctx.db.patch("files_yjs_docs_last_sequences", after.yjsLastSequenceId, {
+					...after.sequence,
+					moveView: undefined,
+				});
+			await ctx.db.patch("files_nodes", node._id, {
+				contentHeadId: after._id,
+				assetId: after.assetId,
+				contentType: after.contentType,
+				...files_content_type_index_fields(after.contentType),
+				textKind: after.textKind,
+				collaborationEnabled: after.collaborationEnabled,
+				pendingContentVersion: after.pendingContentVersion,
+				contentByteSize: after.contentByteSize,
+				yjsSnapshotId: after.yjsSnapshotId,
+				yjsLastSequenceId: after.yjsLastSequenceId,
+				statsId: after.statsId,
+				contentTooLargeByteSize: after.contentTooLargeByteSize,
+				contentShapeMismatchAt: after.contentShapeMismatchAt,
+				contentYjsStateTooLargeByteSize: after.contentYjsStateTooLargeByteSize,
+				contentFrontmatterTooLargeFieldCount: after.contentFrontmatterTooLargeFieldCount,
+				contentFrontmatterTooLargeIndexDocumentCount: after.contentFrontmatterTooLargeIndexDocumentCount,
+				updatedAt: after.updatedAt,
+				updatedBy: after.updatedBy,
+			});
+		}
+		if (after.yjsSnapshotId) await ctx.db.patch("files_yjs_snapshots", after.yjsSnapshotId, { moveView: undefined });
+		if (after.statsId) await ctx.db.patch("file_stats", after.statsId, { moveView: undefined });
+		// Cleanup owns the captured old pointers, never the newer node's pointers.
+		const current = adopt
+			? after
+			: node.contentHeadId
+				? await ctx.db.get("files_saved_content_heads", node.contentHeadId)
+				: null;
+		if (
+			before.yjsLastSequenceId &&
+			before.yjsLastSequenceId !== after.yjsLastSequenceId &&
+			before.yjsLastSequenceId !== current?.yjsLastSequenceId
+		)
+			await ctx.db.delete("files_yjs_docs_last_sequences", before.yjsLastSequenceId);
+		if (
+			before.yjsSnapshotId &&
+			before.yjsSnapshotId !== after.yjsSnapshotId &&
+			before.yjsSnapshotId !== current?.yjsSnapshotId
+		)
+			await ctx.db.delete("files_yjs_snapshots", before.yjsSnapshotId);
+		if (before.statsId && before.statsId !== after.statsId && before.statsId !== current?.statsId)
+			await ctx.db.delete("file_stats", before.statsId);
 	}
-	if (content.afterSnapshotId)
-		await ctx.db.patch("files_yjs_snapshots", content.afterSnapshotId, { moveView: undefined });
-	if (content.afterStatsId) await ctx.db.patch("file_stats", content.afterStatsId, { moveView: undefined });
-	if (node.yjsLastSequenceId && node.yjsLastSequenceId !== content.afterSequence?.lastSequenceId)
-		await ctx.db.delete("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
-	if (node.yjsSnapshotId && node.yjsSnapshotId !== content.afterSnapshotId)
-		await ctx.db.delete("files_yjs_snapshots", node.yjsSnapshotId);
-	if (node.statsId && node.statsId !== content.afterStatsId) await ctx.db.delete("file_stats", node.statsId);
-	await ctx.db.patch("files_nodes", node._id, {
-		assetId: place.assetId,
-		contentType: place.contentType,
-		...files_content_type_index_fields(place.contentType),
-		textKind: place.textKind,
-		collaborationEnabled: place.collaborationEnabled,
-		pendingContentVersion: place.pendingContentVersion,
-		contentByteSize: place.contentByteSize,
-		yjsSnapshotId: content.afterSnapshotId,
-		yjsLastSequenceId: content.afterSequence?.lastSequenceId ?? null,
-		statsId: content.afterStatsId,
-		contentTooLargeByteSize: place.contentTooLargeByteSize,
-		contentShapeMismatchAt: place.contentShapeMismatchAt,
-		contentYjsStateTooLargeByteSize: place.contentYjsStateTooLargeByteSize,
-		contentFrontmatterTooLargeFieldCount: place.contentFrontmatterTooLargeFieldCount,
-		contentFrontmatterTooLargeIndexDocumentCount: place.contentFrontmatterTooLargeIndexDocumentCount,
-	});
 	for (const role of ["previousVersion", "acceptedVersion"] as const) {
 		const version = content[role];
 		const receipt = role === "previousVersion" ? "previousVersionSnapshotId" : "acceptedVersionSnapshotId";
@@ -724,6 +763,8 @@ export async function files_move_content_db_abort(ctx: MutationCtx, args: files_
 	if (content.phaseCursor === "abort:done") return Result({ _yay: { done: true, paged: false } });
 	const cleaned = await db_cleanup_page(ctx, content, "abort");
 	if (!cleaned.done) return Result({ _yay: cleaned });
+	if (content.afterHeadId && content.afterHeadId !== content.beforeHeadId)
+		await ctx.db.patch("files_saved_content_heads", content.afterHeadId, { ready: false, retired: true });
 	if (!content.prepared || files_move_content_changes_saved_content(content.prepared)) {
 		if (content.afterSnapshotId) await ctx.db.delete("files_yjs_snapshots", content.afterSnapshotId);
 		if (content.afterStatsId) await ctx.db.delete("file_stats", content.afterStatsId);

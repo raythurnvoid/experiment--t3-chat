@@ -9,6 +9,8 @@ import { files_sort_text_key } from "../shared/files-sort.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_slot } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
+import { files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
+import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_content_type_index_fields, files_derive_tree_path_for_file_node, files_lowercase_extension, files_check_name_and_path_length, files_check_new_folder_count } from "../shared/files.ts";
@@ -125,6 +127,7 @@ export async function files_nodes_db_hand_unpublished_assets_to_deletion_ledger(
 		if (!asset || asset.r2Key !== undefined) {
 			continue;
 		}
+		if (await files_content_retention_db_uses_asset(ctx.db, assetId)) continue;
 		const claim = await ctx.db
 			.query("files_move_asset_claims")
 			.withIndex("by_asset", (q) => q.eq("assetId", assetId))
@@ -276,12 +279,8 @@ export async function files_nodes_db_upsert_file_stats(
 		charCount: number;
 	},
 ) {
-	const existing = await ctx.db
-		.query("file_stats")
-		.withIndex("by_organization_workspace_fileNode", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
-		)
-		.first();
+	const head = await files_saved_content_db_get_head(ctx.db, args.nodeId);
+	const existing = head?.statsId ? await ctx.db.get("file_stats", head.statsId) : null;
 	if (existing) {
 		await ctx.db.patch("file_stats", existing._id, {
 			lineCount: args.lineCount,
