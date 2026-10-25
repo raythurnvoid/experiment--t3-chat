@@ -1304,6 +1304,8 @@ describe("files_tiptap_markdown_to_json", () => {
 				type: "heading",
 				attrs: {
 					level: 1,
+					markdownClosing: null,
+					markdownUnderline: null,
 				},
 				content: [{ type: "text", text: "Base " }],
 			},
@@ -2703,6 +2705,12 @@ describe("block syntax round-trip through Yjs", () => {
 		["a list nested with 4 spaces", "- a\n    - b\n        - c\n"],
 		["an ordered list nested with 4 spaces", "1. a\n    1. b\n"],
 		["a paragraph indented 4 spaces in an item", "- a\n\n    more\n"],
+		["a `~~~` fence", "~~~js\ncode\n~~~\n"],
+		["a longer fence", "````\ncode\n````\n"],
+		["a space before the language", "``` js\ncode\n```\n"],
+		["an indented code block", "a\n\n    code\n\n    more\n"],
+		["heading closing marks", "## a ##\n"],
+		["a heading underline", "a\n=\n"],
 	])("keeps %s", (_name, input) => {
 		expect(round_trip_markdown(input)).toBe(input);
 	});
@@ -3654,9 +3662,9 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 			["a\n\n```sh\nx\n```\n\nb\n", "a\n\n```sh\nx\n```\n\nb\n"],
 			// Code that holds a fence line.
 			["````\n```\n![x](bonobo-file://S)\n```\n````\n", "````\n```\n![x](bonobo-file://S)\n```\n````\n"],
-			["~~~\n```js\nx\n```\n~~~\n", "````\n```js\nx\n```\n````\n"],
-			// A backtick in the language would make the fence line plain text.
-			["~~~a`b\nx\n~~~\n", "```\nx\n```\n"],
+			["~~~\n```js\nx\n```\n~~~\n", "~~~\n```js\nx\n```\n~~~\n"],
+			// A backtick in the language would make a backtick fence line plain text. A `~~~` fence can keep it.
+			["~~~a`b\nx\n~~~\n", "~~~a`b\nx\n~~~\n"],
 			// Code in an ordered list keeps its indent: `1. ` is three columns.
 			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n"],
 			// A bullet nested with 2 spaces stays nested.
@@ -3722,8 +3730,8 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 			// A `#` heading is one line, so a line break saves as a tag.
 			["# a<br>b\n", "# a<br>b\n"],
 			["### a<br>b\n", "### a<br>b\n"],
-			["a\\\nb\n===\n", "# a<br>b\n"],
-			// An underlined heading keeps its lines, and they start like paragraph lines.
+			// An underlined heading keeps its underline and its lines, and they start like paragraph lines.
+			["a\\\nb\n===\n", "a<br>b\n===\n"],
 			["Title\nmore\n---\n", "Title\nmore\n---\n"],
 			["\\- Title\n\\---\n===\n", "\\- Title\n\\---\n===\n"],
 		] as const;

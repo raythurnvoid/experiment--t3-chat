@@ -411,8 +411,16 @@ function configure_marked(instance: Marked | typeof marked) {
 				};
 				const raw = headingToken.raw ?? "";
 				const trailingSpaces = raw.match(TRAILING_SPACES_OR_TABS_REGEX)?.[0];
+				// Keep closing marks like `## a ##` and an underline like `===`, so save writes the heading as
+				// the file did.
+				const lines = raw.trimEnd().split("\n");
+				const underline = lines.length > 1 ? /^ {0,3}(=+|-+)[ \t]*$/.exec(lines.at(-1) ?? "")?.[1] : undefined;
+				const closing = lines.length === 1 ? /^ {0,3}#{1,6}[ \t]+.*?([ \t]+#+)$/.exec(lines[0] ?? "")?.[1] : undefined;
+				const attributes = `${underline ? ` data-markdown-underline="${underline}"` : ""}${
+					closing ? ` data-markdown-closing="${closing}"` : ""
+				}`;
 
-				if (!trailingSpaces) {
+				if (!trailingSpaces && !attributes) {
 					return false;
 				}
 
@@ -422,7 +430,7 @@ function configure_marked(instance: Marked | typeof marked) {
 						? this.parser.parseInline(headingToken.tokens as Parameters<typeof this.parser.parseInline>[0])
 						: (headingToken.text ?? "");
 
-				return `<h${depth}>${bodyHtml}${trailingSpaces}</h${depth}>`;
+				return `<h${depth}${attributes}>${bodyHtml}${trailingSpaces ?? ""}</h${depth}>`;
 			},
 
 			// Handle trailing `\\\n` in paragraphs that are not converted to `<br>` by default
@@ -459,10 +467,16 @@ function configure_marked(instance: Marked | typeof marked) {
 			// Marked ends the code with a `\n` before `</code>`. The code block keeps every character of
 			// `<pre>`, so that `\n` became part of the code. The save then wrote it as an empty line before
 			// the closing fence. So drop it here.
+			//
+			// Also keep a `~~~` or longer fence, and an indented block, so save writes the block as the file did.
 			code(token) {
-				return Renderer.prototype.code
+				const opening = /^ {0,3}(`{3,}|~{3,})([ \t]*)/.exec(token.raw);
+				const fence =
+					token.codeBlockStyle === "indented" ? "indented" : opening && `${opening[1]}${token.lang ? opening[2] : ""}`;
+				const html = Renderer.prototype.code
 					.call(this, token)
 					.replace(CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX, "</code></pre>\n");
+				return fence && fence !== "```" ? html.replace(/^<pre/, `<pre data-markdown-fence="${fence}"`) : html;
 			},
 
 			// Keep a `*` or `+` bullet, a `1)` number, and blank lines between the items, so a save does not

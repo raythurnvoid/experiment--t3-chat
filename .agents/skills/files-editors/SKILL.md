@@ -59,6 +59,11 @@ Also keep the Markdown save patches:
   an item's blocks, like Marked does for a bullet item.
 - A horizontal rule keeps a style like `***` or `- - -` in `markdownSource` and writes it back while it
   is still a rule.
+- A code block keeps its opening fence (`~~~`, 4 backticks, a space before the language) or `indented`
+  in `markdownFence`. An indented block falls back to a ``` fence where the indented form would not read
+  back the same: in a list item, with a language, after a list, or with a blank first or last line.
+- A heading keeps closing marks in `markdownClosing` and an underline in `markdownUnderline`. An
+  underlined level 1 or 2 heading escapes its line starts like a paragraph (`isUnderlinedHeading`).
 - A mark can write the text it covers with `markdownOptions.renderText`. The HTML entity and backslash
   escape marks use it. It also gets the whole text of the mark run, and a mark's `renderMarkdown` gets
   `meta.markTextNodes`, the number of text nodes in that run. `meta.markWordBefore` and

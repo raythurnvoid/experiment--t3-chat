@@ -92,12 +92,18 @@ An item also keeps blank lines between its own blocks, like before a code block.
 
 Rules keep the style the file uses: `***`, `___`, `- - -`. The `hr` renderer writes it as `data-markdown-source`, and the fork's rule writes it back while it is still a rule. A rule made in the editor saves as `---`.
 
+Code blocks keep how the file opened them: a `~~~` fence, a longer fence like 4 backticks, a space before the language, or an indented block. The `code` renderer writes it as `data-markdown-fence` (`indented` for an indented block), and the fork's code block keeps it in `markdownFence`. Save still makes the fence longer than any run of its character in the code. An indented block saves indented only at the top level or in a quote, with no language, no list just before it, and text on its first and last line. Otherwise it saves with a ``` fence, because the indented form would not read back as the same block.
+
+Headings keep closing marks like `## a ##` and an underline like `===` or `-`. The `heading` renderer writes them as `data-markdown-closing` and `data-markdown-underline`, and the fork's heading keeps them in `markdownClosing` and `markdownUnderline`. An underline stays while the heading is level 1 or 2. A heading made in the editor saves with `#`.
+
 Known changes, with no lost content, all stable after one save:
 
 - A list with blank lines between only some items gets one between all of them. Two blank lines become one.
 - The blank line between an item's first line and a list inside it is dropped.
 - Spaces before and after a rule are dropped.
 - The indent before a top-level list is dropped.
+- An indented code block inside a list item saves with a ``` fence. A tab before an indented code line becomes 4 spaces.
+- Extra spaces inside a closed heading, like `##  a  ##`, become one before the text.
 
 HTML entities keep the spelling the file uses. The `text` renderer in `configure_marked` wraps each entity (`&copy;`, `&#169;`, `&nbsp;`, `&amp;`) in a span that `files_html_entity_mark` reads. The mark stores the source and the character it shows. Save writes the source back while the text under the mark is still that character. A typed or changed character saves as plain text. The same entity twice in a row, like `&nbsp;&nbsp;`, is one text node under one mark, and it also saves as written.
 
