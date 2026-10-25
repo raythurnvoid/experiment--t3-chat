@@ -2762,6 +2762,8 @@ describe("block syntax round-trip through Yjs", () => {
 		// Before, a save put a blank line between every two blocks.
 		["text right under a heading", "# h\ntext\n"],
 		["a blank line between a heading and its text", "# h\n\ntext\n"],
+		// Before, a save dropped an empty heading.
+		["an empty heading", "a\n\n##\n\nb\n"],
 		["a list right under text", "Intro:\n- a\n- b\n"],
 		["a fence right under text, and text under it", "text\n```\ncode\n```\nmore\n"],
 		["text right under a heading in a quote", "> # h\n> text\n"],
