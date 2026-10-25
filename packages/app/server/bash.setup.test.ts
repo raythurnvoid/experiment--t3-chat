@@ -34,6 +34,7 @@ import {
 } from "../shared/files.ts";
 import { bash_run_command, bash_run_job } from "./bash.ts";
 import { bash_READ_INLINE_MAX_BYTES } from "./bash-utils.ts";
+import { files_content_heads_db_wrap } from "./files-content-heads.ts";
 
 export const test_db_files_mount = "/home/cloud-usr/w/personal/home";
 export const function_name_of = (ref: unknown) => {
@@ -247,7 +248,8 @@ export async function seed_organization_node(args: {
 	spec: BashSeedSpec;
 	seedIndex: number;
 }) {
-	const { ctx, scope, spec, seedIndex } = args;
+	const { scope, spec, seedIndex } = args;
+	const ctx = { ...args.ctx, db: files_content_heads_db_wrap(args.ctx).db };
 
 	// Deterministic, distinct recency: later seeds are newer.
 	const updatedAt = spec.updatedAt ?? Date.now() - 1_000_000 + seedIndex * 1000;

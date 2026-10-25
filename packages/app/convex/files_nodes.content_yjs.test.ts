@@ -9,6 +9,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import { files_db_yjs_push_update, files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	test_apply_file_pending_move,
@@ -711,6 +712,7 @@ test("materialize_file_content clears the too-large mark once the content fits a
 
 	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/trimmed.md", markdown: "# Trimmed\n" });
 	await t.run(async (ctx) => {
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 		return await ctx.db.patch("files_nodes", nodeId, {
 			contentTooLargeByteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
 		});
@@ -905,6 +907,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	// Currency gate: a stale snapshot (latest sequence ahead of the materialized snapshot) must not
 	// use chunks — the action falls back so output can never disagree with `cat`.
 	await t.run(async (ctx) => {
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 		const fileNode = await ctx.db.get("files_nodes", nodeId);
 		const snapshot = fileNode?.yjsSnapshotId ? await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId) : null;
 		if (!fileNode?.yjsLastSequenceId || !snapshot) {
@@ -1231,6 +1234,7 @@ async function test_insert_committed_external_markdown(args: {
 	if (chunks._nay) throw new Error(chunks._nay.message);
 	const byteSize = files_get_utf8_byte_size(markdown);
 	return await t.run(async (ctx) => {
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 		const now = Date.now();
 		const name = path.split("/").filter(Boolean).at(-1);
 		if (!name) throw new Error("Expected a root-level file path");
@@ -1534,6 +1538,8 @@ describe("non-collaborative files", () => {
 		const { t, db, path, markdown } = args;
 
 		return await t.run(async (ctx) => {
+			// Direct fixtures keep the same content owners as registered mutations.
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const now = Date.now();
 			const name = path.split("/").filter(Boolean).at(-1);
 			if (!name) throw new Error("Expected a root-level file path");
@@ -3077,6 +3083,7 @@ describe("non-collaborative files", () => {
 		// The frontmatter pair is temporary. A later fitting edit can clear it, so the toggle must
 		// still wait for the newer text to materialize instead of silently dropping that text.
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", nodeId, {
 				contentFrontmatterTooLargeFieldCount: files_metadata_MAX_FRONTMATTER_FIELDS + 1,
 				contentFrontmatterTooLargeIndexDocumentCount: 1,
@@ -3093,6 +3100,7 @@ describe("non-collaborative files", () => {
 		// A durable marker means materialization can never catch up on its own, so waiting would be
 		// a lie. The confirmation dialog names this loss, and the toggle goes ahead.
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", nodeId, {
 				contentYjsStateTooLargeByteSize: 9_000_000,
 			});

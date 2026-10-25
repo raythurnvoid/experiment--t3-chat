@@ -16,6 +16,7 @@ import {
 } from "../shared/organizations.ts";
 import { bash_run_job } from "./bash.ts";
 import { bash_cursor_id_create } from "./bash-utils.ts";
+import { files_content_heads_db_wrap } from "./files-content-heads.ts";
 import {
 	test_db_files_mount,
 	function_name_of,
@@ -286,6 +287,7 @@ describe("bash_run_command", () => {
 			const { runner, volumeId, files, opts = {}, installationId } = args;
 
 			return await runner.t.run(async (ctx) => {
+				ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 				const now = Date.now();
 				const tenant = { organizationId: runner.seeded.organizationId, workspaceId: runner.seeded.workspaceId };
 				const generationId = await ctx.db.insert("plugins_volume_generations", {
@@ -978,6 +980,7 @@ describe("bash_run_command", () => {
 				const reading = f.runner.run({ command: `stat -c %s ${VOLUME_PATH}` });
 				await started;
 				await f.runner.t.run(async (ctx) => {
+					ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 					if (state === "disabled")
 						await ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" });
 					else {

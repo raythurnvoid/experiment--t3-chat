@@ -58,6 +58,7 @@ import {
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import {
 	seed_billing_snapshot_for_user,
 	test_setup_r2_capture,
@@ -777,6 +778,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		// A stored PDF whose earlier content was a PNG.
 		const pdfBytes = "%PDF-current";
 		const { nodeId, assetId: pdfAssetId } = await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const now = Date.now();
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: db.organizationId,
@@ -2197,6 +2199,8 @@ describe("plain text file stats and delete-all", () => {
 		const snapshotBytes = encodeStateAsUpdate(plainDoc);
 
 		await t.run(async (ctx) => {
+			// Direct fixtures keep the same content owners as registered mutations.
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const now = Date.now();
 			const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: db.organizationId,
@@ -2440,6 +2444,7 @@ describe("files_db_yjs_push_update door 1", () => {
 		const { t, db, nodeId, update, rootKind } = args;
 
 		return await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const result = await files_db_yjs_push_update(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -2604,6 +2609,7 @@ describe("files_db_yjs_push_update door 1", () => {
 		const t = test_convex();
 		const { db, nodeId } = await create_door_fixture(t, "/door-marker-refusal.md");
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
 		});
 		const before = await read_log_state({ t, db, nodeId });
@@ -2638,6 +2644,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		const { db, nodeId } = await create_reserve_fixture(t, "/reserve-count-budget.md");
 
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const lastSequenceDoc = await ctx.db
 				.query("files_yjs_docs_last_sequences")
 				.withIndex("by_organization_workspace_fileNode", (q) =>
@@ -2671,6 +2678,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		const { db, nodeId } = await create_reserve_fixture(t, "/reserve-byte-budget.md");
 
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const lastSequenceDoc = await ctx.db
 				.query("files_yjs_docs_last_sequences")
 				.withIndex("by_organization_workspace_fileNode", (q) =>
@@ -2704,6 +2712,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		const { db, nodeId } = await create_reserve_fixture(t, "/reserve-settled-marker.md");
 
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const lastSequenceDoc = await ctx.db
 				.query("files_yjs_docs_last_sequences")
 				.withIndex("by_organization_workspace_fileNode", (q) =>
@@ -2824,6 +2833,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		if (staged._nay) throw new Error(staged._nay.message);
 
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const lastSequenceDoc = await ctx.db
 				.query("files_yjs_docs_last_sequences")
 				.withIndex("by_organization_workspace_fileNode", (q) =>
@@ -2841,6 +2851,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		// The fill helper throws on a reserve refusal because its earlier writes must roll back.
 		await expect(
 			t.run(async (ctx) => {
+				ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 				const fileNode = await ctx.db.get("files_nodes", nodeId);
 				if (!files_node_has_editable_yjs_state(fileNode)) {
 					throw new Error("Expected an editable file node");
@@ -2895,6 +2906,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		// Its only caller is `public_api.publish_file_fill`, so call the writer the same way the
 		// reserve-gate test above does.
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const fileNode = await ctx.db.get("files_nodes", nodeId);
 			if (!files_node_has_editable_yjs_state(fileNode)) {
 				throw new Error("Expected an editable file node");
@@ -2946,6 +2958,7 @@ describe("files_nodes.get_file_next_yjs_update", () => {
 			path: `/next-update-${sequences.join("-")}.md`,
 		});
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			for (const sequence of sequences) {
 				await ctx.db.insert("files_yjs_updates", {
 					organizationId: db.organizationId,
@@ -3091,6 +3104,7 @@ describe("materialization guards", () => {
 			});
 			const update = encodeStateAsUpdate(yjsDoc, stateVectorBefore);
 			const pushed = await t.run(async (ctx) => {
+				ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 				const result = await files_db_yjs_push_update(ctx, {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
@@ -3136,6 +3150,7 @@ describe("materialization guards", () => {
 		// only the run whose frozen target equals the current lastSequence finalize, so every
 		// covered row is behind the new snapshot and the exact recomputed values here are 0/0.
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const fileNode = await ctx.db.get("files_nodes", nodeId);
 			if (!files_node_has_editable_yjs_state(fileNode)) {
 				throw new Error("Expected an editable file node");
@@ -3197,6 +3212,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			path: "/repair-outside-author.md",
 		});
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", createdId, { contentShapeMismatchAt: Date.now() });
 		});
 
@@ -3239,6 +3255,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		});
 
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", nodeId, { contentYjsStateTooLargeByteSize: 17 * 1024 * 1024 });
 			const fileNode = await ctx.db.get("files_nodes", nodeId);
 			if (!files_node_has_editable_yjs_state(fileNode)) {
@@ -3272,6 +3289,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			path: "/repair-stale-finalize.md",
 		});
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
 		});
 
@@ -3396,6 +3414,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 
 		// Poison: pretend materialization refused durably.
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
 		});
 
@@ -3762,6 +3781,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			throw new Error(materialized._nay.message);
 		}
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
 			await files_updated_by_db_delete_for_node(ctx, { nodeId });
 			const doc = await ctx.db
