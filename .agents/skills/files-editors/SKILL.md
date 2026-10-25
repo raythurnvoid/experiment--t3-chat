@@ -80,6 +80,9 @@ Also keep the Markdown save patches:
 - `escapeMarkdownSyntax` escapes `*`, `_`, `~`, `=` and `\` only where they would read as Markdown, so
   `snake_case` and `C:\Users` save as written. The rules are in the
   [editable text spec](../files-editable-text/SKILL.md).
+- A paragraph or heading is written again with those characters, `` ` ``, `[`, `]` and `<` bare
+  (`escapeMode: 'relaxed'`). `readsTheSame` lexes both versions, and the writer keeps the bare one when the
+  tokens match.
 - A hard break saves with its `markdownSource` (two spaces or `<br>`). A new break saves as `\`.
 - A `#` run at the end of a `#` heading saves escaped (`\#`), so it does not read as closing marks.
 

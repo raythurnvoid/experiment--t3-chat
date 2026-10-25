@@ -2546,6 +2546,17 @@ describe("Markdown escapes and line breaks round-trip through Yjs", () => {
 			'*a*\n<u>b</u> `c`\n<mark>d</mark> **e**\n![i](https://e.com/i.png) f<br>\n<span class="g">h</span>\n';
 		expect(round_trip_markdown(input)).toBe(input);
 	});
+
+	test.each([
+		"use my_var and __dirname\n",
+		"glob **/*.ts and *.md\n",
+		"~/projects and ~50% off\n",
+		"[TODO] fix login\n",
+		"[10:00] <alice> hi and </3\n",
+		'100*2 = 200 and ==<span class="x">b</span>==\n',
+	])("writes %j without escapes it does not need", (input) => {
+		expect(round_trip_markdown(input)).toBe(input);
+	});
 });
 
 describe("mark syntax round-trip through Yjs", () => {
@@ -2603,7 +2614,7 @@ describe("mark syntax round-trip through Yjs", () => {
 			tr.insert(2, schema.text("a"));
 			editor.view.dispatch(tr);
 		});
-		expect(saved).toBe("*x*a b**y** *z\\_*\n");
+		expect(saved).toBe("*x*a b**y** *z_*\n");
 	});
 
 	test("writes backticks and `~~` where typed text would read differently inside a tag or `~`", () => {
