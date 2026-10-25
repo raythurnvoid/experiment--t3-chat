@@ -60,6 +60,32 @@ The single most important check. It proves the Yjs provider connects, sends, and
 Pass: marker survives the reload.
 Fail here means the provider is not writing to Convex or not rehydrating — check `files-yjs-provider.ts`.
 
+## 1b. Idle writes after a structural edit
+
+Reuse a small collaborative Markdown file from the QA catalog and record its original content.
+Attach read-only observers before typing. Tiptap exposes its mounted editor as
+`document.querySelector('[role="textbox"][aria-label="File text"]').editor`.
+Its `storage.liveblocksExtension` holds the real `doc` and `provider`. The dev-only
+`__qa.filesYjs()` reports status and node id, but not document or provider identity.
+
+Record `doc.on('update', ...)` and `editor.on('transaction', ...)` counts, the document's
+`clientID`, provider status, and whether the editor object changes. Read existing position maps
+through `doc.share`; do not call `getMap` just to inspect them. Their names start with
+`__tiptap_position_migrations:`. Record names and sizes, not file text or packet contents.
+
+1. Type one character. Confirm one debounced push and that the editor reaches Saved.
+2. Join two blocks with Backspace at the start of the second block. Leave the editor idle.
+3. Take two samples several seconds apart. Both must show Saved with no added local updates,
+   position entries, or outgoing pushes. Compare this delta, not the total entry count: older
+   valid position records remain in the document.
+4. Repeat with a block split. Undo the test edits, confirm the original content and Saved,
+   and remove observers with `off`.
+
+Stable editor identity, growing position maps, and no new document-changing transactions point
+to repeated position-plan writes. A normal text edit can pass while this structural case fails.
+One `Control+A` may select only the current block, so check the selection before a whole-document
+replacement. Do not bring the user's browser to the front before typing; that can capture their keys.
+
 ## 2. Inline comment creation
 
 Exercises `CommentsExtension` and the comment popover.

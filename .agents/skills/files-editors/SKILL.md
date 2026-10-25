@@ -160,6 +160,11 @@ The provider is app code adapted from Liveblocks. Convex stores and streams upda
 - `sync()` merges the snapshot with later updates, applies the merged state, and advances `appliedSeq`. The backend returns updates in descending order; reconstruction applies them in ascending order and skips sequences already covered by the snapshot.
 - Snapshot, update, and sequence reads must agree on `yjsLastSequenceId`. Numeric sequence values alone cannot identify a document after collaboration is toggled or its history is rebuilt.
 
+A rich editor view refresh must not write new Yjs data when its document has not changed. The
+Tiptap fork applies each structural position plan once, beside its content write. Keep pending
+plans through appended transactions until that write happens. Save-status renders can refresh
+the same editor state, so testing only text input or provider batching does not cover this rule.
+
 The sidebar starts the normal snapshot action and R2 byte fetch after New file succeeds, before navigation, when it will open Rich text. This covers inline creation and the sidebar's name modal. Folder, Code, and Review creation do not preload. The file-view toolbar's name modal does not open the new file, so it does not preload either.
 
 The files route also preloads when a navigation opens another node, and once when the route mounts. It starts the snapshot action, the R2 byte fetch, and a warm-up of the update log. When a loaded tree row (`FilesTreeProvider.useGetLoadedNode`) shows the node, the route preloads only a collaborative Rich text file. When no row shows it, as on a page load or a link from elsewhere, the route preloads anyway; a folder then costs one action that answers null. The route skips private drafts, a `fileView`, and a non-rich `view`. It compares each navigation with the previous navigation's `nodeId`, not `fromLocation`: the router's `fromLocation` is the last finished navigation, and the view writes its `view` param before the click's navigation finishes. A folder's README gets no preload, because its id is unknown at click time. The app does not use `StrictMode`, so the mount preload runs once in development too.

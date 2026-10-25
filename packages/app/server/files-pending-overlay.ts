@@ -2712,8 +2712,8 @@ async function db_flush_ancestors(
 }
 
 /**
- * The saved node inline part: no reader, so its cost does not grow with the number of users.
- * Hide copies must match the saved node in this transaction (the window bound).
+ * Saved index fields are copied to every hide and saved-node place in this transaction.
+ * This grows with the copy count; hide keys must match the saved page's index window.
  */
 async function db_flush_saved_node(
 	flush: Flush,
