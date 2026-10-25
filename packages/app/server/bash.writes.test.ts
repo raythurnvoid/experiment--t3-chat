@@ -7,7 +7,7 @@ import { test_apply_file_pending_move, test_convex, test_mocks_fill_db_with } fr
 import {
 	test_db_files_mount,
 	function_name_of,
-	readme_copy_content,
+	readme_seed_content,
 	create_bash_runner,
 	get_seeded_node,
 	get_seeded_node_id,
@@ -509,7 +509,7 @@ describe("bash_run_command", () => {
 		expect(markdownToJson.stdout).toMatch(
 			/^Transfer \S+: 1 ready for review, 0 skipped, 0 failed\. Activity \S+\. Review in Files\.\n/,
 		);
-		expect(markdownToJson.stdout.split("Review in Files.\n")[1]).toBe(readme_copy_content);
+		expect(markdownToJson.stdout.split("Review in Files.\n")[1]).toBe(readme_seed_content);
 		const jsonDraft = await get_private_entry(runner, "/data/copy.json");
 		expect(jsonDraft.pendingUpdate.copiedFrom).toMatchObject({ path: "/docs/readme.md" });
 		expect(jsonDraft.pendingUpdate.createIntent).toMatchObject({

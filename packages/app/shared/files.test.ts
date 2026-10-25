@@ -1173,6 +1173,9 @@ describe("files_tiptap_markdown_to_json", () => {
 			  "_yay": {
 			    "content": [
 			      {
+			        "attrs": {
+			          "markdownTight": null,
+			        },
 			        "content": [
 			          {
 			            "text": Any<String>,
@@ -1215,6 +1218,9 @@ describe("files_tiptap_markdown_to_json", () => {
 			  "_yay": {
 			    "content": [
 			      {
+			        "attrs": {
+			          "markdownTight": null,
+			        },
 			        "content": [
 			          {
 			            "text": Any<String>,
@@ -1305,6 +1311,7 @@ describe("files_tiptap_markdown_to_json", () => {
 				attrs: {
 					level: 1,
 					markdownClosing: null,
+					markdownTight: null,
 					markdownUnderline: null,
 				},
 				content: [{ type: "text", text: "Base " }],
@@ -1550,7 +1557,9 @@ describe("files_parse_markdown_to_html", () => {
 		const html = files_parse_markdown_to_html('Intro\n<video src="bonobo-file://k17abcdef"></video>\nOutro');
 		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
 
-		expect(html._yay).toBe('<p>Intro</p>\n<video src="bonobo-file://k17abcdef"></video><p>Outro</p>\n');
+		expect(html._yay).toBe(
+			'<p>Intro</p>\n<video data-markdown-tight="" src="bonobo-file://k17abcdef"></video><p data-markdown-tight="">Outro</p>\n',
+		);
 	});
 
 	test("refuses Markdown that needs more work than the limit", () => {
@@ -2730,8 +2739,36 @@ describe("block syntax round-trip through Yjs", () => {
 		["a wrapped line before a list nested with 4 spaces", "- a\n  b\n    - c\n"],
 		// Before, a save wrote `2\.`, but `2.` cannot start a list there.
 		["a line that starts with `2.` in a paragraph", "Version\n2. x\n"],
+		// Before, a save put a blank line between every two blocks.
+		["text right under a heading", "# h\ntext\n"],
+		["a blank line between a heading and its text", "# h\n\ntext\n"],
+		["a list right under text", "Intro:\n- a\n- b\n"],
+		["a fence right under text, and text under it", "text\n```\ncode\n```\nmore\n"],
+		["text right under a heading in a quote", "> # h\n> text\n"],
 	])("keeps %s", (_name, input) => {
 		expect(round_trip_markdown(input)).toBe(input);
+	});
+
+	test("puts a blank line back when an edit would join two blocks", () => {
+		const json = files_tiptap_markdown_to_json({ markdown: "# h\ntext\n" });
+		if (json._nay) {
+			throw new Error("Expected markdown to parse", { cause: json._nay });
+		}
+
+		// Turn the heading into a paragraph. Right under it, `text` would join it.
+		const heading = json._yay.content?.[0];
+		if (!heading) {
+			throw new Error("Expected a heading");
+		}
+		heading.type = "paragraph";
+		heading.attrs = {};
+
+		const editor = files_headless_tiptap_editor_create({ initialContent: { json: json._yay } });
+		if (editor._nay) {
+			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+		}
+		expect(files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay })).toBe("h\n\ntext");
+		editor._yay.destroy();
 	});
 
 	test("keeps the text after a block that starts a list item as a paragraph", () => {

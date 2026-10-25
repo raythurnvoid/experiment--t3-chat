@@ -7,7 +7,7 @@ import {
 	test_db_files_mount,
 	function_name_of,
 	test_r2_objects,
-	readme_copy_content,
+	readme_seed_content,
 	seed_organization_node,
 	create_bash_runner,
 	get_seeded_node,
@@ -501,7 +501,7 @@ describe("bash_run_command", () => {
 			yjsRootKind: "rich_text",
 		});
 		const plainProposed = await runner.run({ command: `cat ${test_db_files_mount}/data/plain-target.txt` });
-		expect(plainProposed.stdout).toBe(readme_copy_content);
+		expect(plainProposed.stdout).toBe(readme_seed_content);
 
 		// Accepting replaces the file as a whole on the same node: content, type, and shape.
 		// Discarding keeps the old file untouched.
@@ -705,7 +705,7 @@ describe("bash_run_command", () => {
 			contentType: "text/markdown;charset=utf-8",
 		});
 		const markdownProposed = await runner.run({ command: `cat ${test_db_files_mount}/data/readme-copy.txt` });
-		expect(markdownProposed.stdout).toBe(readme_copy_content);
+		expect(markdownProposed.stdout).toBe(readme_seed_content);
 
 		// JSON copied to a .md name is still JSON.
 		const plainToRich = await runner.run({

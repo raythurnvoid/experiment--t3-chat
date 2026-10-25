@@ -74,14 +74,12 @@ Footnotes keep their text. The editor cannot show them like GitHub does, so it s
 Before, Marked read a one-word note as a link definition. Then `[^1]` became a link to that word, the definition line disappeared, and the indented lines became code. Known limits, with no lost content:
 
 - Only definitions in the document's own block list become a block. A definition in a list or a quote still reads as Marked does, because the list writer drops the blank line before it. A one-word note there, like `> [^1]: note`, reads as a link definition and so becomes a block (see below).
-- A heading right after a definition gets a blank line before it on save.
 - In a rich table cell, the block saves as a paragraph with the same text.
 - The public link page shows a definition block as a code block with the same text.
 
 Link definitions like `[x]: https://e.com "Title"` use the same block. Marked shows nothing for them, so before, save dropped every definition, and one that no link used was lost. The `footnoteDefinition` tokenizer takes them too, also in lists and quotes, and groups the ones right after each other. It registers each one in Marked's link list, like Marked does, so `[a][x]` still finds its address. The `def` renderer keeps a definition the tokenizer did not take. The public link page shows nothing for a block of link definitions only, like Marked. Known changes and limits, with no lost content:
 
 - A reference link like `[a][x]`, `[x][]` or `[x]` saves as an inline link `[a](https://e.com)`. The definition stays.
-- A paragraph right after a definition, with no blank line between them, gets a blank line before it.
 
 Lists keep the marker the file uses: a `*` or `+` bullet, and a `)` after the number (`1)`). The `list` renderer in `configure_marked` writes it as `data-bullet` or `data-delimiter`, and the `taskList` renderer writes a task list's bullet as `data-bullet`. The fork's lists keep it as the `bullet` or `delimiter` attribute, and the list item writer uses it. Without a marker, save writes `-` and `1.`. A new list made in the editor has no marker.
 
@@ -104,6 +102,8 @@ Rules keep the style the file uses: `***`, `___`, `- - -`. The `hr` renderer wri
 Code blocks keep how the file opened them: a `~~~` fence, a longer fence like 4 backticks, a space before the language, or an indented block. The `code` renderer writes it as `data-markdown-fence` (`indented` for an indented block), and the fork's code block keeps it in `markdownFence`. Save still makes the fence longer than any run of its character in the code. An indented block saves indented only at the top level or in a quote, with no language, no list just before it, and text on its first and last line. Otherwise it saves with a ``` fence, because the indented form would not read back as the same block.
 
 Headings keep closing marks like `## a ##` and an underline like `===` or `-`. The `heading` renderer writes them as `data-markdown-closing` and `data-markdown-underline`, and the fork's heading keeps them in `markdownClosing` and `markdownUnderline`. An underline stays while the heading is level 1 or 2. A heading made in the editor saves with `#`.
+
+A block written right under the one before it, with no blank line, stays there: `# Title` then `text`, `Intro:` then a list, text then a fence. `markdown_mark_tight_blocks` (in the `processAllTokens` hook) marks such tokens at the top level and inside quotes, and `TightBlockParser` (from the `provideParser` hook) writes `data-markdown-tight` on the block's first tag. The shared `markdownTight` extension keeps it as the `markdownTight` attribute on each block node type, and a split does not copy it. The fork joins such a block with one newline while the two blocks still read the same as with a blank line between them (`readsAsTwoBlocks` in `MarkdownManager`). Otherwise it writes the blank line, so an edit never merges two blocks, like a heading turned into a paragraph above text. A quote joins its blocks the same way. Before, every save put a blank line between every two blocks. Known limits: a comment line followed by text, like `<!-- c -->` then `text`, is one HTML block for Marked, so it saves with a blank line. Blocks inside a list item use the item's own `loose` rule.
 
 Known changes, with no lost content, all stable after one save:
 

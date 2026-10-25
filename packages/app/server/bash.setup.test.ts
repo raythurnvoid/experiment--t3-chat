@@ -161,9 +161,8 @@ type BashSeedSpec = {
 	updatedAt?: number;
 };
 
-// Saved chunks keep this text. Copied rich text separates the heading from its paragraph.
+// Saved chunks keep this text. A copy of the rich text keeps it too.
 export const readme_seed_content = "# Readme\nunique-token here\nmore unique-token below\n";
-export const readme_copy_content = "# Readme\n\nunique-token here\nmore unique-token below\n";
 export const default_organization_files: BashSeedSpec[] = [
 	{ path: "/docs", kind: "folder" },
 	{ path: "/docs/readme.md", content: readme_seed_content },

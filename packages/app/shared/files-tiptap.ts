@@ -23,6 +23,7 @@ import {
 	marked,
 	Marked,
 	Lexer,
+	Parser,
 	Renderer,
 	Tokenizer,
 	type Links,
@@ -202,6 +203,56 @@ function markdown_work_add(units: number) {
 	markdown_work.used += units;
 	if (markdown_work.used > markdown_work.limit) {
 		throw new MarkdownWorkLimitError("Markdown needs too much work to parse");
+	}
+}
+
+/**
+ * Mark each block that the file wrote right under the block before it, with no blank line between them, like
+ * `# Title` then `text`. Save keeps it there (`markdownTight`). Blocks inside a quote count too. A list item
+ * keeps its own blank lines (`loose`), so its blocks are not marked.
+ *
+ * Marked moves a single newline after a block into that block's `raw`, and keeps a blank line as a `space`
+ * token or as a second newline at the end of `raw`.
+ */
+function markdown_mark_tight_blocks(mut_tokens: Token[]) {
+	let previous: Token | null = null;
+	for (const token of mut_tokens) {
+		if (token.type === "space") {
+			previous = null;
+			continue;
+		}
+
+		if (previous && !previous.raw.endsWith("\n\n")) {
+			markdown_tight_blocks.add(token);
+		}
+		if (token.type === "blockquote" && token.tokens) {
+			markdown_mark_tight_blocks(token.tokens);
+		}
+		previous = token;
+	}
+
+	return mut_tokens;
+}
+
+/**
+ * The block tokens that `markdown_mark_tight_blocks` marked.
+ */
+const markdown_tight_blocks = new WeakSet<Token>();
+
+/**
+ * Write `data-markdown-tight` on the first tag of each block that `markdown_mark_tight_blocks` marked. Marked
+ * renders each block token on its own, so rendering them one by one gives the same HTML.
+ */
+class TightBlockParser extends Parser {
+	override parse(tokens: Token[]) {
+		return tokens
+			.map((token) => {
+				const html = super.parse([token]);
+				return markdown_tight_blocks.has(token)
+					? html.replace(/^<([a-z][a-z0-9-]*)/i, '<$1 data-markdown-tight=""')
+					: html;
+			})
+			.join("");
 	}
 }
 
@@ -428,7 +479,11 @@ function configure_marked(instance: Marked | typeof marked) {
 			},
 		],
 		hooks: {
-			processAllTokens: (tokens) => html_hide_unmodeled_inline_tags(html_merge_tokens(tokens)),
+			processAllTokens: (tokens) =>
+				markdown_mark_tight_blocks(html_hide_unmodeled_inline_tags(html_merge_tokens(tokens))),
+			provideParser() {
+				return this.block ? (tokens, options) => new TightBlockParser(options).parse(tokens) : Parser.parseInline;
+			},
 		},
 		renderer: {
 			heading(token) {
@@ -3736,6 +3791,40 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 					configure_marked(instance);
 					this.options.marked = instance;
 					this.parent?.(event);
+				},
+			}),
+			// The file wrote the block right under the one before it, with no blank line (`markdown_mark_tight_blocks`).
+			// Save keeps it there while the two still read as the same blocks. A split keeps no such link.
+			markdownTight: Extension.create({
+				name: "markdownTight",
+				addGlobalAttributes() {
+					return [
+						{
+							types: [
+								"paragraph",
+								"heading",
+								"blockquote",
+								"codeBlock",
+								"bulletList",
+								"orderedList",
+								"taskList",
+								"horizontalRule",
+								"htmlBlock",
+								"table",
+								"details",
+								"footnoteDefinition",
+							],
+							attributes: {
+								markdownTight: {
+									default: null,
+									keepOnSplit: false,
+									parseHTML: (element: HTMLElement) => (element.hasAttribute("data-markdown-tight") ? true : null),
+									renderHTML: (attributes: Record<string, unknown>) =>
+										attributes.markdownTight ? { "data-markdown-tight": "" } : {},
+								},
+							},
+						},
+					];
 				},
 			}),
 			highlight: Highlight.extend({
