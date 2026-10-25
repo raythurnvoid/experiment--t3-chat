@@ -432,10 +432,10 @@ async function db_cleanup_part_page(
 			(kind === 3 && "fieldPath" in row && row.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX));
 		const headId = view === "before" ? content.beforeHeadId : content.afterHeadId;
 		const rowHeadId = "contentHeadId" in row ? row.contentHeadId : undefined;
-		if (ownsContent && rowHeadId === undefined && headId !== undefined)
-			await ctx.db.patch(table, row._id, { contentHeadId: headId });
+		if (ownsContent && (rowHeadId === undefined || headId === undefined))
+			throw should_never_happen("Content cleanup lost its owner", { contentId: content._id, table, id: row._id });
 		// A later write can keep its bytes while this worker drains the old Move tags.
-		const ownsRow = !ownsContent || (headId !== undefined && (rowHeadId === undefined || rowHeadId === headId));
+		const ownsRow = !ownsContent || rowHeadId === headId;
 		if (remove && ownsRow) await ctx.db.delete(table, row._id);
 		else await ctx.db.patch(table, row._id, { moveView: undefined });
 	}

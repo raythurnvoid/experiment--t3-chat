@@ -152,7 +152,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				const content = await raw.get("files_move_cohort_content", contentId);
 				if (!content) return null;
 				const node = await raw.get("files_nodes", content.nodeId);
-				if (!node) return null;
+				if (!node || node.kind !== "file") return null;
 				const completed = content.phaseCursor === "finish:done" || content.phaseCursor === "abort:done";
 				// Completed history cannot borrow today's content owner.
 				if (
@@ -164,7 +164,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 					throw should_never_happen("Review content has no owners", { contentId });
 				const before = inserted ? await ensure_node(content.nodeId) : content.beforeHeadId!;
 				if (!before) return null;
-				// Review copies committed rows even when its accepted text is unchanged.
+				// Review copies committed docs even when its accepted text is unchanged.
 				// Each copy needs its own owner; its public Yjs identity can stay the same.
 				const prepared = content.prepared !== null;
 				let after = inserted ? before : content.afterHeadId!;
@@ -205,7 +205,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				const node = await raw.get("files_nodes", nodeId);
 				if (!node || node.kind !== "file") return null;
 				const currentId = await ensure_node(nodeId);
-				// Staged rows name their side. Ordinary writes follow today's selected content.
+				// Staged docs name their side. Ordinary writes follow today's selected content.
 				if (cohortId) {
 					const content = await raw
 						.query("files_move_cohort_content")
@@ -227,7 +227,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	async function tag(table: TableNames, id: Id<TableNames>, doc: ContentDoc, inserted = false) {
 		if (!has_content(table, doc)) return;
 		if (!inserted) {
-			if (!doc.contentHeadId) throw should_never_happen("Saved content row has no owner", { table, id });
+			if (!doc.contentHeadId) throw should_never_happen("Saved content doc has no owner", { table, id });
 			return doc.contentHeadId;
 		}
 		const contentHeadId = await owner(doc);

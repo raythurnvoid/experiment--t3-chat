@@ -107,6 +107,7 @@ describe("full metadata maps", () => {
 			membershipId: db.membershipId, target: created._yay.target,
 			pendingUpdateId: proposal!._id, reviewedRevision: proposal!.revision,
 		});
+		expect(saved._nay, "Private folder Save needs no content head").toBeUndefined();
 		if (saved._nay) throw new Error(saved._nay.message);
 		expect(await asUser.query(api.files_metadata.get_field_values, {
 			membershipId: db.membershipId, target: saved._yay.target,

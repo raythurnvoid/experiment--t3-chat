@@ -215,7 +215,7 @@ test("Move and reviewed Archive keep one selected content and metadata view", as
 		expect(current.exactIds).toEqual(original.exactIds);
 		expect(
 			current.plain.map((row) => ({ index: row.index, text: row.text })),
-			"plain text has one row per chunk",
+			"plain text has one doc per chunk",
 		).toEqual(original.plain.map((row) => ({ index: row.index, text: row.text })));
 		expect(
 			current.plain.every((row) => row.view === undefined || row.view.view === current.view?.view),

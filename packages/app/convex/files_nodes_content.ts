@@ -264,7 +264,7 @@ export async function db_replace_file_chunks(
 	}
 
 	const head = (await files_saved_content_db_get_head(ctx.db, fileNode))!;
-	// Only replace this content owner's chunks. Another Review side may still need its own rows.
+	// Only replace this content owner's chunks. Another Review side may still need its own docs.
 	await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
