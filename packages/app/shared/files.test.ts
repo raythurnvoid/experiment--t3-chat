@@ -1311,6 +1311,7 @@ describe("files_tiptap_markdown_to_json", () => {
 				attrs: {
 					level: 1,
 					markdownClosing: null,
+					markdownOpening: null,
 					markdownTight: null,
 					markdownUnderline: null,
 				},
@@ -2810,6 +2811,8 @@ describe("block syntax round-trip through Yjs", () => {
 		["a blank line between a heading and its text", "# h\n\ntext\n"],
 		// Before, a save dropped an empty heading.
 		["an empty heading", "a\n\n##\n\nb\n"],
+		// Before, a save wrote one space after `#` and dropped the closing marks of an empty heading.
+		["spaces after a heading's opening marks", "#   a\n\n##\ta  ##\n\n## ##\n"],
 		["a list right under text", "Intro:\n- a\n- b\n"],
 		["a fence right under text, and text under it", "text\n```\ncode\n```\nmore\n"],
 		["text right under a heading in a quote", "> # h\n> text\n"],

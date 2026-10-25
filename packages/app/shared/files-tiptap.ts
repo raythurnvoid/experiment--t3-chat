@@ -529,21 +529,23 @@ function configure_marked(instance: Marked | typeof marked) {
 					tokens?: unknown[];
 				};
 				const raw = headingToken.raw ?? "";
+				const depth = headingToken.depth ?? 1;
 				const trailingSpaces = raw.match(TRAILING_SPACES_OR_TABS_REGEX)?.[0];
-				// Keep closing marks like `## a ##` and an underline like `===`, so save writes the heading as
-				// the file did.
+				// Keep the spaces after the opening `#` marks, closing marks like `## a ##` or `## ##`, and an
+				// underline like `===`, so save writes the heading as the file did.
 				const lines = raw.trimEnd().split("\n");
 				const underline = lines.length > 1 ? /^ {0,3}(=+|-+)[ \t]*$/.exec(lines.at(-1) ?? "")?.[1] : undefined;
-				const closing = lines.length === 1 ? /^ {0,3}#{1,6}[ \t]+.*?([ \t]+#+)$/.exec(lines[0] ?? "")?.[1] : undefined;
+				const closing =
+					lines.length === 1 ? /^ {0,3}#{1,6}(?:[ \t]+.*?)?([ \t]+#+)$/.exec(lines[0] ?? "")?.[1] : undefined;
+				const opening = lines.length === 1 ? /^ {0,3}(#{1,6}[ \t]+)/.exec(lines[0] ?? "")?.[1] : undefined;
 				const attributes = `${underline ? ` data-markdown-underline="${underline}"` : ""}${
 					closing ? ` data-markdown-closing="${closing}"` : ""
-				}`;
+				}${opening && opening !== `${"#".repeat(depth)} ` ? ` data-markdown-opening="${opening}"` : ""}`;
 
 				if (!trailingSpaces && !attributes) {
 					return false;
 				}
 
-				const depth = headingToken.depth ?? 1;
 				const bodyHtml =
 					headingToken.tokens && headingToken.tokens.length > 0
 						? this.parser.parseInline(headingToken.tokens as Parameters<typeof this.parser.parseInline>[0])

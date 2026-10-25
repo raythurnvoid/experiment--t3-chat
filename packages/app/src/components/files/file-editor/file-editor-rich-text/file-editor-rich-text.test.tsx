@@ -724,9 +724,9 @@ describe("FileEditorRichTextNonCollab", () => {
 	});
 
 	test("warns about the reformat only while the serializer would rewrite the stored bytes", async () => {
-		// Two spaces after the heading marker: the serializer writes one, so the first save rewrites
+		// An indent before the heading marker: the serializer drops it, so the first save rewrites
 		// a line the member never touched.
-		resolveQueryWithNonCollaborativeContent("#  Title\n");
+		resolveQueryWithNonCollaborativeContent("  # Title\n");
 		renderNonCollabRichEditor();
 		await flushEditorMount();
 
