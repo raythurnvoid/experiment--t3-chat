@@ -1082,9 +1082,15 @@ deploy saved a watch ending 2026-10-29. An email sent at 14:14:36 UTC, while the
 showed `data-gmail-push="on"`. Wrong-token and bad-base64 posts to the live route got 403 and 204.
 Setup and token steps are in `../gmail-plugin/SKILL.md`. 501 tests. One day later the watch was
 renewed (it ended 2026-10-30 14:14 UTC), and the idle wait was 60 minutes. One idle hour, 18:54 to
-19:54 UTC on 2026-10-23 with no plugin page open, recorded 17 calls with no errors (0.3.9 used 28):
-dispatch 5, sweep 4, `get_worker` 3, the slice action 2, `finish_slice` 1, one token save, one
-OAuth cleanup.
+19:54 UTC on 2026-10-23 with no plugin page open, recorded 16 calls with no errors (0.3.9 used 28):
+dispatch 5, sweep 4, `get_worker` 3, the slice action 1, `finish_slice` 1, one token save, one
+OAuth cleanup. Count only `Completion` rows in `convex logs --jsonl`. A `Progress` row shares the
+execution id of a call that completes later, so it is not a second call.
+
+Forecast from that hour, times 730 hours, against the dev allocations in the README "Release
+checks": 11,680 calls (2.9% of 400,000), Node 0.26 GB-hours (6.6% of 4), Convex actions 0, database
+I/O 0.024 GB (6.0% of 0.4), egress 0.010 GB (2.5% of 0.4). This is idle only. It leaves out new mail,
+backfill, attachments, the 12-hour grant renewal, and open pages (about 220 calls per hour each).
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
