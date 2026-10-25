@@ -17,6 +17,7 @@ import {
 import { run as moveRun } from "./files_move_run.ts";
 import * as readUrls from "./r2_get_url.ts";
 import * as overlay from "../server/files-pending-overlay.ts";
+import * as contentHeads from "../server/files-content-heads.ts";
 import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -176,6 +177,89 @@ function migration(t: ReturnType<typeof test_convex>) {
 	};
 }
 
+async function check_parallel_page(
+	t: ReturnType<typeof test_convex>,
+	nodeId: Id<"files_nodes">,
+	kind: "text" | "search" | "metadata",
+) {
+	const [table, fn] = (
+		{
+			text: ["files_text_chunks", internal.migrations.backfill_content_head_text],
+			search: ["files_plain_text_chunks", internal.migrations.backfill_content_head_search],
+			metadata: ["files_metadata_docs", internal.migrations.backfill_content_head_metadata],
+		} as const
+	)[kind];
+	await remove_head_fields(t);
+	const before = await semantic_state(t);
+	let active = 0;
+	let peak = 0;
+	let sawOwner = false;
+	const backfill = contentHeads.files_content_heads_db_backfill;
+	const spy = vi.spyOn(contentHeads, "files_content_heads_db_backfill").mockImplementation(async (ctx, source, id) => {
+		active++;
+		peak = Math.max(peak, active);
+		try {
+			await backfill(ctx, source, id);
+			const row = await ctx.db.get(source, id);
+			if (row && "contentHeadId" in row && row.contentHeadId) sawOwner = true;
+		} finally {
+			active--;
+		}
+	});
+	try {
+		await expect(
+			t.mutation(internal.migrations.preview_content_heads, { migration: kind, cursor: null, batchSize: 20 }),
+		).rejects.toMatchObject({ data: { processed: expect.any(Number) } });
+		expect(peak, "Docs in the native migration page overlap without timers").toBeGreaterThan(1);
+		expect(sawOwner, "Preview wrote a real owner before rollback").toBe(true);
+		expect(await semantic_state(t), "Parallel preview preserves original content and receipts").toEqual(before);
+		expect(await t.run((ctx) => ctx.db.query("files_saved_content_heads").collect())).toEqual([]);
+		await t.run(async (ctx) => {
+			for (const row of await ctx.db.query(table).collect()) expect(row).not.toHaveProperty("contentHeadId");
+		});
+		const args = { oneBatchOnly: true, cursor: null, dryRun: false, batchSize: 20 };
+		const result = await t.mutation(fn, args);
+		expect(result?.processed, "The native fixture has several docs in one page").toBeGreaterThan(1);
+		expect(result?.isDone).toBe(true);
+		expect(await semantic_state(t), "Parallel migration changes ownership only").toEqual(before);
+		const heads = await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", nodeId))!;
+			const content = node.moveCohortId
+				? await ctx.db
+						.query("files_move_cohort_content")
+						.withIndex("by_cohort_node", (q) => q.eq("cohortId", node.moveCohortId!).eq("nodeId", nodeId))
+						.unique()
+				: null;
+			const heads = await ctx.db.query("files_saved_content_heads").collect();
+			expect(heads, "Parallel docs create one current head and at most one Review candidate").toHaveLength(
+				content ? 2 : 1,
+			);
+			if (content) expect(content.afterHeadId).not.toBe(content.beforeHeadId);
+			for (const row of await ctx.db.query(table).collect()) {
+				if (
+					row.sourceKind === "pending" ||
+					("fieldPath" in row && !row.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX))
+				) {
+					expect(row).not.toHaveProperty("contentHeadId");
+					continue;
+				}
+				expect(row.contentHeadId, "Each doc keeps its own current or accepted view").toBe(
+					row.moveView?.view === "after" ? content?.afterHeadId : node.contentHeadId,
+				);
+			}
+			return heads;
+		});
+		expect(await t.mutation(fn, args), "The parallel page can be retried").toEqual(result);
+		expect(await semantic_state(t), "Retry keeps original content and receipts").toEqual(before);
+		expect(
+			await t.run((ctx) => ctx.db.query("files_saved_content_heads").collect()),
+			"Retry keeps the same heads",
+		).toEqual(heads);
+	} finally {
+		spy.mockRestore();
+	}
+}
+
 async function owned_rows(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => {
 		const rows = [];
@@ -292,7 +376,7 @@ test("content preview rolls back the node patch and its new head", async () => {
 	});
 });
 
-test.each(["before", "after old content cleanup", "abort", "unchanged"] as const)(
+test.each(["before", "after old content cleanup", "abort", "unchanged", "parallel"] as const)(
 	"migrates content alongside Review cleanup: %s",
 	async (when) => {
 		const f = await fixture();
@@ -366,10 +450,14 @@ test.each(["before", "after old content cleanup", "abort", "unchanged"] as const
 			const ready =
 				when === "before"
 					? !!before.cohort && before.cohort.publishedAt === null
-					: when === "abort" || when === "unchanged"
+					: when === "abort" || when === "unchanged" || when === "parallel"
 						? before.content?.sealed && before.cohort?.publishedAt === null
 						: before.content?.phaseCursor === "finish:1|";
 			if (!startedMigration && ready) {
+				if (when === "parallel") {
+					await check_parallel_page(f.t, f.nodeId, "text");
+					await check_parallel_page(f.t, f.nodeId, "search");
+				}
 				if (when === "unchanged") {
 					// Keep the native sealed Review. Reproduce only the former bridge's shared owner.
 					await f.t.run(async (dbCtx) => {
@@ -718,7 +806,7 @@ test("a plain Move keeps the migrated content owner", async () => {
 });
 
 test("frontmatter gets a content owner while metadata and pending docs stay unchanged", async () => {
-	const f = await create_file_fixture("rich_text", "---\nstatus: saved\n---\nSaved body\n");
+	const f = await create_file_fixture("rich_text", "---\nstatus: saved\nowner: team\nrank: 1\n---\nSaved body\n");
 	expect(
 		await f.asUser.mutation(api.files_metadata.set_entries, {
 			membershipId: f.db.membershipId,
@@ -733,6 +821,7 @@ test("frontmatter gets a content owner while metadata and pending docs stay unch
 		unstagedMarkdown: "---\nstatus: draft\n---\nDraft body\n",
 	});
 	if (edited._nay) throw new Error(edited._nay.message);
+	await check_parallel_page(f.t, f.nodeId, "metadata");
 	await remove_head_fields(f.t);
 	const before = await semantic_state(f.t);
 	await migration(f.t).finish();

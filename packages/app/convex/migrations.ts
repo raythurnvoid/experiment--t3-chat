@@ -62,6 +62,7 @@ export const backfill_content_head_places = app_migrations.define({
 export const backfill_content_head_text = app_migrations.define({
 	table: "files_text_chunks",
 	batchSize: CONTENT_HEAD_BATCH_SIZE,
+	parallelize: true,
 	migrateOne: async (ctx, doc) => {
 		await files_content_heads_db_backfill(ctx, "files_text_chunks", doc._id);
 	},
@@ -70,6 +71,7 @@ export const backfill_content_head_text = app_migrations.define({
 export const backfill_content_head_search = app_migrations.define({
 	table: "files_plain_text_chunks",
 	batchSize: CONTENT_HEAD_BATCH_SIZE,
+	parallelize: true,
 	migrateOne: async (ctx, doc) => {
 		await files_content_heads_db_backfill(ctx, "files_plain_text_chunks", doc._id);
 	},
@@ -87,6 +89,7 @@ export const backfill_content_head_updates = app_migrations.define({
 export const backfill_content_head_metadata = app_migrations.define({
 	table: "files_metadata_docs",
 	batchSize: CONTENT_HEAD_BATCH_SIZE,
+	parallelize: true,
 	migrateOne: async (ctx, doc) => {
 		await files_content_heads_db_backfill(ctx, "files_metadata_docs", doc._id);
 	},
