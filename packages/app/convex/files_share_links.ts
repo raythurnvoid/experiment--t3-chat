@@ -235,8 +235,8 @@ export async function files_share_links_db_check_live_file(
 }
 
 /**
- * Check that a file or folder may become public ("Anyone on the web") right now. The same live checks
- * as a link, but any item may be public: public pages show only its images and videos.
+ * Check that a file may become public right now. The same live checks as a link, but any file may be
+ * public: public pages show it only when it is an image or video.
  */
 export async function files_share_links_db_check_live_node(
 	ctx: QueryCtx | MutationCtx,
@@ -401,33 +401,13 @@ async function db_read_media_node(args: {
 /**
  * The finished asset of a media file that the shared file's visitors may see, or null.
  *
- * A visitor is anonymous, so a media file shows only when it is public ("Anyone on the web"): its
- * `publicScopeNodeId` names a live public root in its own restricted area, the file itself or a folder
- * above it. Knowing a file id grants nothing. Reads at most 9 docs.
+ * A visitor is anonymous, so a media file shows only when it is public (`isPublic`). Knowing a file
+ * id grants nothing. Reads at most 6 docs.
  */
 async function db_check_media_node(args: { ctx: QueryCtx; reads: ViewReads; mediaNode: Doc<"files_nodes"> }) {
 	const { ctx, reads, mediaNode } = args;
 
-	if (mediaNode.publicScopeNodeId === undefined) {
-		return null;
-	}
-
-	const root =
-		mediaNode.publicScopeNodeId === mediaNode._id
-			? mediaNode
-			: await reads_get_node({ ctx, reads, id: mediaNode.publicScopeNodeId });
-	// A pointer can be stale while a scope op runs, so check that the root is still public, in the same
-	// area, and above the file. A folder's tree path ends with "/", so the prefix test cannot match a
-	// sibling whose name only starts the same way.
-	if (
-		!root ||
-		root.organizationId !== reads.organizationId ||
-		root.workspaceId !== reads.workspaceId ||
-		root.archiveOperationId !== null ||
-		root.publicScopeNodeId !== root._id ||
-		root.restrictedScopeNodeId !== mediaNode.restrictedScopeNodeId ||
-		(root._id !== mediaNode._id && (root.kind !== "folder" || !mediaNode.treePath.startsWith(root.treePath)))
-	) {
+	if (!mediaNode.isPublic) {
 		return null;
 	}
 
@@ -617,6 +597,29 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 	}
 
 	return { view, asset, mediaNodes, mediaAssets, media };
+}
+
+/**
+ * The saved image and video files that a linked file names, each once. Empty when the view cannot be
+ * prepared. Turning a link on reads them to make them public.
+ */
+export async function files_share_links_db_list_media_nodes(ctx: MutationCtx, token: string) {
+	let prepared: Awaited<ReturnType<typeof db_prepare_share_link_view>> = null;
+	try {
+		prepared = await db_prepare_share_link_view(ctx, token);
+	} catch (error) {
+		if (!(error instanceof ShareViewBudgetError)) {
+			throw error;
+		}
+	}
+
+	const mediaNodes = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+	for (const mediaNode of prepared?.mediaNodes ?? []) {
+		if (mediaNode) {
+			mediaNodes.set(mediaNode._id, mediaNode);
+		}
+	}
+	return [...mediaNodes.values()];
 }
 
 /**
@@ -897,7 +900,8 @@ export const get_media_to_share = query({
 						isPublic: v.boolean(),
 						nodeId: v.id("files_nodes"),
 						name: v.string(),
-						canManage: v.boolean(),
+						/** The caller can edit the file, so they may make it public. */
+						canEdit: v.boolean(),
 					}),
 				),
 			),
@@ -941,7 +945,7 @@ export const get_media_to_share = query({
 					isPublic,
 					nodeId: mediaNode._id,
 					name: mediaNode.name,
-					canManage: await reader.checker.can(mediaNode, "content.permissions.manage"),
+					canEdit: await reader.checker.can(mediaNode, "content.write"),
 				};
 			}),
 		);

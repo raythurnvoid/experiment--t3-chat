@@ -315,7 +315,6 @@ function node_insert_fields(args: {
 	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
 	extendedScopeNodeId: Id<"files_nodes"> | null;
-	publicScopeNodeId: Doc<"files_nodes">["publicScopeNodeId"];
 	writePolicy?: Doc<"files_nodes">["writePolicy"];
 	newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
 	now: number;
@@ -350,7 +349,6 @@ function node_insert_fields(args: {
 		// A new node inherits its parent's scope, so it is never its own restricted root.
 		isRestrictedScopeRoot: false,
 		extendedScopeNodeId: args.extendedScopeNodeId,
-		publicScopeNodeId: args.publicScopeNodeId,
 		writePolicy: args.writePolicy ?? null,
 		newChildWritePolicy: args.newChildWritePolicy ?? null,
 		archiveOperationId: args.archiveOperationId ?? null,
@@ -402,10 +400,9 @@ async function db_insert_node(
 		args.parent ?? (args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId));
 	const restrictedScopeNodeId = parent?.restrictedScopeNodeId ?? null;
 	// A new node is never a restricted or extended root, so it gets no `parentScopeNodeId`, `scopeOpId`
-	// or `parentExtendedScopeNodeId`. It gets the people added to the items above it.
+	// or `parentExtendedScopeNodeId`. It gets the people added to the items above it. It also starts
+	// not public, a copy included: only the Sharing doors and `create_upload_node` set `isPublic`.
 	const extendedScopeNodeId = parent?.extendedScopeNodeId ?? null;
-	// "Anyone on the web" comes from the parent only, never from a copy source or the request.
-	const publicScopeNodeId = parent?.publicScopeNodeId;
 
 	// Copying the default is an ordinary creation step. It needs no policy-management right.
 	const parentDefault = args.parent
@@ -424,7 +421,6 @@ async function db_insert_node(
 			contentByteSize: asset?.size,
 			restrictedScopeNodeId,
 			extendedScopeNodeId,
-			publicScopeNodeId,
 			writePolicy: args.writePolicy !== undefined ? args.writePolicy : parentDefault,
 			newChildWritePolicy:
 				args.kind === "folder"

@@ -350,6 +350,8 @@ type UploadTarget = {
 	/** The document's own parent folder, for when the assets folder refuses the write. */
 	fallbackParentId: app_convex_Doc<"files_nodes">["parentId"];
 	fallbackParentPath: string;
+	/** The document the files go into. When it has a public link, the server makes them public. */
+	documentNodeId: app_convex_Id<"files_nodes">;
 };
 
 async function resolve_upload_target(args: {
@@ -366,7 +368,11 @@ async function resolve_upload_target(args: {
 
 	const parentPath = documentNode.path.slice(0, documentNode.path.lastIndexOf("/")) || "/";
 	const assetsPath = join_file_node_path(parentPath, "assets");
-	const fallback = { fallbackParentId: documentNode.parentId, fallbackParentPath: parentPath };
+	const fallback = {
+		fallbackParentId: documentNode.parentId,
+		fallbackParentPath: parentPath,
+		documentNodeId: args.documentNodeId,
+	};
 
 	// A file squatting on the `assets` name: don't fight it, upload next to the document.
 	const probe = await app_convex.query(app_convex_api.files_nodes.get_authorized_by_path, {
@@ -567,6 +573,7 @@ async function create_upload_node_with_free_name(args: {
 			contentType: args.contentType,
 			size: args.size,
 			onConflict: "fail",
+			documentNodeId: args.target.documentNodeId,
 		});
 		if (!created._nay) {
 			return { outcome: "created", ...created._yay, filename };
@@ -706,6 +713,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						parentPath: "/assets",
 						fallbackParentId: "folder" as app_convex_Id<"files_nodes">,
 						fallbackParentPath: "/assets",
+						documentNodeId: "document" as app_convex_Id<"files_nodes">,
 					},
 					item: {
 						uploadId: "upload",

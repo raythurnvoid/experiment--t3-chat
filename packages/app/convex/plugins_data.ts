@@ -15,7 +15,7 @@ import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
-import { files_nodes_db_set_public_scope, files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_set_public, files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_share_links_db_delete_for_node, files_share_links_db_delete_for_scope } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
@@ -4170,8 +4170,10 @@ export async function plugins_data_db_apply_file_access_binding(
 		const { organizationId, workspaceId, _id: nodeId } = args.node;
 		await files_share_links_db_delete_for_node(ctx, { organizationId, workspaceId, nodeId });
 		await files_share_links_db_delete_for_scope(ctx, { organizationId, workspaceId, scopeNodeId: nodeId });
-		// "Anyone on the web" ends too. Items inside that point at this node hide with it.
-		await files_nodes_db_set_public_scope(ctx, { nodeId, public: false });
+		// A bound file stops being public too. Public pages already hide the images of a bound area.
+		if (args.node.kind === "file") {
+			await files_nodes_db_set_public(ctx, { nodeId, public: false });
+		}
 	}
 
 	let accessChanged = false;

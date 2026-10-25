@@ -58,8 +58,7 @@
 			padding-bottom: 0;
 		}
 
-		/* "Anyone on the web" gets focus when its select goes away, and "Anyone with the link" when its
-		   media box does. Same outline as the people list. */
+		/* "Public link" gets focus when its media box goes away. Same outline as the people list. */
 		&:focus-visible {
 			outline: 2px solid var(--color-fg-12);
 			outline-offset: 2px;
@@ -205,6 +204,26 @@
 		justify-content: space-between;
 
 		min-width: 130px;
+	}
+
+	/* The public flag of an image or video. The text grows, the select keeps its width. */
+	.FilesShareModalLink-public {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px 12px;
+	}
+
+	.FilesShareModalLink-public-text {
+		flex: 1 1 22rem;
+		min-width: 0;
+		margin: 0;
+
+		font-size: 16px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+
+		overflow-wrap: anywhere;
 	}
 	/* #endregion link */
 

@@ -55,6 +55,7 @@ import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_get_signed_download_serving,
 	files_resolve_upload_content_type,
+	files_is_inline_media_content_type,
 	files_get_utf8_byte_size,
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
@@ -692,18 +693,9 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		isRestrictedScopeRoot
 			? { extendedScopeNodeId: null, parentExtendedScopeNodeId: undefined }
 			: { extendedScopeNodeId: parentExtendedScopeNodeId };
-	// A public root keeps "Anyone on the web" only while its restricted area stays the same. A new
-	// restricted root starts not public. Any other item takes its parent's value.
-	const publicScope = (
-		target: Pick<Doc<"files_nodes">, "publicScopeNodeId" | "restrictedScopeNodeId">,
-		parentPublicScopeNodeId: Id<"files_nodes"> | undefined,
-	) => ({
-		publicScopeNodeId:
-			target.publicScopeNodeId === args.nodeId && target.restrictedScopeNodeId === args.restrictedScopeNodeId
-				? args.nodeId
-				: isRestrictedScopeRoot
-					? undefined
-					: parentPublicScopeNodeId,
+	// A public file stays public only while its restricted area stays the same.
+	const publicFlag = (target: Pick<Doc<"files_nodes">, "isPublic" | "restrictedScopeNodeId">) => ({
+		isPublic: target.restrictedScopeNodeId === args.restrictedScopeNodeId ? target.isPublic : undefined,
 	});
 	if (
 		node &&
@@ -724,14 +716,12 @@ export async function files_nodes_db_set_restricted_scope(args: {
 			if (!place) continue;
 			let parentScopeNodeId: Id<"files_nodes"> | null = null;
 			let parentExtendedScopeNodeId: Id<"files_nodes"> | null = null;
-			let parentPublicScopeNodeId: Id<"files_nodes"> | undefined;
 			let parentId = place.parentId;
 			while (!parentScopeNodeId && parentId !== files_ROOT_ID) {
 				const parent = await files_saved_placement_db_get_node(ctx.db, parentId, fixedView);
 				if (!parent) break;
 				if (parent._id === place.parentId) {
 					parentExtendedScopeNodeId = parent.extendedScopeNodeId;
-					parentPublicScopeNodeId = parent.publicScopeNodeId;
 				}
 				if (parent.isRestrictedScopeRoot) parentScopeNodeId = parent._id;
 				parentId = parent.parentId;
@@ -742,7 +732,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 				isRestrictedScopeRoot,
 				...boundary(parentScopeNodeId),
 				...extended(parentExtendedScopeNodeId),
-				...publicScope(place, parentPublicScopeNodeId),
+				...publicFlag(place),
 			});
 			await files_metadata_db_patch_file_scope(ctx, {
 				...args,
@@ -760,7 +750,7 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		isRestrictedScopeRoot,
 		...boundary(physicalParent?.restrictedScopeNodeId ?? null),
 		...extended(physicalParent?.extendedScopeNodeId ?? null),
-		...(physical ? publicScope(physical, physicalParent?.publicScopeNodeId) : {}),
+		...(physical ? publicFlag(physical) : {}),
 	});
 	await files_metadata_db_patch_file_scope(ctx, {
 		organizationId: args.organizationId,
@@ -822,24 +812,19 @@ export async function files_nodes_db_set_extended_scope(
 }
 
 /**
- * Turn "Anyone on the web" on or off for one item. Start a scope op with
- * `files_subtree_ops_db_start_rebuild` after this for the items inside a folder. The caller checks
- * who may do it.
+ * Turn the public flag of one file on or off. The caller checks who may do it, and that the node is a
+ * file.
  *
- * Off works while a Move holds the item: both Move views change now, so the Move end does not write
+ * Off works while a Move holds the file: both Move views change now, so the Move end does not write
  * the old value back.
  */
-export async function files_nodes_db_set_public_scope(
+export async function files_nodes_db_set_public(
 	ctx: MutationCtx,
 	args: { nodeId: Id<"files_nodes">; public: boolean },
 ) {
 	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (!node) return;
-	// An item that stops being public takes its parent's value. A restricted root starts a new area,
-	// so it takes nothing from above.
-	const fields = (target: Pick<Doc<"files_nodes">, "isRestrictedScopeRoot">, parent: Doc<"files_nodes"> | null) => ({
-		publicScopeNodeId: args.public ? node._id : target.isRestrictedScopeRoot ? undefined : parent?.publicScopeNodeId,
-	});
+	const fields = { isPublic: args.public ? (true as const) : undefined };
 	if (
 		node.moveCohortId ||
 		(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } }))
@@ -855,18 +840,10 @@ export async function files_nodes_db_set_public_scope(
 				)
 				.unique();
 			if (!place) continue;
-			const parent =
-				place.parentId === files_ROOT_ID
-					? null
-					: await files_saved_placement_db_get_node(ctx.db, place.parentId, fixedView);
-			await ctx.db.patch("files_saved_places", place._id, fields(place, parent));
+			await ctx.db.patch("files_saved_places", place._id, fields);
 		}
 	}
-	const physical = await ctx.db.get("files_nodes", args.nodeId);
-	if (!physical) return;
-	const physicalParent =
-		physical.parentId !== files_ROOT_ID ? await ctx.db.get("files_nodes", physical.parentId) : null;
-	await ctx.db.patch("files_nodes", args.nodeId, fields(physical, physicalParent));
+	await ctx.db.patch("files_nodes", args.nodeId, fields);
 }
 
 // #region write-policy
@@ -2392,6 +2369,11 @@ export const create_upload_node = mutation({
 		 * the next one, like the rich text editor uploading a pasted image.
 		 */
 		onConflict: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
+		/**
+		 * The document this upload goes into, like a pasted image. When that document has a public
+		 * link, a new image or video is public at once, so the link page shows it.
+		 */
+		documentNodeId: v.optional(v.id("files_nodes")),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -2647,6 +2629,38 @@ export const create_upload_node = mutation({
 		});
 		if (nodeIdResult._nay) {
 			return Result({ _nay: nodeIdResult._nay });
+		}
+
+		// The uploader can edit the new file, so they may make it public, like `set_node_public`. Only
+		// this upload and turning a link on make images public: a save never does, so it stays fast.
+		// The read check on the document keeps a caller from learning that a file they cannot open has
+		// a link.
+		if (args.documentNodeId && !userAuth.isAnonymous && files_is_inline_media_content_type(storedContentType)) {
+			const documentNodeId = args.documentNodeId;
+			const link = await ctx.db
+				.query("files_share_links")
+				.withIndex("by_organization_workspace_node", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("nodeId", documentNodeId),
+				)
+				.first();
+			const documentNode = link ? await files_saved_placement_db_get_node(ctx.db, documentNodeId) : null;
+			if (
+				link &&
+				documentNode &&
+				(await files_share_links_db_is_selected(ctx.db, link)) &&
+				(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					subject: { kind: "user", userId: userAuth.id, plugin: null },
+					fileNode: documentNode,
+					permission: "content.read",
+				}))
+			) {
+				await files_nodes_db_set_public(ctx, { nodeId: nodeIdResult._yay, public: true });
+			}
 		}
 
 		// Keep the URL end time so cleanup can remove a late PUT.
@@ -3729,14 +3743,8 @@ export async function files_nodes_db_rebuild_node(
 		extendedScopeNodeId:
 			restrictedScopeNodeId === node._id ? null : isExtendedRoot ? node._id : parent.extendedScopeNodeId,
 		...(isExtendedRoot ? { parentExtendedScopeNodeId: parent.extendedScopeNodeId } : {}),
-		// A public root keeps "Anyone on the web" only in its own area. A restricted root starts not
-		// public. Any other child takes its parent's value.
-		publicScopeNodeId:
-			node.publicScopeNodeId === node._id && node.restrictedScopeNodeId === restrictedScopeNodeId
-				? node._id
-				: restrictedScopeNodeId === node._id
-					? undefined
-					: parent.publicScopeNodeId,
+		// A public file stays public only in its own area.
+		isPublic: node.restrictedScopeNodeId === restrictedScopeNodeId ? node.isPublic : undefined,
 	};
 	if (
 		node.path === fields.path &&
@@ -3746,7 +3754,7 @@ export async function files_nodes_db_rebuild_node(
 		(!isBoundary || node.parentScopeNodeId === parent.restrictedScopeNodeId) &&
 		node.extendedScopeNodeId === fields.extendedScopeNodeId &&
 		(!isExtendedRoot || node.parentExtendedScopeNodeId === parent.extendedScopeNodeId) &&
-		node.publicScopeNodeId === fields.publicScopeNodeId
+		node.isPublic === fields.isPublic
 	) {
 		return false;
 	}
@@ -3874,13 +3882,8 @@ export async function files_nodes_db_restore_node(
 		...(args.node.parentExtendedScopeNodeId !== undefined
 			? { parentExtendedScopeNodeId: args.parent?.extendedScopeNodeId ?? null }
 			: {}),
-		// Like the scope op: a public root stays public only in its own area.
-		publicScopeNodeId:
-			args.node.publicScopeNodeId === args.node._id && args.node.restrictedScopeNodeId === restrictedScopeNodeId
-				? args.node._id
-				: restrictedScopeNodeId === args.node._id
-					? undefined
-					: args.parent?.publicScopeNodeId,
+		// Like the scope op: a public file stays public only in its own area.
+		isPublic: args.node.restrictedScopeNodeId === restrictedScopeNodeId ? args.node.isPublic : undefined,
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});

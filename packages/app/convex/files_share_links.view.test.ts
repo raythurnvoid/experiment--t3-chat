@@ -16,6 +16,7 @@ import {
 	seed_big_folder,
 	read_links,
 	link_on,
+	insert_link,
 	set_public,
 	insert_media_file,
 	insert_restricted_folder,
@@ -238,7 +239,7 @@ describe("get_share_link_view", () => {
 				`![Restricted](bonobo-file://${selfRestrictedImageId})`,
 			].join("\n\n"),
 		});
-		const link = await link_on(f, nodeId);
+		const link = await insert_link(f, nodeId);
 
 		const view = await view_of(f, link.token);
 		expect(view?.media).toEqual([
@@ -303,21 +304,16 @@ describe("get_share_link_view", () => {
 			path: "/team/private/b.png",
 			contentType: "image/png",
 		});
-		// `/team/assets` is public, so its image points at it. The private image is public by itself.
 		await f.t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", assetsId, { publicScopeNodeId: assetsId });
-			await ctx.db.patch("files_nodes", teamImageId, { restrictedScopeNodeId: teamId, publicScopeNodeId: assetsId });
-			await ctx.db.patch("files_nodes", privateImageId, {
-				restrictedScopeNodeId: privateId,
-				publicScopeNodeId: privateImageId,
-			});
+			await ctx.db.patch("files_nodes", teamImageId, { restrictedScopeNodeId: teamId, isPublic: true });
+			await ctx.db.patch("files_nodes", privateImageId, { restrictedScopeNodeId: privateId, isPublic: true });
 		});
 		const nodeId = await test_create_saved_text_file(f.t, {
 			membershipId: f.db.membershipId,
 			path: "/team/doc.md",
 			textContent: [teamImageId, openImageId, privateImageId].map((id) => `![a](bonobo-file://${id})`).join("\n\n"),
 		});
-		const link = await link_on(f, nodeId);
+		const link = await insert_link(f, nodeId);
 
 		// The private image is in another area than the page, and still shows. The open image is not public.
 		expect((await view_of(f, link.token))?.media).toEqual([
@@ -830,7 +826,7 @@ describe("create_share_link_download_urls", () => {
 		expect(written.status).toBe(200);
 		expect(await read_links(f.t, pageId)).toEqual([link]);
 		expect((await view_of(f, link.token))?.media.every((item) => !item.available)).toBe(true);
-		expect(await set_public(f, readableId)).toEqual({ public: "on" });
+		expect(await set_public(f, readableId)).toEqual({ public: true });
 
 		const view = await view_of(f, link.token);
 		expect(view?.media).toEqual([

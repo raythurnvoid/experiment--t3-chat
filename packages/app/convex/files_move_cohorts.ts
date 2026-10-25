@@ -157,7 +157,7 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		parentScopeNodeId: place.parentScopeNodeId,
 		extendedScopeNodeId: place.extendedScopeNodeId,
 		parentExtendedScopeNodeId: place.parentExtendedScopeNodeId,
-		publicScopeNodeId: place.publicScopeNodeId,
+		isPublic: place.isPublic,
 		...files_ancestor_fields(files_ancestor_ids(place)),
 	};
 }
@@ -1079,7 +1079,6 @@ async function db_rename_parents(
 			restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
 			isRestrictedScopeRoot: false,
 			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
-			publicScopeNodeId: parent?.publicScopeNodeId,
 			archiveOperationId: cursor.parentArchiveOperationId,
 			writePolicy: parent?.newChildWritePolicy ?? null,
 			newChildWritePolicy: parent?.newChildWritePolicy ?? null,
@@ -1418,14 +1417,9 @@ async function db_headers(
 		return tooLong;
 	}
 	const scope = physical.isRestrictedScopeRoot ? physical._id : (parent?.restrictedScopeNodeId ?? null);
-	// A public root stays public only inside its own restricted area. A Move into a restricted folder
-	// needs no manage there, so it must not bring the item's "Anyone on the web" along.
-	const publicScopeNodeId =
-		(old ?? physical).publicScopeNodeId === physical._id && (old ?? physical).restrictedScopeNodeId === scope
-			? physical._id
-			: scope === physical._id
-				? undefined
-				: parent?.publicScopeNodeId;
+	// A public file keeps its flag only inside its own restricted area. A Move into another area clears
+	// it, like a restrict does.
+	const isPublic = (old ?? physical).restrictedScopeNodeId === scope ? (old ?? physical).isPublic : undefined;
 	// The people added to the new parent's chain can open the item after the Move. An extended root keeps
 	// its own added people and links to that chain too.
 	const destinationExtendedScopeNodeId = scope === physical._id ? null : (parent?.extendedScopeNodeId ?? null);
@@ -1487,8 +1481,9 @@ async function db_headers(
 				});
 		}
 
-		// In the app, write on the destination is enough to move an item into a public or shared folder.
-		// An API key must not share or publish more than its scopes allow, so it also needs these scopes.
+		// In the app, write on the destination is enough to move an item into a shared folder. An API key
+		// must not share more than its scopes allow, so it also needs this scope. A Move never makes a file
+		// public: the flag stays only inside the same restricted area.
 		if (run?.origin.kind === "api") {
 			const apiScopes = (await ctx.db.get("api_credentials", run.origin.credentialId))?.scopes ?? [];
 			const before = old ?? physical;
@@ -1507,27 +1502,6 @@ async function db_headers(
 						message: `Moving "${name}" into or out of a restricted folder changes who can open it. That needs an API key with the files:permissions scope.`,
 					},
 				});
-			// An item that was already public through another public folder gains no new viewers. Check the
-			// old public folder like `db_get_public_state` does, because its pointer can be old while a scope
-			// job still runs.
-			if (!apiScopes.includes("files:publish") && publicScopeNodeId && publicScopeNodeId !== before.publicScopeNodeId) {
-				const beforePublicRoot = before.publicScopeNodeId ? await read_before(before.publicScopeNodeId) : null;
-				const wasPublic =
-					before.publicScopeNodeId === physical._id ||
-					(!!beforePublicRoot &&
-						beforePublicRoot.archiveOperationId === null &&
-						beforePublicRoot.publicScopeNodeId === beforePublicRoot._id &&
-						beforePublicRoot.restrictedScopeNodeId === before.restrictedScopeNodeId &&
-						beforePublicRoot.kind === "folder" &&
-						before.treePath.startsWith(beforePublicRoot.treePath));
-				if (!wasPublic)
-					return Result({
-						_nay: {
-							name: "permission_denied",
-							message: `Moving "${name}" here would make it public on the web. That needs an API key with the files:publish scope.`,
-						},
-					});
-			}
 			// The people added above the old place can already open the item. The check above keeps the
 			// item in its restricted area here, so the access checker's own walk tells if the destination
 			// chain head is in the old chain.
@@ -1683,7 +1657,7 @@ async function db_headers(
 			scope !== physical._id && physical.parentExtendedScopeNodeId !== undefined
 				? destinationExtendedScopeNodeId
 				: undefined,
-		publicScopeNodeId,
+		isPublic,
 		archiveOperationId: afterArchive,
 		// Already archived nodes keep their allowance even if the path changes.
 		archivedPathLength:

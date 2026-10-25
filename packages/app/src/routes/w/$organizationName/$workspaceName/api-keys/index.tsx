@@ -120,8 +120,7 @@ const API_KEY_SCOPE_ROWS = [
 	{ scope: "files:permissions", description: "Change write policies on files and folders you can manage." },
 	{
 		scope: "files:publish",
-		description:
-			'Turn "Anyone on the web" on or off for files and folders you can manage. Public pages then show their images and videos.',
+		description: "Choose whether public pages show images and videos you can edit.",
 	},
 	{ scope: "plugin_data:read", description: "Read the documents an installed plugin stores in this workspace." },
 	{ scope: "plugin_data:write", description: "Create, change, and delete those plugin documents." },

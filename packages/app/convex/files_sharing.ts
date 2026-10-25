@@ -20,6 +20,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { mutation } from "./functions.ts";
 import {
+	access_control_create_file_checker,
 	access_control_db_authorize_membership,
 	access_control_db_authorize_node,
 	access_control_db_authorize_service_account_grant,
@@ -32,12 +33,16 @@ import {
 } from "./access_control.ts";
 import {
 	files_nodes_db_set_extended_scope,
-	files_nodes_db_set_public_scope,
+	files_nodes_db_set_public,
 	files_nodes_db_set_restricted_scope,
 } from "./files_nodes.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
-import { files_share_links_db_check_live_file, files_share_links_db_check_live_node } from "./files_share_links.ts";
+import {
+	files_share_links_db_check_live_file,
+	files_share_links_db_check_live_node,
+	files_share_links_db_list_media_nodes,
+} from "./files_share_links.ts";
 import { files_share_links_db_delete, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
 import { files_subtree_ops_busy_tree_paths } from "./files_subtree_ops_db.ts";
@@ -69,6 +74,7 @@ import {
 	type access_control_GrantPermission,
 	type access_control_RoleRef,
 } from "../shared/access-control.ts";
+import { files_is_inline_media_content_type } from "../shared/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -307,9 +313,6 @@ const share_inherited_validator = v.object({
 	path: v.string(),
 	entries: v.union(v.array(share_entry_validator), v.null()),
 });
-
-/** "Anyone on the web" of one node. See `db_get_public_state`. */
-export const files_sharing_public_state_validator = v.union(v.literal("on"), v.literal("inherited"), v.literal("off"));
 
 type FileSharePrincipal =
 	| { kind: "user"; userId: Id<"users"> }
@@ -657,10 +660,17 @@ export const get_node_share_state = query({
 				}),
 			),
 			/**
-			 * "Anyone on the web": `on` when the node itself is public, `inherited` when a public folder
-			 * above makes it public, `off` otherwise.
+			 * The public flag of an image or video file: public link pages show it inside a linked file.
+			 * Null for a folder and for any other file. `canChange` needs "edit" on the file.
 			 */
-			public: files_sharing_public_state_validator,
+			public: v.union(
+				v.null(),
+				v.object({
+					isPublic: v.boolean(),
+					canChange: v.boolean(),
+					mediaKind: v.union(v.literal("image"), v.literal("video")),
+				}),
+			),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -768,7 +778,19 @@ export const get_node_share_state = query({
 			linkDoc && (await files_share_links_db_is_selected(ctx.db, linkDoc))
 				? { token: linkDoc.token, createdBy: linkDoc.createdBy, createdAt: linkDoc.createdAt }
 				: null;
-		const publicState = await db_get_public_state(ctx, node);
+		const publicFlag =
+			node.kind === "file" && files_is_inline_media_content_type(node.contentType)
+				? {
+						isPublic: node.isPublic === true,
+						// The checker follows "Add people" too, like `set_node_public`.
+						canChange: await access_control_create_file_checker(ctx, {
+							organizationId: organization._id,
+							workspaceId: membership.workspaceId,
+							subject: { kind: "user", userId: userAuth.id, plugin: null },
+						}).can(node, "content.write"),
+						mediaKind: node.contentType?.startsWith("video/") ? ("video" as const) : ("image" as const),
+					}
+				: null;
 
 		// The stored pointer can be out of date. Resolving it the same way the permission check does
 		// keeps the dialog saying the same thing that check does.
@@ -876,7 +898,7 @@ export const get_node_share_state = query({
 				inheritedFrom,
 				organizationOwnerUserId: organization.ownerUserId,
 				link,
-				public: publicState,
+				public: publicFlag,
 			};
 		}
 
@@ -901,7 +923,7 @@ export const get_node_share_state = query({
 			inheritedFrom,
 			organizationOwnerUserId: organization.ownerUserId,
 			link,
-			public: publicState,
+			public: publicFlag,
 		};
 	},
 });
@@ -1610,15 +1632,45 @@ export const set_node_share_link = mutation({
 			});
 		}
 
+		const token = crypto_random_hex(32);
 		await ctx.db.insert("files_share_links", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			nodeId: node._id,
-			token: crypto_random_hex(32),
+			token,
 			restrictedScopeNodeId: node.restrictedScopeNodeId,
 			createdBy: userAuth.id,
 			createdAt: Date.now(),
 		});
+
+		// A new link also makes the images and videos of the file public, but only those the caller can
+		// edit and read. So the caller never makes public an image they cannot edit.
+		//
+		// Only turning the link on does this, never a save. A save reads no images, so it stays fast.
+		// Images that a save adds later get a Show button in Sharing. This reads the file once, like one
+		// visitor of the page.
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
+		});
+		for (const mediaNode of await files_share_links_db_list_media_nodes(ctx, token)) {
+			if (
+				mediaNode.isPublic ||
+				!(await checker.can(mediaNode, "content.write")) ||
+				!(await checker.can(mediaNode, "content.read"))
+			) {
+				continue;
+			}
+			// A refusal, such as a Move that holds the image, leaves only that image gray. Sharing lists it
+			// as not shown, with its Show button.
+			await files_sharing_db_set_node_public(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				node: mediaNode,
+				enabled: true,
+			});
+		}
 
 		return Result({ _yay: null });
 	},
@@ -1626,42 +1678,15 @@ export const set_node_share_link = mutation({
 
 // #endregion public link
 
-// #region anyone on the web
+// #region public flag
 
 /**
- * "Anyone on the web" of one node: `on` when the node itself is public, `inherited` when a public
- * folder above makes it public, `off` otherwise. A pointer can be stale while a scope op runs, so the
- * root is checked the way the public page checks it.
- */
-async function db_get_public_state(ctx: QueryCtx | MutationCtx, node: Doc<"files_nodes">) {
-	if (node.publicScopeNodeId === node._id) {
-		return "on" as const;
-	}
-	const root =
-		node.publicScopeNodeId === undefined
-			? null
-			: await files_saved_placement_db_get_node(ctx.db, node.publicScopeNodeId);
-	return root &&
-		root.organizationId === node.organizationId &&
-		root.workspaceId === node.workspaceId &&
-		root.archiveOperationId === null &&
-		root.publicScopeNodeId === root._id &&
-		root.restrictedScopeNodeId === node.restrictedScopeNodeId &&
-		root.kind === "folder" &&
-		node.treePath.startsWith(root.treePath)
-		? ("inherited" as const)
-		: ("off" as const);
-}
-
-/**
- * Turn "Anyone on the web" on or off for one file or folder. The caller already checked "manage
- * sharing" on the node, and "view" for On. The app and the public API share this. Returns the state
- * after the change: Off on a node inside a public folder leaves it `inherited`.
+ * Turn the public flag of one file on or off. Public link pages then show the file when it is an image
+ * or video inside the linked file. It never opens a file by id. Folders have no flag.
  *
- * Public pages may then show the node's images and videos, and those of the items inside a folder down
- * to the nearest restricted folder. It never opens a file by id.
- *
- * Off only removes access, so it skips the On checks and works while a Move holds the node.
+ * The caller already checked "edit" on the file, and "view" for On. The app, the public API and the
+ * link door share this. Off only removes access, so it skips the On checks and works while a Move holds
+ * the file.
  */
 export async function files_sharing_db_set_node_public(
 	ctx: MutationCtx,
@@ -1670,23 +1695,23 @@ export async function files_sharing_db_set_node_public(
 		workspaceId: Id<"organizations_workspaces">;
 		node: Doc<"files_nodes">;
 		enabled: boolean;
-		userId: Id<"users">;
-		membership: Doc<"organizations_workspaces_users"> | null;
 	},
 ) {
 	const { node } = args;
-	const state = await db_get_public_state(ctx, node);
-	if (!args.enabled && state === "inherited") {
+	if (node.kind !== "file") {
 		return Result({
-			_nay: { message: "This item is public because a folder above it is public. Turn it off on that folder." },
+			_nay: {
+				name: "not_a_file",
+				message: "Only files can be public. Make the files inside this folder public instead.",
+			},
 		});
 	}
 	// Turning it on or off twice writes nothing.
-	if ((state === "on") === args.enabled) {
-		return Result({ _yay: { public: state } });
+	if (Boolean(node.isPublic) === args.enabled) {
+		return Result({ _yay: { public: args.enabled } });
 	}
 	if (args.enabled) {
-		// The Move decides the area the node lands in, and a public root keeps its flag only in its own area.
+		// The Move decides the area the file lands in, and a file keeps its flag only in its own area.
 		if (
 			node.moveCohortId ||
 			(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } }))
@@ -1695,8 +1720,8 @@ export async function files_sharing_db_set_node_public(
 				_nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." },
 			});
 		}
-		// A job on the node or a folder above, such as a restrict that has not reached the node yet, may
-		// still move it into another area. Wait for it. A job below the node changes nothing here.
+		// A job on a folder above, such as a restrict that has not reached the file yet, may still move it
+		// into another area. That would turn the flag off again, so wait for it.
 		for await (const op of ctx.db
 			.query("files_subtree_ops")
 			.withIndex("by_organization_workspace_kind", (q) =>
@@ -1722,26 +1747,13 @@ export async function files_sharing_db_set_node_public(
 		}
 	}
 
-	await files_nodes_db_set_public_scope(ctx, { nodeId: node._id, public: args.enabled });
-	// The items inside a folder follow through a scope op, which stops at restricted folders.
-	await files_subtree_ops_db_start_rebuild(ctx, {
-		kind: "scope",
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		userId: args.userId,
-		membership: args.membership,
-		roots: [{ node, oldTreePath: node.treePath }],
-		budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
-		now: Date.now(),
-	});
-
-	const updated = await files_saved_placement_db_get_node(ctx.db, node._id);
-	return Result({ _yay: { public: updated ? await db_get_public_state(ctx, updated) : ("off" as const) } });
+	await files_nodes_db_set_public(ctx, { nodeId: node._id, public: args.enabled });
+	return Result({ _yay: { public: args.enabled } });
 }
 
 /**
- * Turn "Anyone on the web" on or off for one file or folder. Both need "manage sharing" on its stored
- * scope, like the public link.
+ * Turn the public flag of one file on or off. Both need "edit" on the file: a person who can edit an
+ * image can already upload a copy of it into a linked document.
  */
 export const set_node_public = mutation({
 	args: {
@@ -1749,7 +1761,7 @@ export const set_node_public = mutation({
 		nodeId: v.id("files_nodes"),
 		enabled: v.boolean(),
 	},
-	returns: v_result({ _yay: v.object({ public: files_sharing_public_state_validator }) }),
+	returns: v_result({ _yay: v.object({ public: v.boolean() }) }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -1779,33 +1791,24 @@ export const set_node_public = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.permissions.manage",
-			fileNode: node,
-		});
+		const authorized = await access_control_db_authorize_membership(ctx, { userAuth, membership, permission: null });
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { organization, defaultWorkspaceId } = authorized._yay;
-
+		// The checker follows "Add people" too, so a person added to the file with Can edit may change it.
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
+		});
+		if (!(await checker.can(node, "content.write"))) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		// Nobody publishes content they cannot read themselves.
-		if (
-			args.enabled &&
-			!(await access_control_db_has_permission(ctx, {
-				organizationId: organization._id,
-				workspaceId: membership.workspaceId,
-				defaultWorkspaceId,
-				organizationOwnerUserId: organization.ownerUserId,
-				resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: node.restrictedScopeNodeId },
-				permission: "content.read",
-				userId: userAuth.id,
-			}))
-		) {
+		if (args.enabled && !(await checker.can(node, "content.read"))) {
 			return Result({
 				_nay: {
-					message: `You need "${access_control_PERMISSION_CATALOG["content.read"].label}" on this item to make it public`,
+					message: `You need "${access_control_PERMISSION_CATALOG["content.read"].label}" on this file to make it public`,
 				},
 			});
 		}
@@ -1815,10 +1818,8 @@ export const set_node_public = mutation({
 			workspaceId: membership.workspaceId,
 			node,
 			enabled: args.enabled,
-			userId: userAuth.id,
-			membership,
 		});
 	},
 });
 
-// #endregion anyone on the web
+// #endregion public flag

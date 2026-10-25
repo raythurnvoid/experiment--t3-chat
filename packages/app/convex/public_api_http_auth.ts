@@ -32,7 +32,7 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	"files:download": null,
 	// Policy management is checked on the actual file, including restricted folders.
 	"files:permissions": null,
-	// "Anyone on the web" is checked on the actual file, like policy management.
+	// The public flag is checked on the actual file, like policy management.
 	"files:publish": null,
 	// AI conversations belong to their creator, including guests.
 	"ai_chat:read": null,

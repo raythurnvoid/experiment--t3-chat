@@ -147,7 +147,7 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		parentScopeNodeId: place.parentScopeNodeId,
 		extendedScopeNodeId: place.extendedScopeNodeId,
 		parentExtendedScopeNodeId: place.parentExtendedScopeNodeId,
-		publicScopeNodeId: place.publicScopeNodeId,
+		isPublic: place.isPublic,
 		updatedAt: place.updatedAt,
 		updatedBy: place.updatedBy,
 		ancestor1: place.ancestor1,

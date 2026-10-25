@@ -74,13 +74,22 @@ const SHARE = {
 	canAddPeople: true,
 	inheritedFrom: { restricted: null, extended: [] },
 	link: null as { token: string; createdBy: string; createdAt: number } | null,
-	public: "off" as "on" | "inherited" | "off",
+	public: null as { isPublic: boolean; canChange: boolean; mediaKind: "image" | "video" } | null,
 };
 
 /**
  * A manager's view of a file, not a folder, so the public link section shows.
  */
 const FILE_SHARE = { ...SHARE, nodeName: "notes.md", nodeKind: "file", scope: null, access: "inherits" };
+
+/**
+ * A manager's view of an image file, so the section also has the public flag.
+ */
+const IMAGE_SHARE = {
+	...FILE_SHARE,
+	nodeName: "photo.png",
+	public: { isPublic: false, canChange: true, mediaKind: "image" as const },
+};
 
 /**
  * A folder in the open part of the workspace, with nobody added yet.
@@ -381,7 +390,7 @@ describe("FilesShareModal", () => {
 		expect(await screen.findByRole("option", { name: "Ada" })).toBeTruthy();
 	});
 
-	test("shows the public link section only to a manager of a file", () => {
+	test("shows the public link section to a manager of a file, and the flag alone to an image editor", () => {
 		// `SHARE` is a folder.
 		renderModal();
 		expect(linkSection()).toBeNull();
@@ -396,6 +405,16 @@ describe("FilesShareModal", () => {
 		renderModal();
 		expect(linkSection()?.dataset.shareLink).toBe("off");
 		expect(linkSection()?.textContent).toContain("Only people with access can open this file.");
+		// A file that is not an image or video has no flag.
+		expect(document.querySelector("[data-share-public]")).toBeNull();
+		cleanup();
+
+		// An editor who does not manage the image changes only the flag.
+		mockShareState({ ...IMAGE_SHARE, canManage: false });
+		renderModal();
+		expect(linkSection()?.dataset.shareLink).toBe("hidden");
+		expect(screen.queryByRole("combobox", { name: "Anyone with the link" })).toBeNull();
+		expect(screen.getByRole("combobox", { name: "Inside public documents" })).toBeTruthy();
 	});
 
 	test("turns the public link on", async () => {
@@ -452,15 +471,15 @@ describe("FilesShareModal", () => {
 		});
 	});
 
-	test("makes a file public and shows a refusal beside the control", async () => {
-		mockShareState(FILE_SHARE);
-		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
+	test("shows an image inside public documents and shows a refusal beside the control", async () => {
+		mockShareState(IMAGE_SHARE);
+		mutationMock.mockResolvedValue({ _yay: { public: true } });
 		renderModal();
 		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Anyone on the web" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Public" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Inside public documents" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Shown" }));
 
-		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Made public"));
+		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Shown inside public documents"));
 		expect(mutationMock).toHaveBeenCalledWith("set_public", {
 			membershipId: "membership_1",
 			nodeId: "node_1",
@@ -471,33 +490,28 @@ describe("FilesShareModal", () => {
 		mutationMock.mockResolvedValue({ _nay: { message: "This item is being moved. Try again when the Move ends." } });
 		renderModal();
 		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Anyone on the web" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Public" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Inside public documents" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Shown" }));
 
-		const section = screen.getByRole("region", { name: "Anyone on the web" });
+		const section = screen.getByRole("region", { name: "Public link" });
 		expect((await within(section).findByRole("alert")).textContent).toBe(
 			"This item is being moved. Try again when the Move ends.",
 		);
 		expect(toastErrorMock).not.toHaveBeenCalled();
 	});
 
-	test("hides the public control inside a public folder and from a non-manager", () => {
-		mockShareState({ ...FILE_SHARE, public: "inherited" });
+	test("shows the flag without a select to a manager who cannot edit the image", () => {
+		mockShareState({ ...IMAGE_SHARE, public: { ...IMAGE_SHARE.public, isPublic: true, canChange: false } });
 		renderModal();
-		const section = document.querySelector("[data-share-public]") as HTMLElement;
-		expect(section.dataset.sharePublic).toBe("inherited");
-		expect(section.textContent).toContain("A public folder above makes this file public.");
-		expect(screen.queryByRole("combobox", { name: "Anyone on the web" })).toBeNull();
-		cleanup();
-
-		mockShareState({ ...FILE_SHARE, canManage: false });
-		renderModal();
-		expect(document.querySelector("[data-share-public]")).toBeNull();
+		const flag = document.querySelector("[data-share-public]") as HTMLElement;
+		expect(flag.dataset.sharePublic).toBe("on");
+		expect(flag.textContent).toContain("Public documents that use this image show it.");
+		expect(screen.queryByRole("combobox", { name: "Inside public documents" })).toBeNull();
 	});
 
-	test("lists the media of a linked file and makes a readable image public", async () => {
+	test("lists the media of a linked file and shows an editable image", async () => {
 		mockShareState({ ...FILE_SHARE, link: LINK });
-		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canManage: true };
+		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canEdit: true };
 		mediaQueryMock
 			.mockResolvedValueOnce({
 				media: [
@@ -512,16 +526,16 @@ describe("FilesShareModal", () => {
 					{ ...photo, isPublic: true },
 				],
 			});
-		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
+		mutationMock.mockResolvedValue({ _yay: { public: true } });
 		renderModal();
 		await waitForDialogFocus();
 		// The list reads the whole file, so it loads only on request.
 		expect(mediaQueryMock).not.toHaveBeenCalled();
 
 		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		fireEvent.click(await screen.findByRole("button", { name: "Make Photo.png public" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Show Photo.png" }));
 		// A file the caller cannot open stays unnamed and has no button.
-		expect(screen.getByText("This video is not public, and you cannot open it.")).toBeTruthy();
+		expect(screen.getByText("This video is not shown, and you cannot open it.")).toBeTruthy();
 
 		await waitFor(() => expect(document.querySelector('[data-share-media="public"]')).toBeTruthy());
 		expect(screen.queryByRole("alert")).toBeNull();
@@ -538,16 +552,16 @@ describe("FilesShareModal", () => {
 
 	test("keeps focus in the media box when the new answer has no media", async () => {
 		mockShareState({ ...FILE_SHARE, link: LINK });
-		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canManage: true };
+		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canEdit: true };
 		// The file changed while the dialog was open, so the new answer lists nothing.
 		mediaQueryMock
 			.mockResolvedValueOnce({ media: [{ ...photo, isPublic: false }] })
 			.mockResolvedValueOnce({ media: [] });
-		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
+		mutationMock.mockResolvedValue({ _yay: { public: true } });
 		renderModal();
 		await waitForDialogFocus();
 		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		fireEvent.click(await screen.findByRole("button", { name: "Make Photo.png public" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Show Photo.png" }));
 
 		expect(await screen.findByText("This file has no saved images or videos.")).toBeTruthy();
 		// The list and its button are gone, so focus must not fall out of the dialog.
@@ -557,16 +571,14 @@ describe("FilesShareModal", () => {
 	test("keeps focus in the dialog when another tab ends the link", async () => {
 		mockShareState({ ...FILE_SHARE, link: LINK });
 		mediaQueryMock.mockResolvedValue({
-			media: [
-				{ available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canManage: true, isPublic: false },
-			],
+			media: [{ available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canEdit: true, isPublic: false }],
 		});
 		const { rerender } = renderModal();
 		await waitForDialogFocus();
 		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		const makePublic = await screen.findByRole("button", { name: "Make Photo.png public" });
-		makePublic.focus();
-		expect(document.activeElement).toBe(makePublic);
+		const show = await screen.findByRole("button", { name: "Show Photo.png" });
+		show.focus();
+		expect(document.activeElement).toBe(show);
 
 		// The live share state loses the link, so the media box and its focused button go away.
 		mockShareState(FILE_SHARE);
@@ -576,59 +588,36 @@ describe("FilesShareModal", () => {
 		await waitFor(() => expect(document.activeElement).toBe(linkSection()));
 	});
 
-	test("says when a public image still cannot show, and shows rows the caller cannot change", async () => {
+	test("says when a shown image still cannot show, and shows rows the caller cannot change", async () => {
 		mockShareState({ ...FILE_SHARE, link: LINK });
 		const photo = {
 			available: true,
 			kind: "image",
 			nodeId: "image_1",
 			name: "Photo.png",
-			canManage: true,
+			canEdit: true,
 			isPublic: false,
 		};
 		const media = [
 			photo,
-			{ available: true, kind: "image", nodeId: "image_2", name: "Logo.png", canManage: false, isPublic: false },
+			{ available: true, kind: "image", nodeId: "image_2", name: "Logo.png", canEdit: false, isPublic: false },
 			{ available: false, kind: "image", isPublic: true },
 		];
 		// The second answer still hides the photo, for example while its upload finishes.
 		mediaQueryMock.mockResolvedValue({ media });
-		mutationMock.mockResolvedValue({ _yay: { public: "on" } });
+		mutationMock.mockResolvedValue({ _yay: { public: true } });
 		renderModal();
 		await waitForDialogFocus();
 		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		fireEvent.click(await screen.findByRole("button", { name: "Make Photo.png public" }));
+		fireEvent.click(await screen.findByRole("button", { name: "Show Photo.png" }));
 
 		expect((await screen.findByRole("alert")).textContent).toBe(
-			"This file is public, but this page cannot show it yet. It may still be uploading.",
+			"Turned on, but the page cannot show this file yet. It may still be uploading.",
 		);
-		expect(screen.queryByRole("button", { name: "Make Logo.png public" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Show Logo.png" })).toBeNull();
 		const logoRow = screen.getByText("Logo.png").closest("li")!;
-		expect(within(logoRow).getByText("Not public")).toBeTruthy();
-		expect(screen.getByText("This image is public.")).toBeTruthy();
-	});
-
-	test("says an item stays public when a folder above still makes it public", async () => {
-		mockShareState({ ...FILE_SHARE, public: "on" });
-		// Like the live query, the dialog reads the new state after the write.
-		mutationMock.mockImplementation(async () => {
-			mockShareState({ ...FILE_SHARE, public: "inherited" });
-			return { _yay: { public: "inherited" } };
-		});
-		renderModal();
-		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Anyone on the web" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Not public" }));
-
-		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Still public through a folder above"));
-		// The select is gone for an inherited item, so focus must not fall out of the dialog.
-		await waitFor(() => expect(screen.queryByRole("combobox", { name: "Anyone on the web" })).toBeNull());
-		expect(document.activeElement).toBe(document.querySelector('[data-share-public="inherited"]'));
-		expect(mutationMock).toHaveBeenCalledWith("set_public", {
-			membershipId: "membership_1",
-			nodeId: "node_1",
-			enabled: false,
-		});
+		expect(within(logoRow).getByText("Not shown")).toBeTruthy();
+		expect(screen.getByText("This image is shown.")).toBeTruthy();
 	});
 
 	test("names a creator who left, and shows Unknown when the profile is missing or failed", () => {

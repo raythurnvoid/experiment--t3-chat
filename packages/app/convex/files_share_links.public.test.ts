@@ -1,5 +1,5 @@
-// "Anyone on the web": a public page shows an embedded image or video only when the media file itself
-// is public. These tests cover the view check, the switch, and every writer of `publicScopeNodeId`.
+// A public page shows an embedded image or video only when the media file itself is public. These tests
+// cover the view check, the switch, the link and upload doors that set it, and every writer of `isPublic`.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { api, components, internal } from "./_generated/api.js";
@@ -7,7 +7,6 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	test_create_saved_text_file,
 	test_db_hold_move_source,
-	test_mocks,
 	test_mocks_fill_db_with,
 	test_move_nodes,
 } from "./setup.test.ts";
@@ -21,7 +20,6 @@ import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	mock_share_storage,
 	fixture,
@@ -31,6 +29,7 @@ import {
 	seed_big_folder,
 	read_links,
 	link_on,
+	insert_link,
 	set_public,
 	insert_media_file,
 	insert_restricted_folder,
@@ -56,7 +55,8 @@ function read_node(f: Fixture, nodeId: Id<"files_nodes">) {
 }
 
 /**
- * A saved page at `path` that embeds each id as an image, with a live public link.
+ * A saved page at `path` that embeds each id as an image, with a live public link that made no image
+ * public.
  */
 async function linked_page(f: Fixture, path: string, imageIds: string[]) {
 	const pageId = await test_create_saved_text_file(f.t, {
@@ -64,7 +64,7 @@ async function linked_page(f: Fixture, path: string, imageIds: string[]) {
 		path,
 		textContent: imageIds.map((id, index) => `![Image ${index}](bonobo-file://${id})`).join("\n\n"),
 	});
-	return { pageId, link: await link_on(f, pageId) };
+	return { pageId, link: await insert_link(f, pageId) };
 }
 
 /** Whether each embed of the page shows. */
@@ -83,16 +83,19 @@ async function create_folder(f: Fixture, parentId: Id<"files_nodes"> | "root", p
 	return created._yay.nodeId;
 }
 
-/** An open folder `/${name}` with an image inside, both public after the folder's scope job. */
-async function public_folder_with_image(f: Fixture, name: string) {
+/** An open folder `/${name}` with a public image inside. */
+async function folder_with_public_image(f: Fixture, name: string) {
 	const folderId = await create_folder(f, "root", name);
-	const imageId = await insert_media_file(f, { parentId: folderId, path: `/${name}/a.png`, contentType: "image/png" });
-	expect(await set_public(f, folderId)).toEqual({ public: "on" });
-	expect((await read_node(f, imageId))?.publicScopeNodeId).toBe(folderId);
+	const imageId = await insert_media_file(f, {
+		parentId: folderId,
+		path: `/${name}/a.png`,
+		contentType: "image/png",
+		public: true,
+	});
 	return { folderId, imageId };
 }
 
-/** Set an image node's fields by hand, like a stale pointer that no writer made. */
+/** Set an image node's fields by hand, like a stale value that no writer made. */
 function patch_node(f: Fixture, nodeId: Id<"files_nodes">, fields: Partial<Doc<"files_nodes">>) {
 	return f.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, fields));
 }
@@ -126,7 +129,12 @@ async function insert_guest(f: Fixture, clerkUserId: string) {
 }
 
 /** The owner adds `userId` to `nodeId` through Add people. */
-async function add_person(f: Fixture, nodeId: Id<"files_nodes">, userId: Id<"users">, level: "read" | "write") {
+async function add_person(
+	f: Fixture,
+	nodeId: Id<"files_nodes">,
+	userId: Id<"users">,
+	level: "read" | "write" | "manage",
+) {
 	await reset_rate_limits(f.t, [f.db.userId]);
 	expect(
 		await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
@@ -222,7 +230,7 @@ function insert_service_account(f: Fixture, name: string) {
 
 describe("view", () => {
 	describe("images added by a writer who cannot read them", () => {
-		test("a guest editor of an open page adds an open image: hidden until a manager makes it public", async () => {
+		test("a guest editor of an open page adds an open image: hidden until an editor makes it public", async () => {
 			const f = await fixture();
 			mock_object_store();
 			const pageId = await test_create_saved_text_file(f.t, {
@@ -336,116 +344,6 @@ describe("view", () => {
 		});
 	});
 
-	test("shows an image inside a public folder, and one uploaded or saved there later", async () => {
-		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
-
-		// An upload copies the folder's value when it creates the node.
-		await reset_rate_limits(f.t, [f.db.userId]);
-		const uploaded = await f.asOwner.mutation(api.files_nodes.create_upload_node, {
-			membershipId: f.db.membershipId,
-			parentId: folderId,
-			filename: "later.png",
-			contentType: "image/png",
-			size: 4,
-		});
-		if (uploaded._nay) throw new Error(uploaded._nay.message);
-		const uploadedId = uploaded._yay.nodeId;
-		expect((await read_node(f, uploadedId))?.publicScopeNodeId).toBe(folderId);
-		// Finish the upload by hand. The R2 event does this in the app.
-		await f.t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", uploadedId);
-			await ctx.db.patch("files_r2_assets", node!.assetId!, {
-				unfinalizedExpiresAt: undefined,
-				r2Key: "test/later.png",
-			});
-		});
-
-		// A draft saved into the folder gets the folder's value from its Move.
-		const savedId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/pub/notes.md" });
-		expect((await read_node(f, savedId))?.publicScopeNodeId).toBe(folderId);
-
-		const { link } = await linked_page(f, "/page.md", [imageId, uploadedId]);
-		expect(await shown(f, link.token)).toEqual([true, true]);
-	});
-
-	test("Off on a folder hides its images at once, before its job reaches them", async () => {
-		const f = await fixture();
-		const big = await seed_big_folder(f, files_subtree_ops_STEP_MAX_NODES + 1);
-		const imageId = await insert_media_file(f, {
-			parentId: big.folderId,
-			path: "/big/zz.png",
-			contentType: "image/png",
-		});
-		await set_public(f, big.folderId);
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBe(big.folderId);
-		const { link } = await linked_page(f, "/page.md", [imageId]);
-		expect(await shown(f, link.token)).toEqual([true]);
-
-		await reset_rate_limits(f.t, [f.db.userId]);
-		expect(
-			await f.asOwner.mutation(api.files_sharing.set_node_public, {
-				membershipId: f.db.membershipId,
-				nodeId: big.folderId,
-				enabled: false,
-			}),
-		).toEqual({ _yay: { public: "off" } });
-		// The job has not reached the image, so only the folder's own state hides it.
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBe(big.folderId);
-		expect(await shown(f, link.token)).toEqual([false]);
-
-		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBeUndefined();
-		expect(await shown(f, link.token)).toEqual([false]);
-	});
-
-	test("hides an image whose pointer names a public file that only starts its path", async () => {
-		const f = await fixture();
-		const fileId = await insert_media_file(f, {
-			parentId: "root",
-			path: "/a.png",
-			contentType: "image/png",
-			public: true,
-		});
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/a.png.jpg", contentType: "image/jpeg" });
-		await patch_node(f, imageId, { publicScopeNodeId: fileId });
-		const { link } = await linked_page(f, "/page.md", [imageId, fileId]);
-
-		// Control: the public file itself shows.
-		expect(await shown(f, link.token)).toEqual([false, true]);
-	});
-
-	test("hides an image whose public folder is archived, or in another area, or in another workspace", async () => {
-		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
-		const { link } = await linked_page(f, "/page.md", [imageId]);
-		expect(await shown(f, link.token)).toEqual([true]);
-		const folder = (await read_node(f, folderId))!;
-		const image = (await read_node(f, imageId))!;
-
-		await patch_node(f, folderId, { archiveOperationId: "archive-op" });
-		expect(await shown(f, link.token)).toEqual([false]);
-		await f.t.run((ctx) => ctx.db.replace("files_nodes", folderId, folder));
-		expect(await shown(f, link.token)).toEqual([true]);
-
-		// The image stores another live area than its public folder, like a job that has not reached it.
-		const teamId = await insert_restricted_folder(f, "team");
-		await patch_node(f, imageId, { restrictedScopeNodeId: teamId });
-		expect(await shown(f, link.token)).toEqual([false]);
-		await f.t.run((ctx) => ctx.db.replace("files_nodes", imageId, image));
-		expect(await shown(f, link.token)).toEqual([true]);
-
-		// The public folder belongs to another workspace. Only the tenant check of the folder refuses it.
-		await f.t.run(async (ctx) => {
-			const other = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other" });
-			await ctx.db.patch("files_nodes", folderId, {
-				organizationId: other.organizationId,
-				workspaceId: other.workspaceId,
-			});
-		});
-		expect(await shown(f, link.token)).toEqual([false]);
-	});
-
 	test("hides a public image of another workspace", async () => {
 		const f = await fixture();
 		const imageId = await insert_media_file(f, {
@@ -502,8 +400,8 @@ describe("view", () => {
 		expect(await shown(f, link.token)).toEqual([false]);
 	});
 
-	// Each image reads its public folder and checks the folder's area, so this is the most a page reads.
-	test("shows 50 images of one public restricted folder on an open page", async () => {
+	// Each image reads its own node and checks its area, so this is the most a page reads.
+	test("shows 50 public images of one restricted folder on an open page", async () => {
 		const f = await fixture();
 		const teamId = await insert_restricted_folder(f, "team");
 		const imageIds: Id<"files_nodes">[] = [];
@@ -512,12 +410,11 @@ describe("view", () => {
 				parentId: teamId,
 				path: `/team/photo-${index}.png`,
 				contentType: "image/png",
+				public: true,
 			});
 			await patch_node(f, imageId, { restrictedScopeNodeId: teamId });
 			imageIds.push(imageId);
 		}
-		await set_public(f, teamId);
-		expect((await read_node(f, imageIds[49]!))?.publicScopeNodeId).toBe(teamId);
 		const { link } = await linked_page(f, "/page.md", imageIds);
 
 		expect(await shown(f, link.token)).toEqual(imageIds.map(() => true));
@@ -549,6 +446,97 @@ describe("view", () => {
 	});
 });
 
+describe("set_node_share_link", () => {
+	test("turning a link on makes public only the images the caller can edit", async () => {
+		const f = await fixture();
+		// The member manages the page. The member role edits open files, but not the restricted folders.
+		const pagesId = await insert_restricted_folder(f, "pages");
+		const openId = await insert_media_file(f, { parentId: "root", path: "/open.png", contentType: "image/png" });
+		const viewOnlyFolderId = await insert_restricted_folder(f, "view");
+		const viewOnlyId = await insert_media_file(f, {
+			parentId: viewOnlyFolderId,
+			path: "/view/a.png",
+			contentType: "image/png",
+		});
+		await patch_node(f, viewOnlyId, { restrictedScopeNodeId: viewOnlyFolderId });
+		const secretFolderId = await insert_restricted_folder(f, "secret");
+		const secretId = await insert_media_file(f, {
+			parentId: secretFolderId,
+			path: "/secret/a.png",
+			contentType: "image/png",
+		});
+		await patch_node(f, secretId, { restrictedScopeNodeId: secretFolderId });
+		const textId = await insert_media_file(f, { parentId: "root", path: "/notes.txt", contentType: "text/plain" });
+		const pageId = await test_create_saved_text_file(f.t, {
+			membershipId: f.db.membershipId,
+			path: "/pages/page.md",
+			textContent: [openId, viewOnlyId, secretId, textId]
+				.map((id, index) => `![Image ${index}](bonobo-file://${id})`)
+				.join("\n\n"),
+		});
+		await add_person(f, pagesId, f.memberId, "manage");
+		await add_person(f, viewOnlyFolderId, f.memberId, "read");
+
+		await reset_rate_limits(f.t, [f.memberId]);
+		expect(
+			await f.asMember.mutation(api.files_sharing.set_node_share_link, {
+				membershipId: f.memberMembershipId,
+				nodeId: pageId,
+				enabled: true,
+			}),
+		).toEqual({ _yay: null });
+
+		const [link] = await read_links(f.t, pageId);
+		expect(await shown(f, link!.token)).toEqual([true, false, false, false]);
+		for (const nodeId of [viewOnlyId, secretId, textId]) {
+			expect((await read_node(f, nodeId))?.isPublic).toBeUndefined();
+		}
+	});
+});
+
+describe("create_upload_node", () => {
+	const upload = async (
+		f: Fixture,
+		as: Fixture["asOwner"],
+		args: { filename: string; contentType: string; documentNodeId?: Id<"files_nodes"> },
+	) => {
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const uploaded = await as.mutation(api.files_nodes.create_upload_node, {
+			membershipId: f.db.membershipId,
+			parentId: "root",
+			size: 4,
+			...args,
+		});
+		if (uploaded._nay) throw new Error(uploaded._nay.message);
+		return (await read_node(f, uploaded._yay.nodeId))!;
+	};
+
+	test("an image uploaded into a document with a live link is public, and nothing else is", async () => {
+		const f = await fixture();
+		const { pageId } = await linked_page(f, "/page.md", []);
+		const unlinkedId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/other.md" });
+		const asAnonymousOwner = f.t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: f.db.userId });
+
+		expect(
+			(await upload(f, f.asOwner, { filename: "a.png", contentType: "image/png", documentNodeId: pageId })).isPublic,
+		).toBe(true);
+		expect(
+			(await upload(f, f.asOwner, { filename: "b.png", contentType: "image/png", documentNodeId: unlinkedId }))
+				.isPublic,
+		).toBeUndefined();
+		expect((await upload(f, f.asOwner, { filename: "c.png", contentType: "image/png" })).isPublic).toBeUndefined();
+		expect(
+			(await upload(f, f.asOwner, { filename: "d.pdf", contentType: "application/pdf", documentNodeId: pageId }))
+				.isPublic,
+		).toBeUndefined();
+		// An anonymous account cannot publish, like the public link.
+		expect(
+			(await upload(f, asAnonymousOwner, { filename: "e.png", contentType: "image/png", documentNodeId: pageId }))
+				.isPublic,
+		).toBeUndefined();
+	});
+});
+
 describe("set_node_public", () => {
 	const set_as = async (
 		f: Fixture,
@@ -561,7 +549,7 @@ describe("set_node_public", () => {
 		return await as.mutation(api.files_sharing.set_node_public, { membershipId, nodeId, enabled });
 	};
 
-	test("refuses a member without manage, a guest with Can edit, a viewer, and an anonymous On", async () => {
+	test("an editor may change it, and a viewer or an anonymous On may not", async () => {
 		const f = await fixture();
 		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
 		const editor = await insert_guest(f, "clerk-editor");
@@ -570,30 +558,30 @@ describe("set_node_public", () => {
 		await add_person(f, imageId, viewer.userId, "read");
 		const asAnonymousOwner = f.t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: f.db.userId });
 
-		expect((await set_as(f, f.asMember, f.memberMembershipId, imageId, true))._nay?.message).toBe("Permission denied");
 		await reset_rate_limits(f.t, [editor.userId, viewer.userId]);
-		expect((await set_as(f, editor.as, editor.membershipId, imageId, true))._nay?.message).toBe("Permission denied");
 		expect((await set_as(f, viewer.as, viewer.membershipId, imageId, true))._nay?.message).toBe("Permission denied");
 		expect((await set_as(f, asAnonymousOwner, f.db.membershipId, imageId, true))._nay?.message).toBe(
 			"Sign in to make files public",
 		);
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBeUndefined();
+		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 
-		// Control: the signed-in owner may.
-		expect(await set_as(f, f.asOwner, f.db.membershipId, imageId, true)).toEqual({ _yay: { public: "on" } });
+		expect(await set_as(f, editor.as, editor.membershipId, imageId, true)).toEqual({ _yay: { public: true } });
+		expect((await read_node(f, imageId))?.isPublic).toBe(true);
+		expect((await set_as(f, viewer.as, viewer.membershipId, imageId, false))._nay?.message).toBe("Permission denied");
+		expect((await read_node(f, imageId))?.isPublic).toBe(true);
+		// The member role edits every open file.
+		expect(await set_as(f, f.asMember, f.memberMembershipId, imageId, false)).toEqual({ _yay: { public: false } });
+		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 	});
 
-	test("refuses Off by a member without manage, and the flag stays", async () => {
+	test("refuses a folder, a node of another workspace, and a node in a bound area", async () => {
 		const f = await fixture();
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-		await set_public(f, imageId);
+		const folderId = await create_folder(f, "root", "pub");
+		expect(await set_as(f, f.asOwner, f.db.membershipId, folderId, true)).toMatchObject({
+			_nay: { name: "not_a_file" },
+		});
+		expect((await read_node(f, folderId))?.isPublic).toBeUndefined();
 
-		expect((await set_as(f, f.asMember, f.memberMembershipId, imageId, false))._nay?.message).toBe("Permission denied");
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBe(imageId);
-	});
-
-	test("refuses a node of another workspace and a node in a bound area", async () => {
-		const f = await fixture();
 		const other = await f.t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org", workspaceName: "other" }),
 		);
@@ -605,7 +593,7 @@ describe("set_node_public", () => {
 		expect((await set_as(f, f.asOwner, f.db.membershipId, team.fileId, true))._nay?.message).toBe(
 			"A plugin decides who can read this item, so it cannot be public",
 		);
-		expect((await read_node(f, team.fileId))?.publicScopeNodeId).toBeUndefined();
+		expect((await read_node(f, team.fileId))?.isPublic).toBeUndefined();
 	});
 
 	test("refuses On while a scope job above runs, and for a node a Move reserved", async () => {
@@ -623,7 +611,7 @@ describe("set_node_public", () => {
 		expect((await set_as(f, f.asOwner, f.db.membershipId, big.nodeId, true))._nay?.message).toBe(
 			"Wait until the access change of this item or a folder above finishes",
 		);
-		expect((await read_node(f, big.nodeId))?.publicScopeNodeId).toBeUndefined();
+		expect((await read_node(f, big.nodeId))?.isPublic).toBeUndefined();
 
 		// The reservation holds the Move slot, so it comes last: later saves would wait for it.
 		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
@@ -640,57 +628,13 @@ describe("set_node_public", () => {
 			),
 		);
 		expect((await set_as(f, f.asOwner, f.db.membershipId, imageId, true))._nay?.name).toBe("move_busy");
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBeUndefined();
+		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 	});
 
-	test("a scope job below the node does not block On", async () => {
+	test("a repeated On answers at once, even while a Move holds the file", async () => {
 		const f = await fixture();
-		const parentId = await create_folder(f, "root", "p");
-		// `/p/big` has more children than one job step writes, so its restrict job keeps running.
-		const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/p/big/zz.md" });
-		const bigId = (await read_node(f, fileId))!.parentId as Id<"files_nodes">;
-		await f.t.run(async (ctx) => {
-			for (let index = 0; index < files_subtree_ops_STEP_MAX_NODES + 1; index++) {
-				const name = `f${String(index).padStart(3, "0")}`;
-				await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: f.db.organizationId,
-					workspaceId: f.db.workspaceId,
-					createdBy: f.db.userId,
-					updatedBy: f.db.userId,
-					parentId: bigId,
-					name,
-					sortName: files_sort_text_key(name),
-					path: `/p/big/${name}`,
-					treePath: `/p/big/${name}/`,
-					pathDepth: 3,
-				});
-			}
-		});
-		await reset_rate_limits(f.t, [f.db.userId]);
-		expect(
-			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: bigId }))
-				._nay,
-		).toBeUndefined();
-		// The job has not reached the file yet.
-		expect((await read_node(f, fileId))?.restrictedScopeNodeId).toBeNull();
-
-		expect(await set_as(f, f.asOwner, f.db.membershipId, parentId, true)).toEqual({ _yay: { public: "on" } });
-		expect((await read_node(f, parentId))?.publicScopeNodeId).toBe(parentId);
-	});
-
-	test("Off on an item public through a folder above is refused, and a repeated On answers at once", async () => {
-		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
-
-		expect((await set_as(f, f.asOwner, f.db.membershipId, imageId, false))._nay?.message).toBe(
-			"This item is public because a folder above it is public. Turn it off on that folder.",
-		);
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBe(folderId);
-
-		// A repeated On answers at once, so a double click never fails, even while a Move holds the item.
-		const imageAlone = await insert_media_file(f, { parentId: "root", path: "/alone.png", contentType: "image/png" });
-		expect(await set_public(f, imageAlone)).toEqual({ public: "on" });
+		const imageId = await insert_media_file(f, { parentId: "root", path: "/alone.png", contentType: "image/png" });
+		expect(await set_public(f, imageId)).toEqual({ public: true });
 		await f.t.run((ctx) =>
 			test_db_hold_move_source(
 				ctx,
@@ -700,17 +644,18 @@ describe("set_node_public", () => {
 					userId: f.db.userId,
 					membershipId: f.db.membershipId,
 				},
-				{ kind: "saved", id: imageAlone },
+				{ kind: "saved", id: imageId },
 			),
 		);
-		expect(await set_as(f, f.asOwner, f.db.membershipId, imageAlone, true)).toEqual({ _yay: { public: "on" } });
+		// So a double click never fails.
+		expect(await set_as(f, f.asOwner, f.db.membershipId, imageId, true)).toEqual({ _yay: { public: true } });
 	});
 });
 
 describe("writers", () => {
-	test("restricting the public folder itself hides its images at once and keeps them hidden", async () => {
+	test("restricting a folder clears the flag of its images after the job", async () => {
 		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
+		const { folderId, imageId } = await folder_with_public_image(f, "pub");
 		const { link } = await linked_page(f, "/page.md", [imageId]);
 		expect(await shown(f, link.token)).toEqual([true]);
 
@@ -719,54 +664,27 @@ describe("writers", () => {
 			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderId }))
 				._nay,
 		).toBeUndefined();
-		// A new restricted root starts not public.
-		expect((await read_node(f, folderId))?.publicScopeNodeId).toBeUndefined();
-		expect(await shown(f, link.token)).toEqual([false]);
-
-		// After the job the image is in the folder's area, so a kept flag would show it again.
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+		// The image is in the folder's area now, so a kept flag would show it again.
 		const image = await read_node(f, imageId);
 		expect(image?.restrictedScopeNodeId).toBe(folderId);
-		expect(image?.publicScopeNodeId).toBeUndefined();
+		expect(image?.isPublic).toBeUndefined();
 		expect(await shown(f, link.token)).toEqual([false]);
 	});
 
-	test("restricting a folder above a public folder hides its images after the job", async () => {
+	test("unrestricting a folder clears the flag of its images too", async () => {
 		const f = await fixture();
-		const aboveId = await create_folder(f, "root", "a");
-		const folderId = await create_folder(f, aboveId, "pub");
-		const imageId = await insert_media_file(f, { parentId: folderId, path: "/a/pub/x.png", contentType: "image/png" });
-		await set_public(f, folderId);
-		const { link } = await linked_page(f, "/page.md", [imageId]);
-		expect(await shown(f, link.token)).toEqual([true]);
-
-		await reset_rate_limits(f.t, [f.db.userId]);
-		expect(
-			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: aboveId }))
-				._nay,
-		).toBeUndefined();
-		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-		const folder = await read_node(f, folderId);
-		expect(folder?.restrictedScopeNodeId).toBe(aboveId);
-		expect(folder?.publicScopeNodeId).toBeUndefined();
-		expect(await shown(f, link.token)).toEqual([false]);
-	});
-
-	// Accepted rule: the items of a folder that stops being restricted take the value of the folder above.
-	test("unrestricting a folder inside a public folder makes its images public after the job", async () => {
-		const f = await fixture();
-		const folderId = await create_folder(f, "root", "pub");
-		await set_public(f, folderId);
-		const inner = await create_restricted_folder(f, "/pub/r");
-		expect((await read_node(f, inner.folderId))?.publicScopeNodeId).toBeUndefined();
+		const inner = await create_restricted_folder(f, "/r");
 		const imageId = await insert_media_file(f, {
 			parentId: inner.folderId,
-			path: "/pub/r/x.png",
+			path: "/r/x.png",
 			contentType: "image/png",
+			public: true,
 		});
 		await patch_node(f, imageId, { restrictedScopeNodeId: inner.folderId });
 		const { link } = await linked_page(f, "/page.md", [imageId]);
-		expect(await shown(f, link.token)).toEqual([false]);
+		expect(await shown(f, link.token)).toEqual([true]);
 
 		await reset_rate_limits(f.t, [f.db.userId]);
 		expect(
@@ -778,8 +696,10 @@ describe("writers", () => {
 			)._nay,
 		).toBeUndefined();
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-		expect(await read_node(f, imageId)).toMatchObject({ restrictedScopeNodeId: null, publicScopeNodeId: folderId });
-		expect(await shown(f, link.token)).toEqual([true]);
+		const image = await read_node(f, imageId);
+		expect(image?.restrictedScopeNodeId).toBeNull();
+		expect(image?.isPublic).toBeUndefined();
+		expect(await shown(f, link.token)).toEqual([false]);
 	});
 
 	test("a restore to the same place keeps a public image public, and a restore to another area clears it", async () => {
@@ -825,23 +745,25 @@ describe("writers", () => {
 		await archive([teamId]);
 
 		await restore([openId, teamImageId]);
-		expect(await read_node(f, openId)).toMatchObject({ archiveOperationId: null, publicScopeNodeId: openId });
+		expect(await read_node(f, openId)).toMatchObject({ archiveOperationId: null, isPublic: true });
 		const teamImage = await read_node(f, teamImageId);
 		expect(teamImage).toMatchObject({ archiveOperationId: null, path: "/a.png", restrictedScopeNodeId: null });
-		expect(teamImage?.publicScopeNodeId).toBeUndefined();
+		expect(teamImage?.isPublic).toBeUndefined();
 		expect(await shown(f, link.token)).toEqual([true, false]);
 	});
 
-	/** Copy one file into `targetParentId` as the owner, and return the new node. */
-	const copy_file = async (f: Fixture, sourceId: Id<"files_nodes">, targetParentId: Id<"files_nodes">) => {
+	test("a copy of a public image is not public", async () => {
+		const f = await fixture();
+		const { imageId } = await folder_with_public_image(f, "pub");
+		const plainId = await create_folder(f, "root", "plain");
 		mock_transfer_storage();
 		vi.spyOn(r2_server_side_copy, "copy_object").mockResolvedValue({ outcome: "copied", size: 4, etag: "copied" });
 		const started = await start_transfer(f.asOwner, {
 			membershipId: f.db.membershipId,
-			requestId: `copy-${sourceId}`,
+			requestId: `copy-${imageId}`,
 			kind: "copy",
-			sourceIds: [sourceId],
-			targetParentId,
+			sourceIds: [imageId],
+			targetParentId: plainId,
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		// The Copy helper only reads `t`, `db.membershipId` and `asUser` of its fixture.
@@ -849,61 +771,42 @@ describe("writers", () => {
 			typeof finish_copy_with_workers
 		>[0];
 		expect((await finish_copy_with_workers(copyFixture, started._yay.runId)).activity.status).toBe("succeeded");
-		return await f.t.run((ctx) =>
+		const copy = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_nodes")
-				.filter((q) => q.eq(q.field("parentId"), targetParentId))
+				.filter((q) => q.eq(q.field("parentId"), plainId))
 				.first(),
 		);
-	};
 
-	test("a copy of a public image into a folder that is not public is not public", async () => {
-		const f = await fixture();
-		const { imageId } = await public_folder_with_image(f, "pub");
-		const plainId = await create_folder(f, "root", "plain");
-
-		const copy = await copy_file(f, imageId, plainId);
 		expect(copy?.name).toBe("a.png");
-		expect(copy?.publicScopeNodeId).toBeUndefined();
+		expect(copy?.isPublic).toBeUndefined();
 		const { link } = await linked_page(f, "/page.md", [copy!._id, imageId]);
 		expect(await shown(f, link.token)).toEqual([false, true]);
-	});
-
-	test("a copy into a public folder is public and shows", async () => {
-		const f = await fixture();
-		const folderId = await create_folder(f, "root", "pub");
-		await set_public(f, folderId);
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-
-		const copy = await copy_file(f, imageId, folderId);
-		expect(copy?.name).toBe("photo.png");
-		expect(copy?.publicScopeNodeId).toBe(folderId);
-		const { link } = await linked_page(f, "/page.md", [copy!._id, imageId]);
-		expect(await shown(f, link.token)).toEqual([true, false]);
 	});
 });
 
 describe("plugin binding", () => {
-	test("binding a restricted public folder clears its flag, and a detach does not bring it back", async () => {
+	test("binding a restricted public file clears its flag, and a detach does not bring it back", async () => {
 		const f = await fixture();
-		const team = await create_restricted_folder(f, "/team");
-		await set_public(f, team.folderId);
-		const imageId = await insert_media_file(f, {
-			parentId: team.folderId,
-			path: "/team/a.png",
-			contentType: "image/png",
-		});
-		await patch_node(f, imageId, { restrictedScopeNodeId: team.folderId, publicScopeNodeId: team.folderId });
+		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
+		await reset_rate_limits(f.t, [f.db.userId]);
+		expect(
+			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: imageId }))
+				._nay,
+		).toBeUndefined();
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		// Made public after the restrict, so only the binding can clear it.
+		await set_public(f, imageId);
 		const { link } = await linked_page(f, "/page.md", [imageId]);
 		expect(await shown(f, link.token)).toEqual([true]);
 
 		const installationId = await insert_installation(f);
-		await apply_binding(f, { installationId, folderId: team.folderId, readScopeId: "team" });
-		expect((await read_node(f, team.folderId))?.publicScopeNodeId).toBeUndefined();
+		await apply_binding(f, { installationId, folderId: imageId, readScopeId: "team" });
+		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 		expect(await shown(f, link.token)).toEqual([false]);
 
-		await apply_binding(f, { installationId, folderId: team.folderId, readScopeId: null });
-		expect((await read_node(f, team.folderId))?.publicScopeNodeId).toBeUndefined();
+		await apply_binding(f, { installationId, folderId: imageId, readScopeId: null });
+		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 		expect(await shown(f, link.token)).toEqual([false]);
 	});
 });
@@ -914,21 +817,14 @@ describe("Move", () => {
 		return await test_move_nodes(f.t, f.asOwner, { membershipId: f.db.membershipId, ...args });
 	};
 
-	test("a public folder moved into a restricted folder loses its flag, and so does a public folder inside it", async () => {
+	test("a public image moved into a restricted folder loses its flag", async () => {
 		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
-		const innerId = await create_folder(f, folderId, "inner");
-		const innerImageId = await insert_media_file(f, {
-			parentId: innerId,
-			path: "/pub/inner/b.png",
-			contentType: "image/png",
-		});
-		await set_public(f, innerId);
+		const { folderId, imageId } = await folder_with_public_image(f, "box");
 		const team = await create_restricted_folder(f, "/team");
 		// An editor of the restricted folder who does not manage it.
 		await add_person(f, team.folderId, f.memberId, "write");
-		const { link } = await linked_page(f, "/page.md", [imageId, innerImageId]);
-		expect(await shown(f, link.token)).toEqual([true, true]);
+		const { link } = await linked_page(f, "/page.md", [imageId]);
+		expect(await shown(f, link.token)).toEqual([true]);
 
 		await reset_rate_limits(f.t, [f.memberId]);
 		expect(
@@ -939,19 +835,17 @@ describe("Move", () => {
 			}),
 		).toEqual({ _yay: null });
 
-		// Check the stored nodes after the Move ended, not only the page.
-		for (const nodeId of [folderId, innerId, imageId, innerImageId]) {
-			const node = await read_node(f, nodeId);
-			expect(node?.moveCohortId).toBeUndefined();
-			expect(node?.restrictedScopeNodeId).toBe(team.folderId);
-			expect(node?.publicScopeNodeId).toBeUndefined();
-		}
-		expect(await shown(f, link.token)).toEqual([false, false]);
+		// Check the stored node after the Move ended, not only the page.
+		const image = await read_node(f, imageId);
+		expect(image?.moveCohortId).toBeUndefined();
+		expect(image?.restrictedScopeNodeId).toBe(team.folderId);
+		expect(image?.isPublic).toBeUndefined();
+		expect(await shown(f, link.token)).toEqual([false]);
 	});
 
-	test("a public folder moved into a restricted folder is hidden already while the Move runs", async () => {
+	test("a public image moved into a restricted folder is hidden already while the Move runs", async () => {
 		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
+		const { folderId, imageId } = await folder_with_public_image(f, "box");
 		const team = await create_restricted_folder(f, "/team");
 		const { link } = await linked_page(f, "/page.md", [imageId]);
 		expect(await shown(f, link.token)).toEqual([true]);
@@ -975,35 +869,26 @@ describe("Move", () => {
 		expect(await shown(f, link.token)).toEqual([false]);
 	});
 
-	test("a public item moved inside the same area keeps its own flag", async () => {
+	test("a public image moved inside the same area keeps its flag", async () => {
 		const f = await fixture();
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-		await set_public(f, imageId);
+		const imageId = await insert_media_file(f, {
+			parentId: "root",
+			path: "/photo.png",
+			contentType: "image/png",
+			public: true,
+		});
 		const destId = await create_folder(f, "root", "dest");
 		const { link } = await linked_page(f, "/page.md", [imageId]);
 		expect(await shown(f, link.token)).toEqual([true]);
 
 		expect(await move(f, { itemIds: [imageId], targetParentId: destId })).toEqual({ _yay: null });
-		expect(await read_node(f, imageId)).toMatchObject({ path: "/dest/photo.png", publicScopeNodeId: imageId });
+		expect(await read_node(f, imageId)).toMatchObject({ path: "/dest/photo.png", isPublic: true });
 		expect(await shown(f, link.token)).toEqual([true]);
 	});
 
-	test("an image moved into a public folder shows after the Move", async () => {
+	test("Off on an image a Move holds hides it during and after the Move, and On waits", async () => {
 		const f = await fixture();
-		const folderId = await create_folder(f, "root", "pub");
-		await set_public(f, folderId);
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-		const { link } = await linked_page(f, "/page.md", [imageId]);
-		expect(await shown(f, link.token)).toEqual([false]);
-
-		expect(await move(f, { itemIds: [imageId], targetParentId: folderId })).toEqual({ _yay: null });
-		expect(await read_node(f, imageId)).toMatchObject({ path: "/pub/photo.png", publicScopeNodeId: folderId });
-		expect(await shown(f, link.token)).toEqual([true]);
-	});
-
-	test("Off on a folder a Move holds hides its images during and after the Move, and On waits", async () => {
-		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
+		const { folderId, imageId } = await folder_with_public_image(f, "box");
 		const destId = await create_folder(f, "root", "dest");
 		const { link } = await linked_page(f, "/page.md", [imageId]);
 		expect(await shown(f, link.token)).toEqual([true]);
@@ -1013,23 +898,23 @@ describe("Move", () => {
 			itemIds: [folderId],
 			targetParentId: destId,
 			onStep: async () => {
-				if ((await read_node(f, folderId))?.moveCohortId === undefined) return;
+				if ((await read_node(f, imageId))?.moveCohortId === undefined) return;
 				heldSteps++;
 				await reset_rate_limits(f.t, [f.db.userId]);
 				if (heldSteps === 1) {
 					expect(
 						await f.asOwner.mutation(api.files_sharing.set_node_public, {
 							membershipId: f.db.membershipId,
-							nodeId: folderId,
+							nodeId: imageId,
 							enabled: false,
 						}),
-					).toEqual({ _yay: { public: "off" } });
+					).toEqual({ _yay: { public: false } });
 				} else {
 					expect(
 						(
 							await f.asOwner.mutation(api.files_sharing.set_node_public, {
 								membershipId: f.db.membershipId,
-								nodeId: folderId,
+								nodeId: imageId,
 								enabled: true,
 							})
 						)._nay?.name,
@@ -1041,9 +926,9 @@ describe("Move", () => {
 
 		expect(moved).toEqual({ _yay: null });
 		expect(heldSteps).toBeGreaterThan(1);
-		const folder = await read_node(f, folderId);
-		expect(folder?.path).toBe("/dest/pub");
-		expect(folder?.publicScopeNodeId).toBeUndefined();
+		const image = await read_node(f, imageId);
+		expect(image?.path).toBe("/dest/box/a.png");
+		expect(image?.isPublic).toBeUndefined();
 		expect(await shown(f, link.token)).toEqual([false]);
 	});
 });
@@ -1060,30 +945,21 @@ describe("Sharing list", () => {
 		await patch_node(f, secretId, { restrictedScopeNodeId: teamId });
 		const goneId = await insert_media_file(f, { parentId: "root", path: "/gone.png", contentType: "image/png" });
 		await f.t.run((ctx) => ctx.db.delete("files_nodes", goneId));
-		// Only a restricted item can have a manager added, so the page and the managed image each sit in one.
+		// Only a restricted item can have a person added, so the page and the view-only image each sit in one.
 		const pagesId = await insert_restricted_folder(f, "pages");
 		const mediaId = await insert_restricted_folder(f, "media");
-		const managedId = await insert_media_file(f, {
+		const viewOnlyId = await insert_media_file(f, {
 			parentId: mediaId,
-			path: "/media/managed.png",
+			path: "/media/view.png",
 			contentType: "image/png",
 		});
-		await patch_node(f, managedId, { restrictedScopeNodeId: mediaId });
-		await set_public(f, managedId);
+		await patch_node(f, viewOnlyId, { restrictedScopeNodeId: mediaId });
+		await set_public(f, viewOnlyId);
 		const plainId = await insert_media_file(f, { parentId: "root", path: "/plain.png", contentType: "image/png" });
-		const { pageId, link } = await linked_page(f, "/pages/page.md", [secretId, goneId, managedId, plainId]);
-		// The member manages the page and one image. The member role reads open files, not the team folder.
-		for (const nodeId of [pagesId, mediaId]) {
-			await reset_rate_limits(f.t, [f.db.userId]);
-			expect(
-				await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: f.db.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: f.memberId },
-					level: "manage",
-				}),
-			).toEqual({ _yay: null });
-		}
+		const { pageId, link } = await linked_page(f, "/pages/page.md", [secretId, goneId, viewOnlyId, plainId]);
+		// The member manages the page and only views one image. The member role edits open files.
+		await add_person(f, pagesId, f.memberId, "manage");
+		await add_person(f, mediaId, f.memberId, "read");
 
 		const list = await f.asMember.query(api.files_share_links.get_media_to_share, {
 			membershipId: f.memberMembershipId,
@@ -1093,17 +969,17 @@ describe("Sharing list", () => {
 		expect(list?.media).toEqual([
 			hidden,
 			hidden,
-			{ available: true, kind: "image", isPublic: true, nodeId: managedId, name: "managed.png", canManage: true },
-			{ available: true, kind: "image", isPublic: false, nodeId: plainId, name: "plain.png", canManage: false },
+			{ available: true, kind: "image", isPublic: true, nodeId: viewOnlyId, name: "view.png", canEdit: false },
+			{ available: true, kind: "image", isPublic: false, nodeId: plainId, name: "plain.png", canEdit: true },
 		]);
 		expect(list?.media.map((item) => item.isPublic)).toEqual(await shown(f, link.token));
 	});
 });
 
 describe("tree rows", () => {
-	test("a tree row of a public item has no publicScopeNodeId", async () => {
+	test("a tree row of a public file has no isPublic", async () => {
 		const f = await fixture();
-		const { folderId, imageId } = await public_folder_with_image(f, "pub");
+		const { folderId, imageId } = await folder_with_public_image(f, "pub");
 
 		const page = await f.asOwner.query(api.files_tree.list_tree_children, {
 			membershipId: f.db.membershipId,
@@ -1115,7 +991,7 @@ describe("tree rows", () => {
 			paginationOpts: { numItems: 10, cursor: null },
 		});
 		expect(page.page.map((row) => row._id)).toEqual([imageId]);
-		expect(page.page[0]).not.toHaveProperty("publicScopeNodeId");
+		expect(page.page[0]).not.toHaveProperty("isPublic");
 	});
 });
 
@@ -1169,7 +1045,7 @@ describe("public API", () => {
 		if (publishKey._nay) throw new Error(publishKey._nay.message);
 		const published = await set_with(f, publishKey._yay.credential, imageId, true);
 		expect(published.status).toBe(200);
-		expect(await published.json()).toEqual({ nodeId: imageId, public: "on" });
+		expect(await published.json()).toEqual({ nodeId: imageId, public: true });
 		expect(await shown(f, link.token)).toEqual([true]);
 
 		// A spent Sharing bucket answers 429, like the other API rate limits, and changes nothing.
@@ -1179,24 +1055,28 @@ describe("public API", () => {
 		expect(await shown(f, link.token)).toEqual([true]);
 	});
 
-	test("a key of a member who reads but does not manage the file answers 404", async () => {
+	test("a folder answers 400", async () => {
+		const f = await fixture();
+		await f.t.run((ctx) => ctx.db.patch("users", f.db.userId, { clerkUserId: "clerk-share-owner" }));
+		const folderId = await create_folder(f, "root", "pub");
+		const key = await create_key(f, { serviceAccountId: null, scopes: ["files:publish"] });
+		if (key._nay) throw new Error(key._nay.message);
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const refused = await set_with(f, key._yay.credential, folderId, true);
+		expect(refused.status).toBe(400);
+		expect((await read_node(f, folderId))?.isPublic).toBeUndefined();
+	});
+
+	test("a key of a person who reads but cannot edit the file answers 404", async () => {
 		const f = await fixture();
 		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-		// Only a signed-in account may create an API key. The member was inserted directly, so its key quota is too.
-		await f.t.run(async (ctx) => {
-			await ctx.db.patch("users", f.memberId, { clerkUserId: "clerk-member" });
-			await quotas_db_ensure(ctx, {
-				quotaName: "active_api_credentials",
-				userId: f.memberId,
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				now: Date.now(),
-			});
-		});
-		const subject = { kind: "user", userId: f.memberId, plugin: null } as const;
+		const viewer = await insert_guest(f, "clerk-viewer");
+		await add_person(f, imageId, viewer.userId, "read");
+		const subject = { kind: "user", userId: viewer.userId, plugin: null } as const;
 		expect(await can_act(f, subject, imageId, "content.read")).toBe(true);
-		const key = await f.asMember.mutation(api.public_api.api_credential_create, {
-			membershipId: f.memberMembershipId,
+		const key = await viewer.as.mutation(api.public_api.api_credential_create, {
+			membershipId: viewer.membershipId,
 			serviceAccountId: null,
 			name: "Publisher",
 			scopes: ["files:publish"],
@@ -1204,7 +1084,7 @@ describe("public API", () => {
 		if (key._nay) throw new Error(key._nay.message);
 
 		expect((await set_with(f, key._yay.credential, imageId, true)).status).toBe(404);
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBeUndefined();
+		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 	});
 
 	test("On while a scope job above runs answers 409", async () => {
@@ -1229,7 +1109,7 @@ describe("public API", () => {
 		expect(await refused.json()).toEqual({
 			message: "Wait until the access change of this item or a folder above finishes",
 		});
-		expect((await read_node(f, big.nodeId))?.publicScopeNodeId).toBeUndefined();
+		expect((await read_node(f, big.nodeId))?.isPublic).toBeUndefined();
 	});
 
 	test("a plugin run token is refused", async () => {
@@ -1281,6 +1161,6 @@ describe("public API", () => {
 		const refused = await set_with(f, runToken, imageId, true);
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({ message: "Permission denied" });
-		expect((await read_node(f, imageId))?.publicScopeNodeId).toBeUndefined();
+		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 	});
 });

@@ -1050,13 +1050,14 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
 
 `convex/files_sharing.ts` owns member sharing. Six mutations plus one query:
 `get_node_share_state`, `restrict_node`, `unrestrict_node`, `set_node_share_grant`,
-`remove_node_share_grant`, `set_node_share_link`, `set_node_public`. The six writes take
-`content.permissions.manage` **on the node**, and the `files_sharing_write` bucket first. `get_node_share_state` only takes
+`remove_node_share_grant`, `set_node_share_link`, `set_node_public`. The first five writes take
+`content.permissions.manage` **on the node**, and the `files_sharing_write` bucket first.
+`set_node_public` takes `content.write` instead. `get_node_share_state` only takes
 `content.read` on the node: the dialog opens for anybody who can see the file, and `canManage` in its
 answer is what hides the controls from a reader.
 `set_node_share_link` turns a file's public link on and off. The public doors that serve the link
-live in `convex/files_share_links.ts`. `set_node_public` turns "Anyone on the web" on and off for a
-file or folder. See "Public file links" below.
+live in `convex/files_share_links.ts`. `set_node_public` turns the public flag of one file on and
+off. See "Public file links" below.
 
 The model:
 
@@ -1418,11 +1419,7 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
 3. E's content type is an inline-safe image or video type (`files_is_inline_media_content_type`),
    and it matches the node: an image node needs an image file, a video node needs a video file.
 4. E is not archived and has a finished asset.
-5. E is public ("Anyone on the web", below). `E.publicScopeNodeId` is set and names a root R: E
-   itself, or a folder whose `treePath` starts E's `treePath` (a folder path ends with `/`, so a
-   sibling whose name only starts the same way never matches). R is in the same tenant, is not
-   archived, is still public (`R.publicScopeNodeId === R._id`), and is in E's restricted area
-   (`R.restrictedScopeNodeId === E.restrictedScopeNodeId`). A stale pointer fails this check.
+5. E is public: `E.isPublic` is `true` ("The public flag", below).
 6. `db_check_scope` on E's **own** restricted area answers `ok`: not dead and not plugin-bound.
 
 E may sit in any restricted area. D's area does not matter. Code: `db_check_media_node` in
@@ -1432,7 +1429,8 @@ E may sit in any restricted area. D's area does not matter. Code: `db_check_medi
 writes, and plugin writes keep every media reference as text. A reference to an image that is not
 public stays gray on the public page. It never blocks Save. Credential download scopes do not
 change this: a key without `files:download` can add a reference, and visitors see the image only if
-it is public.
+it is public. Only the link and upload doors in "The public flag" below set the flag. A save reads
+no images, so it stays fast.
 
 A plugin write that adds a new `bonobo-file://` ref to a file the plugin cannot read itself (its
 member inside its sandbox roots) is refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
@@ -1446,72 +1444,78 @@ still change it. A newly exposed reference still shows only a public image.
 
 Private API download scopes do not change. A file id alone never opens a file, and a public image
 gets no link of its own. See the
-[media embed spec](../files-rich-text-embeds/SKILL.md#anyone-on-the-web) for the UI rules.
+[media embed spec](../files-rich-text-embeds/SKILL.md#the-public-flag) for the UI rules.
 
-### Anyone on the web
+### The public flag
 
-"Anyone on the web" lets public pages show a file, or the files inside a folder, as embeds. Like
-Notion, an image shows on a public page only when the image itself is public. It never opens a
-file by id: a visitor still needs a link token, and the file is then only an embed of that page.
+The public flag lets public pages show an image or video file as an embed. Like Notion, an image
+shows on a public page only when the image itself is public. It never opens a file by id: a visitor
+still needs a link token, and the file is then only an embed of that page. Only files have the
+flag. Folders never do, so nothing is public by inheritance.
 
-- The field is `files_nodes.publicScopeNodeId` (also in `files_saved_placement_fields` for Move
-  places). Missing means not public. A public root points at itself. An item inside a public
-  folder points at that folder, down to the nearest restricted folder. The field never leaves the
-  server: tree rows strip it (`files_tree_db_get_public_node_fields`). It is not a public grant.
-- `files_sharing.set_node_public({ membershipId, nodeId, enabled })` turns it on or off. The app
-  and the public API (`POST /api/v1/files/public/set`, see `../public-api/SKILL.md`) share
-  `files_sharing_db_set_node_public`. It works for files and folders.
-- It charges `files_sharing_write` first. On and Off both need `content.permissions.manage` on the
-  node's stored scope.
-- On also needs: a signed-in user, not an anonymous one ("Sign in to make files public");
-  `content.read` on the node; a node that is not archived and a live workspace; no Move mark on the
-  node and no Move reservation for it (`move_busy`); no running subtree op on the node or a folder
-  above it (`not_ready`; an op below the node does not count); and `db_check_scope` `ok` (not dead, not bound).
-- Off needs only manage. It works during a Move: `files_nodes_db_set_public_scope` patches both
-  Move views too, so the Move end does not write the old value back.
-- Off on an item that is public only through a folder above is refused: "This item is public
-  because a folder above it is public. Turn it off on that folder." Repeating On or Off writes
-  nothing.
-- A folder change reaches the items inside through a scope job (`files_subtree_ops_db_start_rebuild`,
-  kind `scope`), which stops at restricted folders. Off hides the folder's images at once, because
-  the view checks that the root is still public. On shows each item when the job writes it.
-- `get_node_share_state` returns `public: "on" | "inherited" | "off"`. `inherited` means a public
-  folder above makes the node public. It uses the same root checks as the view.
+- The field is `files_nodes.isPublic: true` (also in `files_saved_placement_fields` for Move
+  places). Missing means not public. The field never leaves the server: tree rows strip it
+  (`files_tree_db_get_public_node_fields`). It is not a public grant.
+- Changing the flag needs `content.write` on the file. A person who can edit an image could
+  already upload a copy of it into a linked document, so edit is the right bar. It also keeps an
+  editor from showing an image they cannot edit. On also needs `content.read`, and a signed-in
+  user, not an anonymous one ("Sign in to make files public").
+- Three doors set the flag on:
+  - `files_sharing.set_node_public({ membershipId, nodeId, enabled })`, the select in Sharing and
+    the Show button in "Check images and videos". The public API (`POST /api/v1/files/public/set`,
+    see `../public-api/SKILL.md`) shares `files_sharing_db_set_node_public` with it.
+  - Turning a link on (`set_node_share_link`). It flags each image and video of the linked file that
+    the caller can edit and read (`files_share_links_db_list_media_nodes`, one page preparation). A
+    refusal for one image leaves only that image gray.
+  - An upload into a document with a live link. `create_upload_node` takes the document's id
+    (`documentNodeId`) from the rich text editor. When the document has a selected link and the
+    caller can read it, the new image or video starts public. The uploader can edit the new file.
+- A save never sets the flag. Images that a save adds later (not uploads) get a Show button in
+  Sharing.
+- `files_sharing_db_set_node_public` refuses a folder (`not_a_file`). Repeating On or Off writes
+  nothing. It charges `files_sharing_write` first (app and API).
+- On also needs: a file that is not archived and a live workspace; no Move mark on the file and no
+  Move reservation for it (`move_busy`); no running subtree op on the file or a folder above it
+  (`not_ready`); and `db_check_scope` `ok` (not dead, not bound).
+- Off works during a Move: `files_nodes_db_set_public` patches both Move views too, so the Move end
+  does not write the old value back.
+- `get_node_share_state` returns `public: null` for a folder and for a file that is not an image or
+  video. Otherwise it returns `{ isPublic, canChange, mediaKind }`, where `canChange` is the edit
+  check above.
 - `files_share_links.get_media_to_share` feeds Sharing → "Check images and videos" on a file with a
   live link (manage and read needed). Each item has `isPublic`, from the same check as the public
-  page. Only items the caller can read get `nodeId`, `name`, and `canManage`. The rest stay
+  page. Only items the caller can read get `nodeId`, `name`, and `canEdit`. The rest stay
   unnamed, because the file can embed any file id.
 
-**Writers.** Every writer uses one rule. A node that was its own public root stays its own root
-when its restricted area does not change. Otherwise a restricted root gets nothing, and any other
-node gets its parent's value. Writers: `db_insert_node` (a new node copies
-its parent's value, never a copy source's), `files_nodes_db_set_restricted_scope`,
-`files_nodes_db_rebuild_node`, the Move `db_headers` and `db_rename_parents`, and
+**Writers.** Every writer uses one rule: a file keeps its flag only while its restricted area does
+not change. New nodes start not public, copies included. Writers: `files_nodes_db_set_restricted_scope`,
+`files_nodes_db_rebuild_node`, the Move placement in `files_move_cohorts.ts`, and
 `files_nodes_db_restore_node`. So:
 
-- Restrict or unrestrict the public root, or a folder above it, clears its own flag (a folder above
-  clears it when its job writes the root). A new restricted root starts not public.
-- A Move keeps the flag only when the area stays the same. A Move into another area clears it on
-  the moved root and on every public root inside. Other items take the new parent's value.
+- Restricting or unrestricting a folder clears the flag of every file inside when its job writes
+  that file. Restricting a file clears its own flag.
+- A Move keeps the flag only when the area stays the same.
 - Restore uses the same rule. Restore to the same place, or into the same area, keeps the flag.
-- A copy is a new item. It is public only when its new parent folder is public.
-- A plugin bind of a restricted folder (`plugins_data_db_apply_file_access_binding`) clears that
-  folder's own flag. Flags deeper inside stay, but the view hides them while the area is bound. A
-  detach does not bring the cleared flag back.
+- A plugin bind of a restricted file (`plugins_data_db_apply_file_access_binding`) clears its flag.
+  Flags of files inside a bound folder stay, and an upload there can still set one. The view hides
+  them while the area is bound, and they show again after a detach. A detach does not bring a
+  cleared flag back.
 - Ending a link changes no public flag. The flag belongs to the file, not to a link, so other linked
   pages still show the image.
-- Old embeds start not public. There is no migration. A URL signed before Off still works for up to
-  15 minutes.
+- A URL signed before Off still works for up to 15 minutes.
+
+**Cost.** A save does no extra work. Turning a link on costs one page preparation, the same reads
+as one visitor, plus two permission checks per embedded image. An upload into a linked document
+adds about two reads and one permission check.
 
 **Accepted limits.**
 
-- Unrestricting a folder inside a public folder makes its items public by inheritance, after the job.
 - A version restore of a public image changes the bytes visitors see.
-- Restore to the same place keeps an item public.
+- Restore to the same place keeps a file public.
 - Losing an exact service-account `content.write` grant still ends the document's link (see the
   table below), although media no longer depend on it.
-- If a folder is unrestricted and then restricted again before the unrestrict job reaches an item
-  inside, that item keeps its own public flag. Its stored area never changed, the same as before the
+- If a folder is unrestricted and then restricted again before the unrestrict job reaches a file
+  inside, that file keeps its flag. Its stored area never changed, the same as before the
   unrestrict.
 
 The old media approval table `files_share_link_media` was removed on 2026-10-21. It was empty.
@@ -1773,8 +1777,8 @@ Public grant docs are capability-like access, not membership.
 - For an anonymous user, prefer `principalKind: "user"` with their Convex `users` id over `public`.
 - "Anyone with the link can view" does not use public grants. It uses a token doc in
   `files_share_links`; see "Public file links".
-- "Anyone on the web" does not use public grants either. It uses `files_nodes.publicScopeNodeId`;
-  see "Anyone on the web" under "Public file links".
+- The public flag of an image does not use public grants either. It uses `files_nodes.isPublic`;
+  see "The public flag" under "Public file links".
 
 Anonymous upgrade semantics live in `../auth-system/SKILL.md`.
 

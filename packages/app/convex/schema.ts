@@ -563,7 +563,7 @@ const files_saved_placement_fields = {
 	parentScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 	extendedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	parentExtendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
-	publicScopeNodeId: v.optional(v.id("files_nodes")),
+	isPublic: v.optional(v.literal(true)),
 	updatedAt: v.number(),
 	updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 	ancestor1: v.optional(v.id("files_nodes")),
@@ -5008,14 +5008,12 @@ const app_convex_schema = defineSchema({
 		 */
 		parentExtendedScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 		/**
-		 * The public root at or above this node, in the same restricted area. A public root ("Anyone on
-		 * the web") points at itself. Missing means not public. Public pages show an embedded file only
-		 * when this points at a live public root; it never opens a file by id.
+		 * Set on a file that public link pages may show as an embedded image or video. Missing means not
+		 * public. Folders never have it. It never opens a file by id.
 		 *
-		 * A new node copies it from its parent. A folder change reaches the items inside through the scope op,
-		 * which stops at restricted folders. A root loses its own flag when its restricted area changes.
+		 * New files and copies start not public. A file loses it when its restricted area changes.
 		 */
-		publicScopeNodeId: v.optional(v.id("files_nodes")),
+		isPublic: v.optional(v.literal(true)),
 		writePolicy: files_nodes_write_policy_validator,
 		/**
 		 * Starting protection copied once to brand-new files and subfolders.

@@ -5413,20 +5413,17 @@ describe("locked and missing paths", () => {
 			});
 		});
 
-		test("an API move needs files:publish to publish an item and files:permissions to share it", async () => {
+		test("an API move needs files:permissions to share an item", async () => {
 			const t = test_convex();
 			const f = await seed_hidden_folder(t);
-			const folders = (await post(t, "/api/v1/files/mkdir", f.ownerCredential, { paths: ["/pub", "/pub2", "/team"] }))
-				.body as { items: Array<{ nodeId: Id<"files_nodes"> }> };
-			const [pubId, pub2Id, teamId] = folders.items.map((item) => item.nodeId);
-			const insideId = await seed_markdown_file({ t, ...f.db, path: "/pub2/inside.md", committedMarkdown: "# public" });
-			await t.run(async (ctx) => {
-				// "Anyone on the web" on `/pub` and `/pub2`, and added people on `/team`.
-				await ctx.db.patch("files_nodes", pubId!, { publicScopeNodeId: pubId });
-				await ctx.db.patch("files_nodes", pub2Id!, { publicScopeNodeId: pub2Id });
-				await ctx.db.patch("files_nodes", insideId, { publicScopeNodeId: pub2Id });
-				await ctx.db.patch("files_nodes", teamId!, { extendedScopeNodeId: teamId, parentExtendedScopeNodeId: null });
-			});
+			const folders = (await post(t, "/api/v1/files/mkdir", f.ownerCredential, { paths: ["/team"] })).body as {
+				items: Array<{ nodeId: Id<"files_nodes"> }>;
+			};
+			const [teamId] = folders.items.map((item) => item.nodeId);
+			// Added people on `/team`.
+			await t.run((ctx) =>
+				ctx.db.patch("files_nodes", teamId!, { extendedScopeNodeId: teamId, parentExtendedScopeNodeId: null }),
+			);
 			let requestCount = 0;
 			const move = async (credential: string, from: string[], to: string) => {
 				const started = await post(t, "/api/v1/files/move", credential, {
@@ -5446,17 +5443,6 @@ describe("locked and missing paths", () => {
 				scopes: ["files:list", "files:write"],
 			});
 
-			// A refused item fails alone. An item that was already public through `/pub2` gains no new viewers.
-			expect(await move(writer.credential, ["/b.md", "/pub2/inside.md"], "/pub")).toMatchObject({
-				status: "partial",
-				refused: [
-					{
-						path: "/b.md",
-						message:
-							'Moving "b.md" here would make it public on the web. That needs an API key with the files:publish scope.',
-					},
-				],
-			});
 			expect(await move(writer.credential, ["/notes"], "/team")).toMatchObject({
 				status: "failed",
 				refused: [
@@ -5477,17 +5463,16 @@ describe("locked and missing paths", () => {
 					},
 				],
 			});
-			expect(
-				await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/notes", "/pub/inside.md"] }),
-			).toMatchObject({ body: { items: [{ status: "found" }, { status: "found" }, { status: "found" }] } });
+			expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/notes"] })).toMatchObject({
+				body: { items: [{ status: "found" }] },
+			});
 
-			// Control: the same moves pass for a key with both scopes.
+			// Control: the same moves pass for a key with the scope.
 			const sharer = await create_key({
 				asUser: f.asOwner,
 				membershipId: f.db.membershipId,
-				scopes: ["files:list", "files:write", "files:publish", "files:permissions"],
+				scopes: ["files:list", "files:write", "files:permissions"],
 			});
-			expect(await move(sharer.credential, ["/b.md"], "/pub")).toMatchObject({ status: "succeeded" });
 			expect(await move(sharer.credential, ["/notes"], "/team")).toMatchObject({ status: "succeeded" });
 			expect(await move(sharer.credential, ["/team/notes"], "/secret")).toMatchObject({ status: "succeeded" });
 		});

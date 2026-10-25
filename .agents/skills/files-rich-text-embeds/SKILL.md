@@ -18,8 +18,8 @@ description: Spec for image and video embeds in rich text documents — the bono
 - `../../../packages/app/convex/files_share_links.ts` (public link page: media checks and signed URLs)
 - `../../../packages/app/shared/files-share-rich-text.ts` (public schema, media map, alt rules)
 - `../../../packages/app/src/components/files/files-share-page.tsx` (public media node views)
-- `../../../packages/app/convex/files_sharing.ts` (`set_node_public`, "Anyone on the web")
-- `../../../packages/app/src/components/files/files-share-modal.tsx` ("Anyone on the web" select, media check list)
+- `../../../packages/app/convex/files_sharing.ts` (`set_node_public`, the public flag)
+- `../../../packages/app/src/components/files/files-share-modal.tsx` ("Public link" section, media check list)
 
 # Reference Format
 
@@ -136,22 +136,24 @@ items keep an http(s)-only gate as the required second gate at insertion time.
    pasted bitmap `image.png`); dropped and picked files keep their normalized name
    (`files_normalize_upload_file_name` — raw names may carry path separators, which
    `create_upload_node` would treat as folder segments).
-6. `create_upload_node` is always called with `onConflict: "fail"`. The editor must never
+6. `create_upload_node` also gets the document's id as `documentNodeId`. When the document has a
+   live link, the new image or video starts public ("The public flag", below).
+7. `create_upload_node` is always called with `onConflict: "fail"`. The editor must never
    replace a file on a name collision, because the existing file may be another document's
    embed. On a collision the flow probes free `name 2.ext` style names with the free path
    query and retries — mutations are capped (~10) because each one charges the shared
    `files_tree_write` bucket (50/min).
-7. `Rate limit exceeded` from the create stops the rest of the batch with one toast.
-8. Send every returned header on the direct asset PUT, including the signed `If-None-Match: *`.
+8. `Rate limit exceeded` from the create stops the rest of the batch with one toast.
+9. Send every returned header on the direct asset PUT, including the signed `If-None-Match: *`.
    A 412 means the attempt already has an object. Keep the file reference, clear local transfer
    state, and let the asset watch confirm it. Do not discard or assume this PUT's body matches.
    On another failed PUT, call `discard_failed_upload_node` FIRST: `removed: true` keeps a local
    retry placeholder with no file reference; `removed: false` means the R2 event recorded the object
    first, so the file and embed stay. The discard is metered on the `files_bulk_import` bucket
    and can answer `Rate limit exceeded` with `retryAfterMs` — wait it out in a loop.
-9. If the node is gone from the doc mid-flight (undo, collaborator delete): stop; if the
-   create already ran, still run the discard branching. `uploadId` is cleared once the PUT
-   settles.
+10. If the node is gone from the doc mid-flight (undo, collaborator delete): stop; if the
+    create already ran, still run the discard branching. `uploadId` is cleared once the PUT
+    settles.
 
 Multi-file batches run sequentially so collision suffixes stay deterministic. Deleting a
 document does not delete its assets folder — no repair or cleanup logic exists on purpose.
@@ -188,8 +190,7 @@ An embed shows only when all of these hold (`db_read_media_node`, `db_check_medi
    (`files_is_inline_media_content_type`) and matches the node: an image node needs `image/*`, and a
    video node needs `video/*`. SVG and other types are unavailable.
 3. It has a finished asset.
-4. It is public ("Anyone on the web", below). Its `publicScopeNodeId` names a live public root in
-   its own restricted area and tenant: the file itself, or a folder above it.
+4. It is public: `isPublic` is `true` ("The public flag", below).
 5. Its own restricted area is live and not plugin-bound (`db_check_scope` answers `ok`).
 
 Otherwise the view returns `{ index, available: false }`, with no type, name, ID, or reason. The page
@@ -202,30 +203,32 @@ The document's own restricted area does not matter. A public image from any area
 workspace shows. An image that is not public shows the gray box, even when it sits next to the
 document.
 
-## Anyone on the web
+## The public flag
 
 Like Notion, an image or video shows on a public page only when it is public itself. The full
-rules (who can turn it on, inheritance, Move, restore, copy, plugin bind, accepted limits) live in
-the [access-control spec](../access-control/SKILL.md) ("Anyone on the web"). A known file ID grants
-no access, and a public file never opens by itself: it only shows as an embed of a linked page.
+rules (who can turn it on, Move, restore, copy, plugin bind, accepted limits) live in the
+[access-control spec](../access-control/SKILL.md) ("The public flag"). A known file ID grants no
+access, and a public file never opens by itself: it only shows as an embed of a linked page.
 
-- Sharing has an "Anyone on the web" select for files and folders (`Not public` / `Public`). Only a
-  manager sees it. It is hidden when a public folder above makes the item public; turn it off on
-  that folder. Code: `FilesShareModalPublic` in `files-share-modal.tsx`, door
+- Sharing has one **Public link** section, on files only. A manager turns the link on there
+  (`Anyone with the link`: `No access` / `Can view`). On an image or video file the same section
+  also has `Inside public documents` (`Shown` / `Not shown`), for anybody who can edit that file. A
+  person who can edit but not manage sees only that select. Folders have no public section. Code:
+  `FilesShareModalLink` in `files-share-modal.tsx`, doors `files_sharing.set_node_share_link` and
   `files_sharing.set_node_public`.
-- A public folder makes the files inside it public, down to the nearest restricted folder. New
-  files copy their parent's value. So uploads into a public `assets` folder (Upload Flow, step 4)
-  are public at once.
-- Saving, inserting, or uploading never makes media public. Human, API, and plugin writes keep the
-  reference as text. A reference to a file that is not public stays gray. It never blocks Save.
+- Turning a link on shows the images and videos of the document that the caller can edit. The
+  others stay gray until somebody who can edit them presses Show.
+- An image pasted or dropped into a document with a live link is public at once (Upload Flow,
+  step 6 sends `documentNodeId`).
+- Saving never makes media public. Human, API, and plugin writes keep the reference as text. A
+  reference to a file that is not public stays gray. It never blocks Save. A save reads no images, so
+  it stays fast.
 - On a file with a public link, **Sharing → Check images and videos** lists the document's images
-  and videos (`files_share_links.get_media_to_share`), each marked public or not public with the
-  same check as the public page. A readable item shows its name. A manager of that item gets a
-  `Make <name> public` button. An item the caller cannot read stays unnamed.
-- Old embeds start not public. There is no migration. The page gray box text is still "This image
-  is not shared" / "This video is not shared".
-- Off hides the images of a public folder at once. A URL signed before Off still works for up to 15
-  minutes.
+  and videos (`files_share_links.get_media_to_share`), each marked shown or not shown with the
+  same check as the public page. A readable item shows its name. An editor of that item gets a
+  `Show <name>` button. An item the caller cannot read stays unnamed.
+- `Not shown` turns the flag off. A URL signed before that still works for up to 15 minutes. The page
+  gray box text is "This image is not shared" / "This video is not shared".
 
 `create_share_link_download_urls({ token, revision, targets })` signs 1 to 50 unique targets. It
 charges the `files_share_link_download` bucket (200 targets per minute, keyed by the link doc, shared

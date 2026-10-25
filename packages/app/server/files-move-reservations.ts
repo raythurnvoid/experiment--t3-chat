@@ -644,7 +644,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 								"scopeOpId",
 								"extendedScopeNodeId",
 								"parentExtendedScopeNodeId",
-								"publicScopeNodeId",
+								"isPublic",
 							]
 						: table === "files_metadata_docs"
 							? ["isRestrictedScopeRoot", "restrictedScopeNodeId"]

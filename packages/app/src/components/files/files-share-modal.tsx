@@ -2,7 +2,7 @@ import "./files-share-modal.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
-import { memo, type Ref, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -319,7 +319,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 				// Find the row by id: the list can change order while the page is open.
 				const nextItem = next?.media.find((m) => m.available && m.nodeId === item.nodeId);
 				if (nextItem?.available && !nextItem.isPublic) {
-					setError("This file is public, but this page cannot show it yet. It may still be uploading.");
+					setError("Turned on, but the page cannot show this file yet. It may still be uploading.");
 				} else {
 					// The row's button is gone now, so keep focus in the dialog. No answer or an empty one removes the list too.
 					(next && next.media.length > 0 ? listRef : rootRef).current?.focus();
@@ -327,7 +327,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 			}
 		} catch (error) {
 			console.error("[FilesShareModalMedia.handleMakePublic] Failed to make media public", { error });
-			setError("Could not make this file public. Try again.");
+			setError("Could not show this file. Try again.");
 		}
 		setPending(null);
 	});
@@ -343,7 +343,7 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 			className={"FilesShareModalMedia" satisfies FilesShareModalLink_ClassNames}
 		>
 			<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-				Images and videos show through this link only when they are public (Anyone on the web).
+				Turning the link on shows the images and videos you can edit. Check the others here.
 			</p>
 			<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
 				<MyButton
@@ -386,22 +386,22 @@ const FilesShareModalMedia = memo(function FilesShareModalMedia(props: FilesShar
 								{item.available
 									? item.name
 									: item.isPublic
-										? `This ${item.kind} is public.`
-										: `This ${item.kind} is not public, and you cannot open it.`}
+										? `This ${item.kind} is shown.`
+										: `This ${item.kind} is not shown, and you cannot open it.`}
 							</span>
-							{item.available && item.isPublic ? <span>Public</span> : null}
-							{item.available && !item.isPublic && item.canManage ? (
+							{item.available && item.isPublic ? <span>Shown</span> : null}
+							{item.available && !item.isPublic && item.canEdit ? (
 								<MyButton
 									variant="outline"
 									disabled={busy || (pending !== null && pending !== String(index))}
-									aria-label={`Make ${item.name} public`}
+									aria-label={`Show ${item.name}`}
 									aria-busy={pending === String(index) || undefined}
 									onClick={() => handleMakePublic(index)}
 								>
-									{pending === String(index) ? "Saving..." : "Make public"}
+									{pending === String(index) ? "Saving..." : "Show"}
 								</MyButton>
 							) : null}
-							{item.available && !item.isPublic && !item.canManage ? <span>Not public</span> : null}
+							{item.available && !item.isPublic && !item.canEdit ? <span>Not shown</span> : null}
 						</li>
 					))}
 				</ul>
@@ -421,168 +421,90 @@ type FilesShareModalLink_ClassNames =
 	| "FilesShareModalMedia-row"
 	| "FilesShareModalLink-created"
 	| "FilesShareModalLink-error"
-	| "FilesShareModalLink-level-trigger";
+	| "FilesShareModalLink-level-trigger"
+	| "FilesShareModalLink-public"
+	| "FilesShareModalLink-public-text";
 
 type FilesShareModalLink_CustomAttributes = {
-	"data-share-link": "on" | "off";
+	"data-share-link": "on" | "off" | "hidden";
+	"data-share-public": "on" | "off";
 };
 
 type FilesShareModalLink_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
-	link: { token: string; createdAt: number; creatorName: string } | null;
+	/** The file's link. `hidden` when the caller does not manage the file, so they get no link select. */
+	link: { token: string; createdAt: number; creatorName: string } | null | "hidden";
+	/** The public flag of an image or video file, with its kind. Null for any other file. */
+	publicFlag: { isPublic: boolean; canChange: boolean; mediaKind: "image" | "video" } | null;
 	/** The link write is the one being saved. */
 	pending: boolean;
+	/** The public flag write is the one being saved. */
+	publicPending: boolean;
 	/** A write is running somewhere in the dialog, so this control may not start a second one. */
 	busy: boolean;
-	/** Why the last write was refused. Shown here, beside the control, instead of in a toast. */
+	/** Why the last link write was refused. Shown here, beside the control, instead of in a toast. */
 	error: string | null;
+	/** Why the last public flag write was refused. */
+	publicError: string | null;
 	onEnabledChange: (enabled: boolean) => void;
+	onPublicChange: (enabled: boolean) => void;
 };
 
+/**
+ * Everything public about one file: its link, and for an image or video, whether public documents show
+ * it. Folders have neither, so they get no section.
+ */
 const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareModalLink_Props) {
-	const { nodeId, link, pending, busy, error, onEnabledChange } = props;
+	const {
+		nodeId,
+		link,
+		publicFlag,
+		pending,
+		publicPending,
+		busy,
+		error,
+		publicError,
+		onEnabledChange,
+		onPublicChange,
+	} = props;
 
-	const levelLabel = link ? access_control_FILE_SHARE_LEVELS.read.label : "No access";
+	const linkOn = link !== null && link !== "hidden";
+	const levelLabel = linkOn ? access_control_FILE_SHARE_LEVELS.read.label : "No access";
 
 	return (
 		<section
 			// Not reachable by Tab, but focus lands here when the media box it held goes away.
 			tabIndex={-1}
-			aria-label="Anyone with the link"
+			aria-label="Public link"
 			className={cn(
 				"FilesShareModal-section" satisfies FilesShareModal_ClassNames,
 				"FilesShareModalLink" satisfies FilesShareModalLink_ClassNames,
 			)}
-			{...({ "data-share-link": link ? "on" : "off" } satisfies FilesShareModalLink_CustomAttributes)}
+			{...({
+				"data-share-link": link === "hidden" ? "hidden" : linkOn ? "on" : "off",
+			} satisfies Partial<FilesShareModalLink_CustomAttributes>)}
 		>
 			{/* The level picker and Copy sit beside the text, as the help button does in the Properties modal. */}
 			<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
 				<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
-					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>
-						Anyone with the link
-					</h3>
-					<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-						{link
-							? "Anyone who has the link can view this file without signing in."
-							: "Only people with access can open this file."}
-					</p>
+					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Public link</h3>
+					{link === "hidden" ? null : (
+						<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+							{linkOn
+								? "Anyone who has the link can view this file without signing in."
+								: "Only people with access can open this file."}
+						</p>
+					)}
 				</div>
 
-				<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
-					<MySelect
-						value={link ? "on" : "off"}
-						setValue={(value) => {
-							const enabled = value === "on";
-							// Choosing the level it already has changes nothing, so it sends nothing.
-							if (enabled !== Boolean(link)) {
-								onEnabledChange(enabled);
-							}
-						}}
-					>
-						{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
-						<MySelectTrigger disabled={busy && !pending}>
-							<MyButton
-								type="button"
-								variant="outline"
-								className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
-								aria-label="Anyone with the link"
-								aria-busy={pending || undefined}
-							>
-								<span>{pending ? "Saving..." : levelLabel}</span>
-								<MySelectOpenIndicator />
-							</MyButton>
-						</MySelectTrigger>
-						<MySelectPopover unmountOnHide>
-							<MySelectPopoverContent>
-								<MySelectItem value="off">
-									No access
-									{!link ? <MySelectItemIndicator /> : null}
-								</MySelectItem>
-								<MySelectItem value="on">
-									{access_control_FILE_SHARE_LEVELS.read.label}
-									{link ? <MySelectItemIndicator /> : null}
-								</MySelectItem>
-							</MySelectPopoverContent>
-						</MySelectPopover>
-					</MySelect>
-
-					{link ? <CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy link" /> : null}
-				</div>
-			</div>
-
-			{link ? (
-				<p className={"FilesShareModalLink-created" satisfies FilesShareModalLink_ClassNames}>
-					Link created by {link.creatorName} on {format_time(link.createdAt)}.
-				</p>
-			) : null}
-			{link ? <FilesShareModalMedia key={`${nodeId}:${link.token}`} nodeId={nodeId} busy={busy} /> : null}
-
-			{error ? (
-				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
-					{error}
-				</p>
-			) : null}
-		</section>
-	);
-});
-// #endregion link
-
-// #region public
-type FilesShareModalPublic_CustomAttributes = {
-	"data-share-public": "on" | "inherited" | "off";
-};
-
-type FilesShareModalPublic_Props = {
-	ref?: Ref<HTMLElement>;
-	state: "on" | "inherited" | "off";
-	nodeKindText: "file" | "folder";
-	/** The public write is the one being saved. */
-	pending: boolean;
-	/** A write is running somewhere in the dialog, so this control may not start a second one. */
-	busy: boolean;
-	/** Why the last write was refused. Shown here, beside the control, instead of in a toast. */
-	error: string | null;
-	onEnabledChange: (enabled: boolean) => void;
-};
-
-/**
- * "Anyone on the web" for one file or folder. Public pages show only public images and videos. It
- * never opens the item by itself: that needs a public link.
- */
-const FilesShareModalPublic = memo(function FilesShareModalPublic(props: FilesShareModalPublic_Props) {
-	const { ref, state, nodeKindText, pending, busy, error, onEnabledChange } = props;
-
-	return (
-		<section
-			ref={ref}
-			// Not reachable by Tab, but focus lands here when the select it held goes away.
-			tabIndex={-1}
-			aria-label="Anyone on the web"
-			className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}
-			{...({ "data-share-public": state } satisfies FilesShareModalPublic_CustomAttributes)}
-		>
-			<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
-				<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
-					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Anyone on the web</h3>
-					<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
-						{state === "inherited"
-							? `A public folder above makes this ${nodeKindText} public. Turn it off on that folder.`
-							: state === "on"
-								? nodeKindText === "folder"
-									? "Public pages can show the images and videos in this folder, down to any restricted folder. It does not open them by themselves."
-									: "Public pages can show this file if it is an image or video. It does not open the file by itself."
-								: `Public pages do not show ${nodeKindText === "folder" ? "the images and videos in this folder" : "this file"}.`}
-					</p>
-				</div>
-
-				{state === "inherited" ? null : (
+				{link === "hidden" ? null : (
 					<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
 						<MySelect
-							value={state}
+							value={linkOn ? "on" : "off"}
 							setValue={(value) => {
 								const enabled = value === "on";
-								// Choosing the value it already has changes nothing, so it sends nothing.
-								if (enabled !== (state === "on")) {
+								// Choosing the level it already has changes nothing, so it sends nothing.
+								if (enabled !== linkOn) {
 									onEnabledChange(enabled);
 								}
 							}}
@@ -593,39 +515,108 @@ const FilesShareModalPublic = memo(function FilesShareModalPublic(props: FilesSh
 									type="button"
 									variant="outline"
 									className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
-									aria-label="Anyone on the web"
+									aria-label="Anyone with the link"
 									aria-busy={pending || undefined}
 								>
-									<span>{pending ? "Saving..." : state === "on" ? "Public" : "Not public"}</span>
+									<span>{pending ? "Saving..." : levelLabel}</span>
 									<MySelectOpenIndicator />
 								</MyButton>
 							</MySelectTrigger>
 							<MySelectPopover unmountOnHide>
 								<MySelectPopoverContent>
 									<MySelectItem value="off">
-										Not public
-										{state === "off" ? <MySelectItemIndicator /> : null}
+										No access
+										{!linkOn ? <MySelectItemIndicator /> : null}
 									</MySelectItem>
 									<MySelectItem value="on">
-										Public
-										{state === "on" ? <MySelectItemIndicator /> : null}
+										{access_control_FILE_SHARE_LEVELS.read.label}
+										{linkOn ? <MySelectItemIndicator /> : null}
 									</MySelectItem>
 								</MySelectPopoverContent>
 							</MySelectPopover>
 						</MySelect>
+
+						{linkOn ? <CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy link" /> : null}
 					</div>
 				)}
 			</div>
+
+			{linkOn ? (
+				<p className={"FilesShareModalLink-created" satisfies FilesShareModalLink_ClassNames}>
+					Link created by {link.creatorName} on {format_time(link.createdAt)}.
+				</p>
+			) : null}
+			{linkOn ? <FilesShareModalMedia key={`${nodeId}:${link.token}`} nodeId={nodeId} busy={busy} /> : null}
 
 			{error ? (
 				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
 					{error}
 				</p>
 			) : null}
+
+			{/* An image or video can also show inside the public link pages of other files. */}
+			{publicFlag ? (
+				<div
+					className={"FilesShareModalLink-public" satisfies FilesShareModalLink_ClassNames}
+					{...({
+						"data-share-public": publicFlag.isPublic ? "on" : "off",
+					} satisfies Partial<FilesShareModalLink_CustomAttributes>)}
+				>
+					<p className={"FilesShareModalLink-public-text" satisfies FilesShareModalLink_ClassNames}>
+						{publicFlag.isPublic
+							? `Public documents that use this ${publicFlag.mediaKind} show it.`
+							: `Public documents that use this ${publicFlag.mediaKind} show a gray box instead.`}
+					</p>
+					{publicFlag.canChange ? (
+						<MySelect
+							value={publicFlag.isPublic ? "on" : "off"}
+							setValue={(value) => {
+								const enabled = value === "on";
+								// Choosing the value it already has changes nothing, so it sends nothing.
+								if (enabled !== publicFlag.isPublic) {
+									onPublicChange(enabled);
+								}
+							}}
+						>
+							{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
+							<MySelectTrigger disabled={busy && !publicPending}>
+								<MyButton
+									type="button"
+									variant="outline"
+									className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
+									aria-label="Inside public documents"
+									aria-busy={publicPending || undefined}
+								>
+									<span>{publicPending ? "Saving..." : publicFlag.isPublic ? "Shown" : "Not shown"}</span>
+									<MySelectOpenIndicator />
+								</MyButton>
+							</MySelectTrigger>
+							<MySelectPopover unmountOnHide>
+								<MySelectPopoverContent>
+									<MySelectItem value="on">
+										Shown
+										{publicFlag.isPublic ? <MySelectItemIndicator /> : null}
+									</MySelectItem>
+									<MySelectItem value="off">
+										Not shown
+										{!publicFlag.isPublic ? <MySelectItemIndicator /> : null}
+									</MySelectItem>
+								</MySelectPopoverContent>
+							</MySelectPopover>
+						</MySelect>
+					) : null}
+				</div>
+			) : null}
+
+			{publicError ? (
+				<p className={"FilesShareModalLink-error" satisfies FilesShareModalLink_ClassNames} role="alert">
+					{publicError}
+				</p>
+			) : null}
 		</section>
 	);
 });
-// #endregion public
+// #endregion link
 
 // #region root
 type FilesShareModal_ClassNames =
@@ -680,14 +671,13 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const [pendingKey, setPendingKey] = useState<string | null>(null);
 	/** Why the last public link write was refused, kept with the node it was about. */
 	const [linkError, setLinkError] = useState<{ nodeId: app_convex_Id<"files_nodes">; message: string } | null>(null);
-	/** Why the last "Anyone on the web" write was refused. Keyed by node, like `linkError`. */
+	/** Why the last public flag write was refused. Keyed by node, like `linkError`. */
 	const [publicError, setPublicError] = useState<{ nodeId: app_convex_Id<"files_nodes">; message: string } | null>(
 		null,
 	);
 	/** The node whose restrict is waiting for a yes. Keyed by node, like `linkError`. */
 	const [restrictConfirmNodeId, setRestrictConfirmNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const listRef = useRef<HTMLUListElement>(null);
-	const publicSectionRef = useRef<HTMLElement>(null);
 	/** Where focus goes when the write a button started replaces the branch that button lived in. */
 	const dialogRef = useRef<HTMLDivElement>(null);
 	const addPrincipalTriggerRef = useRef<HTMLButtonElement>(null);
@@ -784,11 +774,10 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const runShareWrite = useFn(
 		(args: {
 			key: string;
-			request: Promise<{ _nay?: { message: string }; _yay?: { public: "on" | "inherited" | "off" } | null }>;
-			/** A function picks the message from the answer, when the answer can differ from the request. */
-			successMessage: string | ((result: { _yay?: { public: "on" | "inherited" | "off" } | null }) => string);
+			request: Promise<{ _nay?: { message: string } }>;
+			successMessage: string;
 			/** Runs only when the server said yes, so a refusal leaves the form as the user left it. */
-			onDone?: (result: { _yay?: { public: "on" | "inherited" | "off" } | null }) => void;
+			onDone?: () => void;
 			/** Shows a refusal beside its control instead of in a toast. */
 			onRefused?: (message: string) => void;
 		}) => {
@@ -811,8 +800,8 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						return;
 					}
 
-					toast.success(typeof args.successMessage === "string" ? args.successMessage : args.successMessage(result));
-					args.onDone?.(result);
+					toast.success(args.successMessage);
+					args.onDone?.();
 				})
 				.catch((error) => {
 					console.error("[FilesShareModal.runShareWrite] Failed to change sharing:", {
@@ -953,19 +942,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				nodeId: viewNodeId,
 				enabled,
 			}),
-			// Off on an item inside a public folder clears only its own setting, so it stays public.
-			successMessage: (result) =>
-				enabled
-					? "Made public"
-					: result._yay?.public === "inherited"
-						? "Still public through a folder above"
-						: "No longer public",
-			// An inherited item has no select, so the focused one goes away. Keep focus in the dialog.
-			onDone: (result) => {
-				if (result._yay?.public === "inherited") {
-					publicSectionRef.current?.focus();
-				}
-			},
+			successMessage: enabled ? "Shown inside public documents" : "Not shown in public documents",
 			onRefused: (message) => setPublicError({ nodeId: viewNodeId, message }),
 		});
 	});
@@ -1199,35 +1176,30 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 								) : null}
 							</section>
 
-							{/* A link opens one file, never a folder, and only a manager may turn it on or off. */}
-							{shareState.nodeKind === "file" && shareState.canManage ? (
+							{/* A link opens one file, never a folder, and only a manager may turn it on or off. An
+							    image or video also shows its public flag to anybody who may edit it. */}
+							{shareState.nodeKind === "file" && (shareState.canManage || shareState.public?.canChange) ? (
 								<FilesShareModalLink
 									nodeId={shareState.nodeId}
 									link={
-										shareState.link
-											? {
-													token: shareState.link.token,
-													createdAt: shareState.link.createdAt,
-													creatorName: read_display_name(userAnagraphicDict[shareState.link.createdBy]),
-												}
-											: null
+										!shareState.canManage
+											? "hidden"
+											: shareState.link
+												? {
+														token: shareState.link.token,
+														createdAt: shareState.link.createdAt,
+														creatorName: read_display_name(userAnagraphicDict[shareState.link.createdBy]),
+													}
+												: null
 									}
+									publicFlag={shareState.public}
 									pending={pendingKey === "link"}
+									publicPending={pendingKey === "public"}
 									busy={busy}
 									error={linkError?.nodeId === viewNodeId ? linkError.message : null}
+									publicError={publicError?.nodeId === viewNodeId ? publicError.message : null}
 									onEnabledChange={handleLinkEnabledChange}
-								/>
-							) : null}
-
-							{shareState.canManage ? (
-								<FilesShareModalPublic
-									ref={publicSectionRef}
-									state={shareState.public}
-									nodeKindText={nodeKindText}
-									pending={pendingKey === "public"}
-									busy={busy}
-									error={publicError?.nodeId === viewNodeId ? publicError.message : null}
-									onEnabledChange={handlePublicEnabledChange}
+									onPublicChange={handlePublicEnabledChange}
 								/>
 							) : null}
 

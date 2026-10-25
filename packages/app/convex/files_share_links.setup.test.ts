@@ -10,6 +10,7 @@ import {
 	plugins_data_db_prepare_file_access_binding,
 } from "./plugins_data.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { crypto_random_hex } from "../server/crypto-utils.ts";
 
 // Each test file calls this in `beforeEach`.
 export function mock_share_storage() {
@@ -292,7 +293,28 @@ export async function link_on(f: Fixture, nodeId: Id<"files_nodes">) {
 }
 
 /**
- * Turn "Anyone on the web" on or off as the owner, and let the scope job of a folder end.
+ * A live link of `nodeId`, seeded directly. Turning a link on in Sharing also makes the images and
+ * videos of the file public, so use this when a test needs them to stay as they are.
+ */
+export async function insert_link(f: Fixture, nodeId: Id<"files_nodes">) {
+	await f.t.run(async (ctx) => {
+		const node = (await ctx.db.get("files_nodes", nodeId))!;
+		await ctx.db.insert("files_share_links", {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			nodeId,
+			token: crypto_random_hex(32),
+			restrictedScopeNodeId: node.restrictedScopeNodeId,
+			createdBy: f.db.userId,
+			createdAt: Date.now(),
+		});
+	});
+	const [link] = await read_links(f.t, nodeId);
+	return link!;
+}
+
+/**
+ * Turn the public flag of a file on or off as the owner.
  */
 export async function set_public(f: Fixture, nodeId: Id<"files_nodes">, enabled = true) {
 	await reset_rate_limits(f.t, [f.db.userId]);
@@ -302,11 +324,6 @@ export async function set_public(f: Fixture, nodeId: Id<"files_nodes">, enabled 
 		enabled,
 	});
 	expect(result._nay).toBeUndefined();
-	// Only a folder starts a scope job. A file schedules nothing, so the jobs of other writes keep waiting.
-	const node = await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-	if (node?.kind === "folder") {
-		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-	}
 	return result._yay!;
 }
 
@@ -319,7 +336,7 @@ export function insert_media_file(
 		parentId: Id<"files_nodes"> | "root";
 		path: string;
 		contentType: string;
-		/** Make it a public root itself, like "Anyone on the web" on the file. */
+		/** Make it public, like the public flag in Sharing. */
 		public?: true;
 	},
 ) {
@@ -354,7 +371,7 @@ export function insert_media_file(
 			contentByteSize: 4,
 		});
 		if (args.public) {
-			await ctx.db.patch("files_nodes", nodeId, { publicScopeNodeId: nodeId });
+			await ctx.db.patch("files_nodes", nodeId, { isPublic: true });
 		}
 		return nodeId;
 	});

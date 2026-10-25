@@ -624,8 +624,8 @@ A plugin write in place keeps the file's public link ("Anyone with the link can 
 or fill keeps the node, so the link and its token stay, and the page shows the new committed text.
 A write that archives the old file and creates a new node ends the old link, and the new node has no
 link. A plugin archive or delete ends the link too. A plugin write never makes an image or video
-public. An image it adds shows on the page only when a person made that image public ("Anyone on the
-web", see `../files-rich-text-embeds/SKILL.md`). A plugin cannot turn that on: the API scope
+public. An image it adds shows on the page only when a person made that image public (its public
+flag, see `../files-rich-text-embeds/SKILL.md`). A plugin cannot turn that on: the API scope
 `files:publish` is for a person's own key only. Media inside a plugin-bound folder never show, because
 the page refuses every node on or under a binding.
 
