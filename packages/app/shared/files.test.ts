@@ -2788,6 +2788,9 @@ describe("block syntax round-trip through Yjs", () => {
 		["the info string after the language", '```ts title="a" {1,3}\ncode\n```\n'],
 		["a backtick in a `~~~` fence's info string", "~~~sh a`b &amp;\ncode\n~~~\n"],
 		["spaces after a fence's language", "```ts  \ncode\n```\n"],
+		// Before, a save dropped the spaces before a fence.
+		["an indented fence", "   ```ts\n   x\n\n   y\n   ```\n"],
+		["an indented `~~~` fence", " ~~~\n x\n ~~~\n"],
 		["an indented code block", "a\n\n    code\n\n    more\n"],
 		["heading closing marks", "## a ##\n"],
 		["a heading underline", "a\n=\n"],

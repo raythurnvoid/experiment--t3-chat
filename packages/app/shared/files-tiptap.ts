@@ -614,15 +614,18 @@ function configure_marked(instance: Marked | typeof marked) {
 			// `<pre>`, so that `\n` became part of the code. The save then wrote it as an empty line before
 			// the closing fence. So drop it here.
 			//
-			// Also keep a `~~~` or longer fence, and an indented block, so save writes the block as the file did.
+			// Also keep a `~~~` or longer fence, the spaces before the fence, and an indented block, so save writes
+			// the block as the file did.
 			//
 			// Marked keeps only the first word of the info string, the language. Keep the rest too, like
 			// ` title="a"` in ```` ```ts title="a" ````. Before, a save dropped it.
 			code(token) {
-				const opening = /^ {0,3}(`{3,}|~{3,})([ \t]*)\S*(.*)/.exec(token.raw);
+				const opening = /^( {0,3})(`{3,}|~{3,})([ \t]*)\S*(.*)/.exec(token.raw);
 				const fence =
-					token.codeBlockStyle === "indented" ? "indented" : opening && `${opening[1]}${token.lang ? opening[2] : ""}`;
-				const meta = token.codeBlockStyle === "indented" ? "" : (opening?.[3] ?? "");
+					token.codeBlockStyle === "indented"
+						? "indented"
+						: opening && `${opening[1]}${opening[2]}${token.lang ? opening[3] : ""}`;
+				const meta = token.codeBlockStyle === "indented" ? "" : (opening?.[4] ?? "");
 				const html = Renderer.prototype.code
 					.call(this, token)
 					.replace(CODE_BLOCK_HTML_FINAL_NEWLINE_REGEX, "</code></pre>\n");
