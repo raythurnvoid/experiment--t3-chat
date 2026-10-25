@@ -2772,6 +2772,8 @@ describe("block syntax round-trip through Yjs", () => {
 	test.each([
 		["the same number on every item", "1. a\n1. b\n"],
 		["a `*` task bullet", "* [ ] a\n* [x] b\n"],
+		// Before, a save wrote `[X]` as `[x]`.
+		["an upper-case `[X]`", "- [X] a\n- [x] b\n  - [X] c\n"],
 		["an empty bullet item", "- a\n-\n- c\n"],
 		// Before, the empty item ended the list, and `3. c` started a second list.
 		["an empty ordered item", "1. a\n2.\n3. c\n"],

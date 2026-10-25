@@ -455,6 +455,7 @@ function configure_marked(instance: Marked | typeof marked) {
 					const taskListToken = token as {
 						items?: Array<{
 							checked?: boolean;
+							checkedMark?: string;
 							text?: string;
 							tokens?: unknown[];
 							nestedTokens?: Array<{ type: string }>;
@@ -472,9 +473,11 @@ function configure_marked(instance: Marked | typeof marked) {
 									: "";
 							// Keep a blank line before the item's blocks, like the `listitem` renderer.
 							const loose = itemToken.nestedTokens?.some((child) => child.type === "space");
+							// Keep a checked `[X]`, so save does not write it as `[x]`.
+							const checkedMark = itemToken.checkedMark === "X" ? ' data-checked-mark="X"' : "";
 							return `<li data-type="taskItem" data-checked="${
 								itemToken.checked ? "true" : "false"
-							}"${loose ? " data-loose" : ""}><p>${itemTextHtml}</p>${nestedHtml}</li>`;
+							}"${loose ? " data-loose" : ""}${checkedMark}><p>${itemTextHtml}</p>${nestedHtml}</li>`;
 						})
 						.join("");
 					// Keep a `*` or `+` bullet, like the `list` renderer.
