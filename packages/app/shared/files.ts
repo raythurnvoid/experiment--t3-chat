@@ -1,6 +1,6 @@
 // Lean, cross-runtime file helpers: constants, name/path normalization, and byte helpers.
 // Keep this module free of heavy runtime imports (@tiptap/* runtime, yjs,
-// y-prosemirror, marked): Convex evaluates a function module's full static import graph on cold
+// marked): Convex evaluates a function module's full static import graph on cold
 // start, and many consumers only need these pure helpers. Type-only imports are fine. Yjs helpers
 // live in `shared/files-yjs.ts`; Tiptap/Markdown helpers live in `shared/files-tiptap.ts`.
 
