@@ -195,9 +195,8 @@ const PROPOSAL_FIELDS = [
 
 /**
  * A saved node's move, rename or archive refreshes every user's hide and place of that node in the
- * same transaction (exact windows), and a content write refreshes its places, so their number must
- * stay small. A user's own write may add a hide or place of a saved node only while other users hold
- * fewer than this many of them.
+ * same transaction (exact windows), so their number must stay small. A user's own write may add a
+ * hide or place of a saved node only while other users hold fewer than this many of them.
  */
 const MAX_OTHER_USERS_DOCS_PER_SAVED_NODE = 32;
 
@@ -313,6 +312,25 @@ type JobInput =
 	| { kind: "repair_user"; userId: Id<"users"> }
 	| { kind: "place_fields"; placeIds: Id<"files_pending_places">[] }
 	| { kind: "targets"; userId: Id<"users">; items: TargetsJobItem[] };
+
+/**
+ * A saved-place pass keeps its creation-time bound and page while later writes ask for another pass.
+ */
+export type files_pending_overlay_SavedPlacesCursor = {
+	page: string | null;
+	through: number;
+	isDone?: boolean;
+	place?: {
+		id: Id<"files_pending_places">;
+		phase: "clear" | "build" | "cleanup";
+		page: string | null;
+		refreshId: string;
+		fieldsVersion: number;
+		metadataRevision: number;
+	};
+	rerun?: boolean;
+	rerunFieldsChanged?: boolean;
+};
 
 type Reader = ReturnType<typeof files_visible_resolve_db_create>;
 
@@ -1353,7 +1371,7 @@ export async function files_pending_overlay_db_pending_update_is_listed(args: {
 	return child === null;
 }
 
-type DesiredPlace = Omit<WithoutSystemFields<Doc<"files_pending_places">>, "fieldsVersion">;
+type DesiredPlace = Omit<WithoutSystemFields<Doc<"files_pending_places">>, "fieldsVersion" | "fieldsRefreshId">;
 
 /**
  * What the derived docs of one user's target should be, from source tables and the reader only.
@@ -2497,6 +2515,71 @@ export async function files_pending_overlay_db_schedule_saved_scope(
 }
 
 /**
+ * Refresh private copies without making the saved writer visit every owner. Keep an active pass's
+ * cursor; a later write asks for one more pass. Callers schedule the same node sequentially.
+ */
+export async function files_pending_overlay_db_schedule_saved_places(
+	ctx: MutationCtx,
+	node: Pick<Doc<"files_nodes">, "_id" | "organizationId" | "workspaceId">,
+	args: { fieldsChanged?: boolean } = {},
+) {
+	// Global and plugin volume workspaces have no drafts.
+	const organizationId = ctx.db.normalizeId("organizations", node.organizationId);
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", node.workspaceId);
+	if (!organizationId || !workspaceId) return;
+	const job = (await ctx.db
+		.query("files_pending_overlay_jobs")
+		.withIndex("by_kind_key", (q) => q.eq("kind", "saved_places").eq("key", node._id))
+		.unique()) as Extract<Doc<"files_pending_overlay_jobs">, { kind: "saved_places" }> | null;
+	if (job) {
+		if (args.fieldsChanged)
+			await ctx.db.patch("files_pending_overlay_jobs", job._id, { metadataRevision: job.metadataRevision + 1 });
+		if (job.cursor) {
+			const cursor = JSON.parse(job.cursor) as files_pending_overlay_SavedPlacesCursor;
+			await ctx.db.patch("files_pending_overlay_jobs", job._id, {
+				cursor: JSON.stringify({
+					...cursor,
+					rerun: true,
+					rerunFieldsChanged: cursor.rerunFieldsChanged || args.fieldsChanged === true,
+				}),
+			});
+		} else if (args.fieldsChanged && !job.fieldsChanged)
+			await ctx.db.patch("files_pending_overlay_jobs", job._id, { fieldsChanged: true });
+		const run = await ctx.db.system.get("_scheduled_functions", job.scheduledFunctionId);
+		if (job.blockedByCohortId || run?.state.kind === "pending" || run?.state.kind === "inProgress") return;
+	} else {
+		const place = await ctx.db
+			.query("files_pending_places")
+			.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", node._id))
+			.first();
+		if (!place) return;
+	}
+	const now = Date.now();
+	const scheduledFunctionId = await ctx.scheduler.runAfter(0, internal.files_pending_overlay.run_job, {
+		kind: "saved_places",
+		key: node._id,
+		nextAttemptAt: now,
+	});
+	if (job) {
+		await ctx.db.patch("files_pending_overlay_jobs", job._id, { nextAttemptAt: now, scheduledFunctionId });
+		return;
+	}
+	await ctx.db.insert("files_pending_overlay_jobs", {
+		organizationId,
+		workspaceId,
+		kind: "saved_places",
+		savedNodeId: node._id,
+		fieldsChanged: args.fieldsChanged === true,
+		metadataRevision: 0,
+		key: node._id,
+		cursor: null,
+		nextAttemptAt: now,
+		scheduledFunctionId,
+		attempts: 0,
+	});
+}
+
+/**
  * Make a saved node's chunks and metadata docs follow its new path, archive state or area. A node with
  * few of them is patched in this mutation. A bigger one gets a saved scope job, so one big file costs
  * this mutation little.
@@ -2712,11 +2795,8 @@ async function db_flush_ancestors(
 }
 
 /**
- * Saved index fields are copied to every hide and saved-node place in this transaction, and hide
- * keys must match the saved page's index window. Hides do not copy `updatedAt`, so a content Save or
- * Restore reads none of them. Places copy `updatedAt` for the user's `ls -t` and `find -mmin`. Only a
- * user's own move adds one, and the admission cap refuses it once other users hold
- * `MAX_OTHER_USERS_DOCS_PER_SAVED_NODE` of them.
+ * Structural copies stay exact for the saved page's index window. Content-only writes queue the
+ * copied dates instead, so Save and version Restore do not visit every owner's hide or place.
  */
 async function db_flush_saved_node(
 	flush: Flush,
@@ -2750,10 +2830,14 @@ async function db_flush_saved_node(
 				.withIndex("by_savedNode_user", (q) => q.eq("savedNodeId", nodeId))
 				.collect()
 		: [];
-	const places = await ctx.db
-		.query("files_pending_places")
-		.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
-		.collect();
+	const places = hideFieldsChanged
+		? await ctx.db
+				.query("files_pending_places")
+				.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
+				.collect()
+		: [];
+	if (!hideFieldsChanged && node && old.updatedAt !== node.updatedAt)
+		await files_pending_overlay_db_schedule_saved_places(ctx, node);
 
 	// During a Move the physical node keeps its old place until cleanup. A hide or place tagged with a
 	// Move view copies the node as that view shows it, so security writes keep the after copies right.
@@ -3171,14 +3255,8 @@ export async function files_pending_overlay_db_flush(ctx: MutationCtx) {
 
 		// Fields of a moved saved node follow its committed metadata.
 		for (const nodeId of committedMetadataNodeIds) {
-			const places = await ctx.db
-				.query("files_pending_places")
-				.withIndex("by_target_user", (q) => q.eq("target.kind", "saved").eq("target.id", nodeId))
-				.collect();
-			for (const place of places) {
-				await ctx.db.patch("files_pending_places", place._id, { fieldsVersion: place.fieldsVersion + 1 });
-				state.placeFieldIds.set(place._id, place);
-			}
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (node) await files_pending_overlay_db_schedule_saved_places(ctx, node, { fieldsChanged: true });
 		}
 
 		// A write to the drafts of more than one user (another user's write, a cron, a purge) sends

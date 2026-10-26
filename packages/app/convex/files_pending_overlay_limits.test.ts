@@ -535,7 +535,7 @@ describe("hard delete", () => {
 	const hard_delete_cost = async (userCount: number) => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const seeded = await t.run(async (ctx) => {
+		const seeded = await test_run_with_flush(t, async (ctx) => {
 			const a = await insert_saved_node(ctx, db, { parent: null, name: "a", kind: "folder" });
 			const b = await insert_saved_node(ctx, db, { parent: null, name: "b", kind: "folder" });
 			const files: Doc<"files_nodes">[] = [];
@@ -619,7 +619,7 @@ describe("saved scope job", () => {
 			const nodeId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path, textContent: "x" });
 			await t.finishAllScheduledFunctions(vi.runAllTimers);
 			// A real Save of this size is slow in tests.
-			await t.run((ctx) =>
+			await test_run_with_flush(t, (ctx) =>
 				db_replace_file_chunks(ctx, {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
@@ -725,7 +725,10 @@ describe("metadata catalog", () => {
 	test("measures create, full replacement, archive, restore, restrict and the compactor at maximum delta sizes", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const node = await t.run((ctx) => insert_saved_node(ctx, db, { parent: null, name: "max", kind: "folder" }));
+		// Frontmatter belongs to a saved file's content head.
+		const node = await test_run_with_flush(t, (ctx) =>
+			insert_saved_node(ctx, db, { parent: null, name: "max", kind: "file" }),
+		);
 		const docs = (round: number) =>
 			(["frontmatter", "metadata"] as const).flatMap((namespace) =>
 				Array.from({ length: 128 }, (_, key) => {
@@ -843,7 +846,7 @@ describe("content save", () => {
 	test("saves a shared file with 100 shares", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const file = await t.run(async (ctx) => {
+		const file = await test_run_with_flush(t, async (ctx) => {
 			const file = await insert_saved_node(ctx, db, { parent: null, name: "shared.md", kind: "file" });
 			await ctx.db.patch("files_nodes", file._id, { restrictedScopeNodeId: file._id, isRestrictedScopeRoot: true });
 			return file;

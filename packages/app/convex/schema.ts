@@ -4024,6 +4024,10 @@ const app_convex_schema = defineSchema({
 		 * Bumped each time the flush schedules the place fields job for this place.
 		 */
 		fieldsVersion: v.number(),
+		/**
+		 * The published field copy. Missing for private drafts or fields built by Move.
+		 */
+		fieldsRefreshId: v.optional(v.string()),
 	})
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		.index("by_org_ws_user_visible_parent_name", [
@@ -4106,6 +4110,7 @@ const app_convex_schema = defineSchema({
 			"name",
 		])
 		.index("by_target_user", ["target.kind", "target.id", "userId", "moveView.cohortId", "moveView.view"])
+		.index("by_target", ["target.kind", "target.id"])
 		.index("by_pendingUpdate", ["pendingUpdateId", "moveView.cohortId", "moveView.view"])
 		.index("by_org_ws_user_isPathless", [
 			"organizationId",
@@ -4238,7 +4243,7 @@ const app_convex_schema = defineSchema({
 	 * metadata doc the owner sees for a place. The other fields copy the place; a read drops a doc
 	 * whose copy no longer matches its place.
 	 *
-	 * Derived docs: only the place fields job and data deletion write them.
+	 * Derived docs: overlay field jobs, Move staging and data deletion write them.
 	 */
 	files_pending_place_fields: defineTable({
 		moveView: v.optional(files_move_view_tag_validator),
@@ -4258,6 +4263,7 @@ const app_convex_schema = defineSchema({
 		isVisible: v.boolean(),
 		accessNodeId: v.union(v.id("files_nodes"), v.null()),
 		fieldsVersion: v.number(),
+		fieldsRefreshId: v.optional(v.string()),
 	})
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		.index("by_org_ws_user_visible_docKind_field_tree", [
@@ -4419,6 +4425,16 @@ const app_convex_schema = defineSchema({
 				workspaceId: files_committed_index_fields.workspaceId,
 				kind: v.literal("saved_scope"),
 				savedNodeId: v.id("files_nodes"),
+			}),
+			/**
+			 * Refreshes copied dates and metadata on private places. It does not delay Review.
+			 */
+			v.object({
+				...files_pending_overlay_job_fields,
+				kind: v.literal("saved_places"),
+				savedNodeId: v.id("files_nodes"),
+				fieldsChanged: v.boolean(),
+				metadataRevision: v.number(),
 			}),
 			v.object({
 				...files_pending_overlay_job_fields,

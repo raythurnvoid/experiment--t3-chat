@@ -27,9 +27,11 @@ import {
 	files_pending_overlay_db_flush,
 	files_pending_overlay_db_mark_target,
 	files_pending_overlay_db_schedule_repair,
+	files_pending_overlay_db_schedule_saved_places,
 	files_pending_overlay_db_set_own_job,
 	files_pending_overlay_db_sync_list_key,
 	files_pending_overlay_db_target_cohort,
+	type files_pending_overlay_SavedPlacesCursor,
 } from "../server/files-pending-overlay.ts";
 import {
 	files_saved_placement_db_get_slot,
@@ -69,6 +71,12 @@ const SCOPE_PAGE_SIZE = 4;
  */
 const SAVED_SCOPE_PAGE_SIZE = 256;
 const SAVED_SCOPE_PAGE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Leave room for wrapper reads and one full-size doc beyond the page's byte bound.
+ */
+const PLACE_FIELDS_PAGE_SIZE = 64;
+const PLACE_FIELDS_PAGE_BYTES = 512 * 1024;
 
 /**
  * Leave room for the next target and its derived writes. Deep resolution saves its remaining
@@ -138,6 +146,7 @@ const RESTRICTED_SCOPE_CHECK_PAGE_SIZE = 1000;
 const job_kind_validator = v.union(
 	v.literal("saved_node"),
 	v.literal("saved_scope"),
+	v.literal("saved_places"),
 	v.literal("parent"),
 	v.literal("owner_path"),
 	v.literal("place_fields"),
@@ -153,7 +162,7 @@ type Scope = {
 
 type PagedJob = Exclude<
 	Doc<"files_pending_overlay_jobs">,
-	{ kind: "place_fields" | "targets" | "saved_scope" | "repair_user" }
+	{ kind: "place_fields" | "targets" | "saved_scope" | "saved_places" | "repair_user" }
 >;
 
 /**
@@ -532,18 +541,36 @@ function field_copies_place(field: Doc<"files_pending_place_fields">, place: Doc
 }
 
 /**
- * Make one place's field docs match its metadata, or delete them when the place is gone. One place
- * has at most 512 fields, so this fits one run.
+ * Saved places use the paged worker. Private drafts keep their current field writer. Return false
+ * when a deleted place still needs cleanup; an unfinished saved build can have two field sets.
  */
 async function db_sync_place_fields(ctx: MutationCtx, placeId: Id<"files_pending_places">) {
 	const place = await ctx.db.get("files_pending_places", placeId);
+	if (place?.target.kind === "saved") {
+		await files_pending_overlay_db_schedule_saved_places(
+			ctx,
+			{ ...place, _id: place.target.id },
+			{ fieldsChanged: true },
+		);
+		return true;
+	}
+	if (!place) {
+		const fields = await ctx.db
+			.query("files_pending_place_fields")
+			.withIndex("by_place", (q) =>
+				q.eq("placeId", placeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			)
+			.take(SCOPE_PAGE_SIZE);
+		for (const field of fields) await ctx.db.delete("files_pending_place_fields", field._id);
+		return fields.length < SCOPE_PAGE_SIZE;
+	}
 	const fields = await ctx.db
 		.query("files_pending_place_fields")
 		.withIndex("by_place", (q) =>
 			q.eq("placeId", placeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 		)
 		.collect();
-	const values = place ? await db_place_field_values(ctx.db, place) : [];
+	const values = await db_place_field_values(ctx.db, place);
 
 	const stored = new Map<string, Doc<"files_pending_place_fields">[]>();
 	for (const field of fields) {
@@ -553,27 +580,28 @@ async function db_sync_place_fields(ctx: MutationCtx, placeId: Id<"files_pending
 	for (const value of values) {
 		const field = stored.get(field_value_key(value))?.pop();
 		const copies = {
-			parent: place!.parent,
-			ownerTreePath: place!.ownerTreePath,
-			isVisible: place!.isVisible,
-			accessNodeId: place!.accessNodeId,
-			fieldsVersion: place!.fieldsVersion,
+			parent: place.parent,
+			ownerTreePath: place.ownerTreePath,
+			isVisible: place.isVisible,
+			accessNodeId: place.accessNodeId,
+			fieldsVersion: place.fieldsVersion,
 		};
 		if (!field)
 			await ctx.db.insert("files_pending_place_fields", {
-				organizationId: place!.organizationId,
-				workspaceId: place!.workspaceId,
-				userId: place!.userId,
-				target: place!.target,
+				organizationId: place.organizationId,
+				workspaceId: place.workspaceId,
+				userId: place.userId,
+				target: place.target,
 				placeId,
 				...value,
 				...copies,
 			});
-		else if (!field_copies_place(field, place!) || field.fieldsVersion !== place!.fieldsVersion)
+		else if (!field_copies_place(field, place) || field.fieldsVersion !== place.fieldsVersion)
 			await ctx.db.patch("files_pending_place_fields", field._id, copies);
 	}
 	for (const extra of stored.values())
 		for (const field of extra) await ctx.db.delete("files_pending_place_fields", field._id);
+	return true;
 }
 
 /**
@@ -585,6 +613,7 @@ async function db_continue_job(
 	job: Doc<"files_pending_overlay_jobs">,
 	patch: {
 		cursor: string | null;
+		fieldsChanged?: boolean;
 		placeIds?: Id<"files_pending_places">[];
 		items?: Extract<Doc<"files_pending_overlay_jobs">, { kind: "targets" }>["items"];
 	},
@@ -680,6 +709,151 @@ async function db_run_saved_scope_job(
 }
 
 /**
+ * Read current saved values on each page. A fixed creation-time bound lets the pass end while new
+ * places arrive. Normal creation queues its fields; Move promotion asks for another saved pass.
+ */
+async function db_run_saved_places_job(
+	ctx: MutationCtx,
+	job: Extract<Doc<"files_pending_overlay_jobs">, { kind: "saved_places" }>,
+) {
+	const node = await ctx.db.get("files_nodes", job.savedNodeId);
+	let cursor = job.cursor ? (JSON.parse(job.cursor) as files_pending_overlay_SavedPlacesCursor) : null;
+	if (!node && !cursor?.place) {
+		await files_pending_overlay_db_delete_job(ctx, job);
+		return;
+	}
+	// Owner staging holds the saved target too, even when only its draft destination is moving.
+	const cohortId = await files_pending_overlay_db_target_cohort(ctx.db, {
+		...job,
+		target: { kind: "saved", id: job.savedNodeId },
+	});
+	if (cohortId) {
+		await ctx.db.patch("files_pending_overlay_jobs", job._id, { blockedByCohortId: cohortId });
+		return;
+	}
+	if (!cursor) {
+		const last = await ctx.db
+			.query("files_pending_places")
+			.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", job.savedNodeId))
+			.order("desc")
+			.first();
+		if (!last) {
+			await files_pending_overlay_db_delete_job(ctx, job);
+			return;
+		}
+		cursor = { page: null, through: last._creationTime };
+	}
+	if (cursor.place) {
+		const work = cursor.place;
+		const place = node ? await ctx.db.get("files_pending_places", work.id) : null;
+		if (!place) {
+			// Earlier cleanup pages kept the selected fields. With no place, remove those too.
+			work.page = null;
+			work.phase = "cleanup";
+		} else if (
+			work.phase === "build" &&
+			(work.metadataRevision !== job.metadataRevision || work.fieldsVersion !== place.fieldsVersion)
+		) {
+			// Keep the selected copy. A later pass retries changed sources; never publish mixed pages.
+			work.page = null;
+			work.phase = "cleanup";
+		}
+		const paginationOpts = {
+			cursor: work.page,
+			numItems: PLACE_FIELDS_PAGE_SIZE,
+			maximumBytesRead: PLACE_FIELDS_PAGE_BYTES,
+		};
+		if (work.phase === "build" && place) {
+			const page = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode", (q) =>
+					q
+						.eq("organizationId", job.organizationId)
+						.eq("workspaceId", job.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", job.savedNodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				)
+				.paginate(paginationOpts);
+			for (const doc of page.page)
+				await ctx.db.insert("files_pending_place_fields", {
+					organizationId: place.organizationId,
+					workspaceId: place.workspaceId,
+					userId: place.userId,
+					target: place.target,
+					placeId: place._id,
+					docKind: doc.docKind,
+					fieldPath: doc.fieldPath,
+					valueKind: doc.valueKind,
+					stringValue: doc.stringValue,
+					numberValue: doc.numberValue,
+					booleanValue: doc.booleanValue,
+					parent: place.parent,
+					ownerTreePath: place.ownerTreePath,
+					isVisible: place.isVisible,
+					accessNodeId: place.accessNodeId,
+					fieldsVersion: work.fieldsVersion,
+					fieldsRefreshId: work.refreshId,
+				});
+			work.page = page.continueCursor;
+			if (page.isDone) {
+				// The job revision and place version were read in this same transaction.
+				await ctx.db.patch("files_pending_places", place._id, { fieldsRefreshId: work.refreshId });
+				work.phase = "cleanup";
+				work.page = null;
+			}
+		} else {
+			const page = await ctx.db
+				.query("files_pending_place_fields")
+				.withIndex("by_place", (q) =>
+					q.eq("placeId", work.id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+				)
+				.paginate(paginationOpts);
+			for (const field of page.page)
+				if (!place || field.fieldsRefreshId !== place.fieldsRefreshId || field.fieldsVersion !== place.fieldsVersion)
+					await ctx.db.delete("files_pending_place_fields", field._id);
+			work.page = page.continueCursor;
+			if (page.isDone) {
+				if (work.phase === "clear" && place) {
+					work.phase = "build";
+					work.page = null;
+					work.metadataRevision = job.metadataRevision;
+					work.fieldsVersion = place.fieldsVersion;
+				} else delete cursor.place;
+			}
+		}
+	} else if (!cursor.isDone) {
+		// Convex permits one paginate call per run, so field work starts in the next run.
+		const page = await ctx.db
+			.query("files_pending_places")
+			.withIndex("by_target", (q) =>
+				q.eq("target.kind", "saved").eq("target.id", job.savedNodeId).lte("_creationTime", cursor.through),
+			)
+			.paginate({ cursor: cursor.page, numItems: job.fieldsChanged ? 1 : JOB_PAGE_SIZE });
+		for (const place of page.page) {
+			if (place.updatedAt !== node!.updatedAt || place.kind !== node!.kind)
+				await ctx.db.patch("files_pending_places", place._id, { updatedAt: node!.updatedAt, kind: node!.kind });
+			if (job.fieldsChanged)
+				cursor.place = {
+					id: place._id,
+					phase: "clear",
+					page: null,
+					refreshId: crypto.randomUUID(),
+					fieldsVersion: place.fieldsVersion,
+					metadataRevision: job.metadataRevision,
+				};
+		}
+		cursor.page = page.continueCursor;
+		cursor.isDone = page.isDone;
+	}
+	if (cursor.place || (node && !cursor.isDone)) await db_continue_job(ctx, job, { cursor: JSON.stringify(cursor) });
+	else if (cursor.rerun)
+		await db_continue_job(ctx, job, { cursor: null, fieldsChanged: cursor.rerunFieldsChanged === true });
+	else await files_pending_overlay_db_delete_job(ctx, job);
+}
+
+/**
  * One run of an overlay job: recompute docs until the transaction is near a limit, then schedule
  * the next run. The last run deletes the task doc.
  */
@@ -710,6 +884,10 @@ export const run_job = internalMutation({
 		}
 		if (!(await ctx.db.get("organizations_workspaces", job.workspaceId))) {
 			await files_pending_overlay_db_delete_job(ctx, job);
+			return null;
+		}
+		if (job.kind === "saved_places") {
+			await db_run_saved_places_job(ctx, job);
 			return null;
 		}
 		const own = files_pending_overlay_db_set_own_job(ctx, job);
@@ -774,7 +952,7 @@ export const run_job = internalMutation({
 					await park(cohortId, { placeIds: job.placeIds.slice(done) });
 					return null;
 				}
-				await db_sync_place_fields(ctx, placeId);
+				if (!(await db_sync_place_fields(ctx, placeId))) break;
 				done++;
 			}
 			if (done === job.placeIds.length) await files_pending_overlay_db_delete_job(ctx, job);
@@ -1142,7 +1320,7 @@ async function db_check_target(
 				.eq("moveView.view", undefined),
 		)
 		.unique();
-	const storedPlace = place && { ...place, fieldsVersion: undefined };
+	const storedPlace = place && { ...place, fieldsVersion: undefined, fieldsRefreshId: undefined };
 	if (stable_json(storedPlace) !== stable_json(desired.place))
 		differences.push(`place of ${name}: stored ${stable_json(storedPlace)}, expected ${stable_json(desired.place)}`);
 

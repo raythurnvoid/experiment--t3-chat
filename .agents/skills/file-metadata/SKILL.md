@@ -95,8 +95,8 @@ The table has strict committed and pending variants. Committed docs use a real `
 Pending frontmatter and private metadata docs use a saved/private `target`, owner, proposal ID, and proposal revision.
 Pending docs always belong to a real organization and workspace. Committed Mount files use their
 volume id as the storage scope and keep the real owning organization. Saved move and cleanup paths query both
-the committed file index and the pending target index. Marking content for rebase hides its old
-frontmatter until preparation rebuilds it.
+the committed file index and the pending target index. Retained draft frontmatter stays visible
+to its owner until preparation replaces its indexes.
 
 # Rules
 
@@ -341,6 +341,12 @@ The map holds member-defined labels and details recorded by creation flows.
   `packages/app/server/bash-meta-command.ts`. `meta get` prints frontmatter and metadata fields
   together; its `source:` line identifies saved or pending text. A private item also owns a pending
   metadata map. Search JSON names its short matched copy `matchedValue`. Use `meta get` for full values.
+  Saved changes refresh the copied search values of private moved entries in background jobs.
+  Small pages build a new copy while the old set stays searchable. One final patch publishes the
+  complete set, then cleanup removes the old docs in pages. A newer source edit discards an
+  unfinished build for the next pass; Move holds it until Move cleanup ends. Copies may lag;
+  paths and access checks stay current. See
+  [Saved place refresh](../files-agent-pending-updates/SKILL.md#pending-overlay).
 
 Folder metadata participates in sidebar and global search. Rename, move, archive, and restore update
 its indexed scope with the folder's own path, including nested and archived descendants. Folder

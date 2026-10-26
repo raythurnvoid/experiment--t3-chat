@@ -26,8 +26,8 @@ Restore and Copy replacement keep other users' drafts untouched. They advance th
 `pendingContentVersion`; an older draft becomes stale by comparison. Preparation updates only its
 owner's draft. Never scan, mark, or delete all owners' content drafts during publication. The
 structural overlay does not copy `updatedAt` into hides, so Save and Restore never touch other
-users' hides. They still refresh the copied `updatedAt` on the places of other users who moved that
-file (see "Remaining saved-index cost").
+users' hides. Copied dates and metadata on private places refresh in background jobs. Saved content
+is current at once, and the refresh never changes anyone's draft (see "Saved place refresh").
 Version-history Restore stays in its current request flow. It does not need a new background job
 to handle drafts. Unarchive uses its existing job and is a separate operation.
 
@@ -267,7 +267,7 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   the clock first, because changes may have skipped it. `files_pending_review_versions` still
   advances on every proposal write.
 - `files_pending_review_fact_state.pendingJobCount` counts the workspace's overlay jobs with
-  `reviewFactsPending` (every kind except `place_fields` and `saved_scope`). The job insert adds 1,
+  `reviewFactsPending` (every kind except `place_fields`, `saved_scope` and `saved_places`). The job insert adds 1,
   and `files_pending_overlay_db_delete_job` subtracts 1. While it is above 0, the plan producer
   waits and polls. A counter-only wait can expire. Move and subtree waits renew the deadline,
   so do not promise a fixed timeout. Data deletion uses the same job delete helper to keep the
@@ -760,11 +760,15 @@ The pending overlay is a set of derived tables. They copy what each user's draft
 
 **The flush rule.** Every mutation imports `mutation` or `internalMutation` from `convex/functions.ts`. That wrapper captures writes to the source tables (`files_nodes`, `files_pending_updates`, `files_pending_nodes`, `files_pending_node_publish_receipts`, `files_metadata_docs`, `access_control_permission_grants`) and flushes once at the end, in the same transaction. The same flush keeps the share rows (`files_share_rows`) true: only file grants and scope roots (restricted or extended) change them (see "Share rows" in `../access-control/SKILL.md`). Every flush call also inserts the metadata catalog's deltas for the committed metadata writes since the last call, tagged Move docs included, and clears them (see "Catalog" in `../file-metadata/SKILL.md`). Derived writes are diffed, so an unchanged doc is not written. The flush, its jobs, data deletion and fenced cohort staging write derived tables. Cohort workers build both owner views before publication. Owner path work uses a bounded inline step and jobs; job-updated docs can lag a few seconds. In tests, `t.run` is raw: seed drafts with `test_run_with_flush` from `convex/setup.test.ts`.
 
-**Remaining saved-index cost.** A saved-node move, rename, archive or restore refreshes every hide and saved-node place in the same transaction. Hide keys must match the saved name and path indexes for hidden-row subtraction. Claim jobs can give one node more hides than the 32-document admission cap below.
+**Saved place refresh.** Content-only Save, version Restore and saved metadata writes queue one `saved_places` job per saved file. They do not collect or invalidate every owner's private place. Copied dates used by the moving user's agent `ls -t`, `ls -l` and `find -mmin` / `-mtime`, and copied values used by metadata search, may lag until that job runs. The normal Files directory's Modified sort reads saved docs directly.
 
-A content-only Save or Restore reads and writes no hide. Hides do not copy `updatedAt`, and `ls -t` checks the hide of each saved node by `by_savedNode_user` (one range per node). The Save still refreshes the copied `updatedAt` on the node's saved places, which order and filter the moving user's agent `ls -t`, `ls -l` and `find -mmin` / `-mtime`. Only a user's own move adds such a place, and the cap refuses it once other users hold 32 hides or places, so this part does not grow with claims. A move whose overlay work goes to a job, and the user who accepts or discards, skip the cap, so it is not a hard limit.
+Each pass walks `files_pending_places.by_target` up to the last creation time it saw when it began. Later writes keep its page cursor and request one more pass. Date-only pages read no metadata. Normal creation copies the current header and queues its fields. Saved-target field jobs and repair use the same saved-place refresh.
 
-Do not delay these copies without redesigning the readers. The normal Files directory's Modified sort reads saved rows directly.
+Metadata work builds one place's new fields in small native pages. Its old published fields stay searchable during the build. Each copy carries a `fieldsRefreshId`; one final patch selects the complete copy on the place. Readers require that ID and `fieldsVersion` to match, then check current paths and access. A changed metadata revision or structural version discards the unfinished copy and advances to the next owner. The next pass tries again, so steady writes cannot keep one pass stuck at its first owner. Cleanup removes unused copies in pages. It keeps at most two copies, including after retries.
+
+Jobs park while Move holds their saved target. Move stages its own complete fields and preserves the selected copy when it finishes or aborts. Both paths request a refresh when they promote a kept place. Jobs resume through the existing Move wake-up and recovery cron.
+
+**Remaining saved-index cost.** A saved-node move, rename, archive or unarchive still refreshes hide and place headers in the same transaction. Hide keys must match saved name and path indexes for hidden-row subtraction. Claim jobs can give one node more hides than the 32-document admission cap. Structural jobs and Accept/Discard also skip that cap, so it is not a hard owner limit. Content-only Save and version Restore read and write no hide. Hides do not copy `updatedAt`; `ls -t` checks each saved node's hide through `by_savedNode_user`. Do not delay paths or access checks with the copied dates and metadata.
 
 **Saved node ancestors.** The same flush writes `files_nodes.ancestor1..ancestor12`: the folders above a node, top-level folder first, so "under folder G" is one equality `ancestor<G.pathDepth> = G` in the `files_nodes.search_name` search index. For every saved node the round inserted or whose parent or `treePath` changed, parents first (shorter `treePath`), it copies the parent's ancestors plus the parent. A node more than 12 folders deep keeps the top 12, so a folder deeper than 12 levels cannot scope a name search. Ordinary creates, restores and path repair use this flush. Move, Rename and Accept also build the AFTER place's ancestors in their fenced cohort stage. Outside fenced cohort materialization, a `files_nodes` patch that writes only ancestor fields marks nothing; a patch that mixes them with other fields throws. `files_pending_overlay:check_ancestors` (`cursor: null`, call again until the cursor is null) reports nodes whose ancestors drifted, for example after a dashboard edit.
 

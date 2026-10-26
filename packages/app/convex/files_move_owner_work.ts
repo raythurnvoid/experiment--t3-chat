@@ -6,6 +6,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import {
 	files_pending_overlay_db_can_join_step,
 	files_pending_overlay_db_resolve_facts,
+	files_pending_overlay_db_schedule_saved_places,
 	files_pending_overlay_db_stage_owner,
 	files_pending_overlay_db_stage_owner_fields,
 	files_pending_overlay_db_stage_owner_lists,
@@ -1030,9 +1031,19 @@ async function db_cleanup(ctx: MutationCtx, args: Args, mode: "finish" | "abort"
 						}),
 				);
 				for (const row of page?.page ?? []) {
-					if (cursor.view === keep && table !== "files_pending_overlay_resolve_work")
+					if (cursor.view === keep && table !== "files_pending_overlay_resolve_work") {
 						await ctx.db.patch(table, row._id as Id<typeof table>, { moveView: undefined });
-					else await ctx.db.delete(table, row._id);
+						if (table === "files_pending_places") {
+							const place = row as Doc<"files_pending_places">;
+							// Staged copies can predate a saved refresh that has already finished.
+							if (place.target.kind === "saved")
+								await files_pending_overlay_db_schedule_saved_places(
+									ctx,
+									{ ...cohort, _id: place.target.id as Id<"files_nodes"> },
+									{ fieldsChanged: true },
+								);
+						}
+					} else await ctx.db.delete(table, row._id);
 				}
 				if ((table === "files_pending_places" || table === "files_pending_type_entries") && page?.page.length) {
 					const slot = await ctx.db

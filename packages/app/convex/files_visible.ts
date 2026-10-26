@@ -3093,7 +3093,7 @@ export const internal_search_metadata_saved = internalQuery({
 
 /**
  * Frontmatter of the user's text drafts of saved files. Frontmatter follows the text, so while a
- * draft's text is current its pending docs stand in for the committed ones. Reads the user's
+ * draft's text is ready its pending docs stand in for the committed ones. Reads the user's
  * proposals on saved files, so its cost is the user's own drafts; the folder is checked per row.
  * Pending `metadata.*` docs belong to private drafts only, which place fields cover.
  */
@@ -3190,8 +3190,8 @@ export const internal_search_metadata_pending = internalQuery({
 
 /**
  * The user's place fields: metadata of drafts at their place. A field doc copies its place, and the
- * place fields job can lag, so a copy that no longer matches its place (or its `fieldsVersion`) is
- * dropped. Access is checked on every row, like other place streams.
+ * fields jobs can lag, so only the place's published copy with its current `fieldsVersion` is used.
+ * Access is checked on every row, like other place streams.
  */
 export const internal_search_metadata_places = internalQuery({
 	args: { ...stream_args.fields, plan: files_metadata_search_plan_validator },
@@ -3234,6 +3234,7 @@ export const internal_search_metadata_places = internalQuery({
 				if (
 					!place?.isVisible ||
 					place.fieldsVersion !== field.fieldsVersion ||
+					place.fieldsRefreshId !== field.fieldsRefreshId ||
 					place.ownerTreePath !== field.ownerTreePath ||
 					place.accessNodeId !== field.accessNodeId
 				)
@@ -3241,7 +3242,7 @@ export const internal_search_metadata_places = internalQuery({
 				const decision = await db_stream_place_item(ctx, reader, place);
 				if (!decision || typeof decision === "string") return decision;
 				// A moved saved file's fields copy its committed docs. Its frontmatter comes from the
-				// pending stream while the user's text draft is current.
+				// pending stream when the user has a ready text draft.
 				if (place.target.kind === "saved" && field.fieldPath.startsWith("frontmatter.")) {
 					const node = await files_saved_placement_db_get_node(ctx.db, place.target.id);
 					const proposal = await files_saved_placement_db_get_proposal(ctx.db, place.pendingUpdateId);

@@ -3,7 +3,14 @@ import { Workpool } from "@convex-dev/workpool";
 import { type FunctionReference, getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
+import type { Doc } from "../convex/_generated/dataModel.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_transfer_run,
+	test_mocks_fill_db_with,
+} from "../convex/setup.test.ts";
 import {
 	files_pending_overlay_db_stage_owner,
 	files_pending_overlay_db_stage_owner_fields,
@@ -213,7 +220,9 @@ describe("Move owner views", () => {
 		await f.materializeNode(f.nodeId);
 		await f.t.run((ctx) => ctx.db.patch("files_move_cohorts", f.cohortId, { phase: "complete" }));
 		await wake();
-		expect((await f.t.run((ctx) => ctx.db.get("files_pending_overlay_jobs", job._id)))?.blockedByCohortId).toBe(f.cohortId);
+		expect((await f.t.run((ctx) => ctx.db.get("files_pending_overlay_jobs", job._id)))?.blockedByCohortId).toBe(
+			f.cohortId,
+		);
 		await f.t.run(async (ctx) => {
 			await ctx.db.delete("files_move_source_reservations", reservationId);
 			const claims = await ctx.db
@@ -226,7 +235,7 @@ describe("Move owner views", () => {
 				.withIndex("by_workspace", (q) =>
 					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
 				)
-			.unique();
+				.unique();
 			if (!slot) throw new Error("Expected the fixture workspace slot");
 			await ctx.db.replace("files_move_workspace_slots", slot._id, {
 				organizationId: slot.organizationId,
@@ -254,6 +263,264 @@ describe("Move owner views", () => {
 			awake?.scheduledFunctionId,
 		);
 	});
+
+	test.each(["finish", "abort"] as const)(
+		"refreshes the kept saved place after native Move %s",
+		async (mode) => {
+			const t = test_convex({ transactionLimits: true });
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			async function saved_folder(path: string) {
+				const result = await asUser.mutation(api.files_nodes.create_folder_node, {
+					membershipId: db.membershipId,
+					parentId: "root",
+					path,
+				});
+				if (result._nay) throw new Error(result._nay.message);
+				return result._yay.nodeId;
+			}
+			const movingId = await saved_folder("/moving");
+			const destinationId = await saved_folder("/destination");
+			const nodeId = await test_create_saved_text_file(t, {
+				membershipId: db.membershipId,
+				path: "/outside.txt",
+				textContent: "Saved outside the moving folder.",
+			});
+			expect(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nodeId,
+					metadataYaml: "note: current",
+				}),
+			).toEqual({ _yay: null });
+			expect(
+				(
+					await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						userId: db.userId,
+						target: { kind: "saved", id: nodeId },
+						destParent: { kind: "saved", id: movingId },
+						destName: "draft.txt",
+					})
+				)._nay,
+			).toBeUndefined();
+			const original = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_places")
+					.withIndex("by_target_user", (q) =>
+						q.eq("target.kind", "saved").eq("target.id", nodeId).eq("userId", db.userId),
+					)
+					.unique(),
+			);
+			if (!original) throw new Error("Expected the native draft place");
+			const fieldJobs = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_kind_key", (q) => q.eq("kind", "place_fields"))
+					.collect(),
+			);
+			const fieldJob = fieldJobs.find((job) => job.kind === "place_fields" && job.placeIds.includes(original._id));
+			if (!fieldJob) throw new Error("Expected the queued native field job");
+			expect(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nodeId,
+					metadataYaml: ["note: current", ...Array.from({ length: 80 }, (_, index) => `field${index}: current`)].join(
+						"\n",
+					),
+				}),
+			).toEqual({ _yay: null });
+			// Start a real partial field copy before Move tags the owner view.
+			for (let step = 0; step < 3; step++) {
+				const refresh = await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_overlay_jobs")
+						.withIndex("by_kind_key", (q) => q.eq("kind", "saved_places").eq("key", nodeId))
+						.unique(),
+				);
+				if (!refresh) throw new Error("Expected the saved-place refresh");
+				await t.mutation(internal.files_pending_overlay.run_job, {
+					kind: refresh.kind,
+					key: refresh.key,
+					nextAttemptAt: refresh.nextAttemptAt,
+				});
+			}
+			const unfinished = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_place_fields")
+					.withIndex("by_place", (q) => q.eq("placeId", original._id))
+					.collect(),
+			);
+			expect(unfinished, "Move starts during a partial field build").toHaveLength(64);
+			expect(unfinished.every((field) => field.fieldsRefreshId !== original.fieldsRefreshId)).toBe(true);
+			const overlay = await import("./files-pending-overlay.ts");
+			const canJoin = overlay.files_pending_overlay_db_can_join_step;
+			// Pause admission once. Every later step uses the native Move driver.
+			const join = vi
+				.spyOn(overlay, "files_pending_overlay_db_can_join_step")
+				.mockImplementation(async (ctx, limitFactor) => {
+					const allowed = await canJoin(ctx, limitFactor);
+					const slot = await ctx.db
+						.query("files_move_workspace_slots")
+						.withIndex("by_workspace", (q) =>
+							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+						)
+						.unique();
+					return allowed && !slot?.cohortId;
+				});
+			const started = await asUser.mutation(api.files_transfer.accept_input, {
+				membershipId: db.membershipId,
+				requestId: crypto.randomUUID(),
+				kind: "move",
+				sourceIds: [movingId],
+				expectedSourceCount: 1,
+				targetParentId: destinationId,
+			});
+			if (started._nay) throw new Error(started._nay.message);
+			const runId = started._yay.runId;
+			expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId })).toEqual({
+				_yay: null,
+			});
+			let cohort: Doc<"files_move_cohorts"> | null = null;
+			for (let step = 0; step < 200; step++) {
+				cohort = await t.run((ctx) =>
+					ctx.db
+						.query("files_move_cohorts")
+						.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+						.order("desc")
+						.first(),
+				);
+				if (cohort) join.mockRestore();
+				if (cohort?.workPhase === "publish") break;
+				if (cohort) {
+					expect(cohort.errorCode).toBeNull();
+					await t.action(internal.files_move_run.run, {
+						cohortId: cohort._id,
+						step: cohort.step,
+						runGeneration: cohort.runJob?.generation ?? null,
+						mode: "step",
+					});
+				} else await t.mutation(internal.files_transfer.advance, { runId });
+			}
+			expect(cohort?.workPhase, "the native Move reaches publication").toBe("publish");
+			if (!cohort) throw new Error("Expected the native cohort");
+			const cohortId = cohort._id;
+			const work = await t.run((ctx) =>
+				ctx.db
+					.query("files_move_owner_work")
+					.withIndex("by_cohort_owner_target", (q) =>
+						q.eq("cohortId", cohortId).eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", nodeId),
+					)
+					.unique(),
+			);
+			if (!work?.beforePlaceId || !work.afterPlaceId) throw new Error("Expected both native owner places");
+			expect(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_move_cohort_nodes")
+						.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohortId).eq("nodeId", nodeId))
+						.unique(),
+				),
+				"the saved target is outside the physical Move",
+			).toBeNull();
+			expect(
+				await t.run((ctx) =>
+					files_pending_overlay_db_target_cohort(ctx.db, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						target: { kind: "saved", id: nodeId },
+					}),
+				),
+				"owner collection holds the outside saved target before tagging its place",
+			).toBe(cohortId);
+			await t.mutation(internal.files_pending_overlay.run_job, {
+				kind: fieldJob.kind,
+				key: fieldJob.key,
+				nextAttemptAt: fieldJob.nextAttemptAt,
+			});
+			expect(
+				await t.run((ctx) => ctx.db.get("files_pending_overlay_jobs", fieldJob._id)),
+				"the existing field job parks on the native target reservation",
+			).toMatchObject({ blockedByCohortId: cohortId });
+			const keptId = mode === "finish" ? work.afterPlaceId : work.beforePlaceId;
+			const lostId = mode === "finish" ? work.beforePlaceId : work.afterPlaceId;
+			const saved = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+			// Seed an old copied header and value. This is not a write through a held saved-file door.
+			await t.run(async (ctx) => {
+				await ctx.db.patch("files_pending_places", keptId, { updatedAt: saved.updatedAt - 100 });
+				const fields = await ctx.db
+					.query("files_pending_place_fields")
+					.withIndex("by_place", (q) => q.eq("placeId", keptId))
+					.collect();
+				for (const field of fields)
+					if (field.docKind === "value" && field.fieldPath === "metadata.note")
+						await ctx.db.patch("files_pending_place_fields", field._id, { stringValue: "stale" });
+			});
+			if (mode === "abort")
+				expect(await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId })).toEqual({
+					_yay: null,
+				});
+			let promoted = false;
+			let refreshRequested = false;
+			let refreshParked = false;
+			await test_finish_transfer_run(asUser, runId, async () => {
+				const kept = await t.run((ctx) => ctx.db.get("files_pending_places", keptId));
+				if (!kept || kept.moveView) return;
+				promoted = true;
+				const job = await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_overlay_jobs")
+						.withIndex("by_kind_key", (q) => q.eq("kind", "saved_places").eq("key", nodeId))
+						.unique(),
+				);
+				if (job?.kind === "saved_places") {
+					refreshRequested ||= job.fieldsChanged;
+					refreshParked ||= job.blockedByCohortId === cohortId;
+				}
+			});
+			expect(promoted, "native cleanup promotes the kept place").toBe(true);
+			const kept = await t.run((ctx) => ctx.db.get("files_pending_places", keptId));
+			expect(kept, "promotion refreshes the kept date").toMatchObject({ updatedAt: saved.updatedAt });
+			expect(kept?.moveView).toBeUndefined();
+			expect(await t.run((ctx) => ctx.db.get("files_pending_places", lostId))).toBeNull();
+			const fields = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_place_fields")
+					.withIndex("by_place", (q) =>
+						q.eq("placeId", keptId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+					)
+					.collect(),
+			);
+			expect(
+				fields
+					.filter((field) => field.docKind === "value" && field.fieldPath === "metadata.note")
+					.map((field) => field.stringValue),
+				"promotion refreshes the kept metadata value",
+			).toEqual(["current"]);
+			expect(refreshRequested, "promotion requests a complete saved-field refresh").toBe(true);
+			expect(refreshParked, "the saved-place refresh waits for the native target reservation to release").toBe(true);
+			expect(
+				fields.every(
+					(field) =>
+						field.fieldsVersion === kept?.fieldsVersion &&
+						field.fieldsRefreshId === kept?.fieldsRefreshId &&
+						field.ownerTreePath === kept?.ownerTreePath,
+				),
+				"refreshed fields keep the promoted path and version",
+			).toBe(true);
+			expect(fields, "partial copies do not leave duplicates after Move").toHaveLength(162);
+			expect(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_place_fields")
+						.withIndex("by_place", (q) => q.eq("placeId", lostId))
+						.collect(),
+				),
+			).toEqual([]);
+		},
+		120_000,
+	);
 
 	test("keeps original before docs and joins every after field to one stable place", async () => {
 		const f = await fixture();
@@ -430,7 +697,8 @@ describe("Move owner views", () => {
 			{
 				...scope,
 				target,
-				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
+				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!
+					.pendingContentVersion,
 			},
 		);
 		if (batch._nay) throw new Error(batch._nay.message);
