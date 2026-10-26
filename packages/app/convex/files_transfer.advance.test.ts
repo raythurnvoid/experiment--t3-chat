@@ -16,6 +16,7 @@ import { quotas_db_ensure } from "./quotas.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
+import { upsert_file_pending_update_public_for_test } from "./files_pending_updates.setup.test.ts";
 import {
 	r2Objects,
 	mock_transfer_storage,
@@ -1194,6 +1195,148 @@ describe("advance", () => {
 });
 
 describe("resolve_conflicts", () => {
+	test.each([false, true])("checks saved Copy Replace after its owner's draft changes (saved: %s)", async (saved) => {
+		const fixture = await create_folder_fixture([]);
+		const { t, db, asUser } = fixture;
+		const destinationId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/target/report.txt",
+			textContent: "Saved text\n",
+		});
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId: destinationId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		const proposed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: db.membershipId,
+			nodeId: destinationId,
+			stagedMarkdown: "Accepted draft text\n",
+			unstagedMarkdown: "Proposed draft text\n",
+		});
+		if (proposed._nay) throw new Error(proposed._nay.message);
+		const readDraft = () =>
+			t.run(async (ctx) => ({
+				pending: await ctx.db.query("files_pending_updates").collect(),
+				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
+				pages: await ctx.db.query("files_pending_update_yjs_state_pages").collect(),
+			}));
+		const originalDraft = (await readDraft()).pending[0]!;
+		const destinationBefore = await get_node(fixture, "/target/report.txt");
+		const source = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "report.txt",
+			contentType: "image/png",
+			size: 8,
+		});
+		if (source._nay) throw new Error(source._nay.message);
+		const key = r2_create_asset_key({ ...db, assetId: source._yay.assetId });
+		const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+		r2Objects.set(key, imageBytes);
+		await t.run((ctx) =>
+			ctx.db.patch("files_r2_assets", source._yay.assetId, { r2Key: key, unfinalizedExpiresAt: undefined }),
+		);
+		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+			const body = r2Objects.get(args.sourceKey)!;
+			r2Objects.set(args.destinationKey, body);
+			return { outcome: "copied", size: (await new Response(body).arrayBuffer()).byteLength, etag: "stored-copy" };
+		});
+		const runId = await start_copy(fixture, [source._yay.nodeId]);
+		const waiting = await finish_discovery(fixture, runId);
+		expect(waiting.activity.status).toBe("awaiting_input");
+		const page = await asUser.query(api.files_transfer_status.list_items, {
+			membershipId: db.membershipId,
+			runId,
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		const item = page!.page[0]!;
+		expect(item.conflict!.target).toEqual({ kind: "saved", id: destinationId });
+		const version = item.conflict!.version;
+		if (version?.kind !== "asset") throw new Error("Expected the saved text asset");
+		const updated = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: db.membershipId,
+			nodeId: destinationId,
+			pendingUpdateId: originalDraft._id,
+			reviewedRevision: originalDraft.revision,
+			stagedMarkdown: "Updated accepted draft text\n",
+			unstagedMarkdown: "Updated proposed draft text\n",
+		});
+		if (updated._nay) throw new Error(updated._nay.message);
+		const before = await readDraft();
+		const currentDraft = before.pending[0]!;
+		expect(currentDraft.revision).toBeGreaterThan(originalDraft.revision);
+		if (saved) {
+			expect(
+				(
+					await test_save_file_pending_update(asUser, {
+						membershipId: db.membershipId,
+						target: { kind: "saved", id: destinationId },
+						pendingUpdateId: currentDraft._id,
+						reviewedRevision: currentDraft.revision,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const beforeResolution = await get_node(fixture, "/target/report.txt");
+		const resolved = await asUser.mutation(api.files_transfer.resolve_conflicts, {
+			membershipId: db.membershipId,
+			runId,
+			revision: waiting.revision,
+			choices: [
+				{
+					itemId: item.itemId,
+					choice: "replace",
+					reviewedTarget: item.conflict!.target!,
+					reviewedVersion: item.conflict!.version,
+				},
+			],
+			applyToRemaining: { file: null, folder: null },
+		});
+		if (saved) {
+			const content = await asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
+				membershipId: db.membershipId,
+				nodeId: destinationId,
+			});
+			expect(content._yay?.text).toBe("Updated accepted draft text\n");
+			expect(beforeResolution?.assetId).not.toBe(version.assetId);
+			expect(resolved).toEqual({ _nay: { message: "The destination changed. Review it again." } });
+			expect(await get_node(fixture, "/target/report.txt")).toEqual(beforeResolution);
+			expect(
+				(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status,
+			).toBe("awaiting_input");
+			return;
+		}
+		expect(
+			resolved,
+			"Replace accepts the reviewed saved file while its owner has a text draft",
+		).toEqual({ _yay: null });
+		const finished = await finish_copy_with_workers(fixture, runId);
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item.itemId))).toMatchObject({
+			state: "completed",
+			errorMessage: null,
+		});
+		expect(finished.activity).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1, failed: 0 },
+		});
+		const destination = await get_node(fixture, "/target/report.txt");
+		expect(destination).toMatchObject({
+			_id: destinationId,
+			contentType: "image/png",
+			textKind: null,
+			collaborationEnabled: null,
+			pendingContentVersion: destinationBefore!.pendingContentVersion + 1,
+		});
+		const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", destination!.assetId!));
+		expect(r2Objects.get(asset!.r2Key!)).toEqual(imageBytes);
+		expect(await readDraft(), "Copy Replace keeps the exact text draft and all its pages").toEqual(before);
+	});
+
 	test.each([
 		{ firstWorker: "first", outsideCollision: false, occupiedOriginal: false },
 		{ firstWorker: "second", outsideCollision: false, occupiedOriginal: false },

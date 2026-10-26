@@ -175,6 +175,8 @@ with private proposals. `files_pending_updates.ts` and
 - Conflict answers include the current run revision and, for replacement, the exact target and
   version shown in that conflict. A new unresolved conflict pauses every later
   publication. Already completed files stay. Replace checks its current destination again.
+  Discovery and confirmation must use the same `sourceView`: a human Replace checks saved content,
+  even when that person has a draft on the destination. A draft change is not a saved-file change.
 - Copy, Move, and Rename results are private job history. Check access when the job reads or writes
   an item, then show its recorded source path, output path, and result. Later moves, renames, or lost
   file access do not rewrite that history. A skipped locked child keeps the path visible when its

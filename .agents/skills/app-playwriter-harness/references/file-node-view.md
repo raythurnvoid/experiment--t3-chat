@@ -314,7 +314,9 @@ Fixture recipe: see "Non-Collaborative File Fixture" in `files.md`. Resolve acti
 
 ### Pending Proposals After a Member Save
 
-Use a collaboration-off file and the branch readback steps in the toggle recipe below. Give the accepted and proposed branches separate edits, then save a third edit far away through the normal editor. Before Review, check that the old proposal and all three branch texts are unchanged. Agent reads must return the saved text, and a text write must refuse with instructions to open Review or discard.
+Use a collaboration-off file and the branch readback steps in the toggle recipe below. Give the accepted and proposed branches separate edits, then save a third edit far away through the normal editor. Before Review, check that the old proposal and all three branch texts are unchanged. The owner's agent reads and text search must return the retained draft. A text write must refuse with instructions to open Review or discard.
+
+Repeat the passive read check after Restore. Wait for the saved content version to advance before checking the result; the Confirm click starts an asynchronous action. Before opening Review, compare the exact proposal, expiry, state IDs, state pages, and draft chunks with the baseline. Read and search must leave them unchanged. Opening Review may prepare the draft, so its later changes are expected.
 
 Open Review and check the preparation status, read-only panes, and final branch texts. Both branches must include the member's edit while keeping accepted and proposed edits separate. Preparation must leave the saved file unchanged. Save accepted text, then save the remaining proposal; check exact saved text after each action. Repeat with Review mounted during another member Save.
 

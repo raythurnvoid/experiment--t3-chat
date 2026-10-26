@@ -2483,7 +2483,13 @@ export const resolve_conflicts = mutation({
 					!files_transfer_source_versions_equal(choice.reviewedVersion, item.conflictVersion)
 				)
 					return Result({ _nay: { message: "Review this exact destination before replacing it" } });
-				const current = await reader.resolveTarget(item.conflictTarget);
+				// Compare the same saved or draft view that recorded this conflict.
+				const current = await files_transfer_status_db_get_entry({
+					ctx,
+					run: { ...run, ...run.destinationScope },
+					target: item.conflictTarget,
+					reader,
+				});
 				if (
 					!current ||
 					!files_transfer_source_versions_equal(
