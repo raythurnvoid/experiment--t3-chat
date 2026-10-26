@@ -13,9 +13,12 @@ import { files_u8_to_array_buffer } from "../server/files.ts";
 import { bash_browser_command_create, type bash_BrowserContext } from "../server/bash-browser-command.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { upsert_file_pending_update_internal_for_test } from "./files_pending_updates.setup.test.ts";
+import { r2_confirmed_object_delete } from "./r2_client.ts";
 import {
 	runnerQueue,
 	runnerCalls,
+	r2Objects,
 	HTML_TEXT,
 	seed_html_file,
 	authed,
@@ -26,6 +29,7 @@ import {
 	runner_web_session,
 	seed_web_member,
 	start_web_session,
+	add_workspace_member,
 } from "./files_browser.setup.test.ts";
 
 const model = vi.hoisted(() => ({ streamText: vi.fn() }));
@@ -396,6 +400,122 @@ describe("start_browser", () => {
 		});
 		expect(started._nay).not.toBeUndefined();
 		expect(runnerCalls).toEqual([]);
+	});
+
+	test.each(["Save", "Restore"] as const)("keeps proposed HTML after %s and stops when access ends", async (operation) => {
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockImplementation(async (_ctx, key) => {
+			r2Objects.delete(key);
+		});
+		const t = test_convex();
+		const fixture = await seed_html_file(t);
+		const asOwner = authed(t, fixture.userId);
+		const member = await add_workspace_member({ t, owner: fixture, role: "member", plan: "Pro" });
+		const asMember = authed(t, member.userId);
+		if (operation === "Save") {
+			expect(
+				(
+					await asOwner.mutation(api.files_nodes_content.set_file_non_collaborative, {
+						membershipId: fixture.membershipId,
+						nodeId: fixture.nodeId,
+						acknowledgeDropCollaborativeHistory: true,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const proposed = "<!doctype html><title>Retained draft</title><p>Old proposed text</p>";
+		expect(
+			(
+				await upsert_file_pending_update_internal_for_test({
+					t,
+					...member,
+					nodeId: fixture.nodeId,
+					stagedMarkdown: proposed,
+					unstagedMarkdown: proposed,
+				})
+			)._nay,
+		).toBeUndefined();
+		const readDraft = () =>
+			t.run(async (ctx) => ({
+				pending: await ctx.db.query("files_pending_updates").collect(),
+				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
+				pages: await ctx.db.query("files_pending_update_yjs_state_pages").collect(),
+				expiryChecks: await ctx.db.query("files_pending_update_expiry_checks").collect(),
+			}));
+		const before = await readDraft();
+		expect(before.pending).toHaveLength(1);
+		const pending = before.pending[0]!;
+		if (!pending.content || pending.content.base.kind === "new") throw new Error("Expected a saved-file draft");
+		if (operation === "Save") {
+			expect(
+				(
+					await asOwner.action(api.files_nodes_content.replace_file_content, {
+						membershipId: fixture.membershipId,
+						nodeId: fixture.nodeId,
+						text: "<!doctype html><title>Saved file</title><p>New saved text</p>",
+					})
+				)._nay,
+			).toBeUndefined();
+		} else {
+			const snapshot = await t.run((ctx) => ctx.db.query("files_snapshots").first());
+			if (!snapshot) throw new Error("Expected the created snapshot");
+			expect(
+				(
+					await asOwner.action(api.files_nodes_content.restore_snapshot_r2, {
+						membershipId: fixture.membershipId,
+						nodeId: fixture.nodeId,
+						snapshotId: snapshot._id,
+						sessionId: "browser-retained-draft",
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const saved = await t.run((ctx) => ctx.db.get("files_nodes", fixture.nodeId));
+		if (operation === "Save") {
+			if (pending.content.base.kind !== "asset") throw new Error("Expected a non-collaborative draft");
+			expect(saved?.assetId).not.toBe(pending.content.base.assetId);
+		} else {
+			expect(saved?.pendingContentVersion).toBeGreaterThan(pending.content.base.pendingContentVersion);
+		}
+		expect(await readDraft()).toEqual(before);
+
+		runnerQueue.push(runner_open_session({ nodeId: fixture.nodeId, sourceKind: "proposed" }));
+		const started = await asMember.action(api.files_browser.start_browser, {
+			membershipId: member.membershipId,
+			targetKind: "saved",
+			nodeId: fixture.nodeId,
+			path: fixture.path,
+			sourceKind: "proposed",
+			navigationGeneration: 1,
+			navigationClientId: "retained-draft",
+			viewport: { width: 1280, height: 900 },
+		});
+		expect(started._nay, "A proposed browser can read the retained HTML").toBeUndefined();
+		if (started._nay) throw new Error(started._nay.message);
+		expect(runnerCalls).toHaveLength(1);
+		expect(runnerCalls[0]?.body).toMatchObject({ html: proposed, sourceKind: "proposed" });
+		expect(await readDraft()).toEqual(before);
+
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.membershipId,
+					nodeId: fixture.nodeId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await asMember.query(api.files_browser.browser_source_current_version, {
+				membershipId: member.membershipId,
+				nodeId: String(fixture.nodeId),
+				path: fixture.path,
+				sourceKind: "proposed",
+			}),
+		).toBeNull();
+		expect(
+			(await t.query(internal.files_browser.check_browser_session_access, { ...member, sessionId: started._yay.sessionId }))
+				.ok,
+		).toBe(false);
+		expect(await readDraft()).toEqual(before);
 	});
 
 	test("draft start without capture ids asks for a source", async () => {

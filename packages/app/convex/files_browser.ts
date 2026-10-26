@@ -56,7 +56,6 @@ import {
 	files_guess_content_type_from_name,
 	files_normalize_browser_download_name,
 	files_normalize_content_type,
-	files_pending_update_content_is_stale,
 	files_pending_update_has_content,
 } from "../shared/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
@@ -547,24 +546,9 @@ export const authorize_browser_source = internalQuery({
 			!files_pending_update_has_content(pendingUpdate) ||
 			pendingUpdate.target.kind !== "saved" ||
 			pendingUpdate.target.id !== fileNode._id ||
-			!pendingUpdate.content ||
-			files_pending_update_content_is_stale(pendingUpdate, fileNode)
+			pendingUpdate.content.rootKind !== "plain_text"
 		) {
 			return html_unavailable();
-		}
-
-		// A stale-generation proposal was built against a replaced document history. The commit
-		// gate refuses it, so its text must not serve here either. Non-collaborative files have
-		// no sequence doc; the asset check inside the staleness helper screens them instead.
-		if (fileNode.yjsLastSequenceId) {
-			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
-			if (
-				!lastSequenceDoc ||
-				pendingUpdate.content.base.kind !== "yjs" ||
-				lastSequenceDoc.lineageGeneration !== pendingUpdate.content.base.lineageGeneration
-			) {
-				return html_unavailable();
-			}
 		}
 
 		const stateDoc = await ctx.db.get("files_pending_update_yjs_states", pendingUpdate.content.unstagedStateId);

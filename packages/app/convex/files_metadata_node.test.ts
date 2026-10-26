@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { applyUpdate, Doc as YjsDoc, encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { text_search_files_all_pages } from "./files_nodes.setup.test.ts";
 import {
 	create_file_fixture,
 	create_pending_proposal,
@@ -11,7 +12,7 @@ import {
 	prepare_agent_replacement,
 	start_agent_copy,
 } from "./files_nodes_content.setup.test.ts";
-import { test_create_saved_text_file } from "./setup.test.ts";
+import { test_create_saved_text_file, test_meta_search } from "./setup.test.ts";
 import { files_metadata_stringify_entries_yaml } from "../shared/files-metadata.ts";
 import { files_u8_to_array_buffer } from "../shared/files.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
@@ -444,7 +445,7 @@ describe("full metadata reads", () => {
 		});
 	});
 
-	test("a native restore makes an old owner draft use the saved source", async () => {
+	test("a native restore keeps the owner's old frontmatter while saved reads use the restored source", async () => {
 		const fixture = await create_file_fixture("rich_text", "---\nsummary: saved snapshot\n---\n\nBody\n");
 		const draft = "---\nsummary: owner draft\n---\n\nBody\n";
 		const pending = await create_pending_proposal({ fixture, texts: { staged: draft, unstaged: draft } });
@@ -465,8 +466,110 @@ describe("full metadata reads", () => {
 			before.pendingContentVersion + 1,
 		);
 		const restored = page(await read_path(fixture, "frontmatter.summary"));
-		expect(restored.sourceKind, "A stale draft uses saved content until it is prepared").toBe("committed");
-		expect(full_values([restored])).toEqual(["saved snapshot"]);
+		expect(restored.sourceKind).toBe("pending");
+		expect(full_values([restored])).toEqual(["owner draft"]);
+		expect(full_values([page(await read_saved(fixture, "frontmatter.summary"))])).toEqual(["saved snapshot"]);
+		expect(await fixture.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
+	});
+
+	test("a retained draft stays private and current access loss blocks every read", async () => {
+		const savedText = "---\nsummary: saved snapshot\n---\n\nSaved body\n";
+		const fixture = await create_file_fixture("rich_text", savedText);
+		const member = await fixture.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "retained_draft_owner" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.db.organizationId,
+				workspaceId: fixture.db.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				...fixture.scope,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const draftText = "---\nsummary: owner draft\n---\n\nownerneedle Ω\n";
+		const pending = await create_pending_proposal({
+			fixture,
+			userId: member.userId,
+			texts: { staged: draftText, unstaged: draftText },
+		});
+		expect(
+			(
+				await fixture.asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: fixture.db.membershipId,
+					nodeId: fixture.nodeId,
+					snapshotId: fixture.snapshotId,
+					sessionId: "retained-draft-access",
+				})
+			)._nay,
+		).toBeUndefined();
+		const reader = {
+			...fixture,
+			db: { ...fixture.db, ...member },
+			scope: { ...fixture.scope, userId: member.userId },
+			asUser: fixture.t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId }),
+		};
+		const readArgs = {
+			...reader.scope,
+			subject: { kind: "user" as const, userId: member.userId, plugin: null },
+			path: "/restore.md",
+		};
+		const searchArgs = {
+			...reader.scope,
+			subject: readArgs.subject,
+			query: "ownerneedle",
+			numItems: 10,
+			cursor: null,
+		};
+		const metadataArgs = {
+			...reader.scope,
+			plan: { op: "eq" as const, fieldPath: "frontmatter.summary", value: "owner draft" },
+		};
+		const content = await fixture.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, readArgs);
+		expect(content?.content).toBe(draftText);
+		expect(full_values([page(await read_path(reader, "frontmatter.summary"))])).toEqual(["owner draft"]);
+		expect((await text_search_files_all_pages(fixture.t, searchArgs)).items.map((item) => item.path)).toEqual([
+			readArgs.path,
+		]);
+		expect((await test_meta_search(fixture.t, metadataArgs)).items.map((item) => item.path)).toEqual([readArgs.path]);
+		// A member without this draft still reads the saved version.
+		expect(
+			(await fixture.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				...readArgs,
+				userId: fixture.db.userId,
+				subject: { kind: "user", userId: fixture.db.userId, plugin: null },
+			}))?.content,
+		).toBe(savedText);
+		expect(full_values([page(await read_path(fixture, "frontmatter.summary"))])).toEqual(["saved snapshot"]);
+		expect(
+			(await text_search_files_all_pages(fixture.t, {
+				...searchArgs,
+				userId: fixture.db.userId,
+				subject: { kind: "user", userId: fixture.db.userId, plugin: null },
+			})).items,
+		).toEqual([]);
+		expect((await test_meta_search(fixture.t, { ...metadataArgs, userId: fixture.db.userId })).items).toEqual([]);
+		expect(
+			(
+				await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.db.membershipId,
+					nodeId: fixture.nodeId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await fixture.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, readArgs),
+		).toBeNull();
+		expect(await read_path(reader, "frontmatter.summary")).toEqual({ _nay: { message: "Permission denied" } });
+		expect((await text_search_files_all_pages(fixture.t, searchArgs)).items).toEqual([]);
+		expect((await test_meta_search(fixture.t, metadataArgs)).items).toEqual([]);
+		expect(await fixture.t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
 	});
 
 	test("a ready Copy replacement is visible to its owner while the table stays saved", async () => {

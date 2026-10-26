@@ -20,7 +20,6 @@ import {
 	files_fetch_file_yjs_state_and_text,
 	files_fetch_private_file_pending_text,
 	files_node_has_editable_text_content,
-	files_pending_update_content_is_stale,
 	files_pending_update_has_content,
 	type files_VisibleEntry,
 } from "@/lib/files.ts";
@@ -196,7 +195,11 @@ async function read_preview_source(args: {
 		if (draft?.sourceKind !== "editor_draft") throw new Error("Choose an available source.");
 		html = draft.text;
 	} else if (source === "proposed_changes") {
-		if (!files_pending_update_has_content(pendingUpdate) || pendingUpdate.target.kind !== "saved") {
+		if (
+			!files_pending_update_has_content(pendingUpdate) ||
+			pendingUpdate.target.kind !== "saved" ||
+			pendingUpdate.content.rootKind !== "plain_text"
+		) {
 			throw new Error("Choose an available source.");
 		}
 
@@ -228,11 +231,7 @@ async function read_preview_source(args: {
 		if (
 			pending_content_key(currentPending) !== pending_content_key(pendingUpdate) ||
 			!currentPending ||
-			currentPending.currentPendingContentVersion === null ||
-			files_pending_update_content_is_stale(currentPending, {
-				assetId: node.assetId,
-				pendingContentVersion: currentPending.currentPendingContentVersion,
-			})
+			currentPending.currentPendingContentVersion === null
 		) {
 			throw new Error("The proposed changes changed while loading. Refresh to try again.");
 		}
@@ -328,19 +327,11 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 
 	const hasProposal =
 		files_pending_update_has_content(pendingUpdate) &&
+		pendingUpdate.content.rootKind === "plain_text" &&
 		!pendingUpdate.preparation &&
 		pendingUpdate.target.kind === target.kind &&
 		pendingUpdate.target.id === target.id;
 	const pendingKey = pending_content_key(pendingUpdate ?? null);
-
-	const staleProposal =
-		hasProposal &&
-		savedNode !== null &&
-		(files_pending_update_content_is_stale(pendingUpdate, {
-			assetId: savedNode.assetId,
-			pendingContentVersion: pendingUpdate.currentPendingContentVersion!,
-		}) ||
-			pendingUpdate.currentYjsLastSequenceId !== savedNode.yjsLastSequenceId);
 
 	// undefined is a real fourth state: no source chosen yet, and the checks below test `!== undefined`.
 	const [editorSource, setEditorSource] = useState<"editor_draft" | "proposed_changes" | null>();
@@ -388,9 +379,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 				? "Choose an available source."
 				: selectedSource === "proposed_changes" && pendingUpdate !== undefined && !hasProposal
 					? "Choose an available source."
-					: selectedSource === "proposed_changes" && staleProposal
-						? "Review and sync these changes first."
-						: null;
+					: null;
 	const contentKey =
 		selectedSource === "editor_draft"
 			? String(editorRevision)

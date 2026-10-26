@@ -2971,7 +2971,7 @@ export const get_file_byte_read_source = internalQuery({
 		if (!entry || entry.node.kind !== "file" || entry.pendingUpdate?.preparation) return null;
 		const version = await files_transfer_db_get_entry_version(ctx, entry);
 		if (!version) return null;
-		if (version.textKind === null) {
+		if (version.textKind === null && !entry.pendingUpdate?.content) {
 			const source = await db_get_stored_file_read_source(ctx, { entry, userId: args.userId });
 			return source && { kind: "stored" as const, ...source };
 		}
@@ -3153,40 +3153,12 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			}
 		}
 
-		// A non-collaborative file passes here too. It has no materialization state, so the
-		// committed-chunks merge at the end of this handler is what serves its text.
-		if (!files_node_has_editable_text_content(fileNode)) return null;
-
 		// Move-only docs carry no content; keep returning their `pendingUpdateId` below so
 		// write_file/edit_file mix onto them, while content resolves from the committed tree.
-		let pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
-
-		// A stale-generation proposal was built against a document history that a repair has
-		// since replaced. The commit gate refuses it, so its text must not be served as the
-		// file's current pending content either: treat it as no pending content and resolve
-		// from the committed tree. The doc keeps its `pendingUpdateId` below, so the agent's
-		// next write mixes onto it and rebuilds the family from the live state.
-		//
-		// A non-collaborative file has no last-sequence doc; the asset check below screens its
-		// proposals instead.
-		if (pendingUpdate && pendingUpdateContent && fileNode.yjsLastSequenceId) {
-			const lastSequenceDoc = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
-			if (
-				!lastSequenceDoc ||
-				pendingUpdateContent.base.kind !== "yjs" ||
-				lastSequenceDoc.lineageGeneration !== pendingUpdateContent.base.lineageGeneration
-			) {
-				pendingUpdateContent = null;
-			}
-		}
-
-		// A member save hides stale proposal text until preparation updates it. Keep its base state ID
-		// in the read result so an edit cannot overwrite a proposal prepared after this read.
-		if (pendingUpdate && pendingUpdateContent && files_pending_update_content_is_stale(pendingUpdate, fileNode)) {
-			pendingUpdateContent = null;
-		}
+		const pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
 
 		if (pendingUpdate && pendingUpdateContent) {
+			// Restore can change the saved type or history. The retained draft still owns its text.
 			// Rebuild the pending branch from its canonical unstaged paged state (a full state, so
 			// no base merge is needed). On any refusal the pending read is NULL — the agent reports
 			// the file as unavailable — never the committed text: falling through to committed
@@ -3221,7 +3193,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			}
 
 			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(unstagedBytes._yay));
-			const text = files_yjs_doc_get_text({ yjsDoc, rootKind: fileNode.textKind });
+			const text = files_yjs_doc_get_text({ yjsDoc, rootKind: pendingUpdateContent.rootKind });
 			if (text._nay) {
 				console.error("Failed to reconstruct text from files_pending_updates", {
 					nay: { message: text._nay.message },
@@ -3240,6 +3212,9 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				pendingContentVersion: fileNode.pendingContentVersion,
 			};
 		}
+
+		// A non-collaborative file has no materialization state and reads committed chunks below.
+		if (!files_node_has_editable_text_content(fileNode)) return null;
 
 		const asset = fileNode.assetId
 			? await ctx.db

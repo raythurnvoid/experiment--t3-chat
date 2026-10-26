@@ -18,6 +18,7 @@ import type {
 	FileEditorPendingUpdatesFloating_Props,
 	FileEditorPresenceSupplier_Props,
 } from "../file-editor/file-editor.tsx";
+import type { FileEditorDiff_Props } from "../file-editor/file-editor-diff/file-editor-diff.tsx";
 import type { FileHtmlPreview } from "./file-html-preview.tsx";
 import { FilesClipboardProvider } from "../files-clipboard.tsx";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
@@ -35,6 +36,7 @@ const {
 	actionMock,
 	queryPushListeners,
 	editorRenderMock,
+	diffEditorRenderMock,
 	editorMountMock,
 	editorUnmountMock,
 	pluginUnmountMock,
@@ -48,6 +50,7 @@ const {
 	actionMock: vi.fn(),
 	queryPushListeners: new Set<() => void>(),
 	editorRenderMock: vi.fn<(props: FileEditor_Props) => void>(),
+	diffEditorRenderMock: vi.fn<(props: FileEditorDiff_Props) => void>(),
 	editorMountMock: vi.fn(),
 	editorUnmountMock: vi.fn(),
 	pluginUnmountMock: vi.fn(),
@@ -248,7 +251,10 @@ vi.mock("../file-editor/file-editor.tsx", async () => {
 			);
 		},
 		FileEditorPresenceSupplier: (props: FileEditorPresenceSupplier_Props) =>
-			props.children({ presenceStore: null, onlineUsers: [] }),
+			props.children({
+				presenceStore: { localSessionId: "session_1" } as NonNullable<FileEditor_Props["presenceStore"]>,
+				onlineUsers: [],
+			}),
 		FileEditorPendingUpdatesFloating: (props: FileEditorPendingUpdatesFloating_Props) => (
 			<>
 				{props.showReviewButton ? <button onClick={props.onReviewChanges}>Review changes</button> : null}
@@ -261,6 +267,12 @@ vi.mock("../file-editor/file-editor.tsx", async () => {
 		),
 	};
 });
+vi.mock("../file-editor/file-editor-diff/file-editor-diff.tsx", () => ({
+	FileEditorDiff: (props: FileEditorDiff_Props) => {
+		diffEditorRenderMock(props);
+		return <div data-testid="retained-draft-review" />;
+	},
+}));
 vi.mock("./file-html-preview.tsx", () => ({
 	FileHtmlPreview: (props: ComponentProps<typeof FileHtmlPreview>) => (
 		<div data-testid="html-preview">{props.getEditorSnapshot()?.text}</div>
@@ -335,7 +347,7 @@ const NODE = {
 	contentByteSize: null as number | null,
 	assetId: "asset_1",
 	textKind: "plain_text" as string | null,
-	collaborationEnabled: false,
+	collaborationEnabled: false as boolean | null,
 	yjsSnapshotId: null,
 	yjsLastSequenceId: null,
 	archiveOperationId: null as string | null,
@@ -703,6 +715,7 @@ beforeEach(() => {
 	actionMock.mockResolvedValue({ _yay: { target: { kind: "saved", id: NODE._id }, newSequence: null } });
 	editorMountMock.mockClear();
 	editorRenderMock.mockClear();
+	diffEditorRenderMock.mockClear();
 	editorUnmountMock.mockClear();
 	pluginUnmountMock.mockClear();
 	vi.mocked(toast.info).mockClear();
@@ -1493,6 +1506,76 @@ describe("FileNodeView file views", () => {
 		await openViewPicker();
 		expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(fixture.options);
 	});
+
+	test.each(["plain_text", "rich_text"] as const)(
+		"keeps a %s draft in read-only Review after the saved file becomes binary",
+		async (rootKind) => {
+			node = { ...NODE, contentType: rootKind === "rich_text" ? "text/markdown" : "text/plain", textKind: rootKind };
+			const pendingUpdate = {
+				...PRIVATE_ENTRY.pendingUpdate,
+				_id: "retained_draft",
+				target: { kind: "saved", id: node._id },
+				createIntent: undefined,
+				content: {
+					...PRIVATE_ENTRY.pendingUpdate.content!,
+					rootKind,
+					base: { kind: "asset", assetId: "old_text_asset", pendingContentVersion: 1 },
+				},
+			};
+			pendingUpdates = [
+				{ kind: "entry", readiness: "ready", entry: { kind: "saved", node, pendingUpdate, path: node.path } },
+			];
+			const { onNavigateSearch } = renderFileView({ nodeId: node._id, view: "diff_editor" });
+			await screen.findByTestId("editor");
+
+			node = { ...node, contentType: "application/octet-stream", textKind: null, collaborationEnabled: null };
+			pendingUpdates = [
+				{ kind: "entry", readiness: "ready", entry: { kind: "saved", node, pendingUpdate, path: node.path } },
+			];
+			await act(async () => queryPushListeners.forEach((listener) => listener()));
+			await screen.findByTestId("retained-draft-review");
+			expect(screen.queryByTestId("editor")).toBeNull();
+			expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
+			expect(diffEditorRenderMock.mock.lastCall?.[0]).toMatchObject({
+				target: { kind: "saved", id: node._id },
+				pendingUpdateId: "retained_draft",
+				rootKind,
+				editable: false,
+				nonCollaborative: true,
+				committedAssetId: node.assetId,
+			});
+			await act(async () => {
+				fireEvent.click(screen.getByRole("combobox", { name: "View: Review changes" }));
+			});
+			await screen.findByRole("combobox", { name: "Search views" });
+			expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+				"Review changes",
+				"File details",
+			]);
+			await act(async () => {
+				fireEvent.click(screen.getByRole("option", { name: "File details" }));
+			});
+			expect(await screen.findByRole("region", { name: "File details" })).toBeTruthy();
+			expect(screen.getByText("application/octet-stream")).toBeTruthy();
+			await act(async () => {
+				fireEvent.click(screen.getByRole("combobox", { name: "View: File details" }));
+			});
+			await screen.findByRole("combobox", { name: "Search views" });
+			await act(async () => {
+				fireEvent.click(screen.getByRole("option", { name: "Review changes" }));
+			});
+			expect(screen.getByRole("combobox", { name: "View: Review changes" })).toBeTruthy();
+
+			pendingUpdates = [];
+			savedPendingUpdate = null;
+			await act(async () => queryPushListeners.forEach((listener) => listener()));
+			expect(await screen.findByRole("combobox", { name: "View: File details" })).toBeTruthy();
+			expect(screen.queryByTestId("retained-draft-review")).toBeNull();
+			expect(onNavigateSearch.mock.lastCall?.[0].fileView).toBe("details");
+			expect(actionMock).not.toHaveBeenCalled();
+			expect(mutationMock).not.toHaveBeenCalled();
+		},
+	);
 
 	test.each([
 		{

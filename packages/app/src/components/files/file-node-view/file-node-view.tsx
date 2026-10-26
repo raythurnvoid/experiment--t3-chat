@@ -4,6 +4,8 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { FileEditorSidebar } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar.tsx";
 import { FileEditorPresence } from "@/components/files/file-editor/file-editor-presence.tsx";
+import { FileEditorDiff } from "@/components/files/file-editor/file-editor-diff/file-editor-diff.tsx";
+import { FileEditorDiffSkeleton } from "@/components/files/file-editor/file-editor-diff/file-editor-diff-skeleton.tsx";
 import { FILE_EDITOR_SIDEBAR_TAB_ID_PENDING } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending-strip.tsx";
 import {
 	FileEditor,
@@ -1362,6 +1364,7 @@ type FileNodeViewFile_Props = {
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	protectedDescendantIds: FileNodeViewHeader_Props["protectedDescendantIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	retainedDraftRootKind?: files_YjsRootKind;
 	committedAssetId: FileEditor_Props["committedAssetId"];
 	pendingUpdatesLoaded: FileEditor_Props["pendingUpdatesLoaded"];
 	serverSequence?: number;
@@ -1387,6 +1390,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		fileNodesList,
 		protectedDescendantIds,
 		pendingUpdateId,
+		retainedDraftRootKind,
 		committedAssetId,
 		pendingUpdatesLoaded,
 		serverSequence,
@@ -1415,6 +1419,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	});
 	const fileViewPlugins = useQuery(app_convex_api.plugins_ui_installed.list_file_views, { membershipId });
 	const isEditable = files_node_has_editable_text_content(node);
+	const hasRetainedDraft = !isEditable && retainedDraftRootKind !== undefined && pendingUpdateId !== undefined;
 	const hasHtmlPreview =
 		isEditable && files_editable_text_content_type_of(node.contentType) === "text/html;charset=utf-8";
 	const uploadState = files_get_upload_pipeline_state(asset);
@@ -1439,7 +1444,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const activeFileView =
 		hasHtmlPreview && selectedViewExists && selectedFileView === "default"
 			? "code"
-			: !isEditable && selectedFileView === "details"
+			: !isEditable && !hasRetainedDraft && selectedFileView === "details"
 				? "default"
 				: selectedViewExists
 					? selectedFileView
@@ -1458,7 +1463,12 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const flatEditorMode: FileEditor_Mode =
 		activeFileView === "review" || activeFileView === "review_browser" ? "diff_editor" : "plain_text_editor";
 
-	const editorOptions = isEditable && !hasHtmlPreview ? get_editor_view_options(node.textKind) : [];
+	const editorOptions =
+		isEditable && !hasHtmlPreview
+			? get_editor_view_options(node.textKind)
+			: hasRetainedDraft
+				? [{ value: "diff_editor" as const, label: "Review changes" }]
+				: [];
 	const viewOptions = hasHtmlPreview
 		? [
 				{ value: "code", label: "Code" },
@@ -1556,6 +1566,27 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
 			onPreviewSnapshotChange={hasHtmlPreview ? handlePreviewSnapshotChange : undefined}
 		/>
+	) : hasRetainedDraft && editorMode === "diff_editor" ? (
+		presenceStore ? (
+			<FileEditorDiff
+				key={pendingUpdateId}
+				isActive={isEditorActive}
+				target={{ kind: "saved", id: node._id }}
+				editable={false}
+				rootKind={retainedDraftRootKind}
+				monacoLanguageId={retainedDraftRootKind === "rich_text" ? "markdown" : "plaintext"}
+				pendingUpdateId={pendingUpdateId}
+				nonCollaborative={true}
+				committedAssetId={node.assetId}
+				presenceStore={presenceStore}
+				commentsPortalHost={commentsPortalHost}
+				toolbarPortalHost={toolbarPortalHost}
+				topSafeArea={topSafeArea}
+				onExit={() => onFileViewChange("details", { replace: true })}
+			/>
+		) : (
+			<FileEditorDiffSkeleton />
+		)
 	) : (
 		<FileNodeViewStoredFile node={node} asset={asset} />
 	);
@@ -1593,7 +1624,13 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				<FileNodeViewViewSelect
 					options={viewOptions}
 					value={
-						hasHtmlPreview ? activeFileView : isEditorActive ? (isEditable ? editorMode : "details") : activeFileView
+						hasHtmlPreview
+							? activeFileView
+							: isEditorActive
+								? isEditable || hasRetainedDraft
+									? editorMode
+									: "details"
+								: activeFileView
 					}
 					onValueChange={handleViewChange}
 				/>,
@@ -1651,7 +1688,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 						ref={primaryPanelRef}
 						className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
 						role="region"
-						aria-label={isEditable ? "File editor" : "Stored file"}
+						aria-label={isEditable || hasRetainedDraft ? "File editor" : "Stored file"}
 						tabIndex={-1}
 						hidden={!isEditorActive}
 						inert={!isEditorActive}
@@ -1659,7 +1696,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 						{editorContent}
 					</div>
 				)}
-				{isEditable && activeFileView === "details" && (
+				{(isEditable || hasRetainedDraft) && activeFileView === "details" && (
 					<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
 						<FileNodeViewStoredFile node={node} asset={asset} />
 					</div>
@@ -5747,6 +5784,7 @@ type FileNodeViewContent_Props = {
 	fileNodesList: files_VisibleTreeNode[] | undefined;
 	protectedDescendantIds: FileNodeViewHeader_Props["protectedDescendantIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	retainedDraftRootKind?: files_YjsRootKind;
 	committedAssetId: FileEditor_Props["committedAssetId"];
 	pendingUpdatesLoaded: FileEditor_Props["pendingUpdatesLoaded"];
 	serverSequence?: number;
@@ -5778,6 +5816,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		fileNodesList,
 		protectedDescendantIds,
 		pendingUpdateId,
+		retainedDraftRootKind,
 		committedAssetId,
 		pendingUpdatesLoaded,
 		serverSequence,
@@ -5891,6 +5930,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			fileNodesList={fileNodesList}
 			protectedDescendantIds={protectedDescendantIds}
 			pendingUpdateId={pendingUpdateId}
+			retainedDraftRootKind={retainedDraftRootKind}
 			committedAssetId={committedAssetId}
 			pendingUpdatesLoaded={pendingUpdatesLoaded}
 			serverSequence={serverSequence}
@@ -6118,6 +6158,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
 	const resolvedNodeHasEditableTextContent = files_node_has_editable_text_content(resolvedNode);
+	// The saved file keeps its type. Its owner's old text can still open in read-only Review.
+	const retainedDraftRootKind =
+		!resolvedNodeHasEditableTextContent &&
+		selectedTargetView?.entry.kind === "saved" &&
+		selectedTargetView.entry.node._id === resolvedNode?._id &&
+		!selectedTargetView.entry.pendingUpdate?.preparation
+			? selectedTargetView.entry.pendingUpdate?.content?.rootKind
+			: undefined;
 
 	// Only the rows on screen can show the protected mark. The archive door still refuses the rest.
 	const protectedDescendantIds = useMemo(
@@ -6133,14 +6181,16 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId =
 		resolvedNode && resolvedNode.kind === "file"
-			? resolvedNodeHasEditableTextContent
+			? resolvedNodeHasEditableTextContent || retainedDraftRootKind !== undefined
 				? resolvedNode._id
 				: null
 			: targetFolderId
 				? (folderReadme?._id ?? null)
 				: null;
 	const activeEditorNode =
-		resolvedNode?.kind === "file" && resolvedNodeHasEditableTextContent ? resolvedNode : (folderReadme ?? undefined);
+		resolvedNode?.kind === "file" && (resolvedNodeHasEditableTextContent || retainedDraftRootKind !== undefined)
+			? resolvedNode
+			: (folderReadme ?? undefined);
 	const activeEditorTarget: files_PendingTarget | null =
 		privateEntry && privateTextIntent
 			? { kind: "private", id: privateEntry.node._id }
@@ -6177,7 +6227,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// node drops both, and the effect below writes that node's default once its type is known.
 	const defaultFileView = isHtmlFile
 		? "code"
-		: resolvedNode?.kind === "file" && !resolvedNodeHasEditableTextContent
+		: resolvedNode?.kind === "file" &&
+			!resolvedNodeHasEditableTextContent &&
+			!(requestedView === "diff_editor" && (retainedDraftRootKind !== undefined || selectedTargetView === undefined))
 			? "details"
 			: undefined;
 	// Resolve the default here, not after the URL write, so the children get the same value before
@@ -6765,6 +6817,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					fileNodesList={fileNodesList}
 					protectedDescendantIds={protectedDescendantIds}
 					pendingUpdateId={currentPendingUpdate?._id}
+					retainedDraftRootKind={retainedDraftRootKind}
 					committedAssetId={
 						activeEditorNode?.collaborationEnabled === false ? (activeEditorNode.assetId ?? null) : null
 					}

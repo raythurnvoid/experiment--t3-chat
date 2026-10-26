@@ -8,6 +8,7 @@ import {
 	test_drain_billing_usage_event_outbox,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
@@ -109,7 +110,7 @@ describe("prepare_file_pending_update_for_agent upload in flight", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const now = Date.now();
-		const ids = await t.run(async (ctx) => {
+		const ids = await test_run_with_flush(t, async (ctx) => {
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,

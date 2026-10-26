@@ -147,7 +147,9 @@ Preparation, proposal Sync, and Save share the same line merge. Accepted changed
 
 Review prepares stale branches before allowing edits. Agent edit and shell-write tools also prepare automatically before reading fresh text; opening Review is not a prerequisite for agent work. Draft persistence, Sync, and Save carry the loaded proposal's id and `reviewedRevision`, so an old pane cannot accept a newer version.
 
-Restore keeps every owner's proposals. The open diff view waits for preparation and reloads both prepared branches; it must not fill both panes with restored text. Retained branches use `contentRebaseRootKind` until preparation clears it and writes the current shape. Keep unsubmitted local text available for copying while replacing panes. Restoring stored bytes keeps text proposals too, but applying them to that stored-byte file remains undefined.
+If replacement leaves a saved file without editable text, its owner's retained text still opens in Review. That view uses the draft's own shape and forces the existing Diff editor read-only. Copy and Discard remain available. It cannot prepare or Save text onto the binary file. File details and the saved MIME stay unchanged. When the proposal is gone, the view returns to File details.
+
+Restore keeps every owner's proposals. For an editable saved file, the open diff view waits for preparation and reloads both prepared branches; it must not fill both panes with restored text. Retained branches use their own `content.rootKind`. Keep unsubmitted local text available for copying while replacing panes. Restoring stored bytes keeps text proposals in the read-only Review view described above.
 
 Files with collaboration off still support the views allowed by their shape. Their ordinary editors save the whole text through `replace_file_content`; proposal review uses the pending-update save path. Do not send these files through live Yjs loading.
 

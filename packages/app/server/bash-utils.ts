@@ -38,7 +38,6 @@ import {
 	files_get_utf8_byte_size,
 	files_normalize_lf_newlines,
 	files_normalize_special_node_path,
-	files_pending_update_content_is_stale,
 	files_pending_update_has_content,
 	type files_PendingTarget,
 } from "../shared/files.ts";
@@ -1431,8 +1430,7 @@ export class bash_DbFilesFs implements IFileSystem {
 						: entry.pendingUpdate.content
 							? entry.pendingUpdate.size
 							: undefined
-					: files_pending_update_has_content(entry.pendingUpdate) &&
-						  !files_pending_update_content_is_stale(entry.pendingUpdate, entry.node)
+					: files_pending_update_has_content(entry.pendingUpdate)
 						? entry.pendingUpdate.size
 						: replacement?.size,
 		};

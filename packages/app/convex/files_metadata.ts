@@ -76,7 +76,6 @@ import {
 	type files_saved_placement_FixedView,
 } from "../server/files-saved-placement.ts";
 import {
-	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
 	files_pending_update_index_revision,
 	files_get_utf8_byte_size,
@@ -1257,13 +1256,12 @@ async function db_get_full_read_source(
 	args: { entry: files_VisibleEntry; userId: Id<"users">; metadataOnly?: boolean },
 ): Promise<files_metadata_FullReadSource> {
 	const { entry } = args;
-	let pending =
+	const pending =
 		entry.pendingUpdate &&
 		(entry.kind === "private" ||
 			(!args.metadataOnly &&
 				!entry.pendingUpdate.preparation &&
-				files_pending_update_has_pending_chunks(entry.pendingUpdate) &&
-				!files_pending_update_content_is_stale(entry.pendingUpdate, entry.node)))
+				files_pending_update_has_pending_chunks(entry.pendingUpdate)))
 			? entry.pendingUpdate
 			: null;
 	const selected = entry.kind === "private" ? entry : { ...entry, pendingUpdate: pending };
@@ -1275,19 +1273,7 @@ async function db_get_full_read_source(
 		ctx.db,
 		entry.kind === "private" ? { kind: "pending", id: entry.pendingUpdate._id } : { kind: "saved", id: entry.node._id },
 	);
-	let version = args.metadataOnly ? null : await files_transfer_db_get_entry_version(ctx, selected);
-	// A repaired Yjs history cannot supply a branch built on its old generation.
-	if (
-		entry.kind === "saved" &&
-		pending?.content &&
-		version?.kind === "pending" &&
-		version.savedVersion?.kind === "yjs" &&
-		(pending.content.base.kind !== "yjs" ||
-			pending.content.base.lineageGeneration !== version.savedVersion.lineageGeneration)
-	) {
-		pending = null;
-		version = version.savedVersion;
-	}
+	const version = args.metadataOnly ? null : await files_transfer_db_get_entry_version(ctx, selected);
 	const view = entry.kind === "saved" ? await files_saved_placement_db_get_node_view(ctx.db, entry.node._id) : null;
 	return {
 		path: entry.path,
@@ -1306,7 +1292,7 @@ async function db_get_full_read_source(
 			map ? [map._id, map.revision] : null,
 		]),
 		textRead:
-			version?.textKind === "rich_text"
+			!args.metadataOnly && (pending?.content?.rootKind ?? version?.textKind) === "rich_text"
 				? { includePending: pending !== null, pendingUpdateId: pending?._id ?? null }
 				: null,
 	};
@@ -1410,9 +1396,7 @@ export const get_index_values_by_path = internalQuery({
 
 		const pendingUpdate =
 			entry.pendingUpdate &&
-			(entry.kind === "private" ||
-				(files_pending_update_has_pending_chunks(entry.pendingUpdate) &&
-					!files_pending_update_content_is_stale(entry.pendingUpdate, entry.node)))
+			(entry.kind === "private" || files_pending_update_has_pending_chunks(entry.pendingUpdate))
 				? entry.pendingUpdate
 				: null;
 

@@ -8,7 +8,6 @@ import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
 import { files_db_authorize_volume_read } from "./files_volume_access.ts";
 import {
-	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
 	files_pending_update_index_revision,
 	files_ROOT_ID,
@@ -125,8 +124,7 @@ export async function files_search_db_create_reader(
 		const hasPendingContent =
 			pendingUpdate !== null &&
 			!pendingUpdate.preparation &&
-			files_pending_update_has_pending_chunks(pendingUpdate) &&
-			(entry.kind === "private" || !files_pending_update_content_is_stale(pendingUpdate, entry.node));
+			files_pending_update_has_pending_chunks(pendingUpdate);
 
 		// Drop an indexed pending doc once its proposal is gone or its revision moved on. A pending
 		// metadata doc belongs to a private draft only, and a pending content doc needs current

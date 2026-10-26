@@ -16,6 +16,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
@@ -111,7 +112,9 @@ export async function seed_file_with_markdown(args: {
 		membershipId: Id<"organizations_workspaces_users">;
 	};
 }) {
-	const { ctx, path, name, markdown } = args;
+	const { path, name, markdown } = args;
+	// Saved fixtures need the same content owner as normal file writes.
+	const ctx = { ...args.ctx, db: files_content_heads_db_wrap(args.ctx).db };
 	const rootKind = args.rootKind ?? "rich_text";
 	const membership = args.membership ?? (await test_mocks_fill_db_with.membership(ctx));
 	const { userId, organizationId, workspaceId, membershipId } = membership;
@@ -299,7 +302,8 @@ export async function seed_committed_chunks_for_file(args: {
 	path: string;
 	markdown: string;
 }) {
-	const textChunkId = await args.ctx.db.insert("files_text_chunks", {
+	const ctx = { ...args.ctx, db: files_content_heads_db_wrap(args.ctx).db };
+	const textChunkId = await ctx.db.insert("files_text_chunks", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		fileNodeId: args.nodeId,
@@ -313,7 +317,7 @@ export async function seed_committed_chunks_for_file(args: {
 		lineEnd: args.markdown.split("\n").length,
 		chunkFlags: 0,
 	});
-	const plainTextChunkId = await args.ctx.db.insert("files_plain_text_chunks", {
+	const plainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		fileNodeId: args.nodeId,
@@ -361,7 +365,8 @@ export async function seed_signed_in_file_with_markdown(
  * events take another path.
  */
 export async function seed_non_collaborative_file(args: { ctx: MutationCtx; path: string; text: string }) {
-	const { ctx, path, text } = args;
+	const { path, text } = args;
+	const ctx = { ...args.ctx, db: files_content_heads_db_wrap(args.ctx).db };
 
 	const clerkUserId = await ctx.db.insert("users", {
 		clerkUserId: `clerk_pending_update_test_${seed_signed_in_file_user_counter++}`,

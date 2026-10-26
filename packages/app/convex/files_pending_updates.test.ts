@@ -12,6 +12,7 @@ import {
 	test_get_file_yjs_pointers,
 	test_meta_search,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
@@ -2218,7 +2219,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 		// The ON toggle also marks the proposal. Flip the flag alone, so the commit's own check is
 		// the one that refuses.
-		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { collaborationEnabled: true }));
+		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { collaborationEnabled: true }));
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: seeded.userId,
@@ -2512,7 +2513,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		expect(await search("committed")).not.toContain(path);
 	});
 
-	test("after a member save the read doors hide the stale proposal and serve the saved text", async () => {
+	test("after a member save the read doors keep the owner's old proposal visible", async () => {
 		const t = test_convex();
 		const path = "/off-overlay-stale.md";
 		const { seeded, row, readScope } = await seed_file_with_proposal(t, path);
@@ -2527,16 +2528,16 @@ describe("overlay reads on a file with collaboration off", () => {
 			mode: { kind: "full", maxBytes: 10_000 },
 		});
 		if (!full) throw new Error("expected a full read");
-		expect(full.content).toBe(savedMarkdown);
+		expect(full.content).toBe(proposalMarkdown);
+		expect(full.pendingUpdateId).toBe(row._id);
 
-		// read_committed_file_chunk_stats: the door behind `wc`. The stale proposal has no text of
-		// its own, so the committed chunks answer with the saved text's counts.
+		// `wc` must count the owner's draft, not the newer saved text.
 		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
 			...readScope,
 			userId: seeded.userId,
 			path,
 		});
-		expect(stats).toMatchObject({ usable: true, nodeId: seeded.nodeId, lineCount: 3 });
+		expect(stats.usable).toBe(false);
 
 		const textgrep = await t.query(internal.files_nodes.match_plain_text_file_lines, {
 			...readScope,
@@ -2548,7 +2549,7 @@ describe("overlay reads on a file with collaboration off", () => {
 			invert: false,
 		});
 		if (!textgrep) throw new Error("expected a textgrep result");
-		expect(textgrep.lines.map(({ lineNumber }) => lineNumber)).toEqual([3]);
+		expect(textgrep.lines.map(({ lineNumber }) => lineNumber)).toEqual([5]);
 
 		const grep = await t.query(internal.files_nodes.match_text_file_lines, {
 			...readScope,
@@ -2562,10 +2563,9 @@ describe("overlay reads on a file with collaboration off", () => {
 			after: 0,
 		});
 		if (!grep) throw new Error("expected a grep result");
-		expect(grep.lines.map(({ lineNumber }) => lineNumber)).toEqual([3]);
+		expect(grep.lines.map(({ lineNumber }) => lineNumber)).toEqual([5]);
 
-		// The stale doc stays, and the door still names it, so the agent's next write rebuilds
-		// the proposal on it instead of creating a second doc.
+		// Reading keeps the old proposal. Review is still needed before writing or saving it.
 		const state = await t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
 			...readScope,
 			userId: seeded.userId,
@@ -2573,7 +2573,7 @@ describe("overlay reads on a file with collaboration off", () => {
 			path,
 		});
 		if (!state) throw new Error("expected a content state");
-		expect(state.content).toBe(savedMarkdown);
+		expect(state.content).toBe(proposalMarkdown);
 		expect(state.pendingUpdateId).toBe(row._id);
 		expect(state.materializationState).toBeNull();
 
@@ -2599,8 +2599,18 @@ describe("overlay reads on a file with collaboration off", () => {
 			}
 			return paths;
 		};
-		expect(await search("saved")).toContain(path);
-		expect(await search("proposal")).not.toContain(path);
+		expect(await search("saved")).not.toContain(path);
+		expect(await search("proposal")).toContain(path);
+		const saved = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			...readScope,
+			userId: seeded.userId,
+			subject: { kind: "user", userId: seeded.userId, plugin: null },
+			path,
+			committedOnly: true,
+			mode: { kind: "full", maxBytes: 10_000 },
+		});
+		expect(saved?.content).toBe(savedMarkdown);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", row._id))).toEqual(row);
 	});
 
 	test("wc counts the committed text behind a move-only doc", async () => {
@@ -2628,7 +2638,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		expect(stats).toMatchObject({ usable: true, nodeId: seeded.nodeId, lineCount: 3 });
 	});
 
-	test("metadata search reads the proposal's frontmatter until a member save makes it stale", async () => {
+	test("metadata search keeps the owner's old frontmatter after a member save", async () => {
 		const t = test_convex();
 		const path = "/off-overlay-frontmatter.md";
 		const seeded = await t.run((ctx) =>
@@ -2659,8 +2669,8 @@ describe("overlay reads on a file with collaboration off", () => {
 		expect(await search_title("committed")).not.toContain(path);
 
 		await save_as_member({ t, seeded, text: "---\ntitle: saved\n---\n\n# Body\n" });
-		expect(await search_title("saved")).toContain(path);
-		expect(await search_title("proposal")).not.toContain(path);
+		expect(await search_title("saved")).not.toContain(path);
+		expect(await search_title("proposal")).toContain(path);
 	});
 
 	test("the sidebar search reads the saved title while the by-path metadata door reads the proposal", async () => {
@@ -2713,7 +2723,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		await save_as_member({ t, seeded, text: "---\ntitle: saved\n---\n\n# Body\n" });
 		expect(await search_saved_title("saved")).toEqual([seeded.nodeId]);
 		expect(await search_saved_title("proposal")).toEqual([]);
-		expect(await title_by_path()).toBe("saved");
+		expect(await title_by_path()).toBe("proposal");
 	});
 });
 
@@ -2908,15 +2918,17 @@ describe("pending content version reads", () => {
 		expect(
 			(await t.query(internal.files_nodes.text_search_files, searchArgs)).items.map((item) => item.path),
 		).toContain("/mark.txt");
-		await t.run(async ctx => {
+		await test_run_with_flush(t, async ctx => {
 			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
 			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
 		});
-		await t.run(async ctx => {
+		await test_run_with_flush(t, async ctx => {
 			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
 			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
 		});
-		expect((await t.query(internal.files_nodes.text_search_files, searchArgs)).items).toEqual([]);
+		expect((await t.query(internal.files_nodes.text_search_files, searchArgs)).items.map((item) => item.path)).toContain(
+			"/mark.txt",
+		);
 		const content = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
@@ -2925,7 +2937,7 @@ describe("pending content version reads", () => {
 			path: "/mark.txt",
 			mode: { kind: "full", maxBytes: 1000 },
 		});
-		expect(content?.content).toBe("base\n");
+		expect(content?.content).toBe(`markedneedle ${seeded.userId}\n`);
 
 		await t.run(async (ctx) => {
 			for (const doc of before.docs) {
@@ -2944,7 +2956,7 @@ describe("pending content version reads", () => {
 	test("keeps old saved markers without a content proposal", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/mark-empty.txt", text: "base\n" }));
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			await ctx.db.insert("files_pending_updates_last_sequence_saved", {
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,

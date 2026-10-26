@@ -237,8 +237,9 @@ and searches carry the same source check; normal Properties reads keep their own
 Saved metadata changes immediately. Private metadata stays owned by the create proposal until Save.
 
 `get_read_source_by_path` reads the same owner tree. It returns a full map, tagged target, path, and exact text
-source version. Preparing private drafts return null. Saved stale or preparing content uses saved
-text. Service accounts and read-only mounts use saved content only. `get_index_values_by_path`
+source version. Preparing private drafts return null. A ready retained draft supplies its owner's
+frontmatter in its own text shape, even after saved content changes. Unfinished Copy proposals use
+saved text. Service accounts and read-only mounts use saved content only. `get_index_values_by_path`
 inspects derived index docs; full-value callers never fall back to those docs.
 
 `server/files-metadata-read.ts` serves Bash and the Node table action. It reads supported Markdown

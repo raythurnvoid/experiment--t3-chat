@@ -1014,8 +1014,8 @@ export function files_pending_update_index_revision(
 }
 
 /**
- * Restore and replacement keep drafts on their original base. Reads use saved text until
- * that owner prepares the draft. With collaboration off, a later Save also changes its asset.
+ * Restore and replacement keep readable drafts on their original base. Review must prepare
+ * an old draft before Save. With collaboration off, a later Save also changes its asset.
  */
 export function files_pending_update_content_is_stale(
 	row: FilePendingUpdateFieldsForContent,

@@ -9,6 +9,7 @@ import {
 	test_create_saved_text_file,
 	test_finish_pending_update_run,
 	test_get_file_yjs_pointers,
+	test_meta_search,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 	test_spy_move_ranges,
@@ -26,6 +27,7 @@ import { quotas_db_ensure } from "./quotas.ts";
 import { files_media_validation_db_capture_versions } from "./files_media_validation.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
 import type { Id } from "./_generated/dataModel.js";
+import { text_search_files_all_pages } from "./files_nodes.setup.test.ts";
 import {
 	objects,
 	mock_nodes_content_storage,
@@ -1100,7 +1102,8 @@ describe("restore_snapshot_r2", () => {
 		async ({ sourceRootKind, targetRootKind, off }) => {
 			const fixture = await create_file_fixture(sourceRootKind);
 			const { t, db, asUser, nodeId, snapshotId } = fixture;
-			await create_pending_proposal({ fixture });
+			const draftText = "---\nreview: retained\n---\n\nownerneedle Ω\n";
+			const pending = await create_pending_proposal({ fixture, texts: { staged: draftText, unstaged: draftText } });
 			const otherUserId = await t.run(async (ctx) => {
 				const userId = await ctx.db.insert("users", { clerkUserId: "restore_other_owner" });
 				await ctx.db.insert("organizations_workspaces_users", {
@@ -1120,7 +1123,12 @@ describe("restore_snapshot_r2", () => {
 				});
 				return userId;
 			});
-			await create_pending_proposal({ fixture, userId: otherUserId });
+			const otherText = draftText.replace("ownerneedle", "memberneedle");
+			await create_pending_proposal({
+				fixture,
+				userId: otherUserId,
+				texts: { staged: otherText, unstaged: otherText },
+			});
 			if (off) {
 				const toggled = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 					membershipId: db.membershipId,
@@ -1200,12 +1208,39 @@ describe("restore_snapshot_r2", () => {
 				expect(node?.pendingContentVersion).toBe(++pendingContentVersion);
 				expect(node?.textKind).toBe(rootKind);
 				expect(node?.collaborationEnabled === false).toBe(off);
-				const content = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				const readArgs = {
 					subject: { kind: "user" as const, userId: fixture.scope.userId, plugin: null },
 					...fixture.scope,
 					path: sourceRootKind === "rich_text" ? "/restore.md" : "/restore.txt",
+				};
+				const content = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, readArgs);
+				expect(content?.content, "Passive reads keep the exact old draft").toBe(draftText);
+				expect(content?.pendingUpdateId).toBe(pending._id);
+				const other = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...readArgs,
+					userId: otherUserId,
+					subject: { kind: "user", userId: otherUserId, plugin: null },
 				});
-				expect(content?.content).toBe(text);
+				expect(other?.content).toBe(otherText);
+				const saved = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...readArgs,
+					includePending: false,
+				});
+				expect(saved?.content).toBe(text);
+				const found = await text_search_files_all_pages(t, {
+					...fixture.scope,
+					subject: readArgs.subject,
+					query: "ownerneedle",
+					numItems: 10,
+					cursor: null,
+				});
+				expect(found.items.map((item) => item.path)).toEqual([readArgs.path]);
+				const metadata = await test_meta_search(t, {
+					...fixture.scope,
+					plan: { op: "eq", fieldPath: "frontmatter.review", value: "retained" },
+				});
+				expect(metadata.items.map((item) => item.path)).toEqual(sourceRootKind === "rich_text" ? [readArgs.path] : []);
+				expect(await readProposals(), "Reads do not prepare drafts or extend their expiry").toEqual(before);
 			}
 		},
 	);
@@ -1723,7 +1758,12 @@ describe("accept_file_pending_replacement", () => {
 				});
 				return userId;
 			});
-			const pending = await create_pending_proposal({ fixture, userId: otherUserId });
+			const draftText = "---\nreview: retained\n---\n\nownerneedle Ω\n";
+			const pending = await create_pending_proposal({
+				fixture,
+				userId: otherUserId,
+				texts: { staged: draftText, unstaged: draftText },
+			});
 			const readDraft = () =>
 				t.run(async (ctx) => {
 					const stateIds = [pending.content!.baseStateId, pending.content!.stagedStateId, pending.content!.unstagedStateId];
@@ -1741,6 +1781,18 @@ describe("accept_file_pending_replacement", () => {
 						chunks: await ctx.db
 							.query("files_text_chunks")
 							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pending._id))
+							.collect(),
+						searchChunks: await ctx.db
+							.query("files_plain_text_chunks")
+							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pending._id))
+							.collect(),
+						metadata: await ctx.db
+							.query("files_metadata_docs")
+							.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pending._id))
+							.collect(),
+						expiryChecks: await ctx.db
+							.query("files_pending_update_expiry_checks")
+							.withIndex("by_user", (q) => q.eq("userId", otherUserId))
 							.collect(),
 					};
 				});
@@ -1822,6 +1874,48 @@ describe("accept_file_pending_replacement", () => {
 				)._nay,
 			).toBeUndefined();
 			expect(await readDraft()).toEqual(beforeDraft);
+			const readArgs = {
+				...fixture.scope,
+				userId: otherUserId,
+				subject: { kind: "user" as const, userId: otherUserId, plugin: null },
+				path: "/restore.md",
+			};
+			expect(
+				(await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, readArgs))?.content,
+			).toBe(draftText);
+			expect(
+				await t.query(internal.files_nodes_content.get_file_byte_read_source, { ...readArgs, includePending: true }),
+			).toMatchObject({
+				kind: "text",
+				// The draft keeps its text shape. MIME still describes the saved file.
+				contentType: sourceKind === "text" ? "text/plain;charset=utf-8" : "application/pdf",
+			});
+			const savedSource = await t.query(internal.files_nodes_content.get_file_byte_read_source, {
+				...readArgs,
+				includePending: false,
+			});
+			expect(savedSource?.kind).toBe(sourceKind === "text" ? "text" : "stored");
+			const saved = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				...readArgs,
+				includePending: false,
+			});
+			expect(saved?.content ?? null).toBe(sourceKind === "text" ? "Copied text\n" : null);
+			const found = await text_search_files_all_pages(t, {
+				...fixture.scope,
+				userId: otherUserId,
+				subject: readArgs.subject,
+				query: "ownerneedle",
+				numItems: 10,
+				cursor: null,
+			});
+			expect(found.items.map((item) => item.path)).toEqual([readArgs.path]);
+			const metadata = await test_meta_search(t, {
+				...fixture.scope,
+				userId: otherUserId,
+				plan: { op: "eq", fieldPath: "frontmatter.review", value: "retained" },
+			});
+			expect(metadata.items.map((item) => item.path)).toEqual([readArgs.path]);
+			expect(await readDraft(), "Passive reads keep the exact draft after replacement").toEqual(beforeDraft);
 			// The accepted proposal was a pending replacement, so a proof could check the file through it.
 			const contentClock = mediaPins.versions[2]!;
 			expect(

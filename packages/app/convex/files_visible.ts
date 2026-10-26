@@ -66,7 +66,6 @@ import {
 	files_ANCESTOR_FIELD_COUNT,
 	files_ROOT_ID,
 	files_derive_tree_path_for_file_node,
-	files_pending_update_content_is_stale,
 	files_pending_update_has_pending_chunks,
 	files_pending_update_index_revision,
 	type files_PendingTarget,
@@ -2714,16 +2713,11 @@ function metadata_plan_matches(
 }
 
 /**
- * Whether the user's draft of a saved file has current text. The file's frontmatter then comes from
+ * Whether the user's draft of a saved file has readable text. The file's frontmatter then comes from
  * the draft, not from the saved text, as in `files_search_db_create_reader`.
  */
-function metadata_pending_text_is_current(proposal: Doc<"files_pending_updates"> | null, node: Doc<"files_nodes">) {
-	return (
-		proposal !== null &&
-		!proposal.preparation &&
-		files_pending_update_has_pending_chunks(proposal) &&
-		!files_pending_update_content_is_stale(proposal, node)
-	);
+function metadata_has_pending_text(proposal: Doc<"files_pending_updates"> | null) {
+	return proposal !== null && !proposal.preparation && files_pending_update_has_pending_chunks(proposal);
 }
 
 /**
@@ -3084,7 +3078,7 @@ export const internal_search_metadata_saved = internalQuery({
 						? await files_saved_placement_db_get_proposal(ctx.db, sourceProposal._id)
 						: null;
 					// The pending stream shows the frontmatter of the user's text draft instead.
-					if (metadata_pending_text_is_current(proposal, node)) return null;
+					if (metadata_has_pending_text(proposal)) return null;
 				}
 				const decision = await db_stream_saved_item(ctx, {
 					node,
@@ -3144,7 +3138,7 @@ export const internal_search_metadata_pending = internalQuery({
 				)
 					return null;
 				const node = await files_saved_placement_db_get_node(ctx.db, proposal.target.id);
-				if (!node || node.archiveOperationId !== null || !metadata_pending_text_is_current(proposal, node)) return null;
+				if (!node || node.archiveOperationId !== null || !metadata_has_pending_text(proposal)) return null;
 				const tags = [
 					undefined,
 					...(opened._yay.saved.view.cohortId
@@ -3251,7 +3245,7 @@ export const internal_search_metadata_places = internalQuery({
 				if (place.target.kind === "saved" && field.fieldPath.startsWith("frontmatter.")) {
 					const node = await files_saved_placement_db_get_node(ctx.db, place.target.id);
 					const proposal = await files_saved_placement_db_get_proposal(ctx.db, place.pendingUpdateId);
-					if (node && metadata_pending_text_is_current(proposal, node)) return null;
+					if (node && metadata_has_pending_text(proposal)) return null;
 				}
 				return {
 					item: decision.item,

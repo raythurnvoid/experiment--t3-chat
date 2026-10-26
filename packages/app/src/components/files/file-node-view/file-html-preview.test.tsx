@@ -495,7 +495,7 @@ describe("FileHtmlPreview", () => {
 		);
 	});
 
-	test("waits for Refresh after a stale proposal becomes current again", async () => {
+	test("keeps the old preview until Refresh after Review changes the proposal", async () => {
 		let currentNode = { ...NODE, collaborationEnabled: false, yjsLastSequenceId: null, yjsSnapshotId: null };
 		const proposal = {
 			...PENDING,
@@ -512,8 +512,7 @@ describe("FileHtmlPreview", () => {
 		// A member save makes this proposal stale. Agent preparation keeps its id.
 		currentNode = { ...currentNode, assetId: "asset_2" as typeof NODE.assetId };
 		view.rerender(<Preview node={currentNode} initialSource="proposed_changes" />);
-		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
-		expect(screen.getByText("Review and sync these changes first.")).toBeDefined();
+		expect(screen.getByTitle("HTML preview: brief.html")).toBe(first.frame);
 		pendingReadMock.mockResolvedValue(pending_bytes("<p>Prepared proposal</p>"));
 		publish_query_values({
 			pending: {
@@ -527,9 +526,8 @@ describe("FileHtmlPreview", () => {
 				revision: 2,
 			},
 		});
-		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
+		expect(screen.getByTitle("HTML preview: brief.html")).toBe(first.frame);
 		expect(pendingReadMock).toHaveBeenCalledOnce();
-		expect(screen.getByText("Refresh to preview this source.")).toBeDefined();
 		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 		const next = await start_frame();
 		send_status({ frame: next.frame, data: { ...next.hello, type: "ready" } });
@@ -558,11 +556,23 @@ describe("FileHtmlPreview", () => {
 		expect(actionMock).not.toHaveBeenCalled();
 	});
 
-	test("refuses stale proposals without preparing or reading their pages", async () => {
+	test("previews old proposals without preparing them", async () => {
 		publish_query_values({ pending: { ...PENDING, currentPendingContentVersion: 2 } });
 		render(<Preview />);
-		await screen.findByText("Review and sync these changes first.");
-		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
+		const preview = await start_frame();
+		send_status({ frame: preview.frame, data: { ...preview.hello, type: "ready" } });
+		expect(preview.post).toHaveBeenLastCalledWith(
+			expect.objectContaining({ html: "<p>Proposed</p>" }),
+			"https://preview.test",
+		);
+		expect(pendingReadMock).toHaveBeenCalledOnce();
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("does not preview a retained rich-text branch as HTML", async () => {
+		publish_query_values({ pending: { ...PENDING, content: { ...PENDING.content, rootKind: "rich_text" } } });
+		render(<Preview initialSource="proposed_changes" />);
+		await screen.findByText("Choose an available source.");
 		expect(pendingReadMock).not.toHaveBeenCalled();
 		expect(actionMock).not.toHaveBeenCalled();
 	});
@@ -579,7 +589,7 @@ describe("FileHtmlPreview", () => {
 		expect(screen.getByRole("alert").textContent).toContain("changed while loading");
 	});
 
-	test("refuses a late proposal read after a no-packet Restore keeps the same family and head", async () => {
+	test("keeps a proposal read after Restore leaves its family unchanged", async () => {
 		publish_query_values({ pending: PENDING });
 		const deferred = Promise.withResolvers<ReturnType<typeof pending_bytes>>();
 		pendingReadMock.mockReturnValue(deferred.promise);
@@ -590,8 +600,13 @@ describe("FileHtmlPreview", () => {
 			query === "get_file_pending_update" ? { ...PENDING, currentPendingContentVersion: 2 } : NODE,
 		);
 		await act(async () => deferred.resolve(pending_bytes("<p>Old proposal</p>")));
-		expect(screen.queryByTitle("HTML preview: brief.html")).toBeNull();
-		expect(screen.getByRole("alert").textContent).toContain("changed while loading");
+		const preview = await start_frame();
+		send_status({ frame: preview.frame, data: { ...preview.hello, type: "ready" } });
+		expect(preview.post).toHaveBeenLastCalledWith(
+			expect.objectContaining({ html: "<p>Old proposal</p>" }),
+			"https://preview.test",
+		);
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("ignores an old read after switching sources", async () => {

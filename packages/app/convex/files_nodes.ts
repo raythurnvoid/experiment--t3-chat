@@ -163,7 +163,6 @@ import {
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_parse_content_type_prefix,
-	files_pending_update_content_is_stale,
 	files_pending_update_index_revision,
 	files_TEXT_SEARCH_MAX_RESULTS,
 	type files_VisibleEntry,
@@ -5250,10 +5249,8 @@ async function db_resolve_committed_chunk_source(
 	const organizationId = args.organizationId;
 	const workspaceId = scope.workspaceId;
 
-	// The user's unstaged branch is not materialized into chunks; read it via the in-memory path.
-	// This holds in both editable modes: a file with collaboration off carries proposals too. A
-	// move-only doc has no text of its own, and a stale proposal's text is not served, so the
-	// committed chunks below answer for both, the same way the read doors fall through.
+	// Saved counts do not describe the user's draft, even after Save or Restore changes the file.
+	// A move-only doc has no text of its own and can still use saved counts.
 	const pendingSource = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_organization_workspace_user_target", (q) =>
@@ -5266,11 +5263,7 @@ async function db_resolve_committed_chunk_source(
 		)
 		.first();
 	const pendingUpdate = pendingSource ? await files_saved_placement_db_get_proposal(ctx.db, pendingSource._id) : null;
-	if (
-		pendingUpdate != null &&
-		files_pending_update_has_pending_chunks(pendingUpdate) &&
-		!files_pending_update_content_is_stale(pendingUpdate, fileNode)
-	) {
+	if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
 		return null;
 	}
 
@@ -5647,10 +5640,7 @@ export const read_file_content_from_chunks = internalQuery({
 			!isEditableTextFile && !isNonCollaborativeTextFile && (fileNode?.contentType?.startsWith("text/plain") ?? false);
 		let pendingUpdateBaseStateId: Id<"files_pending_update_yjs_states"> | undefined;
 		if (realTenantScope) {
-			if (entry.kind === "saved" && !isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile)
-				return null;
-
-			if (entry.kind === "private" || isEditableTextFile || isNonCollaborativeTextFile) {
+			if (args.pendingUpdateId != null || args.committedOnly !== true) {
 				// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 				const { organizationId, workspaceId } = realTenantScope;
 
@@ -5689,22 +5679,15 @@ export const read_file_content_from_chunks = internalQuery({
 				}
 				if (pendingUpdate) pendingUpdate = await files_saved_placement_db_get_proposal(ctx.db, pendingUpdate._id);
 
-				// Keep the source family even when stale reads show saved text. Review may replace
-				// this family before a read-based edit writes its result.
+				// Review may replace this family before a read-based edit writes its result.
 				pendingUpdateBaseStateId = pendingUpdate?.content?.baseStateId;
 				// A stored replacement has no text. The old saved text is no longer this user's view.
 				if (pendingUpdate?.pendingReplacement && pendingUpdate.pendingReplacement.yjsRootKind === undefined)
 					return null;
 
-				// Move-only docs and copies of stored files have no pending chunks; fall through to
-				// the committed chunks so reads do not return an empty file behind them. A stale
-				// proposal (a member saved the file with collaboration off after it was made) falls
-				// through too, until preparation updates it.
-				if (
-					pendingUpdate != null &&
-					files_pending_update_has_pending_chunks(pendingUpdate) &&
-					(fileNode === null || !files_pending_update_content_is_stale(pendingUpdate, fileNode))
-				) {
+				// Read retained drafts before checking the saved type. Restore may have changed it.
+				// Move-only docs have no text and fall through to committed chunks.
+				if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
 					const chunks = files_saved_content_db_text_chunks(ctx.db, {
@@ -5780,9 +5763,9 @@ export const read_file_content_from_chunks = internalQuery({
 						pendingContentVersion,
 					};
 				}
-			} else if (args.pendingUpdateId != null) {
-				return null;
 			}
+			if (entry.kind === "saved" && !isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile)
+				return null;
 		} else if (args.pendingUpdateId != null) {
 			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
 			return null;
@@ -6536,17 +6519,11 @@ async function db_get_text_match_source(
 			proposalRevision = files_pending_update_index_revision(entry.pendingUpdate);
 		} else {
 			fileNode = entry.node;
-			if (!files_node_has_editable_text_content(fileNode)) return null;
-			// A move-only or stale content proposal keeps reading the saved chunks.
-			if (
-				pending &&
-				!pending.preparation &&
-				files_pending_update_has_pending_chunks(pending) &&
-				!files_pending_update_content_is_stale(pending, fileNode)
-			) {
+			// A retained draft keeps its text even when Restore changes the saved type.
+			if (pending && !pending.preparation && files_pending_update_has_pending_chunks(pending)) {
 				pendingUpdateId = pending._id;
 				proposalRevision = files_pending_update_index_revision(pending);
-			}
+			} else if (!files_node_has_editable_text_content(fileNode)) return null;
 		}
 	} else {
 		if (args.target.kind !== "saved" || args.pendingUpdateId != null) return null;
