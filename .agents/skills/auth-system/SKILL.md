@@ -347,7 +347,7 @@ When an anonymous user is created:
 
 Public access to a file works through a separate random token, never through the file id. File ids appear in URLs, embeds, API answers, and logs, and former members keep them, so an id is never a secret and opens nothing. The link doc, its live checks, and the events that end it are specified in the access-control skill ("Public file links").
 
-- Today one kind of public access exists: "Anyone with the link can view" for one saved file. A manager turns it on in the share dialog (`files_sharing.set_node_share_link`).
+- Today one kind of public access exists: "Anyone with the link can view" for one saved file. A manager turns it on in the share dialog (`files_share_links.set_node_share_link`).
 - The server makes the token: 32 random bytes as hex. The link is `<origin><BASE_URL>share/<token>`, built only by `url_share_link` in `src/lib/urls.ts`.
 - Turning the link off deletes the token. Turning it on again makes a new token, so an old link never works again.
 - An anonymous user cannot turn a link on. So the upgrade rules below never have to find and secure links.

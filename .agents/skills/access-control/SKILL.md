@@ -1062,16 +1062,17 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
 
 ## File sharing
 
-`convex/files_sharing.ts` owns member sharing. Six mutations plus one query:
+`convex/files_sharing.ts` owns member sharing. Five mutations plus one query:
 `get_node_share_state`, `restrict_node`, `unrestrict_node`, `set_node_share_grant`,
-`remove_node_share_grant`, `set_node_share_link`, `set_node_public`. The first five writes take
+`remove_node_share_grant`, `set_node_public`. The first four writes take
 `content.permissions.manage` **on the node**, and the `files_sharing_write` bucket first.
 `set_node_public` takes `content.write` instead. `get_node_share_state` only takes
 `content.read` on the node: the dialog opens for anybody who can see the file, and `canManage` in its
 answer is what hides the controls from a reader.
-`set_node_share_link` turns a file's public link on and off. The public doors that serve the link
-live in `convex/files_share_links.ts`. `set_node_public` turns the public flag of one file on and
-off. See "Public file links" below.
+`set_node_share_link` in `convex/files_share_links.ts` turns a file's public link on and off. It
+takes the same permission and bucket. The public doors that serve the link live in the same module.
+`set_node_public` turns the public flag of one file on and off. The database writes behind these
+doors live in `convex/files_sharing_db.ts`. See "Public file links" below.
 
 The model:
 
@@ -1297,9 +1298,10 @@ read a row under a folder the caller cannot open. Code: `server/files-tree-walk.
 ## Public file links
 
 "Anyone with the link can view" publishes one saved file to people with no account. The code:
-`convex/files_share_links.ts` (public view, signer, `list_workspace_links`, live checks),
-`convex/files_share_links_db.ts` (lifecycle delete helpers), `set_node_share_link` and
-`get_node_share_state` in `convex/files_sharing.ts`, and `shared/files-share-rich-text.ts` (safe
+`convex/files_share_links.ts` (public view, signer, `list_workspace_links`, `set_node_share_link`,
+the live file check), `server/files-share-links.ts` (scope and workspace checks, shared with the
+public flag), `convex/files_share_links_db.ts` (lifecycle delete helpers), `get_node_share_state` in
+`convex/files_sharing.ts`, and `shared/files-share-rich-text.ts` (safe
 content). The share page is `/share/<token>`; the auth skill describes its public boundary.
 
 ### The link doc and its token
@@ -1328,7 +1330,7 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
 
 ### Turning it on and off
 
-`files_sharing.set_node_share_link({ membershipId, nodeId, enabled })` returns a Result.
+`files_share_links.set_node_share_link({ membershipId, nodeId, enabled })` returns a Result.
 
 - It charges `files_sharing_write` first.
 - Both On and Off need an active membership and `content.permissions.manage` on the file's
@@ -1339,14 +1341,14 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
   - a signed-in user, not an anonymous one ("Sign in to create a public link"). So an anonymous
     upgrade never has to find and secure links;
   - `content.read` on the stored scope. Nobody publishes what they cannot read;
-  - every check in `files_share_links_db_check_live_file`: the node is a file, not a folder, and is
+  - every check in `db_check_live_file` (`files_share_links.ts`): the node is a file, not a folder, and is
     not archived; the organization and workspace are live (see check 4 below); the scope node is
-    live (`db_check_scope`, below); a finished asset; and a supported text shape;
+    live (`files_share_links_db_check_scope`, below); a finished asset; and a supported text shape;
   - fewer than 500 links in the workspace;
   - no Move mark on the file itself (`moveCohortId`), else `move_busy`. A file the Move has not
     reached yet can get a link: Move link staging reads every held file's link after all captures,
     so the switch still ends it. This check reads no folder above the file.
-- `db_check_scope` reads the stored scope node and its plugin bindings, at most 5 docs. `dead`
+- `files_share_links_db_check_scope` (`server/files-share-links.ts`) reads the stored scope node and its plugin bindings, at most 5 docs. `dead`
   means the node is gone, in another tenant, or no longer its own restricted root, and On refuses
   with "Wait until the access change of a folder above finishes". `bound` means a plugin decides
   who reads the area, and On refuses. A null scope is always fine.
@@ -1368,7 +1370,7 @@ scope node changes.** So every read checks:
 1. The doc exists. Its node exists, is a file of the doc's organization and workspace, and is not
    archived.
 2. The file's stored `restrictedScopeNodeId` equals the doc's.
-3. `db_check_scope` answers `ok`: the scope is null, or the scope node is a live restricted root of
+3. `files_share_links_db_check_scope` answers `ok`: the scope is null, or the scope node is a live restricted root of
    the same tenant with no `plugins_file_access_bindings` doc and no attached
    `plugins_external_file_bindings` doc (`detachedAt === null`). A plugin reader list would be
    bypassed by a public link.
@@ -1454,7 +1456,7 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
    and it matches the node: an image node needs an image file, a video node needs a video file.
 4. E is not archived and has a finished asset.
 5. E is public: `E.isPublic` is `true` ("The public flag", below).
-6. `db_check_scope` on E's **own** restricted area answers `ok`: not dead and not plugin-bound.
+6. `files_share_links_db_check_scope` on E's **own** restricted area answers `ok`: not dead and not plugin-bound.
 
 E may sit in any restricted area. D's area does not matter. Code: `db_check_media_node` in
 `files_share_links.ts`. Every read is reserved in the view budget.
@@ -1499,7 +1501,7 @@ flag. Folders never do, so nothing is public by inheritance.
     documents` select in the image's own Sharing. The public API (`POST /api/v1/files/public/set`,
     see `../public-api/SKILL.md`) shares `files_sharing_db_set_node_public` with it.
   - Turning a link on (`set_node_share_link`). It flags each image and video of the linked file that
-    the caller can edit and read (`files_share_links_db_list_media_nodes`, one page preparation). A
+    the caller can edit and read (`db_list_media_nodes`, one page preparation). A
     refusal for one image leaves only that image gray.
   - An upload into a document with a live link. `create_upload_node` takes the document's id
     (`documentNodeId`) from the rich text editor. When the document has a selected link and the
@@ -1510,7 +1512,8 @@ flag. Folders never do, so nothing is public by inheritance.
   nothing. It charges `files_sharing_write` first (app and API).
 - On also needs: a file that is not archived and a live workspace; no Move mark on the file and no
   Move reservation for it (`move_busy`); no running subtree op on the file or a folder above it
-  (`not_ready`); and `db_check_scope` `ok` (not dead, not bound).
+  (`not_ready`); and `files_share_links_db_check_scope` `ok` (not dead, not bound). The archive,
+  workspace and scope checks are `files_share_links_db_check_live_node` in `server/files-share-links.ts`.
 - Off works during a Move: `files_nodes_db_set_public` patches both Move views too, so the Move end
   does not write the old value back.
 - `get_node_share_state` returns `public: null` for a folder and for a file that is not an image or
@@ -1865,7 +1868,8 @@ Consequences the UI has to carry, each of which is a server rule and not a style
 - `packages/app/convex/schema.ts`
 - `packages/app/convex/organizations.ts`
 - `packages/app/convex/data_deletion.ts`
-- `packages/app/convex/files_share_links.ts`, `packages/app/convex/files_share_links_db.ts` (+ `files_share_links*.test.ts`)
+- `packages/app/convex/files_share_links.ts`, `packages/app/convex/files_share_links_db.ts`, `packages/app/server/files-share-links.ts` (+ `files_share_links*.test.ts`)
+- `packages/app/convex/files_sharing.ts`, `packages/app/convex/files_sharing_db.ts`, `packages/app/convex/files_subtree_ops_rebuild.ts`
 - `packages/app/convex/access_control.test.ts`
 - `packages/app/convex/organizations.test.ts`
 - `packages/app/convex/data_deletion.test.ts`

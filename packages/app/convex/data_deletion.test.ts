@@ -32,7 +32,7 @@ import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_assets.ts
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_insert_pending_update, files_ROOT_ID } from "../server/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops.ts";
+import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops_rebuild.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { files_share_rows_db_sync_grant } from "../server/files-share-rows.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";

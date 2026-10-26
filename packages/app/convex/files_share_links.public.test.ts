@@ -15,7 +15,7 @@ import {
 	access_control_db_set_service_account_grant,
 	type access_control_Subject,
 } from "./access_control.ts";
-import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
@@ -481,7 +481,7 @@ describe("set_node_share_link", () => {
 
 		await reset_rate_limits(f.t, [f.memberId]);
 		expect(
-			await f.asMember.mutation(api.files_sharing.set_node_share_link, {
+			await f.asMember.mutation(api.files_share_links.set_node_share_link, {
 				membershipId: f.memberMembershipId,
 				nodeId: pageId,
 				enabled: true,

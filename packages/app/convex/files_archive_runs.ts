@@ -49,7 +49,6 @@ import { files_media_validation_db_advance_version } from "./files_media_validat
 import {
 	authorize_leaving_restricted_scope,
 	files_nodes_db_archive_node,
-	files_nodes_db_rebuild_node,
 	files_nodes_db_require_swept_nodes_writable,
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
@@ -71,15 +70,14 @@ import {
 	files_subtree_ops_db_recover,
 	files_subtree_ops_db_run,
 	files_subtree_ops_db_schedule_step,
-} from "./files_subtree_ops_db.ts";
-import {
 	files_subtree_ops_db_find_blocked_paths,
 	files_subtree_ops_db_first_node,
 	files_subtree_ops_db_next_children,
 	files_subtree_ops_db_pause_for_move,
 	files_subtree_ops_db_reserve_sequences,
 	files_subtree_ops_db_save_page,
-} from "./files_subtree_ops.ts";
+} from "./files_subtree_ops_db.ts";
+import { files_nodes_db_rebuild_node } from "./files_subtree_ops_rebuild.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,

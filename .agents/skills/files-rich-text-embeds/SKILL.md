@@ -191,7 +191,7 @@ An embed shows only when all of these hold (`db_read_media_node`, `db_check_medi
    video node needs `video/*`. SVG and other types are unavailable.
 3. It has a finished asset.
 4. It is public: `isPublic` is `true` ("The public flag", below).
-5. Its own restricted area is live and not plugin-bound (`db_check_scope` answers `ok`).
+5. Its own restricted area is live and not plugin-bound (`files_share_links_db_check_scope` answers `ok`).
 
 Otherwise the view returns `{ index, available: false }`, with no type, name, ID, or reason. The page
 shows a gray box, "This image is not shared" or "This video is not shared", from the node's own kind.
@@ -214,7 +214,7 @@ access, and a public file never opens by itself: it only shows as an embed of a 
   (`Anyone with the link`: `No access` / `Can view`). On an image or video file the same section
   also has `Inside public documents` (`Shown` / `Not shown`), for anybody who can edit that file. A
   person who can edit but not manage sees only that select. Folders have no public section. Code:
-  `FilesShareModalLink` in `files-share-modal.tsx`, doors `files_sharing.set_node_share_link` and
+  `FilesShareModalLink` in `files-share-modal.tsx`, doors `files_share_links.set_node_share_link` and
   `files_sharing.set_node_public`.
 - Turning a link on shows the images and videos of the document that the caller can edit. The
   others stay gray until somebody who can edit them sets `Inside public documents` to `Shown` in

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_create_saved_text_file, test_move_nodes } from "./setup.test.ts";
-import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import {
 	fixture,
 	mock_share_storage,

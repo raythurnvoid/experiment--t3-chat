@@ -12,6 +12,11 @@
 // That rule lives in `access_control.ts` and is what makes "restricted" mean restricted, including
 // against an admin. It also means the person who restricts something has to keep a way back in, so
 // `restrict_node` writes their own grants, and the last manager cannot be removed.
+//
+// Keep the imports of this module small. On a cold call Convex loads every file that this module imports,
+// even the unused ones. The share dialog waits on these doors, so this module must not import
+// files_nodes.ts, files_share_links.ts or files_subtree_ops.ts. scripts/convex-sharing-path-imports.test.ts
+// checks this.
 
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
@@ -34,32 +39,23 @@ import {
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import {
-	files_nodes_db_set_extended_scope,
-	files_nodes_db_set_public,
-	files_nodes_db_set_restricted_scope,
-} from "./files_nodes.ts";
-import {
 	files_nodes_db_get_plugin_binding_installation_id,
 	files_nodes_db_has_plugin_binding,
 } from "./files_nodes_db.ts";
 import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 import {
-	files_share_links_db_check_live_file,
-	files_share_links_db_check_live_node,
-	files_share_links_db_list_media_nodes,
-} from "./files_share_links.ts";
-import { files_share_links_db_delete, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
-import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
-import { files_subtree_ops_busy_tree_paths } from "./files_subtree_ops_db.ts";
+	files_nodes_db_set_extended_scope,
+	files_nodes_db_set_restricted_scope,
+	files_sharing_db_set_node_public,
+} from "./files_sharing_db.ts";
+import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { crypto_random_hex } from "../server/crypto-utils.ts";
 import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
-import { files_move_reservations_db_find_blocker } from "../server/files-move-reservations.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import {
 	files_saved_placement_db_get_node,
@@ -292,7 +288,7 @@ const share_level_validator = v.union(v.literal("read"), v.literal("write"), v.l
 /**
  * Who a share entry is about. `public` is missing on purpose, so nothing here can write a public grant.
  * A public grant on a restricted folder would open every file inside it. Public file links use their own
- * token table instead (`files_share_links`, see `set_node_share_link`).
+ * token table instead (`files_share_links`, written by `set_node_share_link` in `files_share_links.ts`).
  */
 const share_principal_validator = v.union(
 	v.object({ kind: v.literal("user"), userId: v.id("users") }),
@@ -1747,250 +1743,7 @@ export const unrestrict_node = mutation({
 
 // #endregion scope restriction
 
-// #region public link
-
-/**
- * Turn the "anyone with the link can view" link of one file on or off.
- *
- * Both need "manage sharing" on the file's stored scope. While a scope op runs, the stored scope of a
- * file it has not reached is still the old one. Its link ends when the op writes the file, and a link
- * whose scope node changes ends at once (`files_nodes_db_set_restricted_scope`).
- *
- * Off only removes access, so it skips the checks On runs on the file. A manager can turn a link off
- * while a job runs or after the file is archived. On waits only while a Move holds the file itself.
- */
-export const set_node_share_link = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-		enabled: v.boolean(),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		// An anonymous account cannot publish. So upgrading it never has to find and secure its links.
-		if (args.enabled && userAuth.isAnonymous) {
-			return Result({ _nay: { message: "Sign in to create a public link" } });
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-		if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const authorized = await access_control_db_authorize_membership(ctx, {
-			userAuth,
-			membership,
-			permission: "content.permissions.manage",
-			fileNode: node,
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-		const { organization, defaultWorkspaceId } = authorized._yay;
-
-		const link = await ctx.db
-			.query("files_share_links")
-			.withIndex("by_organization_workspace_node", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("nodeId", node._id),
-			)
-			.first();
-		if (!args.enabled) {
-			if (link) {
-				await files_share_links_db_delete(ctx, link._id);
-			}
-			return Result({ _yay: null });
-		}
-		// Move link staging reads each held file's link after every capture. So a file the Move has not
-		// reached yet can get a link, and staging still ends it at the switch. Only the file's own mark waits.
-		if (node.moveCohortId) {
-			return Result({ _nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." } });
-		}
-
-		// Turning it on twice keeps the first token, so a double click does not break a copied link.
-		if (link) {
-			return Result({ _yay: null });
-		}
-
-		// Nobody publishes content they cannot read themselves.
-		const canRead = await access_control_db_has_permission(ctx, {
-			organizationId: organization._id,
-			workspaceId: membership.workspaceId,
-			defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: node.restrictedScopeNodeId },
-			permission: "content.read",
-			userId: userAuth.id,
-		});
-		if (!canRead) {
-			return Result({
-				_nay: {
-					message: `You need "${access_control_PERMISSION_CATALOG["content.read"].label}" on this file to create a public link`,
-				},
-			});
-		}
-
-		const live = await files_share_links_db_check_live_file(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			node,
-		});
-		if (live._nay) {
-			return live;
-		}
-
-		// Link reads and deletes load at most this many links of one workspace, so no more may exist.
-		const workspaceLinks = await ctx.db
-			.query("files_share_links")
-			.withIndex("by_organization_workspace_node", (q) =>
-				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
-			)
-			.take(files_share_links_MAX_PER_WORKSPACE);
-		if (workspaceLinks.length >= files_share_links_MAX_PER_WORKSPACE) {
-			return Result({
-				_nay: {
-					message: `One workspace can have at most ${files_share_links_MAX_PER_WORKSPACE} public links. Turn off a link you no longer need.`,
-				},
-			});
-		}
-
-		const token = crypto_random_hex(32);
-		await ctx.db.insert("files_share_links", {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId: node._id,
-			token,
-			restrictedScopeNodeId: node.restrictedScopeNodeId,
-			createdBy: userAuth.id,
-			createdAt: Date.now(),
-		});
-
-		// A new link also makes the images and videos of the file public, but only those the caller can
-		// edit and read. So the caller never makes public an image they cannot edit.
-		//
-		// Only turning the link on does this, never a save. A save reads no images, so it stays fast.
-		// An editor shows images that a save adds later from each image's own Sharing. This reads the file
-		// once, like one visitor of the page.
-		const checker = access_control_create_file_checker(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			subject: { kind: "user", userId: userAuth.id, plugin: null },
-		});
-		for (const mediaNode of await files_share_links_db_list_media_nodes(ctx, token)) {
-			if (
-				mediaNode.isPublic ||
-				!(await checker.can(mediaNode, "content.write")) ||
-				!(await checker.can(mediaNode, "content.read"))
-			) {
-				continue;
-			}
-			// A refusal, such as a Move that holds the image, leaves only that image gray.
-			await files_sharing_db_set_node_public(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				node: mediaNode,
-				enabled: true,
-			});
-		}
-
-		return Result({ _yay: null });
-	},
-});
-
-// #endregion public link
-
 // #region public flag
-
-/**
- * Turn the public flag of one file on or off. Public link pages then show the file when it is an image
- * or video inside the linked file. It never opens a file by id. Folders have no flag.
- *
- * The caller already checked "edit" on the file, and "view" for On. The app, the public API and the
- * link door share this. Off only removes access, so it skips the On checks and works while a Move holds
- * the file.
- */
-export async function files_sharing_db_set_node_public(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		node: Doc<"files_nodes">;
-		enabled: boolean;
-	},
-) {
-	const { node } = args;
-	if (node.kind !== "file") {
-		return Result({
-			_nay: {
-				name: "not_a_file",
-				message: "Only files can be public. Make the files inside this folder public instead.",
-			},
-		});
-	}
-	// Turning it on or off twice writes nothing.
-	if (Boolean(node.isPublic) === args.enabled) {
-		return Result({ _yay: { public: args.enabled } });
-	}
-	if (args.enabled) {
-		// The Move decides the area the file lands in, and a file keeps its flag only in its own area.
-		if (
-			node.moveCohortId ||
-			(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: node._id } }))
-		) {
-			return Result({
-				_nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." },
-			});
-		}
-		// A job on a folder above, such as a restrict that has not reached the file yet, may still move it
-		// into another area. That would turn the flag off again, so wait for it.
-		for await (const op of ctx.db
-			.query("files_subtree_ops")
-			.withIndex("by_organization_workspace_kind", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
-			)) {
-			if (
-				files_subtree_ops_busy_tree_paths(op).some(
-					(busyPath) => busyPath === node.treePath || (busyPath.endsWith("/") && node.treePath.startsWith(busyPath)),
-				)
-			) {
-				return Result({
-					_nay: { name: "not_ready", message: "Wait until the access change of this item or a folder above finishes" },
-				});
-			}
-		}
-		const live = await files_share_links_db_check_live_node(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			node,
-		});
-		if (live._nay) {
-			return live;
-		}
-	}
-
-	await files_nodes_db_set_public(ctx, { nodeId: node._id, public: args.enabled });
-	return Result({ _yay: { public: args.enabled } });
-}
 
 /**
  * Turn the public flag of one file on or off. Both need "edit" on the file: a person who can edit an

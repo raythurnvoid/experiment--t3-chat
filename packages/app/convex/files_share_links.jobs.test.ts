@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_rename_node, test_move_nodes, test_create_saved_text_file, test_mocks } from "./setup.test.ts";
-import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	mock_share_storage,
@@ -305,7 +305,7 @@ describe("archive_nodes", () => {
 		expect(await read_links(f.t, f.nodeId)).toEqual([outside]);
 
 		await reset_rate_limits(f.t, [f.db.userId]);
-		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		const refused = await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId,
 			enabled: true,

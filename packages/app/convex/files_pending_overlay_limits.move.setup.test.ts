@@ -197,7 +197,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	});
 	refill_sharing();
 	expect(
-		await asOwner.mutation(api.files_sharing.set_node_share_link, {
+		await asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: db.membershipId,
 			nodeId: seeded.links[499]!._id,
 			enabled: true,
@@ -207,7 +207,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 	refill_sharing();
 	expect(
 		(
-			await asOwner.mutation(api.files_sharing.set_node_share_link, {
+			await asOwner.mutation(api.files_share_links.set_node_share_link, {
 				membershipId: db.membershipId,
 				nodeId: extraLinkId,
 				enabled: true,

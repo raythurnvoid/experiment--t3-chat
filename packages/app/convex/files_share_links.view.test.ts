@@ -4,7 +4,7 @@ import { api, components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
-import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
 import { files_media_build_private_src } from "../shared/files-media.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -63,7 +63,7 @@ describe("get_share_link_view", () => {
 		}
 
 		await reset_rate_limits(f.t, [f.db.userId]);
-		await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: f.nodeId,
 			enabled: false,
@@ -674,7 +674,7 @@ describe("create_share_link_download_urls", () => {
 		}
 
 		await reset_rate_limits(f.t, [f.db.userId]);
-		await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: f.nodeId,
 			enabled: false,

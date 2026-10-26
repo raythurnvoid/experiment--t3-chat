@@ -79,7 +79,7 @@ import {
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
-import { files_sharing_db_set_node_public } from "./files_sharing.ts";
+import { files_sharing_db_set_node_public } from "./files_sharing_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";

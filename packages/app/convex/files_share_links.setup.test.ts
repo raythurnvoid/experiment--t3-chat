@@ -288,7 +288,7 @@ export function read_links(t: TestConvex, nodeId: Id<"files_nodes">) {
 export async function link_on(f: Fixture, nodeId: Id<"files_nodes">) {
 	await reset_rate_limits(f.t, [f.db.userId]);
 	expect(
-		await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId,
 			enabled: true,

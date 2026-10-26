@@ -21,7 +21,7 @@ import {
 	test_spy_handler,
 } from "./setup.test.ts";
 import { descendants as descendant_page } from "./files_move_pages.ts";
-import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import {
 	files_ROOT_ID,
 	files_INITIAL_CONTENT,

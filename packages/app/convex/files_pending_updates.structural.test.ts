@@ -6,6 +6,7 @@ import {
 	test_save_file_pending_update,
 	test_apply_file_pending_move,
 	test_convex,
+	test_finish_archive_jobs,
 	test_rename_node,
 	test_move_nodes,
 	test_get_file_yjs_pointers,
@@ -3884,6 +3885,7 @@ describe("pending delete accept", () => {
 		if (archived._nay) {
 			throw new Error(archived._nay.message);
 		}
+		await test_finish_archive_jobs(t);
 		const archivedOperationId = (await t.run((ctx) => ctx.db.get("files_nodes", archivedTree.rootId)))
 			?.archiveOperationId;
 		expect(archivedOperationId).toBeDefined();

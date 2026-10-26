@@ -890,7 +890,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		setLinkError(null);
 		runShareWrite({
 			key: "link",
-			request: app_convex.mutation(app_convex_api.files_sharing.set_node_share_link, {
+			request: app_convex.mutation(app_convex_api.files_share_links.set_node_share_link, {
 				membershipId,
 				nodeId: viewNodeId,
 				enabled,

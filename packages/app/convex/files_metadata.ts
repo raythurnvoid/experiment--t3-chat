@@ -287,48 +287,6 @@ export async function files_metadata_db_replace_pending(
 	]);
 }
 
-export async function files_metadata_db_patch_file_scope(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_metadata_docs">["organizationId"];
-		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
-		nodeId: Id<"files_nodes">;
-		fixedView?: files_saved_placement_FixedView;
-		/** Written to committed field docs only, like every folder table sort field. */
-		isRestrictedScopeRoot: boolean;
-		/** The node's area, written to every committed doc. */
-		restrictedScopeNodeId: Id<"files_nodes"> | null;
-	},
-) {
-	// Committed metadata is bounded by its write caps. Archive and Restore copy path and archive state
-	// onto these docs, and the scope op copies the area of the items inside. Each copies in the same
-	// mutation as the node, or in a saved scope job when the node has many docs
-	// (`files_pending_overlay_db_follow_saved_scope`).
-	const docs = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("fileNodeId", args.nodeId)
-				.eq("moveView.cohortId", args.fixedView?.cohortId)
-				.eq("moveView.view", args.fixedView?.view),
-		)
-		.collect();
-	await Promise.all(
-		docs.flatMap((doc) =>
-			doc.sourceKind === "committed"
-				? [
-						ctx.db.patch("files_metadata_docs", doc._id, {
-							restrictedScopeNodeId: args.restrictedScopeNodeId,
-							...(doc.docKind === "field" ? { isRestrictedScopeRoot: args.isRestrictedScopeRoot } : {}),
-						}),
-					]
-				: [],
-		),
-	);
-}
-
 // #endregion indexed doc writes
 
 // #region search box

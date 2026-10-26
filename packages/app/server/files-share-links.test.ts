@@ -29,7 +29,7 @@ async function linked_fixture() {
 	// The future cohort has no public producer yet. Create the link through its real door first.
 	await f.t.run((ctx) => ctx.db.patch("files_nodes", f.nodeId, { moveCohortId: undefined }));
 	expect(
-		await f.asUser.mutation(api.files_sharing.set_node_share_link, {
+		await f.asUser.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: f.nodeId,
 			enabled: true,
@@ -112,14 +112,14 @@ test("the public token merges normal and selected chunks once during preparation
 test("creating a link is busy after access proof, while revocation remains immediate", async () => {
 	const f = await linked_fixture();
 	expect(
-		await f.asUser.mutation(api.files_sharing.set_node_share_link, {
+		await f.asUser.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: f.nodeId,
 			enabled: true,
 		}),
 	).toMatchObject({ _nay: { name: "move_busy" } });
 	expect(
-		await f.asUser.mutation(api.files_sharing.set_node_share_link, {
+		await f.asUser.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: f.nodeId,
 			enabled: false,

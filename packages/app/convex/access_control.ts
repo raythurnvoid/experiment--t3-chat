@@ -987,8 +987,8 @@ const DEAD_SCOPE_MAX_HOPS = 8;
  * Every permission check and list filter reads `restrictedScopeNodeId` through here, so the rule for
  * "is this pointer real" exists once. A second copy of it would let the permission check and the list
  * filter drift apart, and then a file would be locked in a list but still open by id, or the other way
- * round. Public links are the one exception: `db_check_scope` in `files_share_links.ts` refuses a
- * dead pointer instead of following it.
+ * round. Public links are the one exception: `files_share_links_db_check_scope` in
+ * `server/files-share-links.ts` refuses a dead pointer instead of following it.
  */
 export async function access_control_db_resolve_live_restricted_scope(
 	ctx: QueryCtx | MutationCtx,

@@ -7,7 +7,13 @@
 // the job writes the file. A change of the scope node itself ends every link of its area at once.
 //
 // The helpers that delete links when a file's access changes live in `files_share_links_db.ts`, so the
-// file lifecycle modules can import them without importing this module.
+// file lifecycle modules can import them without importing this module. The live checks that links and
+// public files share live in `server/files-share-links.ts`, so `files_sharing_db.ts` can use them
+// without importing this module.
+//
+// `set_node_share_link` lives here, not in `files_sharing.ts`. Turning a link on also makes the file's
+// images and videos public. Finding them needs `db_prepare_share_link_view` below, which loads the
+// Markdown editor code (about 2 MB).
 
 import type { RegisteredQuery } from "convex/server";
 import { getConvexSize, v, type Value } from "convex/values";
@@ -15,23 +21,36 @@ import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { action, internalQuery, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import { access_control_db_filter_readable_file_nodes } from "./access_control.ts";
+import {
+	access_control_create_file_checker,
+	access_control_db_authorize_membership,
+	access_control_db_filter_readable_file_nodes,
+	access_control_db_has_permission,
+} from "./access_control.ts";
 import { files_merge_contiguous_chunks } from "./files_nodes.ts";
-import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_nodes_db_get_tree_reader } from "./files_tree_db.ts";
-import { files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
+import { files_share_links_db_delete, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
+import { files_sharing_db_set_node_public } from "./files_sharing_db.ts";
+import { mutation } from "./functions.ts";
+import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { r2 } from "./r2_client.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
-import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_resolve_read_target,
 } from "../server/files-saved-placement.ts";
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
-import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
+import {
+	files_share_links_db_check_scope,
+	files_share_links_db_is_selected,
+	files_share_links_db_is_workspace_live,
+} from "../server/files-share-links.ts";
+import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { access_control_PERMISSION_CATALOG } from "../shared/access-control.ts";
 import {
 	files_editable_text_shape_of,
 	files_get_signed_download_serving,
@@ -89,75 +108,6 @@ const MAX_DOC_BYTES = 1024 * 1024;
 const MAX_VIEW_BYTES = 1_000_000;
 
 /**
- * Whether the organization and workspace exist and no deletion has started. Reads 4 docs.
- */
-async function db_is_workspace_live(
-	ctx: QueryCtx | MutationCtx,
-	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
-) {
-	const organization = await ctx.db.get("organizations", args.organizationId);
-	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
-	// A deletion request exists before the purge starts, so it hides the file first. Look up this
-	// organization's request and this workspace's request exactly. A request for another workspace of
-	// the same organization must not hide this file.
-	const organizationDeletion = await ctx.db
-		.query("data_deletion_requests")
-		.withIndex("by_organization_workspace", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", undefined),
-		)
-		.first();
-	const workspaceDeletion = await ctx.db
-		.query("data_deletion_requests")
-		.withIndex("by_organization_workspace", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
-		)
-		.first();
-	return (
-		organization !== null &&
-		workspace !== null &&
-		workspace.organizationId === args.organizationId &&
-		workspace.pluginDataPurgeStartedAt === undefined &&
-		organizationDeletion === null &&
-		workspaceDeletion === null
-	);
-}
-
-/**
- * Whether a link may trust a stored restricted scope. A live link's scope is null, or a live
- * restricted root with no plugin binding. `dead` means the scope node stopped being a root, which
- * ended its links, so a new link waits for the scope op. `bound` means a plugin decides who reads the
- * area. Reads at most 5 docs. Never cache the answer: a turn-on and a bind at the same moment must
- * read the same binding docs, so one of them retries.
- */
-async function db_check_scope(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		restrictedScopeNodeId: Id<"files_nodes"> | null;
-	},
-) {
-	if (args.restrictedScopeNodeId === null) {
-		return "ok" as const;
-	}
-
-	const scopeNode = await files_saved_placement_db_get_node(ctx.db, args.restrictedScopeNodeId);
-	if (
-		!scopeNode ||
-		scopeNode.organizationId !== args.organizationId ||
-		scopeNode.workspaceId !== args.workspaceId ||
-		scopeNode.restrictedScopeNodeId !== scopeNode._id
-	) {
-		return "dead" as const;
-	}
-	if (await files_nodes_db_has_plugin_binding(ctx, scopeNode._id)) {
-		return "bound" as const;
-	}
-
-	return "ok" as const;
-}
-
-/**
  * The node's asset when it belongs to the node's tenant and its upload has finished. Reads 1 doc.
  */
 async function db_get_finished_asset(ctx: QueryCtx | MutationCtx, node: Doc<"files_nodes">) {
@@ -190,7 +140,7 @@ function has_shareable_text_shape(node: Doc<"files_nodes">) {
  * The caller has already loaded the node in this workspace. The `_nay` messages explain a refused
  * turn-on to a manager. The public view must answer all of them with the same generic "unavailable".
  */
-export async function files_share_links_db_check_live_file(
+async function db_check_live_file(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -206,11 +156,11 @@ export async function files_share_links_db_check_live_file(
 		return Result({ _nay: { message: "This file is archived" } });
 	}
 
-	if (!(await db_is_workspace_live(ctx, args))) {
+	if (!(await files_share_links_db_is_workspace_live(ctx, args))) {
 		return Result({ _nay: { message: "This workspace is being deleted" } });
 	}
 
-	const scope = await db_check_scope(ctx, {
+	const scope = await files_share_links_db_check_scope(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		restrictedScopeNodeId: node.restrictedScopeNodeId,
@@ -232,41 +182,6 @@ export async function files_share_links_db_check_live_file(
 	}
 
 	return Result({ _yay: { asset } });
-}
-
-/**
- * Check that a file may become public right now. The same live checks as a link, but any file may be
- * public: public pages show it only when it is an image or video.
- */
-export async function files_share_links_db_check_live_node(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		node: Doc<"files_nodes">;
-	},
-) {
-	if (args.node.archiveOperationId !== null) {
-		return Result({ _nay: { message: "This item is archived" } });
-	}
-
-	if (!(await db_is_workspace_live(ctx, args))) {
-		return Result({ _nay: { message: "This workspace is being deleted" } });
-	}
-
-	const scope = await db_check_scope(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		restrictedScopeNodeId: args.node.restrictedScopeNodeId,
-	});
-	if (scope === "dead") {
-		return Result({ _nay: { name: "not_ready", message: "Wait until the access change of a folder above finishes" } });
-	}
-	if (scope === "bound") {
-		return Result({ _nay: { message: "A plugin decides who can read this item, so it cannot be public" } });
-	}
-
-	return Result({ _yay: null });
 }
 
 /**
@@ -415,7 +330,7 @@ async function db_check_media_node(args: { ctx: QueryCtx; reads: ViewReads; medi
 	// area, and a dead area waits for its scope op, so neither shows.
 	reads_reserve({ reads, calls: 5, docs: 5 });
 	if (
-		(await db_check_scope(ctx, {
+		(await files_share_links_db_check_scope(ctx, {
 			organizationId: reads.organizationId,
 			workspaceId: reads.workspaceId,
 			restrictedScopeNodeId: mediaNode.restrictedScopeNodeId,
@@ -466,13 +381,16 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
 
 	const { restrictedScopeNodeId } = link;
 	reads_reserve({ reads, calls: 5, docs: 5 });
-	if (node.restrictedScopeNodeId !== restrictedScopeNodeId || (await db_check_scope(ctx, link)) !== "ok") {
+	if (
+		node.restrictedScopeNodeId !== restrictedScopeNodeId ||
+		(await files_share_links_db_check_scope(ctx, link)) !== "ok"
+	) {
 		return null;
 	}
 
 	reads_reserve({ reads, calls: 5, docs: 5 });
 	const asset = await db_get_finished_asset(ctx, node);
-	if (!asset || !(await db_is_workspace_live(ctx, link))) {
+	if (!asset || !(await files_share_links_db_is_workspace_live(ctx, link))) {
 		return null;
 	}
 
@@ -603,7 +521,7 @@ async function db_prepare_share_link_view(ctx: QueryCtx, token: string) {
  * The saved image and video files that a linked file names, each once. Empty when the view cannot be
  * prepared. Turning a link on reads them to make them public.
  */
-export async function files_share_links_db_list_media_nodes(ctx: MutationCtx, token: string) {
+async function db_list_media_nodes(ctx: MutationCtx, token: string) {
 	let prepared: Awaited<ReturnType<typeof db_prepare_share_link_view>> = null;
 	try {
 		prepared = await db_prepare_share_link_view(ctx, token);
@@ -621,6 +539,176 @@ export async function files_share_links_db_list_media_nodes(ctx: MutationCtx, to
 	}
 	return [...mediaNodes.values()];
 }
+
+/**
+ * Turn the "anyone with the link can view" link of one file on or off.
+ *
+ * Both need "manage sharing" on the file's stored scope. While a scope op runs, the stored scope of a
+ * file it has not reached is still the old one. Its link ends when the op writes the file, and a link
+ * whose scope node changes ends at once (`files_nodes_db_set_restricted_scope`).
+ *
+ * Off only removes access, so it skips the checks On runs on the file. A manager can turn a link off
+ * while a job runs or after the file is archived. On waits only while a Move holds the file itself.
+ */
+export const set_node_share_link = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		enabled: v.boolean(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		// An anonymous account cannot publish. So upgrading it never has to find and secure its links.
+		if (args.enabled && userAuth.isAnonymous) {
+			return Result({ _nay: { message: "Sign in to create a public link" } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+		if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.permissions.manage",
+			fileNode: node,
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { organization, defaultWorkspaceId } = authorized._yay;
+
+		const link = await ctx.db
+			.query("files_share_links")
+			.withIndex("by_organization_workspace_node", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("nodeId", node._id),
+			)
+			.first();
+		if (!args.enabled) {
+			if (link) {
+				await files_share_links_db_delete(ctx, link._id);
+			}
+			return Result({ _yay: null });
+		}
+		// Move link staging reads each held file's link after every capture. So a file the Move has not
+		// reached yet can get a link, and staging still ends it at the switch. Only the file's own mark waits.
+		if (node.moveCohortId) {
+			return Result({
+				_nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." },
+			});
+		}
+
+		// Turning it on twice keeps the first token, so a double click does not break a copied link.
+		if (link) {
+			return Result({ _yay: null });
+		}
+
+		// Nobody publishes content they cannot read themselves.
+		const canRead = await access_control_db_has_permission(ctx, {
+			organizationId: organization._id,
+			workspaceId: membership.workspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: node.restrictedScopeNodeId },
+			permission: "content.read",
+			userId: userAuth.id,
+		});
+		if (!canRead) {
+			return Result({
+				_nay: {
+					message: `You need "${access_control_PERMISSION_CATALOG["content.read"].label}" on this file to create a public link`,
+				},
+			});
+		}
+
+		const live = await db_check_live_file(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			node,
+		});
+		if (live._nay) {
+			return live;
+		}
+
+		// Link reads and deletes load at most this many links of one workspace, so no more may exist.
+		const workspaceLinks = await ctx.db
+			.query("files_share_links")
+			.withIndex("by_organization_workspace_node", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
+			)
+			.take(files_share_links_MAX_PER_WORKSPACE);
+		if (workspaceLinks.length >= files_share_links_MAX_PER_WORKSPACE) {
+			return Result({
+				_nay: {
+					message: `One workspace can have at most ${files_share_links_MAX_PER_WORKSPACE} public links. Turn off a link you no longer need.`,
+				},
+			});
+		}
+
+		const token = crypto_random_hex(32);
+		await ctx.db.insert("files_share_links", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: node._id,
+			token,
+			restrictedScopeNodeId: node.restrictedScopeNodeId,
+			createdBy: userAuth.id,
+			createdAt: Date.now(),
+		});
+
+		// A new link also makes the images and videos of the file public, but only those the caller can
+		// edit and read. So the caller never makes public an image they cannot edit.
+		//
+		// Only turning the link on does this, never a save. A save reads no images, so it stays fast.
+		// An editor shows images that a save adds later from each image's own Sharing. This reads the file
+		// once, like one visitor of the page.
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
+		});
+		for (const mediaNode of await db_list_media_nodes(ctx, token)) {
+			if (
+				mediaNode.isPublic ||
+				!(await checker.can(mediaNode, "content.write")) ||
+				!(await checker.can(mediaNode, "content.read"))
+			) {
+				continue;
+			}
+			// A refusal, such as a Move that holds the image, leaves only that image gray.
+			await files_sharing_db_set_node_public(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				node: mediaNode,
+				enabled: true,
+			});
+		}
+
+		return Result({ _yay: null });
+	},
+});
 
 /**
  * The public page of a link. Anyone with the token may call this, with or without an account.

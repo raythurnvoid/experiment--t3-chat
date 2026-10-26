@@ -9,10 +9,10 @@ import {
 	test_spy_handler,
 } from "./setup.test.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
-import { files_nodes_db_set_restricted_scope } from "./files_nodes.ts";
+import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
 import { files_share_links_db_delete_for_scope, files_share_links_MAX_PER_WORKSPACE } from "./files_share_links_db.ts";
-import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops.ts";
-import { set_node_share_link } from "./files_sharing.ts";
+import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
+import { set_node_share_link } from "./files_share_links.ts";
 import { organizations_db_create_workspace } from "./organizations.ts";
 import { plugins_data_db_prepare_file_access_binding } from "./plugins_data.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -49,33 +49,33 @@ describe("set_node_share_link", () => {
 		const f = await fixture();
 		const args = { membershipId: f.db.membershipId, nodeId: f.nodeId };
 
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: true })).toEqual({
+		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true })).toEqual({
 			_yay: null,
 		});
 		const first = await f.asOwner.query(api.files_sharing.get_node_share_state, args);
 		expect(first?.link?.token).toMatch(/^[0-9a-f]{64}$/);
 		expect(first?.link?.createdBy).toBe(f.db.userId);
 
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: true })).toEqual({
+		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true })).toEqual({
 			_yay: null,
 		});
 		const again = await f.asOwner.query(api.files_sharing.get_node_share_state, args);
 		expect(again?.link?.token).toBe(first?.link?.token);
 		expect(await read_links(f.t, f.nodeId)).toHaveLength(1);
 
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: false })).toEqual({
+		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: false })).toEqual({
 			_yay: null,
 		});
 		expect((await f.asOwner.query(api.files_sharing.get_node_share_state, args))?.link).toBeNull();
 		expect(await read_links(f.t, f.nodeId)).toHaveLength(0);
 
 		// Off without a link is still a success.
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: false })).toEqual({
+		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: false })).toEqual({
 			_yay: null,
 		});
 
 		await reset_rate_limits(f.t, [f.db.userId]);
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: true })).toEqual({
+		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true })).toEqual({
 			_yay: null,
 		});
 		const fresh = await f.asOwner.query(api.files_sharing.get_node_share_state, args);
@@ -93,7 +93,7 @@ describe("set_node_share_link", () => {
 	test("a reader without manage sharing cannot change the link and never gets the token", async () => {
 		const f = await fixture();
 
-		const refused = await f.asMember.mutation(api.files_sharing.set_node_share_link, {
+		const refused = await f.asMember.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.memberMembershipId,
 			nodeId: f.nodeId,
 			enabled: true,
@@ -101,7 +101,7 @@ describe("set_node_share_link", () => {
 		expect(refused._nay?.message).toBe("Permission denied");
 		expect(await read_links(f.t, f.nodeId)).toHaveLength(0);
 
-		await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: f.nodeId,
 			enabled: true,
@@ -114,7 +114,7 @@ describe("set_node_share_link", () => {
 		expect(memberState?.nodeId).toBe(f.nodeId);
 		expect(memberState?.link).toBeNull();
 
-		const refusedOff = await f.asMember.mutation(api.files_sharing.set_node_share_link, {
+		const refusedOff = await f.asMember.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.memberMembershipId,
 			nodeId: f.nodeId,
 			enabled: false,
@@ -127,7 +127,7 @@ describe("set_node_share_link", () => {
 		const f = await fixture({ memberRole: "admin" });
 		const args = { membershipId: f.memberMembershipId, nodeId: f.nodeId };
 
-		expect(await f.asMember.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: true })).toEqual({
+		expect(await f.asMember.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true })).toEqual({
 			_yay: null,
 		});
 		const state = await f.asMember.query(api.files_sharing.get_node_share_state, args);
@@ -139,12 +139,12 @@ describe("set_node_share_link", () => {
 		const asAnonymousOwner = f.t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: f.db.userId });
 		const args = { membershipId: f.db.membershipId, nodeId: f.nodeId };
 
-		const refused = await asAnonymousOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: true });
+		const refused = await asAnonymousOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true });
 		expect(refused._nay?.message).toBe("Sign in to create a public link");
 		expect(await read_links(f.t, f.nodeId)).toHaveLength(0);
 
-		await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: true });
-		expect(await asAnonymousOwner.mutation(api.files_sharing.set_node_share_link, { ...args, enabled: false })).toEqual(
+		await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true });
+		expect(await asAnonymousOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: false })).toEqual(
 			{ _yay: null },
 		);
 		expect(await read_links(f.t, f.nodeId)).toHaveLength(0);
@@ -157,7 +157,7 @@ describe("set_node_share_link", () => {
 		);
 		const otherNodeId = await test_create_saved_text_file(f.t, { membershipId: other.membershipId, path: "/x.md" });
 
-		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		const refused = await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: otherNodeId,
 			enabled: true,
@@ -190,7 +190,7 @@ describe("set_node_share_link", () => {
 			await ctx.db.patch("access_control_role_assignments", assignment!._id, { role: roleId });
 		});
 
-		const refused = await f.asMember.mutation(api.files_sharing.set_node_share_link, {
+		const refused = await f.asMember.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.memberMembershipId,
 			nodeId: f.nodeId,
 			enabled: true,
@@ -202,7 +202,7 @@ describe("set_node_share_link", () => {
 	test("refuses folders, stored text blobs, and unfinished uploads", async () => {
 		const f = await fixture();
 		const on = (nodeId: Id<"files_nodes">) =>
-			f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 				membershipId: f.db.membershipId,
 				nodeId,
 				enabled: true,
@@ -240,7 +240,7 @@ describe("set_node_share_link", () => {
 		const folderId = node!.parentId as Id<"files_nodes">;
 		const turn_on = async (nodeId: Id<"files_nodes">) => {
 			await reset_rate_limits(f.t, [f.db.userId]);
-			return await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			return await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 				membershipId: f.db.membershipId,
 				nodeId,
 				enabled: true,
@@ -301,7 +301,7 @@ describe("set_node_share_link", () => {
 			});
 		});
 		const turn_on = () =>
-			f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 				membershipId: f.db.membershipId,
 				nodeId,
 				enabled: true,
@@ -319,7 +319,7 @@ describe("set_node_share_link", () => {
 	test("refuses while this workspace or organization is being deleted, not another workspace", async () => {
 		const f = await fixture();
 		const on = () =>
-			f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+			f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
 				enabled: true,
@@ -377,10 +377,10 @@ describe("set_node_share_link", () => {
 
 		await reset_rate_limits(f.t, [f.db.userId]);
 		const fileArgs = { membershipId: f.db.membershipId, nodeId };
-		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...fileArgs, enabled: true });
+		const refused = await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...fileArgs, enabled: true });
 		expect(refused._nay?.message).toBe("Wait until the access change of a folder above finishes");
 		expect(await read_links(f.t, nodeId)).toHaveLength(0);
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, { ...fileArgs, enabled: false })).toEqual({
+		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...fileArgs, enabled: false })).toEqual({
 			_yay: null,
 		});
 
@@ -428,13 +428,13 @@ describe("set_node_share_link", () => {
 		const otherNodeId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/other.md" });
 		const args = { membershipId: f.db.membershipId, nodeId: otherNodeId, enabled: true };
 
-		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, args);
+		const refused = await f.asOwner.mutation(api.files_share_links.set_node_share_link, args);
 		expect(refused._nay?.message).toBe(
 			`One workspace can have at most ${files_share_links_MAX_PER_WORKSPACE} public links. Turn off a link you no longer need.`,
 		);
 
 		await f.t.run((ctx) => ctx.db.delete("files_share_links", firstFillerId));
-		expect(await f.asOwner.mutation(api.files_sharing.set_node_share_link, args)).toEqual({ _yay: null });
+		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, args)).toEqual({ _yay: null });
 	});
 
 	test("works under 100 folders", async () => {
@@ -488,7 +488,7 @@ describe("set_node_share_link", () => {
 describe("set_node_share_link during a Move", () => {
 	const set_link = async (f: Fixture, nodeId: Id<"files_nodes">, enabled: boolean) => {
 		await reset_rate_limits(f.t, [f.db.userId]);
-		return await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		return await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId,
 			enabled,
@@ -962,7 +962,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 		expect(await read_links(f.t, other.fileId)).toEqual([otherLink]);
 
 		await reset_rate_limits(f.t, [f.db.userId]);
-		const refused = await f.asOwner.mutation(api.files_sharing.set_node_share_link, {
+		const refused = await f.asOwner.mutation(api.files_share_links.set_node_share_link, {
 			membershipId: f.db.membershipId,
 			nodeId: team.fileId,
 			enabled: true,
