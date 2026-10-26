@@ -1490,6 +1490,8 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   a bare `.monaco-editor` also matches each editor's empty popup node.
 - The Properties footer `Save` uses the native `disabled` property. Read that property or use
   `isEnabled()` before pressing it. The status line explains a refused metadata write.
+- Saving metadata leaves Properties open. Reuse the visible dialog for the next edit, or close it
+  before clicking the breadcrumb button again.
 - The footer `Save` stays disabled until a section differs from its saved state, so a `setValue` with
   the same text leaves the button disabled — that is correct, not a broken run.
 - The status line is one element: `role="status"` for `Metadata saved`, `role="alert"` for a
