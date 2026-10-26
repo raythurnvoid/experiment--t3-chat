@@ -1415,9 +1415,10 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											</MySelect>
 										) : null}
 
+										{/* Keep the label while adding. `aria-busy` gives the wait cursor (`MyButton` CSS). */}
 										<MyButton disabled={addDisabled} aria-busy={pendingKey === "add" || undefined} onClick={handleAdd}>
 											<Plus aria-hidden />
-											{pendingKey === "add" ? "Adding..." : "Add"}
+											Add
 										</MyButton>
 									</div>
 								) : null}
