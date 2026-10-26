@@ -1617,7 +1617,9 @@ app client, then wait until `.FileEditorSnapshotsModalListItem:visible` has that
 `snapshots.length` items. Do this while no new saves are running. Versions saved seconds apart all
 read `Just now`, newest first, so pick by index (`nth(i)`) only after that wait. Always prove which
 version you opened from the preview's diff block: it is `diffWordsWithSpace(current, snapshot)`, so the snapshot text is every
-`.FileEditorSnapshotsModalPreviewModalDiffBlock-word` that is NOT `-removed`, joined. After `Confirm`
+`.FileEditorSnapshotsModalPreviewModalDiffBlock-word` without the
+`.FileEditorSnapshotsModalPreviewModalDiffBlock-removed` class, joined. Compare this text with the
+expected snapshot before clicking `Confirm`. After `Confirm`
 the Rich view must refresh with no further interaction: the word badge
 (`.FileEditorRichTextNonCollabToolbarActions-word-count-badge`), the `span.lb-tiptap-thread-mark`
 elements, and the anchored-comments Convex subscription all follow the restored document. Poll the

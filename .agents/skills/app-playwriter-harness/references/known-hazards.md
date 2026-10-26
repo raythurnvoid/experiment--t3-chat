@@ -3052,6 +3052,11 @@ button. `click()` then waits until the call times out, and a mouse click lands o
 `page.setViewportSize({ width: 1400, height: 900 })` and press Escape before clicking. Check with
 `document.elementFromPoint(x, y)` when a click does nothing. Hit 2026-10-21.
 
+An owned tab in the existing Edge profile can also report a 0×0 viewport while its DOM is loaded.
+Controls then have negative coordinates and clicks time out. Set the owned tab's viewport size,
+then observe again before retrying: the timed-out click may finish after the resize. This worked
+without `bringToFront()` or a browser restart on 2026-10-26. Close only the owned tab when done.
+
 ## A combobox closed with Escape does not open again on click
 
 After Escape closes the folder filter bar or the files search list, the input keeps focus. A
