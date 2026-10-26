@@ -39,29 +39,51 @@ const STRICT_AUTH_OR_BILLING = {
 } as const;
 
 const rate_limiter_CONFIG = {
+	/**
+	 * Deleting the current user's account (`users.delete_current_user_account`).
+	 */
 	account_delete: STRICT_AUTH_OR_BILLING,
+
+	/**
+	 * Creating, rotating, and revoking public API keys (`public_api.api_credential_*`).
+	 */
 	api_credentials_write: STRICT_AUTH_OR_BILLING,
+
+	/**
+	 * Checking the credential of a public API request, before the caller is known. Plugin service
+	 * routes and external file readers check their credentials here too.
+	 */
 	public_api_auth: {
 		kind: "token bucket",
 		rate: 60,
 		period: MINUTE,
 		capacity: 10,
 	},
-	// One of four unsharded parts per key and route: together they hold 20 tokens and refill at
-	// 120/min. A charge walks every part before refusing, so tokens cannot be missed in another
-	// part. The first part often has a token, which avoids reading a second doc. Each charge is 1;
-	// batch routes charge their items in their own bulk bucket. Exhausted write retries can still
-	// refuse early. After a full drain, the next whole token in each part takes two seconds.
+
+	/**
+	 * One of four unsharded parts per key and route: together they hold 20 tokens and refill at
+	 * 120/min. A charge walks every part before refusing, so tokens cannot be missed in another
+	 * part. The first part often has a token, which avoids reading a second doc.
+	 *
+	 * Each charge is 1; batch routes charge their items in their own bulk bucket. Exhausted write
+	 * retries can still refuse early. After a full drain, the next whole token in each part takes
+	 * two seconds.
+	 */
 	public_api_principal: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
 		capacity: 5,
 	},
-	// Bulk file writes charge one token per file in a single up-front batch charge, so the
-	// capacity must cover a full write-many request (20 files) with room for several back-to-back
-	// batches during an import. Four shards spread the writes. One charge must stay <= capacity /
-	// shards = 25, because the first charge on an unused shard reads only that shard.
+
+	/**
+	 * Bulk file writes charge one token per file in a single up-front batch charge, so the
+	 * capacity must cover a full write-many request (20 files) with room for several back-to-back
+	 * batches during an import.
+	 *
+	 * Four shards spread the writes. One charge must stay <= capacity / shards = 25, because the
+	 * first charge on an unused shard reads only that shard.
+	 */
 	public_api_files_write_bulk: {
 		kind: "token bucket",
 		rate: 600,
@@ -69,251 +91,417 @@ const rate_limiter_CONFIG = {
 		capacity: 100,
 		shards: 4,
 	},
-	// `upload-urls` and `download-urls` items: one token per URL, charged once per request. Each
-	// bucket holds 20 tokens and refills at 120/min. Not sharded: they are not hot paths, and a
-	// 20-item charge needs the whole capacity.
+
+	/**
+	 * `upload-urls` and `download-urls` items: one token per URL, charged once per request. Each
+	 * bucket holds 20 tokens and refills at 120/min. Not sharded: they are not hot paths, and a
+	 * 20-item charge needs the whole capacity.
+	 */
 	public_api_files_upload_bulk: {
 		kind: "token bucket",
 		rate: 120,
 		period: MINUTE,
 		capacity: 20,
 	},
+
+	/**
+	 * The `download-urls` half of the pair above. Same shape and the same reasons.
+	 */
 	public_api_files_download_bulk: {
 		kind: "token bucket",
 		rate: 120,
 		period: MINUTE,
 		capacity: 20,
 	},
-	// Same shape for plugin-document batches: one token per document, charged once before the batch
-	// writes anything. The capacity covers two full 50-document batches back to back.
+
+	/**
+	 * Same shape for plugin-document batches: one token per document, charged once before the batch
+	 * writes anything. The capacity covers two full 50-document batches back to back.
+	 */
 	public_api_plugin_data_write_bulk: {
 		kind: "token bucket",
 		rate: 600,
 		period: MINUTE,
 		capacity: 100,
 	},
+
+	/**
+	 * Starting an agent chat reply over HTTP (`ai_chat_http_chat` and `ai_chat_http_run_stream`).
+	 * Each reply runs a model, so the limit is strict.
+	 */
 	ai_chat_http: STRICT_AI_HTTP,
+
+	/**
+	 * Preparing a Playwriter remote browser connection, control handoff, or source recovery
+	 * (`playwriter_browser.prepare_*`).
+	 */
 	playwriter_connect: {
 		kind: "token bucket",
 		rate: 5,
 		period: MINUTE,
 		capacity: 5,
 	},
+
+	/**
+	 * Starting a run in an agent chat thread (`ai_chat.thread_run_begin`), which writes the user's message.
+	 */
 	ai_chat_message_write: {
 		kind: "token bucket",
 		rate: 24,
 		period: MINUTE,
 		capacity: 4,
 	},
+
+	/**
+	 * Creating, branching, renaming, archiving, deleting, and marking agent chat threads as read.
+	 */
 	ai_chat_thread_write: STRICT_WRITE,
+
+	/**
+	 * The inline AI prompt in the rich text editor (`files_nodes_ai_http_contextual_prompt`).
+	 */
 	ai_inline_http: STRICT_AI_HTTP,
+
+	/**
+	 * Creating an anonymous user and resolving the signed-in user over HTTP (`users.ts`).
+	 */
 	auth_http: STRICT_AUTH_OR_BILLING,
-	// Validating a cached anonymous token is a read, and every page load does it at least twice.
-	// Keep the ceiling well above ordinary reloads so a replayed token still cannot flood the route.
+
+	/**
+	 * Validating a cached anonymous token is a read, and every page load does it at least twice.
+	 * Keep the ceiling well above ordinary reloads so a replayed token still cannot flood the route.
+	 */
 	auth_http_refresh: {
 		kind: "token bucket",
 		rate: 60,
 		period: MINUTE,
 		capacity: 10,
 	},
+
+	/**
+	 * Billing actions that call Polar: checkout links, the customer portal, and subscription changes.
+	 */
 	billing_action: STRICT_AUTH_OR_BILLING,
+
+	/**
+	 * Sending, editing, and deleting Messages channel messages.
+	 */
 	channels_message_write: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 20 },
+
+	/**
+	 * Adding and removing reactions on channel messages.
+	 */
 	channels_reaction_write: { kind: "token bucket", rate: 120, period: MINUTE, capacity: 30 },
+
+	/**
+	 * Other channel writes: creating channels, opening direct channels, thread titles, resolution, and following.
+	 */
 	channels_write: { kind: "token bucket", rate: 30, period: MINUTE, capacity: 8 },
+
+	/**
+	 * Creating an upload target for a file attached to a channel message.
+	 */
 	channels_upload_write: { kind: "token bucket", rate: 30, period: MINUTE, capacity: 10 },
-	// Folder import charges one token per file, so one mutation call can consume many tokens at
-	// once. Capacity covers one typical import in a single burst; a bigger import drains the
-	// refill and the client waits `retryAfterMs` between chunks. Keep the burst modest: every
-	// skipped item doubles as a bounded existence probe for restricted paths, so raising the
-	// capacity widens that probe budget too (see the access-control skill).
+
+	/**
+	 * Folder import charges one token per file, so one mutation call can consume many tokens at
+	 * once. Capacity covers one typical import in a single burst; a bigger import drains the
+	 * refill and the client waits `retryAfterMs` between chunks.
+	 *
+	 * Keep the burst modest: every skipped item doubles as a bounded existence probe for restricted
+	 * paths, so raising the capacity widens that probe budget too (see the access-control skill).
+	 */
 	files_bulk_import: {
 		kind: "token bucket",
 		rate: 100,
 		period: MINUTE,
 		capacity: 300,
 	},
+
+	/**
+	 * Writing agent pending updates: staging, batching, rebasing, sealing, and discarding them.
+	 */
 	files_pending_update_write: BULK_FILES_WRITE,
-	// One page of the search box's custom-field search. Each page walks many folders, so it is not
-	// free like a query read. A chip can make two calls per page, and the box searches again 300 ms
-	// after typing stops, so the capacity covers a few quick edits and "Show more" clicks.
+
+	/**
+	 * One page of the search box's custom-field search. Each page walks many folders, so it is not
+	 * free like a query read. A chip can make two calls per page, and the box searches again 300 ms
+	 * after typing stops, so the capacity covers a few quick edits and "Show more" clicks.
+	 */
 	files_search_metadata: {
 		kind: "token bucket",
 		rate: 60,
 		period: MINUTE,
 		capacity: 20,
 	},
-	// Signed URLs for one public link, charged per target and keyed by the link doc, never by its
-	// token. Every visitor of the link shares it, so one page can load its file, or up to 50 images
-	// and videos, a few times in a row. A popular link waits for the refill while its text stays on screen.
+
+	/**
+	 * Signed URLs for one public link, charged per target and keyed by the link doc, never by its
+	 * token. Every visitor of the link shares it, so one page can load its file, or up to 50 images
+	 * and videos, a few times in a row. A popular link waits for the refill while its text stays on screen.
+	 */
 	files_share_link_download: {
 		kind: "token bucket",
 		rate: 200,
 		period: MINUTE,
 		capacity: 200,
 	},
-	// Sharing is bursty in the same way as `roles_write`: somebody restricts a folder and then adds
-	// three people to it in a few seconds. It gets its own bucket so that sharing several files does
-	// not eat the budget for managing organization roles, and the other way round.
+
+	/**
+	 * Sharing is bursty in the same way as `roles_write`: somebody restricts a folder and then adds
+	 * three people to it in a few seconds. It gets its own bucket so that sharing several files does
+	 * not eat the budget for managing organization roles, and the other way round.
+	 */
 	files_sharing_write: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
 		capacity: 8,
 	},
+
+	/**
+	 * Archiving, unarchiving, and restoring file version snapshots.
+	 */
 	files_snapshot_write: STRICT_WRITE,
+
+	/**
+	 * Files tree writes from the app: create, rename, archive, upload nodes, write rules, metadata,
+	 * folder sorts, and Move repairs.
+	 */
 	files_tree_write: BULK_FILES_WRITE,
-	// Live editor typing. The editor sends one batch after each 500 ms pause, so one tab sends up to
-	// about 2 pushes a second. The capacity covers a few open tabs of the same user. Each push also
-	// bills one `file_save` event, so this cap is also the most a user's typing can cost per minute.
+
+	/**
+	 * Live editor typing. The editor sends one batch after each 500 ms pause, so one tab sends up to
+	 * about 2 pushes a second. The capacity covers a few open tabs of the same user.
+	 *
+	 * Each push also bills one `file_save` event, so this cap is also the most a user's typing can
+	 * cost per minute.
+	 */
 	files_yjs_push_update: {
 		kind: "token bucket",
 		rate: 120,
 		period: MINUTE,
 		capacity: 30,
 	},
-	// A member writing plugin data from a plugin frame. Most calls change one document; atomic private
-	// setup creates its scope, grants, and first document under one charge. The name says "page",
-	// but both frame kinds charge here: a plugin page and a file view. Nothing in `plugins_data.ts`
-	// reads the session's `fileNodeId`, so a file view writes exactly as a page does.
-	//
-	// Chat-like use is bursty — a few messages or reactions in a row — so the capacity covers a short
-	// burst and the rate sustains one write every two seconds. Keyed by user and installation
-	// together, so one busy frame cannot drain the member's write budget in every other plugin.
+
+	/**
+	 * A member writing plugin data from a plugin frame. Most calls change one document; atomic private
+	 * setup creates its scope, grants, and first document under one charge. The name says "page",
+	 * but both frame kinds charge here: a plugin page and a file view. Nothing in `plugins_data.ts`
+	 * reads the session's `fileNodeId`, so a file view writes exactly as a page does.
+	 *
+	 * Chat-like use is bursty — a few messages or reactions in a row — so the capacity covers a short
+	 * burst and the rate sustains one write every two seconds. Keyed by user and installation
+	 * together, so one busy frame cannot drain the member's write budget in every other plugin.
+	 */
 	plugins_data_page_user_write: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
 		capacity: 10,
 	},
-	// A member invoking a plugin backend endpoint from a plugin frame. Same shape as the page
-	// write budget above: clicks come in short bursts, and the key pairs user and installation
-	// so one busy frame cannot drain the member's invoke budget in every other plugin.
+
+	/**
+	 * A member invoking a plugin backend endpoint from a plugin frame. Same shape as the page
+	 * write budget above: clicks come in short bursts, and the key pairs user and installation
+	 * so one busy frame cannot drain the member's invoke budget in every other plugin.
+	 */
 	plugins_backend_invoke: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
 		capacity: 10,
 	},
+
+	/**
+	 * Preparing plugin volume file writes through the public API (`public_api_volumes.prepare_write`).
+	 */
 	plugins_volume_write_bulk: {
 		kind: "token bucket",
 		rate: 1_200,
 		period: MINUTE,
 		capacity: 1_200,
 	},
+
+	/**
+	 * Staging, publishing, and deleting a plugin volume through the public API.
+	 */
 	plugins_volume_control: {
 		kind: "token bucket",
 		rate: 60,
 		period: MINUTE,
 		capacity: 30,
 	},
+
+	/**
+	 * Files a plugin volume can finish writing in one UTC day (`public_api_volumes.finalize_write`).
+	 */
 	plugins_volume_daily_files: {
 		kind: "fixed window",
 		rate: 10_000,
 		period: DAY,
 		start: 0,
 	},
-	// A chat agent calling an MCP server's tool. One reply can have 25 steps with about 5 parallel MCP
-	// calls each, and one busy reply must not hit the limit. The key is still one member on one server.
-	// TODO(mcp-inflight-cap): add a per-server cap on calls running at once if a server reports floods.
+
+	/**
+	 * A chat agent calling an MCP server's tool. One reply can have 25 steps with about 5 parallel MCP
+	 * calls each, and one busy reply must not hit the limit. The key is still one member on one server.
+	 *
+	 * TODO(mcp-inflight-cap): add a per-server cap on calls running at once if a server reports floods.
+	 */
 	plugins_mcp_tool_call: {
 		kind: "token bucket",
 		rate: 120,
 		period: MINUTE,
 		capacity: 60,
 	},
-	// Saving or testing a member's own MCP server makes Convex fetch a URL the member chose. The
-	// capacity lets a member save all 10 pasted servers in a row.
+
+	/**
+	 * Saving or testing a member's own MCP server makes Convex fetch a URL the member chose. The
+	 * capacity lets a member save all 10 pasted servers in a row.
+	 */
 	mcp_custom_servers_probe: {
 		kind: "token bucket",
 		rate: 20,
 		period: MINUTE,
 		capacity: 10,
 	},
-	// Starting an OAuth sign-in makes Convex fetch the server's sign-in settings and may register a client
-	// at the sign-in server. A member starts one sign-in at a time, so a strict bucket is enough.
+
+	/**
+	 * Starting an OAuth sign-in makes Convex fetch the server's sign-in settings and may register a client
+	 * at the sign-in server. A member starts one sign-in at a time, so a strict bucket is enough.
+	 */
 	plugins_mcp_oauth_start: STRICT_AUTH_OR_BILLING,
-	// Turning off, deleting, or disconnecting a server removes access. A member who does several in a
-	// row must not be refused on the third, so this is wider than STRICT_WRITE.
+
+	/**
+	 * Turning off, deleting, or disconnecting a server removes access. A member who does several in a
+	 * row must not be refused on the third, so this is wider than STRICT_WRITE.
+	 */
 	mcp_member_write: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
 		capacity: 10,
 	},
+
+	/**
+	 * Managing plugins: publish, install, uninstall, disable, secrets, schedules, repositories, and
+	 * service accounts (`plugins.ts`, `plugins_access.ts`).
+	 */
 	plugins_manage: STRICT_AUTH_OR_BILLING,
-	// Reading the candidate branch HEAD spends the shared GitHub token but must not consume the
-	// management token that the immediate publish needs. Keep a separate short retry burst here.
+
+	/**
+	 * Reading the candidate branch HEAD spends the shared GitHub token but must not consume the
+	 * management token that the immediate publish needs. Keep a separate short retry burst here.
+	 */
 	plugins_publish_preflight: STRICT_AUTH_OR_BILLING,
-	// Two kinds of charge share this bucket. A plugin page mints here. Every token rotation also
-	// charges here, because `refresh_ui_session` serves both frame kinds: a plugin page and a file
-	// view. Only the file-view mint goes to the separate bucket below.
-	//
-	// Rotations stay rare. The token and its plugin-session JWT live 30 minutes and expire together;
-	// the frame's Convex client asks for a new JWT 10 seconds before that, and the SDK answers that
-	// ask with one rotation here. A 401 on the public API rotates too. So browsing files does not
-	// fill this bucket. A file switch mints instead, and that mint is charged below.
+
+	/**
+	 * Two kinds of charge share this bucket. A plugin page mints here. Every token rotation also
+	 * charges here, because `refresh_ui_session` serves both frame kinds: a plugin page and a file
+	 * view. Only the file-view mint goes to the separate bucket below.
+	 *
+	 * Rotations stay rare. The token and its plugin-session JWT live 30 minutes and expire together;
+	 * the frame's Convex client asks for a new JWT 10 seconds before that, and the SDK answers that
+	 * ask with one rotation here. A 401 on the public API rotates too. So browsing files does not
+	 * fill this bucket. A file switch mints instead, and that mint is charged below.
+	 */
 	plugins_ui_session_mint: STRICT_WRITE,
-	// File views mint on every file switch and every details/view toggle, so browsing a few videos
-	// in quick succession must not read as broken. Only the mint is split out here. A file-view
-	// session rotates its token on the stricter bucket above, exactly as a page does.
+
+	/**
+	 * File views mint on every file switch and every details/view toggle, so browsing a few videos
+	 * in quick succession must not read as broken. Only the mint is split out here. A file-view
+	 * session rotates its token on the stricter bucket above, exactly as a page does.
+	 */
 	plugins_ui_file_view_session_mint: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
 		capacity: 8,
 	},
-	// Fallback for a frame whose host delivered no plugin-session JWT: it exchanges its `plu_` token
-	// here for the same JWT the mint would have delivered. A current host delivers the JWT with the
-	// session, so a frame on the current SDK never charges this bucket; an older frame charges it
-	// once per token lifetime.
-	//
-	// Both frame kinds exchange here: a plugin page and a file view. Keyed by session id, and only a
-	// token that resolved to a live session reaches the charge — a garbage token is refused before it.
-	// Public service identity exchange shares this rate under a separate session-key prefix.
+
+	/**
+	 * Fallback for a frame whose host delivered no plugin-session JWT: it exchanges its `plu_` token
+	 * here for the same JWT the mint would have delivered. A current host delivers the JWT with the
+	 * session, so a frame on the current SDK never charges this bucket; an older frame charges it
+	 * once per token lifetime.
+	 *
+	 * Both frame kinds exchange here: a plugin page and a file view. Keyed by session id, and only a
+	 * token that resolved to a live session reaches the charge — a garbage token is refused before it.
+	 * Public service identity exchange shares this rate under a separate session-key prefix.
+	 */
 	plugins_ui_session_jwt_exchange: {
 		kind: "token bucket",
 		rate: 12,
 		period: MINUTE,
 		capacity: 6,
 	},
-	// Each fresh plugin artifact review is a system-billed model call. A publish whose review subject
-	// already has a stored verdict reuses it and is never charged here.
+
+	/**
+	 * Each fresh plugin artifact review is a system-billed model call. A publish whose review subject
+	 * already has a stored verdict reuses it and is never charged here.
+	 */
 	plugins_publish_review: {
 		kind: "token bucket",
 		rate: 20,
 		period: HOUR,
 		capacity: 5,
 	},
-	// Keyed by user, so all of a user's tabs share it. Each tab keeps two sessions (the sidebar and
-	// the open file), and each one beats every 10 seconds: 12 calls per minute per tab. Opening a
-	// file adds one more right away. This fits about ten tabs. A lower limit refused the first beat
-	// of a newly opened file, so its presence and cursors showed up only on the next beat.
+
+	/**
+	 * Keyed by user, so all of a user's tabs share it. Each tab keeps two sessions (the sidebar and
+	 * the open file), and each one beats every 10 seconds: 12 calls per minute per tab. Opening a
+	 * file adds one more right away. This fits about ten tabs.
+	 *
+	 * A lower limit refused the first beat of a newly opened file, so its presence and cursors
+	 * showed up only on the next beat.
+	 */
 	presence_heartbeat: {
 		kind: "token bucket",
 		rate: 120,
 		period: MINUTE,
 		capacity: 20,
 	},
+
+	/**
+	 * Leaving a presence room: `presence.disconnect` and `presence.removeSessionData`. Cursor
+	 * updates have their own bucket below.
+	 */
 	presence_write: STRICT_WRITE,
-	// Each editor tab sends its cursor here at most once per 550ms debounce, so about 110 calls per
-	// minute while someone types or moves the cursor. `STRICT_WRITE` refused most of them, and a
-	// refused call left the cursor stuck at an old place for the other people in the file.
+
+	/**
+	 * Each editor tab sends its cursor here at most once per 550ms debounce, so about 110 calls per
+	 * minute while someone types or moves the cursor. `STRICT_WRITE` refused most of them, and a
+	 * refused call left the cursor stuck at an old place for the other people in the file.
+	 */
 	presence_session_data: {
 		kind: "token bucket",
 		rate: 120,
 		period: MINUTE,
 		capacity: 10,
 	},
-	// Setting up roles is bursty: an admin assigns a role to several people, or edits a role and
-	// assigns it, in a few seconds. `STRICT_WRITE` only allows two in a row, which would read as a
-	// broken page rather than as a limit.
+
+	/**
+	 * Setting up roles is bursty: an admin assigns a role to several people, or edits a role and
+	 * assigns it, in a few seconds. `STRICT_WRITE` only allows two in a row, which would read as a
+	 * broken page rather than as a limit.
+	 */
 	roles_write: {
 		kind: "token bucket",
 		rate: 30,
 		period: MINUTE,
 		capacity: 8,
 	},
+
+	/**
+	 * Saving an agent pending update into the file, and starting its review.
+	 */
 	save_file_pending_update: BULK_FILES_WRITE,
+
+	/**
+	 * Organization and workspace writes: create, edit, delete, invite, remove members, billing mode,
+	 * ownership transfer, and the integration policy.
+	 */
 	organizations_write: STRICT_WRITE,
 } as const;
 
