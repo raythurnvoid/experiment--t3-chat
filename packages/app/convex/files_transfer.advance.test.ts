@@ -1335,6 +1335,39 @@ describe("resolve_conflicts", () => {
 		const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", destination!.assetId!));
 		expect(r2Objects.get(asset!.r2Key!)).toEqual(imageBytes);
 		expect(await readDraft(), "Copy Replace keeps the exact text draft and all its pages").toEqual(before);
+		const head = await t.run((ctx) => ctx.db.get("files_saved_content_heads", destination!.contentHeadId!));
+		expect(
+			await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+				membershipId: db.membershipId,
+				target: { kind: "saved", id: destinationId },
+				pendingUpdateId: currentDraft._id,
+				reviewedRevision: currentDraft.revision,
+			}),
+			"Discard removes the retained text proposal after the saved file becomes an image",
+		).toEqual({ _yay: null });
+		// Discard retires the states. The normal cleanup job removes their pages later.
+		expect(await readDraft()).toEqual({
+			pending: [],
+			states: before.states.map((state) => ({
+				...state,
+				owner: { kind: "retired", cleanupTaskId: expect.any(String) },
+			})),
+			pages: before.pages,
+		});
+		await t.run(async (ctx) => {
+			for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
+				expect(
+					await ctx.db
+						.query(table)
+						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", currentDraft._id))
+						.collect(),
+				).toEqual([]);
+			}
+			expect(await ctx.db.get("files_nodes", destinationId)).toEqual(destination);
+			expect(await ctx.db.get("files_saved_content_heads", destination!.contentHeadId!)).toEqual(head);
+			expect(await ctx.db.get("files_r2_assets", destination!.assetId!)).toEqual(asset);
+		});
+		expect(r2Objects.get(asset!.r2Key!)).toEqual(imageBytes);
 	});
 
 	test.each([

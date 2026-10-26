@@ -887,6 +887,7 @@ replay require that root to stay active; cleanup archives it before deleting chi
 - `Review changes` must switch into diff mode.
 - In the diff editor, `Accept all` only copies unstaged content into staged content; it does not save by itself. In the Pending changes tab, bulk Accept applies or saves every row shown by the selected source, with the pending folders those rows need.
 - In the diff editor, `Discard all` copies staged content into unstaged content without a special clear mutation. The Pending changes tab uses backend discard mutations for its rows. Its content mutation copies staged into unstaged and may waive only a missing `content.write` permission for the caller's exact existing doc; it never weakens general pending upserts.
+- Discard of a stale text proposal uses that proposal's stored shape, even when the saved file is now binary. It removes only the owner's text proposal and keeps any move or archive proposal. The saved file stays unchanged.
 - `Save` can partially resolve a pending update and keep the unresolved branch alive.
 - `Sync` must rebase on top of the latest live file state before persisting.
 - Stale rebases must be rejected.

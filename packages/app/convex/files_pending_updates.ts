@@ -5577,12 +5577,13 @@ export const discard_file_pending_content = mutation({
 			return Result({ _yay: null });
 		}
 
+		// The saved file may now be binary, but its owner's old text draft can still be discarded.
 		const fileNode = await ctx.db.get("files_nodes", nodeId);
 		if (
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
 			fileNode.workspaceId !== membership.workspaceId ||
-			!files_node_has_editable_text_content(fileNode)
+			fileNode.kind !== "file"
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
