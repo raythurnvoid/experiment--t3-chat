@@ -46,6 +46,7 @@ import {
 	files_monaco_execute_edits_with_read_only_fallback,
 	files_normalize_upload_file_name,
 	files_resolve_effective_editor_view,
+	files_PresenceStore,
 	files_ROOT_ID,
 	files_set_node_path_cached_validation_message,
 	files_yjs_rebase_branch_with_local_text,
@@ -1164,5 +1165,34 @@ describe("files_get_comment_thread_ids_from_markdown", () => {
 		const markdown = 'The <span data-type="comment" data-lb-thread-id="t1">launch</span> date is final.\n';
 
 		expect(files_get_comment_thread_ids_from_markdown(markdown, "plain_text")).toBeNull();
+	});
+});
+
+describe("files_PresenceStore", () => {
+	test("keeps the local Yjs fields when the server copy is older", () => {
+		type PresenceStoreData = ConstructorParameters<typeof files_PresenceStore>[0]["data"];
+		const serverData = {
+			sessionToken: "session_token",
+			sessions: [{ sessionId: "session_local", userId: "user_local" }],
+			sessionsData: { session_local: { color: "#000000" } },
+			usersAnagraphics: {
+				user_local: { displayName: "Local User" } as PresenceStoreData["usersAnagraphics"][string],
+			},
+		} satisfies PresenceStoreData;
+		const presenceStore = new files_PresenceStore({
+			data: serverData,
+			localSessionId: "session_local",
+			onSetSessionData: vi.fn(),
+		});
+
+		// The awareness sets these, then a server update arrives before the debounced write is sent.
+		presenceStore.setSessionData({ yjs_clientId: 7, yjs_data: { user: { name: "Local User", color: "#000000" } } });
+		presenceStore.sync(serverData);
+
+		expect(presenceStore.getPresenceData()?.sessionData).toEqual({
+			color: "#000000",
+			yjs_clientId: 7,
+			yjs_data: { user: { name: "Local User", color: "#000000" } },
+		});
 	});
 });

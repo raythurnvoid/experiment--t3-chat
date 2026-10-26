@@ -284,13 +284,26 @@ const rate_limiter_CONFIG = {
 		period: HOUR,
 		capacity: 5,
 	},
+	// Keyed by user, so all of a user's tabs share it. Each tab keeps two sessions (the sidebar and
+	// the open file), and each one beats every 10 seconds: 12 calls per minute per tab. Opening a
+	// file adds one more right away. This fits about ten tabs. A lower limit refused the first beat
+	// of a newly opened file, so its presence and cursors showed up only on the next beat.
 	presence_heartbeat: {
 		kind: "token bucket",
-		rate: 30,
+		rate: 120,
 		period: MINUTE,
-		capacity: 3,
+		capacity: 20,
 	},
 	presence_write: STRICT_WRITE,
+	// Each editor tab sends its cursor here at most once per 550ms debounce, so about 110 calls per
+	// minute while someone types or moves the cursor. `STRICT_WRITE` refused most of them, and a
+	// refused call left the cursor stuck at an old place for the other people in the file.
+	presence_session_data: {
+		kind: "token bucket",
+		rate: 120,
+		period: MINUTE,
+		capacity: 10,
+	},
 	// Setting up roles is bursty: an admin assigns a role to several people, or edits a role and
 	// assigns it, in a few seconds. `STRICT_WRITE` only allows two in a row, which would read as a
 	// broken page rather than as a limit.

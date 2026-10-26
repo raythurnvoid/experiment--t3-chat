@@ -180,6 +180,54 @@ describe("presence", () => {
 		);
 	});
 
+	test("accepts the heartbeats of several open tabs of one user", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) => {
+			const user = await presence_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-presence-tabs",
+				displayName: "Tabs User",
+			});
+			return user.userId;
+		});
+
+		const asUser = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: userId });
+
+		// Three tabs, each with a sidebar session and an open file session, all beating together.
+		for (let session = 0; session < 6; session++) {
+			await asUser.mutation(api.presence.heartbeat, {
+				roomId: `presence-test-tabs-room-${session % 2}`,
+				userId,
+				sessionId: `presence-test-tabs-session-${session}`,
+				interval: 10_000,
+			});
+		}
+	});
+
+	test("accepts cursor updates at the rate an editor tab sends them", async () => {
+		const t = test_convex();
+
+		const { userId, sessionToken } = await t.run(async (ctx) => {
+			const user = await presence_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-presence-cursor",
+				displayName: "Cursor User",
+			});
+			const heartbeat = await presence_test_seed_heartbeat(ctx, {
+				roomId: "presence-test-cursor-room",
+				userId: user.userId,
+				sessionId: "presence-test-cursor-session",
+			});
+			return { userId: user.userId, sessionToken: heartbeat.sessionToken };
+		});
+
+		const asUser = t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: userId });
+
+		// The editor sends the cursor at most once per 550ms debounce. Ten moves in a row must all
+		// arrive, or the other people in the file see this cursor stuck at an old place.
+		for (let cursor = 0; cursor < 10; cursor++) {
+			await asUser.mutation(api.presence.setSessionData, { sessionToken, data: { cursor } });
+		}
+	});
+
 	test("refuses the global room to a signed-in caller, and still answers for other rooms", async () => {
 		const t = test_convex();
 		const tenantRoomId = "presence-test-tenant-room";
