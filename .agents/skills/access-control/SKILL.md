@@ -1167,9 +1167,11 @@ inside it. Everybody who had access before keeps it: added people only add acces
   Removing that row restricts the item, and the list then starts with "You". Adding "Everyone in this
   workspace" back from the add picker unrestricts it. The picker can also add people who are already
   in the workspace, so a user can add people and then remove workspace access in one pass. Roles read
-  "Everyone with this workspace role". "Can manage" shows only on a restricted root. A change asks
-  first only when it costs something: who loses access, public links that turn off (any access change
-  turns them off), the caller lowering their own only manage, or a plugin folder. A plugin folder
+  "Everyone with this workspace role". "Can manage" shows only on a restricted root. Restrict never
+  asks: removing the base row is a clear choice, the caller keeps access, and the list shows the
+  result at once (product decision, 2026-10-26). Another change asks first only when it costs
+  something: someone who stops managing, public links that turn off (any access change turns them
+  off), the caller lowering their own access, or a plugin folder. A plugin folder
   hides the remove button, and a caller without edit cannot restrict.
 - History: one-time migrations moved every old file grant onto a scope root. A
   grant on an open item made it an extended root; a grant on a plain item inside a restricted folder

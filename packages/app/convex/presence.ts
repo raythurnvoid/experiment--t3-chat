@@ -212,7 +212,7 @@ export const setSessionData = mutation({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "presence_write", key: args.sessionToken });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "presence_session_data", key: args.sessionToken });
 		if (rateLimit) {
 			throw rate_limit_error(rateLimit);
 		}

@@ -33,6 +33,7 @@ import {
 	MySelectPopoverScrollableArea,
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -496,6 +497,71 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 });
 // #endregion link
 
+// #region skeleton
+type FilesShareModalSkeleton_ClassNames =
+	| "FilesShareModalSkeleton"
+	| "FilesShareModalSkeleton-add-principal"
+	| "FilesShareModalSkeleton-add-level"
+	| "FilesShareModalSkeleton-add-button"
+	| "FilesShareModalSkeleton-icon"
+	| "FilesShareModalSkeleton-name"
+	| "FilesShareModalSkeleton-meta"
+	| "FilesShareModalSkeleton-text"
+	| "FilesShareModalSkeleton-link-level";
+
+/**
+ * Stands in for the dialog while it loads, in its most common shape: a file shared with nobody, so
+ * the list has only the workspace row and the link is off.
+ *
+ * It uses the same section, add row, and source row classes as the loaded dialog, and each bar is as
+ * tall as the text line or button it stands for. So that shape loads with no layout shift. A list
+ * with added people, or a folder (no link section), still changes height when the data arrives.
+ */
+const FilesShareModalSkeleton = memo(function FilesShareModalSkeleton() {
+	return (
+		<div
+			className={cn(
+				"FilesShareModal-body" satisfies FilesShareModal_ClassNames,
+				"FilesShareModalSkeleton" satisfies FilesShareModalSkeleton_ClassNames,
+			)}
+			role="status"
+			aria-label="Loading sharing"
+			aria-busy
+		>
+			<section className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}>
+				<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>People with access</h3>
+				<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>
+					<MySkeleton
+						className={"FilesShareModalSkeleton-add-principal" satisfies FilesShareModalSkeleton_ClassNames}
+					/>
+					<MySkeleton className={"FilesShareModalSkeleton-add-level" satisfies FilesShareModalSkeleton_ClassNames} />
+					<MySkeleton className={"FilesShareModalSkeleton-add-button" satisfies FilesShareModalSkeleton_ClassNames} />
+				</div>
+				<div className={"FilesShareModalSourceRow" satisfies FilesShareModalSourceRow_ClassNames}>
+					<MySkeleton className={"FilesShareModalSkeleton-icon" satisfies FilesShareModalSkeleton_ClassNames} />
+					<div className={"FilesShareModalSourceRow-main" satisfies FilesShareModalSourceRow_ClassNames}>
+						<MySkeleton className={"FilesShareModalSkeleton-name" satisfies FilesShareModalSkeleton_ClassNames} />
+						<MySkeleton className={"FilesShareModalSkeleton-meta" satisfies FilesShareModalSkeleton_ClassNames} />
+					</div>
+				</div>
+			</section>
+
+			<section className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}>
+				<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
+					<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
+						<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Public link</h3>
+						<MySkeleton className={"FilesShareModalSkeleton-text" satisfies FilesShareModalSkeleton_ClassNames} />
+					</div>
+					<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+						<MySkeleton className={"FilesShareModalSkeleton-link-level" satisfies FilesShareModalSkeleton_ClassNames} />
+					</div>
+				</div>
+			</section>
+		</div>
+	);
+});
+// #endregion skeleton
+
 // #region root
 type FilesShareModal_ClassNames =
 	| "FilesShareModal"
@@ -512,7 +578,7 @@ type FilesShareModal_ClassNames =
 	| "FilesShareModal-add-principal-trigger"
 	| "FilesShareModal-add-level-trigger"
 	| "FilesShareModal-list"
-	| "FilesShareModal-loading";
+	| "FilesShareModal-unavailable";
 
 /**
  * One change the dialog can make. Removing the workspace row restricts the item, and adding it back
@@ -565,10 +631,6 @@ function level_rank(level: access_control_FileShareLevel | null) {
 /** "Ana", "Ana and you", "Ana, Bo, and you". */
 function join_names(names: string[]) {
 	return names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
-}
-
-function count_noun(count: number, one: string, many: string) {
-	return `${count} ${count === 1 ? one : many}`;
 }
 
 /** Capitalize the first letter, for a sentence that starts with "you". */
@@ -983,7 +1045,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	 * closure uses on each render to check its cache, and `shareState` is undefined while it loads.
 	 */
 	const callerAccessAfter = (state: NonNullable<typeof shareState>, change: FilesShareModalChange | null) => {
-		const baseRow = change?.kind === "restrict" ? false : change?.kind === "unrestrict" ? true : hasBaseRow;
+		const baseRow = change?.kind === "unrestrict" ? true : hasBaseRow;
 		// Added people cannot manage, so an unrestrict turns every manage on the list into edit.
 		const listLevel = (principal: FilesSharePrincipal, level: access_control_FileShareLevel | null) => {
 			const changed =
@@ -1011,9 +1073,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		});
 	};
 
-	/** The confirm text for a change, or null when the change takes nothing away and can go at once. */
+	/** The confirm text for a change, or null when the change can go at once. */
 	const confirmTextFor = (change: FilesShareModalChange) => {
-		if (!shareState) return null;
+		// Restrict never asks. Removing the workspace row is a clear choice, the caller keeps access, and the
+		// list shows who still has access right after. Product decision, 2026-10-26.
+		if (!shareState || change.kind === "restrict") return null;
 
 		const lines: string[] = [];
 		const linkLine =
@@ -1021,43 +1085,12 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				? shareState.link
 					? "The public link turns off. Changing who can open this always turns it off. You can turn it on again after."
 					: null
-				: change.kind === "restrict" || shareState.linksInside
+				: shareState.linksInside
 					? "Any public links in this folder turn off. You can turn them on again after."
 					: null;
-		const pluginLine =
-			shareState.pluginArea?.isSelf && change.kind !== "restrict"
-				? `${pluginName} keeps this list up to date. If you change it here, ${pluginName} stops updating it.`
-				: null;
-
-		if (change.kind === "restrict") {
-			const listed = entries.filter((entry) => !entry.isCaller);
-			const counts = [
-				[listed.filter((entry) => entry.principal.kind === "user").length, "person", "people"],
-				[listed.filter((entry) => entry.principal.kind === "role").length, "role", "roles"],
-				[listed.filter((entry) => entry.principal.kind === "service_account").length, "app", "apps"],
-			] as const;
-			const parts = counts.filter(([count]) => count > 0).map(([count, one, many]) => count_noun(count, one, many));
-			const listedText = parts.length > 0 ? `the ${join_names(parts)} listed` : null;
-			lines.push(
-				isOwner
-					? listedText
-						? `Only you and ${listedText} will have access.`
-						: "Only you will have access."
-					: listedText
-						? `Only you, the owner, and ${listedText} will have access. You keep Can manage.`
-						: "Only you and the owner will have access. You keep Can manage.",
-			);
-			lines.push(
-				baseScope
-					? `People from ${baseScope.name} lose access, unless they are listed.`
-					: "Everyone else in this workspace loses access, including apps with workspace access.",
-			);
-			for (const folder of shareState.inheritedFrom.extended) {
-				lines.push(`People added to ${folder.name} lose access.`);
-			}
-			if (linkLine) lines.push(linkLine);
-			return { title: "Restrict access?", lines, action: "Restrict" };
-		}
+		const pluginLine = shareState.pluginArea?.isSelf
+			? `${pluginName} keeps this list up to date. If you change it here, ${pluginName} stops updating it.`
+			: null;
 
 		if (change.kind === "unrestrict") {
 			// Name everyone who can manage today and cannot after: added people get edit at most, and only
@@ -1108,7 +1141,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			: null;
 	};
 
-	/** Ask first when the change takes access away, otherwise send it now. */
+	/** Ask first when `confirmTextFor` has text for the change, otherwise send it now. */
 	const requestChange = (change: FilesShareModalChange) => {
 		if (!viewNodeId || pendingKey) {
 			return;
@@ -1207,16 +1240,9 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 				<MyModalScrollableArea>
 					{loading ? (
-						<div
-							className={"FilesShareModal-loading" satisfies FilesShareModal_ClassNames}
-							role="status"
-							aria-live="polite"
-						>
-							<Lock aria-hidden />
-							Loading sharing...
-						</div>
+						<FilesShareModalSkeleton />
 					) : !shareState ? (
-						<div className={"FilesShareModal-loading" satisfies FilesShareModal_ClassNames} role="alert">
+						<div className={"FilesShareModal-unavailable" satisfies FilesShareModal_ClassNames} role="alert">
 							{/* `shareState` is null here, so its kind is unknown. Say neither. */}
 							This is not available.
 						</div>
@@ -1510,7 +1536,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									))}
 								</ul>
 
-								{/* A change that takes access away asks first and says who loses what. */}
+								{/* A change that costs something asks first and says what. Restrict never asks. */}
 								{confirmChange && confirmText ? (
 									<div
 										className={"FilesShareModal-confirm" satisfies FilesShareModal_ClassNames}
@@ -1539,11 +1565,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 												Cancel
 											</MyButton>
 											<MyButton
-												variant={
-													confirmChange.kind === "restrict" || confirmChange.kind === "unrestrict"
-														? undefined
-														: "destructive"
-												}
+												variant={confirmChange.kind === "unrestrict" ? undefined : "destructive"}
 												disabled={busy}
 												aria-busy={busy || undefined}
 												onClick={() => runChange(confirmChange, true)}

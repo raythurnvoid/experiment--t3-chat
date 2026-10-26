@@ -154,6 +154,32 @@ If the span or `data-lb-thread-id` is gone, comments will silently detach from t
    label sits inside the closed hovercard, so it is in the DOM but `visible: false` — read `textContent`,
    do not wait for visibility.
 
+### 7b. Two users: presence and remote cursors
+
+One user cannot prove that cursors work: the caret plugin never draws the tab's own cursor. Use
+the user's QA Edge tab (owner of `chitchat-qa`) and a headless session signed in as
+`qa.perm.member` (`second-user-fixtures.md`). Open the same file in both, for example
+`chitchat-qa/home:/new-file.md`. Presence must be enabled in both browsers.
+
+1. Read each tab's presence store. The editor exposes it:
+   `document.querySelector('[role=textbox][aria-label="File text"]').editor.storage.liveblocksExtension.provider.awareness.presenceStore`.
+   Every session in `sessionsData` must have a `yjs_clientId`. A missing id means no tab can draw
+   that cursor; see "Presence And Cursors" in the `files-editors` skill.
+2. Click in the member's editor, then read `.collaboration-carets__caret` in the owner's tab. Its
+   text is the member's display name. `editor.view.posAtDOM(caret, 0)` must equal the member's
+   `editor.state.selection.from`. Allow about 2 s: the write waits in a 550 ms debounce.
+3. Move the member's caret 6 times, about 650 ms apart, then stop. The owner's caret must end at the
+   final position, and the member's logs must have no `presence:setSessionData` `Rate limit exceeded`.
+   A stuck caret with those log lines means the server limit is below the client's send rate.
+4. Do the reverse. In the user's own browser, move the caret with
+   `editor.commands.setTextSelection(pos)` instead of the keyboard: keyboard input in an extension
+   tab can go to the window that has OS focus.
+
+Do not type as `qa.perm.member` to test live edits: its account has no credits, so the server
+refuses its pushes with `Insufficient funds`. The text stays `Unsaved`, and the others cannot draw
+its cursor, because the cursor points at text they never got. Insert a marker from the owner's tab
+with `editor.commands.insertContent(...)`, check it in the member's tab, then delete it.
+
 ## 8. Collaboration toggle rebuilds the document (lineage)
 
 Run this after changing how `FilesConvexYjsStream` picks its document (`expectedYjsLastSequenceId`)
@@ -340,3 +366,14 @@ The only provider console line in the whole run was the dispose-flush warning na
 `useAppAuth must be used within AppAuthProvider` page error also appeared, but it landed right after
 `[vite] hot updated: …/file-editor-rich-text.tsx` from another agent editing that file in the shared
 worktree, and it did not appear in any run before their HMR — not a finding about this change.
+
+## Run 2026-10-26 — two-user presence and cursors
+
+Ran check 7b with the owner's Edge tab and `qa.perm.member` in a headless session on
+`chitchat-qa/home:/new-file.md`. Presence showed 2 online users, but no tab ever drew a remote
+cursor: `files_PresenceStore.sync()` replaced the local session's data with the older server copy
+and dropped `yjs_clientId`. After that fix, cursors showed, but they got stuck after a few moves:
+`setSessionData` shared the strict `presence_write` limit (12 a minute), and the per-user heartbeat
+limit refused the first beat after a file switch. Both limits now fit the client's send rate. After
+the fixes, the 6-move test ended at the same position in both tabs, in both directions, with no
+refused writes. An owner edit showed live in the member's tab with the owner's caret after it.

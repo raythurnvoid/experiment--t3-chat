@@ -918,13 +918,22 @@ export class files_PresenceStore extends TypedEventTarget<files_PresenceStore_Ev
 				);
 			}
 
+			// Keep the Yjs fields of the local session from this store. Only this tab writes them, and
+			// each write waits in a debounce before it reaches the server, so the server copy can be older.
+			// If sync took the server copy, it would drop `yjs_clientId` right after the awareness set it.
+			// Then no other tab could draw this tab's cursor.
+			const serverSessionData = newData.sessionsData[newSession.sessionId];
+			const localSessionData =
+				newSession.sessionId === this.localSessionId ? this.sessionsData.get(newSession.sessionId) : undefined;
+			const newSessionData = {
+				color: serverSessionData?.color,
+				yjs_data: localSessionData ? localSessionData.yjs_data : serverSessionData?.yjs_data,
+				yjs_clientId: localSessionData ? localSessionData.yjs_clientId : serverSessionData?.yjs_clientId,
+			};
+
 			const setData = () => {
 				this.localSessionToken = newData.sessionToken;
-				this.sessionsData.set(newSession.sessionId, {
-					color: newData.sessionsData[newSession.sessionId]?.color,
-					yjs_data: newData.sessionsData[newSession.sessionId]?.yjs_data,
-					yjs_clientId: newData.sessionsData[newSession.sessionId]?.yjs_clientId,
-				});
+				this.sessionsData.set(newSession.sessionId, newSessionData);
 				this.usersData.set(newSession.userId, {
 					displayName: newData.usersAnagraphics[newSession.userId].displayName,
 				});
@@ -944,12 +953,6 @@ export class files_PresenceStore extends TypedEventTarget<files_PresenceStore_Ev
 						oldSessionData,
 						oldUserData,
 					});
-
-				const newSessionData = {
-					color: newData.sessionsData[newSession.sessionId]?.color,
-					yjs_data: newData.sessionsData[newSession.sessionId]?.yjs_data,
-					yjs_clientId: newData.sessionsData[newSession.sessionId]?.yjs_clientId,
-				};
 
 				const newUserData = {
 					displayName: newData.usersAnagraphics[newSession.userId].displayName,

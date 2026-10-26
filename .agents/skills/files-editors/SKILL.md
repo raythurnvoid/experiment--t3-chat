@@ -201,6 +201,15 @@ For a one-time client read, start at `files_fetch_file_yjs_state_and_text` in `p
 
 When opening file B shows file A's text, compare the route's `nodeId`, the hook's `providerNodeId`, and the rendered editor content. Inspect `useFilesYjs` and the caller's provider checks. Test repeated A/B switches after the fix.
 
+# Presence And Cursors
+
+Presence uses the vendored `@convex-dev/presence` component (`packages/app/vendor/presence`) through `packages/app/convex/presence.ts`. The sidebar joins one global room, and each open file has its own room. `FileEditorPresenceSupplier_Enabled` in `file-editor.tsx` builds a `files_PresenceStore`. `files_yjs_Awareness` turns the store's session data into Yjs awareness states, and Tiptap's `CollaborationCaret` draws the other people's cursors from them.
+
+- Another tab draws a cursor only when that session's data has both `yjs_clientId` and `yjs_data.cursor`. `getStates()` skips a session with no `yjs_clientId`.
+- Each tab owns the Yjs fields of its own session. `files_PresenceStore.sync()` takes `color` from the server, but keeps the local `yjs_clientId` and `yjs_data`. Each write waits in a 550 ms debounce, so the server copy can be older. When sync took the server copy, it dropped the id on every file open, and no cursor showed for anyone (fixed 2026-10-26).
+- Rate limits must fit how often the client sends. `setSessionData` sends at most once per 550 ms per tab, about 110 calls a minute, and has its own `presence_session_data` limit. A refused write is not sent again, so the others see the cursor stuck at an old place. Heartbeats are limited per user and shared by all tabs. Each tab has two sessions that beat every 10 seconds, and opening a file adds one more. Keep `presence_heartbeat` high enough for about ten tabs.
+- A cursor that points at text the other tab has not received yet is not drawn there. So when the server refuses a user's edits (for example `Insufficient funds`), their cursor can also disappear for the others.
+
 # Separate Live State, Stored Text, And Version History
 
 `files_yjs_docs_last_sequences.lastSequence` tracks live updates. `files_yjs_snapshots` points to a compacted R2 Yjs state; `files_yjs_updates` holds later packets. User-facing history uses `files_snapshots` and content assets.

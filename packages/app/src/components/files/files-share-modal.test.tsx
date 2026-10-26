@@ -180,7 +180,7 @@ describe("FilesShareModal", () => {
 		queryMock.mockImplementation((query: string) => (query === "users" ? ["owner_1", "user_1"] : undefined));
 		renderModal();
 
-		expect(screen.getByRole("status").textContent).toBe("Loading sharing...");
+		expect(screen.getByRole("status", { name: "Loading sharing" }).getAttribute("aria-busy")).toBe("true");
 	});
 
 	test("adds an active service account with a permitted level", async () => {
@@ -290,7 +290,7 @@ describe("FilesShareModal", () => {
 		).toBeNull();
 	});
 
-	test("removing the workspace row asks first, then restricts", async () => {
+	test("removing the workspace row restricts at once, without asking", async () => {
 		mockShareState({
 			...OPEN_SHARE,
 			access: "extended_root",
@@ -307,15 +307,7 @@ describe("FilesShareModal", () => {
 		renderModal();
 		fireEvent.click(screen.getByRole("button", { name: "Remove workspace access" }));
 
-		const confirmBox = document.querySelector('[data-share-confirm="restrict"]') as HTMLElement;
-		expect([...within(confirmBox).getByRole("alert").querySelectorAll("p")].map((line) => line.textContent)).toEqual([
-			"Only you and the 1 person listed will have access.",
-			"Everyone else in this workspace loses access, including apps with workspace access.",
-			"Any public links in this folder turn off. You can turn them on again after.",
-		]);
-		expect(mutationMock).not.toHaveBeenCalled();
-
-		fireEvent.click(within(confirmBox).getByRole("button", { name: "Restrict" }));
+		expect(document.querySelector("[data-share-confirm]")).toBeNull();
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("restrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
 		);

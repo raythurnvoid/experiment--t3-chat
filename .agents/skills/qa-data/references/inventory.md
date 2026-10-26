@@ -39,7 +39,7 @@ Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts be
 | (not written here) | The owner's main account. The QA Edge profile is signed in as it. | Never sign it out. |
 | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | `qa.perm.owner` | Owns `qa-browser`. |
 | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | `qa.perm.admin` | Personal org only. |
-| `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns `qa-tmp-share`, member of `chitchat-qa` and `qa-browser` (seen 2026-10-11). |
+| `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns `qa-tmp-share`, member of `chitchat-qa` and `qa-browser` (seen 2026-10-11). Good second user for presence and cursor checks in `chitchat-qa/home`. It has no credits: its text edits there are refused with `Insufficient funds` (seen 2026-10-26). |
 | `m572qhnpq7xw34askfcy6w97h18ck1f8` | `qa.perm.viewer` | `member` role in `qa-browser`. |
 | `m570f2kgg8jq3qka7snprkpeks8cme94` | `ray-test-1+clerk_test@gmail.com` (2026-08-17) | Member of `chitchat-qa`, with credits. The second user for agent chat checks (see `clerk-test-accounts.md`). Not a member of `qa-browser`: a share there needs an invite first. |
 | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | `import-qa-member` | Deleted: its `users` doc has `deletedAt` (seen 2026-10-21). |
