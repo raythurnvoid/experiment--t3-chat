@@ -33,6 +33,7 @@ import {
 	MySelectPopoverScrollableArea,
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -496,6 +497,71 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 });
 // #endregion link
 
+// #region skeleton
+type FilesShareModalSkeleton_ClassNames =
+	| "FilesShareModalSkeleton"
+	| "FilesShareModalSkeleton-add-principal"
+	| "FilesShareModalSkeleton-add-level"
+	| "FilesShareModalSkeleton-add-button"
+	| "FilesShareModalSkeleton-icon"
+	| "FilesShareModalSkeleton-name"
+	| "FilesShareModalSkeleton-meta"
+	| "FilesShareModalSkeleton-text"
+	| "FilesShareModalSkeleton-link-level";
+
+/**
+ * Stands in for the dialog while it loads, in its most common shape: a file shared with nobody, so
+ * the list has only the workspace row and the link is off.
+ *
+ * It uses the same section, add row, and source row classes as the loaded dialog, and each bar is as
+ * tall as the text line or button it stands for. So that shape loads with no layout shift. A list
+ * with added people, or a folder (no link section), still changes height when the data arrives.
+ */
+const FilesShareModalSkeleton = memo(function FilesShareModalSkeleton() {
+	return (
+		<div
+			className={cn(
+				"FilesShareModal-body" satisfies FilesShareModal_ClassNames,
+				"FilesShareModalSkeleton" satisfies FilesShareModalSkeleton_ClassNames,
+			)}
+			role="status"
+			aria-label="Loading sharing"
+			aria-busy
+		>
+			<section className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}>
+				<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>People with access</h3>
+				<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>
+					<MySkeleton
+						className={"FilesShareModalSkeleton-add-principal" satisfies FilesShareModalSkeleton_ClassNames}
+					/>
+					<MySkeleton className={"FilesShareModalSkeleton-add-level" satisfies FilesShareModalSkeleton_ClassNames} />
+					<MySkeleton className={"FilesShareModalSkeleton-add-button" satisfies FilesShareModalSkeleton_ClassNames} />
+				</div>
+				<div className={"FilesShareModalSourceRow" satisfies FilesShareModalSourceRow_ClassNames}>
+					<MySkeleton className={"FilesShareModalSkeleton-icon" satisfies FilesShareModalSkeleton_ClassNames} />
+					<div className={"FilesShareModalSourceRow-main" satisfies FilesShareModalSourceRow_ClassNames}>
+						<MySkeleton className={"FilesShareModalSkeleton-name" satisfies FilesShareModalSkeleton_ClassNames} />
+						<MySkeleton className={"FilesShareModalSkeleton-meta" satisfies FilesShareModalSkeleton_ClassNames} />
+					</div>
+				</div>
+			</section>
+
+			<section className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}>
+				<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
+					<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
+						<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Public link</h3>
+						<MySkeleton className={"FilesShareModalSkeleton-text" satisfies FilesShareModalSkeleton_ClassNames} />
+					</div>
+					<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
+						<MySkeleton className={"FilesShareModalSkeleton-link-level" satisfies FilesShareModalSkeleton_ClassNames} />
+					</div>
+				</div>
+			</section>
+		</div>
+	);
+});
+// #endregion skeleton
+
 // #region root
 type FilesShareModal_ClassNames =
 	| "FilesShareModal"
@@ -512,7 +578,7 @@ type FilesShareModal_ClassNames =
 	| "FilesShareModal-add-principal-trigger"
 	| "FilesShareModal-add-level-trigger"
 	| "FilesShareModal-list"
-	| "FilesShareModal-loading";
+	| "FilesShareModal-unavailable";
 
 /**
  * One change the dialog can make. Removing the workspace row restricts the item, and adding it back
@@ -1207,16 +1273,9 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 				<MyModalScrollableArea>
 					{loading ? (
-						<div
-							className={"FilesShareModal-loading" satisfies FilesShareModal_ClassNames}
-							role="status"
-							aria-live="polite"
-						>
-							<Lock aria-hidden />
-							Loading sharing...
-						</div>
+						<FilesShareModalSkeleton />
 					) : !shareState ? (
-						<div className={"FilesShareModal-loading" satisfies FilesShareModal_ClassNames} role="alert">
+						<div className={"FilesShareModal-unavailable" satisfies FilesShareModal_ClassNames} role="alert">
 							{/* `shareState` is null here, so its kind is unknown. Say neither. */}
 							This is not available.
 						</div>

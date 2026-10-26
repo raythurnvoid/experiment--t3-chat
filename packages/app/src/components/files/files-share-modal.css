@@ -19,7 +19,7 @@
 		flex-direction: column;
 	}
 
-	.FilesShareModal-loading {
+	.FilesShareModal-unavailable {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -50,12 +50,6 @@
 
 		&:last-child {
 			padding-bottom: 0;
-		}
-
-		/* "Public link" gets focus when its media box goes away. Same outline as the people list. */
-		&:focus-visible {
-			outline: 2px solid var(--color-fg-12);
-			outline-offset: 2px;
 		}
 	}
 
@@ -245,6 +239,73 @@
 	}
 	/* #endregion link */
 
+	/* #region skeleton */
+	/* Each bar takes the box of what it stands for, so the loaded dialog has the same height. A button
+	   bar is 36px, like `MyButton`. A text bar is one line (`1lh`) with the font size and line height of
+	   that text. Its padding draws the bar thinner than the line, so it does not look like a button. */
+	.FilesShareModalSkeleton-add-principal,
+	.FilesShareModalSkeleton-add-level,
+	.FilesShareModalSkeleton-add-button,
+	.FilesShareModalSkeleton-link-level {
+		flex: none;
+
+		height: 36px;
+		border-radius: 6px;
+	}
+
+	.FilesShareModalSkeleton-add-principal {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.FilesShareModalSkeleton-add-level,
+	.FilesShareModalSkeleton-link-level {
+		width: 130px;
+	}
+
+	.FilesShareModalSkeleton-add-button {
+		width: 72px;
+	}
+
+	.FilesShareModalSkeleton-icon {
+		flex: none;
+
+		width: 32px;
+		height: 32px;
+		border-radius: 999px;
+	}
+
+	.FilesShareModalSkeleton-name,
+	.FilesShareModalSkeleton-meta,
+	.FilesShareModalSkeleton-text {
+		max-width: 100%;
+		height: 1lh;
+		padding-block: 3px;
+
+		background-clip: content-box;
+	}
+
+	.FilesShareModalSkeleton-name {
+		width: 210px;
+
+		font-size: 16px;
+	}
+
+	.FilesShareModalSkeleton-meta {
+		width: 420px;
+
+		font-size: 15px;
+		line-height: 1.4;
+	}
+
+	.FilesShareModalSkeleton-text {
+		width: 330px;
+
+		font-size: 16px;
+		line-height: 1.45;
+	}
+	/* #endregion skeleton */
+
 	/* #region add row */
 	.FilesShareModal-add {
 		display: flex;
@@ -376,7 +437,8 @@
 			flex-wrap: wrap;
 		}
 
-		.FilesShareModal-add-principal-trigger {
+		.FilesShareModal-add-principal-trigger,
+		.FilesShareModalSkeleton-add-principal {
 			flex-basis: 100%;
 		}
 

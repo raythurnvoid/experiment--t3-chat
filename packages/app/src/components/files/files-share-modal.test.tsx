@@ -180,7 +180,7 @@ describe("FilesShareModal", () => {
 		queryMock.mockImplementation((query: string) => (query === "users" ? ["owner_1", "user_1"] : undefined));
 		renderModal();
 
-		expect(screen.getByRole("status").textContent).toBe("Loading sharing...");
+		expect(screen.getByRole("status", { name: "Loading sharing" }).getAttribute("aria-busy")).toBe("true");
 	});
 
 	test("adds an active service account with a permitted level", async () => {
