@@ -80,7 +80,8 @@
 		gap: 8px;
 
 		width: 100%;
-		padding: 6px 12px;
+		/* Indent the text past the group headings (12px), like .MySelectItem. */
+		padding: 6px 20px;
 		border-radius: 4px;
 		color: var(--color-fg-11);
 

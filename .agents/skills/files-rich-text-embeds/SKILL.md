@@ -217,16 +217,13 @@ access, and a public file never opens by itself: it only shows as an embed of a 
   `FilesShareModalLink` in `files-share-modal.tsx`, doors `files_sharing.set_node_share_link` and
   `files_sharing.set_node_public`.
 - Turning a link on shows the images and videos of the document that the caller can edit. The
-  others stay gray until somebody who can edit them presses Show.
+  others stay gray until somebody who can edit them sets `Inside public documents` to `Shown` in
+  that image's Sharing.
 - An image pasted or dropped into a document with a live link is public at once (Upload Flow,
   step 6 sends `documentNodeId`).
 - Saving never makes media public. Human, API, and plugin writes keep the reference as text. A
   reference to a file that is not public stays gray. It never blocks Save. A save reads no images, so
   it stays fast.
-- On a file with a public link, **Sharing → Check images and videos** lists the document's images
-  and videos (`files_share_links.get_media_to_share`), each marked shown or not shown with the
-  same check as the public page. A readable item shows its name. An editor of that item gets a
-  `Show <name>` button. An item the caller cannot read stays unnamed.
 - `Not shown` turns the flag off. A URL signed before that still works for up to 15 minutes. The page
   gray box text is "This image is not shared" / "This video is not shared".
 

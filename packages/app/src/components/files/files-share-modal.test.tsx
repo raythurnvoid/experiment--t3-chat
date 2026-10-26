@@ -2,16 +2,14 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { queryMock, mediaQueryMock, pageMock, mutationMock, anagraphicsMock, toastSuccessMock, toastErrorMock } =
-	vi.hoisted(() => ({
-		queryMock: vi.fn(),
-		mediaQueryMock: vi.fn(),
-		pageMock: vi.fn(),
-		mutationMock: vi.fn(),
-		anagraphicsMock: vi.fn(),
-		toastSuccessMock: vi.fn(),
-		toastErrorMock: vi.fn(),
-	}));
+const { queryMock, pageMock, mutationMock, anagraphicsMock, toastSuccessMock, toastErrorMock } = vi.hoisted(() => ({
+	queryMock: vi.fn(),
+	pageMock: vi.fn(),
+	mutationMock: vi.fn(),
+	anagraphicsMock: vi.fn(),
+	toastSuccessMock: vi.fn(),
+	toastErrorMock: vi.fn(),
+}));
 
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => queryMock(...args),
@@ -32,10 +30,8 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: {
 		mutation: (...args: unknown[]) => mutationMock(...args),
-		query: (...args: unknown[]) => mediaQueryMock(...args),
 	},
 	app_convex_api: {
-		files_share_links: { get_media_to_share: "media_to_share" },
 		files_sharing: {
 			get_node_share_state: "sharing",
 			set_node_share_grant: "set_grant",
@@ -169,7 +165,6 @@ beforeEach(() => {
 		loadMore: vi.fn(),
 	});
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
-	mediaQueryMock.mockReset().mockResolvedValue({ media: [] });
 	anagraphicsMock.mockReset().mockReturnValue({ owner_1: { displayName: "Owner" }, user_1: { displayName: "Ada" } });
 	toastSuccessMock.mockReset();
 	toastErrorMock.mockReset();
@@ -578,117 +573,6 @@ describe("FilesShareModal", () => {
 		expect(flag.dataset.sharePublic).toBe("on");
 		expect(flag.textContent).toContain("Public documents that use this image show it.");
 		expect(screen.queryByRole("combobox", { name: "Inside public documents" })).toBeNull();
-	});
-
-	test("lists the media of a linked file and shows an editable image", async () => {
-		mockShareState({ ...FILE_SHARE, link: LINK });
-		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canEdit: true };
-		mediaQueryMock
-			.mockResolvedValueOnce({
-				media: [
-					{ ...photo, isPublic: false },
-					{ available: false, kind: "video", isPublic: false },
-				],
-			})
-			// The new answer can list the rows in another order.
-			.mockResolvedValueOnce({
-				media: [
-					{ available: false, kind: "video", isPublic: false },
-					{ ...photo, isPublic: true },
-				],
-			});
-		mutationMock.mockResolvedValue({ _yay: { public: true } });
-		renderModal();
-		await waitForDialogFocus();
-		// The list reads the whole file, so it loads only on request.
-		expect(mediaQueryMock).not.toHaveBeenCalled();
-
-		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		fireEvent.click(await screen.findByRole("button", { name: "Show Photo.png" }));
-		// A file the caller cannot open stays unnamed and has no button.
-		expect(screen.getByText("This video is not shown, and you cannot open it.")).toBeTruthy();
-
-		await waitFor(() => expect(document.querySelector('[data-share-media="public"]')).toBeTruthy());
-		expect(screen.queryByRole("alert")).toBeNull();
-		// The clicked button is gone, so focus must not fall out of the dialog.
-		expect(document.activeElement).toBe(screen.getByRole("list", { name: "Images and videos in the public link" }));
-		expect(mutationMock).toHaveBeenCalledWith("set_public", {
-			membershipId: "membership_1",
-			nodeId: "image_1",
-			enabled: true,
-		});
-		expect(mediaQueryMock).toHaveBeenCalledTimes(2);
-		expect(mediaQueryMock).toHaveBeenCalledWith("media_to_share", { membershipId: "membership_1", nodeId: "node_1" });
-	});
-
-	test("keeps focus in the media box when the new answer has no media", async () => {
-		mockShareState({ ...FILE_SHARE, link: LINK });
-		const photo = { available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canEdit: true };
-		// The file changed while the dialog was open, so the new answer lists nothing.
-		mediaQueryMock
-			.mockResolvedValueOnce({ media: [{ ...photo, isPublic: false }] })
-			.mockResolvedValueOnce({ media: [] });
-		mutationMock.mockResolvedValue({ _yay: { public: true } });
-		renderModal();
-		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		fireEvent.click(await screen.findByRole("button", { name: "Show Photo.png" }));
-
-		expect(await screen.findByText("This file has no saved images or videos.")).toBeTruthy();
-		// The list and its button are gone, so focus must not fall out of the dialog.
-		expect(document.activeElement).toBe(screen.getByRole("group", { name: "Images and videos" }));
-	});
-
-	test("keeps focus in the dialog when another tab ends the link", async () => {
-		mockShareState({ ...FILE_SHARE, link: LINK });
-		mediaQueryMock.mockResolvedValue({
-			media: [{ available: true, kind: "image", nodeId: "image_1", name: "Photo.png", canEdit: true, isPublic: false }],
-		});
-		const { rerender } = renderModal();
-		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		const show = await screen.findByRole("button", { name: "Show Photo.png" });
-		show.focus();
-		expect(document.activeElement).toBe(show);
-
-		// The live share state loses the link, so the media box and its focused button go away.
-		mockShareState(FILE_SHARE);
-		rerender(<FilesShareModal nodeId={"node_1" as app_convex_Id<"files_nodes">} onClose={() => {}} />);
-
-		expect(screen.queryByRole("group", { name: "Images and videos" })).toBeNull();
-		await waitFor(() => expect(document.activeElement).toBe(linkSection()));
-	});
-
-	test("says when a shown image still cannot show, and shows rows the caller cannot change", async () => {
-		mockShareState({ ...FILE_SHARE, link: LINK });
-		const photo = {
-			available: true,
-			kind: "image",
-			nodeId: "image_1",
-			name: "Photo.png",
-			canEdit: true,
-			isPublic: false,
-		};
-		const media = [
-			photo,
-			{ available: true, kind: "image", nodeId: "image_2", name: "Logo.png", canEdit: false, isPublic: false },
-			{ available: false, kind: "image", isPublic: true },
-		];
-		// The second answer still hides the photo, for example while its upload finishes.
-		mediaQueryMock.mockResolvedValue({ media });
-		mutationMock.mockResolvedValue({ _yay: { public: true } });
-		renderModal();
-		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("button", { name: "Check images and videos" }));
-		fireEvent.click(await screen.findByRole("button", { name: "Show Photo.png" }));
-
-		expect((await screen.findByRole("alert")).textContent).toBe(
-			"Turned on, but the page cannot show this file yet. It may still be uploading.",
-		);
-		expect(screen.queryByRole("button", { name: "Show Logo.png" })).toBeNull();
-		const logoRow = screen.getByText("Logo.png").closest("li")!;
-		expect(within(logoRow).getByText("Not shown")).toBeTruthy();
-		expect(screen.getByText("This image is shown.")).toBeTruthy();
 	});
 
 	test("names a creator who left, and shows Unknown when the profile is missing or failed", () => {

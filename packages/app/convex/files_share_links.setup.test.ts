@@ -3,7 +3,13 @@ import { expect, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { api, components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	plugins_data_db_apply_file_access_binding,
@@ -328,7 +334,7 @@ export async function set_public(f: Fixture, nodeId: Id<"files_nodes">, enabled 
 }
 
 /**
- * A finished image or video file. Seeded directly, because the public view only reads it.
+ * A finished image or video file. Use the normal writer so the file owns its content.
  */
 export function insert_media_file(
 	f: Fixture,
@@ -340,7 +346,7 @@ export function insert_media_file(
 		public?: true;
 	},
 ) {
-	return f.t.run(async (ctx) => {
+	return test_run_with_flush(f.t, async (ctx) => {
 		const name = args.path.split("/").at(-1)!;
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: f.db.organizationId,

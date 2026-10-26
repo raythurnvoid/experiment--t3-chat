@@ -8199,7 +8199,7 @@ const app_convex_schema = defineSchema({
 	 *
 	 * It is an outbox. It outlives the installation until the plugin got the notice of the `revoked` feed
 	 * doc, or until it failed for 3 days. So workspace and organization purges do not delete it. A disable
-	 * ends it the same way, and the enable creates it again.
+	 * keeps it: while disabled, it gets only the installation's own feed docs and the `revoked` doc.
 	 */
 	plugins_service_event_receivers: defineTable({
 		installationId: v.id("plugins_workspace_installations"),
@@ -8220,8 +8220,8 @@ const app_convex_schema = defineSchema({
 		pendingRevision: v.number(),
 		deliveredRevision: v.number(),
 		/**
-		 * The revision of the last notice: the `revoked` feed doc, or the installation doc of a disable. Null
-		 * while the installation is enabled. No later revision is sent.
+		 * The revision of the last notice, the `revoked` feed doc. Null until the installation is removed. No
+		 * later revision is sent.
 		 */
 		finalRevision: v.union(v.number(), v.null()),
 		/**
@@ -8243,7 +8243,8 @@ const app_convex_schema = defineSchema({
 		failingSince: v.union(v.number(), v.null()),
 		/**
 		 * Set after 3 days of failure. A paused receiver has no job until a lease or pull of its installation
-		 * wakes it. It is deleted when its installation is removed or disabled.
+		 * wakes it. It is deleted when its `revoked` feed doc arrives, because a removed installation wakes
+		 * nothing.
 		 */
 		pausedAt: v.union(v.number(), v.null()),
 	})

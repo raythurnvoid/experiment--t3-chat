@@ -1889,8 +1889,8 @@ export const set_node_share_link = mutation({
 		// edit and read. So the caller never makes public an image they cannot edit.
 		//
 		// Only turning the link on does this, never a save. A save reads no images, so it stays fast.
-		// Images that a save adds later get a Show button in Sharing. This reads the file once, like one
-		// visitor of the page.
+		// An editor shows images that a save adds later from each image's own Sharing. This reads the file
+		// once, like one visitor of the page.
 		const checker = access_control_create_file_checker(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -1904,8 +1904,7 @@ export const set_node_share_link = mutation({
 			) {
 				continue;
 			}
-			// A refusal, such as a Move that holds the image, leaves only that image gray. Sharing lists it
-			// as not shown, with its Show button.
+			// A refusal, such as a Move that holds the image, leaves only that image gray.
 			await files_sharing_db_set_node_public(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,

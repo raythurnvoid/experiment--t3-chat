@@ -34,6 +34,8 @@ Pop-Location
 
 Do not route JSON args through `pnpm.CMD`, `convex.ps1`, or a nested `powershell -Command`; those paths have stripped JSON quotes on this machine. If Convex reports unquoted keys or values, the function did not run. Fix the direct Node argument and verify it with a read-only function before retrying a write.
 
+`--inline-query` takes a handler **body** that uses `ctx` and ends in `return`, for example `const s = await ctx.db.query("x").first(); return s?.revision;`. Do not pass a function like `async (ctx) => ...`: the CLI then returns the function itself, which fails with `AsyncFunction "[Function]" is not a supported Convex type`, or prints nothing and exits 0. A multi-line body also fails through `pnpm exec` with `batch file arguments are invalid`; pass it with the direct-node form above, for example from a small Node runner that reads the body from a file and calls `spawnSync(process.execPath, [".../convex/bin/main.js", "run", "--inline-query", body])`. Seen 2026-10-25.
+
 A long `--inline-query` can fail with `ENAMETOOLONG` before Windows starts the CLI. Embed only the saved fields the query uses. Keep full baseline validation and source checks in the outside runner. Check the quoted command size for both before and after reads, then require a successful native dev read. Do not dump raw child output to diagnose this limit.
 
 The direct-node form is required only for commands that pass JSON arguments (`run`). Commands without JSON args (`data`, `logs`, `function-spec`) may use the troubleshooting skill's `vp env exec pnpm --dir packages/app exec convex ...` form, which works from the repo root. The direct-node form must run from `packages\app` — from the repo root it fails with `MODULE_NOT_FOUND`.
