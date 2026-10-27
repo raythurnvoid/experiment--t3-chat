@@ -9802,11 +9802,29 @@ const app_convex_schema = defineSchema({
 		 * not reactivate this membership.
 		 */
 		pendingOrganizationRemoval: v.boolean(),
+		/**
+		 * Copy of the user's `users_anagraphics.displayName`, so the Share dialog can search members by
+		 * name with an index. A name change updates it later, in batches
+		 * (`organizations_member_names.drain_user_name`).
+		 */
+		displayName: v.optional(v.string()),
+		/** `files_sort_text_key(displayName)`. */
+		sortDisplayName: v.optional(v.string()),
 	})
 		.index("by_workspace_user_active", ["workspaceId", "userId", "active"])
 		.index("by_user_organization_workspace_active", ["userId", "organizationId", "workspaceId", "active"])
 		.index("by_active_organization_workspace_user", ["active", "organizationId", "workspaceId", "userId"])
-		.index("by_active_user_organization_workspace", ["active", "userId", "organizationId", "workspaceId"]),
+		.index("by_active_user_organization_workspace", ["active", "userId", "organizationId", "workspaceId"])
+		.index("by_active_organization_workspace_sortDisplayName", [
+			"active",
+			"organizationId",
+			"workspaceId",
+			"sortDisplayName",
+		])
+		.searchIndex("search_displayName", {
+			searchField: "displayName",
+			filterFields: ["active", "organizationId", "workspaceId"],
+		}),
 
 	/**
 	 * One doc per (workspace, user). `lifetime` bumps every time the member leaves and rejoins, so

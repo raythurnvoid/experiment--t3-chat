@@ -67,6 +67,7 @@ import { files_pending_overlay_db_delete_job } from "../server/files-pending-ove
 import { files_type_query_db_delete_batch } from "../server/files-type-query.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
+import { organizations_member_names_db_fields } from "./organizations_member_names.ts";
 import { users_db_delete_auth_billing_and_activity_docs } from "./users.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_assets.ts";
 
@@ -196,6 +197,8 @@ async function db_create_default_organization_and_workspace_for_user(
 		updatedAt: args.now,
 	});
 
+	const nameFields = await organizations_member_names_db_fields(ctx, args.userId);
+
 	// Connect the new organization: point it at its default workspace, create the quota docs, add an
 	// active membership, and set the user's default organization and workspace. No role assignment:
 	// being in `organizations.ownerUserId` already gives the creator everything.
@@ -222,6 +225,7 @@ async function db_create_default_organization_and_workspace_for_user(
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: args.now,
+			...nameFields,
 		}),
 		ctx.db.patch("users", args.userId, {
 			defaultOrganizationId: organizationId,

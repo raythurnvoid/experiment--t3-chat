@@ -116,6 +116,7 @@ import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as organizations from "../organizations.js";
 import type * as organizations_integration_policy from "../organizations_integration_policy.js";
+import type * as organizations_member_names from "../organizations_member_names.js";
 import type * as organizations_membership_lifetimes from "../organizations_membership_lifetimes.js";
 import type * as organizations_memberships_db from "../organizations_memberships_db.js";
 import type * as playwriter_browser from "../playwriter_browser.js";
@@ -296,6 +297,7 @@ declare const fullApi: ApiFromModules<{
   notifications: typeof notifications;
   organizations: typeof organizations;
   organizations_integration_policy: typeof organizations_integration_policy;
+  organizations_member_names: typeof organizations_member_names;
   organizations_membership_lifetimes: typeof organizations_membership_lifetimes;
   organizations_memberships_db: typeof organizations_memberships_db;
   playwriter_browser: typeof playwriter_browser;

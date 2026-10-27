@@ -30,6 +30,7 @@ import {
 import { files_ROOT_ID } from "../shared/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
+import { organizations_member_names_db_fields } from "./organizations_member_names.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -849,6 +850,7 @@ export async function access_control_db_ensure_owner_memberships(
 			.collect(),
 	]);
 	const active = owner?.deletedAt == null;
+	const nameFields = await organizations_member_names_db_fields(ctx, args.ownerUserId);
 
 	const addedMembershipIds: Id<"organizations_workspaces_users">[] = [];
 	for (const workspace of workspaces) {
@@ -864,6 +866,7 @@ export async function access_control_db_ensure_owner_memberships(
 				active,
 				pendingOrganizationRemoval: false,
 				updatedAt: args.now,
+				...nameFields,
 			}),
 		);
 		await quotas_db_ensure(ctx, {

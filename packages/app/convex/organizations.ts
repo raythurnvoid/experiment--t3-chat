@@ -41,6 +41,7 @@ import { channels_db_drain_member_batch } from "./channels.ts";
 import { files_browser_db_delete_profile } from "./files_browser.ts";
 import { playwriter_browser_db_disconnect } from "./playwriter_browser.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
+import { organizations_member_names_db_fields } from "./organizations_member_names.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -186,6 +187,8 @@ export async function organizations_db_create(
 		updatedAt: args.now,
 	});
 
+	const nameFields = await organizations_member_names_db_fields(ctx, args.userId);
+
 	const updates = [
 		ctx.db.patch("organizations", organizationId, {
 			defaultWorkspaceId,
@@ -214,6 +217,7 @@ export async function organizations_db_create(
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: args.now,
+			...nameFields,
 		}),
 	];
 
@@ -368,6 +372,7 @@ export async function organizations_db_create_workspace(
 		active: true,
 		pendingOrganizationRemoval: false,
 		updatedAt: args.now,
+		...(await organizations_member_names_db_fields(ctx, args.userId)),
 	});
 	await quotas_db_ensure(ctx, {
 		quotaName: "active_api_credentials",
@@ -1190,6 +1195,8 @@ export const invite_user_to_organization_workspace = mutation({
 			}
 		}
 
+		const nameFields = await organizations_member_names_db_fields(ctx, userIdToAdd);
+
 		// Add the user to the default workspace and, when different, to the requested workspace.
 		await Promise.all([
 			existingHomeMembership
@@ -1201,6 +1208,7 @@ export const invite_user_to_organization_workspace = mutation({
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: now,
+						...nameFields,
 					}),
 			existingHomeMembership
 				? null
@@ -1238,6 +1246,7 @@ export const invite_user_to_organization_workspace = mutation({
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: now,
+						...nameFields,
 					}),
 			isDefaultWorkspace
 				? null

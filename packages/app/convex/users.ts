@@ -333,6 +333,10 @@ async function db_upsert_anagraphic(
 	if (previous?.displayName !== args.displayName) {
 		// Outside the member check: files can name an updater who has no memberships now.
 		await ctx.scheduler.runAfter(0, internal.files_updated_by.drain_user_name, { userId: args.userId });
+		await ctx.scheduler.runAfter(0, internal.organizations_member_names.drain_user_name, {
+			userId: args.userId,
+			cursor: null,
+		});
 		const member = await ctx.db
 			.query("organizations_membership_lifetimes")
 			.withIndex("by_user", (q) => q.eq("userId", args.userId))
