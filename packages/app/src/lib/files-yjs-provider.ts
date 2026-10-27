@@ -382,7 +382,14 @@ class FilesConvexYjsStream {
 					continue;
 				}
 
-				// A null answer is not retryable: the node is gone or this user lost read access.
+				// A preload can be older than the access this editor opened with. For example, the page
+				// loaded while the user had no access, and access came back later. So ask once more.
+				if (!result && preload) {
+					preload.abortController.abort();
+					this.snapshotPreload = null;
+					continue;
+				}
+				// A fresh null answer is not retryable: the node is gone or this user lost read access.
 				if (!result) {
 					console.error("[FilesConvexYjsStream.sync] fetch_doc returned null");
 					this.onLoadFailedChange(true);

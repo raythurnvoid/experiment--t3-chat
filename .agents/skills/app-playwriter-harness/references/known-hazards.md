@@ -2228,6 +2228,12 @@ window.__fresh = async (ref, args) => {
 
 It reads as the signed-in user. It is gone after a reload, so reinstall it with the harness scripts.
 
+The app does not import `convex/browser` itself, so Vite may not have it in its dependency cache. Then
+the first `import("/@id/convex/browser")` makes Vite build it, rewrite `.vite/deps/_metadata.json`,
+and fully reload every open app tab, including the user's own tabs. On 2026-10-27 the reloaded tabs
+stayed blank until one more manual reload. Run the import once in a scratch tab before a check that
+must keep its page state, and tell the user their tabs may have reloaded.
+
 On 2026-10-05 `window.Clerk` was `undefined` in the QA profile's Files tab, so this recipe threw
 before it sent a query. `m.app_convex.query(...)` still worked, and is fine for a read whose query
 the page does not subscribe to. Also, the first page-context query right after a Convex push

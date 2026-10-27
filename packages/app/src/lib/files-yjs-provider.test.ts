@@ -415,7 +415,7 @@ describe("files_yjs_Provider snapshot sync", () => {
 		provider.destroy();
 	});
 
-	test("keeps a null preloaded answer as a refused read", async () => {
+	test("keeps a null answer as a refused read after it asks again past a null preload", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		appConvexMock.app_convex.action.mockResolvedValue(null);
 		const fetchMock = vi.fn();
@@ -435,7 +435,7 @@ describe("files_yjs_Provider snapshot sync", () => {
 		await advanceTimersByTime(6000);
 		expect(provider.getStatus()).toBe("loading");
 		expect(provider.loadFailed).toBe(true);
-		expect(appConvexMock.app_convex.action).toHaveBeenCalledOnce();
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
 		expect(fetchMock).not.toHaveBeenCalled();
 		appConvexMock.app_convex.action.mockResolvedValue({
 			snapshot: { sequence: 0 },
@@ -446,8 +446,44 @@ describe("files_yjs_Provider snapshot sync", () => {
 		provider.unpause();
 		await flushMicrotasks();
 		expect(provider.getStatus()).toBe("synchronized");
-		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(3);
 		provider.destroy();
+	});
+
+	test("loads the file when a preload refused the read before access came back", async () => {
+		const snapshotDoc = new Y.Doc();
+		snapshotDoc.getText("content").insert(0, "Shared text");
+		const snapshotUpdate = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(snapshotDoc));
+		// The page loaded while the user had no access, so the preload answered null.
+		appConvexMock.app_convex.action.mockResolvedValueOnce(null).mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(snapshotUpdate)),
+		);
+		const args = {
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+		};
+		files_yjs_preload_snapshot(args);
+		await flushMicrotasks();
+
+		const provider = new files_yjs_Provider({
+			...args,
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(provider.loadFailed).toBe(false);
+		expect(getRootDoc(provider).getText("content").toString()).toBe("Shared text");
+		provider.destroy();
+		snapshotDoc.destroy();
 	});
 
 	test("refuses a preload when read access is lost before its current sequence read", async () => {
