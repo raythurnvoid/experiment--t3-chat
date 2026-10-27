@@ -165,6 +165,16 @@ await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state
 - A refused content read renders a closed-editor alert instead of a fabricated empty document. Do not read a missing `.monaco-editor` as "still loading" without checking for that alert.
 - The plain text editor does not live-collaborate. Edits stay local until `Save`, and `Sync` is disabled while `workingYjsDocSequence === serverSequence` — that is, until somebody else moves the server forward.
 
+### Non-Collaborative Save Retry QA
+
+Use an existing collaboration-off QA file. Save its exact text and version count before editing.
+
+1. Make a small edit, click Save, read the stored text, then reload and check the editor. Save must become disabled after success. Check content and frontmatter searches separately; indexing shows no status in the editor.
+2. In the owned tab, wrap `app_convex.action` only for `files_nodes_content:replace_file_content`. Record its request ID and result. For one call, let the real action finish with `_yay`, then throw a test error to simulate a lost reply. Keep the original client method for cleanup.
+3. Edit again and click Save. After the test error, retry without changing the text. Both calls must send the same request ID and return the same content revision. `get_file_snapshots_list` must show only one added version. Read stored text too; a disabled Save button alone is not proof.
+4. For the fix-off proof, intercept only the plain editor module in that tab. Disable the `saveRequestRef` reuse condition after requiring one exact match in the served code. Reload and confirm that the changed module ran. The same retry check must fail at the request-ID assertion, after both actions succeed. Do not edit or deploy the shared backend for this check.
+5. Remove that route, reload, and repeat the proof with normal code. Restore the client method and disconnect test observers. Restore the file through Save, check its exact stored text after reload, and check that its temporary metadata and text no longer match search. Keep existing history.
+
 ### Sync And Undo QA
 
 Use this after changing how the plain editor writes content into its Monaco model. It proves that a sync keeps the user's undo history instead of resetting it. This recipe uses the editor handle to make each undo step explicit.
