@@ -1441,7 +1441,7 @@ describe("paginated bash listing queries", () => {
 
 	test("get_by_path resolves active paths and excludes archived or root paths", async () => {
 		const t = test_convex();
-		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const db = await test_run_with_flush(t, async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: db.userId,
@@ -1480,7 +1480,7 @@ describe("get_path_by_id", () => {
 	test("returns paths for folders, text files, and read-only binary files", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-		const [textId, binaryId] = await t.run(async (ctx) => {
+		const [textId, binaryId] = await test_run_with_flush(t, async (ctx) => {
 			const base = {
 				...test_mocks.files.base(),
 				organizationId: db.organizationId,
@@ -2045,7 +2045,7 @@ test("rename_node leaves generated siblings independent from the source", async 
 		external_id: db.userId,
 		name: "Test User",
 	});
-	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
+	const { sourceNodeId, generatedNodeId } = await test_run_with_flush(t, async (ctx) => {
 		const sourceNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: db.organizationId,
@@ -2274,7 +2274,7 @@ describe("files_nodes.create_upload_node", () => {
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		const folderName = "f".repeat(files_NAME_MAX_LENGTH + 1);
 		const fileName = `${"n".repeat(files_NAME_MAX_LENGTH)}.pdf`;
-		const oldFileId = await t.run(async (ctx) => {
+		const oldFileId = await test_run_with_flush(t, async (ctx) => {
 			await insert_old_root_node(ctx, db, folderName, "folder");
 			return await insert_old_root_node(ctx, db, fileName, "file");
 		});
@@ -2790,7 +2790,7 @@ describe("files_nodes.create_upload_nodes", () => {
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		const folderName = "f".repeat(files_NAME_MAX_LENGTH + 1);
 		const fileName = `${"n".repeat(files_NAME_MAX_LENGTH)}.bin`;
-		const oldFileId = await t.run(async (ctx) => {
+		const oldFileId = await test_run_with_flush(t, async (ctx) => {
 			await insert_old_root_node(ctx, db, folderName, "folder");
 			return await insert_old_root_node(ctx, db, fileName, "file");
 		});

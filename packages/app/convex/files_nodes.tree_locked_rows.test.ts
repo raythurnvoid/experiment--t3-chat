@@ -434,7 +434,7 @@ describe("locked rows in folder lists", () => {
 		const chain = await seed_deep_chain(seeded, member);
 		const { tableId, template, parent } = chain;
 		const deepestId = parent._id;
-		await seeded.t.run(async (ctx) => {
+		await test_run_with_flush(seeded.t, async (ctx) => {
 			// Open children of the deepest folder, and restricted ones: one the member can open, one not.
 			for (const [index, scope] of (["open", "open", "open", "shared", "locked"] as const).entries()) {
 				const path = `${parent.path}/f-${index}.md`;
@@ -565,7 +565,7 @@ describe("locked rows in folder lists", () => {
 		const { template, parent } = await seed_deep_chain(seeded, member);
 		// 200 files of the deepest folder are their own "Add people" roots, but still point at the folder
 		// above it: the scope job has not reached them. So each one gets the full check.
-		await seeded.t.run(async (ctx) => {
+		await test_run_with_flush(seeded.t, async (ctx) => {
 			for (let index = 0; index < 200; index++) {
 				const name = `f-${String(index).padStart(3, "0")}.md`;
 				const path = `${parent.path}/${name}`;
