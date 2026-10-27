@@ -1152,7 +1152,7 @@ describe("Move write reservations", () => {
 			}
 			return parent!;
 		});
-		// The largest metadata set of one file: 128 keys per namespace, 3 frontmatter or 2 metadata values each.
+		// Stress both namespaces at once. The custom values here are wrapper inputs, not a public metadata map.
 		const docs = (round: number) =>
 			(["frontmatter", "metadata"] as const).flatMap((namespace) =>
 				Array.from({ length: 128 }, (_, key) => {
@@ -1203,8 +1203,30 @@ describe("Move write reservations", () => {
 			return { ranges: after.databaseQueries.used - before.databaseQueries.used, docs: old.length };
 		});
 		expect(cost.docs).toBe(896);
-		// Without a Move this write uses 2 ranges. Each doc once walked the file's 3 ancestors.
+		// This counts point reads and index queries in the write body, before the wrapper flush.
 		expect(cost.ranges, "index ranges of 896 deletes and 896 inserts during a Move").toBeLessThan(16);
+		const saved = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode", (q) =>
+					q
+						.eq("organizationId", f.db.organizationId)
+						.eq("workspaceId", f.db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", file._id),
+				)
+				.collect(),
+		);
+		expect(saved).toHaveLength(896);
+		const actual = saved.map((doc) => {
+			if (doc.sourceKind !== "committed") throw new Error("Expected saved metadata");
+			expect(doc.contentHeadId, "only frontmatter belongs to the current content head").toBe(
+				doc.fieldPath.startsWith("frontmatter.") ? file.contentHeadId : undefined,
+			);
+			const { _id, _creationTime, contentHeadId, ...fields } = doc;
+			return fields;
+		});
+		expect(new Set(actual)).toEqual(new Set(docs(1)));
 	});
 
 	test("node reads reuse a value only until the next write", async () => {

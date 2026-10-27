@@ -335,6 +335,11 @@ that head's index range. Cleanup also keeps its sequence and lineage checks. A p
 head retains both its content asset and Yjs snapshot asset. Review preserves the editor's public
 sequence ID; each content head stores its own counters until cleanup adopts the selected head.
 
+The content write wrapper reuses owner IDs within one mutation, including parallel chunk and
+frontmatter writes. Node, Review content, cohort and content-head writes clear these reads before
+and after the write. Child mutations do the same. Keep pending flush work when clearing reads,
+so a later insert uses the new selected content without losing earlier writes.
+
 The two toggles answer a permission refusal with different words, and that is not an oversight: the mutation asks the permission question itself and bubbles the shared helper's `Permission denied`, while the action only learns that its preflight query said no and answers `Not found` for every reason, exactly like `restore_snapshot_r2`.
 
 ## Where the mode comes from

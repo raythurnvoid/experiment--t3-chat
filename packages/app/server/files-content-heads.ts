@@ -9,6 +9,12 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 
 const WRITES = Symbol("files_content_heads");
+const OWNER_TABLES = new Set<TableNames>([
+	"files_nodes",
+	"files_move_cohort_content",
+	"files_move_cohorts",
+	"files_saved_content_heads",
+]);
 const CONTENT_TABLES = new Set<TableNames>([
 	"files_text_chunks",
 	"files_plain_text_chunks",
@@ -47,6 +53,7 @@ type Head = Doc<"files_saved_content_heads">;
 type Fields = Record<string, unknown>;
 type ContentWrites = {
 	db: MutationCtx["db"];
+	runMutation: MutationCtx["runMutation"];
 	flush: () => Promise<void>;
 };
 type ContentDoc = {
@@ -107,6 +114,12 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 			after: Id<"files_saved_content_heads">;
 		} | null>
 	>();
+
+	function forget_reads() {
+		nodes.clear();
+		owners.clear();
+		contents.clear();
+	}
 
 	async function values(node: Doc<"files_nodes"> | Doc<"files_saved_places">, sequence?: Head["sequence"]) {
 		const [snapshot, physicalSequence] = await Promise.all([
@@ -197,9 +210,9 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	function owner(doc: ContentDoc) {
 		const nodeId = doc.fileNodeId!;
 		const cohortId = doc.moveView?.cohortId;
-		// A page can insert many chunks for one side. Read its owner once until that mapping changes.
-		const key = cohortId ? `${nodeId}:${cohortId}:${doc.moveView!.view}` : null;
-		let pending = key ? owners.get(key) : undefined;
+		// Reuse one owner for a file's chunks and frontmatter until its selection changes.
+		const key = cohortId ? `${nodeId}:${cohortId}:${doc.moveView!.view}` : nodeId;
+		let pending = owners.get(key);
 		if (!pending) {
 			pending = (async () => {
 				const node = await raw.get("files_nodes", nodeId);
@@ -219,7 +232,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				if (!currentId) return null;
 				return (await files_saved_content_db_get_head(raw, { ...node, contentHeadId: currentId }))!._id;
 			})();
-			if (key) owners.set(key, pending);
+			owners.set(key, pending);
 		}
 		return pending;
 	}
@@ -338,8 +351,14 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 			if (property === WRITES) return writes;
 			if (property === "insert")
 				return async (table: TableNames, value: Fields) => {
-					const id = await target.insert(table, value as never);
-					if (table === "files_nodes" || table === "files_move_cohort_content") owners.clear();
+					const changesOwner = OWNER_TABLES.has(table);
+					if (changesOwner) forget_reads();
+					let id: Id<TableNames>;
+					try {
+						id = await target.insert(table, value as never);
+					} finally {
+						if (changesOwner) forget_reads();
+					}
 					if (table === "files_nodes" && value.kind === "file") {
 						const node = (await raw.get("files_nodes", id as Id<"files_nodes">))!;
 						const headId = await raw.insert("files_saved_content_heads", {
@@ -359,34 +378,41 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				};
 			if (property === "patch" || property === "replace" || property === "delete")
 				return async (...args: unknown[]) => {
-					const write = Reflect.get(target, property) as (...args: unknown[]) => Promise<void>;
+					const method = Reflect.get(target, property) as (...args: unknown[]) => Promise<void>;
 					const tableFirst = args.length === (property === "delete" ? 2 : 3);
 					if (!tableFirst) {
-						for (const table of WATCHED_TABLES)
+						for (const table of [...WATCHED_TABLES, ...OWNER_TABLES])
 							if (raw.normalizeId(table, String(args[0])))
 								throw should_never_happen("Content writes must name their table", { table, id: args[0] });
-						return await Reflect.apply(write, target, args);
+						return await Reflect.apply(method, target, args);
 					}
 					const table = args[0] as TableNames;
 					const id = args[1] as Id<TableNames>;
 					const patch = property === "delete" ? null : (args[2] as Fields);
-					if (table === "files_nodes" || table === "files_move_cohort_content") owners.clear();
+					const changesOwner = OWNER_TABLES.has(table);
+					const write = async () => {
+						if (changesOwner) forget_reads();
+						try {
+							return await Reflect.apply(method, target, args);
+						} finally {
+							// Drop lookups started while this write was still in flight.
+							if (changesOwner) forget_reads();
+						}
+					};
 					if (
 						!WATCHED_TABLES.has(table) ||
 						(property === "patch" && Object.keys(patch!).every((key) => key === "contentHeadId"))
-					) {
-						if (table === "files_nodes") nodes.delete(id as Id<"files_nodes">);
-						return await Reflect.apply(write, target, args);
-					}
+					)
+						return await write();
 					// Deleted content needs no new ownership tag.
-					if (CONTENT_TABLES.has(table) && property === "delete") return await Reflect.apply(write, target, args);
+					if (CONTENT_TABLES.has(table) && property === "delete") return await write();
 					if (
 						table === "files_nodes" &&
 						property === "patch" &&
 						!HEADER_FIELDS.some((key) => key in patch!) &&
 						!("moveCohortId" in patch!)
 					)
-						return await Reflect.apply(write, target, args);
+						return await write();
 					const old = await raw.get(table, id);
 					if (old && CONTENT_TABLES.has(table)) {
 						// Promotion keeps the same owner when it clears the Move tag.
@@ -400,20 +426,17 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 						for (const headId of new Set([content.beforeHeadId, content.afterHeadId]))
 							if (headId && headId !== node?.contentHeadId) await raw.delete("files_saved_content_heads", headId);
 					}
-					await Reflect.apply(write, target, args);
+					await write();
 					// Location and text edits keep the owner assigned above. Do not read each chunk twice.
 					if (
 						CONTENT_TABLES.has(table) && property === "patch" &&
 						!["fileNodeId", "sourceKind", "fieldPath"].some((key) => key in patch!)
 					) return;
-					if (table === "files_nodes" && patch && "contentHeadId" in patch) nodes.delete(id as Id<"files_nodes">);
-					if (table === "files_move_cohort_content") contents.delete(id as Id<"files_move_cohort_content">);
 					if (property === "delete") {
 						if (table === "files_nodes") {
 							// Old and candidate heads belong to the existing paged cohort cleanup.
 							const node = old as Doc<"files_nodes"> | null;
 							if (node?.contentHeadId) await raw.delete("files_saved_content_heads", node.contentHeadId);
-							nodes.delete(id as Id<"files_nodes">);
 						} else if (old && "fileNodeId" in old) dirty.add(old.fileNodeId as Id<"files_nodes">);
 						return;
 					}
@@ -430,8 +453,18 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 			await raw.patch("files_saved_content_heads", old._id, next);
 	}
 
+	const runMutation: MutationCtx["runMutation"] = async (mutation, ...args) => {
+		// A child has its own wrapper and can change any saved content selection.
+		forget_reads();
+		try {
+			return await ctx.runMutation(mutation, ...args);
+		} finally {
+			forget_reads();
+		}
+	};
 	const writes = {
 		db,
+		runMutation,
 		async flush() {
 			for (const nodeId of dirty) {
 				const node = await raw.get("files_nodes", nodeId);

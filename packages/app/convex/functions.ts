@@ -25,7 +25,7 @@ const customization = {
 	input: async (ctx: MutationCtx) => {
 		const content = files_content_heads_db_wrap(ctx);
 		const access = files_access_version_db_wrap({ ...ctx, db: content.db });
-		const guarded = files_move_reservations_db_wrap({ ...ctx, db: access.db });
+		const guarded = files_move_reservations_db_wrap({ ...ctx, runMutation: content.runMutation, db: access.db });
 		const wrapped = files_pending_overlay_db_wrap({ ...ctx, ...guarded });
 		return {
 			ctx: { ...guarded, ...wrapped },
