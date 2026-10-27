@@ -38,6 +38,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			remove_node_share_grant: "remove_grant",
 			restrict_node: "restrict_node",
 			unrestrict_node: "unrestrict_node",
+			set_node_workspace_view: "set_workspace_view",
 			set_node_public: "set_public",
 		},
 		files_share_links: { set_node_share_link: "set_link" },
@@ -65,16 +66,17 @@ const SHARE = {
 		level: "read";
 		serviceAccountName: string | null;
 		servicePluginName: string | null;
-		coverage: { base: string | null; folder: null; role: null } | null;
+		coverage: { base: string | null; folder: null; role: null; workspace: null } | null;
 	}[],
 	// The owner is looking, so a restrict or an unrestrict never asks about their own access.
 	callerUserId: "owner_1",
-	callerCoverage: { base: "manage", folder: null, role: null },
+	callerCoverage: { base: "manage", folder: null, role: null, workspace: null },
 	callerRoles: [] as string[],
-	baseScope: null as { nodeId: string; name: string; path: string } | null,
+	baseScope: null as { nodeId: string; name: string; path: string; workspaceView: boolean | null } | null,
 	linksInside: false,
 	pluginArea: null,
 	access: "restricted_root",
+	workspaceView: false,
 	canAddPeople: true,
 	inheritedFrom: { restricted: null, extended: [] },
 	link: null as { token: string; createdBy: string; createdAt: number } | null,
@@ -108,13 +110,14 @@ const INSIDE_SHARE = {
 	nodeName: "notes.md",
 	nodeKind: "file",
 	scope: { nodeId: "node_0", name: "Team", path: "/Team", isSelf: false },
-	baseScope: { nodeId: "node_0", name: "Team", path: "/Team" },
+	baseScope: { nodeId: "node_0", name: "Team", path: "/Team", workspaceView: false },
 	access: "inherits",
 	inheritedFrom: {
 		restricted: {
 			nodeId: "node_0",
 			name: "Team",
 			path: "/Team",
+			workspaceView: false,
 			entries: [
 				{
 					principal: { kind: "user", userId: "user_1" },
@@ -128,6 +131,19 @@ const INSIDE_SHARE = {
 	},
 };
 
+/**
+ * A folder restricted on its own inside the restricted folder Team. The server sends no
+ * `inheritedFrom.restricted` for a restricted item.
+ */
+const TEAM_ROOT_SHARE = {
+	...INSIDE_SHARE,
+	nodeName: "Reports",
+	nodeKind: "folder",
+	scope: { ...SHARE.scope },
+	access: "restricted_root",
+	inheritedFrom: { restricted: null, extended: [] },
+};
+
 // Midday UTC, so the date reads the same in every time zone the tests may run in.
 const LINK = { token: "token_1", createdBy: "user_1", createdAt: Date.UTC(2026, 8, 27, 12) };
 
@@ -135,6 +151,19 @@ function mockShareState(shareState: object) {
 	queryMock.mockImplementation((query: string) =>
 		query === "sharing" ? shareState : query === "users" ? ["owner_1", "user_1"] : query === "roles" ? [] : undefined,
 	);
+}
+
+function generalSection() {
+	return document.querySelector("[data-share-general]") as HTMLElement;
+}
+
+/**
+ * Pick one option in the General access select.
+ */
+async function chooseGeneral(name: string) {
+	await waitForDialogFocus();
+	fireEvent.click(screen.getByRole("combobox", { name: "Who can open this" }));
+	fireEvent.click(await screen.findByRole("option", { name }));
 }
 
 function linkSection() {
@@ -290,7 +319,7 @@ describe("FilesShareModal", () => {
 		).toBeNull();
 	});
 
-	test("removing the workspace row restricts at once, without asking", async () => {
+	test("Only people added restricts at once, without asking", async () => {
 		mockShareState({
 			...OPEN_SHARE,
 			access: "extended_root",
@@ -300,12 +329,12 @@ describe("FilesShareModal", () => {
 					level: "read",
 					serviceAccountName: null,
 					servicePluginName: null,
-					coverage: { base: "write", folder: null, role: null },
+					coverage: { base: "write", folder: null, role: null, workspace: null },
 				},
 			],
 		});
 		renderModal();
-		fireEvent.click(screen.getByRole("button", { name: "Remove workspace access" }));
+		await chooseGeneral("Only people added");
 
 		expect(document.querySelector("[data-share-confirm]")).toBeNull();
 		await waitFor(() =>
@@ -313,7 +342,7 @@ describe("FilesShareModal", () => {
 		);
 	});
 
-	test("adding the workspace back asks first when someone loses manage", async () => {
+	test("opening to the workspace again asks first when someone loses manage", async () => {
 		mockShareState({
 			...SHARE,
 			entries: [
@@ -323,23 +352,21 @@ describe("FilesShareModal", () => {
 					serviceAccountName: null,
 					servicePluginName: null,
 					// The workspace role gives edit only, so Ada can no longer change access after.
-					coverage: { base: "write", folder: null, role: null },
+					coverage: { base: "write", folder: null, role: null, workspace: null },
 				},
 			],
 		});
 		renderModal();
-		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Everyone in this workspace" }));
-		fireEvent.click(screen.getByRole("button", { name: "Add" }));
+		await chooseGeneral("Everyone in this workspace");
 
-		const confirmBox = document.querySelector('[data-share-confirm="unrestrict"]') as HTMLElement;
+		// The box shows next to the select that started the change.
+		const confirmBox = generalSection().querySelector('[data-share-confirm="unrestrict"]') as HTMLElement;
 		expect([...within(confirmBox).getByRole("alert").querySelectorAll("p")].map((line) => line.textContent)).toEqual([
 			"Ada can no longer change who has access.",
 		]);
 		expect(mutationMock).not.toHaveBeenCalled();
 
-		fireEvent.click(within(confirmBox).getByRole("button", { name: "Add workspace access" }));
+		fireEvent.click(within(confirmBox).getByRole("button", { name: "Change" }));
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("unrestrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
 		);
@@ -349,14 +376,14 @@ describe("FilesShareModal", () => {
 		mockShareState({
 			...SHARE,
 			callerUserId: "user_1",
-			callerCoverage: { base: "write", folder: null, role: null },
+			callerCoverage: { base: "write", folder: null, role: null, workspace: null },
 			entries: [
 				{
 					principal: { kind: "user", userId: "user_1" },
 					level: "manage",
 					serviceAccountName: null,
 					servicePluginName: null,
-					coverage: { base: "write", folder: null, role: null },
+					coverage: { base: "write", folder: null, role: null, workspace: null },
 				},
 			],
 		});
@@ -381,24 +408,27 @@ describe("FilesShareModal", () => {
 		);
 	});
 
-	test("the workspace row says why it cannot be removed when the caller cannot restrict", () => {
+	test("General access says why it cannot restrict when the caller cannot", async () => {
 		mockShareState({ ...INSIDE_SHARE, canRestrict: false });
 		renderModal();
 
-		const row = document.querySelector('[data-share-source="base"]') as HTMLElement;
-		expect(row.textContent).toContain("You need Can edit here to restrict this.");
-		expect(within(row).queryByRole("button", { name: "Remove access from Team" })).toBeNull();
+		expect(generalSection().textContent).toContain("You need Can edit here to restrict this.");
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Who can open this" }));
+		expect((await screen.findByRole("option", { name: "Only people added" })).getAttribute("aria-disabled")).toBe(
+			"true",
+		);
 	});
 
-	test("the folder row names the folder and its people", async () => {
+	test("General access names the folder above and its people", async () => {
 		mockShareState(INSIDE_SHARE);
 		renderModal();
 
-		const row = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
-		expect(row.textContent).toContain("People with access to Team");
-		expect(row.textContent).toContain("Ada (Can view)");
+		const section = generalSection();
+		expect(section.textContent).toContain("People with access to Team");
+		expect(section.textContent).toContain("Ada (Can view)");
 
-		fireEvent.click(within(row).getByRole("button", { name: "Manage on Team" }));
+		fireEvent.click(within(section).getByRole("button", { name: "Manage on Team" }));
 		await waitFor(() =>
 			expect(queryMock).toHaveBeenCalledWith("sharing", { membershipId: "membership_1", nodeId: "node_0" }),
 		);
@@ -408,17 +438,155 @@ describe("FilesShareModal", () => {
 		mockShareState({
 			...INSIDE_SHARE,
 			canManage: false,
+			canRestrict: false,
+			canShareWithServiceAccounts: false,
 			canAddPeople: false,
-			inheritedFrom: { restricted: { ...INSIDE_SHARE.inheritedFrom.restricted, entries: null }, extended: [] },
+			callerUserId: "user_1",
+			callerCoverage: null,
+			baseScope: { ...INSIDE_SHARE.baseScope, workspaceView: null },
+			inheritedFrom: {
+				restricted: { ...INSIDE_SHARE.inheritedFrom.restricted, entries: null, workspaceView: null },
+				extended: [],
+			},
 		});
 		renderModal();
 
-		const row = document.querySelector('[data-share-inherited="node_0"]') as HTMLElement;
-		expect(row.textContent).toContain("Change on Team.");
-		expect(row.textContent).not.toContain("Ada");
+		const section = generalSection();
+		expect(section.textContent).toContain("Change on Team.");
+		expect(section.textContent).not.toContain("Ada");
+		expect(within(section).queryByRole("combobox")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Manage on Team" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
 		expect(screen.getByText("Only people who can manage this can change access.")).toBeTruthy();
+	});
+
+	test("Everyone can view from the workspace asks only because the file's public link ends", async () => {
+		mockShareState({ ...FILE_SHARE, link: LINK });
+		renderModal();
+		await chooseGeneral("Everyone in this workspace can view");
+
+		const confirmBox = generalSection().querySelector('[data-share-confirm="workspace_view"]') as HTMLElement;
+		expect(within(confirmBox).getByRole("heading").textContent).toBe(
+			'Change to "Everyone in this workspace can view"?',
+		);
+		expect(within(confirmBox).getByRole("alert").textContent).toBe(
+			"The public link turns off. Changing who can open this always turns it off. You can turn it on again after.",
+		);
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		fireEvent.click(within(confirmBox).getByRole("button", { name: "Change" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_workspace_view", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				enabled: true,
+			}),
+		);
+		cleanup();
+		mutationMock.mockClear();
+
+		// Without a link it goes at once.
+		mockShareState(FILE_SHARE);
+		renderModal();
+		await chooseGeneral("Everyone in this workspace can view");
+		expect(document.querySelector("[data-share-confirm]")).toBeNull();
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+	});
+
+	test("Only people added on a view-only item turns the workspace grant off", async () => {
+		mockShareState({ ...SHARE, workspaceView: true });
+		renderModal();
+		await chooseGeneral("Only people added");
+
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_workspace_view", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				enabled: false,
+			}),
+		);
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+	});
+
+	test("Everyone can view is offered inside a restricted folder only when that folder has it on", async () => {
+		mockShareState(INSIDE_SHARE);
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Who can open this" }));
+		expect(await screen.findByRole("option", { name: "Only people added" })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: "Everyone in this workspace can view" })).toBeNull();
+		cleanup();
+
+		// A restricted item inside Team gets no `inheritedFrom.restricted`, so the flag comes from `baseScope`.
+		mockShareState({ ...TEAM_ROOT_SHARE, baseScope: { ...TEAM_ROOT_SHARE.baseScope, workspaceView: true } });
+		renderModal();
+		await chooseGeneral("Everyone in this workspace can view");
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_workspace_view", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				enabled: true,
+			}),
+		);
+	});
+
+	test("going back to a restricted folder that is not open to the workspace warns that members lose view", async () => {
+		mockShareState({ ...TEAM_ROOT_SHARE, workspaceView: true });
+		renderModal();
+		await chooseGeneral("People with access to Team");
+
+		const confirmBox = generalSection().querySelector('[data-share-confirm="unrestrict"]') as HTMLElement;
+		expect(within(confirmBox).getByRole("alert").textContent).toBe(
+			"People in this workspace who cannot open Team lose access.",
+		);
+		expect(mutationMock).not.toHaveBeenCalled();
+		cleanup();
+
+		// When everyone can view Team too, nobody loses access, so it goes at once.
+		mockShareState({
+			...TEAM_ROOT_SHARE,
+			workspaceView: true,
+			baseScope: { ...TEAM_ROOT_SHARE.baseScope, workspaceView: true },
+		});
+		renderModal();
+		await chooseGeneral("People with access to Team");
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("unrestrict_node", { membershipId: "membership_1", nodeId: "node_1" }),
+		);
+	});
+
+	test("a change that runs at once closes the confirm box of another change", async () => {
+		mockShareState({
+			...SHARE,
+			callerUserId: "user_1",
+			callerCoverage: { base: "write", folder: null, role: null, workspace: null },
+			entries: [
+				{
+					principal: { kind: "user", userId: "user_1" },
+					level: "manage",
+					serviceAccountName: null,
+					servicePluginName: null,
+					coverage: { base: "write", folder: null, role: null, workspace: null },
+				},
+			],
+		});
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Access level for You" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Can edit" }));
+		expect(document.querySelector('[data-share-confirm="set"]')).not.toBeNull();
+
+		// Turning view on keeps the caller's own row, so it runs at once.
+		await chooseGeneral("Everyone in this workspace can view");
+
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_workspace_view", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				enabled: true,
+			}),
+		);
+		expect(document.querySelector("[data-share-confirm]")).toBeNull();
 	});
 
 	test("the level select has no manage on an Add-people item", async () => {

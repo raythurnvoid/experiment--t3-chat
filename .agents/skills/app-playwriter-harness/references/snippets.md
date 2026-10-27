@@ -743,7 +743,7 @@ Verified 2026-09-14.
 No query returns the whole tree. The sidebar loads one folder at a time, and so does this walk. It
 reads the same streams as the sidebar (`files_tree_stream_args` in `src/lib/files-tree-context.tsx`):
 for each folder and each kind, the open children, the owner's restricted children
-(`restricted: true`), and a member's 3 share streams. Each stream answers an empty, done page to
+(`restricted: true`), and a member's 4 share streams. Each stream answers an empty, done page to
 the reader it is not for, so the walk works for the owner and for a member. A member with no
 workspace read gets no root rows from the open stream, so the walk also reads
 `list_tree_shared_roots` when it starts at the root.

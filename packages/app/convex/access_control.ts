@@ -546,6 +546,30 @@ function db_get_public_permission_grant(
 		.first();
 }
 
+function db_get_workspace_permission_grant(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		resourceKind: access_control_ResourceKind;
+		resourceId: string;
+		permission: access_control_GrantPermission;
+	},
+) {
+	return ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_public_permission", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", args.resourceKind)
+				.eq("resourceId", args.resourceId)
+				.eq("principalKind", "workspace")
+				.eq("permission", args.permission),
+		)
+		.first();
+}
+
 function db_get_role_permission_grant(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -646,10 +670,12 @@ export async function access_control_db_set_service_account_grant(
 				(grant) => grant.principalKind === "service_account" && grant.serviceAccountId === args.serviceAccountId,
 			)
 		) {
+			// "Everyone in this workspace" is not a name on the list, so it does not count, like in
+			// `files_sharing.ts`.
 			const principals = new Set(
-				grants.map(
-					(grant) => `${grant.principalKind}:${grant.userId ?? grant.role ?? grant.serviceAccountId ?? "public"}`,
-				),
+				grants
+					.filter((grant) => grant.principalKind !== "workspace")
+					.map((grant) => `${grant.principalKind}:${grant.userId ?? grant.role ?? grant.serviceAccountId ?? "public"}`),
 			);
 			if (principals.size >= 50) {
 				// An attached transcript reserves one extra slot for its own account after all 50
@@ -909,6 +935,10 @@ async function db_set_role_assignment(
  * with workspace-wide `content.read` is locked out unless a grant names them. Only the owner is let
  * through, earlier, in `access_control_db_has_permission`.
  *
+ * The one exception is a `workspace` grant ("Everyone in this workspace can view"). It lets the user
+ * read when their own workspace access could read an open item, so a guest stays out. Only a caller
+ * that checks a restricted root passes `workspace_allows`: chain roots never hold this grant.
+ *
  * The caller never falls back to the role check. It also asks this for each extended root ("Add
  * people") at or above the node, where the same rule holds.
  */
@@ -924,6 +954,8 @@ async function has_restricted_file_permission(
 		allowPublic?: boolean;
 		/** Shares one role lookup across the roots of one chain walk. */
 		get_role_refs?: () => Promise<access_control_RoleRef[]>;
+		/** Whether the user's own workspace access gives `permission` on an open item. */
+		workspace_allows?: () => Promise<boolean>;
 	},
 ) {
 	const grantKey = {
@@ -956,7 +988,18 @@ async function has_restricted_file_permission(
 			});
 
 	const roleGrants = await Promise.all(refs.map((role) => db_get_role_permission_grant(ctx, { ...grantKey, role })));
-	return roleGrants.some(Boolean);
+	if (roleGrants.some(Boolean)) {
+		return true;
+	}
+
+	// Read last, so a user with their own grant or a role grant pays nothing for it. The grant is view
+	// only, so a check for any other permission skips the read.
+	return Boolean(
+		args.workspace_allows &&
+		args.permission === "content.read" &&
+		(await db_get_workspace_permission_grant(ctx, grantKey)) &&
+		(await args.workspace_allows()),
+	);
 }
 
 /**
@@ -1331,27 +1374,35 @@ export function access_control_create_file_checker(
 			return base || (node !== null && (await chain_allows(tenant, node, permission)));
 		}
 
-		const base = await once(`user:${scopeNodeId}:${permission}`, async () => {
-			if (subject.userId === tenant.organizationOwnerUserId) {
-				return true;
-			}
-			if (scopeNodeId) {
-				return await has_restricted_file_permission(ctx, {
+		// An open node needs the workspace permission. Asking here, not trusting the caller, keeps a
+		// guest with one shared folder out of every open node. A `workspace` grant asks the same question,
+		// so both share this cached answer.
+		const open_allows = () =>
+			once(`user:null:${permission}`, async () => {
+				if (subject.userId === tenant.organizationOwnerUserId) {
+					return true;
+				}
+				return await access_control_db_has_permission(ctx, {
 					...tenant,
-					scopeNodeId,
-					permission,
 					userId: subject.userId,
+					resource: { kind: "workspace", id: tenant.workspaceId },
+					permission,
 				});
-			}
-			// An open node needs the workspace permission. Asking here, not trusting the caller, keeps a
-			// guest with one shared folder out of every open node.
-			return await access_control_db_has_permission(ctx, {
-				...tenant,
-				userId: subject.userId,
-				resource: { kind: "workspace", id: tenant.workspaceId },
-				permission,
 			});
-		});
+		const base = scopeNodeId
+			? await once(`user:${scopeNodeId}:${permission}`, async () => {
+					if (subject.userId === tenant.organizationOwnerUserId) {
+						return true;
+					}
+					return await has_restricted_file_permission(ctx, {
+						...tenant,
+						scopeNodeId,
+						permission,
+						userId: subject.userId,
+						workspace_allows: open_allows,
+					});
+				})
+			: await open_allows();
 		return base || (node !== null && (await chain_allows(tenant, node, permission)));
 	};
 
@@ -1705,7 +1756,19 @@ export async function access_control_db_has_permission(
 			allowPublic: args.allowPublic,
 		};
 		if (scopeNodeId) {
-			if (await has_restricted_file_permission(ctx, { ...scopeArgs, scopeNodeId })) {
+			if (
+				await has_restricted_file_permission(ctx, {
+					...scopeArgs,
+					scopeNodeId,
+					// A `workspace` grant asks the same question as an open node below.
+					workspace_allows: () =>
+						access_control_db_has_permission(ctx, {
+							...args,
+							allowPublic: undefined,
+							resource: { kind: "workspace", id: args.workspaceId },
+						}),
+				})
+			) {
 				return true;
 			}
 		} else if (

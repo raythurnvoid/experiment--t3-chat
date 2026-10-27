@@ -9438,7 +9438,18 @@ const app_convex_schema = defineSchema({
 		 * restricted folder.
 		 */
 		resourceId: v.string(),
-		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public"), v.literal("service_account")),
+		/**
+		 * `"workspace"` is "Everyone in this workspace can view" on a restricted file or folder. It has
+		 * no id field and only the `content.read` permission. It lets in each member whose own
+		 * workspace access can read an open item (see `has_restricted_file_permission`).
+		 */
+		principalKind: v.union(
+			v.literal("role"),
+			v.literal("user"),
+			v.literal("public"),
+			v.literal("service_account"),
+			v.literal("workspace"),
+		),
 		userId: v.optional(v.id("users")),
 		/**
 		 * Plugin-managed file readers must belong to this exact membership lifetime.
@@ -9518,6 +9529,7 @@ const app_convex_schema = defineSchema({
 			"role",
 			"permission",
 		])
+		// Serves the `workspace` principal too: neither kind has an id field.
 		.index("by_organization_workspace_resource_public_permission", [
 			"organizationId",
 			"workspaceId",

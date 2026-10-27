@@ -424,6 +424,7 @@ describe("list_tree_children_shared", () => {
 		{ principalIndex: 0, oldPluginGrant: false },
 		{ principalIndex: 2, oldPluginGrant: false },
 		{ principalIndex: 2, oldPluginGrant: true },
+		{ principalIndex: 3, oldPluginGrant: false },
 	] as const)(
 		"the share page guards fit the measured reads of the worst row (principal $principalIndex, old plugin grant $oldPluginGrant)",
 		async ({ principalIndex, oldPluginGrant }) => {
@@ -451,7 +452,9 @@ describe("list_tree_children_shared", () => {
 						resourceId: String(nodeId),
 						...(principalIndex === 0
 							? { principalKind: "user" as const, userId: f.admin.userId }
-							: { principalKind: "role" as const, role: "member" as const }),
+							: principalIndex === 2
+								? { principalKind: "role" as const, role: "member" as const }
+								: { principalKind: "workspace" as const }),
 						permission: "content.read",
 						createdAt: now,
 						updatedAt: now,
@@ -493,7 +496,8 @@ describe("list_tree_children_shared", () => {
 							: await ctx.runQuery(api.files_tree.list_tree_shared_roots, {
 									membershipId: f.admin.membershipId,
 									archived: false,
-									principalIndex,
+									// The loop below never reads Shared with you for index 3.
+									principalIndex: principalIndex as 0 | 2,
 									paginationOpts,
 								});
 					const after = await ctx.meta.getTransactionMetrics();
@@ -502,9 +506,10 @@ describe("list_tree_children_shared", () => {
 
 			// The new `a-*` shares come first by name in both queries. The page cost minus the cost of a
 			// one-row page is what the other rows read.
+			// Shared with you has no workspace stream: it lists items shared with this person.
 			for (const [query, guard] of [
 				["filter", 166],
-				["roots", 176],
+				...(principalIndex === 3 ? [] : [["roots", 176] as const]),
 			] as const) {
 				const one = await read_cost(1, query);
 				const six = await read_cost(6, query);

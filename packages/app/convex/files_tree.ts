@@ -566,8 +566,9 @@ function get_table_read_args(args: {
 
 /**
  * The `principalKey`s of the share rows a member reads, by `principalIndex`: 0 is the member, 1 and
- * 2 are their workspace role and organization role (`access_control_db_resolve_role_refs`). A role
- * they do not have has no key.
+ * 2 are their workspace role and organization role (`access_control_db_resolve_role_refs`), 3 is
+ * "Everyone in this workspace can view". A role they do not have has no key, and a member without
+ * workspace read (a guest) has no workspace key, like the permission check.
  */
 async function db_get_share_principal_keys(
 	ctx: QueryCtx,
@@ -575,6 +576,7 @@ async function db_get_share_principal_keys(
 		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
 		defaultWorkspaceId: Id<"organizations_workspaces">;
+		hasWorkspaceRead: boolean;
 	},
 ) {
 	const roleRefs = await access_control_db_resolve_role_refs(ctx, {
@@ -583,9 +585,12 @@ async function db_get_share_principal_keys(
 		defaultWorkspaceId: reader.defaultWorkspaceId,
 		userId: reader.userAuth.id,
 	});
+	// Fixed places, so a missing role never moves the workspace key to a role index.
 	return [
 		files_share_rows_principal_key("user", reader.userAuth.id),
-		...roleRefs.map((role) => files_share_rows_principal_key("role", role)),
+		roleRefs[0] ? files_share_rows_principal_key("role", roleRefs[0]) : null,
+		roleRefs[1] ? files_share_rows_principal_key("role", roleRefs[1]) : null,
+		reader.hasWorkspaceRead ? files_share_rows_principal_key("workspace", reader.membership.workspaceId) : null,
 	];
 }
 
@@ -1241,10 +1246,10 @@ export const list_tree_children_sorted = query({
  * in their key and come after the value rows, by name. The owner reads the restricted metadata twin
  * of `list_tree_children_sorted`, so the owner gets an empty page.
  *
- * A share row is one copy per share (one grant to a user or a role), not one per member who can
- * read the node. A share to a role stays one row however many members hold the role, and a role
- * change writes nothing. So a member reads up to 3 streams per kind, by `principalIndex`
- * (`db_get_share_principal_keys`), and the client drops a node it already has.
+ * A share row is one copy per share (one grant to a user, a role or the whole workspace), not one
+ * per member who can read the node. A share to a role stays one row however many members hold the
+ * role, and a role change writes nothing. So a member reads up to 4 streams per kind, by
+ * `principalIndex` (`db_get_share_principal_keys`), and the client drops a node it already has.
  */
 export const list_tree_children_shared = query({
 	args: {
@@ -1254,9 +1259,10 @@ export const list_tree_children_shared = query({
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		/**
-		 * 0 reads the member's own shares, 1 and 2 the shares of their roles.
+		 * 0 reads the member's own shares, 1 and 2 the shares of their roles, 3 the items everyone in the
+		 * workspace can view.
 		 */
-		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2)),
+		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
 		sort: files_sort_validator,
 		filter: v.union(files_table_filter_validator, v.null()),
 		namePrefix: v.union(v.string(), v.null()),
@@ -1347,8 +1353,10 @@ export const list_tree_children_shared = query({
 
 		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: result.page, extendedRoots: false });
 		// Reads only restricted children the caller can open; role streams are capped by
-		// MAX_FILE_SHARES_PER_ROLE. Approved exception: a row that does not match is left out after
-		// this read, so a page can be short.
+		// MAX_FILE_SHARES_PER_ROLE. The workspace stream has no such cap, but it holds only items that
+		// everyone can view, and only a caller with workspace read gets it, so the caller can open
+		// them. Approved exception: a row that does not match is left out after this read, so a page
+		// can be short.
 		const fieldDocs = await Promise.all(
 			rows.map(({ shareRow }) =>
 				ctx.db
@@ -1487,7 +1495,8 @@ export const list_tree_shared_roots = query({
 		savedStream: v.optional(files_saved_stream_validator),
 		archived: v.boolean(),
 		/**
-		 * 0 reads the member's own shares, 1 and 2 the shares of their roles.
+		 * 0 reads the member's own shares, 1 and 2 the shares of their roles. Index 3 (everyone in the
+		 * workspace) is not taken: those items are not shared with the member in particular.
 		 */
 		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2)),
 		paginationOpts: paginationOptsValidator,

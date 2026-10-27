@@ -298,7 +298,7 @@ Indexes:
 
 Fields: `organizationId`, `workspaceId`, `resourceKind` (`organization` | `workspace` | `file` |
 `thread` | `plugin_scope` | `plugin_installation`), `resourceId` (stringified id), `principalKind`
-(`role` | `user` | `public` | `service_account`), optional `userId`, optional `role`, optional
+(`role` | `user` | `public` | `service_account` | `workspace`), optional `userId`, optional `role`, optional
 `serviceAccountId`, `permission`, `createdAt`, `updatedAt`. A run-as grant also pins the user's
 membership id, lifetime and API scopes in `runAs`.
 
@@ -306,7 +306,9 @@ membership id, lifetime and API scopes in `runAs`.
 System role permissions live in code. File shares use one doc per permission per principal, with
 the **restricted scope node** as `resourceId`. Plugin setup uses the exact workspace; plugin
 management uses the exact installation. Nothing writes a `public` grant, and the share validator
-has no `public` arm. A file share also has a share row (see "Share rows" under "File sharing").
+has no `public` arm. A `workspace` grant has no id field and is only `content.read` on a restricted
+root (see "Everyone in this workspace can view" under "File sharing"). A file share also has a share
+row (see "Share rows" under "File sharing").
 
 The declarative access bindings (`plugins_file_access_bindings` in `plugins_data.ts`) are the
 host-maintained file-grant mirror: a plugin binds one of its owned nodes to one of its private scopes
@@ -993,12 +995,14 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
 - `list_tree_children_shared` gives a member the restricted children shared with them that match a
   custom-field text filter, one share stream per principal, for the table. It reads no drafts. The
   owner, and any other order, gets an empty, done page.
-  - A non-owner can read a restricted scope root only through a user or role `content.read` grant
-    on it, so the share rows hold every candidate. Scanning the folder instead would not scale: a
+  - A non-owner can read a restricted scope root only through a user, role or workspace
+    `content.read` grant on it, so the share rows hold every candidate. Scanning the folder instead would not scale: a
     folder of one private folder per person has thousands of restricted children.
   - The server builds the `principalKey` from the caller (`principalIndex` 0 is the user, 1 and 2
-    their roles from `access_control_db_resolve_role_refs`), never from the client. A role the
-    member does not have gets an empty, done page.
+    their roles from `access_control_db_resolve_role_refs`, 3 "Everyone in this workspace can
+    view"), never from the client. A role the member does not have, or index 3 for a member without
+    workspace read, gets an empty, done page. "Shared with you" (`list_tree_shared_roots`) takes
+    0 to 2 only: those items are not shared with the member in particular.
   - A member's filtered page must never depend on a custom field they cannot read. Otherwise a cut
     would move when a locked child's value changes and leak that value. The stream reads only the
     member's share rows (by name), then each row's own committed field doc, so a locked child's
@@ -1062,9 +1066,9 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
 
 ## File sharing
 
-`convex/files_sharing.ts` owns member sharing. Five mutations plus one query:
-`get_node_share_state`, `restrict_node`, `unrestrict_node`, `set_node_share_grant`,
-`remove_node_share_grant`, `set_node_public`. The first four writes take
+`convex/files_sharing.ts` owns member sharing. Six mutations plus one query:
+`get_node_share_state`, `restrict_node`, `unrestrict_node`, `set_node_workspace_view`,
+`set_node_share_grant`, `remove_node_share_grant`, `set_node_public`. The first five writes take
 `content.permissions.manage` **on the node**, and the `files_sharing_write` bucket first.
 `set_node_public` takes `content.write` instead. `get_node_share_state` only takes
 `content.read` on the node: the dialog opens for anybody who can see the file, and `canManage` in its
@@ -1112,6 +1116,46 @@ The model:
 - Three levels — `read`, `write`, `manage` — each a superset of the last, saved as one grant doc per
   permission. `access_control_FILE_SHARE_LEVELS` is the source of truth.
 
+### Everyone in this workspace can view
+
+A restricted root can let every workspace member view it, like Google Drive's "Anyone in this
+organization" and Notion's workspace access. It is one grant doc with `principalKind: "workspace"`,
+no id field, and only `content.read`. Decided 2026-10-27.
+
+- **Who it lets in.** A user passes `content.read` in that restricted area when the grant exists and
+  their own workspace access gives `content.read`: the same check an open item uses (the owner, or a
+  workspace or organization role with `content.read`). So a guest (a role without `content.read`)
+  gets nothing. `has_restricted_file_permission` reads the grant last, through `workspace_allows`,
+  and only for `content.read`. A user with their own grant or a role grant pays nothing for it.
+- **View only, never more.** It never gives `content.write` or `content.permissions.manage`. People
+  added on the list keep their own level, so "everyone can view, these people can edit" is the list
+  plus this grant.
+- **Users only.** Service accounts get nothing from it, and plugin sessions get nothing on their own:
+  a plugin session acts as its human, but still needs its app on the list (a sandbox root). Add an
+  app to the list to give it access. The extended chain (added people) and the public-link checks never read it.
+- **Only where the workspace has access above.** `set_node_workspace_view` turns it on only when
+  the item's parent area is open, or is a restricted folder that has this grant too. Inside any
+  other restricted folder it refuses: it would open the item past that folder's list, and members
+  could not reach it through the locked folder. Add people or roles there instead.
+- **The door.** `set_node_workspace_view({ membershipId, nodeId, enabled })` takes
+  `content.permissions.manage` and the `files_sharing_write` bucket. On an item that is not
+  restricted, turning it on restricts the item first, in the same transaction, through the same
+  helper as `restrict_node` (`db_restrict_node`): every refusal comes before the first write,
+  including the manage ceiling. Turning it off deletes the doc and keeps the item restricted. Asking
+  for the state it already has answers yes. `unrestrict_node` deletes the grant, so the next restrict
+  does not bring it back. A grant-only change keeps public links. A restrict or an unrestrict ends
+  them, as always.
+- **Not a name on the list.** It does not count toward `MAX_FILE_SHARE_PRINCIPALS` or the account
+  writer's cap, and the dialog shows it in General access, not as a row. It takes the last doc of
+  `MAX_FILE_SHARE_GRANT_DOCS`: it sorts after every other grant, so a smaller cap would hide it.
+- **Known limits, accepted.** Every member who can view the item can open the Share dialog and see
+  its people list, like any reader of a restricted root. A view-only root stays open to the workspace
+  when the folder above stops letting the workspace in later: the folder is restricted later, turns
+  this setting off, or is unrestricted into a locked folder, or the item is moved into a locked folder. Members cannot browse to it through the
+  locked folder then. The rule above is a product guard, not a security boundary: a manager could
+  name every role on the item instead. Past 8 dead folders (see the dead pointer bullet above) the reader keeps the stored
+  scope, like every other grant.
+
 ### Add people
 
 Any file or folder can get added people, open or inside a restricted folder. The item becomes an
@@ -1148,7 +1192,8 @@ inside it. Everybody who had access before keeps it: added people only add acces
   and accounts added there lose access.
 - **Unrestrict keeps the list too.** `unrestrict_node` keeps every grant, so an item with any grant
   becomes an extended root. Added people hold only view or edit, so each kept `manage` drops to
-  `write` (an account through the account writer, a user or role by deleting its manage doc).
+  `write` (an account through the account writer, a user or role by deleting its manage doc). The
+  one exception is the `workspace` grant, which it deletes: an open item lets the workspace in anyway.
 - A Move keeps an item's added people: an extended root moved into a restricted folder still gives
   its people that item. Items inside it take the chain of their new place.
 - `get_node_share_state` returns `access` (`restricted_root`, `extended_root` or `inherits`),
@@ -1158,22 +1203,41 @@ inside it. Everybody who had access before keeps it: added people only add acces
   or the workspace when it is open). A person who gets in only through added people must not learn
   who reads the folders above.
 - For the dialog it also returns `baseScope` (the restricted folder whose people reach this item, or
-  `null` for the workspace), `callerUserId`, and, only for a manager, `callerRoles`, `callerCoverage`,
+  `null` for the workspace; its `workspaceView` says that folder has "Everyone in this
+  workspace can view", which a restricted item gets nowhere else; null unless the caller may read
+  that folder's list: `seesBaseLevels` for a restricted root, `seesInheritedNames` otherwise), `callerUserId`, and, only for a manager, `callerRoles`, `callerCoverage`,
   and a `coverage` per entry: the level the person already gets from the base (`base`), from an
-  added-people folder above (`folder`), or from a role row in the same list (`role`). `linksInside`
-  says a restricted folder holds public links (one `.first()` read), and `pluginArea` names the
-  plugin that owns the folder's list.
-- The dialog has one "People with access" list. The first row is the base: "Everyone in this
-  workspace" (view and edit follow each person's workspace role) or "People with access to <folder>".
-  Removing that row restricts the item, and the list then starts with "You". Adding "Everyone in this
-  workspace" back from the add picker unrestricts it. The picker can also add people who are already
-  in the workspace, so a user can add people and then remove workspace access in one pass. Roles read
-  "Everyone with this workspace role". "Can manage" shows only on a restricted root. Restrict never
-  asks: removing the base row is a clear choice, the caller keeps access, and the list shows the
-  result at once (product decision, 2026-10-26). Another change asks first only when it costs
-  something: someone who stops managing, public links that turn off (any access change turns them
-  off), the caller lowering their own access, or a plugin folder. A plugin folder
-  hides the remove button, and a caller without edit cannot restrict.
+  added-people folder above (`folder`), from a role row in the same list (`role`), or from
+  "Everyone in this workspace can view" (`workspace`, only while it is on). `workspaceView` says the
+  node has that grant, and `inheritedFrom.restricted.workspaceView` says the folder above has it
+  (null when the caller may not see that folder's names). `linksInside` says a restricted folder
+  holds public links (one `.first()` read), and `pluginArea` names the plugin that owns the folder's
+  list.
+- The dialog has two parts, like Google Drive and Notion. "People with access" is the list: the
+  folders above with added people, the owner as a fixed row (always, so the list is never empty),
+  then the people, roles, and apps added here. Roles read "Everyone with this workspace
+  role". "Can manage" shows only on a restricted root. Below it, "General access" is one select,
+  "Who can open this":
+  - "Everyone in this workspace" (view and edit follow each person's workspace role), or "People
+    with access to <folder>" inside a restricted folder. Picking it unrestricts the item.
+  - "Everyone in this workspace can view": `set_node_workspace_view(true)`. Offered only when the
+    parent area is open or a restricted folder above has it on too, or while it is already on (an
+    ancestor was restricted later).
+  - "Only people added": `restrict_node` from the base, `set_node_workspace_view(false)` from view.
+  While the item itself has "can view" on, the add level starts at "Can edit": everyone can already
+  view. An item that only takes "can view" from a folder above starts at "Can view": that still
+  gives something to a guest, who gets nothing from "can view".
+- Confirm rules. Restricting asks only when a public link of the file turns off; otherwise it is a
+  clear choice, the caller keeps access, and the list shows the result at once (product decision,
+  2026-10-26; the link question was added 2026-10-27). Turning on "can view" from the base restricts
+  too, so it asks the same (title `Change to "Everyone in this workspace can view"?`). Turning "can view" on or off on a restricted root asks only for a plugin
+  folder. Another change asks first only when it costs something: someone who stops managing,
+  workspace members who lose view when unrestricting inside a restricted folder without it,
+  public links that turn off (any restrict or unrestrict turns them off), the caller lowering their
+  own access, or a plugin folder. The confirm box shows in the section whose control started the
+  change, and a change that runs at once closes any other open box. Inside a plugin folder General access is plain text with the note "<plugin> decides who
+  can open this folder.", and a caller without edit cannot restrict (note "You need Can edit here to
+  restrict this.").
 - History: one-time migrations moved every old file grant onto a scope root. A
   grant on an open item made it an extended root; a grant on a plain item inside a restricted folder
   gave nothing (a dormant grant) and was deleted; a `manage` grant on an extended root was lowered to
@@ -1205,14 +1269,15 @@ Five rules that look like details and are not:
 `files_share_rows` holds one row per share, so a member's shared items can be paged with indexes like
 the folder table. Code: `packages/app/server/files-share-rows.ts`.
 
-- A share is a file `content.read` grant to a user, a role or a service account. Its row lives while
-  the grant lives and its node is a scope root (restricted or extended) in the grant's organization
-  and workspace, active or archived. A public grant has no row. "Shared with you"
-  (`list_tree_shared_roots`) lists both kinds; the custom-field filter streams
-  (`list_tree_children_shared`) list restricted roots only, by name
+- A share is a file `content.read` grant to a user, a role, a service account or the workspace. Its
+  row lives while the grant lives and its node is a scope root (restricted or extended) in the
+  grant's organization and workspace, active or archived. A public grant has no row. "Shared with
+  you" (`list_tree_shared_roots`) lists both kinds, but not workspace rows; the custom-field filter
+  streams (`list_tree_children_shared`) list restricted roots only, by name
   (`by_org_ws_principal_parent_kind_archive_sortName_name`).
-- `principalKey` is `user:<userId>`, `role:<role>` or `service_account:<serviceAccountId>`. A role
-  share is one row, not one row per member.
+- `principalKey` is `user:<userId>`, `role:<role>`, `service_account:<serviceAccountId>` or
+  `workspace:<workspaceId>`. A role share is one row, not one row per member, and so is a workspace
+  share.
 - A row copies the node's list fields (parent, kind, archive, names, `treePath`, `updatedAt`,
   extension, size, creation time) and the grant's `externalPluginMembershipLifetime` (`null` when
   missing).

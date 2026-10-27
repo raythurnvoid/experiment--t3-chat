@@ -520,8 +520,10 @@ and `find` also keep raw name order.
   of a non-owner: the restricted children shared with a member that match, read from the share rows
   (`files_share_rows`, the `access-control` skill explains them). It takes the args of
   `list_tree_children_sorted` without `restricted`, plus `principalIndex`: 0 reads the member's own
-  shares, 1 and 2 the shares of their workspace role and organization role. The server builds the
-  `principalKey` from the caller, never from the client.
+  shares, 1 and 2 the shares of their workspace role and organization role, and 3 the items that
+  everyone in the workspace can view (only for a member whose own workspace access reads open
+  items; a guest gets an empty page). The server builds the `principalKey` from the caller, never
+  from the client.
   - A share row is one copy per share, not per member, so a role share is one row for every member
     with the role. It reads only `by_org_ws_principal_parent_kind_archive_sortName_name`, then the
     node's committed field doc, and keeps the row only when that doc matches the filter.
@@ -542,8 +544,8 @@ and `find` also keep raw name order.
     ranges). Its rows are always open (`locked: false`).
   - Refusals that need no folder read come before the folder check, so they cost nothing.
 - `useFilesSortedChildren` in `packages/app/src/hooks/files-search-hooks.ts` merges it all:
-  - Per kind and segment there are five streams: the open stream, the restricted twin, and the
-    member's 3 share streams. Each stream uses `usePaginatedQuery` from `convex/react`, with pages
+  - Per kind and segment there are six streams: the open stream, the restricted twin, and the
+    member's 4 share streams. Each stream uses `usePaginatedQuery` from `convex/react`, with pages
     of 100. Everyone reads the open stream and the twin. Only a custom-field filter (a text filter on
     a metadata or frontmatter field) changes that: a member skips the twin and reads the share
     streams, and the owner skips the share streams. While the role loads, it reads both.

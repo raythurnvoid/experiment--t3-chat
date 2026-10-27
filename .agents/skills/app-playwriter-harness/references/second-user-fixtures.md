@@ -25,7 +25,7 @@ The signed-in Clerk session lives in the user's own browser profile, so the seco
 vp env exec pnpx playwriter session new --browser headless
 ```
 
-That command worked on 2026-09-05 (Chrome headless, `state.page = await context.newPage()` then `goto`). Each headless session is its own profile, so two of them can hold two signed-in QA accounts at once.
+That command worked on 2026-09-05 (Chrome headless, `state.page = await context.newPage()` then `goto`). The Playwriter docs say headless sessions may share one headless Chrome, so do not count on two of them keeping two signed-in accounts apart. For two accounts at once, use two Chrome for Testing browsers with separate `--user-data-dir` profiles (below); that worked on 2026-10-27.
 
 If headless startup is unavailable on the machine, launch the installed Chrome for Testing yourself and attach over direct CDP. Put the profile in the task's personal AI folder (see AGENTS.md), never in the repo or `$env:TEMP`:
 
@@ -118,6 +118,7 @@ Owner-side fixture calls:
 - `files_nodes.create_folder_node({ membershipId, parentId: "root", path })`
 - `files_nodes_content.create_text_node({ membershipId, parentId, path })` (an action, not a mutation). It makes an empty file. `replace_file_content` answers `Not found` on a collaborative file, so to give a fixture one line of text, turn collaboration off for that file first (seen 2026-10-10).
 - `files_sharing.restrict_node({ membershipId, nodeId })`
+- `files_sharing.set_node_workspace_view({ membershipId, nodeId, enabled })` — "Everyone in this workspace can view". `enabled: true` on an open item restricts it first. A member whose role reads open files can then view it, and a guest cannot.
 - `files_sharing.set_node_share_grant({ membershipId, nodeId, principal: { kind: "user", userId }, level: "read" | "write" | "manage" })` — `nodeId` must be the restricted node itself
 - `files_transfer.accept_input({ membershipId, requestId, kind: "move", expectedSourceCount, sourceIds, targetParentId })` — append further input pages with `append_input`. Complete Move input starts in that transaction. Wait for `get` to report the final Activity and read the item results with `list_items`.
 

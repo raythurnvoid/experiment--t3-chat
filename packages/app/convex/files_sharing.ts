@@ -13,6 +13,9 @@
 // against an admin. It also means the person who restricts something has to keep a way back in, so
 // `restrict_node` writes their own grants, and the last manager cannot be removed.
 //
+// One grant names no person, role, or app: "Everyone in this workspace can view" (`principalKind: "workspace"`, set by
+// `set_node_workspace_view`). It is not an entry of the list. The dialog shows it as General access.
+//
 // Keep the imports of this module small. On a cold call Convex loads every file that this module imports,
 // even the unused ones. The share dialog waits on these doors, so this module must not import
 // files_nodes.ts, files_share_links.ts or files_subtree_ops.ts. scripts/convex-sharing-path-imports.test.ts
@@ -92,9 +95,12 @@ const MAX_FILE_SHARE_PRINCIPALS = 50;
 /**
  * How many grant docs we ever load for one restricted node.
  *
- * A principal costs up to three docs, one per permission of the `manage` level, so this is the
- * principal cap with room to spare. It exists so a single query can never read an unbounded number
- * of docs, not as a second limit users can hit.
+ * A principal costs up to three docs, one per permission of the `manage` level. The `+ 1` principal is
+ * the slot kept for an app account. The last `+ 1` doc is the "Everyone in this workspace can view"
+ * grant. It sorts after every other grant in the index, so it must fit, or a read would miss it.
+ *
+ * The cap exists so a single query can never read an unbounded number of docs, not as a second limit
+ * users can hit.
  */
 const MAX_FILE_SHARE_GRANT_DOCS = (MAX_FILE_SHARE_PRINCIPALS + 1) * 3 + 1;
 
@@ -324,14 +330,21 @@ const share_coverage_validator = v.object({
 			role: doc(app_convex_schema, "access_control_role_assignments").fields.role,
 		}),
 	),
+	/** From "Everyone in this workspace can view" on this node. Apps never get it. */
+	workspace: v.union(v.literal("read"), v.null()),
 });
 
-/** A folder above the node whose people also reach it. `entries` is null when the caller may not see them. */
+/**
+ * A folder above the node whose people also reach it. `entries` and `workspaceView` are null when the
+ * caller may not see them.
+ */
 const share_inherited_validator = v.object({
 	nodeId: v.id("files_nodes"),
 	name: v.string(),
 	path: v.string(),
 	entries: v.union(v.array(share_entry_validator), v.null()),
+	/** Whether everyone in the workspace can view that folder. */
+	workspaceView: v.union(v.boolean(), v.null()),
 });
 
 type FileSharePrincipal =
@@ -342,9 +355,13 @@ type FileSharePrincipal =
 /**
  * One string that stands for one principal, so entries can be grouped in a `Map`.
  *
- * The prefix keeps user, role, and service-account IDs apart.
+ * The prefix keeps user, role, and service-account IDs apart. `workspace` is the grant behind
+ * "Everyone in this workspace can view". It has no id, and it is never an entry.
  */
-function share_principal_key(principal: FileSharePrincipal) {
+function share_principal_key(principal: FileSharePrincipal | { kind: "workspace" }) {
+	if (principal.kind === "workspace") {
+		return "workspace";
+	}
 	if (principal.kind === "service_account") {
 		return `service_account:${principal.serviceAccountId}`;
 	}
@@ -391,7 +408,13 @@ function read_grant_principal(grant: Doc<"access_control_permission_grants">): F
 
 	// `public` grants land here. Nothing in this module writes one, and the share dialog has no row
 	// that could show it, so it is left out rather than shown as an entry nobody can remove.
+	// `workspace` grants land here too: the dialog shows them as General access, not as a row.
 	return null;
+}
+
+/** Whether a restricted node holds "Everyone in this workspace can view". */
+function has_workspace_view(grants: Doc<"access_control_permission_grants">[]) {
+	return grants.some((grant) => grant.principalKind === "workspace" && grant.permission === "content.read");
 }
 
 /**
@@ -450,7 +473,8 @@ async function db_set_principal_level(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		scopeNodeId: Id<"files_nodes">;
-		principal: Exclude<FileSharePrincipal, { kind: "service_account" }>;
+		/** `workspace` takes only `read` or `null`: callers never give it more. */
+		principal: Exclude<FileSharePrincipal, { kind: "service_account" }> | { kind: "workspace" };
 		/** `null` removes the principal from the share list. */
 		level: access_control_FileShareLevel | null;
 		grants: Doc<"access_control_permission_grants">[];
@@ -463,7 +487,9 @@ async function db_set_principal_level(
 	const key = share_principal_key(args.principal);
 	const existingByPermission = new Map<access_control_GrantPermission, Doc<"access_control_permission_grants">>();
 	for (const grant of args.grants) {
-		const principal = read_grant_principal(grant);
+		// `read_grant_principal` leaves the workspace grant out of entries, so match it by kind here.
+		const principal =
+			grant.principalKind === "workspace" ? { kind: "workspace" as const } : read_grant_principal(grant);
 		if (principal && share_principal_key(principal) === key) {
 			existingByPermission.set(grant.permission, grant);
 		}
@@ -480,7 +506,11 @@ async function db_set_principal_level(
 					resourceKind: "file",
 					resourceId: String(args.scopeNodeId),
 					principalKind: args.principal.kind,
-					...(args.principal.kind === "user" ? { userId: args.principal.userId } : { role: args.principal.role }),
+					...(args.principal.kind === "user"
+						? { userId: args.principal.userId }
+						: args.principal.kind === "role"
+							? { role: args.principal.role }
+							: {}),
 					permission,
 					createdAt: args.now,
 					updatedAt: args.now,
@@ -653,6 +683,8 @@ export const get_node_share_state = query({
 			 * the access of the folders above it.
 			 */
 			access: v.union(v.literal("restricted_root"), v.literal("extended_root"), v.literal("inherits")),
+			/** "Everyone in this workspace can view" on this node. Only a restricted root can have it. */
+			workspaceView: v.boolean(),
 			/** Whether the caller may add people here. Any item can get added people. */
 			canAddPeople: v.boolean(),
 			/**
@@ -680,6 +712,12 @@ export const get_node_share_state = query({
 					nodeId: v.id("files_nodes"),
 					name: v.string(),
 					path: v.string(),
+					/**
+					 * Whether everyone in the workspace can view that folder. The dialog needs it to offer
+					 * "can view" here, to warn on unrestrict, and to pick the icon. `null` when the caller may not
+					 * read that folder's list.
+					 */
+					workspaceView: v.union(v.boolean(), v.null()),
 				}),
 			),
 			/** Whether a file inside this restricted folder has a public link. An unrestrict ends it. */
@@ -859,15 +897,23 @@ export const get_node_share_state = query({
 				: node.parentExtendedScopeNodeId !== undefined
 					? ("extended_root" as const)
 					: ("inherits" as const);
+		// The entries and the workspace view of one node come from the same grants, so read them once.
+		const scopeGrants = new Map<Id<"files_nodes">, ReturnType<typeof db_list_scope_grants>>();
+		const grants_on = (scopeNodeId: Id<"files_nodes">) => {
+			let grants = scopeGrants.get(scopeNodeId);
+			if (!grants) {
+				grants = db_list_scope_grants(ctx, {
+					organizationId: organization._id,
+					workspaceId: membership.workspaceId,
+					scopeNodeId,
+				});
+				scopeGrants.set(scopeNodeId, grants);
+			}
+			return grants;
+		};
 		const entries_on = async (scopeNodeId: Id<"files_nodes">) =>
 			await Promise.all(
-				group_grants_into_entries(
-					await db_list_scope_grants(ctx, {
-						organizationId: organization._id,
-						workspaceId: membership.workspaceId,
-						scopeNodeId,
-					}),
-				).map(async (entry) => {
+				group_grants_into_entries(await grants_on(scopeNodeId)).map(async (entry) => {
 					const account =
 						entry.principal.kind === "service_account"
 							? await ctx.db.get("access_control_service_accounts", entry.principal.serviceAccountId)
@@ -887,6 +933,7 @@ export const get_node_share_state = query({
 				}),
 			);
 		const entries = access === "inherits" ? [] : await entries_on(node._id);
+		const workspaceView = access === "restricted_root" && has_workspace_view(await grants_on(node._id));
 
 		// Inherited names only for somebody who reads the whole area: every folder here is in the node's
 		// own restricted area (or all open). A person who gets in only through added people must not learn
@@ -910,6 +957,7 @@ export const get_node_share_state = query({
 			name: folder.name,
 			path: folder.path,
 			entries: seesInheritedNames ? await entries_on(folder._id) : null,
+			workspaceView: seesInheritedNames ? has_workspace_view(await grants_on(folder._id)) : null,
 		});
 		const chainNodes = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
 		const extendedFolders: Doc<"files_nodes">[] = [];
@@ -947,15 +995,12 @@ export const get_node_share_state = query({
 				: scopeNode && scopeIsLive
 					? scopeNode._id
 					: null;
-		const baseScopeNode = baseScopeNodeId ? await ctx.db.get("files_nodes", baseScopeNodeId) : null;
-		const baseScope = baseScopeNode
-			? { nodeId: baseScopeNode._id, name: baseScopeNode.name, path: baseScopeNode.path }
-			: null;
 
 		// What each row and the caller get from somewhere else, so the dialog can say "Can manage through
 		// workspace role" and warn before a change takes access away. Only a manager can change the list,
 		// so only a manager gets it. The reads are bounded: at most 50 entries, each with 2 role reads and 3
-		// permission checks, plus the folders above, which are already read.
+		// permission checks, plus the folders above, which are already read, plus one workspace check while
+		// Everyone can view is on.
 		const baseResource = baseScopeNodeId
 			? { kind: "file" as const, id: String(baseScopeNodeId), restrictedScopeNodeId: baseScopeNodeId }
 			: { kind: "workspace" as const, id: String(membership.workspaceId) };
@@ -974,6 +1019,20 @@ export const get_node_share_state = query({
 					permission: "content.read",
 					userId: userAuth.id,
 				})));
+		const baseScopeNode = baseScopeNodeId ? await ctx.db.get("files_nodes", baseScopeNodeId) : null;
+		const baseScope = baseScopeNode
+			? {
+					nodeId: baseScopeNode._id,
+					name: baseScopeNode.name,
+					path: baseScopeNode.path,
+					// Ask the same question as for the names of that folder. For an item that takes its access,
+					// `seesInheritedNames` asks about that folder. For a restricted root it asks about the root
+					// itself, so use `seesBaseLevels`, which checks the folder above.
+					workspaceView: (access === "restricted_root" ? seesBaseLevels : seesInheritedNames)
+						? has_workspace_view(await grants_on(baseScopeNode._id))
+						: null,
+				}
+			: null;
 		const baseRoleEntries =
 			baseScopeNodeId && seesBaseLevels
 				? group_grants_into_entries(
@@ -1069,7 +1128,24 @@ export const get_node_share_state = query({
 					role = { level: entry.level, role: entry.principal.role };
 				}
 			}
-			return { base, folder, role };
+			// The same question the permission check asks for a `workspace` grant.
+			let workspace: "read" | null = null;
+			if (workspaceView && principal.kind === "user") {
+				const canRead = await access_control_db_has_permission(ctx, {
+					...checkArgs,
+					resource: { kind: "workspace", id: String(membership.workspaceId) },
+					permission: "content.read",
+					userId: principal.userId,
+				});
+				workspace = canRead ? "read" : null;
+			} else if (workspaceView && principal.kind === "role") {
+				const rolePermissions = await access_control_db_resolve_role_permissions(ctx, {
+					organizationId: organization._id,
+					role: principal.role,
+				});
+				workspace = rolePermissions?.includes("content.read") ? "read" : null;
+			}
+			return { base, folder, role, workspace };
 		};
 		const listedEntries = await Promise.all(
 			entries.map(async (entry) => ({ ...entry, coverage: canManage ? await coverage_of(entry.principal) : null })),
@@ -1124,6 +1200,7 @@ export const get_node_share_state = query({
 				canShareWithServiceAccounts,
 				serviceGrantableLevels,
 				access,
+				workspaceView,
 				canAddPeople: canManage,
 				entries: listedEntries,
 				callerUserId: userAuth.id,
@@ -1155,6 +1232,7 @@ export const get_node_share_state = query({
 			canShareWithServiceAccounts,
 			serviceGrantableLevels,
 			access,
+			workspaceView,
 			canAddPeople: canManage,
 			entries: listedEntries,
 			callerUserId: userAuth.id,
@@ -1501,6 +1579,136 @@ export const remove_node_share_grant = mutation({
 
 // #region scope restriction
 
+/**
+ * Restrict a node that is not restricted yet, for `restrict_node` and `set_node_workspace_view`.
+ * The caller already checked `content.permissions.manage` on the node. Every refusal comes before
+ * the first write, so a refusal leaves the node as it was.
+ */
+async function db_restrict_node(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		node: Doc<"files_nodes">;
+		organization: Doc<"organizations">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+	},
+) {
+	const { userAuth, membership, node, organization, defaultWorkspaceId } = args;
+
+	// A plugin decides who reads the whole bound area. A restricted item inside would leave that list.
+	// While a Move holds the item, the area it moves into counts too: the Move checked it before this restrict.
+	const moveView = await files_saved_placement_db_get_node_view(ctx.db, node._id);
+	const moved = moveView
+		? await files_saved_placement_db_get_node(ctx.db, node._id, { cohortId: moveView.cohortId, view: "after" })
+		: null;
+	for (const scopeNodeId of [node.restrictedScopeNodeId, moved?.restrictedScopeNodeId]) {
+		if (scopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, scopeNodeId))) {
+			return Result({
+				_nay: { message: "A plugin decides who can read this item, so it cannot be restricted on its own" },
+			});
+		}
+	}
+
+	const isOwner = userAuth.id === organization.ownerUserId;
+
+	// The grant below is a `manage` grant, and `manage` carries write. Somebody who may choose access
+	// but not edit content would walk out of this call able to edit. Same ceiling as handing the level
+	// to anybody else. Asked here because it has to be asked twice over: before the patch, since a
+	// refusal after one still commits it, and while the node is still open, because once it is
+	// restricted a role gives nothing inside it and this would refuse everyone.
+	if (!isOwner) {
+		const missing = await caller_can_hand_out_level(ctx, {
+			organization,
+			defaultWorkspaceId,
+			workspaceId: membership.workspaceId,
+			node,
+			userId: userAuth.id,
+			level: "manage",
+		});
+		if (missing) {
+			return Result({
+				_nay: {
+					message: `You cannot give "${access_control_FILE_SHARE_LEVELS["manage"].label}" here: you do not have "${access_control_PERMISSION_CATALOG[missing].label}" on it`,
+				},
+			});
+		}
+	}
+
+	// Restricting keeps the people, roles, and service accounts added here, so the list stays the one
+	// the dialog showed. The person restricting it joins the list below, so a full list has no room
+	// for them.
+	const grants = await db_list_scope_grants(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		scopeNodeId: node._id,
+	});
+	const entries = group_grants_into_entries(grants);
+	const callerKey = share_principal_key({ kind: "user", userId: userAuth.id });
+	if (
+		!isOwner &&
+		entries.length >= MAX_FILE_SHARE_PRINCIPALS &&
+		!entries.some((entry) => share_principal_key(entry.principal) === callerKey)
+	) {
+		return Result({
+			_nay: {
+				message: `This list already has ${MAX_FILE_SHARE_PRINCIPALS} people, roles, and apps, the most it can hold. Remove one first.`,
+			},
+		});
+	}
+
+	const now = Date.now();
+	await db_detach_file_access_binding({ ctx, node });
+	await files_nodes_db_set_restricted_scope({
+		ctx,
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		nodeId: node._id,
+		restrictedScopeNodeId: node._id,
+	});
+	// The root changes even when the folder is empty and no op starts.
+	await files_media_validation_db_advance_version(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+	});
+	// An op gives the descendants the new scope. Its first step runs here, so a small folder is done now,
+	// unless a Move holds the workspace.
+	await files_subtree_ops_db_start_rebuild(ctx, {
+		kind: "scope",
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: userAuth.id,
+		membership,
+		roots: [{ node, oldTreePath: node.treePath }],
+		budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
+		now,
+	});
+
+	// The person restricting it has to stay in. A role gives nothing inside a restricted scope, so
+	// without this an admin would restrict a folder and lose it in the same click, and only the
+	// owner could give it back.
+	//
+	// The owner is skipped because they already pass every check and hold no docs anywhere in access
+	// control. The dialog shows them as a fixed row instead.
+	if (!isOwner) {
+		await db_set_principal_level(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			scopeNodeId: node._id,
+			principal: { kind: "user", userId: userAuth.id },
+			level: "manage",
+			// Pass the kept grants, so a caller who was already listed gets no second copy of a permission.
+			grants,
+			now,
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
+ * "Only people added": the item stops taking the access of the workspace or of the folder above.
+ */
 export const restrict_node = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -1527,117 +1735,126 @@ export const restrict_node = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
-		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
+		const { node } = authorized._yay;
 		if (node.restrictedScopeNodeId === node._id) {
 			// Already restricted. Answering yes keeps a double click, or two people clicking at once,
 			// from reading as an error.
 			return Result({ _yay: null });
 		}
-		// A plugin decides who reads the whole bound area. A restricted item inside would leave that list.
-		// While a Move holds the item, the area it moves into counts too: the Move checked it before this restrict.
-		const moveView = await files_saved_placement_db_get_node_view(ctx.db, node._id);
-		const moved = moveView
-			? await files_saved_placement_db_get_node(ctx.db, node._id, { cohortId: moveView.cohortId, view: "after" })
-			: null;
-		for (const scopeNodeId of [node.restrictedScopeNodeId, moved?.restrictedScopeNodeId]) {
-			if (scopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, scopeNodeId))) {
-				return Result({
-					_nay: { message: "A plugin decides who can read this item, so it cannot be restricted on its own" },
-				});
-			}
+
+		return await db_restrict_node(ctx, { userAuth, ...authorized._yay });
+	},
+});
+
+/**
+ * Turn "Everyone in this workspace can view" on or off for one item.
+ *
+ * Turning it on restricts the item first when it is open, in the same transaction, so nobody loses access in
+ * between. Then each member reads it when their own workspace access could read an open item, and
+ * only the people on the list can change it. Turning it off keeps the item restricted ("Only people added").
+ *
+ * Only an item whose folder above lets the whole workspace in may turn it on: an open folder, or a
+ * restricted folder that has this setting on too. Inside any other restricted folder it would open the
+ * item past that folder's list, like naming every role, and the new readers could not browse to it
+ * through the locked folder. So the dialog offers people and roles there instead. This is a product
+ * guard, checked only here: an item stays open to the workspace when the folder above stops letting
+ * the workspace in later.
+ */
+export const set_node_workspace_view = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		enabled: v.boolean(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const isOwner = userAuth.id === organization.ownerUserId;
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
 
-		// The grant below is a `manage` grant, and `manage` carries write. Somebody who may choose access
-		// but not edit content would walk out of this call able to edit. Same ceiling as handing the level
-		// to anybody else. Asked here because it has to be asked twice over: before the patch, since a
-		// refusal after one still commits it, and while the node is still open, because once it is
-		// restricted a role gives nothing inside it and this would refuse everyone.
-		if (!isOwner) {
-			const missing = await caller_can_hand_out_level(ctx, {
-				organization,
-				defaultWorkspaceId,
+		const authorized = await authorize_node_sharing(ctx, {
+			userAuth,
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+			permission: "content.permissions.manage",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { membership, node } = authorized._yay;
+		const isRestrictedRoot = node.restrictedScopeNodeId === node._id;
+
+		const grantsBefore = isRestrictedRoot
+			? await db_list_scope_grants(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					scopeNodeId: node._id,
+				})
+			: [];
+		// Already so. A double click must not read as an error. Turning it off on an item that is not
+		// restricted lands here too: such an item has no grant to remove.
+		if (has_workspace_view(grantsBefore) === args.enabled) {
+			return Result({ _yay: null });
+		}
+
+		if (args.enabled) {
+			const parentScopeNodeId = await access_control_db_resolve_live_restricted_scope(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				node,
-				userId: userAuth.id,
-				level: "manage",
+				restrictedScopeNodeId: await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+					parentId: node.parentId,
+				}),
 			});
-			if (missing) {
+			const parentLetsWorkspaceIn =
+				!parentScopeNodeId ||
+				has_workspace_view(
+					await db_list_scope_grants(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						scopeNodeId: parentScopeNodeId,
+					}),
+				);
+			if (!parentLetsWorkspaceIn) {
 				return Result({
 					_nay: {
-						message: `You cannot give "${access_control_FILE_SHARE_LEVELS["manage"].label}" here: you do not have "${access_control_PERMISSION_CATALOG[missing].label}" on it`,
+						message:
+							"This is inside a restricted folder, so it cannot be opened to the whole workspace. Add people or roles instead.",
 					},
 				});
 			}
+
+			if (!isRestrictedRoot) {
+				const restricted = await db_restrict_node(ctx, { userAuth, ...authorized._yay });
+				if (restricted._nay) {
+					return restricted;
+				}
+			}
 		}
 
-		// Restricting keeps the people, roles, and service accounts added here, so the list stays the one
-		// the dialog showed. The person restricting it joins the list below, so a full list has no room
-		// for them.
+		// Read after the restrict above. A mutation sees its own writes.
 		const grants = await db_list_scope_grants(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			scopeNodeId: node._id,
 		});
-		const entries = group_grants_into_entries(grants);
-		const callerKey = share_principal_key({ kind: "user", userId: userAuth.id });
-		if (
-			!isOwner &&
-			entries.length >= MAX_FILE_SHARE_PRINCIPALS &&
-			!entries.some((entry) => share_principal_key(entry.principal) === callerKey)
-		) {
-			return Result({
-				_nay: {
-					message: `This list already has ${MAX_FILE_SHARE_PRINCIPALS} people, roles, and apps, the most it can hold. Remove one first.`,
-				},
-			});
-		}
-
-		const now = Date.now();
-		await db_detach_file_access_binding({ ctx, node });
-		await files_nodes_db_set_restricted_scope({
-			ctx,
+		await db_set_principal_level(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			nodeId: node._id,
-			restrictedScopeNodeId: node._id,
+			scopeNodeId: node._id,
+			principal: { kind: "workspace" },
+			level: args.enabled ? "read" : null,
+			grants,
+			now: Date.now(),
 		});
-		// The root changes even when the folder is empty and no op starts.
-		await files_media_validation_db_advance_version(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-		});
-		// An op gives the descendants the new scope. Its first step runs here, so a small folder is done now,
-		// unless a Move holds the workspace.
-		await files_subtree_ops_db_start_rebuild(ctx, {
-			kind: "scope",
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: userAuth.id,
-			membership,
-			roots: [{ node, oldTreePath: node.treePath }],
-			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
-			now,
-		});
-
-		// The person restricting it has to stay in. A role gives nothing inside a restricted scope, so
-		// without this an admin would restrict a folder and lose it in the same click, and only the
-		// owner could give it back.
-		//
-		// The owner is skipped because they already pass every check and hold no docs anywhere in access
-		// control. The dialog shows them as a fixed row instead.
-		if (!isOwner) {
-			await db_set_principal_level(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				scopeNodeId: node._id,
-				principal: { kind: "user", userId: userAuth.id },
-				level: "manage",
-				// Pass the kept grants, so a caller who was already listed gets no second copy of a permission.
-				grants,
-				now,
-			});
+		// A manual change takes the list over from a plugin. The restrict above already did this when it ran.
+		if (isRestrictedRoot) {
+			await db_detach_file_access_binding({ ctx, node });
 		}
 
 		return Result({ _yay: null });
@@ -1706,6 +1923,11 @@ export const unrestrict_node = mutation({
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 		}
 		for (const grant of grants) {
+			// An open item lets the workspace in anyway. Kept, the grant would come back with the next restrict.
+			if (grant.principalKind === "workspace") {
+				await ctx.db.delete("access_control_permission_grants", grant._id);
+				continue;
+			}
 			if (grant.permission !== "content.permissions.manage") continue;
 			// Service account grants go through the account writer, so the plugin folders stay in sync.
 			// A revoked account cannot get a new level, so its grant goes.

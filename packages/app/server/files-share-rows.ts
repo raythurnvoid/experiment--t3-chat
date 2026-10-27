@@ -1,7 +1,8 @@
 // Share rows (`files_share_rows`): one copy of a node per file `content.read` grant, so a member's
-// shared items can be paged with indexes like the folder table. A user, role or service
-// account grant has a copy while its node is a scope root in the grant's workspace, active or
-// archived: a restricted root, or an extended root (an item with added people).
+// shared items can be paged with indexes like the folder table. A user, role, service account or
+// workspace ("Everyone in this workspace can view") grant has a copy while its node is a scope root in
+// the grant's workspace, active or archived: a restricted root, or an extended root (an item with
+// added people).
 //
 // The overlay flush (`server/files-pending-overlay.ts`) keeps them true in the writer's transaction: a
 // grant write syncs its row, and a write to a node that has or may get a row syncs the node's rows.
@@ -37,10 +38,10 @@ export const files_share_rows_NODE_FIELDS = [
 ] as const;
 
 /**
- * The `principalKey` of a user, a role or a service account. The writes and the reads build it here,
- * so they match.
+ * The `principalKey` of a user, a role, a service account or a workspace. The writes and the reads
+ * build it here, so they match.
  */
-export function files_share_rows_principal_key(kind: "user" | "role" | "service_account", id: string) {
+export function files_share_rows_principal_key(kind: "user" | "role" | "service_account" | "workspace", id: string) {
 	return `${kind}:${id}`;
 }
 
@@ -62,7 +63,9 @@ function share_row_of(
 				? files_share_rows_principal_key("role", grant.role)
 				: grant.principalKind === "service_account" && grant.serviceAccountId
 					? files_share_rows_principal_key("service_account", grant.serviceAccountId)
-					: null;
+					: grant.principalKind === "workspace"
+						? files_share_rows_principal_key("workspace", grant.workspaceId)
+						: null;
 	if (!principalKey) return null;
 	// A grant may name a node id of another workspace. Never copy such a node.
 	if (node.organizationId !== grant.organizationId || node.workspaceId !== grant.workspaceId) return null;

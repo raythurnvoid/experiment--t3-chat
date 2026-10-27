@@ -1,6 +1,6 @@
 @layer components {
 	/* #region root */
-	/* Restricting, unrestricting and stepping into the parent's scope all replace the button that had
+	/* The yes button of a confirm box and stepping into the parent's scope remove the button that had
 	   focus, so focus moves to the dialog itself. `MyModalPopover` clears its outline for every modal,
 	   so the ring is put back here only. */
 	.FilesShareModal {
@@ -105,7 +105,8 @@
 		flex: none;
 	}
 
-	/* The yes or no before a change that takes access away, under the list. */
+	/* The yes or no before a change that takes access away, shown next to the control that started the
+	   change. */
 	.FilesShareModal-confirm {
 		display: flex;
 		flex-direction: column;
@@ -128,8 +129,8 @@
 	/* #endregion section */
 
 	/* #region source row */
-	/* The workspace row and the folder rows line up with the people rows: same padding, same icon box.
-	   The text grows, and the actions drop below it when a folder name is long. */
+	/* The folder rows line up with the people rows: same padding, same icon box. The text grows, and
+	   the actions drop below it when a folder name is long. */
 	.FilesShareModalSourceRow {
 		display: flex;
 		flex-wrap: wrap;
@@ -175,8 +176,7 @@
 		overflow-wrap: anywhere;
 	}
 
-	.FilesShareModalSourceRow-meta,
-	.FilesShareModalSourceRow-note {
+	.FilesShareModalSourceRow-meta {
 		font-size: 15px;
 		line-height: 1.4;
 		color: var(--color-fg-08);
@@ -190,6 +190,84 @@
 		flex: none;
 	}
 	/* #endregion source row */
+
+	/* #region general access */
+	/* Lines up with the people rows: same padding, same icon box. The select sits where a name would. */
+	.FilesShareModalGeneral-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 10px;
+
+		padding: 8px 10px;
+	}
+
+	.FilesShareModalGeneral-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+
+		width: 32px;
+		height: 32px;
+		border-radius: 999px;
+
+		color: var(--color-fg-10);
+		background: var(--color-base-1-05);
+
+		> svg {
+			width: 16px;
+			height: 16px;
+		}
+	}
+
+	.FilesShareModalGeneral-main {
+		display: flex;
+		flex-direction: column;
+		align-items: start;
+		gap: 4px;
+
+		min-width: 0;
+		flex: 1 1 18rem;
+	}
+
+	/* A folder name in the label can be one long word, so the trigger may not grow past the row. */
+	.FilesShareModalGeneral-trigger {
+		justify-content: space-between;
+		gap: 8px;
+
+		min-width: 260px;
+		max-width: 100%;
+
+		> span:first-child {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+	}
+
+	.FilesShareModalGeneral-current {
+		font-size: 16px;
+		font-weight: 500;
+		color: var(--color-fg-11);
+		overflow-wrap: anywhere;
+	}
+
+	.FilesShareModalGeneral-text,
+	.FilesShareModalGeneral-note {
+		font-size: 15px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+		overflow-wrap: anywhere;
+	}
+
+	.FilesShareModalGeneral-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: none;
+	}
+	/* #endregion general access */
 
 	/* #region link */
 	.FilesShareModalLink-created {
@@ -246,6 +324,7 @@
 	.FilesShareModalSkeleton-add-principal,
 	.FilesShareModalSkeleton-add-level,
 	.FilesShareModalSkeleton-add-button,
+	.FilesShareModalSkeleton-general-level,
 	.FilesShareModalSkeleton-link-level {
 		flex: none;
 
@@ -265,6 +344,11 @@
 
 	.FilesShareModalSkeleton-add-button {
 		width: 72px;
+	}
+
+	.FilesShareModalSkeleton-general-level {
+		width: 260px;
+		max-width: 100%;
 	}
 
 	.FilesShareModalSkeleton-icon {

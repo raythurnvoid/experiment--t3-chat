@@ -461,7 +461,7 @@ function useFilesSortedChildrenSource(
 		!active || sort === null || (restricted && skipsTwin)
 			? ("skip" as const)
 			: { membershipId, parentId: folderId, kind, sort, filter, namePrefix, restricted, segment, stream: props.stream };
-	const sharedArgs = (principalIndex: 0 | 1 | 2) =>
+	const sharedArgs = (principalIndex: 0 | 1 | 2 | 3) =>
 		!active || sort === null || skipsShares
 			? ("skip" as const)
 			: {
@@ -482,8 +482,9 @@ function useFilesSortedChildrenSource(
 	const shared0 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(0), options);
 	const shared1 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(1), options);
 	const shared2 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(2), options);
+	const shared3 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(3), options);
 
-	return [open, restricted, shared0, shared1, shared2]
+	return [open, restricted, shared0, shared1, shared2, shared3]
 		.filter((_result, index) => !((index === 1 && skipsTwin) || (index >= 2 && skipsShares)))
 		.map((result) => ({
 			rows: result.results.map((row): FilesSortedChildrenRow => ({

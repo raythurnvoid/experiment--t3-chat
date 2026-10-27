@@ -3,6 +3,7 @@ import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_create_saved_text_file, test_move_nodes, test_run_with_flush, test_spy_handler } from "./setup.test.ts";
 import { get_node_share_state } from "./files_sharing.ts";
+import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { expect_under_convex_limits, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import { access_control_ADDED_PEOPLE_LEVEL_MESSAGE } from "../shared/access-control.ts";
 import {
@@ -330,7 +331,7 @@ test("the share dialog says where access comes from", async () => {
 	expect(onFolder).toMatchObject({ access: "extended_root", canAddPeople: true });
 	expect(onFolder?.entries.map((entry) => entry.principal)).toEqual([{ kind: "user", userId: f.memberId }]);
 	expect(onFolder?.inheritedFrom).toEqual({
-		restricted: { nodeId: restrictedId, name: "r", path: "/r", entries: [] },
+		restricted: { nodeId: restrictedId, name: "r", path: "/r", entries: [], workspaceView: false },
 		extended: [],
 	});
 
@@ -343,6 +344,7 @@ test("the share dialog says where access comes from", async () => {
 	expect(asMember).toMatchObject({ canAddPeople: false });
 	expect(asMember?.inheritedFrom.restricted?.entries).toBe(null);
 	expect(asMember?.inheritedFrom.extended.map((line) => line.entries)).toEqual([null]);
+	expect(asMember?.baseScope?.workspaceView).toBe(null);
 
 	// A reader of the whole restricted folder sees the names, as before.
 	expect((await share_with(f, restrictedId, "read"))._nay).toBeUndefined();
@@ -352,6 +354,7 @@ test("the share dialog says where access comes from", async () => {
 		{ kind: "user", userId: f.memberId },
 	]);
 	expect(asReader?.inheritedFrom.extended.map((line) => line.entries?.length)).toEqual([1]);
+	expect(asReader?.baseScope?.workspaceView).toBe(false);
 });
 
 test("a manager of a restricted folder inside another one learns no levels from the outer list", async () => {
@@ -369,15 +372,18 @@ test("a manager of a restricted folder inside another one learns no levels from 
 		});
 		expect(shared._nay).toBeUndefined();
 	}
+	const state = (as: typeof f.asOwner, membershipId: Id<"organizations_workspaces_users">) =>
+		as.query(api.files_sharing.get_node_share_state, { membershipId, nodeId: folderId });
 	const admin_base = async (as: typeof f.asOwner, membershipId: Id<"organizations_workspaces_users">) =>
-		(await as.query(api.files_sharing.get_node_share_state, { membershipId, nodeId: folderId }))?.entries.find(
-			(entry) => entry.principal.kind === "role",
-		)?.coverage?.base;
+		(await state(as, membershipId))?.entries.find((entry) => entry.principal.kind === "role")?.coverage?.base;
 
 	// The owner reads `/r`, so the admin row shows its level there.
 	expect(await admin_base(f.asOwner, f.db.membershipId)).toBe("read");
-	// The member manages `/r/d` but cannot open `/r`.
+	expect((await state(f.asOwner, f.db.membershipId))?.baseScope?.workspaceView).toBe(false);
+	// The member manages `/r/d` but cannot open `/r`, so they learn nothing about it, not even its
+	// "can view" setting.
 	expect(await admin_base(f.asMember, f.memberMembershipId)).toBe(null);
+	expect((await state(f.asMember, f.memberMembershipId))?.baseScope?.workspaceView).toBe(null);
 });
 
 test("a public link survives adding people", async () => {
@@ -856,4 +862,210 @@ test("a chain whose roots point at each other stops instead of looping", async (
 			}),
 		),
 	).toBe(false);
+});
+
+async function set_workspace_view(f: Fixture, nodeId: Id<"files_nodes">, enabled: boolean) {
+	await reset_rate_limits(f.t, [f.db.userId]);
+	return await f.asOwner.mutation(api.files_sharing.set_node_workspace_view, {
+		membershipId: f.db.membershipId,
+		nodeId,
+		enabled,
+	});
+}
+
+/** The member's own access through `access_control_db_has_permission`, the path most doors use. */
+function member_has(
+	f: Fixture,
+	nodeId: Id<"files_nodes">,
+	permission: "content.read" | "content.write" = "content.read",
+) {
+	return f.t.run(async (ctx) =>
+		access_control_db_has_permission(ctx, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			defaultWorkspaceId: f.db.workspaceId,
+			organizationOwnerUserId: f.db.userId,
+			userId: f.memberId,
+			resource: {
+				kind: "file",
+				id: nodeId,
+				restrictedScopeNodeId: (await ctx.db.get("files_nodes", nodeId))!.restrictedScopeNodeId,
+			},
+			permission,
+		}),
+	);
+}
+
+/**
+ * Give the member a new role with only these permissions. The role door refuses this fixture's
+ * member, whose role is also their organization role, so the test sets it in the database.
+ */
+async function set_member_permissions(
+	f: Fixture,
+	permissions: ("content.read" | "content.permissions.manage" | "workspace.create")[],
+) {
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const role = await f.asOwner.mutation(api.access_control.create_role, {
+		organizationId: f.db.organizationId,
+		name: permissions.length === 1 ? "Guest" : "Curator",
+		description: "",
+		permissions,
+	});
+	expect(role._nay).toBeUndefined();
+	await f.t.run(async (ctx) => {
+		const assignment = await ctx.db
+			.query("access_control_role_assignments")
+			.filter((q) => q.eq(q.field("userId"), f.memberId))
+			.unique();
+		await ctx.db.patch("access_control_role_assignments", assignment!._id, { role: role._yay!.roleId });
+	});
+}
+
+function workspace_grants(f: Fixture, nodeId: Id<"files_nodes">) {
+	return f.t.run((ctx) =>
+		ctx.db
+			.query("access_control_permission_grants")
+			.filter((q) => q.and(q.eq(q.field("resourceId"), nodeId), q.eq(q.field("principalKind"), "workspace")))
+			.collect(),
+	);
+}
+
+test("Everyone in this workspace can view lets members read but not edit, and lets no guest in", async () => {
+	const f = await fixture();
+	const folderId = await seed_folder(f, "/v");
+	const fileId = (await f.t.run((ctx) =>
+		ctx.db
+			.query("files_nodes")
+			.filter((q) => q.eq(q.field("path"), "/v/x.md"))
+			.first(),
+	))!._id;
+
+	expect(await set_workspace_view(f, folderId, true)).toEqual({ _yay: null });
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+	// It restricted the open folder in the same call.
+	expect((await get_node(f, folderId)).restrictedScopeNodeId).toBe(folderId);
+	expect(await can(f, member(f), fileId)).toBe(true);
+	expect(await member_has(f, fileId)).toBe(true);
+	expect(await can(f, member(f), fileId, "content.write")).toBe(false);
+	expect(await member_has(f, fileId, "content.write")).toBe(false);
+
+	// A guest's own role reads nothing in an open folder, so "everyone" does not cover them.
+	await set_member_permissions(f, ["workspace.create"]);
+	expect(await can(f, member(f), fileId)).toBe(false);
+	expect(await member_has(f, fileId)).toBe(false);
+
+	// A person added on top gets their own level.
+	expect((await share_with(f, folderId, "write"))._nay).toBeUndefined();
+	expect(await can(f, member(f), fileId, "content.write")).toBe(true);
+	expect(await member_has(f, fileId, "content.write")).toBe(true);
+});
+
+test("an item everyone can view shows in a member's filtered table, and not in a guest's", async () => {
+	const f = await fixture();
+	const folderId = await seed_folder(f, "/v");
+	const fileId = (await f.t.run((ctx) =>
+		ctx.db
+			.query("files_nodes")
+			.filter((q) => q.eq(q.field("path"), "/v/x.md"))
+			.first(),
+	))!._id;
+	expect(await set_workspace_view(f, fileId, true)).toEqual({ _yay: null });
+	// Write the metadata after the restrict: the field docs copy the node's flag.
+	await f.t.run(async (ctx) =>
+		files_metadata_db_write_entries(ctx, {
+			fileNode: (await ctx.db.get("files_nodes", fileId))!,
+			entries: [{ key: "status", value: "open" }],
+		}),
+	);
+	// The share rows serve only custom-field filters.
+	const read = async () =>
+		(
+			await f.asMember.query(api.files_tree.list_tree_children_shared, {
+				stream: "normal",
+				membershipId: f.memberMembershipId,
+				parentId: folderId,
+				kind: "file",
+				principalIndex: 3,
+				sort: [{ field: "metadata.status", direction: "asc" }],
+				filter: { kind: "text", field: "metadata.status", op: "present" },
+				namePrefix: null,
+				segment: "value",
+				paginationOpts: { numItems: 10, cursor: null },
+			})
+		).page.map((row) => row.name);
+
+	expect(await read()).toEqual(["x.md"]);
+
+	// Add the guest to /v by name, so the read gets past the parent check and reaches the stream.
+	expect((await share_with(f, folderId, "read"))._nay).toBeUndefined();
+	await set_member_permissions(f, ["workspace.create"]);
+	expect(await can(f, member(f), folderId)).toBe(true);
+	expect(await read()).toEqual([]);
+});
+
+test("turning Everyone can view off, or opening the item, removes the grant for good", async () => {
+	const f = await fixture();
+	const folderId = await seed_folder(f, "/v");
+
+	expect(await set_workspace_view(f, folderId, true)).toEqual({ _yay: null });
+	expect(await set_workspace_view(f, folderId, false)).toEqual({ _yay: null });
+
+	// Off keeps the folder restricted to the people added.
+	expect((await get_node(f, folderId)).restrictedScopeNodeId).toBe(folderId);
+	expect(await can(f, member(f), folderId)).toBe(false);
+	expect(await workspace_grants(f, folderId)).toEqual([]);
+
+	// Opening the folder deletes the grant, so the next restrict does not bring it back.
+	expect(await set_workspace_view(f, folderId, true)).toEqual({ _yay: null });
+	await set_restricted(f, folderId, false);
+	expect(await workspace_grants(f, folderId)).toEqual([]);
+	await set_restricted(f, folderId, true);
+	expect(await can(f, member(f), folderId)).toBe(false);
+});
+
+test("Everyone can view inside a restricted folder needs that folder to have it too, and refuses before any write", async () => {
+	const f = await fixture();
+	const { restrictedId, folderId } = await seed_restricted(f);
+
+	const refused = await set_workspace_view(f, folderId, true);
+
+	expect(refused._nay?.message).toBe(
+		"This is inside a restricted folder, so it cannot be opened to the whole workspace. Add people or roles instead.",
+	);
+	expect((await get_node(f, folderId)).restrictedScopeNodeId).toBe(restrictedId);
+	expect(await workspace_grants(f, folderId)).toEqual([]);
+
+	// A restricted folder that the whole workspace can view lets it in, so the item inside may say the same.
+	expect(await set_workspace_view(f, restrictedId, true)).toEqual({ _yay: null });
+	const before = await f.asOwner.query(api.files_sharing.get_node_share_state, {
+		membershipId: f.db.membershipId,
+		nodeId: folderId,
+	});
+	expect(before?.baseScope?.workspaceView).toBe(true);
+	expect(before?.inheritedFrom.restricted?.workspaceView).toBe(true);
+	expect(await set_workspace_view(f, folderId, true)).toEqual({ _yay: null });
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	expect((await get_node(f, folderId)).restrictedScopeNodeId).toBe(folderId);
+	expect(await can(f, member(f), folderId)).toBe(true);
+});
+
+test("Everyone can view does not hand the caller a write level they never had", async () => {
+	const f = await fixture();
+	const folderId = await seed_folder(f, "/v");
+	await set_member_permissions(f, ["content.read", "content.permissions.manage"]);
+
+	await reset_rate_limits(f.t, [f.memberId]);
+	const refused = await f.asMember.mutation(api.files_sharing.set_node_workspace_view, {
+		membershipId: f.memberMembershipId,
+		nodeId: folderId,
+		enabled: true,
+	});
+
+	// The restrict inside would give the caller "Can manage", which carries edit.
+	expect(refused._nay?.message).toBe(
+		'You cannot give "Can manage" here: you do not have "Edit workspace content" on it',
+	);
+	expect((await get_node(f, folderId)).restrictedScopeNodeId).toBeNull();
+	expect(await workspace_grants(f, folderId)).toEqual([]);
 });

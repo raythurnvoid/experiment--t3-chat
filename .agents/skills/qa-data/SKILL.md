@@ -42,7 +42,7 @@ accounts, and a "what do you need" table that points to real files.
 
 | The check needs | Use |
 | --- | --- |
-| An owner and a member: permissions, refusals, shares. No uploads. | `qa.perm.owner` and `qa.perm.viewer` in `qa-browser/home`, each in its own scratch browser. These accounts have no paid plan, so they cannot upload (seen 2026-10-21). |
+| An owner and a member: permissions, refusals, shares. No uploads. | `qa.perm.owner` and `qa.perm.viewer` in `qa-browser/home`, each in its own scratch browser. These accounts have no paid plan, so they cannot upload (seen 2026-10-21). `qa.perm.viewer` has no credits either, so its content saves fail with `Insufficient funds`. The server checks write permission before credits, so that error still proves the member may write (seen 2026-10-27). |
 | A paid plan: uploads, images, videos, public pages with media, Save with credits. | `qa.paid.owner` in `f5-repro-org/home`, in a scratch browser. The account has a Pro plan. |
 | An anonymous visitor (public link pages). | A new headless session with no sign-in. Open the share URL first, not `/`. |
 | Lots of existing data: big folders, many file types, existing images. | The QA Edge profile and its `chitchat-qa` workspaces. Use the account that is already signed in there; never sign in or out in that profile. |
