@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
+import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { fixture } from "./files_pending_overlay.setup.test.ts";
@@ -13,7 +14,7 @@ import {
 import { seed_billing_snapshot_for_user } from "./files_nodes.setup.test.ts";
 import { upsert_file_pending_update_public_for_test } from "./files_pending_updates.setup.test.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
-import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import * as markdown_chunks from "../server/files-markdown-chunking-mastra.ts";
 import {
 	files_metadata_MAX_FRONTMATTER_FIELDS,
 	files_metadata_preflight_frontmatter,
@@ -84,6 +85,151 @@ async function expect_saved_text(f: Awaited<ReturnType<typeof create_file>>, tex
 		text,
 	);
 }
+
+test("Save stages source during upload and publishes only after both finish", async () => {
+	const f = await create_file();
+	const text = "Replacement text\n";
+	const before = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
+	const history = await read_history(f);
+	const entered = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const capturedFetch = fetch;
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "PUT" && init.body === text) {
+				entered.resolve();
+				await resume.promise;
+			}
+			return await capturedFetch(input, init);
+		}),
+	);
+	const saving = f.asU.action(api.files_nodes_content.replace_file_content, {
+		membershipId: f.db.membershipId,
+		nodeId: f.nodeId,
+		requestId: "overlap-upload",
+		text,
+	});
+	await entered.promise;
+	try {
+		let request: Doc<"files_content_save_requests"> | null = null;
+		// Yield to the action without running unrelated scheduled jobs or expiry timers.
+		for (let step = 0; step < 100; step++) {
+			request = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_content_save_requests")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId))
+					.unique(),
+			);
+			if (request?.progress.state === "preparing" && request.progress.nextChunkIndex > 0) break;
+		}
+		expect(
+			request?.progress.state === "preparing" && request.progress.nextChunkIndex > 0,
+			"source staging starts before upload finishes",
+		).toBe(true);
+		if (request?.progress.state !== "preparing") throw new Error("Expected an unpublished Save");
+		const headId = request.progress.headId;
+		expect(
+			(await f.t.run((ctx) => ctx.db.get("files_saved_content_heads", headId)))?.ready,
+			"the candidate stays unsealed while upload waits",
+		).toBe(false);
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId))).toEqual(before);
+		expect(await read_history(f)).toEqual(history);
+		await expect_saved_text(f, "Original text\n");
+		resume.resolve();
+		expect(await saving).toHaveProperty("_yay");
+		await expect_saved_text(f, text);
+	} finally {
+		resume.resolve();
+		await saving;
+	}
+});
+
+test.each(["upload", "staging"] as const)("Save waits for both branches after %s fails", async (failure) => {
+	const f = await create_file();
+	const text = "Replacement text\n";
+	const before = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
+	const history = await read_history(f);
+	const uploadEntered = Promise.withResolvers<void>();
+	const stagingEntered = Promise.withResolvers<void>();
+	const uploadResume = Promise.withResolvers<void>();
+	const stagingResume = Promise.withResolvers<void>();
+	const capturedFetch = fetch;
+	const parse = markdown_chunks.files_chunk_markdown_bounds;
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "PUT" && init.body === text) {
+				uploadEntered.resolve();
+				await uploadResume.promise;
+				if (failure === "upload") throw new Error("Upload failed for this test");
+			}
+			return await capturedFetch(input, init);
+		}),
+	);
+	vi.spyOn(markdown_chunks, "files_chunk_markdown_bounds").mockImplementation(async (input) => {
+		stagingEntered.resolve();
+		await stagingResume.promise;
+		if (failure === "staging") return Result({
+			_nay: {
+				name: "nay",
+				message: "Error while chunking markdown",
+				cause: new Error("Staging failed for this test"),
+			},
+		});
+		return await parse(input);
+	});
+	let settled = false;
+	const saving = f.asU
+		.action(api.files_nodes_content.replace_file_content, {
+			membershipId: f.db.membershipId,
+			nodeId: f.nodeId,
+			requestId: `failed-${failure}`,
+			text,
+		})
+		.then(
+			(result) => {
+				settled = true;
+				return { result };
+			},
+			(error: unknown) => {
+				settled = true;
+				return { error };
+			},
+		);
+	try {
+		await Promise.all([uploadEntered.promise, stagingEntered.promise]);
+		if (failure === "upload") uploadResume.resolve();
+		else stagingResume.resolve();
+		for (let step = 0; step < 20; step++) await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
+		expect(settled, "a failed Save waits for the other started branch").toBe(false);
+		uploadResume.resolve();
+		stagingResume.resolve();
+		const outcome = await saving;
+		if (failure === "upload") expect(outcome).toMatchObject({ error: { message: "Upload failed for this test" } });
+		else expect(outcome).toMatchObject({ result: { _nay: { message: "Error while chunking markdown" } } });
+		const request = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_content_save_requests")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId))
+				.unique(),
+		);
+		expect(request?.progress.state, "a failed branch cannot seal or publish the Save").toBe("preparing");
+		if (request?.progress.state !== "preparing") throw new Error("Expected an unpublished Save");
+		expect(request.progress.nextChunkIndex, "started staging settles before Save returns").toBe(
+			failure === "upload" ? 1 : 0,
+		);
+		const headId = request.progress.headId;
+		expect((await f.t.run((ctx) => ctx.db.get("files_saved_content_heads", headId)))?.ready).toBe(false);
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId))).toEqual(before);
+		expect(await read_history(f)).toEqual(history);
+		await expect_saved_text(f, "Original text\n");
+	} finally {
+		uploadResume.resolve();
+		stagingResume.resolve();
+		await saving;
+	}
+});
 
 test("Save publication rechecks a lock added during upload", async () => {
 	const f = await create_file();
@@ -836,7 +982,7 @@ test(
 	async () => {
 		const oldText = test_max_chunks_markdown();
 		expect(files_get_utf8_byte_size(oldText)).toBe(898_930);
-		const chunks = await files_chunk_markdown(oldText);
+		const chunks = await markdown_chunks.files_chunk_markdown(oldText);
 		if (chunks._nay) throw new Error(chunks._nay.message);
 		expect(chunks._yay).toHaveLength(2985);
 		expect(longestPath).toHaveLength(1024);

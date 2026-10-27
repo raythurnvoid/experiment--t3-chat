@@ -381,7 +381,9 @@ file's lifetime, also after archive, restore and history cleanup. Last committed
 an older completed Save does not overwrite it.
 
 `files_content_saves.ts` stages exact source chunks in separate transactions and selects the ready
-head in one final mutation. Permission and write-policy checks run again at publication. Other
+head in one final mutation. Save uploads the version and stages its private source pages together.
+It waits for both tasks, also on failure, before sealing. A ready receipt must always mean the
+upload finished, because a retry can publish it. Permission and write-policy checks run again at publication. Other
 members' drafts stay intact. Exact source stays while a live source, index build, published index
 or Move needs it. A Yjs log keeps its owner record. Version assets follow normal history retention.
 Retirement deletes only unreferenced source chunks and headers in pages.

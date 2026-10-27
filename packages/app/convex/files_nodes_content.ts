@@ -4888,34 +4888,43 @@ async function action_replace_file_content(
 	if (!head) throw should_never_happen("Save candidate is missing", { saveId: request._id });
 	const progress = request.progress;
 	if (progress.state === "preparing") {
-		await r2_put_object(ctx, {
-			key: r2_create_asset_key({
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				assetId: progress.assetId,
+		const [upload, prepared] = await Promise.allSettled([
+			r2_put_object(ctx, {
+				key: r2_create_asset_key({
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					assetId: progress.assetId,
+				}),
+				body: text,
+				contentType: files_editable_text_content_type_of(head.contentType) ?? "application/octet-stream",
 			}),
-			body: text,
-			contentType: files_editable_text_content_type_of(head.contentType) ?? "application/octet-stream",
-		});
-		const chunks = head.textKind === "rich_text"
-			? await files_chunk_markdown_bounds(text)
-			: Result({ _yay: files_chunk_plain_text(text) });
-		if (chunks._nay) return Result({ _nay: { message: chunks._nay.message } });
-		let nextChunkIndex = progress.nextChunkIndex;
-		while (nextChunkIndex < chunks._yay.length) {
-			const page = await ctx.runMutation(internal.files_content_saves.stage_page, {
-				saveId: request._id, generation: progress.generation, firstChunkIndex: nextChunkIndex,
-				chunks: chunks._yay.slice(nextChunkIndex, nextChunkIndex + 100).map((chunk) => ({
-					chunkIndex: chunk.chunkIndex, textChunk: chunk.textChunk, startIndex: chunk.startIndex,
-					endIndex: chunk.endIndex, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, chunkFlags: chunk.chunkFlags,
-				})),
-			});
-			if (page._nay) return page;
-			if (page._yay === -1) break;
-			nextChunkIndex = page._yay;
-		}
+			(async () => {
+				const chunks = head.textKind === "rich_text"
+					? await files_chunk_markdown_bounds(text)
+					: Result({ _yay: files_chunk_plain_text(text) });
+				if (chunks._nay) return Result({ _nay: { message: chunks._nay.message } });
+				let nextChunkIndex = progress.nextChunkIndex;
+				while (nextChunkIndex < chunks._yay.length) {
+					const page = await ctx.runMutation(internal.files_content_saves.stage_page, {
+						saveId: request._id, generation: progress.generation, firstChunkIndex: nextChunkIndex,
+						chunks: chunks._yay.slice(nextChunkIndex, nextChunkIndex + 100).map((chunk) => ({
+							chunkIndex: chunk.chunkIndex, textChunk: chunk.textChunk, startIndex: chunk.startIndex,
+							endIndex: chunk.endIndex, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, chunkFlags: chunk.chunkFlags,
+						})),
+					});
+					if (page._nay) return page;
+					if (page._yay === -1) break;
+					nextChunkIndex = page._yay;
+				}
+				return Result({ _yay: chunks._yay.length });
+			})(),
+		]);
+		if (upload.status === "rejected") throw upload.reason;
+		if (prepared.status === "rejected") throw prepared.reason;
+		if (prepared.value._nay) return prepared.value;
+		// A retry can publish a ready receipt, so seal only after both writes finish.
 		const sealed = await ctx.runMutation(internal.files_content_saves.seal, {
-			saveId: request._id, generation: progress.generation, chunkCount: chunks._yay.length,
+			saveId: request._id, generation: progress.generation, chunkCount: prepared.value._yay,
 			textLength: text.length, ...files_compute_wc_counts(text),
 		});
 		if (sealed._nay) return sealed;
