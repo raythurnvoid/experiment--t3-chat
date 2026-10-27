@@ -5,7 +5,7 @@ import { api } from "../convex/_generated/api.js";
 import type { Doc } from "../convex/_generated/dataModel.js";
 import { list_tree_children, list_tree_children_shared, list_tree_children_sorted } from "../convex/files_tree.ts";
 import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "../convex/setup.test.ts";
-import type { files_DirectoryView } from "../shared/files.ts";
+import type { files_DirectoryView, files_IndexDirectoryView } from "../shared/files.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 
 beforeEach(() => {
@@ -34,13 +34,15 @@ function read_directory(
 	args: {
 		parentId: Doc<"files_nodes">["parentId"];
 		stream: "normal" | "cohort";
-		pageView?: files_DirectoryView;
+		pageView?: files_IndexDirectoryView;
 		paginationOpts: { cursor: string | null; numItems: number; endCursor?: string };
 	},
 ) {
 	const common = { membershipId: f.db.membershipId, kind: "file" as const, ...args };
 	if (door === "tree")
-		return f.asUser.query(api.files_tree.list_tree_children, { ...common, archived: false, restricted: false });
+		return f.asUser.query(api.files_tree.list_tree_children, {
+			...common, archived: false, restricted: false, pageView: common.pageView as files_DirectoryView | undefined,
+		});
 	const sorted = {
 		...common,
 		sort: [{ field: "name" as const, direction: "asc" as const }],

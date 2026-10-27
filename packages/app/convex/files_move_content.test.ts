@@ -220,6 +220,79 @@ test("reports content pages, including an empty update page", async () => {
 	expect(sawEmptyUpdatePage, "the test reaches the empty native update page").toBe(true);
 });
 
+test("Move keeps other source versions and cleans an older published index", async () => {
+	const f = await fixture();
+	const seeded = await f.t.run(async (ctx) => {
+		const content = (await ctx.db.get("files_move_cohort_content", f.context.contentId))!;
+		const head = (await ctx.db.get("files_saved_content_heads", content.beforeHeadId!))!;
+		const { _id: _headId, _creationTime: _headTime, ...header } = head;
+		// A materialization rotates exact source ownership while keeping its live Yjs log.
+		const sourceHeadId = await ctx.db.insert("files_saved_content_heads", { ...header, yjsContentHeadId: head._id });
+		const stagedHeadId = await ctx.db.insert("files_saved_content_heads", { ...header, ready: false });
+		await ctx.db.patch("files_nodes", f.nodeId, { contentHeadId: sourceHeadId });
+		await ctx.db.patch("files_move_cohort_content", content._id, { beforeHeadId: sourceHeadId, afterHeadId: sourceHeadId });
+		const exact = (await ctx.db.query("files_text_chunks")
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id)).first())!;
+		if (exact.sourceKind !== "committed") throw new Error("Expected saved source text");
+		const { _id: _chunkId, _creationTime: _chunkTime, ...chunk } = exact;
+		await ctx.db.patch("files_text_chunks", exact._id, { contentHeadId: sourceHeadId });
+		const retainedChunkId = await ctx.db.insert("files_text_chunks", chunk);
+		const plain = await ctx.db.query("files_plain_text_chunks")
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id)).first();
+		if (plain) await ctx.db.patch("files_plain_text_chunks", plain._id, { textChunkId: retainedChunkId });
+		const stagedChunkId = await ctx.db.insert("files_text_chunks", {
+			...chunk, contentHeadId: stagedHeadId, textChunk: "unpublished source",
+		});
+		const update = {
+			organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, fileNodeId: f.nodeId,
+			sequence: 0, update: new Uint8Array([0, 0]).buffer,
+			origin: { type: "USER_EDIT" as const, sessionId: "source-ownership" },
+			createdBy: f.db.userId, createdAt: Date.now(),
+		};
+		const selectedLogId = await ctx.db.insert("files_yjs_updates", { ...update, contentHeadId: head._id });
+		const otherLogId = await ctx.db.insert("files_yjs_updates", { ...update, contentHeadId: stagedHeadId });
+		await ctx.db.insert("files_index_states", {
+			organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, fileNodeId: f.nodeId,
+			contentRevision: 1, requestedRevision: 1, requestedHeadId: sourceHeadId,
+			publishedRevision: 0, publishedHeadId: head._id, activeRunId: null,
+			needsRun: true, nextAttemptAt: Date.now(), movePublication: null,
+		});
+		return { sourceHeadId, exactId: exact._id, retainedChunkId, stagedChunkId, selectedLogId, otherLogId };
+	});
+	await f.stage();
+	await f.t.run(async (ctx) => {
+		for (const id of [seeded.retainedChunkId, seeded.stagedChunkId])
+			expect((await ctx.db.get("files_text_chunks", id))?.moveView,
+				"Move does not tag another exact source version").toBeUndefined();
+		expect((await ctx.db.get("files_yjs_updates", seeded.otherLogId))?.moveView,
+			"Move does not tag another Yjs log").toBeUndefined();
+		expect((await ctx.db.get("files_yjs_updates", seeded.selectedLogId))?.moveView,
+			"Move follows the stable log owner of its exact source").toEqual({ cohortId: f.cohortId, view: "before" });
+	});
+	expect(await f.chunks()).toBe("old text");
+	expect(await f.publish()).toEqual({ _yay: null });
+	for (let pass = 0; pass < 100; pass++) {
+		const finished = await test_run_with_flush(f.t, (ctx) => files_move_content_db_finish(ctx, f.context));
+		if (finished._nay) throw new Error(finished._nay.message);
+		if (finished._yay.done) break;
+		if (pass === 99) throw new Error("Content cleanup did not finish");
+	}
+	await f.t.run(async (ctx) => {
+		expect(await ctx.db.get("files_text_chunks", seeded.exactId),
+			"Move cleanup keeps exact source bytes pinned by indexing").toMatchObject({ contentHeadId: seeded.sourceHeadId });
+		for (const id of [seeded.retainedChunkId, seeded.stagedChunkId])
+			expect(await ctx.db.get("files_text_chunks", id), "Move cleanup leaves other source versions alone").not.toBeNull();
+		const plain = await ctx.db.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId)
+					.eq("fileNodeId", f.nodeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+			).collect();
+		expect(plain.map((row) => row.plainTextChunk),
+			"Move cleanup removes the older published index even when its source owner differs").toEqual(["accepted text"]);
+	});
+	expect(await f.chunks()).toBe("accepted text");
+});
+
 test("staging preserves saved content, then publishes exact partial content and quota once", async () => {
 	const f = await fixture();
 	const old = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));

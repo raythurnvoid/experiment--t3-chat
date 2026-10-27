@@ -449,6 +449,7 @@ describe("start_browser", () => {
 			expect(
 				(
 					await asOwner.action(api.files_nodes_content.replace_file_content, {
+						requestId: "browser-session-save",
 						membershipId: fixture.membershipId,
 						nodeId: fixture.nodeId,
 						text: "<!doctype html><title>Saved file</title><p>New saved text</p>",

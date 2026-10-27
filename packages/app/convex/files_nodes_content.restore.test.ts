@@ -4,6 +4,7 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { applyUpdate, Doc as YjsDoc, encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
+import { files_content_sources_action_prepare } from "./files_content_sources.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
@@ -201,7 +202,14 @@ describe("cleanup_file_yjs_task", () => {
 				}),
 			),
 		);
+		const prepared = await t.action((ctx) => files_content_sources_action_prepare(ctx, {
+			nodeId,
+			assetId: contentSnapshotAssetId!,
+			text: "Original text\n",
+		}));
+		if (prepared._nay) throw new Error(prepared._nay.message);
 		const finalized = await asUser.mutation(internal.files_nodes_content.finalize_file_collaboration_enable, {
+			preparedSourceHeadId: prepared._yay,
 			membershipId: db.membershipId,
 			nodeId,
 			text: "Original text\n",
@@ -951,6 +959,7 @@ describe("restore_snapshot_r2", () => {
 			let textSnapshotId = snapshotId;
 			if (!collaborationEnabled) {
 				const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+					requestId: "save-with-collaboration-off",
 					membershipId: db.membershipId,
 					nodeId,
 					text: "Saved with collaboration off\n",
@@ -1403,6 +1412,7 @@ describe("restore_snapshot_r2", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: "# Title",
+			requestId: "normalize-version",
 		});
 		expect(saved._nay).toBeUndefined();
 		const version = await t.run(async (ctx) => {
@@ -1523,6 +1533,7 @@ describe("restore_snapshot_r2", () => {
 					membershipId: db.membershipId,
 					nodeId,
 					text: "Version saved with collaboration off\n",
+					requestId: "off-version",
 				});
 				expect(saved._nay).toBeUndefined();
 				versionId = await t.run(async (ctx) => {
@@ -1537,6 +1548,7 @@ describe("restore_snapshot_r2", () => {
 				membershipId: db.membershipId,
 				nodeId,
 				text: "Current text to replace\n",
+				requestId: "current-before-restore",
 			});
 			expect(savedCurrent._nay).toBeUndefined();
 			if (!destinationOff) {

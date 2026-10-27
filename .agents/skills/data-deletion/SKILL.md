@@ -317,6 +317,11 @@ Current purge coverage includes:
   bounded table batch per call. User finalization drains members, reads, followers, and inbox through
   `channels_db_drain_member_batch` before removing memberships. Messages, reactions and uploads remain in
   surviving workspaces. Account retention does not run this drain; restore keeps the membership pin.
+- Saved index runs before their source tables. The workspace purge fence stops new publication.
+  Drain each run's `files_index_candidates` in pages, then its input, owned workspace slot and run.
+  Drain `files_index_states`, `files_index_tickets` and `files_content_save_requests` by workspace.
+  Late worker callbacks see the fence or missing run and write nothing. Ordinary archive, restore
+  and history cleanup keep committed Save receipts; only file-lifetime cleanup removes them.
 - `files_metadata_docs`
 - `files_metadata_maps`, including saved, pending, and capture owners. Physical owner deletes
   remove their map through the mutation wrapper. Tenant purge also drains exact scope leftovers.
@@ -325,6 +330,7 @@ Current purge coverage includes:
 - `files_plain_text_chunks`, `files_text_chunks`
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`
+- `files_saved_content_heads`, after their source docs and before generic assets and nodes.
 - `files_folder_sorts` (the saved sort of each folder's table). The workspace purge is the only
   delete path, and organization deletion reaches it through that purge. No per-folder delete is
   needed: user folders are archived, never hard-deleted, and a row keyed by an archived folder id

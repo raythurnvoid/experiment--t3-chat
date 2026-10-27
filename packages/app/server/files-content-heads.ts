@@ -6,7 +6,8 @@ import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx } from "../convex/_generated/server.js";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_saved_content_db_get_head } from "./files-saved-content-head.ts";
+import { files_saved_content_db_get_head, files_saved_content_yjs_owner } from "./files-saved-content-head.ts";
+import { files_content_retention_db_index_uses_head } from "./files-content-retention.ts";
 
 const WRITES = Symbol("files_content_heads");
 const OWNER_TABLES = new Set<TableNames>([
@@ -54,6 +55,9 @@ type Fields = Record<string, unknown>;
 type ContentWrites = {
 	db: MutationCtx["db"];
 	runMutation: MutationCtx["runMutation"];
+	pin: (head: Head) => void;
+	stageInsert: (value: Fields, head: Head) => void;
+	isStagedInsert: (value: Fields) => boolean;
 	flush: () => Promise<void>;
 };
 type ContentDoc = {
@@ -102,8 +106,41 @@ export async function files_content_heads_db_flush(ctx: MutationCtx) {
 	await writes?.flush();
 }
 
+export function files_content_heads_db_is_staged_insert(db: MutationCtx["db"], table: TableNames, value: Fields) {
+	if (table !== "files_text_chunks" && table !== "file_stats") return false;
+	const writes = Reflect.get(db, WRITES) as ContentWrites | undefined;
+	return writes?.isStagedInsert(value) === true;
+}
+
+// The caller checks its Save or index run before writing this private candidate.
+export function files_content_heads_db_for_head(ctx: MutationCtx, head: Head): MutationCtx["db"] {
+	const writes = Reflect.get(ctx.db, WRITES) as ContentWrites | undefined;
+	if (!writes) throw should_never_happen("Content writer is missing");
+	writes.pin(head);
+	return new Proxy(ctx.db, {
+		get(target, property) {
+			if (property === "insert") return async (table: TableNames, value: Fields) => {
+				if (!CONTENT_TABLES.has(table) && table !== "file_stats") return await target.insert(table, value as never);
+				if (head.retired || value.fileNodeId !== head.fileNodeId ||
+					value.organizationId !== head.organizationId || value.workspaceId !== head.workspaceId)
+					throw should_never_happen("Content candidate does not match its owner", { table, headId: head._id });
+				// Keep catalog counts, access checks and reservations on the normal write path.
+				const next = {
+					...value, ...(CONTENT_TABLES.has(table) && has_content(table, value as ContentDoc) ? { contentHeadId: head._id } : {}),
+				};
+				writes.stageInsert(next, head);
+				return await target.insert(table, next as never);
+			};
+			const value: unknown = Reflect.get(target, property);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
 export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	const raw = ctx.db;
+	const pinned = new Map<Id<"files_saved_content_heads">, Head>();
+	const stagedInserts = new WeakSet<Fields>();
 	const dirty = new Set<Id<"files_nodes">>();
 	const nodes = new Map<Id<"files_nodes">, Promise<Id<"files_saved_content_heads"> | null>>();
 	const owners = new Map<string, Promise<Id<"files_saved_content_heads"> | null>>();
@@ -119,22 +156,6 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 		nodes.clear();
 		owners.clear();
 		contents.clear();
-	}
-
-	// Rollout only: old writers keep their current owner while cleanup learns that identity.
-	async function capture_cleanup_owner(table: TableNames, value: Fields) {
-		if (table === "files_yjs_cleanup_tasks" && value.logOwnerId === undefined && value.fileNodeId) {
-			const head = await files_saved_content_db_get_head(raw, value.fileNodeId as Id<"files_nodes">);
-			return { ...value, logOwnerId: head?._id ?? null, ...(head ? {} : { historyPending: false }) };
-		}
-		if (table === "files_move_waiters" && value.worker) {
-			const worker = value.worker as Doc<"files_move_waiters">["worker"];
-			if ((worker.kind === "content_cleanup" || worker.kind === "yjs_covered") && worker.logOwnerId === undefined) {
-				const head = await files_saved_content_db_get_head(raw, worker.nodeId);
-				if (head) return { ...value, worker: { ...worker, logOwnerId: head._id } };
-			}
-		}
-		return value;
 	}
 
 	async function values(node: Doc<"files_nodes"> | Doc<"files_saved_places">, sequence?: Head["sequence"]) {
@@ -213,8 +234,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 						ready: content.sealed,
 						retired: false,
 					});
-					const next = (await raw.get("files_saved_content_heads", after))!;
-					if (next.yjsLastSequenceId) await raw.patch("files_saved_content_heads", after, { yjsContentHeadId: after });
+					if ((place ?? node).yjsLastSequenceId)
+						await raw.patch("files_saved_content_heads", after, { yjsContentHeadId: after });
 				}
 				if (content.beforeHeadId !== before || content.afterHeadId !== after)
 					await raw.patch("files_move_cohort_content", contentId, { beforeHeadId: before, afterHeadId: after });
@@ -262,7 +283,14 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 			if (!doc.contentHeadId) throw should_never_happen("Saved content doc has no owner", { table, id });
 			return doc.contentHeadId;
 		}
-		const contentHeadId = await owner(doc);
+		if (doc.contentHeadId && pinned.get(doc.contentHeadId)?.fileNodeId === doc.fileNodeId) return doc.contentHeadId;
+		let contentHeadId = await owner(doc);
+		if (contentHeadId && table === "files_yjs_updates") {
+			const head = await raw.get("files_saved_content_heads", contentHeadId);
+			const logOwner = head ? files_saved_content_yjs_owner(head) : null;
+			if (!logOwner) throw should_never_happen("Yjs content owner is missing", { contentHeadId });
+			contentHeadId = logOwner;
+		}
 		if (contentHeadId) await raw.patch(table, id, { contentHeadId } as never);
 		return contentHeadId;
 	}
@@ -292,7 +320,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 		dirty.add(node._id);
 		const retired = kept === heads.after ? heads.before : heads.after;
 		const currentId = node.contentHeadId === heads.before ? kept : node.contentHeadId;
-		if (retired !== kept && retired !== currentId)
+		if (retired !== kept && retired !== currentId && !await files_content_retention_db_index_uses_head(raw, retired))
 			await raw.patch("files_saved_content_heads", retired, { ready: false, retired: true });
 	}
 
@@ -324,6 +352,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				next.snapshotAssetId = snapshot?.assetId ?? null;
 			}
 			if ("yjsLastSequenceId" in patch && patch.yjsLastSequenceId !== head.yjsLastSequenceId) {
+				next.yjsContentHeadId = patch.yjsLastSequenceId ? head._id : null;
 				const sequence = patch.yjsLastSequenceId
 					? await raw.get("files_yjs_docs_last_sequences", patch.yjsLastSequenceId as Id<"files_yjs_docs_last_sequences">)
 					: null;
@@ -370,7 +399,6 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 			if (property === WRITES) return writes;
 			if (property === "insert")
 				return async (table: TableNames, value: Fields) => {
-					value = await capture_cleanup_owner(table, value);
 					const changesOwner = OWNER_TABLES.has(table);
 					if (changesOwner) forget_reads();
 					let id: Id<TableNames>;
@@ -390,7 +418,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 							ready: true,
 							retired: false,
 						});
-						if (node.yjsLastSequenceId) await raw.patch("files_saved_content_heads", headId, { yjsContentHeadId: headId });
+						if (node.yjsLastSequenceId)
+							await raw.patch("files_saved_content_heads", headId, { yjsContentHeadId: headId });
 						await raw.patch("files_nodes", node._id, { contentHeadId: headId });
 						nodes.set(node._id, Promise.resolve(headId));
 					}
@@ -410,7 +439,6 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 					}
 					const table = args[0] as TableNames;
 					const id = args[1] as Id<TableNames>;
-					if (property !== "delete") args[2] = await capture_cleanup_owner(table, args[2] as Fields);
 					const patch = property === "delete" ? null : (args[2] as Fields);
 					const changesOwner = OWNER_TABLES.has(table);
 					const write = async () => {
@@ -447,7 +475,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 						const node = await raw.get("files_nodes", content.nodeId);
 						// History cleanup only removes its old owners. It never selects current content.
 						for (const headId of new Set([content.beforeHeadId, content.afterHeadId]))
-							if (headId && headId !== node?.contentHeadId) await raw.delete("files_saved_content_heads", headId);
+							if (headId && headId !== node?.contentHeadId && !await files_content_retention_db_index_uses_head(raw, headId))
+								await raw.delete("files_saved_content_heads", headId);
 					}
 					await write();
 					// Location and text edits keep the owner assigned above. Do not read each chunk twice.
@@ -459,7 +488,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 						if (table === "files_nodes") {
 							// Old and candidate heads belong to the existing paged cohort cleanup.
 							const node = old as Doc<"files_nodes"> | null;
-							if (node?.contentHeadId) await raw.delete("files_saved_content_heads", node.contentHeadId);
+							if (node?.contentHeadId && await raw.get("files_saved_content_heads", node.contentHeadId))
+								await raw.delete("files_saved_content_heads", node.contentHeadId);
 						} else if (old && "fileNodeId" in old) dirty.add(old.fileNodeId as Id<"files_nodes">);
 						return;
 					}
@@ -472,8 +502,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	});
 
 	async function sync_head(old: Head, next: Partial<WithoutSystemFields<Head>>) {
-		const sequenceId = next.yjsLastSequenceId === undefined ? old.yjsLastSequenceId : next.yjsLastSequenceId;
-		next.yjsContentHeadId = sequenceId ? old._id : null;
+		if ("yjsLastSequenceId" in next && !old.yjsContentHeadId)
+			next.yjsContentHeadId = next.yjsLastSequenceId ? old._id : null;
 		if (Object.entries(next).some(([key, value]) => JSON.stringify(old[key as keyof Head]) !== JSON.stringify(value)))
 			await raw.patch("files_saved_content_heads", old._id, next);
 	}
@@ -490,6 +520,9 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	const writes = {
 		db,
 		runMutation,
+		pin(head: Head) { pinned.set(head._id, head); },
+		stageInsert(value: Fields, head: Head) { if (!head.ready && !head.retired) stagedInserts.add(value); },
+		isStagedInsert(value: Fields) { return stagedInserts.has(value); },
 		async flush() {
 			for (const nodeId of dirty) {
 				const node = await raw.get("files_nodes", nodeId);

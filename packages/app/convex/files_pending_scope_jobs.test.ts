@@ -7,7 +7,6 @@ import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { pending_chunks, pending_metadata } from "./files_move_pages.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { run_job } from "./files_pending_overlay.ts";
-import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { accept_input, advance as advance_transfer } from "./files_transfer.ts";
 import {
 	test_convex,
@@ -360,23 +359,15 @@ test("a saved scope job pages a file's saved docs and ends equal to the node aft
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	// About 330 chunks: more than one scope job page.
+	const body = Array.from({ length: 25_000 }, (_, index) => index.toString(36).padStart(15, "-")).join("\n");
+	const frontmatter = Array.from({ length: 12 }, (_, index) => `key${index}: value${index}`).join("\n");
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
 		path: "/project/big.md",
-		textContent: "Saved.",
+		textContent: `---\n${frontmatter}\n---\n${body}`,
 	});
 	await t.finishAllScheduledFunctions(() => vi.advanceTimersByTime(1_000), 5_000);
-	// About 330 chunks: more than one job page. A real Save of this size is slow in tests.
-	const body = Array.from({ length: 25_000 }, (_, index) => index.toString(36).padStart(15, "-")).join("\n");
-	const frontmatter = Array.from({ length: 12 }, (_, index) => `key${index}: value${index}`).join("\n");
-	await t.run((ctx) =>
-		db_replace_file_chunks(ctx, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			nodeId,
-			textContent: `---\n${frontmatter}\n---\n${body}`,
-		}),
-	);
 	const saved = await read_saved_docs(t, nodeId);
 	expect(saved.chunks.length).toBeGreaterThan(256);
 	expect(saved.metadata.length).toBeGreaterThan(12);

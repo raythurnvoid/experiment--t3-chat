@@ -77,6 +77,7 @@ import {
 	files_move_content_db_abort,
 	files_move_content_db_publish_accounting,
 	files_move_content_db_release_claims,
+	files_move_content_changes_saved_content,
 } from "./files_move_content_db.ts";
 import type { files_move_content_db_stage } from "./files_move_content.ts";
 import { files_move_media_db_validate_next } from "./files_move_media_db.ts";
@@ -103,6 +104,7 @@ import {
 	files_pending_update_db_release_replacement_asset,
 } from "./files_pending_updates_db.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_index_db_finish_move, files_index_db_prepare_move, files_index_db_release_ticket, files_index_db_ticket } from "../server/files-index.ts";
 
 // Reuse loaded modules. Keep each request's state inside its handler.
 export const experimental_reuseContext = true;
@@ -238,11 +240,20 @@ async function db_begin(
 			current.attemptFence === args.attemptFence
 		)
 			return Result({ _yay: current._id });
-		return Result({ _nay: { name: "move_busy", message: "Another Move is finishing. This Move will wait." } });
 	}
 	// A repair may start after Review planning. Its paths must settle before a view is selected.
 	if (args.origin.kind === "review" && (await files_subtree_ops_db_find_repair(ctx, args)))
 		return Result({ _nay: { name: "repair_busy", message: "Files are still being updated. This review will wait." } });
+	const ticket = await files_index_db_ticket(ctx, {
+		organizationId: args.organizationId, workspaceId: args.workspaceId,
+		owner: { ...args.origin, fence: args.fence, attemptFence: args.attemptFence },
+	});
+	if (!ticket.first || slot?.cohortId || (slot && "indexRunId" in slot)) {
+		await ctx.scheduler.runAfter(0, internal.files_index.wake, {
+			organizationId: args.organizationId, workspaceId: args.workspaceId,
+		});
+		return Result({ _nay: { name: "move_busy", message: "Another file update is finishing. This Move will wait." } });
+	}
 	const pins = await files_media_validation_db_capture_versions(ctx, { userId: args.userId, scopes: [args] });
 	const now = Date.now();
 	const generation = (slot?.generation ?? 0) + 1;
@@ -1812,6 +1823,15 @@ async function db_sides(
 	if (!after) throw should_never_happen("Move side work has no candidate", { recordId: record._id });
 	const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
+	if (ownsContent && item.contentId) {
+		const content = await ctx.db.get("files_move_cohort_content", item.contentId);
+		if (!content?.sealed) throw should_never_happen("Move indexes have no sealed content", { itemId: item._id });
+		await files_index_db_prepare_move(ctx, {
+			organizationId: cohort.organizationId, workspaceId: cohort.workspaceId,
+			nodeId: record.nodeId, cohortId: cohort._id, headId: content.afterHeadId ?? null,
+			contentChanged: content.prepared !== null && files_move_content_changes_saved_content(content.prepared),
+		});
+	}
 	const before = record.beforePlaceId ? await ctx.db.get("files_saved_places", record.beforePlaceId) : null;
 	const beforeTag = { cohortId: cohort._id, view: "before" as const };
 	const afterTag = { cohortId: cohort._id, view: "after" as const };
@@ -2272,6 +2292,7 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 	});
 	const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
+	if (ownsContent) await files_index_db_finish_move(ctx, { nodeId: record.nodeId, cohortId: cohort._id, published: finish });
 	if (finish && place?.kind === "file" && record.beforePlaceId && !ownsContent) {
 		const before = await ctx.db.get("files_saved_places", record.beforePlaceId);
 		if (before && before.archiveOperationId === place.archiveOperationId && before.path !== place.path) {
@@ -2434,6 +2455,10 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 		});
 		await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	}
+	await files_index_db_release_ticket(ctx, {
+		organizationId: cohort.organizationId, workspaceId: cohort.workspaceId,
+		owner: { ...cohort.origin, fence: cohort.fence, attemptFence: cohort.attemptFence },
+	});
 	await ctx.db.patch("files_move_cohorts", cohort._id, {
 		phase: "complete",
 		workPhase: "complete",
@@ -3251,7 +3276,7 @@ export const cleanup = internalMutation({
 							q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
 						)
 						.unique();
-					if (slot?.cohortId === null) await ctx.db.delete("files_move_workspace_slots", slot._id);
+					if (slot?.cohortId === null && !("indexRunId" in slot)) await ctx.db.delete("files_move_workspace_slots", slot._id);
 					const search = await ctx.db
 						.query("files_move_search_generations")
 						.withIndex("by_workspace", (q) =>
@@ -3259,7 +3284,7 @@ export const cleanup = internalMutation({
 						)
 						.unique();
 					// A Move that still holds the slot needs the number. Its own cleanup removes this doc later.
-					if (search && !slot?.cohortId) await ctx.db.delete("files_move_search_generations", search._id);
+					if (search && !slot?.cohortId && !(slot && "indexRunId" in slot)) await ctx.db.delete("files_move_search_generations", search._id);
 				}
 				await ctx.db.delete("files_move_cohorts", cohort._id);
 				return null;
@@ -3331,6 +3356,7 @@ export const wake_waiters = internalMutation({
 					break;
 				case "content_cleanup":
 					await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
+						logOwnerId: worker.logOwnerId,
 						organizationId: worker.organizationId,
 						workspaceId: worker.workspaceId,
 						nodeId: worker.nodeId,
@@ -3343,6 +3369,7 @@ export const wake_waiters = internalMutation({
 					break;
 				case "yjs_covered":
 					await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
+						logOwnerId: worker.logOwnerId,
 						organizationId: worker.organizationId,
 						workspaceId: worker.workspaceId,
 						nodeId: worker.nodeId,

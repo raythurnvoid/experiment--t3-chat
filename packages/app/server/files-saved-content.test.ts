@@ -36,19 +36,92 @@ afterEach(() => {
 
 async function content_fixture() {
 	const f = await fixture();
+	const heads = await f.t.run(async (ctx) => {
+		const before = f.saved.contentHeadId ? await ctx.db.get("files_saved_content_heads", f.saved.contentHeadId) : null;
+		if (!before) throw new Error("Expected the saved content owner");
+		const { _id: beforeHeadId, _creationTime: _time, ...fields } = before;
+		const afterHeadId = await ctx.db.insert("files_saved_content_heads", fields);
+		await ctx.db.patch("files_saved_content_heads", afterHeadId, { yjsContentHeadId: afterHeadId });
+		const itemId = await ctx.db.insert("files_move_cohort_items", {
+			cohortId: f.cohortId,
+			order: 0,
+			origin: { kind: "transfer", itemId: f.itemId },
+			pendingUpdateId: f.proposal._id,
+			reviewedRevision: f.proposal.revision,
+			selectedContentStateId: null,
+			target: f.proposal.target,
+			privateVersion: null,
+			nodeRecordId: f.recordId,
+			afterProposal: null,
+			contentId: null,
+			replacementItemId: null,
+			status: "staged",
+			validatedEpoch: null,
+			billingState: "none",
+		});
+		const contentId = await ctx.db.insert("files_move_cohort_content", {
+			cohortId: f.cohortId,
+			itemId,
+			nodeId: f.nodeId,
+			beforeHeadId,
+			afterHeadId,
+			pendingUpdateId: f.proposal._id,
+			reviewedRevision: f.proposal.revision,
+			selectedContentStateId: null,
+			prepared: null,
+			operationBatchId: null,
+			phase: "sealed",
+			phaseCursor: null,
+			nextChunkIndex: 0,
+			acceptedTextInputId: null,
+			unstagedTextInputId: null,
+			acceptedTextDigest: null,
+			sourceSnapshotSequence: null,
+			afterYjsSnapshotAssetId: null,
+			preparationFence: 1,
+			storageBytes: 0,
+			storageResourceCount: 0,
+			privateByteDelta: 0,
+			privateNodeDelta: 0,
+			privateAccountingAdded: false,
+			storedByteDelta: 0,
+			storedUpload: false,
+			previousVersion: null,
+			acceptedVersion: null,
+			previousVersionSnapshotId: null,
+			acceptedVersionSnapshotId: null,
+			beforeContentVersion: null,
+			afterContentVersion: null,
+			afterSnapshotId: fields.yjsSnapshotId,
+			afterStatsId: fields.statsId,
+			afterAssetId: fields.assetId,
+			trustedStageId: null,
+			nextSequence: null,
+			partialFamily: null,
+			sealed: true,
+			proofEpoch: 1,
+			costCents: 0,
+			afterSequence: null,
+			mediaProof: null,
+			preparedMediaSet: null,
+		});
+		await ctx.db.patch("files_move_cohort_items", itemId, { contentId });
+		return { beforeHeadId, afterHeadId };
+	});
 	await f.t.run(async (ctx) => {
 		for (const table of ["files_text_chunks", "files_plain_text_chunks", "files_yjs_updates"] as const) {
 			const rows = await ctx.db.query(table).collect();
 			for (const row of rows) await ctx.db.delete(table, row._id);
 		}
 	});
-	const add = (text: string, index: number, view?: "before" | "after") =>
+	const add = (text: string, index: number, view?: "before" | "after", owner = view ?? "before") =>
 		f.t.run(async (ctx) => {
 			const fields = {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				sourceKind: "committed" as const,
 				fileNodeId: f.nodeId,
+				contentHeadId: owner === "after" ? heads.afterHeadId : heads.beforeHeadId,
 				yjsSequence: 0,
 				moveView: view ? { cohortId: f.cohortId, view } : undefined,
 				chunkIndex: index,
@@ -76,7 +149,7 @@ async function content_fixture() {
 				.map((row) => row.textChunk)
 				.join(""),
 		);
-	return { ...f, add, text };
+	return { ...f, ...heads, add, text };
 }
 
 test("reads every original chunk while staging splits normal and before rows", async () => {
@@ -96,7 +169,7 @@ test("reads every new chunk during cleanup and lets selected chunks win duplicat
 	const f = await content_fixture();
 	await f.add("old1", 0, "before");
 	await f.add("old2", 1, "before");
-	await f.add("new1", 0);
+	await f.add("new1", 0, undefined, "after");
 	await f.add("same", 1);
 	await f.add("new2", 1, "after");
 	await f.add("new3", 2, "after");
@@ -138,6 +211,7 @@ test("merges selected Yjs sequences once and keeps the frozen upper bound", asyn
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				fileNodeId: f.nodeId,
+				contentHeadId: view === "after" ? f.afterHeadId : f.beforeHeadId,
 				sequence,
 				moveView: view ? { cohortId: f.cohortId, view } : undefined,
 				update: files_u8_to_array_buffer(new Uint8Array([sequence])),
@@ -181,11 +255,12 @@ test("the editor reads the effective non-collaborative header and split chunks",
 	await f.t.run(async (ctx) => {
 		const record = await ctx.db.get("files_move_cohort_nodes", f.recordId);
 		if (!record?.beforePlaceId || !record.afterPlaceId) throw new Error("Expected saved candidates");
-		for (const id of [record.beforePlaceId, record.afterPlaceId])
-			await ctx.db.patch("files_saved_places", id, {
+		for (const id of [f.beforeHeadId, f.afterHeadId])
+			await ctx.db.patch("files_saved_content_heads", id, {
 				collaborationEnabled: false,
 				yjsLastSequenceId: null,
 				yjsSnapshotId: null,
+				yjsContentHeadId: null,
 			});
 	});
 	expect(
@@ -206,6 +281,7 @@ test("a paged Yjs read stops when its effective lineage changes", async () => {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			fileNodeId: f.nodeId,
+			contentHeadId: f.beforeHeadId,
 			sequence: 1,
 			update: files_u8_to_array_buffer(new Uint8Array([1])),
 			origin: { type: "USER_EDIT", sessionId: "saved-content" },
@@ -223,9 +299,14 @@ test("a paged Yjs read stops when its effective lineage changes", async () => {
 		throughSequence: 1,
 	};
 	expect((await f.t.query(internal.files_nodes.get_file_next_yjs_update, args)).kind).toBe("row");
-	await f.t.run((ctx) =>
-		ctx.db.patch("files_yjs_docs_last_sequences", head._id, { lineageGeneration: head.lineageGeneration + 1 }),
-	);
+	await f.t.run(async (ctx) => {
+		await ctx.db.patch("files_yjs_docs_last_sequences", head._id, { lineageGeneration: head.lineageGeneration + 1 });
+		const source = await ctx.db.get("files_saved_content_heads", f.beforeHeadId);
+		if (!source?.sequence) throw new Error("Expected content counters");
+		await ctx.db.patch("files_saved_content_heads", source._id, {
+			sequence: { ...source.sequence, lineageGeneration: head.lineageGeneration + 1 },
+		});
+	});
 	expect(
 		await f.t.query(internal.files_nodes.get_file_next_yjs_update, args),
 		"a changed lineage cannot enter a frozen Yjs read",

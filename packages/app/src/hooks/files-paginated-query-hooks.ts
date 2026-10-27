@@ -10,11 +10,12 @@ import {
 	getFunctionName,
 	makeFunctionReference,
 	type FunctionReference,
+	type FunctionReturnType,
 	type paginationOptsValidator,
 	type PaginationResult,
 } from "convex/server";
 import { ConvexError, convexToJson, jsonToConvex, type Infer, type Value } from "convex/values";
-import type { files_DirectoryView } from "../../shared/files.ts";
+import type { files_DirectoryView, files_IndexDirectoryView } from "../../shared/files.ts";
 import { useCachedQueries } from "./convex-hooks.ts";
 import { useFn } from "./utils-hooks.ts";
 
@@ -25,6 +26,13 @@ type PageQuery = {
 	query: FunctionReference<"query">;
 	args: Record<string, Value> & { paginationOpts: Infer<typeof paginationOptsValidator> };
 };
+
+type QueryDirectoryView<Query extends PaginatedQueryReference> =
+	FunctionReturnType<Query> extends {
+		directoryView: infer View extends files_IndexDirectoryView;
+	}
+		? View
+		: files_DirectoryView;
 
 type PageState = {
 	query: FunctionReference<"query">;
@@ -50,7 +58,12 @@ function next_pagination_id() {
 	return paginationId;
 }
 
-function split_page(key: number, splitCursor: string, continueCursor: string, directoryView?: files_DirectoryView) {
+function split_page(
+	key: number,
+	splitCursor: string,
+	continueCursor: string,
+	directoryView?: files_IndexDirectoryView,
+) {
 	return (state: PageState) => {
 		const queries = { ...state.queries };
 		const firstKey = state.nextPageKey;
@@ -118,7 +131,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		 */
 		cacheSavedStreamFirstPage?: boolean;
 	},
-): UsePaginatedQueryResult<PaginatedQueryItem<Query>> & { directoryView: files_DirectoryView | undefined } {
+): UsePaginatedQueryResult<PaginatedQueryItem<Query>> & { directoryView: QueryDirectoryView<Query> | undefined } {
 	if (typeof options?.initialNumItems !== "number" || options.initialNumItems < 0)
 		throw new Error("initialNumItems must be a positive number.");
 	const skip = args === "skip";
@@ -185,19 +198,19 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	const liveResults = useQueries(liveQueries);
 	const resultsObject = useMemo(() => ({ ...cachedResults, ...liveResults }), [cachedResults, liveResults]) as Record<
 		number,
-		(PaginationResult<PaginatedQueryItem<Query>> & { directoryView?: files_DirectoryView }) | Error | undefined
+		(PaginationResult<PaginatedQueryItem<Query>> & { directoryView?: files_IndexDirectoryView }) | Error | undefined
 	>;
 	const [results, lastResult, nextState, directoryView] = useMemo<
 		[
 			PaginatedQueryItem<Query>[],
-			(PaginationResult<PaginatedQueryItem<Query>> & { directoryView?: files_DirectoryView }) | undefined,
+			(PaginationResult<PaginatedQueryItem<Query>> & { directoryView?: files_IndexDirectoryView }) | undefined,
 			PageState | "reset" | null,
-			files_DirectoryView | undefined,
+			files_IndexDirectoryView | undefined,
 		]
 	>(() => {
 		let waitingForView = false;
 		let invalidCursor = false;
-		let directoryView: files_DirectoryView | undefined;
+		let directoryView: files_IndexDirectoryView | undefined;
 		// A failed split child is defined too. Check all pages before showing rows or swapping a split.
 		for (const key of [...current.pageKeys, ...Object.values(current.ongoingSplits).flat()]) {
 			const result = resultsObject[key];
@@ -215,7 +228,9 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 				data !== null &&
 				typeof data === "object" &&
 				"reason" in data &&
-				(data.reason === "saved_move_view_changed" || data.reason === "saved_search_view_changed") &&
+				(data.reason === "saved_move_view_changed" ||
+					data.reason === "saved_search_view_changed" ||
+					(!directory && data.reason === "saved_index_view_changed")) &&
 				"paginationError" in data &&
 				data.paginationError === "InvalidCursor"
 			) {
@@ -340,5 +355,5 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	}, [lastResult, current.id, current.args, current.nextPageKey]);
 	// The tree can retain an older result and its button while this view waits.
 	const loadMore = useFn(status.loadMore);
-	return { results, ...status, loadMore, directoryView };
+	return { results, ...status, loadMore, directoryView: directoryView as QueryDirectoryView<Query> | undefined };
 }

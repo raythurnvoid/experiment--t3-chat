@@ -80,6 +80,45 @@ export async function test_compact_metadata_catalog(t: TestConvexRoot<DataModel>
 	throw new Error("The metadata catalog compactor did not drain");
 }
 
+/** Run only this file's index steps, without firing unrelated timers. */
+export async function test_finish_file_index(t: TestConvexRoot<DataModel>, nodeId: Id<"files_nodes">) {
+	for (let pass = 0; pass < 10_000; pass++) {
+		const state = await t.run((ctx) => ctx.db.query("files_index_states")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId)).first());
+		if (!state?.activeRunId) {
+			if (state && state.publishedRevision < state.requestedRevision) {
+				await t.mutation(internal.files_index.start, { nodeId });
+				const started = await t.run((ctx) => ctx.db.get("files_index_states", state._id));
+				if (!started?.activeRunId) {
+					const source = await t.run(async (ctx) => ({
+						workspace: await ctx.db.get("organizations_workspaces", state.workspaceId),
+						node: await ctx.db.get("files_nodes", nodeId),
+					}));
+					throw new Error(`The requested index did not start: ${JSON.stringify({ state: started, ...source })}`);
+				}
+				continue;
+			}
+			expect(state?.publishedRevision, "the idle index has published its latest request").toBe(state?.requestedRevision);
+			return;
+		}
+		const run = await t.run((ctx) => ctx.db.get("files_index_runs", state.activeRunId!));
+		if (!run) throw new Error("The active file index run is missing");
+		const args = { runId: run._id, step: run.step, generation: run.generation };
+		if (run.phase === "build_metadata") await t.action(internal.files_index.prepare_metadata, args);
+		else await t.mutation(internal.files_index.advance, args);
+	}
+	const waiting = await t.run(async (ctx) => {
+		const state = await ctx.db.query("files_index_states").withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId)).first();
+		return {
+			state,
+			run: state?.activeRunId ? await ctx.db.get("files_index_runs", state.activeRunId) : null,
+			workspace: state ? await ctx.db.get("organizations_workspaces", state.workspaceId) : null,
+			node: await ctx.db.get("files_nodes", nodeId),
+		};
+	});
+	throw new Error(`The file index did not finish: ${JSON.stringify(waiting)}`);
+}
+
 /**
  * Run the billing outbox drainer until the outbox is empty, so a test sees every signed-in usage
  * event of its saves as an `ingest_events` job on the usage pool. Only `Date.now` moves past the
@@ -1100,11 +1139,15 @@ export async function test_fill_saved_file_with_max_chunks(
 	}
 	const chunks = await chunking;
 	if (chunks._nay) throw new Error(chunks._nay.message);
-	return await t.run(async (ctx) => {
+	const previousHeadId = await test_run_with_flush(t, async (ctx) => {
 		const node = (await ctx.db.get("files_nodes", nodeId))!;
 		const scope = { organizationId: node.organizationId, workspaceId: node.workspaceId };
-		// Save only the head, so its metadata docs are real, then swap in the chunks of the whole text.
-		const replaced = await db_replace_file_chunks(ctx, { ...scope, nodeId, textContent: head });
+		const previous = (await ctx.db.get("files_saved_content_heads", node.contentHeadId!))!;
+		const { _id: _previousId, _creationTime: _previousCreationTime, ...fields } = previous;
+		const headId = await ctx.db.insert("files_saved_content_heads", { ...fields, statsId: null });
+		await ctx.db.patch("files_nodes", nodeId, { contentHeadId: headId, statsId: null });
+		// Start a fresh source owner, then replace its small prefix with the full test chunks.
+		const replaced = await db_replace_file_chunks(ctx, { ...scope, nodeId, previousHeadId: previous._id, textContent: head });
 		if (replaced._nay) throw new Error(replaced._nay.message);
 		const headChunks = await Promise.all([
 			ctx.db
@@ -1130,15 +1173,26 @@ export async function test_fill_saved_file_with_max_chunks(
 		]);
 		for (const doc of headChunks[0]) await ctx.db.delete("files_text_chunks", doc._id);
 		for (const doc of headChunks[1]) await ctx.db.delete("files_plain_text_chunks", doc._id);
-		await files_nodes_db_insert_committed_text_chunks(ctx, {
-			...scope,
-			nodeId,
-			path: node.path,
-			archiveOperationId: node.archiveOperationId ?? undefined,
-			chunks: chunks._yay,
-		});
-		return chunks._yay.length;
+		return previous._id;
 	});
+	for (let start = 0; start < chunks._yay.length; start += 100) {
+		await test_run_with_flush(t, async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", nodeId))!;
+			await files_nodes_db_insert_committed_text_chunks(ctx, {
+				organizationId: node.organizationId,
+				workspaceId: node.workspaceId,
+				nodeId,
+				path: node.path,
+				archiveOperationId: node.archiveOperationId ?? undefined,
+				chunkCount: chunks._yay.length,
+				chunks: chunks._yay.slice(start, start + 100),
+			});
+		});
+	}
+	await test_finish_file_index(t, nodeId);
+	await t.mutation(internal.files_content_saves.retire, { headId: previousHeadId });
+	await t.mutation(internal.files_content_saves.discard, { headId: previousHeadId });
+	return chunks._yay.length;
 }
 
 /**

@@ -6,7 +6,7 @@ import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import { files_pending_updates_action_stage_private_state_family } from "./files_pending_updates.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
-import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_finish_file_index, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_set_file_metadata,
@@ -353,11 +353,12 @@ describe("agent file write source", () => {
 		});
 		expect(
 			await f.asUser.action(api.files_nodes_content.replace_file_content, {
+				requestId: "save-original-before-agent-edit",
 				membershipId: f.home.membershipId,
 				nodeId,
 				text: "first: original\nlast: saved\n",
 			}),
-		).toEqual({ _yay: null });
+		).toEqual({ _yay: { requestId: "save-original-before-agent-edit", contentRevision: expect.any(Number) } });
 		const before = await f.t.run(async (ctx) => ({
 			proposal: await ctx.db.query("files_pending_updates").first(),
 			batches: await ctx.db.query("files_pending_update_operation_batches").collect(),
@@ -498,6 +499,13 @@ describe("agent file write source", () => {
 				expect(await write).toMatchObject({
 					metadata: { workspace: "personal", entries: [{ key: "private-note", value: true }] },
 				});
+			if (!revoked) {
+				const node = await f.t.run((ctx) => ctx.db.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) => q.eq("organizationId", f.home.organizationId)
+						.eq("workspaceId", f.home.workspaceId).eq("moveCohortId", undefined).eq("path", "/notes")).unique());
+				if (!node) throw new Error("Expected the saved folder");
+				await test_finish_file_index(f.t, node._id);
+			}
 			const docs = await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
 			const marked = docs.filter((doc) => doc.docKind === "value" && doc.fieldPath === "metadata.private-note");
 			expect(marked).toHaveLength(revoked ? 0 : 1);

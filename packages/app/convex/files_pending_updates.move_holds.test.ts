@@ -738,6 +738,7 @@ test.each([false, true])("no-change rebase checks removal, surviving Move %s", a
 	expect(
 		(
 			await f.mover.action(api.files_nodes_content.replace_file_content, {
+				requestId: "save-before-move",
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
 				text: "draft\n",

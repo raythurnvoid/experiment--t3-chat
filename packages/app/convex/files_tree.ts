@@ -5,7 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator, paginationResultValidator, type PaginationResult } from "convex/server";
 import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
 import { compareValues, v, type Infer } from "convex/values";
-import { files_ROOT_ID, type files_DirectoryView } from "../shared/files.ts";
+import { files_ROOT_ID, type files_DirectoryView, type files_IndexDirectoryView } from "../shared/files.ts";
 import {
 	files_sort_is_valid,
 	files_sort_text_key,
@@ -25,9 +25,12 @@ import app_convex_schema, {
 	files_table_filter_validator,
 	files_saved_stream_validator,
 	files_directory_view_validator,
+	files_index_directory_view_validator,
 } from "./schema.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create, files_saved_stream_db_create_directory } from "../server/files-saved-stream.ts";
+import { files_saved_index_db_get_directory } from "../server/files-saved-index.ts";
+import { files_metadata_db_get_table_field } from "./files_metadata.ts";
 import {
 	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_view,
@@ -808,7 +811,7 @@ export const list_tree_children_sorted = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		stream: v.union(v.literal("normal"), v.literal("cohort")),
-		pageView: v.optional(files_directory_view_validator),
+		pageView: v.optional(files_index_directory_view_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		/**
@@ -844,7 +847,7 @@ export const list_tree_children_sorted = query({
 				v.object({ ...files_tree_locked_row_fields, sortKey: files_sort_row_key_validator }),
 			),
 		).fields,
-		directoryView: files_directory_view_validator,
+		directoryView: files_index_directory_view_validator,
 	}),
 	handler: async (
 		ctx,
@@ -852,7 +855,7 @@ export const list_tree_children_sorted = query({
 	): Promise<
 		PaginationResult<
 			Awaited<ReturnType<typeof files_tree_db_get_list_rows>>[number] & { sortKey: files_sort_RowKey }
-		> & { directoryView: files_DirectoryView }
+		> & { directoryView: files_IndexDirectoryView }
 	> => {
 		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
 		// (files-explorer-tree skill, "Saved-only lists").
@@ -879,19 +882,31 @@ export const list_tree_children_sorted = query({
 			}
 		}
 
-		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, args);
-		const empty = { ...refused, directoryView: saved.directoryView };
-		if (saved.empty) return empty;
 		const table = get_table_read_args(args);
-		if (!table) {
-			return empty;
-		}
+		if (!table) return refused;
 		const { sort, filter, namePrefix, metadataField } = table;
+		const index = metadataField !== null ? await files_saved_index_db_get_directory(ctx.db, membership, args) : null;
+		const pageMoveId = args.pageView ? ctx.db.normalizeId("files_move_cohorts", args.pageView.cohortId) : null;
+		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, {
+			...args,
+			pageView: index
+				? undefined
+				: args.pageView && pageMoveId
+					? { ...args.pageView, cohortId: pageMoveId }
+					: args.pageView === null
+						? null
+						: undefined,
+			paginationOpts: index ? { ...args.paginationOpts, cursor: null, endCursor: undefined } : args.paginationOpts,
+		});
+		const directoryView = index ? index.directoryView : saved.directoryView;
+		const empty = { ...refused, directoryView };
+		if (index ? index.empty : saved.empty) return empty;
 
 		// Only the owner reads the restricted metadata twin: its values decide the order, and other
 		// readers may not see them. Other readers get the restricted children of a custom-field filter
 		// from `list_tree_children_shared`, and those of a custom-field sort by name, below.
 		const ownerOrOpen = !args.restricted || reader.isOwner;
+		if (!ownerOrOpen && saved.empty) return empty;
 		if (metadataField !== null && !ownerOrOpen && filter !== null) {
 			return empty;
 		}
@@ -919,7 +934,7 @@ export const list_tree_children_sorted = query({
 			});
 			return {
 				...result,
-				directoryView: saved.directoryView,
+				directoryView,
 				page: listRows.map((listRow, index) => {
 					const row = rows[index]!;
 					// Name, size, dates and extension are fields a locked row shows, so its key may use them.
@@ -941,8 +956,8 @@ export const list_tree_children_sorted = query({
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("sourceKind", "committed")
-						.eq("moveView.cohortId", saved.tag?.cohortId)
-						.eq("moveView.view", saved.tag?.view)
+						.eq("moveView.cohortId", index?.tag?.cohortId)
+						.eq("moveView.view", index?.tag?.view)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "field")
 						.eq("fieldPath", metadataField)
@@ -973,7 +988,7 @@ export const list_tree_children_sorted = query({
 				});
 
 			if (files_tree_db_page_needs_split(result, guard)) {
-				return { ...files_tree_db_page_split_required(result), directoryView: saved.directoryView };
+				return { ...files_tree_db_page_split_required(result), directoryView };
 			}
 
 			const rows = await Promise.all(
@@ -1223,7 +1238,7 @@ export const list_tree_children_sorted = query({
 		})();
 
 		if (files_tree_db_page_needs_split(stream.result, guard)) {
-			return { ...files_tree_db_page_split_required(stream.result), directoryView: saved.directoryView };
+			return { ...files_tree_db_page_split_required(stream.result), directoryView };
 		}
 
 		return await table_page(
@@ -1255,7 +1270,7 @@ export const list_tree_children_shared = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		stream: v.union(v.literal("normal"), v.literal("cohort")),
-		pageView: v.optional(files_directory_view_validator),
+		pageView: v.optional(files_index_directory_view_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		kind: doc(app_convex_schema, "files_nodes").fields.kind,
 		/**
@@ -1279,7 +1294,7 @@ export const list_tree_children_shared = query({
 				sortKey: files_sort_row_key_validator,
 			}),
 		).fields,
-		directoryView: files_directory_view_validator,
+		directoryView: files_index_directory_view_validator,
 	}),
 	handler: async (
 		ctx,
@@ -1287,7 +1302,7 @@ export const list_tree_children_shared = query({
 	): Promise<
 		PaginationResult<
 			Awaited<ReturnType<typeof files_tree_db_get_rows>>[number] & { locked: false; sortKey: files_sort_RowKey }
-		> & { directoryView: files_DirectoryView }
+		> & { directoryView: files_IndexDirectoryView }
 	> => {
 		// Saved rows only: UI lists never show drafts. Drafts show in the Pending tab and to the agent
 		// (files-explorer-tree skill, "Saved-only lists").
@@ -1308,11 +1323,20 @@ export const list_tree_children_shared = query({
 		) {
 			return refused;
 		}
-		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, args);
-		const empty = { ...refused, directoryView: saved.directoryView };
+		const table = get_table_read_args(args);
+		const index =
+			table?.metadataField && table.filter?.kind === "text"
+				? await files_saved_index_db_get_directory(ctx.db, membership, args)
+				: null;
+		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, {
+			...args,
+			pageView: index ? undefined : (args.pageView as files_DirectoryView | undefined),
+			paginationOpts: index ? { ...args.paginationOpts, cursor: null, endCursor: undefined } : args.paginationOpts,
+		});
+		const directoryView = index ? index.directoryView : saved.directoryView;
+		const empty = { ...refused, directoryView };
 		if (saved.empty) return empty;
 
-		const table = get_table_read_args(args);
 		if (!table || reader.isOwner || table.metadataField === null || table.filter?.kind !== "text") {
 			return empty;
 		}
@@ -1348,7 +1372,7 @@ export const list_tree_children_shared = query({
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, guard) });
 
 		if (files_tree_db_page_needs_split(result, guard)) {
-			return { ...files_tree_db_page_split_required(result), directoryView: saved.directoryView };
+			return { ...files_tree_db_page_split_required(result), directoryView };
 		}
 
 		const rows = await db_get_share_tree_rows(ctx, { reader, shareRows: result.page, extendedRoots: false });
@@ -1358,24 +1382,10 @@ export const list_tree_children_shared = query({
 		// them. Approved exception: a row that does not match is left out after this read, so a page
 		// can be short.
 		const fieldDocs = await Promise.all(
-			rows.map(({ shareRow }) =>
-				ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-						q
-							.eq("organizationId", membership.organizationId)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", shareRow.nodeId)
-							.eq("moveView.cohortId", tag?.cohortId)
-							.eq("moveView.view", tag?.view)
-							.eq("fieldPath", metadataField),
-					)
-					// The range is one node's docs of one key: its field doc, which carries the sort value and is
-					// written first, then one value doc per array item, capped on write (`shared/files-metadata.ts`).
-					.filter((q) => q.eq(q.field("docKind"), "field"))
-					.first(),
-			),
+			rows.map(async ({ shareRow }) => {
+				const node = await files_saved_placement_db_get_node(ctx.db, shareRow.nodeId);
+				return node ? files_metadata_db_get_table_field(ctx, { fileNode: node, field: metadataField }) : null;
+			}),
 		);
 		const start = filter.op === "present" ? null : files_sort_text_key(filter.value);
 		const end = filter.op === "starts_with" ? string_prefix_upper_bound(start!) : null;
@@ -1387,7 +1397,7 @@ export const list_tree_children_shared = query({
 					: compareValues(sortValue, start!) >= 0 && (end === null || compareValues(sortValue, end) < 0)));
 		return {
 			...result,
-			directoryView: saved.directoryView,
+			directoryView,
 			page: rows.flatMap(({ shareRow, treeRow }, index) => {
 				const fieldDoc = fieldDocs[index];
 				if (fieldDoc?.sourceKind !== "committed" || !matches(fieldDoc.sortValue)) return [];

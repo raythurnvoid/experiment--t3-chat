@@ -5,6 +5,11 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
+import { files_index_db_request } from "../server/files-index.ts";
+import {
+	files_pending_overlay_db_follow_saved_scope,
+	files_pending_overlay_db_schedule_saved_scope,
+} from "../server/files-pending-overlay.ts";
 import {
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_extract_entries,
@@ -16,11 +21,11 @@ import {
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
 import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
-import { files_saved_placement_db_get_node, type files_saved_placement_FixedView } from "../server/files-saved-placement.ts";
 import {
-	files_pending_update_index_revision,
-	type files_VisibleEntry,
-} from "../shared/files.ts";
+	files_saved_placement_db_get_node,
+	type files_saved_placement_FixedView,
+} from "../server/files-saved-placement.ts";
+import { files_pending_update_index_revision, type files_VisibleEntry } from "../shared/files.ts";
 
 export function files_metadata_value_doc_payload(value: files_metadata_Value) {
 	switch (value.valueKind) {
@@ -195,9 +200,8 @@ async function db_query_metadata_docs(
 }
 
 /**
- * Replace one file's metadata in a single transaction: delete the `metadata.` docs it has now,
- * then insert one field doc and one value doc per key. The file's frontmatter docs are untouched,
- * so a Markdown file keeps both sources side by side.
+ * Save the full map first. Workspace search catches up through the shared index publisher.
+ * Private proposals and read-only mounts keep their own index writers.
  *
  * Copy `path`, `treePath` and `archiveOperationId` from the node like the frontmatter writers do.
  * Search filters on those fields, so a doc without them would be invisible to a path-scoped or
@@ -228,6 +232,14 @@ export async function files_metadata_db_write_entries(
 				: { kind: "pending", id: args.privateEntry.pendingUpdate._id },
 		entries: args.entries,
 	});
+	if (
+		"fileNode" in args &&
+		ctx.db.normalizeId("organizations", node.organizationId) &&
+		ctx.db.normalizeId("organizations_workspaces", node.workspaceId)
+	) {
+		await files_index_db_request(ctx, { nodeId: args.fileNode._id, contentChanged: false });
+		return;
+	}
 	const existingDocs =
 		"fileNode" in args
 			? await db_query_metadata_docs(ctx, {
@@ -317,31 +329,10 @@ export async function files_metadata_db_patch_file_scope(
 		restrictedScopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
-	// Committed metadata is bounded by its write caps. Archive and Restore copy path and archive state
-	// onto these docs, and the scope op copies the area of the items inside. Each copies in the same
-	// mutation as the node, or in a saved scope job when the node has many docs
-	// (`files_pending_overlay_db_follow_saved_scope`).
-	const docs = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("fileNodeId", args.nodeId)
-				.eq("moveView.cohortId", args.fixedView?.cohortId)
-				.eq("moveView.view", args.fixedView?.view),
-		)
-		.collect();
-	await Promise.all(
-		docs.flatMap((doc) =>
-			doc.sourceKind === "committed"
-				? [
-						ctx.db.patch("files_metadata_docs", doc._id, {
-							restrictedScopeNodeId: args.restrictedScopeNodeId,
-							...(doc.docKind === "field" ? { isRestrictedScopeRoot: args.isRestrictedScopeRoot } : {}),
-						}),
-					]
-				: [],
-		),
-	);
+	// Move keeps both access headers current. Its saved scope job waits for the chosen side to normalize.
+	if (args.fixedView) {
+		await files_pending_overlay_db_schedule_saved_scope(ctx, { ...args, _id: args.nodeId }, { metadataOnly: true });
+		return;
+	}
+	await files_pending_overlay_db_follow_saved_scope(ctx, { ...args, _id: args.nodeId }, { metadataOnly: true });
 }

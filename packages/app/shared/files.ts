@@ -23,8 +23,22 @@ export type files_SavedStream =
 			generation: number;
 	  };
 
+export type files_IndexStream =
+	| { kind: "normal"; generation: number }
+	| {
+			kind: "cohort";
+			cohortId: app_convex_Id<"files_move_cohorts"> | app_convex_Id<"files_index_runs">;
+			view: "before" | "after";
+			generation: number;
+	  };
+
 export type files_DirectoryView = {
 	cohortId: app_convex_Id<"files_move_cohorts">;
+	view: "before" | "after";
+} | null;
+
+export type files_IndexDirectoryView = {
+	cohortId: app_convex_Id<"files_move_cohorts"> | app_convex_Id<"files_index_runs">;
 	view: "before" | "after";
 } | null;
 

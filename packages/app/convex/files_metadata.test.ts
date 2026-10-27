@@ -4,17 +4,13 @@ import type { FunctionReturnType } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import {
-	files_metadata_db_replace_pending,
-} from "./files_metadata.ts";
-import {
-	files_metadata_db_insert_committed,
-	files_metadata_db_write_entries,
-} from "./files_metadata_db.ts";
+import { files_metadata_db_replace_pending } from "./files_metadata.ts";
+import { files_metadata_db_insert_committed, files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_compact_metadata_catalog,
 	test_convex,
+	test_finish_file_index,
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
@@ -45,10 +41,10 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 		return { userId, membershipId };
 	});
 	const asViewer = t.withIdentity({ issuer: "https://clerk.test", external_id: viewer.userId });
-	const child = (args: { name: string; entries?: files_metadata_Entry[]; folderId?: Id<"files_nodes"> }) => {
+	const child = async (args: { name: string; entries?: files_metadata_Entry[]; folderId?: Id<"files_nodes"> }) => {
 		const { name, entries = [], folderId = parentId } = args;
 
-		return test_run_with_flush(t, async (ctx) => {
+		const nodeId = await test_run_with_flush(t, async (ctx) => {
 			const parent = await ctx.db.get("files_nodes", folderId);
 			if (!parent) throw new Error("Expected parent");
 			const path = `${parent.path}/${name}`;
@@ -71,6 +67,8 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			await files_metadata_db_write_entries(ctx, { fileNode, entries });
 			return nodeId;
 		});
+		await test_finish_file_index(t, nodeId);
+		return nodeId;
 	};
 	const frontmatter = (nodeId: Id<"files_nodes">, yaml: string) =>
 		test_run_with_flush(t, (ctx) =>
@@ -88,7 +86,11 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			await ctx.db.patch("files_pending_updates", created._yay.pendingUpdateId, {
 				createIntent: { kind: "folder" },
 			});
-			await files_metadata_maps_db_write(ctx.db, { ...owner, owner: { kind: "pending", id: created._yay.pendingUpdateId }, entries });
+			await files_metadata_maps_db_write(ctx.db, {
+				...owner,
+				owner: { kind: "pending", id: created._yay.pendingUpdateId },
+				entries,
+			});
 			await files_metadata_db_replace_pending(ctx, {
 				...owner,
 				target: { kind: "private", id: created._yay.privateNodeId },
@@ -305,7 +307,8 @@ describe("list_folder_fields", () => {
 			await ctx.db.delete("files_nodes", id);
 			return id;
 		});
-		for (const folderId of [fileId, created._yay.nodeId, deletedId]) expect(await read(viewer.membershipId, folderId)).toEqual(refused);
+		for (const folderId of [fileId, created._yay.nodeId, deletedId])
+			expect(await read(viewer.membershipId, folderId)).toEqual(refused);
 		// Somebody else's membership.
 		expect(await read(scope.membershipId, parentId)).toEqual(refused);
 

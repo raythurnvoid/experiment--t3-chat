@@ -5,7 +5,13 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { files_pending_overlay_SavedPlacesCursor } from "../server/files-pending-overlay.ts";
 import { mock_nodes_content_storage } from "./files_nodes_content.setup.test.ts";
 import { add_member, fixture, type Fixture } from "./files_pending_overlay.setup.test.ts";
-import { test_create_saved_text_file, test_meta_search, test_run_with_flush, test_spy_handler } from "./setup.test.ts";
+import {
+	test_create_saved_text_file,
+	test_finish_file_index,
+	test_meta_search,
+	test_run_with_flush,
+	test_spy_handler,
+} from "./setup.test.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -72,6 +78,7 @@ async function metadata_fixture(count = 2) {
 	const f = await fixture(true);
 	const node = await f.saved(null, "notes.md");
 	await f.set_metadata(node.path, [{ key: "status", value: "old" }]);
+	await test_finish_file_index(f.t, node._id);
 	const owners = [f.v];
 	for (let index = 1; index < count; index++)
 		owners.push(await f.t.run((ctx) => add_member(ctx, f.u, `saved_place_${index}`)));
@@ -171,6 +178,7 @@ describe("files_pending_overlay saved places", () => {
 			const result =
 				operation === "Save"
 					? await f.asU.action(api.files_nodes_content.replace_file_content, {
+							requestId: "changed-saved-text",
 							membershipId: f.db.membershipId,
 							nodeId,
 							text: "Changed saved text\n",
@@ -229,6 +237,7 @@ describe("files_pending_overlay saved places", () => {
 				).items.map((item) => item.path),
 			).toEqual([`/owner-${index}.md`]);
 		}
+		await test_finish_file_index(f.t, node._id);
 		await f.settle();
 		for (const [index, owner] of owners.entries()) {
 			expect(
@@ -251,6 +260,7 @@ describe("files_pending_overlay saved places", () => {
 		expect(await saved_job(f, node._id)).toMatchObject({ fieldsChanged: false });
 		// Metadata widens the queued date refresh before its first page.
 		await f.set_metadata(node.path, [{ key: "status", value: "first" }]);
+		await test_finish_file_index(f.t, node._id);
 		expect(await saved_job(f, node._id)).toMatchObject({ fieldsChanged: true });
 		await f.run_job("saved_places", node._id);
 		const active = (await saved_job(f, node._id))!;
@@ -260,6 +270,7 @@ describe("files_pending_overlay saved places", () => {
 			{ key: "status", value: "latest" },
 			{ key: "later", value: "added" },
 		]);
+		await test_finish_file_index(f.t, node._id);
 		const requested = (await saved_job(f, node._id))!;
 		expect(JSON.parse(requested.cursor!)).toMatchObject({ ...cursor, rerun: true, rerunFieldsChanged: true });
 		const late = await f.t.run((ctx) => add_member(ctx, f.u, "saved_place_late"));
@@ -304,6 +315,7 @@ describe("files_pending_overlay saved places", () => {
 				})
 			).items.map((item) => item.path);
 		await f.set_metadata(node.path, entries("building"));
+		await test_finish_file_index(f.t, node._id);
 		const partial = await build_with_values(f, node._id);
 		const staged = await fields_of(f, before._id);
 		expect(staged.length, "the build writes a hidden field set").toBeGreaterThan(oldFields.length);
@@ -324,6 +336,7 @@ describe("files_pending_overlay saved places", () => {
 		).toEqual([]);
 
 		await f.set_metadata(node.path, entries("latest"));
+		await test_finish_file_index(f.t, node._id);
 		const requested = await saved_job(f, node._id);
 		expect(requested?.kind).toBe("saved_places");
 		if (!requested || requested.kind !== "saved_places") throw new Error("Expected the requested refresh");
@@ -366,6 +379,64 @@ describe("files_pending_overlay saved places", () => {
 		).toEqual(expected);
 	});
 
+	test("an unfinished draft field build waits for saved index publication", async () => {
+		const { f, node, owners } = await metadata_fixture(1);
+		const owner = owners[0]!;
+		const before = (await f.overlay({ kind: "saved", id: node._id }, owner)).place!;
+		const oldFields = await fields_of(f, before._id);
+		const entries = (value: string) => [
+			{ key: "status", value },
+			...Array.from({ length: 80 }, (_, index) => ({ key: `field-${index}`, value: `${value}-${index}` })),
+		];
+		await f.set_metadata(node.path, entries("building"));
+		await test_finish_file_index(f.t, node._id);
+		await build_with_values(f, node._id);
+		await f.set_metadata(node.path, entries("latest"));
+		await f.t.mutation(internal.files_index.start, { nodeId: node._id });
+		let paused = false;
+		for (let step = 0; step < 100; step++) {
+			const run = await f.t.run(async (ctx) => {
+				const state = await ctx.db
+					.query("files_index_states")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", node._id))
+					.unique();
+				return state?.activeRunId ? await ctx.db.get("files_index_runs", state.activeRunId) : null;
+			});
+			if (!run) throw new Error("Expected the active saved index build");
+			if (run.phase === "install_text") {
+				paused = true;
+				break;
+			}
+			const args = { runId: run._id, step: run.step, generation: run.generation };
+			if (run.phase === "build_metadata") await f.t.action(internal.files_index.prepare_metadata, args);
+			else await f.t.mutation(internal.files_index.advance, args);
+		}
+		expect(paused, "the saved index has tagged all old metadata before the draft worker resumes").toBe(true);
+		for (let step = 0; step < 100; step++) await f.run_job("saved_places", node._id);
+		const parked = (await f.overlay({ kind: "saved", id: node._id }, owner)).place!;
+		const selected = (await fields_of(f, parked._id)).filter(
+			(field) => field.fieldsRefreshId === parked.fieldsRefreshId && field.fieldsVersion === parked.fieldsVersion,
+		);
+		expect(selected.map(field_payload).sort(), "index publication cannot select partial draft fields").toEqual(
+			oldFields.map(field_payload).sort(),
+		);
+		await test_finish_file_index(f.t, node._id);
+		await f.settle();
+		const fields = await fields_of(f, before._id);
+		expect(fields, "the resumed draft receives every complete latest field").toHaveLength(162);
+		expect(
+			fields
+				.filter((field) => field.docKind === "value")
+				.map((field) => field.stringValue)
+				.sort(),
+		).toEqual(
+			entries("latest")
+				.map((entry) => entry.value)
+				.sort(),
+		);
+		expect(await saved_job(f, node._id)).toBeNull();
+	});
+
 	test("an empty metadata set becomes visible before old fields finish cleanup", async () => {
 		const { f, node, owners } = await metadata_fixture(1);
 		const before = (await f.overlay({ kind: "saved", id: node._id }, owners[0])).place!;
@@ -376,6 +447,7 @@ describe("files_pending_overlay saved places", () => {
 			remove: ["status"],
 		});
 		expect(cleared._nay).toBeUndefined();
+		await test_finish_file_index(f.t, node._id);
 		let sawEmptyBeforeCleanup = false;
 		for (let step = 0; step < 100 && (await saved_job(f, node._id)); step++) {
 			await f.run_job("saved_places", node._id);
@@ -409,6 +481,7 @@ describe("files_pending_overlay saved places", () => {
 			{ key: "status", value: "recovered" },
 			...Array.from({ length: 80 }, (_, index) => ({ key: `field-${index}`, value: `recovered-${index}` })),
 		]);
+		await test_finish_file_index(f.t, node._id);
 		const partial = await build_with_values(f, node._id);
 		expect(
 			(await fields_of(f, discardedPlace._id)).length,
@@ -463,6 +536,7 @@ describe("files_pending_overlay saved places", () => {
 			{ key: "status", value: "building" },
 			...Array.from({ length: 80 }, (_, index) => ({ key: `field-${index}`, value: `building-${index}` })),
 		]);
+		await test_finish_file_index(f.t, node._id);
 		await build_with_values(f, node._id);
 		expect((await fields_of(f, place._id)).length).toBeGreaterThan(64);
 		// Model deletion between its node removal and queued field cleanup. This is not a full purge test.

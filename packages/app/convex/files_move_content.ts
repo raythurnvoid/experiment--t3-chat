@@ -24,6 +24,7 @@ import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { files_stored_uploads_cost_cents, files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_saved_content_yjs_owner } from "../server/files-saved-content-head.ts";
 import {
 	files_chunk_markdown_add_plain_text,
 	files_chunk_markdown_bounds,
@@ -197,9 +198,16 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				? (prepared.expectedYjsLastSequence?.lastSequence ?? 0)
 				: 0;
 	const input = (role: "staged" | "unstaged") => (step.inputs[role] ??= db_input(ctx, content, role));
+	const sourceHead = content.beforeHeadId ? await ctx.db.get("files_saved_content_heads", content.beforeHeadId) : null;
+	const logOwnerId = sourceHead ? files_saved_content_yjs_owner(sourceHead) : null;
 	// Each probe below uses the same range as its page.
 	const source_chunks = (table: "files_text_chunks" | "files_plain_text_chunks") =>
-		ctx.db
+		table === "files_text_chunks" && content.beforeHeadId
+			? ctx.db.query("files_text_chunks").withIndex("by_contentHead_view_chunk", (q) =>
+					q.eq("contentHeadId", content.beforeHeadId)
+						.eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+				)
+			: ctx.db
 			.query(table)
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q
@@ -209,17 +217,14 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 					.eq("moveView.cohortId", undefined)
 					.eq("moveView.view", undefined),
 			);
-	const source_updates = () =>
-		ctx.db
+	const source_updates = () => logOwnerId ? ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+			.withIndex("by_contentHead_view_sequence", (q) =>
 				q
-					.eq("organizationId", scope.organizationId)
-					.eq("workspaceId", scope.workspaceId)
-					.eq("fileNodeId", content.nodeId)
+					.eq("contentHeadId", logOwnerId)
 					.eq("moveView.cohortId", undefined)
 					.eq("moveView.view", undefined),
-			);
+			) : null;
 	const pending_chunks = (table: "files_text_chunks" | "files_plain_text_chunks") =>
 		ctx.db
 			.query(table)
@@ -251,7 +256,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 			if (await source_chunks(part === 0 ? "files_text_chunks" : "files_plain_text_chunks").first()) break;
 			part++;
 		} else if (phase === "sources") {
-			if (await source_updates().first()) break;
+			if (await source_updates()?.first()) break;
 			phase = "text";
 			part = 0;
 		} else if ((phase === "text" || phase === "plain_text") && !((await input("staged")) && shape.rootKind))
@@ -286,7 +291,9 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				true,
 			);
 		}
-		const page = await source_updates().paginate({ cursor, numItems: 1 });
+		const sourceUpdates = source_updates();
+		if (!sourceUpdates) return await db_progress(ctx, content, "text", 0, null, false);
+		const page = await sourceUpdates.paginate({ cursor, numItems: 1 });
 		for (const row of page.page) await ctx.db.patch("files_yjs_updates", row._id, { moveView: beforeTag });
 		return await db_progress(
 			ctx,
@@ -329,13 +336,12 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 	}
 	if (phase === "updates") {
 		if (prepared.kind === "saved_yjs") {
+			if (!logOwnerId) throw should_never_happen("Move lost its source Yjs owner", { contentId: content._id });
 			const page = await ctx.db
 				.query("files_yjs_updates")
-				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				.withIndex("by_contentHead_view_sequence", (q) =>
 					q
-						.eq("organizationId", scope.organizationId)
-						.eq("workspaceId", scope.workspaceId)
-						.eq("fileNodeId", content.nodeId)
+						.eq("contentHeadId", logOwnerId)
 						.eq("moveView.cohortId", cohort._id)
 						.eq("moveView.view", "before")
 						.gt("sequence", content.sourceSnapshotSequence!)

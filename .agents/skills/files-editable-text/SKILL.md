@@ -297,11 +297,11 @@ Two predicates in `packages/app/shared/files.ts` ask the two different questions
 
 ## The third write door
 
-`replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the **member's** content-write door for a non-collaborative file. It is an action plus a final mutation, because a Convex mutation cannot reach R2 and this door writes a new version snapshot object. The agent never uses it: an agent write becomes a pending update, and its Accept runs `save_file_pending_update_non_collaborative_in_db` (`files_pending_updates.ts`), which commits through the same `files_nodes_db_commit_text_replacement` helper as `finalize_file_content_replacement` (see `../files-agent-pending-updates/SKILL.md`, "Files with collaboration turned off"). A plugin updating its own non-collaborative file goes through the public `/api/v1/files/write` door instead, which has its own write pipeline and does not go through this helper.
+`replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the **member's** content-write door for a non-collaborative file. Its action uploads the new version to R2 and stages exact text through `files_content_saves.ts`. An agent write becomes a pending update instead. Its direct Accept uses `files_nodes_db_commit_text_replacement`; bulk Review has its own prepared content. A plugin uses `/api/v1/files/write`. These paths all request saved indexing after committing source.
 
-- The action checks auth and credits, runs the text cap and the frontmatter preflight, and PUTs the new content object. Over-cap frontmatter is refused with `Too many frontmatter fields`, the same words as the pending-update preflight: both are doors where a person hands over a whole text and can shorten it after reading the message. Materialization cannot refuse anybody, so it settles with the marker pair instead — see the `file-metadata` skill.
-- `finalize_file_content_replacement` re-runs auth → membership → ACL `content.write` → current write policies and credits, then replaces the chunks, points the node at the new asset, stores the version snapshot, and emits the `file_save` billing event.
-- Saves carry only the text and the caller's scope and file ids. Neither the action nor the final mutation compares an older content asset. The mutation that commits last wins, including when an earlier request takes longer to upload. Success is `_yay: null`.
+- The action checks auth, credits and the existing text-byte limit. Frontmatter indexing runs later and cannot refuse Save because it needs many index docs.
+- `files_content_saves.publish` checks membership, ACL `content.write`, write policies and credits again. It selects the complete source, stores the version and receipt, and emits the `file_save` billing event in one transaction.
+- Saves carry a stable `requestId`. Success returns that ID and `contentRevision`. Last committed Save wins; replaying a completed request returns its receipt without another write or charge.
 - The door refuses a collaborative file. That file's text lives in its Yjs document, and replacing the chunks under it would leave the two disagreeing.
 
 ## The two toggles
@@ -328,7 +328,7 @@ Every live writer carries the exact current `yjsLastSequenceId`. Materialization
 
 Each materialization uploads a fresh Yjs snapshot asset and a fresh version asset. This action never overwrites a published R2 object. The final mutation also compares `expectedYjsSnapshotAssetId` with the current snapshot's asset: this rejects a second publication at the same sequence counter. A stale run hands both new assets to the deletion ledger and changes no current content. A successful run patches the existing snapshot doc and publishes both assets in one transaction. It keeps the snapshot doc id, sequence doc id, and lineage generation unchanged.
 
-Materialization starts bounded cleanup of covered update and job docs immediately. It keeps the old Yjs object for 15 minutes for readers that already loaded its header, then checks its references before deleting it. The separate `putMayArriveUntil` used by OFF, repair, and replacement is a deletion-job settlement deadline: DELETE starts immediately, but a successful early delete keeps the job for another attempt after the deadline. The hourly recovery schedules due jobs. It is not a promise that the first DELETE waits 15 minutes.
+Materialization starts bounded cleanup of covered update and job docs immediately. It keeps the old Yjs object for 35 minutes for readers that already loaded its header, then checks its references before deleting it. This covers the default runtime's 30-minute action lifetime plus the five-minute upload margin. The separate `putMayArriveUntil` used by OFF, repair, and replacement is a deletion-job settlement deadline: DELETE starts immediately, but a successful early delete keeps the job for another attempt after the deadline. The hourly recovery schedules due jobs. It is not a promise that the first DELETE waits 35 minutes.
 
 Saved text and Yjs updates belong to a content head. Exact reads and covered-update cleanup use
 that head's index range. Cleanup also keeps its sequence and lineage checks. A preparing or current
@@ -362,6 +362,40 @@ the content type check, UTF-8, NUL, size, document-build, and frontmatter handli
 one content/version snapshot and one file snapshot, with no Yjs asset, snapshot, sequence, or update
 docs. A deterministic fallback stays a blob, preserves any service lock provenance, and leaves the
 node `textKind` and `collaborationEnabled` null. There is still no lazy Yjs creation: a collaborative file gets its document eagerly.
+
+## Save and background indexing
+
+Save stays in the foreground. The editor shows Saved only after the source bytes, exact text
+chunks, version history and receipt are durable. Opening the file or reading its text sees that
+source at once. Search, metadata filters, table sort values and suggestions may follow later.
+Do not show indexing status, a toast or an Activity. This rule applies to saved text and metadata:
+derived search work must not hold up source Save.
+
+For `replace_file_content`, each submitted text has one `requestId`. Retries reuse it. Later typing
+gets a new request. The request is bound to the actor, workspace, file and content hash. Its
+committed receipt returns the original result without publishing again. Keep this receipt for the
+file's lifetime, also after archive, restore and history cleanup. Last committed Save wins; retrying
+an older completed Save does not overwrite it.
+
+`files_content_saves.ts` stages exact source chunks in separate transactions and selects the ready
+head in one final mutation. Permission and write-policy checks run again at publication. Other
+members' drafts stay intact. Exact source stays while a live source, index build, published index
+or Move needs it. A Yjs log keeps its owner record. Version assets follow normal history retention.
+Retirement deletes only unreferenced source chunks and headers in pages.
+
+`files_index.ts` builds one captured version per file. Saves can replace its pending request, but
+do not restart its active build. Each step checks its step number and generation. The workspace
+publication queue serves ready index, Move and Review work in order. It stays held through staging,
+the view switch and cleanup. Source Save does not wait for that queue. Readers use the last complete
+index until the next complete one is selected. See [metadata](../file-metadata/SKILL.md).
+
+Exact saved text and the live Yjs log have separate owners. Materializing new exact text keeps the
+same Yjs log owner, so edits arriving during materialization remain visible. Indexing must never
+rewrite Yjs snapshots, counters or update tails. A Review replacement can select its own prepared
+Yjs log. The temporary owner-field migration preserves each existing head's own log.
+
+Database page sizes are work units, not file-size limits. The existing whole-text editor and
+request limits still apply; this change does not remove browser, parser or transport limits.
 
 ## What the editors do
 
@@ -407,11 +441,11 @@ Fields on `files_nodes` (`packages/app/convex/schema.ts`; read the docblocks the
 
 - `contentShapeMismatchAt`: set when materialization finds the reconstructed document's shape does not match the node's `textKind`. Readers report a shape mismatch instead of content; the Yjs writers refuse more updates.
 - `contentYjsStateTooLargeByteSize`: set when the reconstructed state passes the 4 MiB cap. Materialization does not advance, readers report the failure, and the Yjs writers refuse more updates.
-- `contentFrontmatterTooLargeFieldCount` and `contentFrontmatterTooLargeIndexDocumentCount`: set as a pair when a materialization's frontmatter is over the 128-field or 512-index-document cap. Committed content stays at the last sequence that fit. The Files top status shows both stored counts and limits, so the user knows frontmatter indexing is paused. Cleared when the user reduces the metadata and a later materialization succeeds. An uploaded `.md` that converts with over-cap frontmatter is born with the pair already set (see the upload path below).
+- `contentFrontmatterTooLargeFieldCount` and `contentFrontmatterTooLargeIndexDocumentCount`: the inline upload converter can set this pair when frontmatter exceeds its index limits. Save, materialization, Restore, repair and collaboration enable use the paged index worker and clear the pair. They do not set it for a large field count.
 
 While `contentShapeMismatchAt` or `contentYjsStateTooLargeByteSize` is set, door 1 refuses every update with the repair message — accepting more would only grow the broken log. The pre-existing `contentTooLargeByteSize` (visible text over 900,000 bytes) is a settle marker, not one of the four: content freezes at the last fitting sequence, but writes continue. When an unmaterialized budget trips on a settle-marked file, the reserve gate returns the repair message instead of a false "retry in a moment", because a settled materialization never shrinks the counters.
 
-Operator repair (`repair_file_yjs_state_from_visible_text` plus its staleness-gated `finalize_file_yjs_repair` in `packages/app/convex/files_nodes_content.ts`) is the ONLY recovery for `contentShapeMismatchAt` and `contentYjsStateTooLargeByteSize`. It can also rebuild a frontmatter-marked file, but normal materialization clears that temporary pair after the user reduces the metadata. Repair rebuilds one fresh compact document from the file's visible text, swaps every committed representation atomically, clears the markers, resets the counters, rotates `yjsLastSequenceId`, and increments `lineageGeneration` and `pendingContentVersion`. The exact-id change stops pre-repair live writers and workers. The file version makes old pending proposals and saved-sequence markers stale without changing their stored docs. The old content asset stays under normal snapshot retention. Run it through the `convex-admin-ops` skill.
+Operator repair (`repair_file_yjs_state_from_visible_text` plus `finalize_file_yjs_repair` in `packages/app/convex/files_nodes_content.ts`) is the ONLY recovery for `contentShapeMismatchAt` and `contentYjsStateTooLargeByteSize`. It can also rebuild a frontmatter-marked file; normal materialization now clears that pair too. Repair prepares exact source in pages, then selects the source and a fresh compact Yjs document together. It clears the markers, resets counters, rotates `yjsLastSequenceId`, and increments `lineageGeneration` and `pendingContentVersion`. Indexes follow in the background. The new identity stops old live writers and workers. Existing proposals and saved-sequence markers become stale without changing their stored docs. The old content asset stays under normal snapshot retention. Run repair through the `convex-admin-ops` skill.
 
 # Text Normalization Policy
 

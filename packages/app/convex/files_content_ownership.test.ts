@@ -9,6 +9,7 @@ import {
 	test_convex,
 	test_create_saved_text_file,
 	test_db_get_review_state,
+	test_finish_file_index,
 	test_finish_pending_update_run,
 	test_finish_saved_scope_jobs,
 	test_finish_transfer_run,
@@ -86,7 +87,7 @@ async function read_content(ctx: QueryCtx, nodeId: Id<"files_nodes">) {
 	};
 }
 
-async function ready_content_review() {
+async function ready_content_review(indexBeforeReview = false) {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -95,6 +96,15 @@ async function ready_content_review() {
 		path: "/note.md",
 		textContent: text,
 	});
+	if (indexBeforeReview) {
+		expect(await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId, nodeId, acknowledgeDropCollaborativeHistory: true,
+		})).toHaveProperty("_yay");
+		expect(await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId, nodeId, requestId: "save-before-review", text,
+		})).toHaveProperty("_yay");
+		await t.mutation(internal.files_index.start, { nodeId });
+	}
 	const accepted = text.replace("status: saved", "status: accepted");
 	expect(
 		await upsert_file_pending_update_public_for_test(asUser, {
@@ -290,7 +300,7 @@ test.each(["direct", "in-flight direct", "child", "in-flight child"] as const)(
 	},
 );
 
-test("native Save replaces a full legal frontmatter set with the current owner", async () => {
+test("native Save indexes a full legal frontmatter set with the saved owner", async () => {
 	const t = test_convex({ transactionLimits: true });
 	const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -315,8 +325,10 @@ test("native Save replaces a full legal frontmatter set with the current owner",
 			membershipId: db.membershipId,
 			nodeId,
 			text: markdown(1),
+			requestId: "full-frontmatter",
 		}),
 	).toHaveProperty("_yay");
+	await test_finish_file_index(t, nodeId);
 	const saved = await t.run((ctx) => read_content(ctx, nodeId));
 	expect(saved.text).toBe(markdown(1));
 	expect(saved.fields).toEqual(Array.from({ length: 128 }, (_, key) => `frontmatter.k${key}`).sort());
@@ -344,6 +356,45 @@ test("native Save replaces a full legal frontmatter set with the current owner",
 		docs.every((doc) => doc.sourceKind === "committed" && doc.contentHeadId === saved.headId),
 		"all replacement fields use the current head",
 	).toBe(true);
+});
+
+test("an index build from before Review cannot replace accepted content or metadata", async () => {
+	const f = await ready_content_review(true);
+	const before = await f.t.run((ctx) => ctx.db.query("files_index_states")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	expect(before?.activeRunId, "the older index build exists before Review publishes").not.toBeNull();
+	await f.t.mutation(internal.files_move_cohorts.advance, f.args);
+	await test_finish_pending_update_run(f.asUser, f.runId, { stepwise: true });
+	const accepted = await f.t.run((ctx) => read_content(ctx, f.nodeId));
+	expect(accepted.text).toBe(f.accepted);
+	await test_finish_file_index(f.t, f.nodeId);
+	const final = await f.t.run((ctx) => read_content(ctx, f.nodeId));
+	expect(final.text, "a stale index run cannot replace the accepted source").toBe(f.accepted);
+	expect(final.values, "a stale index run cannot replace accepted metadata").toEqual(accepted.values);
+	expect(final.headId).toBe(accepted.headId);
+});
+
+test("Save after the Review flip survives publication cleanup", async () => {
+	const f = await ready_content_review(true);
+	await f.t.mutation(internal.files_move_cohorts.advance, f.args);
+	const side = await f.t.run((ctx) => ctx.db.query("files_index_states")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	expect(side?.movePublication, "the Review has flipped but its index promotion is unfinished").not.toBeNull();
+	const newerText = text.replace("status: saved", "status: newer");
+	expect(await f.asUser.action(api.files_nodes_content.replace_file_content, {
+		membershipId: f.db.membershipId, nodeId: f.nodeId, requestId: "save-after-review-flip", text: newerText,
+	})).toHaveProperty("_yay");
+	const newer = await f.t.run((ctx) => ctx.db.query("files_index_states")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	await test_finish_pending_update_run(f.asUser, f.runId, { stepwise: true });
+	const after = await f.t.run((ctx) => ctx.db.query("files_index_states")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	expect(after?.requestedHeadId, "Review cleanup keeps the newer Save source request").toBe(newer?.requestedHeadId);
+	expect(after?.requestedRevision).toBe(newer?.requestedRevision);
+	await test_finish_file_index(f.t, f.nodeId);
+	const final = await f.t.run((ctx) => read_content(ctx, f.nodeId));
+	expect(final.text, "Review cleanup keeps the newer saved text").toBe(newerText);
+	expect(final.values).toContainEqual(["frontmatter.status", "newer"]);
 });
 
 test("Move and reviewed Archive keep one selected content and metadata view", async () => {

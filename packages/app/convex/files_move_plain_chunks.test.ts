@@ -8,6 +8,7 @@ import { files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import {
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_finish_saved_scope_jobs,
 	test_finish_transfer_run,
 	test_progress_guard,
@@ -52,6 +53,7 @@ async function fixture() {
 			].join("\n"),
 		}),
 	).toEqual({ _yay: null });
+	await test_finish_file_index(f.t, nodeId);
 	await test_finish_saved_scope_jobs(f.t);
 	return { ...f, sourceId: source._id, targetId: target._id, nodeId };
 }
@@ -565,6 +567,98 @@ describe("Move unchanged plain chunks", () => {
 		await test_finish_saved_scope_jobs(f.t);
 		await assert_reads(f, "/target/source/note.txt");
 	}, 120_000);
+
+	test.each([
+		{ phase: "publish" as const, stop: false },
+		{ phase: "publish" as const, stop: true },
+		{ phase: "finish_sides" as const, stop: false },
+	])(
+		"a restriction follows the winning Move side: $phase, stop $stop",
+		async ({ phase, stop }) => {
+			const f = await fixture();
+			const member = await add_member(f, "scope-reader");
+			const move = await start_move(f, f.nodeId);
+			await drive_to(f, move, phase);
+			expect(
+				await f.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: f.nodeId,
+				}),
+			).toEqual({ _yay: null });
+			expect(
+				await member.asUser.query(api.files_tree.get_file_node_for_membership, {
+					membershipId: member.membershipId,
+					fileNodeId: f.nodeId,
+				}),
+				"restriction closes the selected Move view before metadata refresh",
+			).toBeNull();
+			expect(
+				await saved_search(
+					f,
+					{
+						kind: "metadata",
+						plan: { op: "eq", fieldPath: "metadata.marker", value: "yes" },
+					},
+					undefined,
+					member,
+				),
+				"stale open metadata cannot expose a restricted Move item",
+			).toEqual([]);
+			await test_finish_saved_scope_jobs(f.t);
+			expect(
+				await f.t.run((ctx) =>
+					ctx.db
+						.query("files_pending_overlay_jobs")
+						.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", f.nodeId))
+						.unique(),
+				),
+				"metadata scope work waits for the winning Move side",
+			).toMatchObject({ blockedByCohortId: move.cohortId });
+			if (stop)
+				expect(
+					await f.asUser.mutation(api.activities.request_stop, {
+						membershipId: f.db.membershipId,
+						activityId: move.activityId,
+					}),
+				).toEqual({ _yay: null });
+			await finish(f, move);
+			const completed = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", move.cohortId));
+			const published = phase === "finish_sides";
+			expect(completed?.visibleView, "access changes before the flip keep the old placement").toBe(
+				published ? "after" : "before",
+			);
+			if (!stop)
+				expect(completed?.errorCode, "unpublished Move asks for review after access changes").toBe(
+					published ? null : "needs_review",
+				);
+			const docs = await f.t.run((ctx) =>
+				ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_source_fileNode", (q) =>
+						q
+							.eq("organizationId", f.db.organizationId)
+							.eq("workspaceId", f.db.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", f.nodeId),
+					)
+					.collect(),
+			);
+			expect(docs, "Move keeps one complete metadata version").toHaveLength(256);
+			for (const doc of docs) {
+				if (doc.sourceKind !== "committed") throw new Error("Expected saved metadata");
+				expect(doc.moveView).toBeUndefined();
+				expect(doc.path, "cleanup keeps the winning placement").toBe(
+					published ? "/target/note.txt" : "/source/note.txt",
+				);
+				expect(
+					doc.restrictedScopeNodeId,
+					"cleanup cannot restore the old open metadata scope",
+				).toBe(f.nodeId);
+				if (doc.docKind === "field") expect(doc.isRestrictedScopeRoot).toBe(true);
+			}
+		},
+		120_000,
+	);
 
 	test("scope changes use current access while sharing normal chunks", async () => {
 		const f = await fixture();

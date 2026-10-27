@@ -126,10 +126,13 @@ async function turn_off_collaboration(fixture: Fixture) {
 	).toBeUndefined();
 }
 
+let saveRequestNumber = 0;
+
 async function replace_text(fixture: Fixture, text: string) {
 	expect(
 		(
 			await fixture.asUser.action(api.files_nodes_content.replace_file_content, {
+				requestId: `metadata-save:${++saveRequestNumber}`,
 				membershipId: fixture.db.membershipId,
 				nodeId: fixture.nodeId,
 				text,

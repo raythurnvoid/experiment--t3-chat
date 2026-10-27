@@ -1639,6 +1639,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	// and closing a file then never marks it dirty, and only the first save may reformat once
 	// (`showReformatHint` warns about that).
 	const baselineMarkdownRef = useRef<string>(initialText);
+	const saveRequestRef = useRef<{ nodeId: string; text: string; requestId: string } | null>(null);
 	// Only this editor's successful upsert can advance the revision used by retries.
 	const reviewedRevisionRef = useRef(pendingUpdate?.revision ?? 0);
 	const [dirtyCheckState, setDirtyCheckState] = useState<"clean" | "checking" | "dirty">("clean");
@@ -1791,12 +1792,16 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 			if (!nodeId) return;
 
 			// Save replaces the whole text with this editor's Markdown.
+			if (saveRequestRef.current?.nodeId !== nodeId || saveRequestRef.current.text !== textToSave)
+				saveRequestRef.current = { nodeId, text: textToSave, requestId: crypto.randomUUID() };
 			const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
 				membershipId,
 				nodeId,
 				text: textToSave,
+				requestId: saveRequestRef.current.requestId,
 			});
 			if (replaced._nay) {
+				if (replaced._nay.name === "save_expired") saveRequestRef.current = null;
 				console.error("[FileEditorRichTextNonCollab.handleClickSave] Error while replacing the file content", {
 					nay: replaced._nay,
 				});
@@ -1804,6 +1809,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				return;
 			}
 
+			saveRequestRef.current = null;
 			baselineMarkdownRef.current = textToSave;
 			setShowReformatHint(false);
 			// The member may have typed while the call was waiting. Recompute dirty against the
@@ -1894,13 +1900,17 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				return false;
 			}
 
+			if (saveRequestRef.current?.nodeId !== nodeId || saveRequestRef.current.text !== textWithComment)
+				saveRequestRef.current = { nodeId, text: textWithComment, requestId: crypto.randomUUID() };
 			const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
 				membershipId,
 				nodeId,
 				text: textWithComment,
+				requestId: saveRequestRef.current.requestId,
 			});
 
 			if (replaced._nay) {
+				if (replaced._nay.name === "save_expired") saveRequestRef.current = null;
 				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the comment", {
 					nay: replaced._nay,
 				});
@@ -1908,6 +1918,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				return false;
 			}
 
+			saveRequestRef.current = null;
 			baselineMarkdownRef.current = textWithComment;
 			setShowReformatHint(false);
 			recomputeDirtyState(editor);

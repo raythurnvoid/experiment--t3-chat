@@ -846,6 +846,7 @@ describe("bash_run_command", () => {
 			throw new Error("No pending copy");
 		}
 		const memberSave = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+			requestId: "member-before-accept-copy",
 			membershipId: runner.seeded.membershipId,
 			nodeId: savedOverId,
 			text: "someone else: 1\n",

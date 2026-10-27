@@ -7,6 +7,7 @@ import {
 	test_compact_metadata_catalog,
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 } from "../convex/setup.test.ts";
@@ -69,20 +70,27 @@ test("saved tree sources keep the normal names until publication", async () => {
 });
 
 test("metadata reads merge normal and selected facts before and after the switch", async () => {
-	const f = await test_create_saved_placement_fixture({ normalPaths: ["/normal.txt", "/meta.txt"] });
+	const f = await test_create_saved_placement_fixture({
+		normalPaths: ["/normal.txt", "/meta.txt"],
+		beforeMove: async ({ t, db, normalNodes }) => {
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			for (const [path, metadataYaml] of [
+				["/normal.txt", "normal: true"],
+				["/meta.txt", "status: old"],
+			] as const) {
+				const fileNodeId = normalNodes.get(path)!;
+				expect(
+					await asUser.mutation(api.files_metadata.set_entries, {
+						membershipId: db.membershipId,
+						fileNodeId,
+						metadataYaml,
+					}),
+				).toEqual({ _yay: null });
+				await test_finish_file_index(t, fileNodeId);
+			}
+		},
+	});
 	const nodeId = f.normalNodes.get("/meta.txt")!;
-	for (const [id, metadataYaml] of [
-		[f.normalNodes.get("/normal.txt")!, "normal: true"],
-		[nodeId, "status: old"],
-	] as const) {
-		expect(
-			await f.asUser.mutation(api.files_metadata.set_entries, {
-				membershipId: f.db.membershipId,
-				fileNodeId: id,
-				metadataYaml,
-			}),
-		).toEqual({ _yay: null });
-	}
 	await f.stageNode(nodeId);
 	// Pause the reader fixture while owned-file facts sit in both views. The wrapper moves the
 	// metadata catalog rows with the docs.
@@ -124,29 +132,31 @@ test("metadata reads merge normal and selected facts before and after the switch
 	};
 	const paginationOpts = { numItems: 50, cursor: null };
 	const fields = () =>
-		read_streams(async (savedStream) =>
-			(
-				await f.asUser.query(api.files_metadata.list_folder_fields, {
-					membershipId: f.db.membershipId,
-					savedStream,
-					parentId: "root",
-					restricted: false,
-					prefix: "",
-					paginationOpts,
-				})
-			).page,
+		read_streams(
+			async (savedStream) =>
+				(
+					await f.asUser.query(api.files_metadata.list_folder_fields, {
+						membershipId: f.db.membershipId,
+						savedStream,
+						parentId: "root",
+						restricted: false,
+						prefix: "",
+						paginationOpts,
+					})
+				).page,
 		);
 	const values = () =>
-		read_streams(async (savedStream) =>
-			(
-				await f.asUser.query(api.files_metadata.list_search_values, {
-					membershipId: f.db.membershipId,
-					savedStream,
-					fieldPath: "metadata.status",
-					prefix: "",
-					paginationOpts,
-				})
-			).page,
+		read_streams(
+			async (savedStream) =>
+				(
+					await f.asUser.query(api.files_metadata.list_search_values, {
+						membershipId: f.db.membershipId,
+						savedStream,
+						fieldPath: "metadata.status",
+						prefix: "",
+						paginationOpts,
+					})
+				).page,
 		);
 	const keys = () =>
 		read_streams(async (savedStream) =>
@@ -205,7 +215,9 @@ test("metadata reads merge normal and selected facts before and after the switch
 		if (!doc) throw new Error("Expected an after metadata doc");
 		await ctx.db.patch("files_metadata_docs", doc._id, { moveView: undefined });
 	});
-	expect((await byPath())?.fields, "Indexed metadata merges a partly cleaned selected view").toEqual(["metadata.status"]);
+	expect((await byPath())?.fields, "Indexed metadata merges a partly cleaned selected view").toEqual([
+		"metadata.status",
+	]);
 	expect(await fields()).toEqual(["metadata.normal", "metadata.status"]);
 	expect(await values(), "after metadata wins at the shared switch").toEqual(["new"]);
 });
@@ -240,6 +252,7 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 				metadataYaml: "note: match",
 			}),
 		).toEqual({ _yay: null });
+		await test_finish_file_index(t, nodeId);
 		expected.push(`${nodeId}:/target/source/${name}`);
 	}
 	expect(
@@ -287,13 +300,15 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 	const canJoin = overlay.files_pending_overlay_db_can_join_step;
 	let admissionYielded = false;
 	// Yield once during setup. Later steps use the real guard and worker.
-	const pause = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
-		const allowed = await canJoin(ctx, limitFactor);
-		if (limitFactor !== 4) return allowed;
-		admissionYielded = true;
-		pause.mockRestore();
-		return false;
-	});
+	const pause = vi
+		.spyOn(overlay, "files_pending_overlay_db_can_join_step")
+		.mockImplementation(async (ctx, limitFactor) => {
+			const allowed = await canJoin(ctx, limitFactor);
+			if (limitFactor !== 4) return allowed;
+			admissionYielded = true;
+			pause.mockRestore();
+			return false;
+		});
 	const started = await asUser.mutation(api.files_transfer.accept_input, {
 		membershipId: db.membershipId,
 		requestId: crypto.randomUUID(),
@@ -324,7 +339,12 @@ test("metadata pages keep every moved-in match during an unrelated Move", async 
 				expect(cohort.visibleView).toBe("before");
 				break;
 			}
-			await t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+			await t.action(internal.files_move_run.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 		} else {
 			const jobs = await t.run((ctx) =>
 				ctx.db
@@ -459,7 +479,12 @@ test.each([false, true])(
 				if (!cohort) throw new Error("Expected the native Move group");
 				expect(cohort.errorCode).toBeNull();
 				if (cohort.publishedAt !== null) break;
-				await t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+				await t.action(internal.files_move_run.run, {
+					cohortId: cohort._id,
+					step: cohort.step,
+					runGeneration: cohort.runJob?.generation ?? null,
+					mode: "step",
+				});
 			} else {
 				const jobs = await t.run((ctx) =>
 					ctx.db

@@ -401,7 +401,7 @@ describe("bash_run_command", () => {
 		test.each([null, "invalid"])("reports unknown for stored type %s", async (contentType) => {
 			const runner = await create_bash_runner();
 			const nodeId = await get_seeded_node_id(runner, "/uploaded.md");
-			await runner.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { contentType }));
+			await test_run_with_flush(runner.t, (ctx) => ctx.db.patch("files_nodes", nodeId, { contentType }));
 			const result = await runner.run({ command: "file uploaded.md; file -b --mime-type uploaded.md" });
 			expect(result.metadata.exitCode, result.stderr).toBe(0);
 			expect(result.stdout).toBe("uploaded.md: unknown\nunknown\n");
@@ -509,6 +509,7 @@ describe("bash_run_command", () => {
 			if (!proposal?.content || proposal.content.base.kind !== "asset") throw new Error("Expected a text proposal");
 			const nodeId = await get_seeded_node_id(runner, "/stale.txt");
 			const saved = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+				requestId: "new-saved-text",
 				membershipId: runner.seeded.membershipId,
 				nodeId,
 				text: "new saved text\n",

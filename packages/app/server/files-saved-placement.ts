@@ -496,7 +496,7 @@ export async function files_saved_placement_db_get_sequence(
 	node: Doc<"files_nodes">,
 	fixedView?: files_saved_placement_FixedView,
 ) {
-	const head = await files_saved_content_db_get_head(db, node, fixedView);
+	const head = await files_saved_content_db_get_head(db, node._id, fixedView);
 	if (!head?.yjsLastSequenceId) return null;
 	const sequence = await db.get("files_yjs_docs_last_sequences", head.yjsLastSequenceId);
 	if (

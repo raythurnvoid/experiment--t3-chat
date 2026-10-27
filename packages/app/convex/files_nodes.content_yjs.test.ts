@@ -17,6 +17,7 @@ import {
 	test_drain_billing_usage_event_outbox,
 	test_rename_node,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
 } from "./setup.test.ts";
@@ -379,7 +380,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 	expect(r2Writes.has(yjsSnapshotR2Key)).toBe(true);
 });
 
-test("materialize_file_content rolls back Convex writes when committed chunking fails", async () => {
+test("materialize_file_content preserves saved content when source chunking fails", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -435,7 +436,7 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 	const savedYjsBytes = r2Writes.get(before.yjsKey!);
 
 	const chunkMarkdownSpy = vi
-		.spyOn(await import("../server/files-markdown-chunking-mastra.ts"), "files_chunk_markdown")
+		.spyOn(await import("../server/files-markdown-chunking-mastra.ts"), "files_chunk_markdown_bounds")
 		.mockResolvedValueOnce(
 			Result({
 				_nay: {
@@ -454,7 +455,7 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 			userId: db.userId,
 			targetSequence: pushResult._yay.newSequence,
 		}),
-	).rejects.toThrow("Failed to materialize file content");
+	).resolves.toMatchObject({ _nay: { message: "Error while chunking markdown" } });
 	expect(chunkMarkdownSpy).toHaveBeenCalled();
 
 	const after = await t.run(async (ctx) => {
@@ -575,7 +576,7 @@ test("materialize_file_content marks over-cap content too large and leaves the n
 	expect(r2Writes.size).toBe(r2WriteCountBeforePush);
 });
 
-test("materialize_file_content settles over-cap frontmatter with the marker pair before any asset write", async () => {
+test("materialize_file_content saves and indexes every field beyond the old frontmatter cap", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -633,7 +634,12 @@ test("materialize_file_content settles over-cap frontmatter with the marker pair
 		userId: db.userId,
 		targetSequence: pushResult._yay.newSequence,
 	});
-	expect(materialized._nay).toMatchObject({ message: "Frontmatter exceeds the index caps" });
+	expect(materialized._nay).toBeUndefined();
+	await t.mutation(internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
+		organizationId: db.organizationId, workspaceId: db.workspaceId, nodeId,
+		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+		throughSequence: pushResult._yay.newSequence,
+	});
 
 	const afterReject = await t.run(async (ctx) => {
 		const fileNode = await ctx.db.get("files_nodes", nodeId);
@@ -645,17 +651,19 @@ test("materialize_file_content settles over-cap frontmatter with the marker pair
 		return { fileNode, jobs, assetCount };
 	});
 
-	// Both marker halves are written and the job settles: retrying cannot shrink the frontmatter.
-	expect(afterReject.fileNode?.contentFrontmatterTooLargeFieldCount).toBe(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
-	expect(afterReject.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
-		files_metadata_MAX_FRONTMATTER_FIELDS + 1,
-	);
+	expect(afterReject.fileNode?.contentFrontmatterTooLargeFieldCount).toBeNull();
+	expect(afterReject.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 	expect(afterReject.jobs).toHaveLength(0);
-	// The preflight runs before `insert_asset` and the R2 uploads, so the refusal leaves no
-	// orphan asset doc and no new object, and the node keeps its last good content.
-	expect(afterReject.fileNode?.assetId).toBe(beforePush.assetId);
-	expect(afterReject.assetCount).toBe(beforePush.assetCount);
-	expect(r2Writes.size).toBe(r2WriteCountBeforePush);
+	expect(afterReject.fileNode?.assetId).not.toBe(beforePush.assetId);
+	expect(afterReject.assetCount).toBeGreaterThan(beforePush.assetCount);
+	expect(r2Writes.size).toBeGreaterThan(r2WriteCountBeforePush);
+	await test_finish_file_index(t, nodeId);
+	const indexed = await t.run((ctx) => ctx.db.query("files_metadata_docs")
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) => q
+			.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
+			.eq("sourceKind", "committed").eq("fileNodeId", nodeId)).collect());
+	expect(indexed.filter((doc) => doc.docKind === "value"), "every frontmatter value is indexed")
+		.toHaveLength(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
 
 	// The next fitting content clears both marker halves at finalization. Build it as a diff on
 	// the live document's own lineage: pushing a fresh doc's whole state would MERGE with the
@@ -1817,6 +1825,7 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: rawNextText,
+			requestId: "replace-new-text",
 		});
 		expect(saved._nay).toBeUndefined();
 
@@ -1846,7 +1855,7 @@ describe("non-collaborative files", () => {
 		// The replacement landed and the file is still non-collaborative.
 		expect(after.collaborationEnabled).toBe(false);
 		expect(after.assetId).not.toBe(assetId);
-		expect(saved._yay).toBeNull();
+		expect(saved._yay).toEqual({ requestId: "replace-new-text", contentRevision: expect.any(Number) });
 		expect(after.newAssetKind).toBe("content_snapshot");
 		expect(after.newAssetSize).toBe(files_get_utf8_byte_size(nextText));
 		expect(after.contentByteSize).toBe(files_get_utf8_byte_size(nextText));
@@ -1892,11 +1901,12 @@ describe("non-collaborative files", () => {
 			expect(doc).toBeNull();
 		});
 
-		// `replace_file_content` reaches the writer through `finalize_file_content_replacement`.
+		// The public Save keeps the updater sort doc in step with the new source.
 		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
 			membershipId: db.membershipId,
 			nodeId,
 			text: "# New\n",
+			requestId: "replace-sync",
 		});
 		expect(saved._nay).toBeUndefined();
 
@@ -1965,6 +1975,7 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: firstText,
+			requestId: "first-save",
 		});
 		if (overlap) {
 			await firstPutStarted;
@@ -1975,6 +1986,7 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: secondText,
+			requestId: "second-save",
 		});
 		releaseFirstPut?.();
 		const firstSaved = await firstSaving;
@@ -2035,22 +2047,9 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: "x".repeat(files_MAX_TEXT_CONTENT_BYTES + 1),
+			requestId: "over-size",
 		});
 		expect(tooBig._nay?.message).toContain("exceeds");
-
-		// Frontmatter over the field limit is refused the same way.
-		const tooManyFields = Array.from(
-			{ length: files_metadata_MAX_FRONTMATTER_FIELDS + 5 },
-			(_, index) => `field${index}: value${index}`,
-		).join("\n");
-		const fatFrontmatter = await asUser.action(api.files_nodes_content.replace_file_content, {
-			membershipId: db.membershipId,
-			nodeId,
-			text: `---\n${tooManyFields}\n---\n\nbody\n`,
-		});
-		// Same words as the pending-update preflight: both doors take a whole text from a person who
-		// can shorten it after reading the message.
-		expect(fatFrontmatter._nay?.message).toBe("Too many frontmatter fields");
 
 		// The read-only lock blocks this write door like every other one.
 		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -2063,6 +2062,7 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: "# Guarded\n\nwritten through the lock\n",
+			requestId: "locked-save",
 		});
 		expect(whileLocked._nay?.name).toBe("read_only");
 		expect(whileLocked._nay?.message).toBe("This item is read-only.");
@@ -2202,6 +2202,7 @@ describe("non-collaborative files", () => {
 			membershipId: member.membershipId,
 			nodeId,
 			text: "# Restricted\n\nwritten without permission\n",
+			requestId: "restricted-save",
 		});
 		// An action cannot read the database, so it only learns that its preflight query said no,
 		// not which check said it. It answers one message for all of them, the same way
@@ -2255,6 +2256,7 @@ describe("non-collaborative files", () => {
 			membershipId: member.membershipId,
 			nodeId,
 			text: "# Restricted\n\nwritten with permission\n",
+			requestId: "funded-save",
 		});
 		expect(unfunded._nay?.message).toBe("Insufficient funds");
 		expect(r2Writes.size).toBe(0);
@@ -2264,6 +2266,7 @@ describe("non-collaborative files", () => {
 			membershipId: member.membershipId,
 			nodeId,
 			text: "# Restricted\n\nwritten with permission\n",
+			requestId: "funded-save",
 		});
 		expect(allowed._nay).toBeUndefined();
 	});
@@ -2346,6 +2349,9 @@ describe("non-collaborative files", () => {
 			email: "round-trip-user@example.com",
 		});
 		const r2Writes = test_setup_r2_capture();
+		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockImplementation(async (_ctx, key) => {
+			r2Writes.delete(key);
+		});
 
 		const markdown = "# Round trip\n\nbody with searchword\n";
 		const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/round-trip.md", markdown });
@@ -2398,6 +2404,29 @@ describe("non-collaborative files", () => {
 		});
 		expect(deletionJob?.reason).toBe("untracked_asset_event");
 		expect(deletionJob?.putMayArriveUntil).toBeGreaterThan(Date.now());
+		if (!deletionJob) throw new Error("Expected the old snapshot deletion job");
+
+		// An old action can still upload at minute 20. Cleanup must delete those bytes too.
+		const offAt = Date.now();
+		vi.useFakeTimers();
+		vi.setSystemTime(offAt + 20 * 60_000);
+		await t.action(internal.r2_client.process_object_deletion_job, {
+			jobId: deletionJob._id,
+			generation: deletionJob.generation,
+		});
+		await fetch(`https://r2.test/upload?key=${encodeURIComponent(deletionJob.r2Key)}`, {
+			method: "PUT",
+			body: "late snapshot bytes",
+		});
+		expect(r2Writes.has(deletionJob.r2Key)).toBe(true);
+		vi.setSystemTime(offAt + 35 * 60_000 + 1);
+		await t.action(internal.r2_client.process_object_deletion_job, {
+			jobId: deletionJob._id,
+			generation: deletionJob.generation,
+		});
+		expect(r2Writes.has(deletionJob.r2Key), "cleanup removes a PUT that arrives after minute 15").toBe(false);
+		expect(await t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", deletionJob._id))).toBeNull();
+		vi.useRealTimers();
 
 		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
 			membershipId: db.membershipId,
@@ -2884,6 +2913,7 @@ describe("non-collaborative files", () => {
 		});
 		expect(locked._nay).toBeUndefined();
 		const refused = await asUser.mutation(internal.files_nodes_content.finalize_file_collaboration_enable, {
+			preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.contentHeadId!,
 			membershipId: db.membershipId,
 			nodeId,
 			text,
@@ -3551,6 +3581,7 @@ describe("non-collaborative files", () => {
 					membershipId: db.membershipId,
 					nodeId,
 					text: "# Saved after disabling collaboration\n",
+					requestId: "save-after-toggle",
 				});
 				expect(saved._nay).toBeUndefined();
 			}
@@ -3656,6 +3687,7 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: interveningText,
+			requestId: "save-during-restore",
 		});
 		const interveningAssetId = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId);
 		releaseRestorePut?.();
@@ -3707,7 +3739,7 @@ describe("non-collaborative files", () => {
 	});
 });
 
-test("file_stats stay fresh after an edit: re-materialization patches the same doc in place", async () => {
+test("file_stats stay fresh after an edit and preserve the previous source counts", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -3772,6 +3804,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	}).toEqual(wc(committedA));
 	const statsDocIdA = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
 	expect(statsDocIdA).not.toBeNull();
+	const oldStats = await t.run((ctx) => ctx.db.get("file_stats", statsDocIdA!));
 
 	// Edit: transform the live Yjs doc to B and push only the incremental diff, then re-materialize.
 	const svA = encodeStateVector(yjsDoc);
@@ -3810,19 +3843,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	}).toEqual(wc(committedB));
 	expect(statsB.lineCount).toBeGreaterThan(statsA.lineCount);
 
-	// The same stats doc was patched in place (back-ref unchanged) — no duplicate doc was inserted.
+	// Each immutable source keeps its own counts while it is still pinned.
 	const statsDocIdB = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
-	expect(statsDocIdB).toBe(statsDocIdA);
-	const statsDocCount = await t.run(
-		async (ctx) =>
-			(
-				await ctx.db
-					.query("file_stats")
-					.withIndex("by_organization_workspace_fileNode", (q) =>
-						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
-					)
-					.collect()
-			).length,
-	);
-	expect(statsDocCount).toBe(1);
+	expect(statsDocIdB).not.toBe(statsDocIdA);
+	expect(await t.run((ctx) => ctx.db.get("file_stats", statsDocIdA!))).toEqual(oldStats);
 });

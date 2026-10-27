@@ -10,6 +10,7 @@ import type { files_PendingParent } from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
+import { files_content_heads_db_is_staged_insert } from "./files-content-heads.ts";
 
 type Source = Doc<"files_move_source_reservations">["source"];
 type Check = {
@@ -31,6 +32,7 @@ type State = {
 	capability: Capability | null;
 	securityNodes: Set<Id<"files_nodes">>;
 	restoreNodes: Map<Id<"files_nodes">, { userId: Id<"users">; mode: "stage" | "publish" }>;
+	saveNodes: Map<Id<"files_nodes">, Id<"files_saved_content_heads">>;
 	knownScopes: Map<string, Scope>;
 	nodes: Map<string, Promise<Doc<"files_nodes"> | Doc<"files_pending_nodes"> | null>>;
 	sourceReads: Map<string, Promise<Doc<"files_move_source_reservations"> | null>>;
@@ -255,6 +257,22 @@ export async function files_move_reservations_db_check_node_write(
 		const result = await files_move_reservations_db_check(db, check);
 		if (result._nay) return result;
 	}
+	return Result({ _yay: null });
+}
+
+// A published Review keeps its placement while a later Save selects a complete source.
+export async function files_move_reservations_db_enter_save(ctx: MutationCtx, args: {
+	nodeId: Id<"files_nodes">; headId: Id<"files_saved_content_heads">;
+}) {
+	const blocker = await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: args.nodeId } });
+	if (!blocker) return Result({ _yay: null });
+	const cohort = await ctx.db.get("files_move_cohorts", blocker);
+	const head = await ctx.db.get("files_saved_content_heads", args.headId);
+	if (!cohort || cohort.publishedAt === null || cohort.visibleView !== "after" ||
+		!head || !head.ready || head.retired || head.fileNodeId !== args.nodeId) return Result({ _nay: BUSY });
+	const state = (ctx.db as GuardedDb)[STATE];
+	if (!state) throw new Error("Save writes need the mutation wrapper.");
+	state.saveNodes.set(args.nodeId, args.headId);
 	return Result({ _yay: null });
 }
 
@@ -518,6 +536,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		capability: null,
 		securityNodes: new Set(),
 		restoreNodes: new Map(),
+		saveNodes: new Map(),
 		knownScopes: new Map(),
 		nodes: new Map(),
 		sourceReads: new Map(),
@@ -647,6 +666,15 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			const blocker = await find_blocker(check);
 			if (!blocker) continue;
 			const nodeId = table === "files_nodes" ? id : value.fileNodeId;
+			const savedHeadId = state.saveNodes.get(nodeId as Id<"files_nodes">);
+			if (savedHeadId && !membershipChanged) {
+				const fields = ["contentHeadId", "assetId", "statsId", "contentByteSize", "pendingContentVersion",
+					"contentTooLargeByteSize", "contentShapeMismatchAt", "contentYjsStateTooLargeByteSize",
+					"contentFrontmatterTooLargeFieldCount", "contentFrontmatterTooLargeIndexDocumentCount", "updatedAt", "updatedBy"];
+				if (table === "files_nodes" && patch?.contentHeadId === savedHeadId &&
+					Object.keys(patch).every((field) => fields.includes(field))) continue;
+			}
+			if (savedHeadId && table === "files_snapshots" && !old) continue;
 			const restore = check.source?.kind === "saved" ? state.restoreNodes.get(check.source.id) : undefined;
 			if (restore && scopes.every((doc) => (table === "files_nodes" ? id : doc.fileNodeId) === check.source?.id)) {
 				if (
@@ -656,6 +684,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 					continue;
 				if (restore.mode === "publish") {
 					const fields = [
+						"contentHeadId",
 						"assetId",
 						"pendingContentVersion",
 						"contentType",
@@ -852,7 +881,9 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 							forget_blockers();
 						}
 					}
-					if (SOURCE_TABLES.has(table) || SIDE_TABLES.has(table)) await guard(table, null, null, value, null);
+					// Private source pages cannot alter a Move's source. Publication still takes the normal guard.
+					if ((SOURCE_TABLES.has(table) || SIDE_TABLES.has(table)) &&
+						!files_content_heads_db_is_staged_insert(raw, table, value)) await guard(table, null, null, value, null);
 					return await target.insert(table, value as never);
 				};
 			if (property === "patch" || property === "replace" || property === "delete")

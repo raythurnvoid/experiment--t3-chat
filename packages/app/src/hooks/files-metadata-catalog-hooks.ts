@@ -1,10 +1,5 @@
 import { useState } from "react";
-import {
-	useQuery,
-	type PaginatedQueryArgs,
-	type PaginatedQueryItem,
-	type PaginatedQueryReference,
-} from "convex/react";
+import { useQuery, type PaginatedQueryArgs, type PaginatedQueryItem, type PaginatedQueryReference } from "convex/react";
 import { compareValues, type Value } from "convex/values";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
@@ -12,8 +7,8 @@ import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
 	files_metadata_METADATA_FIELD_PREFIX,
 } from "../../shared/files-metadata.ts";
-import type { files_SavedStream } from "../../shared/files.ts";
-import { useFilesSavedView } from "./files-saved-view-hooks.ts";
+import type { files_IndexStream } from "../../shared/files.ts";
+import { useFilesSavedIndexView } from "./files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 import { files_merge_sorted_streams } from "./files-search-hooks.ts";
 import { useDebounce } from "./utils-hooks.ts";
@@ -74,8 +69,8 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 }) {
 	const { query, membershipId, requests, scope, order, rowKey, restricted = false } = args;
 
-	const view = useFilesSavedView(membershipId, requests !== null);
-	const streamArgs = (index: number, savedStream: files_SavedStream | null, twin = false) => {
+	const view = useFilesSavedIndexView(membershipId, requests !== null);
+	const streamArgs = (index: number, savedStream: files_IndexStream | null, twin = false) => {
 		const request = requests?.[index];
 		return request && savedStream && (!twin || restricted)
 			? ({ ...request, savedStream, ...(twin ? { restricted: true } : {}) } as unknown as PaginatedQueryArgs<Query>)
@@ -122,7 +117,11 @@ export function useFilesMetadataCatalogPages<Query extends PaginatedQueryReferen
 			compare: (a, b) => compareValues(order(a), order(b)),
 			key: rowKey,
 		});
-		return { streams, rows: merged.rows, blocking: merged.blockingRank === null ? null : streams[merged.blockingRank]! };
+		return {
+			streams,
+			rows: merged.rows,
+			blocking: merged.blockingRank === null ? null : streams[merged.blockingRank]!,
+		};
 	});
 	const streams = merges.flatMap((merge) => merge.streams);
 	const rows = merges.flatMap((merge) => merge.rows);

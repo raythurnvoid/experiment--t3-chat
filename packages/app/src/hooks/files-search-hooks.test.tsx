@@ -31,7 +31,9 @@ const { paginatedArgsSeen, sorted, saved } = vi.hoisted(() => ({
 	paginatedArgsSeen: [] as SortedArgs[],
 	sorted: {
 		view: { cohortId: null, view: null, generation: 0, searchGeneration: 0 } as
-			FunctionReturnType<typeof app_convex_api.files_tree.get_workspace_move_view> | undefined,
+			| FunctionReturnType<typeof app_convex_api.files_tree.get_workspace_move_view>
+			| undefined,
+		indexView: null as FunctionReturnType<typeof app_convex_api.files_metadata.get_workspace_index_view>,
 		rows: new Map<string, SortedRow[]>(),
 		loadingFields: new Set<string>(),
 		loadingKeys: new Set<string>(),
@@ -62,7 +64,7 @@ type SortedArgs = {
 	kind: "file" | "folder";
 	segment: "value" | "missing";
 	restricted?: boolean;
-	principalIndex?: 0 | 1 | 2;
+	principalIndex?: 0 | 1 | 2 | 3;
 	sort: files_sort_Sort;
 	filter: files_table_Filter | null;
 	namePrefix: string | null;
@@ -88,7 +90,7 @@ const sorted_fixture_key = (args: {
 	field: string;
 	direction: "asc" | "desc";
 	restricted?: boolean;
-	principalIndex?: 0 | 1 | 2;
+	principalIndex?: 0 | 1 | 2 | 3;
 	folderId?: typeof FOLDER_ID;
 	filter?: files_table_Filter | null;
 	namePrefix?: string | null;
@@ -109,17 +111,20 @@ const sorted_fixture_key = (args: {
 		directoryView = null,
 	} = args;
 
-	return sorted_key({
-		membershipId: MEMBERSHIP_ID,
-		parentId: folderId,
-		kind,
-		segment,
-		...(principalIndex === undefined ? { restricted } : { principalIndex }),
-		sort: [{ field, direction }],
-		filter,
-		namePrefix,
-		stream,
-	}, directoryView);
+	return sorted_key(
+		{
+			membershipId: MEMBERSHIP_ID,
+			parentId: folderId,
+			kind,
+			segment,
+			...(principalIndex === undefined ? { restricted } : { principalIndex }),
+			sort: [{ field, direction }],
+			filter,
+			namePrefix,
+			stream,
+		},
+		directoryView,
+	);
 };
 const notify_sorted = () => {
 	sorted.revision++;
@@ -151,8 +156,9 @@ vi.mock("convex/react", async (importOriginal) => {
 	};
 	return {
 		...(await importOriginal<typeof import("convex/react")>()),
-		useQuery: () => {
+		useQuery: (query: FunctionReference<"query">) => {
 			useSyncExternalStore(subscribe, () => sorted.revision);
+			if (getFunctionName(query) === "files_metadata:get_workspace_index_view") return sorted.indexView ?? sorted.view;
 			return sorted.view;
 		},
 		useConvex: () => ({
@@ -171,7 +177,9 @@ vi.mock("convex/react", async (importOriginal) => {
 		) => {
 			useSyncExternalStore(subscribe, () => sorted.revision);
 			const isSaved = getFunctionName(query) === "files_nodes:search_saved";
-			const directoryView: files_DirectoryView = sorted.view?.cohortId ? { cohortId: sorted.view.cohortId, view: sorted.view.view! } : null;
+			const directoryView: files_DirectoryView = sorted.view?.cohortId
+				? { cohortId: sorted.view.cohortId, view: sorted.view.view! }
+				: null;
 			const key = args === "skip" ? "skip" : sorted_key(args, directoryView);
 			const reportedView = sorted.directoryViews.has(key) ? sorted.directoryViews.get(key)! : directoryView;
 			if (args !== "skip" && !isSaved) paginatedArgsSeen.push(args);
@@ -201,7 +209,12 @@ vi.mock("convex/react", async (importOriginal) => {
 				// Convex keeps the pages before a split page and reports "LoadingMore" until the split ends.
 				// It ignores loadMore then.
 				if (pageCount > 1 && sorted.splitting.has(key)) {
-					return { results: pages.slice(0, pageCount - 1).flat(), status: "LoadingMore", directoryView: undefined, loadMore: countLoadMore };
+					return {
+						results: pages.slice(0, pageCount - 1).flat(),
+						status: "LoadingMore",
+						directoryView: undefined,
+						loadMore: countLoadMore,
+					};
 				}
 				return {
 					results: pages.slice(0, pageCount).flat(),
@@ -271,6 +284,7 @@ const file_names = (count: number, prefix = "file") =>
 beforeEach(() => {
 	paginatedArgsSeen.length = 0;
 	sorted.view = { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
+	sorted.indexView = null;
 	sorted.rows.clear();
 	sorted.loadingFields.clear();
 	sorted.loadingKeys.clear();
@@ -302,7 +316,11 @@ describe("useFilesSortedChildren", () => {
 				}),
 			{ initialProps: { sort } },
 		);
-	const render_filtered = (sort = NAME_ASC, filter: files_table_Filter | null = NAME_FILTER, namePrefix: string | null = null) =>
+	const render_filtered = (
+		sort = NAME_ASC,
+		filter: files_table_Filter | null = NAME_FILTER,
+		namePrefix: string | null = null,
+	) =>
 		renderHook(
 			(props: {
 				membershipId: typeof MEMBERSHIP_ID;
@@ -334,11 +352,17 @@ describe("useFilesSortedChildren", () => {
 		const before = { cohortId, view: "before" } as const;
 		const after = { cohortId, view: "after" } as const;
 		const fixture = { kind: "file", segment: "value", field: "name", direction: "asc" } as const;
-		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: before }), [saved_row({ kind: "file", name: "b.md" })]);
-		sorted.rows.set(sorted_fixture_key({ ...fixture, stream: "cohort", directoryView: before }), [saved_row({ kind: "file", name: "a.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: before }), [
+			saved_row({ kind: "file", name: "b.md" }),
+		]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, stream: "cohort", directoryView: before }), [
+			saved_row({ kind: "file", name: "a.md" }),
+		]);
 		const afterKey = sorted_fixture_key({ ...fixture, stream: "cohort", directoryView: after });
 		sorted.rows.set(afterKey, [saved_row({ kind: "file", name: "c.md" })]);
-		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: after }), [saved_row({ kind: "file", name: "b.md" })]);
+		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: after }), [
+			saved_row({ kind: "file", name: "b.md" }),
+		]);
 		const { result } = render_sorted(NAME_ASC);
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
 		act(() => {
@@ -346,7 +370,10 @@ describe("useFilesSortedChildren", () => {
 			sorted.view = { cohortId, view: "after", generation: 2, searchGeneration: 2 };
 			notify_sorted();
 		});
-		expect(result.current.rows?.map((row) => row.name), "different directory views never form one table").toEqual(["a.md", "b.md"]);
+		expect(
+			result.current.rows?.map((row) => row.name),
+			"different directory views never form one table",
+		).toEqual(["a.md", "b.md"]);
 		expect(result.current.isBusy).toBe(true);
 		act(() => {
 			sorted.directoryViews.clear();
@@ -357,11 +384,13 @@ describe("useFilesSortedChildren", () => {
 
 	test.each(["before", "after", "idle"] as const)("keeps Show more rows while a Move %s view refills", (view) => {
 		const cohortId = "cohort_1" as app_convex_Id<"files_move_cohorts">;
-		const initialView = view === "before" ? null : { cohortId, view: view === "after" ? "before" as const : "after" as const };
+		const initialView =
+			view === "before" ? null : { cohortId, view: view === "after" ? ("before" as const) : ("after" as const) };
 		const nextView = view === "idle" ? null : { cohortId, view };
-		sorted.view = initialView === null
-			? { cohortId: null, view: null, generation: 0, searchGeneration: 0 }
-			: { ...initialView, generation: 0, searchGeneration: 0 };
+		sorted.view =
+			initialView === null
+				? { cohortId: null, view: null, generation: 0, searchGeneration: 0 }
+				: { ...initialView, generation: 0, searchGeneration: 0 };
 		const fixture = { kind: "file", segment: "value", field: "name", direction: "asc" } as const;
 		const rows = file_names(150).map((name) => saved_row({ kind: "file", name }));
 		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: initialView }), rows);
@@ -373,9 +402,10 @@ describe("useFilesSortedChildren", () => {
 		sorted.pages.set(nextKey, [rows.slice(0, 100), rows.slice(100)]);
 		sorted.splitting.add(nextKey);
 		act(() => {
-			sorted.view = nextView === null
-				? { cohortId: null, view: null, generation: 1, searchGeneration: 1 }
-				: { ...nextView, generation: 1, searchGeneration: 1 };
+			sorted.view =
+				nextView === null
+					? { cohortId: null, view: null, generation: 1, searchGeneration: 1 }
+					: { ...nextView, generation: 1, searchGeneration: 1 };
 			notify_sorted();
 		});
 		expect(result.current.rows, "Show more keeps all loaded rows while the Move pages refill").toHaveLength(150);
@@ -807,7 +837,7 @@ describe("useFilesSortedChildren", () => {
 		expect(paginatedArgsSeen.some((args) => args.restricted === true)).toBe(false);
 		expect(
 			new Set(paginatedArgsSeen.map((args) => args.principalIndex).filter((index) => index !== undefined)),
-		).toEqual(new Set([0, 1, 2]));
+		).toEqual(new Set([0, 1, 2, 3]));
 	});
 
 	test("a built-in filter reads value segments with the name prefix, and the twin", () => {
@@ -849,7 +879,13 @@ describe("useFilesSortedChildren", () => {
 		);
 		const { result, rerender } = render_filtered();
 		expect(result.current.rows).toHaveLength(5);
-		rerender({ membershipId: MEMBERSHIP_ID, folderId: FOLDER_ID, sort: NAME_ASC, filter: nextFilter, namePrefix: null });
+		rerender({
+			membershipId: MEMBERSHIP_ID,
+			folderId: FOLDER_ID,
+			sort: NAME_ASC,
+			filter: nextFilter,
+			namePrefix: null,
+		});
 		expect(result.current.rowsFilter).toEqual(NAME_FILTER);
 		expect(result.current.rows).toHaveLength(5);
 		expect(result.current.isBusy).toBe(true);
@@ -872,14 +908,26 @@ describe("useFilesSortedChildren", () => {
 			[saved_row({ kind: "file", name: "report.md" })],
 		);
 		sorted.loadingKeys.add(
-			sorted_fixture_key({ kind: "file", segment: "value", field: "name", direction: "asc", filter, namePrefix: "rep" }),
+			sorted_fixture_key({
+				kind: "file",
+				segment: "value",
+				field: "name",
+				direction: "asc",
+				filter,
+				namePrefix: "rep",
+			}),
 		);
 		const { result, rerender } = render_filtered(NAME_ASC, filter, "re");
 		expect(result.current.rowsNamePrefix).toBe("re");
 
 		rerender({ membershipId: MEMBERSHIP_ID, folderId: FOLDER_ID, sort: NAME_ASC, filter, namePrefix: "rep" });
 		// The filter and the sort did not change, so only the prefix tells the table these rows are held.
-		expect(result.current).toMatchObject({ rowsFilter: filter, rowsSort: NAME_ASC, rowsNamePrefix: "re", isBusy: true });
+		expect(result.current).toMatchObject({
+			rowsFilter: filter,
+			rowsSort: NAME_ASC,
+			rowsNamePrefix: "re",
+			isBusy: true,
+		});
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["report.md"]);
 	});
 });
@@ -890,29 +938,63 @@ describe("useFilesSearchSaved", () => {
 	const saved_match = (path: string, extra: Record<string, unknown> = {}) =>
 		({ kind: "file", nodeId: `node_${path}`, path, ...extra }) as SavedRow;
 
+	test("content search follows index publication while name search keeps the tree view", () => {
+		const cohortId = "index_search" as app_convex_Id<"files_index_runs">;
+		sorted.indexView = { cohortId, view: "before", generation: 3, searchGeneration: 6 };
+		const clause = { kind: "content", text: "plan" };
+		for (const view of ["before", "after"] as const)
+			saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view, generation: 3 }]), {
+				results: [saved_match(view === "before" ? "/old.md" : "/new.md")],
+				status: "Exhausted",
+			});
+		const { result } = render_search("plan");
+		expect(saved.argsSeen.filter((args) => args.clause.kind === "name").map((args) => args.savedStream)).toEqual([
+			{ kind: "normal", generation: 0 },
+		]);
+		expect(
+			result.current.contents,
+			"content search reads the complete selected index before publication",
+		).toMatchObject({
+			rows: [{ path: "/old.md" }],
+			status: "done",
+		});
+		act(() => {
+			sorted.indexView = { cohortId, view: "after", generation: 3, searchGeneration: 7 };
+			notify_sorted();
+		});
+		expect(result.current.contents).toMatchObject({ rows: [{ path: "/new.md" }], status: "done" });
+	});
+
 	test("keeps selected saved matches and restarts search at publication", () => {
 		const cohortId = "cohort_search" as app_convex_Id<"files_move_cohorts">;
 		sorted.view = { cohortId, view: "before", generation: 1, searchGeneration: 4 };
 		const clause = { kind: "name", text: "plan" };
 		saved.answers.set(JSON.stringify([clause, { kind: "normal", generation: 1 }]), {
-			results: [saved_match("/normal-plan.md")], status: "Exhausted",
+			results: [saved_match("/normal-plan.md")],
+			status: "Exhausted",
 		});
 		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "before", generation: 1 }]), {
-			results: [saved_match("/old-plan.md")], status: "Exhausted",
+			results: [saved_match("/old-plan.md")],
+			status: "Exhausted",
 		});
 		const { result } = render_search("plan", false);
-		expect(result.current.names.rows.map((row) => row.path),
-			"selected saved matches remain visible during a linked move").toEqual(["/normal-plan.md", "/old-plan.md"]);
+		expect(
+			result.current.names.rows.map((row) => row.path),
+			"selected saved matches remain visible during a linked move",
+		).toEqual(["/normal-plan.md", "/old-plan.md"]);
 		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "after", generation: 2 }]), {
-			results: [saved_match("/new-plan.md")], status: "Exhausted",
+			results: [saved_match("/new-plan.md")],
+			status: "Exhausted",
 		});
 		act(() => {
 			sorted.view = { cohortId, view: "after", generation: 2, searchGeneration: 5 };
 			notify_sorted();
 		});
 		expect(result.current.names.rows.map((row) => row.path)).toEqual(["/new-plan.md"]);
-		expect(saved.argsSeen.at(-1)).toMatchObject({ searchGeneration: 5,
-			savedStream: { kind: "cohort", view: "after", generation: 2 } });
+		expect(saved.argsSeen.at(-1)).toMatchObject({
+			searchGeneration: 5,
+			savedStream: { kind: "cohort", view: "after", generation: 2 },
+		});
 	});
 
 	test("waits for the saved view and ends a refused search", () => {
@@ -920,7 +1002,10 @@ describe("useFilesSearchSaved", () => {
 		const { result } = render_search("plan");
 		expect(result.current.names.status).toBe("loading");
 		expect(saved.argsSeen).toEqual([]);
-		act(() => { sorted.view = null; notify_sorted(); });
+		act(() => {
+			sorted.view = null;
+			notify_sorted();
+		});
 		expect(result.current.names).toMatchObject({ rows: [], status: "done" });
 	});
 
@@ -964,8 +1049,13 @@ describe("useFilesSearchSaved", () => {
 		const { result } = render_search("file.path:/docs/** plan");
 
 		expect(saved.argsSeen).toEqual([
-			{ membershipId: MEMBERSHIP_ID, clause: { kind: "name", text: "plan" }, folderPath: "/docs",
-				savedStream: { kind: "normal", generation: 0 }, searchGeneration: 0 },
+			{
+				membershipId: MEMBERSHIP_ID,
+				clause: { kind: "name", text: "plan" },
+				folderPath: "/docs",
+				savedStream: { kind: "normal", generation: 0 },
+				searchGeneration: 0,
+			},
 		]);
 		expect(result.current.contents).toBe("folder");
 		expect(result.current.names).toMatchObject({ rows: [], status: "done", problem: "Folder not found" });
@@ -996,8 +1086,14 @@ describe("useFilesSearchSaved", () => {
 	test("a path or id asks for that node with no folder", () => {
 		const { result } = render_search("file.path:/docs/** /Notes/a.md");
 
-		expect(saved.argsSeen).toEqual([{ membershipId: MEMBERSHIP_ID, clause: { kind: "path", path: "/Notes/a.md" },
-			savedStream: { kind: "normal", generation: 0 }, searchGeneration: 0 }]);
+		expect(saved.argsSeen).toEqual([
+			{
+				membershipId: MEMBERSHIP_ID,
+				clause: { kind: "path", path: "/Notes/a.md" },
+				savedStream: { kind: "normal", generation: 0 },
+				searchGeneration: 0,
+			},
+		]);
 		expect(result.current.isExact).toBe(true);
 		expect(result.current.contents).toBeNull();
 	});

@@ -89,7 +89,12 @@ function page(names: string[], isDone = false, continueCursor = "tail"): Paginat
 	return { page: names.map((name) => ({ name })), isDone, continueCursor };
 }
 
-function changedView(reason: "saved_move_view_changed" | "saved_search_view_changed" = "saved_move_view_changed") {
+function changedView(
+	reason:
+		| "saved_move_view_changed"
+		| "saved_search_view_changed"
+		| "saved_index_view_changed" = "saved_move_view_changed",
+) {
 	return new ConvexError({
 		message: "InvalidCursor: The saved view changed.",
 		isConvexSystemError: true,
@@ -249,7 +254,7 @@ describe("directory pages", () => {
 });
 
 describe("useFilesPaginatedQuery", () => {
-	test.each(["saved_move_view_changed", "saved_search_view_changed"] as const)(
+	test.each(["saved_move_view_changed", "saved_search_view_changed", "saved_index_view_changed"] as const)(
 		"waits for changed args after %s without retrying the old session",
 		(reason) => {
 			const hook = renderPager();
@@ -523,7 +528,9 @@ describe("useFilesPaginatedQuery", () => {
 		for (const generation of [1, 2]) {
 			answer(previous, changedView());
 			hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation } } });
-			expect(listeners.get(previous.key)?.size, "an old Move generation has no listener before the cache timeout").toBe(0);
+			expect(listeners.get(previous.key)?.size, "an old Move generation has no listener before the cache timeout").toBe(
+				0,
+			);
 			previous = activeWatches()[0]!;
 			answer(previous, page([`generation-${generation}`], true, ""));
 			expect(hook.result.current.results).toEqual([{ name: `generation-${generation}` }]);
@@ -576,10 +583,9 @@ describe("useFilesPaginatedQuery", () => {
 	});
 
 	test("releases both null-view split children after their pager unmounts", () => {
-		const hook = renderHook(
-			() => useFilesPaginatedQuery(directoryQuery, directoryArgs, { initialNumItems: 2 }),
-			{ wrapper: CachingWrapper },
-		);
+		const hook = renderHook(() => useFilesPaginatedQuery(directoryQuery, directoryArgs, { initialNumItems: 2 }), {
+			wrapper: CachingWrapper,
+		});
 		const first = activeWatches()[0]!;
 		answer(first, { ...page(["a", "z"]), directoryView: null, pageStatus: "SplitRequired", splitCursor: "m" });
 		const left = activeWatches().find((watch) => watch.args.paginationOpts.endCursor === "m")!;
@@ -595,10 +601,9 @@ describe("useFilesPaginatedQuery", () => {
 	});
 
 	test("releases reset first pages instead of caching each new native session", () => {
-		const hook = renderHook(
-			() => useFilesPaginatedQuery(directoryQuery, directoryArgs, { initialNumItems: 2 }),
-			{ wrapper: CachingWrapper },
-		);
+		const hook = renderHook(() => useFilesPaginatedQuery(directoryQuery, directoryArgs, { initialNumItems: 2 }), {
+			wrapper: CachingWrapper,
+		});
 		const first = activeWatches()[0]!;
 		answer(first, new Error("InvalidCursor: Native first-page journal changed."));
 		const reset = activeWatches().find((watch) => watch.args.paginationOpts.id !== first.args.paginationOpts.id)!;

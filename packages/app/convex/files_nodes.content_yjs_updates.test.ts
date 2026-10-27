@@ -2,6 +2,8 @@
 // files can run at the same time.
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
+import { runToCompletion } from "@convex-dev/migrations";
+import migrations_test from "@convex-dev/migrations/test";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import {
@@ -14,6 +16,7 @@ import {
 	mergeUpdates,
 } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
+import { files_content_sources_action_prepare } from "./files_content_sources.ts";
 import {
 	files_db_yjs_push_update,
 	files_line_range_from_text,
@@ -27,6 +30,7 @@ import {
 	test_convex,
 	test_drain_billing_usage_event_outbox,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_get_file_yjs_pointers,
 	test_mocks,
 	test_mocks_fill_db_with,
@@ -1115,6 +1119,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	});
 
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+		preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", createdFileId)))!.contentHeadId!,
 		membershipId: db.membershipId,
 		nodeId: createdFileId,
 		expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", createdFileId)))!
@@ -1393,7 +1398,12 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	if (restoreStage._nay) {
 		throw new Error(restoreStage._nay.message);
 	}
+	const prepared = await t.action((ctx) => files_content_sources_action_prepare(ctx, {
+		nodeId: createdFileId, assetId: restoreAssets.restoredSnapshotAssetId, text: restoredMarkdown,
+	}));
+	if (prepared._nay) throw new Error(prepared._nay.message);
 	const restoreResult = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+		preparedSourceHeadId: prepared._yay,
 		membershipId: db.membershipId,
 		nodeId: createdFileId,
 		expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", createdFileId)))!
@@ -2330,6 +2340,7 @@ describe("plain text file stats and delete-all", () => {
 		if (firstMaterialize._nay) {
 			throw new Error(firstMaterialize._nay.message);
 		}
+		await test_finish_file_index(t, nodeId);
 		const chunkCountBefore = await t.run(
 			async (ctx) =>
 				(
@@ -2380,6 +2391,7 @@ describe("plain text file stats and delete-all", () => {
 		// The named non-refusal: a legitimate delete-all settles as success, never as a shape or
 		// content refusal.
 		expect(materialized._nay).toBeUndefined();
+		await test_finish_file_index(t, nodeId);
 
 		const after = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
@@ -3042,6 +3054,89 @@ describe("files_nodes.get_file_next_yjs_update", () => {
 });
 
 describe("materialization guards", () => {
+	test.each([false, true])("materialization keeps a later editor update across source rotation: migrated %s", async (migrate) => {
+		vi.useFakeTimers();
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const objects = test_setup_r2_capture();
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId, path: "/materialization-tail.txt", textContent: "Original\n",
+		});
+		const pointers = await test_get_file_yjs_pointers(t, nodeId);
+		const original = await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", nodeId))!;
+			const snapshot = (await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId))!;
+			return { headId: node.contentHeadId!, asset: (await ctx.db.get("files_r2_assets", snapshot.assetId))! };
+		});
+		const editor = new YjsDoc();
+		const stored = objects.get(original.asset.r2Key!);
+		if (!stored) throw new Error("Expected the saved editor bytes");
+		applyUpdate(editor, new Uint8Array(await new Response(stored).arrayBuffer()));
+		const text = editor.getText(files_YJS_DOC_KEYS.plainText);
+		const firstVector = encodeStateVector(editor);
+		text.insert(text.length, "First edit\n");
+		const first = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId, nodeId, expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(editor, firstVector)), sessionId: "first-editor",
+		});
+		if (first._nay) throw new Error(first._nay.message);
+		if (migrate) {
+			migrations_test.register(t as unknown as Parameters<typeof migrations_test.register>[0]);
+			const rows = await t.run((ctx) => ctx.db.query("files_yjs_updates").collect());
+			await t.run((ctx) => ctx.db.patch("files_saved_content_heads", original.headId, { yjsContentHeadId: undefined }));
+			await t.run((ctx) => runToCompletion(ctx, components.migrations, internal.migrations.backfill_saved_content_yjs_owner));
+			expect(await t.run((ctx) => ctx.db.query("files_yjs_updates").collect()), "migration keeps every stored update and owner ID").toEqual(rows);
+			expect(await t.run((ctx) => ctx.db.get("files_saved_content_heads", original.headId))).toMatchObject({ yjsContentHeadId: original.headId });
+		}
+		const entered = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const capturedFetch = fetch;
+		vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "PUT" && init.body === "Original\nFirst edit\n") {
+				entered.resolve();
+				await resume.promise;
+			}
+			return await capturedFetch(input, init);
+		}));
+		const materializing = t.action(internal.files_nodes_content.materialize_file_content, {
+			organizationId: db.organizationId, workspaceId: db.workspaceId, nodeId, userId: db.userId,
+			targetSequence: first._yay.newSequence,
+		});
+		await entered.promise;
+		try {
+			const laterVector = encodeStateVector(editor);
+			text.insert(text.length, "Later edit\n");
+			const laterBytes = files_u8_to_array_buffer(encodeStateAsUpdate(editor, laterVector));
+			const later = await asUser.mutation(api.files_nodes.yjs_push_update, {
+				membershipId: db.membershipId, nodeId, expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
+				update: laterBytes, sessionId: "later-editor",
+			});
+			if (later._nay) throw new Error(later._nay.message);
+			resume.resolve();
+			expect(await materializing, "the captured source may publish while later edits wait").toHaveProperty("_yay");
+			const current = await t.run(async (ctx) => ({
+				node: (await ctx.db.get("files_nodes", nodeId))!,
+				sequence: await ctx.db.get("files_yjs_docs_last_sequences", pointers.yjsLastSequenceId),
+			}));
+			expect(current.node.contentHeadId, "source publication selects a new exact-text owner").not.toBe(original.headId);
+			expect(current.sequence, "the later update stays counted after the covered edits publish").toMatchObject({
+				lastSequence: later._yay.newSequence, unmaterializedUpdateCount: 1, unmaterializedUpdateBytes: laterBytes.byteLength,
+			});
+			const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null }, path: "/materialization-tail.txt", includePending: false,
+			});
+			expect(read?.content, "direct reads keep the later edit after source rotation").toBe("Original\nFirst edit\nLater edit\n");
+			const head = await t.run((ctx) => ctx.db.get("files_saved_content_heads", current.node.contentHeadId!));
+			expect(head?.yjsContentHeadId, "the new source keeps the live update owner").toBe(original.headId);
+		} finally {
+			resume.resolve();
+			await materializing;
+			editor.destroy();
+		}
+	});
+
 	test("snapshot-size preflight settles the state marker without any GET", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -3331,6 +3426,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		// The file advanced past the repair's frozen target: the final mutation must refuse.
 		const pointers = await test_get_file_yjs_pointers(t, nodeId);
 		const finalized = await t.mutation(internal.files_nodes_content.finalize_file_yjs_repair, {
+			preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.contentHeadId!,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId,
@@ -3523,8 +3619,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 	});
 
 	// Seed a file whose frontmatter marker settled: create, materialize once (so the Yjs snapshot
-	// bytes exist in mocked R2), push over-cap frontmatter, and materialize again so the marker
-	// pair lands. Returns the node id and the live over-cap doc for follow-up diff pushes.
+	// bytes exist in mocked R2), then seed the old marker for a migration-era repair.
 	async function seed_frontmatter_marked_file(args: {
 		t: ReturnType<typeof test_convex>;
 		asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
@@ -3570,12 +3665,20 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			userId: db.userId,
 			targetSequence: pushResult._yay.newSequence,
 		});
-		expect(settled._nay).toMatchObject({ message: "Frontmatter exceeds the index caps" });
+		expect(settled._nay).toBeUndefined();
+		// This marker can remain on data saved before background indexing was introduced.
+		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
+			await ctx.db.patch("files_nodes", nodeId, {
+				contentFrontmatterTooLargeFieldCount: files_metadata_MAX_FRONTMATTER_FIELDS + 1,
+				contentFrontmatterTooLargeIndexDocumentCount: (files_metadata_MAX_FRONTMATTER_FIELDS + 1) * 2,
+			});
+		});
 
 		return { nodeId, overCapYjsDoc };
 	}
 
-	test("a frontmatter-marked file repairs from latest_state; still-over-cap frontmatter keeps the marker pair and skips the metadata index", async () => {
+	test("a frontmatter-marked file repairs from latest_state and indexes all fields", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -3605,18 +3708,15 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			throw new Error(repaired._nay.message);
 		}
 		expect(repaired._yay.lineageGeneration).toBe(1);
+		await test_finish_file_index(t, nodeId);
 
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			if (!files_node_has_editable_yjs_state(node)) {
 				throw new Error("Expected the repaired node to stay editable");
 			}
-			// The visible text still carries over-cap frontmatter, so the marker pair stays set
-			// with the fresh counts. Clearing it would hide the deliberately empty metadata index.
-			expect(node.contentFrontmatterTooLargeFieldCount).toBe(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
-			expect(node.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
-				files_metadata_MAX_FRONTMATTER_FIELDS + 1,
-			);
+			expect(node.contentFrontmatterTooLargeFieldCount).toBeNull();
+			expect(node.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 
 			// The deadlock is resolved: the counters reset, so the user can push the fitting edit.
 			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
@@ -3624,8 +3724,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			expect(lastSequenceDoc?.unmaterializedUpdateCount).toBe(0);
 			expect(lastSequenceDoc?.unmaterializedUpdateBytes).toBe(0);
 
-			// The chunks hold the newest text (the repair is lossless) while the metadata index
-			// stays empty instead of throwing the insert helper's over-cap backstop.
+			// Both the complete text and every metadata value survive repair.
 			const chunks = await ctx.db
 				.query("files_plain_text_chunks")
 				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
@@ -3643,7 +3742,8 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 						.eq("fileNodeId", nodeId),
 				)
 				.collect();
-			expect(metadataDocs).toHaveLength(0);
+			expect(metadataDocs.filter((doc) => doc.docKind === "value"))
+				.toHaveLength(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
 		});
 	});
 
@@ -3704,6 +3804,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			throw new Error(repaired._nay.message);
 		}
 
+		await test_finish_file_index(t, nodeId);
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			// The repaired text's frontmatter fits, so the marker pair clears and the metadata

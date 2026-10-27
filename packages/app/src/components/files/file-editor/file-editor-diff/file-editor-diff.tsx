@@ -3581,6 +3581,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 	// The text the save in flight sent, or `null`. Read from the unmount cleanup, which runs
 	// outside render.
 	const saveInFlightMarkdownRef = useRef<string | null>(null);
+	const saveRequestRef = useRef<{ nodeId: string; text: string; requestId: string } | null>(null);
 
 	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialData.text));
 
@@ -3804,12 +3805,16 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			}
 
 			// No document to diff, so Save replaces the whole text.
+			if (saveRequestRef.current?.nodeId !== nodeId || saveRequestRef.current.text !== localMarkdown)
+				saveRequestRef.current = { nodeId, text: localMarkdown, requestId: crypto.randomUUID() };
 			const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
 				membershipId,
 				nodeId,
 				text: localMarkdown,
+				requestId: saveRequestRef.current.requestId,
 			});
 			if (replaced._nay) {
+				if (replaced._nay.name === "save_expired") saveRequestRef.current = null;
 				console.error("[FileEditorDiffNonCollab.handleClickSave] Error while replacing the file content", {
 					nay: replaced._nay,
 				});
@@ -3822,6 +3827,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 				return;
 			}
 
+			saveRequestRef.current = null;
 			// The agent's proposal can replace this view while the save waits (the chooser in
 			// `FileEditorInner` swaps to the review). The saved text is the file now, so there is
 			// nothing left to update here.

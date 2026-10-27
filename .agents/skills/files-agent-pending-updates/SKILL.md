@@ -825,7 +825,8 @@ Ordinary content-only saved proposals do not resolve an unused owner path. Whole
   Search cursors use only `files_move_search_generations`, indexed by workspace. A missing counter
   means zero; its first change writes one. Tree view reads use the slot and do not read the busy cohort.
   Global saved browser pagers wait for new view args on `saved_move_view_changed` or
-  `saved_search_view_changed`. They keep native page splits and stop loadMore while waiting.
+  `saved_search_view_changed`. Saved content and metadata also use `saved_index_view_changed`.
+  They keep native page splits and stop loadMore while waiting.
   Directory pages choose their view from an exact parent anchor instead. They carry that view
   beside native cursors. Mixed or stale directory pages restart locally and refill the requested
   rows. The tree, folder table and picker keep their last complete rows until the views agree.
@@ -837,6 +838,13 @@ Ordinary content-only saved proposals do not resolve an unused owner path. Whole
   pending branch finds its staged scope through its source reservation. Cleanup keeps all fields visible.
 - A user's own draft write may add a hide or place of a saved node only while other users hold fewer than 32 of them. Past that, the flush refuses it with a clean error. Without this cap, one move or rename of a saved node would update every user's copies inline, and one content Save would update every mover's place. The user's own draft write is refused, also when it moves or creates a draft onto the name of a crowded saved node (the claim adds a hide). Folder side effects (a broken move cycle, a folder move), jobs and the user who accepts or discards never refuse, so a node can pass the cap, for example when a saved file moves onto a name that many users' drafts already hold. Discard, Accept and data deletion never fail on the cap.
 - Data deletion deletes derived docs in a last pass, after the drafts and files (see `../data-deletion/SKILL.md`).
+
+Saved search indexes have a separate published view from exact source and live Yjs. Save can finish
+while search still shows a complete older version. Move and Review share the index publication queue.
+A Review content side reserves its revision before publication, then records the selected index
+before releasing the slot. An old detached index build cannot overwrite it. A later source Save
+keeps its pending index request through Review cleanup. Index work never changes another member's
+proposal or its branches. See [Save and background indexing](../files-editable-text/SKILL.md#save-and-background-indexing).
 
 # Architectural Invariants
 

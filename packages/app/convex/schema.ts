@@ -509,6 +509,20 @@ export const files_move_view_tag_validator = v.object({
 	view: files_move_view_validator,
 });
 
+export const files_index_view_tag_validator = v.object({
+	cohortId: v.union(v.id("files_move_cohorts"), v.id("files_index_runs")),
+	view: files_move_view_validator,
+});
+
+export const files_index_stream_validator = v.union(
+	v.object({ kind: v.literal("normal"), generation: v.number() }),
+	v.object({
+		kind: v.literal("cohort"),
+		...files_index_view_tag_validator.fields,
+		generation: v.number(),
+	}),
+);
+
 export const files_saved_stream_validator = v.union(
 	v.object({ kind: v.literal("normal"), generation: v.number() }),
 	v.object({
@@ -520,6 +534,7 @@ export const files_saved_stream_validator = v.union(
 );
 
 export const files_directory_view_validator = v.union(v.null(), files_move_view_tag_validator);
+export const files_index_directory_view_validator = v.union(v.null(), files_index_view_tag_validator);
 
 const files_pending_update_plan_relation_kind_validator = v.union(
 	...(
@@ -890,7 +905,7 @@ const files_metadata_committed_sort_fields = {
  * explains the families and counts.
  */
 const files_metadata_catalog_row_fields = {
-	moveView: v.optional(files_move_view_tag_validator),
+	moveView: v.optional(files_index_view_tag_validator),
 	organizationId: v.id("organizations"),
 	workspaceId: v.id("organizations_workspaces"),
 	/**
@@ -2270,8 +2285,133 @@ const app_convex_schema = defineSchema({
 	// #endregion value store
 
 	// #region files
+	files_index_states: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		fileNodeId: v.id("files_nodes"),
+		contentRevision: v.number(),
+		requestedRevision: v.number(),
+		requestedHeadId: v.union(v.id("files_saved_content_heads"), v.null()),
+		publishedRevision: v.number(),
+		publishedHeadId: v.union(v.id("files_saved_content_heads"), v.null()),
+		activeRunId: v.union(v.id("files_index_runs"), v.null()),
+		needsRun: v.boolean(),
+		nextAttemptAt: v.number(),
+		movePublication: v.union(v.object({
+			cohortId: v.id("files_move_cohorts"),
+			indexRevision: v.number(),
+			contentRevision: v.number(),
+			headId: v.union(v.id("files_saved_content_heads"), v.null()),
+		}), v.null()),
+	})
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_needsRun_nextAttemptAt", ["needsRun", "nextAttemptAt"])
+		.index("by_requestedHead", ["requestedHeadId"])
+		.index("by_publishedHead", ["publishedHeadId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	files_index_runs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		fileNodeId: v.id("files_nodes"),
+		indexRevision: v.number(),
+		contentRevision: v.number(),
+		contentHeadId: v.union(v.id("files_saved_content_heads"), v.null()),
+		previousHeadId: v.union(v.id("files_saved_content_heads"), v.null()),
+		chunkCount: v.number(),
+		textKind: files_saved_placement_fields.textKind,
+		yjsSequence: v.optional(v.number()),
+		placement: v.object({
+			parentId: files_saved_placement_fields.parentId,
+			kind: files_saved_placement_fields.kind,
+			name: v.string(),
+			sortName: v.string(),
+			path: v.string(),
+			treePath: v.string(),
+			archiveOperationId: v.union(v.string(), v.null()),
+			restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+			isRestrictedScopeRoot: v.boolean(),
+		}),
+		phase: v.union(
+			v.literal("build_text"), v.literal("build_metadata"), v.literal("ready"),
+			v.literal("tag_text"), v.literal("tag_metadata"), v.literal("install_text"),
+			v.literal("install_metadata"), v.literal("publish"), v.literal("cleanup_text"),
+			v.literal("cleanup_metadata"), v.literal("cleanup_candidates"), v.literal("complete"),
+		),
+		cursor: v.union(v.string(), v.null()),
+		nextPosition: v.number(),
+		step: v.number(),
+		generation: v.number(),
+		nextAttemptAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+		slotGeneration: v.union(v.number(), v.null()),
+		published: v.boolean(),
+		aborting: v.boolean(),
+		error: v.union(v.string(), v.null()),
+	})
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_contentHead", ["contentHeadId"])
+		.index("by_previousHead", ["previousHeadId"])
+		.index("by_phase_nextAttemptAt", ["phase", "nextAttemptAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	// A run freezes the full custom map. Deleting or recreating its source cannot change this copy.
+	files_index_inputs: defineTable({
+		runId: v.id("files_index_runs"),
+		metadataMapId: v.union(v.id("files_metadata_maps"), v.null()),
+		metadataRevision: v.union(v.number(), v.null()),
+		entries: files_metadata_entries_validator,
+	}).index("by_run", ["runId"]),
+
+	// Detached docs never enter search indexes or metadata catalog counts.
+	files_index_candidates: defineTable(v.union(
+		v.object({
+			runId: v.id("files_index_runs"),
+			kind: v.literal("text"),
+			position: v.number(),
+			value: v.object({ ...files_plain_text_chunk_fields }),
+		}),
+		v.object({
+			runId: v.id("files_index_runs"),
+			kind: v.literal("metadata"),
+			position: v.number(),
+			value: v.object({ ...files_metadata_index_fields, ...files_metadata_committed_sort_fields }),
+		}),
+	))
+		.index("by_run_kind_position", ["runId", "kind", "position"])
+		.index("by_run", ["runId"]),
+
+	files_index_tickets: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		key: v.string(),
+		owner: v.union(
+			v.object({ kind: v.literal("index"), runId: v.id("files_index_runs") }),
+			v.object({
+				kind: v.literal("transfer"), runId: v.id("files_transfer_runs"),
+				itemId: v.id("files_transfer_items"), fence: v.number(), attemptFence: v.number(),
+			}),
+			v.object({
+				kind: v.literal("review"), runId: v.id("files_pending_update_runs"),
+				unitId: v.id("files_pending_update_run_units"), planEpoch: v.number(),
+				fence: v.number(), attemptFence: v.number(),
+			}),
+		),
+	})
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_organization_workspace_key", ["organizationId", "workspaceId", "key"]),
+
 	files_move_workspace_slots: defineTable(
 		v.union(
+			v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				cohortId: v.null(),
+				indexRunId: v.id("files_index_runs"),
+				generation: v.number(),
+				visibleView: files_move_view_validator,
+				migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal")),
+			}),
 			v.object({
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
@@ -4648,6 +4788,7 @@ const app_convex_schema = defineSchema({
 		v.union(
 			v.object({
 				...files_committed_index_fields,
+				moveView: v.optional(files_index_view_tag_validator),
 				...files_metadata_index_fields,
 				...files_metadata_committed_sort_fields,
 				/**
@@ -4830,7 +4971,7 @@ const app_convex_schema = defineSchema({
 		organizationId: files_committed_index_fields.organizationId,
 		workspaceId: files_committed_index_fields.workspaceId,
 		fileNodeId: v.id("files_nodes"),
-		// Filled before source versions and live logs can have separate owners.
+		// Filled for existing heads before the strict schema cutover.
 		yjsContentHeadId: v.optional(v.union(v.id("files_saved_content_heads"), v.null())),
 		contentType: files_saved_placement_fields.contentType,
 		assetId: files_saved_placement_fields.assetId,
@@ -4864,8 +5005,47 @@ const app_convex_schema = defineSchema({
 		retired: v.boolean(),
 	})
 		.index("by_fileNode", ["fileNodeId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_yjsContentHead", ["yjsContentHeadId"])
+		.index("by_stats", ["statsId"])
 		.index("by_asset_retired", ["assetId", "retired"])
 		.index("by_snapshotAsset_retired", ["snapshotAssetId", "retired"]),
+
+	// Completed receipts stay until permanent file deletion so an old retry cannot publish again.
+	files_content_save_requests: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		fileNodeId: v.id("files_nodes"),
+		requestId: v.string(),
+		requestHash: v.string(),
+		textByteSize: v.number(),
+		progress: v.union(
+			v.object({
+				state: v.literal("preparing"),
+				generation: v.number(),
+				headId: v.id("files_saved_content_heads"),
+				assetId: v.id("files_r2_assets"),
+				nextChunkIndex: v.number(),
+				nextStartIndex: v.number(),
+				stagedByteSize: v.number(),
+			}),
+			v.object({
+				state: v.literal("ready"),
+				generation: v.number(),
+				headId: v.id("files_saved_content_heads"),
+				assetId: v.id("files_r2_assets"),
+			}),
+			v.object({ state: v.literal("committed"), contentRevision: v.number(), committedAt: v.number() }),
+			v.object({ state: v.literal("expired"), expiredAt: v.number() }),
+		),
+		expiresAt: v.union(v.number(), v.null()),
+	})
+		.index("by_user_workspace_request", ["userId", "workspaceId", "requestId"])
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_progress_head", ["progress.headId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_expiresAt", ["expiresAt"]),
 
 	files_nodes: defineTable({
 		moveCohortId: v.optional(v.id("files_move_cohorts")),
@@ -5544,6 +5724,7 @@ const app_convex_schema = defineSchema({
 		),
 	)
 		.index("by_contentHead_yjsSeq_chunk", ["contentHeadId", "yjsSequence", "chunkIndex"])
+		.index("by_contentHead_view_chunk", ["contentHeadId", "moveView.cohortId", "moveView.view", "chunkIndex"])
 		.index("by_contentHead_lineEnd_chunk", ["contentHeadId", "lineEnd", "chunkIndex"])
 		.index("by_contentHead_endIndex_chunk", ["contentHeadId", "endIndex", "chunkIndex"])
 		.index("by_organization_workspace_source_fileNode_yjsSeq_chunk", [
@@ -5617,7 +5798,11 @@ const app_convex_schema = defineSchema({
 	 */
 	files_plain_text_chunks: defineTable(
 		v.union(
-			v.object({ ...files_committed_index_fields, ...files_plain_text_chunk_fields }),
+			v.object({
+				...files_committed_index_fields,
+				...files_plain_text_chunk_fields,
+				moveView: v.optional(files_index_view_tag_validator),
+			}),
 			v.object({ ...files_pending_index_fields, ...files_plain_text_chunk_fields }),
 		),
 	)
@@ -5712,6 +5897,7 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 	})
 		.index("by_contentHead_sequence", ["contentHeadId", "sequence"])
+		.index("by_contentHead_view_sequence", ["contentHeadId", "moveView.cohortId", "moveView.view", "sequence"])
 		.index("by_organization_workspace_fileNode_sequence", [
 			"organizationId",
 			"workspaceId",

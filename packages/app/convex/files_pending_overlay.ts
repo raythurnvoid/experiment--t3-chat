@@ -37,6 +37,7 @@ import {
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
+import { files_saved_index_db_is_publishing } from "../server/files-saved-index.ts";
 import {
 	files_metadata_catalog_db_check,
 	files_metadata_catalog_db_compact,
@@ -656,6 +657,13 @@ async function db_run_saved_scope_job(
 	const cursor = job.cursor
 		? (JSON.parse(job.cursor) as { phase: number; page: string | null; rerun?: boolean; metadataOnly?: boolean })
 		: { phase: 0, page: null };
+	// Index publication changes these ranges. Its finish step wakes this job from a fresh page.
+	if (await files_saved_index_db_is_publishing(ctx.db, node._id)) {
+		await ctx.db.patch("files_pending_overlay_jobs", job._id, {
+			cursor: cursor.metadataOnly ? JSON.stringify({ phase: 0, page: null, metadataOnly: true }) : null,
+		});
+		return;
+	}
 	const paginationOpts = {
 		cursor: cursor.page,
 		numItems: SAVED_SCOPE_PAGE_SIZE,
@@ -731,6 +739,8 @@ async function db_run_saved_places_job(
 		await ctx.db.patch("files_pending_overlay_jobs", job._id, { blockedByCohortId: cohortId });
 		return;
 	}
+	// Index cleanup wakes this job with a new revision. Keep its cursor so it can clear staged fields.
+	if (await files_saved_index_db_is_publishing(ctx.db, job.savedNodeId)) return;
 	if (!cursor) {
 		const last = await ctx.db
 			.query("files_pending_places")

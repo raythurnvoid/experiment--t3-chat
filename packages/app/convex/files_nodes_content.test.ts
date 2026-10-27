@@ -5,6 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
 	test_save_file_pending_update,
@@ -164,6 +165,7 @@ describe("private text publication", () => {
 		});
 		expect(off._nay).toBeUndefined();
 		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			requestId: "save-replacement",
 			membershipId: db.membershipId,
 			nodeId,
 			text: text.replace("Original", "Saved"),
@@ -603,6 +605,7 @@ describe("copy_transfer_file", () => {
 		expect(item?.errorMessage).toBeNull();
 		expect(item?.state).toBe("completed");
 		const copiedId = saved_copy_id(item);
+		await test_finish_file_index(t, copiedId);
 		const copied = await t.run((ctx) => ctx.db.get("files_nodes", copiedId));
 		expect(copied).toMatchObject({
 			contentType: before?.contentType,
@@ -937,6 +940,7 @@ describe("copy_transfer_file", () => {
 		expect(
 			(
 				await asUser.action(api.files_nodes_content.replace_file_content, {
+					requestId: "newer-source",
 					membershipId: db.membershipId,
 					nodeId,
 					text: "Newer source text\n",
@@ -1566,6 +1570,7 @@ describe("snapshot content fields", () => {
 			});
 			expect(off._nay).toBeUndefined();
 			const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+				requestId: "save-collaboration-off",
 				membershipId: db.membershipId,
 				nodeId,
 				text: "Saved with collaboration off\n",

@@ -10,6 +10,7 @@ import type { files_visible_resolve_Store } from "../server/files-visible-resolv
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import type { files_PendingParent } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -1090,7 +1091,7 @@ describe("internal_list_children_saved", () => {
 		});
 		if (grant._nay) throw new Error(grant._nay.message);
 		const names = Array.from({ length: 1_100 }, (_, index) => `f-${String(index).padStart(4, "0")}.md`);
-		await f.t.run(async (ctx) => {
+		await test_run_with_flush(f.t, async (ctx) => {
 			for (const name of names) {
 				const nodeId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -1263,6 +1264,8 @@ describe("internal_search_name_saved", () => {
 		const { chains, hits } = args;
 		const member = await add_member(f);
 		await f.t.run(async (ctx) => {
+			// Keep this synthetic access chain, while creating normal content owners for its files.
+			const content = files_content_heads_db_wrap(ctx);
 			const strangerId = await ctx.db.insert("users", { clerkUserId: null });
 			const node = (fields: {
 				parentId: Id<"files_nodes"> | "root";
@@ -1270,7 +1273,7 @@ describe("internal_search_name_saved", () => {
 				path: string;
 				kind: "file" | "folder";
 			}) =>
-				ctx.db.insert("files_nodes", {
+				content.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
@@ -1333,6 +1336,7 @@ describe("internal_search_name_saved", () => {
 					});
 				}
 			}
+			await content.flush();
 		});
 		return member;
 	}

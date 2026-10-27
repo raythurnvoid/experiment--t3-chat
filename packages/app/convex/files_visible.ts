@@ -16,6 +16,8 @@ import app_convex_schema, {
 	files_metadata_search_plan_validator,
 	ai_chat_workspaces_source_validator,
 	files_saved_stream_validator,
+	files_index_stream_validator,
+	files_index_view_tag_validator,
 } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
@@ -38,6 +40,7 @@ import {
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import { files_saved_index_db_get_stream, files_saved_index_db_get_view } from "../server/files-saved-index.ts";
 import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
 import {
 	files_tree_walk_boundary_status,
@@ -593,6 +596,22 @@ export const internal_get_move_view = internalQuery({
 			...(await files_saved_placement_db_get_view(ctx.db, args)),
 			searchGeneration: await files_saved_placement_db_get_search_generation(ctx.db, args),
 		};
+	},
+});
+
+export const internal_get_index_view = internalQuery({
+	args: stream_args.omit("numItems", "position", "savedStream").fields,
+	returns: v.union(
+		v.object({
+			...move_view_validator.omit("searchGeneration").fields,
+			cohortId: v.union(files_index_view_tag_validator.fields.cohortId, v.null()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
+		if (authorized._nay) return null;
+		return await files_saved_index_db_get_view(ctx.db, args);
 	},
 });
 
@@ -2944,6 +2963,7 @@ async function db_reads_every_area(ctx: QueryCtx, args: StreamOpenArgs) {
 export const internal_search_metadata_saved = internalQuery({
 	args: {
 		...stream_args.fields,
+		indexStream: v.optional(files_index_stream_validator),
 		plan: files_metadata_search_plan_validator,
 		movedIn: v.optional(moved_in_validator),
 		frame: v.optional(files_tree_walk_frame_validator),
@@ -2956,6 +2976,7 @@ export const internal_search_metadata_saved = internalQuery({
 		if (!opened._yay) return stream_done(null);
 		const { reader, root } = opened._yay;
 		const { plan } = args;
+		const index = await files_saved_index_db_get_stream(ctx.db, args, args.indexStream ?? args.savedStream);
 		const byTree = plan.op === "exists" || plan.op === "eq";
 
 		// The saved folder whose range `exists` and `eq` read.
@@ -2993,7 +3014,7 @@ export const internal_search_metadata_saved = internalQuery({
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
 						plan,
-						moveView: stream_move_view(args),
+						moveView: index.tag,
 						treePathPrefix: null,
 						bounds: range?.bounds,
 					})
@@ -3002,7 +3023,7 @@ export const internal_search_metadata_saved = internalQuery({
 						workspaceId: args.workspaceId,
 						plan,
 						scopeNodeId: args.frame?.scopeNodeId ?? null,
-						moveView: stream_move_view(args),
+						moveView: index.tag,
 						bounds: frameRange?.bounds ?? range!.bounds,
 					})
 		).paginate(

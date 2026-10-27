@@ -18,6 +18,7 @@ import {
 	test_convex,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "../convex/setup.test.ts";
 import { ai_chat_DEFAULT_MODEL_ID, type ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { delay } from "../shared/async-utils.ts";
@@ -1004,7 +1005,7 @@ export async function push_unsaved_rich_text_edit(args: {
 	if ("_nay" in editedYjsDoc) {
 		throw new Error(editedYjsDoc._nay.message);
 	}
-	await runner.t.run(async (ctx) =>
+	await test_run_with_flush(runner.t, async (ctx) =>
 		files_db_yjs_push_update(ctx, {
 			organizationId: runner.seeded.organizationId,
 			workspaceId: runner.seeded.workspaceId,
@@ -1049,15 +1050,10 @@ export async function read_committed_text(
 	nodeId: Id<"files_nodes">,
 ) {
 	return await runner.t.run(async (ctx) => {
+		const node = (await ctx.db.get("files_nodes", nodeId))!;
 		const chunks = await ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", runner.seeded.organizationId)
-					.eq("workspaceId", runner.seeded.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", nodeId),
-			)
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", node.contentHeadId!))
 			.collect();
 		return chunks
 			.sort((left, right) => left.chunkIndex - right.chunkIndex)

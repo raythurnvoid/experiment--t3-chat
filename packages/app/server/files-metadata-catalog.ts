@@ -405,8 +405,9 @@ export async function files_metadata_catalog_db_rebuild(
 		.query("files_move_workspace_slots")
 		.withIndex("by_workspace", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
 		.unique();
-	// With no Move cohort every source doc is normal, so the rebuild writes no tagged row.
-	if (slot?.cohortId) throw new Error("A Move runs in this workspace. Rebuild after it ends.");
+	// Rebuild reads normal docs only. A publisher must finish both sides first.
+	if (slot?.cohortId || (slot && "indexRunId" in slot))
+		throw new Error("Files are being indexed or moved. Rebuild after that work ends.");
 	const marker = await ctx.db
 		.query("files_metadata_catalog_compactors")
 		.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
@@ -459,7 +460,9 @@ export async function files_metadata_catalog_db_rebuild_step(
 		if (args.mode === "catalog") {
 			const deltas = await ctx.db
 				.query("files_metadata_catalog_deltas")
-				.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+				.withIndex("by_org_ws", (q) =>
+					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
+				)
 				.take(CLEAR_BATCH_SIZE);
 			for (const delta of deltas) await ctx.db.delete("files_metadata_catalog_deltas", delta._id);
 			deleted += deltas.length;
@@ -504,7 +507,9 @@ export async function files_metadata_catalog_db_rebuild_step(
 		)
 		.paginate({ cursor: args.cursor, numItems: SEED_PAGE_SIZE, maximumBytesRead: SEED_PAGE_BYTES });
 	const changes: files_metadata_catalog_Changes = new Map();
-	const keys: files_metadata_catalog_Changes = new Map((JSON.parse(args.keys) as Row[]).map((row) => [row_key(row), row]));
+	const keys: files_metadata_catalog_Changes = new Map(
+		(JSON.parse(args.keys) as Row[]).map((row) => [row_key(row), row]),
+	);
 	let fileNodeId = args.fileNodeId;
 	const emit_keys = () => {
 		for (const row of keys.values()) add_change(changes, row);
@@ -578,7 +583,10 @@ export async function files_metadata_catalog_db_check(
 		.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
 		.first();
 	if (slot?.cohortId || marker || delta)
-		return { differences: ["the catalog is not settled: a Move, a compactor or a delta is still running"], cursor: null };
+		return {
+			differences: ["the catalog is not settled: a Move, a compactor or a delta is still running"],
+			cursor: null,
+		};
 	// Rows of a Move view sort after normal rows. With no cohort, any such row is left over.
 	const last = await ctx.db
 		.query("files_metadata_catalog")

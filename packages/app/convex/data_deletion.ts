@@ -1294,6 +1294,51 @@ async function db_purge_organization_workspace_content_batch(
 
 	// File-derived content and snapshot docs are removed before jobs, assets,
 	// and file nodes, which are cleaned up at the end of this helper.
+	// The workspace purge fence stops publishers. Drain their children before removing each run.
+	const indexRun = await ctx.db
+		.query("files_index_runs")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.first();
+	if (indexRun) {
+		const candidates = await ctx.db
+			.query("files_index_candidates")
+			.withIndex("by_run", (q) => q.eq("runId", indexRun._id))
+			.paginate({ cursor: null, numItems: Math.min(batchSize, 32), maximumBytesRead: 512 * 1024 });
+		for (const candidate of candidates.page) await ctx.db.delete("files_index_candidates", candidate._id);
+		if (candidates.page.length > 0) return { done: false, deletedCount: candidates.page.length };
+		const input = await ctx.db
+			.query("files_index_inputs")
+			.withIndex("by_run", (q) => q.eq("runId", indexRun._id))
+			.unique();
+		if (input) await ctx.db.delete("files_index_inputs", input._id);
+		const slot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
+			.unique();
+		if (slot && "indexRunId" in slot && slot.indexRunId === indexRun._id)
+			await ctx.db.replace("files_move_workspace_slots", slot._id, {
+				organizationId,
+				workspaceId,
+				cohortId: null,
+				generation: slot.generation,
+			});
+		await ctx.db.delete("files_index_runs", indexRun._id);
+		return { done: false, deletedCount: 1 + (input ? 1 : 0) };
+	}
+	for (const table of ["files_index_states", "files_index_tickets", "files_content_save_requests"] as const) {
+		const docs = await ctx.db
+			.query(table)
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+			)
+			.take(batchSize);
+		if (docs.length > 0) {
+			for (const doc of docs) await ctx.db.delete(table, doc._id);
+			return { done: false, deletedCount: docs.length };
+		}
+	}
 	// Full maps are large. Delete each map before reading the next. Continue in a later pass.
 	let deletedMetadataMaps = 0;
 	for await (const map of ctx.db
@@ -1419,6 +1464,17 @@ async function db_purge_organization_workspace_content_batch(
 	if (updatedByDocs.length > 0) {
 		await Promise.all(updatedByDocs.map((doc) => ctx.db.delete("files_updated_by_docs", doc._id)));
 		return { done: false, deletedCount: updatedByDocs.length };
+	}
+
+	const contentHeads = await ctx.db
+		.query("files_saved_content_heads")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (contentHeads.length > 0) {
+		for (const head of contentHeads) await ctx.db.delete("files_saved_content_heads", head._id);
+		return { done: false, deletedCount: contentHeads.length };
 	}
 
 	// Cancel materialization jobs before deleting their tracking docs.

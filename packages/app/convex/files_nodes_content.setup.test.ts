@@ -1,6 +1,7 @@
 // Fixtures shared by the files_nodes_content test files.
 import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
+import { getFunctionName } from "convex/server";
 import { expect, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import {
@@ -468,6 +469,21 @@ export async function create_pending_proposal(args: {
 }
 
 export async function expect_retired_uploads(t: ReturnType<typeof test_convex>, count: number) {
+	// Abandoned prepared heads release their assets after their exact chunks are removed.
+	const completed = new Set<string>();
+	for (let step = 0; step < 1000; step++) {
+		const jobs = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		const job = jobs.find((job) => !completed.has(job._id) && job.state.kind === "pending" &&
+			job.scheduledTime <= Date.now() && [
+				getFunctionName(internal.files_content_saves.retire), getFunctionName(internal.files_content_saves.discard),
+			].includes(job.name));
+		if (!job) break;
+		completed.add(job._id);
+		const args = job.args[0] as { headId: Id<"files_saved_content_heads"> };
+		await t.mutation(job.name === getFunctionName(internal.files_content_saves.retire)
+			? internal.files_content_saves.retire : internal.files_content_saves.discard, args);
+		if (step === 999) throw new Error("Prepared source cleanup did not finish");
+	}
 	await t.run(async (ctx) => {
 		const assets = await ctx.db.query("files_r2_assets").collect();
 		const publishedKeys = new Set(assets.map((asset) => asset.r2Key));

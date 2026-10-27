@@ -8,7 +8,7 @@ import { internalQuery, query } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import app_convex_schema, {
 	files_pending_target_validator,
-	files_saved_stream_validator,
+	files_index_stream_validator,
 	files_metadata_entries_validator,
 	ai_chat_workspaces_source_validator,
 } from "./schema.ts";
@@ -46,7 +46,11 @@ import { files_move_reservations_db_check } from "../server/files-move-reservati
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { files_saved_content_db_get_tags } from "../server/files-saved-content.ts";
 import { files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
-import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import {
+	files_saved_index_db_get_stream,
+	files_saved_index_db_get_view,
+	type files_saved_index_ViewTag,
+} from "../server/files-saved-index.ts";
 import {
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_apply_set_and_remove,
@@ -72,8 +76,7 @@ import { files_pending_overlay_db_has_saved_scope_job } from "../server/files-pe
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_node_view,
-	files_saved_placement_db_get_view,
-	type files_saved_placement_FixedView,
+	files_saved_placement_db_get_search_generation,
 } from "../server/files-saved-placement.ts";
 import {
 	files_pending_update_has_pending_chunks,
@@ -92,6 +95,26 @@ const TABLE_FIELDS_CALL_RESERVE = 16;
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
+
+export const get_workspace_index_view = query({
+	args: { membershipId: v.id("organizations_workspaces_users") },
+	returns: v.union(
+		v.null(),
+		v.object({
+			cohortId: v.union(v.id("files_move_cohorts"), v.id("files_index_runs"), v.null()),
+			view: v.union(v.literal("before"), v.literal("after"), v.null()),
+			generation: v.number(),
+			searchGeneration: v.number(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const reader = await files_nodes_db_get_tree_reader(ctx, args);
+		if (!reader) return null;
+		const { cohortId, view, generation } = await files_saved_index_db_get_view(ctx.db, reader.membership);
+		const searchGeneration = await files_saved_placement_db_get_search_generation(ctx.db, reader.membership);
+		return { cohortId, view, generation, searchGeneration };
+	},
+});
 
 // #region indexed doc writes
 
@@ -374,7 +397,7 @@ export function files_metadata_db_query_saved_plan(
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		plan: files_metadata_SearchPlan;
 		treePathPrefix: string | null;
-		moveView?: files_saved_placement_FixedView;
+		moveView?: files_saved_index_ViewTag;
 		bounds?: Parameters<typeof files_index_range_apply>[1];
 	},
 ) {
@@ -535,7 +558,7 @@ export function files_metadata_db_query_saved_plan_in_area(
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		plan: files_metadata_SearchPlan;
 		scopeNodeId: Id<"files_nodes"> | null;
-		moveView?: files_saved_placement_FixedView;
+		moveView?: files_saved_index_ViewTag;
 		bounds: Parameters<typeof files_index_range_apply>[1];
 	},
 ) {
@@ -592,7 +615,7 @@ export function files_metadata_db_query_saved_plan_in_area(
 export const list_search_fields = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: v.optional(files_saved_stream_validator),
+		savedStream: v.optional(files_index_stream_validator),
 		/**
 		 * The exact path of the folder the search is in. A member gets the keys of its area only.
 		 */
@@ -622,7 +645,7 @@ export const list_search_fields = query({
 		if (!catalogRows) return refused;
 
 		const { membership } = reader;
-		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const { tag } = await files_saved_index_db_get_stream(ctx.db, membership, args.savedStream);
 		const lower = files_metadata_catalog_lower(args.prefix);
 		const upperBound = string_prefix_upper_bound(lower);
 		const result = await ctx.db
@@ -682,7 +705,7 @@ export const get_search_field = query({
 		if (!catalogRows) return null;
 
 		const { membership } = reader;
-		const moveView = await files_saved_placement_db_get_view(ctx.db, membership);
+		const moveView = await files_saved_index_db_get_view(ctx.db, membership);
 		const rows = await Promise.all(
 			[undefined, ...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }])].map(
 				(view) =>
@@ -720,7 +743,7 @@ export const get_search_field = query({
 export const list_search_values = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: v.optional(files_saved_stream_validator),
+		savedStream: v.optional(files_index_stream_validator),
 		/** Like `list_search_fields`. */
 		folderPath: v.optional(v.string()),
 		fieldPath: v.string(),
@@ -739,7 +762,7 @@ export const list_search_values = query({
 		if (!catalogRows) return refused;
 
 		const { membership } = reader;
-		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const { tag } = await files_saved_index_db_get_stream(ctx.db, membership, args.savedStream);
 		const upperBound = string_prefix_upper_bound(args.prefix);
 		const result = await ctx.db
 			.query("files_metadata_catalog")
@@ -871,8 +894,11 @@ export async function files_metadata_db_get_table_field(
 	ctx: QueryCtx,
 	args: { fileNode: Doc<"files_nodes">; field: string },
 ) {
-	const selected = await files_saved_placement_db_get_node_view(ctx.db, args.fileNode._id);
-	const views = selected ? [undefined, selected] : [undefined];
+	const selected = await files_saved_index_db_get_view(ctx.db, args.fileNode);
+	const views =
+		selected.cohortId && selected.view
+			? [undefined, { cohortId: selected.cohortId, view: selected.view }]
+			: [undefined];
 	const candidates = await Promise.all(
 		views.map((moveView) =>
 			ctx.db
@@ -918,7 +944,7 @@ export async function files_metadata_db_get_table_field(
 export const list_folder_fields = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: v.optional(files_saved_stream_validator),
+		savedStream: v.optional(files_index_stream_validator),
 		parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
 		/**
 		 * Read the keys of the children that are their own restricted root. Only the owner gets rows.
@@ -965,7 +991,7 @@ export const list_folder_fields = query({
 			if (readable._nay) return refused;
 		}
 
-		const { tag } = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const { tag } = await files_saved_index_db_get_stream(ctx.db, membership, args.savedStream);
 		const lower = files_metadata_catalog_lower(args.prefix);
 		const upperBound = string_prefix_upper_bound(lower);
 		const result = await ctx.db
@@ -1006,7 +1032,7 @@ export const list_node_fields = query({
 		if (!caller) return null;
 		const fileNode = await files_metadata_db_get_table_node(ctx, { ...caller, target: args.target });
 		if (!fileNode) return null;
-		const moveView = await files_saved_placement_db_get_view(ctx.db, caller.membership);
+		const moveView = await files_saved_index_db_get_view(ctx.db, caller.membership);
 		const views = [
 			undefined,
 			...(moveView.cohortId === null ? [] : [{ cohortId: moveView.cohortId, view: moveView.view }]),
@@ -1353,36 +1379,25 @@ export const get_index_values_by_path = internalQuery({
 		if (!entry) return null;
 
 		const pendingUpdate =
-			entry.pendingUpdate &&
-			(entry.kind === "private" || files_pending_update_has_pending_chunks(entry.pendingUpdate))
+			entry.pendingUpdate && (entry.kind === "private" || files_pending_update_has_pending_chunks(entry.pendingUpdate))
 				? entry.pendingUpdate
 				: null;
 
-		// Frontmatter copies belong to a content head and a location view. User metadata follows the file.
+		// Source and search publish separately. Read the last complete index for both metadata families.
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
-		const view =
-			entry.kind === "private" ? undefined : await files_saved_placement_db_get_node_view(ctx.db, entry.node._id);
-		const committedTags = entry.kind === "private" ? [] : view ? [undefined, view] : [undefined];
-		const head = entry.kind === "private" ? null : await files_saved_content_db_get_head(ctx.db, entry.node);
+		const view = entry.kind === "private" ? undefined : await files_saved_index_db_get_view(ctx.db, entry.node);
+		const committedTags =
+			entry.kind === "private"
+				? []
+				: view?.cohortId && view.view
+					? [undefined, { cohortId: view.cohortId, view: view.view }]
+					: [undefined];
 		const committedDocs =
 			entry.kind === "private"
 				? []
 				: (
-						await Promise.all([
-							...(head
-								? committedTags.map((tag) =>
-										ctx.db
-											.query("files_metadata_docs")
-											.withIndex("by_contentHead_view_fieldPath", (q) =>
-												q
-													.eq("contentHeadId", head._id)
-													.eq("moveView.cohortId", tag?.cohortId)
-													.eq("moveView.view", tag?.view),
-											)
-											.collect(),
-									)
-								: []),
-							...committedTags.map((tag) =>
+						await Promise.all(
+							committedTags.map((tag) =>
 								ctx.db
 									.query("files_metadata_docs")
 									.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
@@ -1392,13 +1407,11 @@ export const get_index_values_by_path = internalQuery({
 											.eq("sourceKind", "committed")
 											.eq("fileNodeId", entry.node._id)
 											.eq("moveView.cohortId", tag?.cohortId)
-											.eq("moveView.view", tag?.view)
-											.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
-											.lt("fieldPath", "metadata/"),
+											.eq("moveView.view", tag?.view),
 									)
 									.collect(),
 							),
-						])
+						)
 					).flat();
 		const pendingTags = pendingUpdate
 			? await files_saved_content_db_get_tags(ctx.db, { pendingUpdateId: pendingUpdate._id })
@@ -1449,33 +1462,6 @@ export const get_index_values_by_path = internalQuery({
 // #region file metadata
 
 /**
- * Read the scalar back out of one value doc.
- *
- * The three value fields are optional in the schema because one doc fills only its own field.
- * Both writers always fill it, so a doc that fills none is a bug and not a state to recover from.
- */
-function read_entry_value(doc: Doc<"files_metadata_docs">) {
-	if (doc.valueKind === "string" && doc.stringValue !== undefined) {
-		return doc.stringValue;
-	}
-	if (doc.valueKind === "number" && doc.numberValue !== undefined) {
-		return doc.numberValue;
-	}
-	if (doc.valueKind === "boolean" && doc.booleanValue !== undefined) {
-		return doc.booleanValue;
-	}
-
-	const errorMessage = "metadata value doc has no value for its valueKind";
-	const errorData = {
-		metadataDocId: doc._id,
-		fieldPath: doc.fieldPath,
-		valueKind: doc.valueKind,
-	};
-	console.error(errorMessage, errorData);
-	throw should_never_happen(errorMessage, errorData);
-}
-
-/**
  * Read the ordered full map of one exact saved owner. Search docs are derived short copies.
  */
 export async function files_metadata_db_read_entries(
@@ -1498,30 +1484,9 @@ export async function files_metadata_db_read_entry(
 		key: string;
 	},
 ) {
-	const selected = await files_saved_placement_db_get_node_view(ctx.db, args.fileNodeId);
-	const views = selected ? [undefined, selected] : [undefined];
-	const docs = (
-		await Promise.all(
-			views.map((moveView) =>
-				ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", args.fileNodeId)
-							.eq("moveView.cohortId", moveView?.cohortId)
-							.eq("moveView.view", moveView?.view)
-							.eq("fieldPath", `${files_metadata_METADATA_FIELD_PREFIX}${args.key}`),
-					)
-					.collect(),
-			),
-		)
-	).flat();
-	// A scalar has an existence doc and a value doc, plus a date index when applicable.
-	const valueDoc = docs.find((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date");
-	return valueDoc ? read_entry_value(valueDoc) : undefined;
+	const map = await files_metadata_maps_db_read(ctx.db, { kind: "saved", id: args.fileNodeId });
+	if (map?.organizationId !== args.organizationId || map.workspaceId !== args.workspaceId) return undefined;
+	return map.entries.find((entry) => entry.key === args.key)?.value;
 }
 
 /**

@@ -24,12 +24,13 @@ import {
 } from "./files_private_storage.ts";
 import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
+import { files_content_retention_db_index_uses_head } from "../server/files-content-retention.ts";
+import { files_saved_content_yjs_owner } from "../server/files-saved-content-head.ts";
 import {
 	files_pending_overlay_db_can_join_step,
 	files_pending_overlay_db_set_cohort_materialization,
 } from "../server/files-pending-overlay.ts";
 import { files_content_type_index_fields } from "../shared/files.ts";
-import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { quotas } from "../shared/quotas.ts";
 
@@ -426,17 +427,18 @@ async function db_cleanup_part_page(
 	// call. Chunks and metadata docs are small, and a Yjs update goes alone.
 	const numItems = kind === 2 ? 1 : files_move_content_PAGE_SIZE;
 	const rows = await query.take(numItems);
+	const headId = view === "before" ? content.beforeHeadId : content.afterHeadId;
+	const keepExact = remove && kind === 0 && headId !== undefined &&
+		await files_content_retention_db_index_uses_head(ctx.db, headId);
+	const logHead = kind === 2 && headId ? await ctx.db.get("files_saved_content_heads", headId) : null;
 	for (const row of rows) {
-		const ownsContent =
-			kind < 3 ||
-			(kind === 3 && "fieldPath" in row && row.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX));
-		const headId = view === "before" ? content.beforeHeadId : content.afterHeadId;
+		const ownsContent = kind === 0 || kind === 2;
 		const rowHeadId = "contentHeadId" in row ? row.contentHeadId : undefined;
 		if (ownsContent && (rowHeadId === undefined || headId === undefined))
 			throw should_never_happen("Content cleanup lost its owner", { contentId: content._id, table, id: row._id });
-		// A later write can keep its bytes while this worker drains the old Move tags.
-		const ownsRow = !ownsContent || rowHeadId === headId;
-		if (remove && ownsRow) await ctx.db.delete(table, row._id);
+		// Search may still own an older source. Its derived rows belong to the Move side, not that source.
+		const ownsRow = !ownsContent || rowHeadId === (kind === 2 && logHead ? files_saved_content_yjs_owner(logHead) : headId);
+		if (remove && ownsRow && !keepExact) await ctx.db.delete(table, row._id);
 		else await ctx.db.patch(table, row._id, { moveView: undefined });
 	}
 	return rows.length < numItems;

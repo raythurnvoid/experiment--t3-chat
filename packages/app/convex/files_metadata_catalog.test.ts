@@ -10,6 +10,7 @@ import {
 	test_compact_metadata_catalog,
 	test_convex,
 	test_finish_archive_jobs,
+	test_finish_file_index,
 	test_finish_saved_scope_jobs,
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
@@ -598,6 +599,7 @@ describe("catalog doors", () => {
 				metadataYaml,
 			}),
 		).toEqual({ _yay: null });
+		await test_finish_file_index(t, nodeId);
 	}
 
 	async function share(t: T, owner: Who & { userId: Id<"users"> }, nodeId: Id<"files_nodes">, userId: Id<"users">) {
@@ -953,6 +955,7 @@ describe("catalog rebuild and check", () => {
 			await asOwner.mutation(api.files_metadata.set_entries, { membershipId: db.membershipId, fileNodeId: a, metadataYaml: "status: open\n" }),
 		).toEqual({ _yay: null });
 		const parentRows = async () => {
+			await test_finish_file_index(t, a);
 			await test_compact_metadata_catalog(t);
 			return (await list_rows(t)).filter((row) => row.family.startsWith("parent")).map((row) => `${row.family}:${row.parentId}:${row.count}`);
 		};
@@ -1092,7 +1095,7 @@ describe("catalog rebuild and check", () => {
 				const slot = await t.run(async (ctx) => await ctx.db.query("files_move_workspace_slots").first());
 				if (!slot?.cohortId || move.cohortId) return;
 				move.cohortId = slot.cohortId;
-				await expect(start_rebuild(t, scope, "catalog")).rejects.toThrow("A Move runs in this workspace");
+				await expect(start_rebuild(t, scope, "catalog")).rejects.toThrow("Files are being indexed or moved");
 				expect(await check(t, scope)).toEqual(unsettled);
 			},
 		});
@@ -1165,6 +1168,7 @@ describe("catalog lifecycle", () => {
 			metadataYaml: "status: open\n",
 		});
 		expect(written).toEqual({ _yay: null });
+		await test_finish_file_index(t, nodeId);
 	}
 
 	/**
@@ -1441,6 +1445,8 @@ describe("catalog lifecycle", () => {
 			_yay: null,
 		});
 		await test_finish_transfer_run(asOwner, started._yay.runId);
+		const indexes = await t.run((ctx) => ctx.db.query("files_index_states").collect());
+		for (const index of indexes) await test_finish_file_index(t, index.fileNodeId);
 		expect(await visible_rows(t, scope)).toEqual(
 			[
 				"area_key:root:metadata.status:=2",
@@ -1477,7 +1483,10 @@ describe("catalog lifecycle", () => {
 				);
 				if (tagged.length === 0) return;
 				expect(admission.yielded, "setup yields the initial Move join").toBe(true);
-				const cohort = await t.run(async (ctx) => await ctx.db.get("files_move_cohorts", tagged[0]!.moveView!.cohortId));
+				const cohort = await t.run(async (ctx) => {
+					const cohortId = ctx.db.normalizeId("files_move_cohorts", tagged[0]!.moveView!.cohortId)!;
+					return await ctx.db.get("files_move_cohorts", cohortId);
+				});
 				expect(cohort, "Stop runs after staging and before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
 				const run = await t.run(async (ctx) => await ctx.db.query("files_transfer_runs").first());
 				expect(await asOwner.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId: run!._id })).toEqual({
@@ -1583,6 +1592,7 @@ describe("catalog lifecycle", () => {
 				metadataYaml: "status: open\n",
 			});
 			expect(written).toEqual({ _yay: null });
+			await test_finish_file_index(t, nodeId);
 		}
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([
@@ -1660,6 +1670,7 @@ describe("compactor drift", () => {
 			].join("\n"),
 		});
 		expect(written).toEqual({ _yay: null });
+		await test_finish_file_index(t, a);
 		await test_compact_metadata_catalog(t);
 		const before = await list_rows(t);
 

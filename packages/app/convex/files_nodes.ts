@@ -81,6 +81,7 @@ import app_convex_schema, {
 	file_content_materialization_state_validator,
 	file_content_materialization_header_validator,
 	files_saved_stream_validator,
+	files_index_stream_validator,
 } from "./schema.ts";
 import { files_search_db_create_reader } from "./files_search.ts";
 import {
@@ -89,6 +90,11 @@ import {
 	files_saved_placement_db_get_sequence,
 } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import {
+	files_saved_index_db_get_stream,
+	files_saved_index_db_get_view,
+	type files_saved_index_ViewTag,
+} from "../server/files-saved-index.ts";
 import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
 import {
 	files_saved_content_collect,
@@ -110,10 +116,7 @@ import {
 	files_archive_runs_REQUEST_MAX_CHECK_NODES,
 	files_archive_runs_REQUEST_MAX_NODES,
 } from "../server/files-archive-runs.ts";
-import {
-	files_saved_placement_db_get_search_generation,
-	files_saved_placement_db_get_view,
-} from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_search_generation } from "../server/files-saved-placement.ts";
 import {
 	files_move_reservations_db_check,
 	files_move_reservations_db_check_node_write,
@@ -200,9 +203,7 @@ import {
 	files_pending_overlay_list_over_budget,
 } from "../server/files-pending-overlay.ts";
 import { quotas } from "../shared/quotas.ts";
-import {
-	r2,
-} from "./r2_client.ts";
+import { r2 } from "./r2_client.ts";
 import {
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
@@ -6559,7 +6560,7 @@ function db_text_search_filtered_query(
 		query: string;
 		targets?: files_PendingTarget[];
 		sourceKind: "pending" | "committed";
-		tag?: { cohortId: Id<"files_move_cohorts">; view: "before" | "after" };
+		tag?: files_saved_index_ViewTag;
 	},
 ) {
 	let searchQuery = ctx.db.query("files_plain_text_chunks").withSearchIndex("search_by_plainTextChunk", (q) => {
@@ -6720,7 +6721,7 @@ export const text_search_files = internalQuery({
 			!organizations_is_global_organization_id(args.organizationId) &&
 			scope.kind === "workspace";
 		const view = {
-			...(await files_saved_placement_db_get_view(ctx.db, args)),
+			...(await files_saved_index_db_get_view(ctx.db, args)),
 			// The cursor keeps the whole view, so a search change starts the search again.
 			searchGeneration: await files_saved_placement_db_get_search_generation(ctx.db, args),
 		};
@@ -6813,7 +6814,7 @@ export type files_nodes_text_search_files_Result =
 export const search_saved = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: v.optional(files_saved_stream_validator),
+		savedStream: v.optional(files_index_stream_validator),
 		searchGeneration: v.optional(v.number()),
 		clause: v.union(
 			// Whole words and word starts of the name. `nodeKind` lists only files or only folders.
@@ -6872,7 +6873,22 @@ export const search_saved = query({
 		}
 		const { userAuth, membership } = reader;
 		const clause = args.clause;
-		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
+		const index =
+			clause.kind === "content" ? await files_saved_index_db_get_stream(ctx.db, membership, args.savedStream) : null;
+		const moveId =
+			args.savedStream?.kind === "cohort" ? ctx.db.normalizeId("files_move_cohorts", args.savedStream.cohortId) : null;
+		if (!index && args.savedStream?.kind === "cohort" && !moveId) return refused;
+		const saved = await files_saved_stream_db_create(
+			ctx.db,
+			membership,
+			index
+				? { kind: "normal", generation: index.view.generation }
+				: args.savedStream?.kind === "cohort" && moveId
+					? { ...args.savedStream, cohortId: moveId }
+					: args.savedStream?.kind === "normal"
+						? args.savedStream
+						: undefined,
+		);
 		if (
 			args.searchGeneration !== undefined &&
 			args.searchGeneration !== (await files_saved_placement_db_get_search_generation(ctx.db, membership))
@@ -7061,8 +7077,8 @@ export const search_saved = query({
 						.eq("workspaceId", membership.workspaceId)
 						.eq("archiveOperationId", undefined)
 						.eq("sourceKind", "committed")
-						.eq("moveView.cohortId", saved.tag?.cohortId)
-						.eq("moveView.view", saved.tag?.view),
+						.eq("moveView.cohortId", index?.tag?.cohortId)
+						.eq("moveView.view", index?.tag?.view),
 				)
 				.paginate(paginationOpts);
 			if (result.page.length > SEARCH_SAVED_MAX_ITEMS) {

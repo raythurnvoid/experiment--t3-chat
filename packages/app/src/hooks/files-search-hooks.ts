@@ -2,11 +2,15 @@ import { useEffect, useState } from "react";
 import { useConvex, type UsePaginatedQueryResult } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { useFn } from "./utils-hooks.ts";
-import { useFilesSavedView } from "./files-saved-view-hooks.ts";
+import { useFilesSavedIndexView, useFilesSavedView } from "./files-saved-view-hooks.ts";
 import { useFilesPaginatedQuery } from "./files-paginated-query-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { detect_search_query_mode, search_free_text, search_path_filter } from "@/lib/files-search.ts";
-import { files_TEXT_SEARCH_MAX_RESULTS, type files_DirectoryView, type files_SavedStream } from "../../shared/files.ts";
+import {
+	files_TEXT_SEARCH_MAX_RESULTS,
+	type files_IndexDirectoryView,
+	type files_IndexStream,
+} from "../../shared/files.ts";
 import {
 	files_search_query_folder_path,
 	files_search_query_parse,
@@ -50,7 +54,11 @@ export type FilesSearchSavedList = {
  * Merge the pages of some `search_saved` queries into one list. `isTextSearch` is set for a names or
  * contents list, which the search index caps.
  */
-export function files_merge_search_lists(results: Array<UsePaginatedQueryResult<FilesSearchSavedResult>>, isTextSearch: boolean, loading = false) {
+export function files_merge_search_lists(
+	results: Array<UsePaginatedQueryResult<FilesSearchSavedResult>>,
+	isTextSearch: boolean,
+	loading = false,
+) {
 	const rows: FilesSearchSavedRow[] = [];
 	const seenNodeIds = new Set<string>();
 	let problem: string | null = null;
@@ -65,11 +73,12 @@ export function files_merge_search_lists(results: Array<UsePaginatedQueryResult<
 		}
 	}
 
-	const status = loading || results.some((result) => result.status === "LoadingFirstPage")
-		? "loading"
-		: results.some((result) => result.status !== "Exhausted")
-			? "more"
-			: "done";
+	const status =
+		loading || results.some((result) => result.status === "LoadingFirstPage")
+			? "loading"
+			: results.some((result) => result.status !== "Exhausted")
+				? "more"
+				: "done";
 
 	return {
 		rows,
@@ -266,24 +275,54 @@ export function useFilesSearchSaved(args: {
 	}
 
 	const savedView = useFilesSavedView(membershipId, first !== null || second !== null || metadataPlans.length > 0);
-	const source_args = (query: SearchArgs | null, savedStream: files_SavedStream | null) =>
+	const indexView = useFilesSavedIndexView(
+		membershipId,
+		first?.clause.kind === "content" || second?.clause.kind === "content" || metadataPlans.length > 0,
+	);
+	const firstView = first?.clause.kind === "content" ? indexView : savedView;
+	const secondView = second?.clause.kind === "content" ? indexView : savedView;
+	const source_args = (query: SearchArgs | null, savedStream: files_IndexStream | null) =>
 		query === null || savedStream === null || (query.clause.kind === "path" && savedStream.kind === "cohort")
 			? ("skip" as const)
-			: { ...query, savedStream, searchGeneration: savedView.searchGeneration! };
+			: {
+					...query,
+					savedStream,
+					searchGeneration: (query.clause.kind === "content" ? indexView : savedView).searchGeneration!,
+				};
 	const options = { initialNumItems: FILES_SEARCH_SAVED_PAGE_SIZE };
-	const firstResult = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.normal), options);
-	const secondResult = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.normal), options);
-	const firstCohort = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(first, savedView.cohort), options);
-	const secondCohort = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, source_args(second, savedView.cohort), options);
-	const firstResults = first === null || savedView.normal === null ? [] : [firstResult,
-		...(savedView.cohort === null || first.clause.kind === "path" ? [] : [firstCohort])];
-	const secondResults = second === null || savedView.normal === null ? [] : [secondResult,
-		...(savedView.cohort === null ? [] : [secondCohort])];
+	const firstResult = useFilesPaginatedQuery(
+		app_convex_api.files_nodes.search_saved,
+		source_args(first, firstView.normal),
+		options,
+	);
+	const secondResult = useFilesPaginatedQuery(
+		app_convex_api.files_nodes.search_saved,
+		source_args(second, secondView.normal),
+		options,
+	);
+	const firstCohort = useFilesPaginatedQuery(
+		app_convex_api.files_nodes.search_saved,
+		source_args(first, firstView.cohort),
+		options,
+	);
+	const secondCohort = useFilesPaginatedQuery(
+		app_convex_api.files_nodes.search_saved,
+		source_args(second, secondView.cohort),
+		options,
+	);
+	const firstResults =
+		first === null || firstView.normal === null
+			? []
+			: [firstResult, ...(firstView.cohort === null || first.clause.kind === "path" ? [] : [firstCohort])];
+	const secondResults =
+		second === null || secondView.normal === null
+			? []
+			: [secondResult, ...(secondView.cohort === null ? [] : [secondCohort])];
 	const metadataList = useFilesSearchSavedMetadata({
 		membershipId,
 		plans: metadataPlans,
 		folderPath,
-		searchGeneration: savedView.searchGeneration,
+		searchGeneration: indexView.searchGeneration,
 	});
 
 	return {
@@ -314,13 +353,13 @@ export function useFilesSearchSaved(args: {
 				: files_merge_search_lists(
 						[...firstResults, ...(isText ? [] : secondResults)],
 						isText || contentText !== null,
-						savedView.loading,
+						firstView.loading || (second !== null && secondView.loading),
 					),
 		contents:
 			isText && withContents
 				? hasFolder
 					? ("folder" as const)
-						: files_merge_search_lists(secondResults, true, savedView.loading)
+					: files_merge_search_lists(secondResults, true, secondView.loading)
 				: null,
 	};
 }
@@ -352,7 +391,7 @@ type FilesSortedChildrenStreamStatus = "inactive" | "loading" | "more" | "done";
 type FilesSortedChildrenStream = {
 	rows: FilesSortedChildrenRow[];
 	status: FilesSortedChildrenStreamStatus;
-	directoryView: files_DirectoryView | undefined;
+	directoryView: files_IndexDirectoryView | undefined;
 	loadMore: () => void;
 };
 
@@ -478,7 +517,11 @@ function useFilesSortedChildrenSource(
 	const options = { initialNumItems: FILES_SORTED_CHILDREN_PAGE_SIZE };
 
 	const open = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_sorted, sortedArgs(false), options);
-	const restricted = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_sorted, sortedArgs(true), options);
+	const restricted = useFilesPaginatedQuery(
+		app_convex_api.files_tree.list_tree_children_sorted,
+		sortedArgs(true),
+		options,
+	);
 	const shared0 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(0), options);
 	const shared1 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(1), options);
 	const shared2 = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children_shared, sharedArgs(2), options);
@@ -615,9 +658,10 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 		...(hasFileMissing ? [fileMissing] : []),
 	];
 	const viewKey = JSON.stringify(folderValue[0]?.directoryView);
-	const viewsMatch = segments.flat().filter((stream) => stream.status !== "inactive").every((stream) =>
-		stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey,
-	);
+	const viewsMatch = segments
+		.flat()
+		.filter((stream) => stream.status !== "inactive")
+		.every((stream) => stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey);
 
 	// Show a segment only once every segment before it is done. Otherwise the next page of an earlier
 	// segment would push the later rows down.
@@ -633,7 +677,8 @@ export function useFilesSortedChildren(props: useFilesSortedChildren_Props) {
 	});
 	const mergedRows = merges.flatMap((merge) => merge.rows);
 	const blockingStream = merges.at(-1)?.blocking ?? null;
-	const isDone = viewsMatch && sort !== null && segments.every((streams) => streams.every((stream) => stream.status === "done"));
+	const isDone =
+		viewsMatch && sort !== null && segments.every((streams) => streams.every((stream) => stream.status === "done"));
 	const streamsSettled =
 		viewsMatch && sort !== null && segments.every((streams) => streams.every((stream) => stream.status !== "loading"));
 

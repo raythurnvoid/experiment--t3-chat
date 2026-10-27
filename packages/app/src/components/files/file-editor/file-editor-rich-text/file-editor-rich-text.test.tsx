@@ -680,6 +680,7 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta\n",
+				requestId: expect.any(String),
 			});
 			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
 			expect(toast.error).not.toHaveBeenCalled();
@@ -692,8 +693,35 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta gamma\n",
+				requestId: expect.any(String),
 			});
 			expect(toast.error).not.toHaveBeenCalled();
+			expect(saveButton.hasAttribute("disabled")).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test.each([false, true])("Save retry keeps its request only for the same text: changed %s", async (changed) => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			convexActionMock.mockRejectedValueOnce(new Error("Save reply lost")).mockResolvedValue({ _yay: null });
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+			await typeIntoEditor(" beta");
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			const firstRequest = convexActionMock.mock.calls[0]?.[1];
+			expect(firstRequest?.requestId, "a Save carries a retry identity").toEqual(expect.any(String));
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+			if (changed) await typeIntoEditor(" gamma");
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			const retry = convexActionMock.mock.calls[1]?.[1];
+			expect(retry?.text).toBe(changed ? "alpha beta gamma\n" : firstRequest.text);
+			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(!changed);
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
 		} finally {
 			vi.useRealTimers();
@@ -810,6 +838,7 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: comment_markdown("thread_new", "alpha"),
+				requestId: expect.any(String),
 			});
 			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
 			expect(toast.error).not.toHaveBeenCalled();
@@ -841,6 +870,7 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: comment_markdown("thread_new", "alpha"),
+				requestId: expect.any(String),
 			});
 			expect(convexQueryMock).toHaveBeenCalledTimes(1);
 			expect(toast.info).not.toHaveBeenCalled();
@@ -879,6 +909,7 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: comment_markdown("thread_new", "alpha"),
+				requestId: expect.any(String),
 			});
 			expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
 			expect(screen.getByText("2 Words")).toBeTruthy();

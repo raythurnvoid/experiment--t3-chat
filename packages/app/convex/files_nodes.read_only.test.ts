@@ -7,6 +7,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
+import { files_content_sources_action_prepare } from "./files_content_sources.ts";
 import { files_nodes_db_set_write_policy, files_nodes_db_get_write_policy_management_state, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
@@ -876,7 +877,7 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 		external_id: db.userId,
 		name: "Test User",
 	});
-	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
+	const { sourceNodeId, generatedNodeId } = await test_run_with_flush(t, async (ctx) => {
 		const sharedNode = {
 			...test_mocks.files.base(),
 			organizationId: db.organizationId,
@@ -939,7 +940,7 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 		external_id: db.userId,
 		name: "Test User",
 	});
-	const { folderId, sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
+	const { folderId, sourceNodeId, generatedNodeId } = await test_run_with_flush(t, async (ctx) => {
 		const folderId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: db.organizationId,
@@ -1393,6 +1394,9 @@ test("files_tree_write rate limit runs before membership validation", async () =
 test("files_snapshot_write rate limit runs before restore snapshot validation", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const preparedNodeId = await test_create_saved_text_file(t, {
+		membershipId: db.membershipId, path: "/snapshot-rate-source.md",
+	});
 	const restoreAssets = await t.run(async (ctx) => {
 		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
 			ctx.db.insert("files_r2_assets", {
@@ -1482,6 +1486,7 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 
 	// The rate limit must win before any file or lineage validation.
 	const blocked = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+		preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", preparedNodeId)))!.contentHeadId!,
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
 		expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", db.files.file_root_1._id)))!
@@ -1512,7 +1517,7 @@ describe("get_visible_target_by_path", () => {
 			return created._yay.nodeId;
 		};
 		const file = (parentId: Id<"files_nodes">, parentPath: string, name: string) =>
-			t.run((ctx) =>
+			test_run_with_flush(t, (ctx) =>
 				ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: db.organizationId,
@@ -3219,7 +3224,7 @@ describe("files_nodes destination conflict privacy", () => {
 	test("rename and move authorize a restricted destination occupant before reporting its conflict", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const fixture = await t.run(async (ctx) => {
+		const fixture = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const memberUserId = await ctx.db.insert("users", {
 				clerkUserId: "clerk_destination_conflict_member",
@@ -5912,6 +5917,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 
 		// The live lock refuses the restore.
 		const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+			preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.contentHeadId!,
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
 			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
@@ -5960,6 +5966,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			// backoff and the hourly sweep, never silently dropped.
 			vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(new Error("simulated R2 outage"));
 			const refused = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+				preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.contentHeadId!,
 				membershipId: db.membershipId,
 				nodeId: seeded.nodeId,
 				expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
@@ -6036,7 +6043,15 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			throw new Error(restoreStage._nay.message);
 		}
 
+		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.restoredSnapshotAssetId, {
+			size: files_get_utf8_byte_size(restoredMarkdown),
+		}));
+		const prepared = await t.action((ctx) => files_content_sources_action_prepare(ctx, {
+			nodeId: seeded.nodeId, assetId: seeded.restoredSnapshotAssetId, text: restoredMarkdown,
+		}));
+		if (prepared._nay) throw new Error(prepared._nay.message);
 		const restored = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
+			preparedSourceHeadId: prepared._yay,
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
 			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
@@ -6135,7 +6150,7 @@ describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 			path: "/repair-superseded-cleanup.md",
 		});
 
-		const superseded = await t.run(async (ctx) => {
+		const superseded = await test_run_with_flush(t, async (ctx) => {
 			const node = await ctx.db.get("files_nodes", createdId);
 			if (!files_node_has_editable_yjs_state(node)) {
 				throw new Error("Expected an editable repair target");
@@ -6218,6 +6233,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 		// before the staleness checks, so no later check can publish first.
 		const pointers = await test_get_file_yjs_pointers(t, seeded.nodeId);
 		const refused = await t.mutation(internal.files_nodes_content.finalize_file_yjs_repair, {
+			preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.contentHeadId!,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId: seeded.nodeId,
@@ -6283,7 +6299,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			nodeId: createdId,
 			authorUserId: db.userId,
 		});
-		expect(refused._nay?.name).toBe("read_only");
+		expect(refused).toMatchObject({ _nay: { name: "read_only" } });
 		expect(refused._nay?.message).toBe("This item is read-only.");
 
 		expect(await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length)).toBe(assetCountBefore);
@@ -6340,9 +6356,8 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 		if (materialized._nay) {
 			throw new Error(materialized._nay.message);
 		}
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
-		});
+		await test_run_with_flush(t, (ctx) =>
+			ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() }));
 
 		// The operator unlocked before repairing, so the final mutation accepts it.
 		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId });

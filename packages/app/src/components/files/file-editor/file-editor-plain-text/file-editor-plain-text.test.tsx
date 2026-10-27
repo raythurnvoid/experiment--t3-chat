@@ -720,6 +720,7 @@ describe("FileEditorPlainText", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 42}\n',
+				requestId: expect.any(String),
 			});
 			expect(pushMutationMock).not.toHaveBeenCalled();
 			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
@@ -739,7 +740,46 @@ describe("FileEditorPlainText", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 43}\n',
+				requestId: expect.any(String),
 			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test.each([false, true])("Save retry keeps its request only for the same text: changed %s", async (changed) => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("{}\n");
+			convexActionMock.mockRejectedValueOnce(new Error("Save reply lost")).mockResolvedValue({ _yay: null });
+			renderPlainTextEditor({ nonCollaborative: true });
+			await act(async () => {});
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			const model = monacoHarness.createdModels[0]?.model;
+			act(() => {
+				model?.setValue('{"answer": 42}\n');
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+			await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			const firstRequest = convexActionMock.mock.calls[0]?.[1];
+			expect(firstRequest?.requestId, "a Save carries a retry identity").toEqual(expect.any(String));
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+			expect(toast.error).toHaveBeenCalledWith("Save reply lost");
+			if (changed) {
+				act(() => {
+					model?.setValue('{"answer": 43}\n');
+					for (const listener of monacoHarness.changeListeners) listener();
+				});
+				await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+			}
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			const retry = convexActionMock.mock.calls[1]?.[1];
+			expect(retry?.text).toBe(changed ? '{"answer": 43}\n' : firstRequest.text);
+			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(!changed);
+			expect(saveButton.hasAttribute("disabled")).toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -790,6 +830,7 @@ describe("FileEditorPlainText", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 42}\n',
+				requestId: expect.any(String),
 			});
 			expect(model?.getValue()).toBe('{"answer": 43}\n');
 			expect(saveButton.hasAttribute("disabled")).toBe(false);
@@ -801,6 +842,7 @@ describe("FileEditorPlainText", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 43}\n',
+				requestId: expect.any(String),
 			});
 		} finally {
 			vi.useRealTimers();

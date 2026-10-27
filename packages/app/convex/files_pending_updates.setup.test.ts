@@ -442,6 +442,8 @@ export async function seed_non_collaborative_file(args: { ctx: MutationCtx; path
 	return { organizationId, workspaceId, membershipId, userId, nodeId, assetId };
 }
 
+let saveRequestNumber = 0;
+
 /**
  * Save `text` on a file with collaboration off through the member save door. Returns the node's
  * new content asset id.
@@ -459,6 +461,7 @@ export async function save_as_member(args: {
 		name: "Test User",
 	});
 	const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+		requestId: `fixture-save:${++saveRequestNumber}`,
 		membershipId: seeded.membershipId,
 		nodeId: seeded.nodeId,
 		text,

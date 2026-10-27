@@ -2,14 +2,14 @@ import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
+import { test_convex, test_finish_file_index, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_table_Filter } from "../shared/files-table.ts";
 import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { insert_tree_node, seed_tree_access_fixture, seed_folder_table } from "./files_nodes.setup.test.ts";
-import type { files_DirectoryView } from "../shared/files.ts";
+import type { files_IndexDirectoryView } from "../shared/files.ts";
 
 beforeEach(() => {
 	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_file_test_billing_event" as never);
@@ -102,7 +102,7 @@ describe("list_tree_children_shared", () => {
 				workPhase: "publish", visibleView: "before",
 			});
 			if (!cohort) throw new Error("Expected the Move cohort");
-			const read = (owner: boolean, pageView?: files_DirectoryView, cursor: string | null = null) => {
+			const read = (owner: boolean, pageView?: files_IndexDirectoryView, cursor: string | null = null) => {
 				const args = {
 					membershipId: owner ? f.db.membershipId : member.membershipId,
 					parentId: f.parentId,
@@ -229,6 +229,11 @@ describe("list_tree_children_shared", () => {
 			await ctx.db.patch("files_nodes", archivedId!, { archiveOperationId: "archive-1" });
 			// The grant names the node in this workspace, so only the node's own workspace keeps it out.
 			await ctx.db.patch("files_nodes", foreignId!, {
+				organizationId: other.organizationId,
+				workspaceId: other.workspaceId,
+			});
+			const foreign = (await ctx.db.get("files_nodes", foreignId!))!;
+			await ctx.db.patch("files_saved_content_heads", foreign.contentHeadId!, {
 				organizationId: other.organizationId,
 				workspaceId: other.workspaceId,
 			});
@@ -475,6 +480,8 @@ describe("list_tree_children_shared", () => {
 					}
 				}
 			});
+			const indexes = await t.run((ctx) => ctx.db.query("files_index_states").collect());
+			for (const index of indexes) await test_finish_file_index(t, index.fileNodeId);
 			const read_cost = (numItems: number, query: "filter" | "roots") =>
 				f.asAdmin.run(async (ctx) => {
 					const paginationOpts = { numItems, cursor: null };

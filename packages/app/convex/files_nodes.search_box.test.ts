@@ -10,6 +10,7 @@ import {
 	test_convex,
 	test_move_nodes,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_mocks_fill_db_with,
 	test_spy_handler,
 } from "./setup.test.ts";
@@ -105,7 +106,12 @@ describe("search box doors", () => {
 				name: "files_search_metadata",
 				key: seeded.db.userId,
 			});
-			return await search_saved_plans({ asWho: seeded.asOwner, membershipId: seeded.db.membershipId, plans, folderPath });
+			return await search_saved_plans({
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				plans,
+				folderPath,
+			});
 		};
 
 		// `status:open` from either metadata kind: the open task, the fixed task through its map, the archive.
@@ -273,6 +279,7 @@ describe("search box doors", () => {
 			metadataYaml: Array.from({ length: 9 }, (_, index) => `extra${index}: x`).join("\n"),
 		});
 		if (written._nay) throw new Error(written._nay.message);
+		await test_finish_file_index(t, seeded.openTaskId);
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
 			membershipId: seeded.db.membershipId,

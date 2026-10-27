@@ -397,6 +397,7 @@ describe("FileEditorDiffNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta\n",
+				requestId: expect.any(String),
 			});
 			// The saved text is the new committed version, so the diff is empty again.
 			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
@@ -410,9 +411,38 @@ describe("FileEditorDiffNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta gamma\n",
+				requestId: expect.any(String),
 			});
 			expect(getPanes().original.getValue()).toBe("alpha beta gamma\n");
 			expect(toast.error).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test.each([false, true])("Save retry keeps its request only for the same text: changed %s", async (changed) => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			convexActionMock.mockRejectedValueOnce(new Error("Save reply lost")).mockResolvedValue({ _yay: null });
+			renderNonCollabDiffEditor();
+			await flushEditorMount();
+			await typeIntoModifiedPane("alpha beta\n");
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			const firstRequest = convexActionMock.mock.calls[0]?.[1];
+			expect(firstRequest?.requestId, "a Save carries a retry identity").toEqual(expect.any(String));
+			expect(getPanes().original.getValue()).toBe("alpha\n");
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+			if (changed) await typeIntoModifiedPane("alpha beta gamma\n");
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			const retry = convexActionMock.mock.calls[1]?.[1];
+			expect(retry?.text).toBe(changed ? "alpha beta gamma\n" : firstRequest.text);
+			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(!changed);
+			expect(getPanes().original.getValue()).toBe(retry.text);
+			expect(saveButton.hasAttribute("disabled")).toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}

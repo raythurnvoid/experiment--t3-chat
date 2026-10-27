@@ -21,6 +21,8 @@ import {
 	test_get_file_yjs_pointers,
 	test_meta_search,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
+	test_finish_file_index,
 } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import {
@@ -129,7 +131,7 @@ async function test_insert_searchable_markdown_file(args: {
 	const { t, db, path, markdown } = args;
 
 	// Seed only the node and committed plain-text chunk docs for tests that exercise search scope.
-	return await t.run(async (ctx) => {
+	return await test_run_with_flush(t, async (ctx) => {
 		const now = Date.now();
 		const name = path.split("/").filter(Boolean).at(-1);
 		if (!name) throw new Error("Expected a root-level file path");
@@ -810,6 +812,21 @@ test("a pure-move row keeps committed metadata visible", async () => {
 		if (moved._nay) throw new Error(moved._nay.message);
 		vi.advanceTimersByTime(1);
 		await t.finishInProgressScheduledFunctions();
+		for (let step = 0; step < 20; step++) {
+			const job = await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_kind_key", (q) => q.eq("kind", "saved_places").eq("key", nodeId))
+					.unique(),
+			);
+			if (!job) break;
+			vi.setSystemTime(Math.max(Date.now(), job.nextAttemptAt));
+			await t.mutation(internal.files_pending_overlay.run_job, {
+				kind: job.kind,
+				key: job.key,
+				nextAttemptAt: job.nextAttemptAt,
+			});
+		}
 	} finally {
 		vi.useRealTimers();
 	}
@@ -1039,6 +1056,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		].join("\n"),
 	});
 	if (written._nay) throw new Error(written._nay.message);
+	await test_finish_file_index(t, nodeId);
 
 	const entries = () =>
 		asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId });
@@ -1151,6 +1169,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		metadataYaml: "title: Only key left\n",
 	});
 	if (replaced._nay) throw new Error(replaced._nay.message);
+	await test_finish_file_index(t, nodeId);
 	expect(await entries()).toEqual([{ key: "title", value: "Only key left" }]);
 	expect((await search({ op: "exists", fieldPath: "metadata.priority" })).items).toEqual([]);
 });
@@ -1181,6 +1200,7 @@ test("file metadata stays visible while a pending content edit hides committed f
 		metadataYaml: "source: slack\n",
 	});
 	if (written._nay) throw new Error(written._nay.message);
+	await test_finish_file_index(t, nodeId);
 
 	const pending = await upsert_pending_update_internal_for_test(t, {
 		organizationId: db.organizationId,
@@ -1360,6 +1380,7 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 		["pages"],
 	);
 	if (second._nay) throw new Error(second._nay.message);
+	await test_finish_file_index(t, nodeId);
 	expect(second._yay.entries).toEqual([
 		{ key: "source", value: "upload" },
 		{ key: "original-name", value: "contract.pdf" },
@@ -1437,6 +1458,7 @@ describe("folder metadata", () => {
 			remove: ["priority"],
 		});
 		if (updated._nay) throw new Error(updated._nay.message);
+		await test_finish_file_index(t, folderId);
 		expect(updated._yay.entries).toEqual([
 			{ key: "plugin-name", value: "council" },
 			{ key: "reviewed", value: false },
@@ -1469,6 +1491,7 @@ describe("folder metadata", () => {
 				metadataYaml: "",
 			}),
 		).toEqual({ _yay: null });
+		await test_finish_file_index(t, folderId);
 		expect(
 			await t.query(internal.files_metadata.get_index_values_by_path, {
 				subject: { kind: "user" as const, userId: scope.userId, plugin: null },
@@ -1568,6 +1591,7 @@ describe("folder metadata", () => {
 					metadataYaml: "folder-key: shared",
 				}),
 			).toEqual({ _yay: null });
+			await test_finish_file_index(t, nodeId);
 		}
 		const destination = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
 			...scope,
@@ -1646,13 +1670,15 @@ describe("folder metadata", () => {
 		await test_finish_saved_scope_jobs(t);
 		await assertScope(["/destination/renamed", "/destination/renamed/inner"], true);
 		await test_compact_metadata_catalog(t);
-		expect((
-			await asOwner.query(api.files_metadata.list_search_fields, {
-				membershipId: db.membershipId,
-				prefix: "",
-				paginationOpts: { numItems: 50, cursor: null },
-			})
-		).page).toEqual([]);
+		expect(
+			(
+				await asOwner.query(api.files_metadata.list_search_fields, {
+					membershipId: db.membershipId,
+					prefix: "",
+					paginationOpts: { numItems: 50, cursor: null },
+				})
+			).page,
+		).toEqual([]);
 		expect(
 			(
 				await asOwner.query(api.files_metadata.list_search_values, {
@@ -1685,15 +1711,15 @@ describe("folder metadata", () => {
 		await assertScope(["/restored-parent/renamed", "/restored-parent/renamed/inner"], false);
 		expect((await search("/destination")).items).toEqual([]);
 		await test_compact_metadata_catalog(t);
-		expect((
-			await asOwner.query(api.files_metadata.list_search_fields, {
-				membershipId: db.membershipId,
-				prefix: "",
-				paginationOpts: { numItems: 50, cursor: null },
-			})
-		).page).toEqual([
-			{ fieldPath: "metadata.folder-key", valueKinds: ["string"] },
-		]);
+		expect(
+			(
+				await asOwner.query(api.files_metadata.list_search_fields, {
+					membershipId: db.membershipId,
+					prefix: "",
+					paginationOpts: { numItems: 50, cursor: null },
+				})
+			).page,
+		).toEqual([{ fieldPath: "metadata.folder-key", valueKinds: ["string"] }]);
 		expect(
 			(
 				await asOwner.query(api.files_metadata.list_search_values, {
@@ -1716,6 +1742,7 @@ describe("folder metadata", () => {
 					metadataYaml: "status: open",
 				}),
 			).toEqual({ _yay: null });
+			await test_finish_file_index(t, nodeId);
 		}
 		const otherUserId = await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_folder_metadata_reader" });
@@ -1771,6 +1798,7 @@ describe("folder metadata", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		await test_finish_file_index(t, nestedId);
 		expect((await read("/folder-metadata/nested", otherUserId))?.values).toMatchObject([
 			{ fieldPath: "metadata.status", stringValue: "changed" },
 		]);
@@ -1849,6 +1877,7 @@ describe("folder table sort fields", () => {
 				metadataYaml,
 			});
 			if (saved._nay) throw new Error(saved._nay.message);
+			await test_finish_file_index(t, nodeId);
 		};
 		return { t, db, asOwner, create_folder, set_metadata };
 	}
@@ -2246,6 +2275,7 @@ describe("list_tree_children_sorted", () => {
 				metadataYaml: `status: ${status}\n`,
 			});
 			expect(saved._nay).toBeUndefined();
+			await test_finish_file_index(t, ids.get(name)!);
 		}
 		// A field doc with no value, like a frontmatter map, counts as missing.
 		await t.run(async (ctx) => {
@@ -2682,7 +2712,7 @@ describe("list_tree_children_sorted", () => {
 	// Guard = floor(3,000 index ranges / index ranges read by the worst row). Each case fills one
 	// stream with one kind of row, so the cost per row is that stream's worst row.
 	test.each([
-		{ restricted: false, field: "metadata.status", guard: 1800 },
+		{ restricted: false, field: "metadata.status", guard: 375 },
 		{ restricted: true, field: "metadata.status", guard: 700 },
 		{ restricted: true, field: "name", guard: 1000 },
 	])(
@@ -2862,12 +2892,17 @@ describe("list_tree_children_sorted", () => {
 		expect((await read()).page.map((row) => row.name)).toEqual(["kept.md"]);
 
 		// A node of another workspace is still a bug, also when its scope changed too.
-		await t.run((ctx) =>
-			ctx.db.patch("files_nodes", archivedId!, {
+		await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", archivedId!))!;
+			await ctx.db.patch("files_saved_content_heads", node.contentHeadId!, {
 				organizationId: other.organizationId,
 				workspaceId: other.workspaceId,
-			}),
-		);
+			});
+			await ctx.db.patch("files_nodes", archivedId!, {
+				organizationId: other.organizationId,
+				workspaceId: other.workspaceId,
+			});
+		});
 		await expect(read()).rejects.toThrow("files_nodes tree stream row scope is mismatched");
 	});
 });
@@ -3010,8 +3045,8 @@ describe("list_tree_children_sorted filter", () => {
 			expect(await read_table({ field, direction: "desc" }, { filter, namePrefix, numItems: 7 })).toEqual(
 				[...expected].reverse(),
 			);
-			// A page reads its own rows (a field doc and a node for a metadata row) and about 8 fixed
-			// docs. A scan that fills the page would read the 75 rows between two matches.
+			// A metadata hit reads its field, node and content head, plus fixed caller/view docs.
+		// A scan that fills the page would read the 75 docs between two matches.
 			const cost = await read_page_cost({
 				kind: "file",
 				sort: { field, direction: "asc" },
@@ -3019,7 +3054,7 @@ describe("list_tree_children_sorted filter", () => {
 				namePrefix,
 				paginationOpts: { numItems: 7, cursor: null },
 			});
-			expect(cost.documents).toBeLessThanOrEqual(2 * cost.rows + 10);
+			expect(cost.documents).toBeLessThanOrEqual(3 * cost.rows + 10);
 		}
 	});
 
@@ -3215,6 +3250,7 @@ describe("create-time metadata", () => {
 
 		// The publish owns the size and the media type, so the create must stamp neither. Check the
 		// stored docs, because the entries above are read back through the same writer that made them.
+		await test_finish_file_index(t, upload._yay.nodeId);
 		expect((await read_metadata_docs(t, upload._yay.nodeId)).map((doc) => doc.fieldPath).sort()).toEqual([
 			"metadata.original-name",
 			"metadata.original-name",

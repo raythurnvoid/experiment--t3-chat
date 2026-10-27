@@ -9,6 +9,7 @@ import { upsert_file_pending_update_public_for_test } from "./files_pending_upda
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_db_get_review_state,
 	test_finish_pending_update_run,
 	test_finish_transfer_run,
@@ -348,7 +349,7 @@ test.each(["before", "after"] as const)("Restore during Move %s publication keep
 	expect(await f.read("/overlap.txt"), "the old path no longer names the moved file").toBeNull();
 });
 
-test("Restore before a ready Move publishes keeps current frontmatter searchable at the destination", async () => {
+test("Restore before a ready Move keeps complete search fields until its index catches up", async () => {
 	const original = "---\nphase: original\n---\n\nOriginal text\n";
 	const f = await fixture("/overlap.md", original);
 	const observer = await f.t.run((ctx) => add_member(ctx, f.scope, "overlap-denied-reader"));
@@ -383,6 +384,7 @@ test("Restore before a ready Move publishes keeps current frontmatter searchable
 			})
 		)._nay,
 	).toBeUndefined();
+	await test_finish_file_index(f.t, f.nodeId);
 	const move = await start_move(f, folder._yay.nodeId);
 	for (let pass = 0; pass < 100; pass++) {
 		if ((await move.cohort())?.phase === "ready") break;
@@ -408,10 +410,10 @@ test("Restore before a ready Move publishes keeps current frontmatter searchable
 	}
 	const published = (await move.cohort())!;
 	expect(published.validatedItemCount, "restaging validates every Move item once").toBe(published.itemCount);
-	const check = async () => {
+	const check = async (phase: "later" | "original") => {
 		await f.expect_content(original, "/dest/overlap.md");
 		for (const [fieldPath, value] of [
-			["frontmatter.phase", "original"],
+			["frontmatter.phase", phase],
 			["metadata.owner", "kept"],
 		]) {
 			const found = await test_meta_search(f.t, {
@@ -421,15 +423,15 @@ test("Restore before a ready Move publishes keeps current frontmatter searchable
 			});
 			expect(
 				found.items.map((item) => item.path),
-				"publication exposes current metadata at the destination",
+				"the complete published index follows the destination",
 			).toEqual(["/dest/overlap.md"]);
 		}
 		const old = await test_meta_search(f.t, {
 			...f.scope,
 			folderPath: "/dest",
-			plan: { op: "eq", fieldPath: "frontmatter.phase", value: "later" },
+			plan: { op: "eq", fieldPath: "frontmatter.phase", value: phase === "later" ? "original" : "later" },
 		});
-		expect(old.items, "publication never exposes the old frontmatter copy").toEqual([]);
+		expect(old.items, "search never mixes both complete index versions").toEqual([]);
 		const restoredFields = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
@@ -456,9 +458,10 @@ test("Restore before a ready Move publishes keeps current frontmatter searchable
 		});
 		expect(denied.items, "a member without destination access cannot find restored frontmatter").toEqual([]);
 	};
-	await check();
+	await check("later");
 	await move.finish();
-	await check();
+	await test_finish_file_index(f.t, f.nodeId);
+	await check("original");
 });
 
 test("Restore after a moving Review publishes writes frontmatter at its selected path", async () => {
@@ -484,21 +487,22 @@ test("Restore after a moving Review publishes writes frontmatter at its selected
 	const review = await start_review(f, { accepted: "---\nphase: accepted\n---\n\nAccepted text\n" });
 	await review.until(({ cohort }) => cohort.publishedAt !== null);
 	expect((await f.restore())._nay).toBeUndefined();
-	const check = async () => {
+	const check = async (phase: "accepted" | "original") => {
 		await f.expect_content(original, "/review-dest/overlap.md");
 		const found = await test_meta_search(f.t, {
 			...observer,
 			folderPath: "/review-dest",
-			plan: { op: "eq", fieldPath: "frontmatter.phase", value: "original" },
+			plan: { op: "eq", fieldPath: "frontmatter.phase", value: phase },
 		});
 		expect(
 			found.items.map((item) => item.path),
 			"restored frontmatter uses the published Review path",
 		).toEqual(["/review-dest/overlap.md"]);
 	};
-	await check();
+	await check("accepted");
 	await review.finish();
-	await check();
+	await test_finish_file_index(f.t, f.nodeId);
+	await check("original");
 });
 
 test("a stale Restore does not cancel a later prepared Review", async () => {
@@ -642,6 +646,7 @@ test("a ready Move cannot replace an occupant restored after its content check",
 	expect(
 		(
 			await f.asUser.action(api.files_nodes_content.replace_file_content, {
+				requestId: "occupant-save",
 				membershipId: f.db.membershipId,
 				nodeId: occupantId,
 				text: "Occupant changed\n",
@@ -803,7 +808,8 @@ test("stored-byte Restore keeps its bytes when unchanged Review shared old stats
 	).toBeUndefined();
 	const restored = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))!;
 	expect(restored).toMatchObject({ textKind: null, statsId: null, yjsSnapshotId: null });
-	expect(await f.t.run((ctx) => ctx.db.get("file_stats", before.statsId!))).toBeNull();
+	expect(await f.t.run((ctx) => ctx.db.get("file_stats", before.statsId!)),
+		"the unfinished Review still pins its old stats").not.toBeNull();
 	const check = async () => {
 		const node = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))!;
 		expect(node.assetId, "cleanup keeps the restored stored-byte asset").toBe(restored.assetId);

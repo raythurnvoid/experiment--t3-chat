@@ -153,6 +153,11 @@ Restore keeps every owner's proposals. For an editable saved file, the open diff
 
 Files with collaboration off still support the views allowed by their shape. Their ordinary editors save the whole text through `replace_file_content`; proposal review uses the pending-update save path. Do not send these files through live Yjs loading.
 
+Ordinary Save keeps one request ID for the submitted text until it succeeds or the text changes.
+A lost reply retries that same request. Text typed while Save runs stays dirty after its reply.
+Saved confirms the durable source; search indexing runs silently afterward. Do not add an indexing
+label, toast or Activity. See [Save and background indexing](../files-editable-text/SKILL.md#save-and-background-indexing).
+
 # File View Dropdown And HTML Preview
 
 `FileNodeViewFile` owns the searchable `View: <label>` dropdown at the start of the content toolbar. It uses `MySearchSelect` with one search field and one flat list of plain names. Keep the trigger visible even for one option and while an alternate view is open. Do not add icons, plugin names, groups, badges, or default-view controls.

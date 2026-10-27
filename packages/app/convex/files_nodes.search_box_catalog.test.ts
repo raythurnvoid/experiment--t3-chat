@@ -12,6 +12,7 @@ import {
 	test_convex,
 	test_finish_archive_jobs,
 	test_finish_saved_scope_jobs,
+	test_finish_file_index,
 	test_run_with_flush,
 } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
@@ -155,6 +156,7 @@ describe("search box doors", () => {
 				metadataYaml: "folder-secret: visible-with-grant",
 			}),
 		).toEqual({ _yay: null });
+		await test_finish_file_index(t, seeded.tasksFolderId);
 		expect(
 			(
 				await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
@@ -271,14 +273,16 @@ describe("search box doors", () => {
 		]);
 		// A prefix ignores case, and a namespace prefix lists its whole namespace.
 		expect(
-			(await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "Frontmatter.S" })).map(
-				(field) => field.fieldPath,
-			),
+			(
+				await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "Frontmatter.S" })
+			).map((field) => field.fieldPath),
 		).toEqual(["frontmatter.source", "frontmatter.source.channel", "frontmatter.status"]);
 		expect(
 			await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "metadata." }),
 		).toHaveLength(2);
-		expect(await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "x" })).toEqual([]);
+		expect(await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, prefix: "x" })).toEqual(
+			[],
+		);
 		expect(
 			await seeded.asOwner.query(api.files_metadata.get_search_field, {
 				membershipId: seeded.db.membershipId,
@@ -349,7 +353,12 @@ describe("search box doors", () => {
 			};
 			for (let index = 0; index < 120; index += 1) {
 				const fieldPath = `frontmatter.page-${String(index).padStart(3, "0")}`;
-				await ctx.db.insert("files_metadata_docs", { ...doc, fieldPath, docKind: "field", parentId: openTask.parentId });
+				await ctx.db.insert("files_metadata_docs", {
+					...doc,
+					fieldPath,
+					docKind: "field",
+					parentId: openTask.parentId,
+				});
 			}
 			for (let index = 0; index < 450; index += 1)
 				await ctx.db.insert("files_metadata_docs", {
@@ -362,7 +371,9 @@ describe("search box doors", () => {
 		});
 		await test_compact_metadata_catalog(t);
 
-		const read_all = async <Row,>(read: (cursor: string | null) => Promise<{ page: Row[]; isDone: boolean; continueCursor: string }>) => {
+		const read_all = async <Row>(
+			read: (cursor: string | null) => Promise<{ page: Row[]; isDone: boolean; continueCursor: string }>,
+		) => {
 			const rows: Row[] = [];
 			const sizes: number[] = [];
 			let cursor: string | null = null;
@@ -625,7 +636,13 @@ describe("search box doors", () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
 		const statusValues = (prefix: string) =>
-			list_values({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId, fieldPath: "frontmatter.status", prefix });
+			list_values({
+				t,
+				asWho: seeded.asOwner,
+				membershipId: seeded.db.membershipId,
+				fieldPath: "frontmatter.status",
+				prefix,
+			});
 
 		// Suggestions and search rows are saved-only.
 		const pending = await upsert_pending_update_internal_for_test(t, {

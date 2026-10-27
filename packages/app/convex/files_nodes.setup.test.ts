@@ -10,6 +10,7 @@ import {
 	test_compact_metadata_catalog,
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_get_file_yjs_pointers,
 	test_mocks,
 	test_mocks_fill_db_with,
@@ -23,7 +24,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import type { files_metadata_Entry, files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import { files_sort_compare, files_sort_text_key, type files_sort_Clause } from "../shared/files-sort.ts";
 import type { files_table_Filter } from "../shared/files-table.ts";
-import type { files_DirectoryView } from "../shared/files.ts";
+import type { files_IndexDirectoryView } from "../shared/files.ts";
 
 /**
  * Insert one node for the tree query tests. `scope: "self"` makes the node its own restricted scope.
@@ -300,9 +301,9 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		if (args.restricted) await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 		return nodeId;
 	};
-	const insert_child = (args: Child) => t.run((ctx) => db_insert_child(ctx, args));
+	const insert_child = (args: Child) => test_run_with_flush(t, (ctx) => db_insert_child(ctx, args));
 	const insert_children = (children: Child[]) =>
-		t.run(async (ctx) => {
+		test_run_with_flush(t, async (ctx) => {
 			const nodeIds: Array<Id<"files_nodes">> = [];
 			for (const child of children) nodeIds.push(await db_insert_child(ctx, child));
 			return nodeIds;
@@ -312,8 +313,8 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 	 * Write committed metadata on saved children. Write it after `restricted` is set: the field docs
 	 * copy the node's flag.
 	 */
-	const set_metadata = (entries: Array<[Id<"files_nodes">, files_metadata_Entry[]]>) =>
-		t.run(async (ctx) => {
+	const set_metadata = async (entries: Array<[Id<"files_nodes">, files_metadata_Entry[]]>) => {
+		await t.run(async (ctx) => {
 			for (const [nodeId, nodeEntries] of entries) {
 				await files_metadata_db_write_entries(ctx, {
 					fileNode: (await ctx.db.get("files_nodes", nodeId))!,
@@ -321,6 +322,8 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 				});
 			}
 		});
+		for (const [nodeId] of entries) await test_finish_file_index(t, nodeId);
+	};
 
 	type Stream = {
 		as?: typeof asOwner;
@@ -337,7 +340,7 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 		principalIndex?: 0 | 1 | 2 | 3;
 	};
 	type PageArgs = Stream & {
-		pageView?: files_DirectoryView;
+		pageView?: files_IndexDirectoryView;
 		paginationOpts: { numItems: number; cursor: string | null; endCursor?: string };
 	};
 	const page_query_args = (args: PageArgs) => ({
@@ -400,7 +403,7 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 	const walk = async (args: Stream & { numItems: number }) => {
 		const pages: Page["page"][] = [];
 		let cursor: string | null = null;
-		let pageView: files_DirectoryView = null;
+		let pageView: files_IndexDirectoryView = null;
 		for (let index = 0; index < 200; index++) {
 			const result: Page = await read_page({ ...args, pageView, paginationOpts: { numItems: args.numItems, cursor } });
 			pages.push(result.page);
@@ -705,6 +708,7 @@ export async function test_materialize_markdown_file(args: {
 		targetSequence: 1,
 	});
 	if (materialized._nay) throw new Error(materialized._nay.message);
+	await test_finish_file_index(t, nodeId);
 	return nodeId;
 }
 
@@ -849,6 +853,7 @@ export async function seed_search_box_fixture(t: ReturnType<typeof test_convex>)
 		metadataYaml: ["status: open", "slack-message-id: '1757003021.482119'"].join("\n"),
 	});
 	if (written._nay) throw new Error(written._nay.message);
+	await test_finish_file_index(t, fixedTaskId);
 
 	const { page: rootFolders } = await asOwner.query(api.files_tree.list_tree_children, {
 		stream: "normal",

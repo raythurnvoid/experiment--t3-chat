@@ -42,18 +42,33 @@ Entries are indexed in the same `files_metadata_docs` table that Markdown frontm
 
 | Source | Prefix | Written by |
 | --- | --- | --- |
-| Markdown YAML frontmatter | `frontmatter.` | content materialization, from the file's own text; for a file with collaboration turned off there is no materialization, so the content replacement door writes it instead |
+| Markdown YAML frontmatter | `frontmatter.` | saved index worker, from captured source text; initial creation and pending proposals keep their own write paths |
 | Metadata next to the file or folder | `metadata.` | a user in the Properties modal, an agent, or a file-creation flow (see "Metadata Written By The File-Creation Flows") |
 
 Both prefixes are exported from `shared/files-metadata.ts`. A range over one source bounds at
 `frontmatter/` or `metadata/`, because `/` (0x2F) is the next character after `.` (0x2E), so the
 range covers exactly that prefix and nothing else.
 
-Per key, `files_metadata_db_write_entries` writes one `field` doc (existence search) and one `value` doc (value
+Per key, the index writer writes one `field` doc (existence search) and one `value` doc (value
 search). A date-like string value also gets the `maybe_date` companion, exactly like frontmatter, so
 range search over dates works. Value docs carry `entryIndex`, the key's position in the full map.
 Properties reads the ordered full map, so saving does not reorder the dialog's lines.
 Frontmatter docs leave `entryIndex` unset.
+
+Saved metadata writes commit the full map and request indexing in the same transaction. The full
+map is readable at once. `files_index.ts` captures that map and the source head, then builds text,
+frontmatter and metadata indexes in pages. A later write replaces only the waiting request; the
+active build can finish. Search and metadata table readers keep the last complete published view.
+The user sees no indexing status. `plugin-name` selection reads the full map, never the delayed index.
+
+Index publication shares the workspace queue with Move and Review. Its slot covers tagging the old
+docs, installing the candidate, selecting one complete view and cleanup. All writes pass through
+the catalog wrapper, including writes pinned to an older captured source. Native normal and selected
+view ranges serve search, filters, sorting and suggestions. No reader scans old index versions.
+Scope refresh jobs wait while their file publishes, then restart from the first page. Private-copy
+field jobs keep their unfinished candidate cursor, discard it if its source changed, then rebuild.
+Access checks use the current saved node. Catalog suggestions keep the delayed behavior below.
+See [Save](../files-editable-text/SKILL.md#save-and-background-indexing).
 
 Search copies have two size limits, in `shared/files-metadata.ts`. The Markdown always keeps
 the full text.
@@ -185,14 +200,9 @@ materialization, repair and the non-collaborative content replacement in `files_
 the upload publish in `r2.ts`, and the pending-update preflight in `files_pending_updates.ts`):
 
 - Never fail the save on `_nay`. Index no frontmatter, log a warning, continue.
-- Over-cap frontmatter is different, and the non-collaborative content replacement is stricter than
-  materialization on purpose. Materialization keeps the file at the last sequence that fit and sets
-  the marker pair, because it runs in a retrying workpool with nobody watching. The replacement door
-  runs while the user waits, and it has no materialization to defer to, so it refuses the save and
-  the user fixes the text. It refuses with `Too many frontmatter fields`, the same words as the
-  pending-update preflight: both are doors where a person hands over a whole text and can shorten it
-  after reading the message. `Frontmatter exceeds the index caps` stays the materialization `_nay`,
-  which nobody reads but the workpool.
+- Whole-text Save does not refuse a file because its frontmatter needs many index docs. Its worker
+  writes those docs in pages. Existing inline creation and pending preflight paths keep their own
+  guards until they use the paged writer. Do not copy those guards into the Save worker.
 - Never set the `contentFrontmatterTooLarge*` marker pair for it. Those markers mean over-cap and
   carry counts; an unreadable file has no counts to show.
 - Keep `_nay` separate from the `doc.errors` case, which returns empty metadata. Broken YAML really
@@ -205,15 +215,11 @@ This is a weakness in `yaml` 2.8.2, not a depth nobody should use: `JSON.parse` 
 of the same shape without complaint. If a later version reports it in `doc.errors` instead, the
 `try` becomes redundant but stays correct.
 
-### TODO: report unreadable frontmatter to the user
+### Index errors
 
-Today, unreadable frontmatter is only logged on the server. The file still saves.
-Plan a general `problems` table with generic pointers to files, workspaces, plugins, or other resources.
-Show a UI list that says what the app could not do and why, in plain words.
-The first problem kind is unreadable frontmatter: the file's frontmatter is not indexed.
-See the warnings in [r2.ts](../../../packages/app/convex/r2.ts#L857) and [files_metadata.ts](../../../packages/app/convex/files_metadata.ts#L155) ([pending content](../../../packages/app/convex/files_metadata.ts#L229)).
-The nearest pattern is the [too-large marker pair](../../../packages/app/convex/schema.ts#L746)
-and its [file banner](../../../packages/app/src/components/files/file-node-view/file-node-view.tsx#L561).
+Unreadable frontmatter is logged on the server. The file still saves. Do not add a search-update
+message, toast or Activity. Failed worker steps keep their durable request and can resume through
+`files_index.recover`; check the run, step, generation and scheduled function before retrying.
 
 # Write Doors
 
@@ -592,11 +598,11 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   values whose encoded payload is at most 1,024 bytes get a value row (UTF-8 bytes plus one byte per
   U+0000, `files_metadata_catalog_value_is_short`): longer index keys share a buffered prefix group in
   Convex, so a page of them is not a real read bound. A long value still counts in its key's string kind.
-  Drafts, global and plugin volume workspaces never count. A restrict or an unrestrict patches the
-  flag on the node's own field docs (`files_nodes_db_set_restricted_scope`), so its keys move between
-  `parent` and `parent_restricted`. It also patches the area on the node's docs. The scope job patches it
-  on the docs of each item inside when it reaches the item, or starts a saved scope job for an item with
-  more than 16 metadata docs. So their `area_*` counts move to the new area. The `key` and `value` rows
+  Drafts, global and plugin volume workspaces never count. Restrict and Unrestrict change access
+  on the node first. Small metadata sets follow inline; a saved scope job copies larger sets in pages, so keys
+  move between `parent` and `parent_restricted`. It waits while Move or index publication owns those
+  docs. Descendant scope work uses the same paged refresh when an item has many docs.
+Their `area_*` counts move to the new area. The `key` and `value` docs
   do not change. A grant change writes nothing here.
 - **Move views.** A doc tagged with a Move cohort's `moveView` counts in the rows of that view, like share
   rows. Readers merge the normal rows with the visible view's rows, so a key never disappears or doubles
@@ -626,7 +632,7 @@ leaf module `server/files-metadata-catalog.ts` holds the rules; its header is th
   minutes) starts a run for a marker whose oldest delta waited more than 10 minutes.
 - **Rebuild and check** (`rebuild_metadata_catalog`, `check_metadata_catalog` in
   `convex/files_pending_overlay.ts`). Run them only in a quiet window: every source writer stopped, also
-  scheduled jobs, until the check ends. Both refuse while a Move cohort holds the workspace. A rebuild puts
+  scheduled jobs, until the check ends. Both refuse while Move or index publication holds the workspace. A rebuild puts
   a new `clearing` marker in place of the old one (older rebuild jobs and compactor runs then stop), deletes
   100 docs per job, sets the marker to `seeding`, and pages the saved docs on
   `by_organization_workspace_source_fileNode` (100 docs or 1 MiB per page). A file's key deltas wait for
@@ -700,7 +706,7 @@ and values from the catalog. Each read is one index range, so it costs the same 
   suggested, and a saved value stays suggested while its owner has a draft that changes it.
 - **Lag.** A new or removed key or value shows after the compactor runs, about 5 to 15 seconds. The
   browser also waits 150 ms after typing before it asks.
-- **Streams.** Each door reads one stream: the normal rows, or the rows of one Move view
+- **Streams.** Each door reads one stream: the normal docs, or the docs of one Move or index view
   (`savedStream`). `useFilesMetadataCatalogPages` (`src/hooks/files-metadata-catalog-hooks.ts`) reads the
   normal stream and the visible view's stream and merges them with `files_merge_sorted_streams`, so a
   key shows once while a Move runs. Value kinds are joined across the streams.
@@ -791,8 +797,8 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 
 - No public HTTP API route. `packages/app/convex/public_api.ts` does not expose metadata. Adding it
   is a follow-up, not an oversight.
-- No quota or billing accounting. `set_entries` shares the `files_tree_write` bucket and writes up to
-  ~384 index docs per call. `set_node_write_policy` has no quota leg either, so this is consistent —
+- No quota or billing accounting. `set_entries` shares the `files_tree_write` bucket and queues its
+  index docs after saving the map. `set_node_write_policy` has no quota leg either, so this is consistent —
   revisit it as a product decision, not as a hole.
 - No dedicated chat renderer for the tool call. It falls back to the generic unknown-tool disclosure,
   which shows name, parameters, and result.

@@ -40,6 +40,7 @@ import {
 	type files_PendingParent,
 	type files_PendingTarget,
 	type files_SavedStream,
+	type files_IndexStream,
 } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -70,6 +71,7 @@ import {
 	type files_saved_placement_FixedView,
 	type files_saved_placement_View,
 } from "./files-saved-placement.ts";
+import { files_saved_index_db_is_publishing } from "./files-saved-index.ts";
 import {
 	files_pending_review_facts_db_change_state,
 	files_pending_review_facts_db_pin_structure,
@@ -2598,7 +2600,8 @@ export async function files_pending_overlay_db_follow_saved_scope(
 ) {
 	// A job of this node may be in the middle of a pass. Let it walk once more, so it cannot write
 	// the old scope after this mutation.
-	if (await files_pending_overlay_db_has_saved_scope_job(ctx, node._id)) {
+	if (await files_pending_overlay_db_has_saved_scope_job(ctx, node._id) ||
+		await files_saved_index_db_is_publishing(ctx.db, node._id)) {
 		await files_pending_overlay_db_schedule_saved_scope(ctx, node, args);
 		return;
 	}
@@ -3435,6 +3438,7 @@ const list_cursor_validator = v.object({
 				lastKey: v.union(v.array(v.any()), v.null()),
 			}),
 			savedStream: saved_source_validator,
+			indexStream: v.optional(saved_source_validator),
 			seek: v.optional(v.union(v.object({ key: v.array(v.any()), inclusive: v.boolean() }), v.null())),
 			parentAlias: v.optional(
 				v.union(
@@ -3552,6 +3556,20 @@ export async function files_pending_overlay_list(
 	// but cannot make both reads miss it. Later reads of the first source break this, so the round
 	// loop limits them.
 	if (view.migrationDirection === "to_normal") savedSources.reverse();
+	const indexView = args.mode === "metadata"
+		? await ctx.runQuery(internal.files_visible.internal_get_index_view, streamArgs)
+		: null;
+	if (args.mode === "metadata" && !indexView)
+		return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
+	const indexSources: files_IndexStream[] = indexView
+		? [
+				{ kind: "normal", generation: indexView.generation },
+				...(indexView.cohortId && indexView.view
+					? [{ kind: "cohort" as const, cohortId: indexView.cohortId, view: indexView.view, generation: indexView.generation }]
+					: []),
+			]
+		: savedSources;
+	if (indexView?.migrationDirection === "to_normal") indexSources.reverse();
 	const scope = JSON.stringify([
 		args.organizationId,
 		args.workspaceId,
@@ -3568,6 +3586,7 @@ export async function files_pending_overlay_list(
 		args.plan,
 		args.updated,
 		[view.cohortId, view.view, view.generation, view.migrationDirection],
+		indexView && [indexView.cohortId, indexView.view, indexView.generation, indexView.migrationDirection],
 	]);
 	const pageSize = Math.max(1, Math.floor(args.numItems));
 	const plan = args.plan;
@@ -3643,7 +3662,7 @@ export async function files_pending_overlay_list(
 	if (args.cursor === null) {
 		cursorStreams = savedSources.flatMap((savedStream, index) => [
 			// A walk reads every saved source itself.
-			...(walk && index > 0
+			...(args.mode === "metadata" || (walk && index > 0)
 				? []
 				: [{ kind: "saved" as const, movedIn: null, numItems: pageSize, position: start, savedStream }]),
 			...(overlay
@@ -3668,6 +3687,17 @@ export async function files_pending_overlay_list(
 				: []),
 			// The frontmatter of the user's text drafts of saved files.
 		]);
+		if (args.mode === "metadata") {
+	// Metadata docs can move between index views while tree and draft docs stay in place.
+			cursorStreams.unshift(...(walk ? indexSources.slice(0, 1) : indexSources).map((indexStream) => ({
+				kind: "saved" as const,
+				movedIn: null,
+				numItems: pageSize,
+				position: start,
+				savedStream: viewStream,
+				indexStream,
+			})));
+		}
 		if (overlay && args.mode === "metadata")
 			cursorStreams.push({
 				kind: "pending",
@@ -3700,9 +3730,11 @@ export async function files_pending_overlay_list(
 		cursorStreams = raw.streams;
 	}
 	const is_walk = (stream: Pick<CursorStream, "kind">) => walk && (stream.kind === "saved" || stream.kind === "nested");
+	const is_migrating = (stream: CursorStream) =>
+		stream.kind !== "pending" && (stream.indexStream ? indexView?.cohortId : view.cohortId) != null;
 	const streams: Stream[] = cursorStreams.map((stream) => ({
 		...stream,
-		position: view.cohortId && stream.kind !== "pending" && !is_walk(stream) ? start : stream.position,
+		position: is_migrating(stream) && !is_walk(stream) ? start : stream.position,
 		open: true,
 		buffer: [],
 		frontier: null,
@@ -3760,14 +3792,15 @@ export async function files_pending_overlay_list(
 				cursor,
 				numItems: stream.numItems,
 				maxCalls: files_tree_walk_MAX_CALLS - walkCalls,
-				rows: savedSources.map((savedStream) => async (frame, numItems) => {
+				rows: (args.mode === "metadata" ? indexSources : savedSources).map((source) => async (frame, numItems) => {
 					const yay = yay_of(
 						args.mode === "metadata"
 							? await ctx.runQuery(internal.files_visible.internal_search_metadata_saved, {
 									...common,
 									plan: plan!,
 									numItems,
-									savedStream,
+									savedStream: viewStream,
+									indexStream: source,
 									frame,
 								})
 							: timeWindow && (walk.startByTime || frame.treePath !== walkStart.treePath)
@@ -3776,7 +3809,7 @@ export async function files_pending_overlay_list(
 										position: start,
 										...filter,
 										numItems,
-										savedStream,
+										savedStream: source as files_SavedStream,
 										frame,
 										updated: timeWindow,
 									})
@@ -3786,7 +3819,7 @@ export async function files_pending_overlay_list(
 										...updated,
 										order,
 										numItems,
-										savedStream,
+										savedStream: source as files_SavedStream,
 										frame,
 									}),
 					);
@@ -3862,7 +3895,7 @@ export async function files_pending_overlay_list(
 			numItems: stream.numItems,
 			position: stream.position,
 			savedStream: stream.savedStream as files_SavedStream,
-			...(view.cohortId && stream.kind !== "pending" ? { seek: stream.seek ?? { key: [], inclusive: true } } : {}),
+			...(is_migrating(stream) ? { seek: stream.seek ?? { key: [], inclusive: true } } : {}),
 		};
 		const orderBy = args.orderBy ?? "name";
 		const movedIn = moved_in_args(stream.movedIn);
@@ -3878,7 +3911,11 @@ export async function files_pending_overlay_list(
 									...common,
 									outsideOnly: true,
 								})
-							: ctx.runQuery(internal.files_visible.internal_search_metadata_saved, { ...metadataArgs, ...movedIn })
+							: ctx.runQuery(internal.files_visible.internal_search_metadata_saved, {
+									...metadataArgs,
+									...movedIn,
+									indexStream: stream.indexStream as files_IndexStream,
+								})
 			) as Promise<files_visible_stream_Result>;
 		}
 		const query =
@@ -3947,15 +3984,11 @@ export async function files_pending_overlay_list(
 		// be in neither read. So the first source reads rows once per page, and the page ends when it
 		// needs more. The next page seeks both sources again from a key no later than its frontier. Calls
 		// that only cross an empty seek phase read no rows, so they do not count.
-		const runnable = (
-			view.cohortId
-				? blocking.filter(
-						(stream) =>
-							is_walk(stream) ||
-							!(stream.kind !== "pending" && stream.savedStream.kind === savedSources[0]!.kind && stream.hasRead),
-					)
-				: blocking
-		).filter((stream) => !is_walk(stream) || walkCalls < files_tree_walk_MAX_CALLS);
+		const runnable = blocking.filter((stream) =>
+			(!is_migrating(stream) || is_walk(stream) || !stream.hasRead ||
+				(stream.indexStream ?? stream.savedStream).kind !== (stream.indexStream ? indexSources : savedSources)[0]!.kind) &&
+			(!is_walk(stream) || walkCalls < files_tree_walk_MAX_CALLS),
+		);
 		if (blocking.length > 0) {
 			if (runnable.length === 0 || rounds === LIST_MAX_ROUNDS) break;
 			rounds++;
@@ -4006,13 +4039,15 @@ export async function files_pending_overlay_list(
 			stream.open = !stream.after.done;
 		}
 		if (row.movedIn && !streams.some((other) => other.movedIn?.savedNodeId === row.movedIn!.savedNodeId)) {
-			for (const savedStream of walk ? savedSources.slice(0, 1) : savedSources)
+			const sources = args.mode === "metadata" ? indexSources : savedSources;
+			for (const source of walk ? sources.slice(0, 1) : sources)
 				streams.push({
 					kind: "nested",
 					movedIn: row.movedIn,
 					numItems: pageSize,
 					position: start,
-					savedStream,
+					savedStream: args.mode === "metadata" ? viewStream : source as files_SavedStream,
+					...(args.mode === "metadata" ? { indexStream: source } : {}),
 					open: true,
 					buffer: [],
 					frontier: null,
@@ -4031,16 +4066,13 @@ export async function files_pending_overlay_list(
 	const pairKey = (stream: Stream) => JSON.stringify([stream.kind, stream.movedIn, stream.parentAlias]);
 	// The pair shares a full-key frontier. Keep an empty source beside its open partner: docs can
 	// move into that source during staging or cleanup before the next page.
-	const left = view.cohortId
-		? streams.filter((stream) =>
-				stream.kind === "pending"
-					? stream.open
-					: streams.some((other) => pairKey(other) === pairKey(stream) && other.open),
-			)
-		: streams.filter((stream) => stream.open);
-	if (view.cohortId) {
+	const left = streams.filter((stream) => is_migrating(stream)
+		? streams.some((other) => pairKey(other) === pairKey(stream) && other.open)
+		: stream.open,
+	);
+	if (view.cohortId || indexView?.cohortId) {
 		for (const stream of left) {
-			if (stream.kind === "pending" || is_walk(stream)) continue;
+			if (!is_migrating(stream) || is_walk(stream)) continue;
 			let seek: { key: Value[]; inclusive: boolean } | null = null;
 			let undecided = false;
 			for (const other of left) {
@@ -4062,12 +4094,19 @@ export async function files_pending_overlay_list(
 		}
 	}
 	const finalView = await ctx.runQuery(internal.files_visible.internal_get_move_view, streamArgs);
+	const finalIndexView = indexView
+		? await ctx.runQuery(internal.files_visible.internal_get_index_view, streamArgs)
+		: null;
 	if (
 		!finalView ||
 		finalView.cohortId !== view.cohortId ||
 		finalView.view !== view.view ||
 		finalView.generation !== view.generation ||
-		finalView.migrationDirection !== view.migrationDirection
+		finalView.migrationDirection !== view.migrationDirection ||
+		finalIndexView?.cohortId !== indexView?.cohortId ||
+		finalIndexView?.view !== indexView?.view ||
+		finalIndexView?.generation !== indexView?.generation ||
+		finalIndexView?.migrationDirection !== indexView?.migrationDirection
 	)
 		return Result({ _nay: { message: "Listing changed. Start again." } });
 	return Result({
@@ -4086,6 +4125,7 @@ export async function files_pending_overlay_list(
 								numItems: stream.numItems,
 								position: stream.position,
 								savedStream: stream.savedStream,
+								indexStream: stream.indexStream,
 								seek: stream.seek,
 								parentAlias: stream.parentAlias,
 							})),

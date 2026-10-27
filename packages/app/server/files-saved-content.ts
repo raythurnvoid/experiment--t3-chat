@@ -2,11 +2,9 @@ import { compareValues, type Value } from "convex/values";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_saved_content_db_get_head } from "./files-saved-content-head.ts";
-import {
-	files_saved_placement_db_get_node_view,
-	type files_saved_placement_FixedView,
-} from "./files-saved-placement.ts";
+import { files_saved_content_db_get_head, files_saved_content_yjs_owner } from "./files-saved-content-head.ts";
+import { files_saved_index_db_get_view } from "./files-saved-index.ts";
+import { type files_saved_placement_FixedView } from "./files-saved-placement.ts";
 
 type Scope = Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">;
 type Source =
@@ -197,20 +195,29 @@ export async function* files_saved_content_db_plain_text_chunks(
 	args: Scope & Source & { fixedView?: files_saved_placement_FixedView; proposalRevision?: number },
 ): AsyncGenerator<Doc<"files_plain_text_chunks">> {
 	if (args.nodeId !== undefined) {
-		const head = await files_saved_content_db_get_head(db, args.nodeId, args.fixedView);
-		if (!head || head.organizationId !== args.organizationId || head.workspaceId !== args.workspaceId) return;
-		// Search copies belong to both a content head and a location view.
-		const view = await files_saved_placement_db_get_node_view(db, args.nodeId, args.fixedView);
-		const tags = view ? [undefined, view] : [undefined];
+		const node = await db.get("files_nodes", args.nodeId);
+		if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) return;
+		// Search may still show the complete index from before the latest source Save.
+		const view = args.fixedView ?? (await files_saved_index_db_get_view(db, args));
+		const tags = view.cohortId && view.view ? [undefined, { cohortId: view.cohortId, view: view.view }] : [undefined];
 		const sources = tags.map((tag) =>
-			db.query("files_plain_text_chunks").withIndex("by_contentHead_view_yjsSeq_chunk", (q) =>
-				q
-					.eq("contentHeadId", head._id)
-					.eq("moveView.cohortId", tag?.cohortId)
-					.eq("moveView.view", tag?.view),
-			),
+			db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", args.nodeId!)
+						.eq("moveView.cohortId", tag?.cohortId)
+						.eq("moveView.view", tag?.view),
+				),
 		);
-		yield* merge(sources, (doc) => [doc.sourceKind === "committed" ? doc.yjsSequence : undefined, doc.chunkIndex], "asc");
+		yield* merge(
+			sources,
+			(doc) => [doc.sourceKind === "committed" ? doc.yjsSequence : undefined, doc.chunkIndex],
+			"asc",
+		);
 		return;
 	}
 	const tags = await files_saved_content_db_get_tags(db, {
@@ -249,10 +256,13 @@ export async function* files_saved_content_db_yjs_updates(
 	if (!organizationId || !workspaceId) return;
 	const head = await files_saved_content_db_get_head(db, args.nodeId, args.fixedView);
 	if (!head || head.organizationId !== organizationId || head.workspaceId !== workspaceId) return;
+	if (!head.yjsLastSequenceId) return;
+	const logOwner = files_saved_content_yjs_owner(head);
+	if (!logOwner) throw should_never_happen("Yjs content owner is missing", { headId: head._id });
 	yield* db
 		.query("files_yjs_updates")
 		.withIndex("by_contentHead_sequence", (q) => {
-			const source = q.eq("contentHeadId", head._id);
+			const source = q.eq("contentHeadId", logOwner);
 			const after = args.afterSequence === undefined ? source : source.gt("sequence", args.afterSequence);
 			return args.throughSequence === undefined ? after : after.lte("sequence", args.throughSequence);
 		})

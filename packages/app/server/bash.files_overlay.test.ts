@@ -570,7 +570,11 @@ describe("bash_run_command", () => {
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
 		expect(pendingRows[0]!.target).toEqual({ kind: "saved", id: nodeBefore._id });
-		expect(pendingRows[0]!.content?.base).toEqual({ kind: "asset", assetId: nodeBefore.assetId });
+		expect(pendingRows[0]!.content?.base).toEqual({
+			kind: "asset",
+			assetId: nodeBefore.assetId,
+			pendingContentVersion: nodeBefore.pendingContentVersion,
+		});
 		expect(pendingRows[0]!.createIntent).toBeUndefined();
 		const nodeAfter = await get_seeded_node(runner, "/docs/off.md");
 		expect(nodeAfter.assetId).toBe(nodeBefore.assetId);
@@ -589,7 +593,7 @@ describe("bash_run_command", () => {
 		expect(rowsAfterAppend[0]!._id).toBe(pendingRows[0]!._id);
 	});
 
-	test("a member save hides the stale proposal from reads and append prepares it automatically", async () => {
+	test("a member save keeps the stale proposal readable and append prepares it automatically", async () => {
 		const path = `${test_db_files_mount}/docs/off-stale.txt`;
 		const runner = await create_bash_runner({
 			extraFiles: [
@@ -605,10 +609,15 @@ describe("bash_run_command", () => {
 		const proposed = await runner.run({ command: `printf 'proposal needle\\nsecond line\\n' > ${path}` });
 		expect(proposed.stderr).toBe("");
 		const [row] = await list_pending_updates(runner);
-		expect(row?.content?.base).toEqual({ kind: "asset", assetId: nodeBefore.assetId });
+		expect(row?.content?.base).toEqual({
+			kind: "asset",
+			assetId: nodeBefore.assetId,
+			pendingContentVersion: nodeBefore.pendingContentVersion,
+		});
 
-		// A member saves the file: the proposal is out of date, so the agent reads the saved text.
+		// A member saves the file. Passive reads keep the agent's exact proposal.
 		const memberSave = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+			requestId: "committed-needle",
 			membershipId: runner.seeded.membershipId,
 			nodeId: nodeBefore._id,
 			text: "committed needle\nsaved line\n",
@@ -616,7 +625,8 @@ describe("bash_run_command", () => {
 		expect(memberSave._nay).toBeUndefined();
 		const read = await runner.run({ command: `cat ${path} && wc -l ${path} && grep -n needle ${path}` });
 		expect(read.stderr).toBe("");
-		expect(read.stdout).toBe(`committed needle\nsaved line\n2 ${path}\n1:committed needle\n`);
+		expect(read.stdout).toBe(`proposal needle\nsecond line\n2 ${path}\n1:proposal needle\n`);
+		expect(await list_pending_updates(runner)).toEqual([row]);
 
 		// Append prepares the old proposal before reading the text it will extend.
 		const rewritten = await runner.run({ command: `printf 'proposal again\\n' >> ${path} && cat ${path}` });
@@ -627,7 +637,11 @@ describe("bash_run_command", () => {
 		expect(rowsAfter[0]!._id).toBe(row!._id);
 		const nodeAfter = await get_seeded_node(runner, "/docs/off-stale.txt");
 		expect(nodeAfter.assetId).not.toBe(nodeBefore.assetId);
-		expect(rowsAfter[0]!.content?.base).toEqual({ kind: "asset", assetId: nodeAfter.assetId });
+		expect(rowsAfter[0]!.content?.base).toEqual({
+			kind: "asset",
+			assetId: nodeAfter.assetId,
+			pendingContentVersion: nodeAfter.pendingContentVersion,
+		});
 	});
 
 	test.each(["append", "edit_file"] as const)(
@@ -722,6 +736,7 @@ describe("bash_run_command", () => {
 				changed = true;
 				if (race === "saved") {
 					const saved = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+						requestId: "member-during-read",
 						membershipId: runner.seeded.membershipId,
 						nodeId: node._id,
 						text: "first: old\nsecond: member\nthird: old\n",
@@ -866,6 +881,7 @@ describe("bash_run_command", () => {
 			unstagedText: "first: staged\nsecond: proposed\nthird: old\n",
 		});
 		const saved = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+			requestId: "member-before-overwrite",
 			membershipId: runner.seeded.membershipId,
 			nodeId: node._id,
 			text: "first: old\nsecond: old\nthird: member\n",
@@ -911,12 +927,18 @@ describe("bash_run_command", () => {
 			const [originalPending] = await list_pending_updates(runner);
 			if (!originalPending) throw new Error("Missing proposal");
 			const asUser = runner_as_user(runner);
-			const saveArgs = { membershipId: runner.seeded.membershipId, nodeId: node._id, text: savedText };
+			const saveArgs = {
+				membershipId: runner.seeded.membershipId,
+				nodeId: node._id,
+				text: savedText,
+				requestId: "saved-during-read",
+			};
 			if (staleAtRead) {
 				expect(
 					(
 						await asUser.action(api.files_nodes_content.replace_file_content, {
 							...saveArgs,
+							requestId: "intermediate-save",
 							text: "first: old\nsecond: intermediate\nthird: old\n",
 						})
 					)._nay,
@@ -1004,7 +1026,7 @@ describe("bash_run_command", () => {
 		[false, "md"],
 		[true, "md"],
 	] as const)(
-		"a mode toggle hides proposals from reads and append prepares them (OFF %s, %s)",
+		"a mode toggle keeps proposals readable and append prepares them (OFF %s, %s)",
 		async (nonCollaborative, extension) => {
 			const filePath = `/docs/toggle-pending.${extension}`;
 			const path = `${test_db_files_mount}${filePath}`;
@@ -1054,26 +1076,27 @@ describe("bash_run_command", () => {
 			const read = await runner.run({ command: `cat ${path} && wc -c ${path} && grep -n needle ${path}` });
 			expect(read.stderr).toBe("");
 			expect(read.stdout).toBe(
-				`${committed}${new TextEncoder().encode(committed).byteLength} ${path}\n${extension === "md" ? 5 : 1}:committed needle\n`,
+				`${proposed}${new TextEncoder().encode(proposed).byteLength} ${path}\n${extension === "md" ? 5 : 1}:proposal needle\n`,
 			);
-			const hiddenSearch = await runner.run({ command: `search --path ${test_db_files_mount}/docs proposal` });
-			expect(hiddenSearch.metadata.exitCode).toBe(0);
-			expect(hiddenSearch.stdout).not.toContain(path);
+			const retainedSearch = await runner.run({ command: `search --path ${test_db_files_mount}/docs proposal` });
+			expect(retainedSearch.metadata.exitCode).toBe(0);
+			expect(retainedSearch.stdout).toContain(path);
 			const committedSearch = await runner.run({ command: `search --path ${test_db_files_mount}/docs committed` });
 			expect(committedSearch.metadata.exitCode).toBe(0);
-			expect(committedSearch.stdout).toContain(path);
+			expect(committedSearch.stdout).not.toContain(path);
 			if (extension === "md") {
-				const hiddenMetadata = await runner.run({
+				const retainedMetadata = await runner.run({
 					command: `meta search --where '{"eq":["frontmatter.status","proposed"]}'`,
 				});
-				expect(hiddenMetadata.metadata.exitCode).toBe(0);
-				expect(hiddenMetadata.stdout).not.toContain(path);
+				expect(retainedMetadata.metadata.exitCode).toBe(0);
+				expect(retainedMetadata.stdout).toContain(path);
 				const committedMetadata = await runner.run({
 					command: `meta search --where '{"eq":["frontmatter.status","saved"]}'`,
 				});
 				expect(committedMetadata.metadata.exitCode).toBe(0);
-				expect(committedMetadata.stdout).toContain(path);
+				expect(committedMetadata.stdout).not.toContain(path);
 			}
+			expect(await list_pending_updates_for_node(runner, node._id)).toEqual([pendingBefore]);
 
 			const appended = await runner.run({ command: `printf 'agent tail\\n' >> ${path} && cat ${path}` });
 			expect(appended.metadata.exitCode).toBe(0);

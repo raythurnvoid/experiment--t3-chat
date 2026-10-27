@@ -26,9 +26,9 @@ import { files_ROOT_ID } from "../shared/files.ts";
  * root or stops it being one. Start a scope op with `files_subtree_ops_db_start_rebuild` after this
  * for the descendants.
  *
- * The folder table indexes split rows by `isRestrictedScopeRoot`, so the node and its committed
- * metadata field docs get the new flag in the same transaction, and all its committed docs get the
- * new area. Archived docs too, because a restore does not rewrite the flag.
+ * Access changes on the node now. Metadata copies its flag and area in small steps, including
+ * archived docs. During Move, both access headers change now and the winning view is refreshed
+ * after cleanup. Catalog suggestions keep their normal delay.
  *
  * A scope change also deletes the node's own public link and every link whose stored scope is this
  * node, now. The scope op reaches the items inside later, but they keep this node as their scope id

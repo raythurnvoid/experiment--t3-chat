@@ -20,7 +20,14 @@ ConvexError<{ message: string; cause?: Cause; data?: Data }> {
  * loses nothing.
  * Global saved-view reasons wait for changed args. Directory pages restart locally.
  */
-export function convex_invalid_cursor_error(message: string, reason?: "saved_move_view_changed" | "saved_search_view_changed" | "saved_directory_view_changed") {
+export function convex_invalid_cursor_error(
+	message: string,
+	reason?:
+		| "saved_move_view_changed"
+		| "saved_search_view_changed"
+		| "saved_directory_view_changed"
+		| "saved_index_view_changed",
+) {
 	return new ConvexError({
 		message: `InvalidCursor: ${message}`,
 		isConvexSystemError: true,

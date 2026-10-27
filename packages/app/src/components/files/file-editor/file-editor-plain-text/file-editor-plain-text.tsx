@@ -339,6 +339,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		initialData.kind === "collaborative" ? initialData.yjsLastSequenceId : null,
 	);
 	const baselineMarkdownRef = useRef<string>(initialData.text);
+	const saveRequestRef = useRef<{ nodeId: string; text: string; requestId: string } | null>(null);
 	// Only this editor's successful upsert can advance the revision used by retries.
 	const reviewedRevisionRef = useRef(initialData.kind === "private" ? initialData.pendingUpdate.revision : 0);
 
@@ -653,12 +654,16 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 			// Collaboration off: no document to diff, so Save replaces the whole text.
 			if (initialData.kind === "non_collaborative") {
+				if (saveRequestRef.current?.nodeId !== nodeId || saveRequestRef.current.text !== localMarkdown)
+					saveRequestRef.current = { nodeId, text: localMarkdown, requestId: crypto.randomUUID() };
 				const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
 					membershipId,
 					nodeId,
 					text: localMarkdown,
+					requestId: saveRequestRef.current.requestId,
 				});
 				if (replaced._nay) {
+					if (replaced._nay.name === "save_expired") saveRequestRef.current = null;
 					console.error("[FileEditorPlainText.handleClickSave] Error while replacing the file content", {
 						nay: replaced._nay,
 					});
@@ -666,6 +671,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					return;
 				}
 
+				saveRequestRef.current = null;
 				updateDirtyBaselineAfterSave(localMarkdown);
 				updateThreadIds(localMarkdown);
 				return;

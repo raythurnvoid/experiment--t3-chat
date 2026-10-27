@@ -1,6 +1,16 @@
 import type { Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
 
+export async function files_content_retention_db_index_uses_head(db: QueryCtx["db"], headId: Id<"files_saved_content_heads">) {
+	const references = await Promise.all([
+		db.query("files_index_states").withIndex("by_requestedHead", (q) => q.eq("requestedHeadId", headId)).first(),
+		db.query("files_index_states").withIndex("by_publishedHead", (q) => q.eq("publishedHeadId", headId)).first(),
+		db.query("files_index_runs").withIndex("by_contentHead", (q) => q.eq("contentHeadId", headId)).first(),
+		db.query("files_index_runs").withIndex("by_previousHead", (q) => q.eq("previousHeadId", headId)).first(),
+	]);
+	return references.some((reference) => reference !== null);
+}
+
 /**
  * Preparing and current content both keep their assets until their owner retires.
  */

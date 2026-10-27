@@ -10,7 +10,6 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { archive_nodes, unarchive_nodes } from "./files_nodes.ts";
 import { files_nodes_db_rebuild_node } from "./files_subtree_ops_rebuild.ts";
-import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_metadata_committed_field_sort_fields, files_metadata_db_patch_file_scope } from "./files_metadata_db.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import * as resolver from "../server/files-visible-resolve.ts";
@@ -18,6 +17,7 @@ import * as overlay from "../server/files-pending-overlay.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_saved_scope_jobs,
 	test_mocks_fill_db_with,
 	test_move_nodes,
 	test_rename_node,
@@ -616,17 +616,8 @@ describe("saved scope job", () => {
 		for (const letter of ["e", "f"]) {
 			const path = `${folder}/${letter.repeat(files_NAME_MAX_LENGTH - 3)}.md`;
 			expect(path).toHaveLength(files_PATH_MAX_LENGTH);
-			const nodeId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path, textContent: "x" });
+			const nodeId = await test_create_saved_text_file(t, { membershipId: db.membershipId, path, textContent: body });
 			await t.finishAllScheduledFunctions(vi.runAllTimers);
-			// A real Save of this size is slow in tests.
-			await test_run_with_flush(t, (ctx) =>
-				db_replace_file_chunks(ctx, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					nodeId,
-					textContent: body,
-				}),
-			);
 			// The most metadata one file can have, like the metadata catalog test below.
 			await test_run_with_flush(t, async (ctx) => {
 				const node = (await ctx.db.get("files_nodes", nodeId))!;
@@ -823,7 +814,17 @@ describe("metadata catalog", () => {
 		expect(await count("files_metadata_catalog")).toBe(2048);
 		// A restrict of the node itself: every doc moves to the node's area, and its keys to
 		// `parent_restricted`.
+		test_spy_handler(run_overlay_job, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			record("catalog/restrict pages", transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
 		await measure("catalog/restrict", async (ctx) => {
+			await ctx.db.patch("files_nodes", node._id, {
+				isRestrictedScopeRoot: true,
+				restrictedScopeNodeId: node._id,
+			});
 			await files_metadata_db_patch_file_scope(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -832,7 +833,12 @@ describe("metadata catalog", () => {
 				restrictedScopeNodeId: node._id,
 			});
 		});
-		expect(await count("files_metadata_catalog_deltas")).toBe(2304);
+		await test_finish_saved_scope_jobs(t);
+		// Separate pages may emit more than one delta for the same catalog row.
+		const deltas = await t.run((ctx) => ctx.db.query("files_metadata_catalog_deltas").collect());
+		expect(
+			new Set(deltas.map((row) => JSON.stringify([row.family, row.parentId, row.fieldPath, row.stringValue]))).size,
+		).toBe(2304);
 		await compact();
 		expect(await count("files_metadata_catalog")).toBe(2048);
 		console.info("metadata catalog peaks at maximum delta sizes", JSON.stringify(Object.fromEntries(peaks)));
@@ -951,6 +957,7 @@ describe("content save", () => {
 		if (off._nay) throw new Error(off._nay.message);
 		vi.advanceTimersByTime(1000);
 		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			requestId: "new-saved-text",
 			membershipId: db.membershipId,
 			nodeId,
 			text: "New\n",
