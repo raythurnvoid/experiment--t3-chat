@@ -71,19 +71,19 @@ const TREE_PAGE_MAX_RANGES = 3000;
 // The page cap and the split guard of "Shared with you". Each share row is its own scope, so each one
 // reads its node and checks its access. The worst row is shared with the member's second role and
 // also has an old plugin grant to the member, so the check also reads that grant and the live
-// membership lifetime, and its write check reads the node again for added people: 17 index ranges
-// (measured in the cost test under `list_tree_children_shared`), floor(3,000 / 17) = 176.
-const TREE_SHARE_PAGE_MAX_ITEMS = 176;
+// membership lifetime. Loading a published Move file and its content head brings this to 18 reads
+// (measured in `files_tree.budgets.test.ts`), floor(3,000 / 18) = 166.
+const TREE_SHARE_PAGE_MAX_ITEMS = 166;
 
 // The page cap and the split guard of the custom-field filter share pages: the worst share row as
-// above, and one read of its node's field doc: 18 index ranges (the same cost test),
-// floor(3,000 / 18) = 166.
-const TREE_SHARE_FILTER_PAGE_MAX_ITEMS = 166;
+// above, another saved node load and its field docs: up to 27 reads for a published Move file,
+// floor(3,000 / 27) = 111. Normal index docs can still point to reserved nodes during staging.
+const TREE_SHARE_FILTER_PAGE_MAX_ITEMS = 111;
 
 // The split guard of an owner's restricted rows in the tree and the folder table. An open row needs
 // no read: the open children of a folder share one access scope, and the rows check each scope once.
-// An owner restricted row is its own scope, so it checks access: 2 reads (the user and the
-// organization; the owner reads no grant), floor(3,000 / 2) = 1,500, and the guard is 1,000.
+// An owner restricted row is its own scope, so it checks access. The owner check is cached and
+// each row checks its restricted scope is live: 1 read. Keep the conservative guard of 1,000.
 const TREE_RESTRICTED_SPLIT_GUARD = 1000;
 
 // The page cap and the split guard of the restricted rows of every other reader. Each row is its own
@@ -96,16 +96,20 @@ const TREE_RESTRICTED_MEMBER_SPLIT_GUARD = 187;
 // The split guard of the open rows in the tree and the folder table. Most open rows share the
 // folder's access and read nothing. A row the scope job has not reached gets the full check: the
 // worst one is its own "Add people" root that still points at an old root, read through added people
-// above and a second role. It reads its node and its own read and write grants: 7 index ranges
-// (measured in `files_nodes.tree_locked_rows.test.ts`). A metadata row also reads its node: 8,
-// floor(3,000 / 8) = 375.
+// above and a second role. A folder costs 7 reads; a file also reads its content head: 8,
+// floor(3,000 / 8) = 375 (measured in `files_tree.budgets.test.ts`).
 const TREE_OPEN_SPLIT_GUARD = 375;
 
-// The split guard of the folder table's metadata sort for an owner's restricted rows. The row reads
-// its node, and it is its own scope, so it also checks access: 2 reads (the user and the
-// organization; the owner reads no grant). That is 3 reads, floor(3,000 / 3) = 1,000, and the guard
-// is 700.
-const TREE_METADATA_RESTRICTED_SPLIT_GUARD = 700;
+// Move rows load their saved placement and content head before access checks. A published file
+// costs up to 18 reads for an open or member restricted row, and 7 for an owner's restricted row.
+const TREE_COHORT_SPLIT_GUARD = 166;
+const TREE_COHORT_RESTRICTED_OWNER_SPLIT_GUARD = 428;
+
+// Metadata rows load the node separately from the access checker: an ordinary open file costs 10
+// reads, and a published Move file costs 18. Use the Move cost for both index streams: normal field
+// docs can point to reserved nodes before Move copies them. Owner restricted rows cost at most 7.
+const TREE_METADATA_OPEN_SPLIT_GUARD = 166;
+const TREE_METADATA_RESTRICTED_SPLIT_GUARD = 428;
 
 const TREE_ANCESTORS_MAX_DEPTH = 64;
 
@@ -118,7 +122,8 @@ async function db_shrink_split_guard(ctx: QueryCtx, guard: number) {
 	// A row that reads nothing needs no guard.
 	if (guard === Infinity) return guard;
 	const { used } = (await ctx.meta.getTransactionMetrics()).databaseQueries;
-	return Math.max(1, Math.floor((guard * Math.max(0, TREE_PAGE_MAX_RANGES - used)) / TREE_PAGE_MAX_RANGES));
+	// Leave one range for the page query itself.
+	return Math.max(1, Math.floor((guard * Math.max(0, TREE_PAGE_MAX_RANGES - used - 1)) / TREE_PAGE_MAX_RANGES));
 }
 
 /**
@@ -730,16 +735,19 @@ export const list_tree_children = query({
 		const saved = await files_saved_stream_db_create_directory(ctx.db, membership, args);
 		if (saved.empty) return { ...refused, directoryView: saved.directoryView };
 
-		// Selected rows also read their saved node, cohort and place before checking access.
-		const guard = Math.min(
-			args.stream === "cohort" ? 500 : Infinity,
-			!args.restricted
-				? await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: TREE_OPEN_SPLIT_GUARD })
-				: await db_shrink_split_guard(
-						ctx,
-						reader.isOwner ? TREE_RESTRICTED_SPLIT_GUARD : TREE_RESTRICTED_MEMBER_SPLIT_GUARD,
-					),
-		);
+		const baseGuard =
+			args.stream === "cohort"
+				? args.restricted && reader.isOwner
+					? TREE_COHORT_RESTRICTED_OWNER_SPLIT_GUARD
+					: TREE_COHORT_SPLIT_GUARD
+				: !args.restricted
+					? TREE_OPEN_SPLIT_GUARD
+					: reader.isOwner
+						? TREE_RESTRICTED_SPLIT_GUARD
+						: TREE_RESTRICTED_MEMBER_SPLIT_GUARD;
+		const guard = !args.restricted
+			? await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: baseGuard })
+			: await db_shrink_split_guard(ctx, baseGuard);
 		const paginationOpts = {
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS, guard),
@@ -946,8 +954,8 @@ export const list_tree_children_sorted = query({
 		// A metadata or frontmatter key: its committed field docs carry the node's sort fields.
 		if (metadataField !== null && ownerOrOpen) {
 			const guard = args.restricted
-				? await db_shrink_split_guard(ctx, saved.tag ? 500 : TREE_METADATA_RESTRICTED_SPLIT_GUARD)
-				: await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: TREE_OPEN_SPLIT_GUARD });
+				? await db_shrink_split_guard(ctx, TREE_METADATA_RESTRICTED_SPLIT_GUARD)
+				: await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: TREE_METADATA_OPEN_SPLIT_GUARD });
 			const result = await ctx.db
 				.query("files_metadata_docs")
 				.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_sort", (q) => {
@@ -1051,16 +1059,19 @@ export const list_tree_children_sorted = query({
 			return { ...page, page: page.page.filter((row) => !row.locked) };
 		}
 
-		// Selected rows also read their saved node, cohort and place before checking access.
-		const guard = Math.min(
-			args.stream === "cohort" ? 500 : Infinity,
-			!args.restricted
-				? await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: TREE_OPEN_SPLIT_GUARD })
-				: await db_shrink_split_guard(
-						ctx,
-						reader.isOwner ? TREE_RESTRICTED_SPLIT_GUARD : TREE_RESTRICTED_MEMBER_SPLIT_GUARD,
-					),
-		);
+		const baseGuard =
+			args.stream === "cohort"
+				? args.restricted && reader.isOwner
+					? TREE_COHORT_RESTRICTED_OWNER_SPLIT_GUARD
+					: TREE_COHORT_SPLIT_GUARD
+				: !args.restricted
+					? TREE_OPEN_SPLIT_GUARD
+					: reader.isOwner
+						? TREE_RESTRICTED_SPLIT_GUARD
+						: TREE_RESTRICTED_MEMBER_SPLIT_GUARD;
+		const guard = !args.restricted
+			? await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: baseGuard })
+			: await db_shrink_split_guard(ctx, baseGuard);
 		const paginationOpts = {
 			...args.paginationOpts,
 			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS, guard),
@@ -1523,6 +1534,7 @@ export const list_tree_shared_roots = query({
 			return refused;
 		}
 		const { tag } = await files_saved_stream_db_create(ctx.db, reader.membership, args.savedStream);
+		const guard = await db_shrink_split_guard(ctx, TREE_SHARE_PAGE_MAX_ITEMS);
 
 		const result = await ctx.db
 			.query("files_share_rows")
@@ -1537,11 +1549,11 @@ export const list_tree_shared_roots = query({
 			})
 			.paginate({
 				...args.paginationOpts,
-				numItems: Math.min(args.paginationOpts.numItems, TREE_SHARE_PAGE_MAX_ITEMS),
+				numItems: Math.min(args.paginationOpts.numItems, guard),
 			});
 
 		// Each share row reads its node and checks its access (`TREE_SHARE_PAGE_MAX_ITEMS`).
-		if (files_tree_db_page_needs_split(result, TREE_SHARE_PAGE_MAX_ITEMS)) {
+		if (files_tree_db_page_needs_split(result, guard)) {
 			return files_tree_db_page_split_required(result);
 		}
 

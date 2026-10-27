@@ -493,23 +493,31 @@ and `find` also keep raw name order.
     order), file.extension `..._kind_ext_sortName_name`, file.size `..._kind_size_sortName_name`. A
     metadata key reads committed field docs on `files_metadata_docs`
     `by_org_ws_source_archive_docKind_field_parent_restricted_sort` (4 MiB `maximumBytesRead`),
-    then one `get` of the node per row.
+    then a saved node load per row, including its content head for a file.
   - Page guards. A reactive rerun has no row cap, so a page can grow far past `numItems`. A stream
     with reads per row returns no rows and `pageStatus: "SplitRequired"` (with Convex's
     `splitCursor`) when its page passes its guard, or when Convex already marked the page for a
     split. It does this only when Convex gave a `splitCursor`; without one it returns the page as
     read. `usePaginatedQuery` then splits the page. Guard = floor(3,000 / index ranges read by the worst
-    row), or lower. An owner restricted row is its own scope and checks access with 2 reads (the
-    user and the organization; the owner reads no grant): 1,500, guard 1,000. A member's restricted
-    row reads up to 16 ranges (shared with their second role, with an old plugin grant): guard 187
+    row), or lower. An owner restricted row uses the cached owner check and checks its scope is live:
+    1 read, with the conservative guard 1,000. A member's restricted row reads up to 16 ranges
+    (shared with their second role, with an old plugin grant): guard 187
     (`TREE_RESTRICTED_MEMBER_SPLIT_GUARD`). An open row reads nothing when it has the folder's
     pair. A row the scope job has not reached gets the full check: up to 7 ranges (its own "Add
-    people" root, read through a second role), 8 with a metadata row's node read: guard 375
-    (`TREE_OPEN_SPLIT_GUARD`), for every open stream. An owner restricted metadata row reads 3:
-    1,000, guard 700. A test measures each with `ctx.meta.getTransactionMetrics()`.
+    people" root, read through a second role), or 8 for a file including its content head: guard 375
+    (`TREE_OPEN_SPLIT_GUARD`). Move rows load their saved placement and content head too: at most
+    18 reads, guard 166; an owner's restricted Move row costs 7, guard 428. These guards cover the
+    tree and built-in table sorts.
+  - Metadata sorts load the node separately from the access checker. An ordinary open file costs
+    10 reads, and a published Move file costs 18: guard 166 (`TREE_METADATA_OPEN_SPLIT_GUARD`).
+    Owner restricted metadata rows cost at most 7: guard 428. Both metadata streams use these Move
+    costs, since normal field docs can still point to reserved nodes before Move copies them.
+    `files_tree.budgets.test.ts` measures real queries with 1 and 6 files, then checks the full-page
+    cost at the actual guard. Keep these tests small; they need no large folder fixture.
   - A guard shrinks by the ranges the call already used before the page (`db_shrink_split_guard`),
-    for example the folder check under a deep scope chain. An open stream first checks the folder's
-    write access (`db_open_split_guard`): its rows reuse that answer, and the shrink counts it. Under
+    plus one range for the page query itself. Choose the stream's base guard before shrinking it.
+    An open stream first checks the folder's write access (`db_open_split_guard`): its rows reuse
+    that answer, and the shrink counts it. Under
     a 500-deep chain, 200 such lagging rows come in pages of 59, each about 2,821 ranges.
   - One file checker serves the whole query (`reader.checker` from `files_nodes_db_get_tree_reader`,
     made by `access_control_create_file_checker`): the folder check, the locked-row checks and the
@@ -539,9 +547,10 @@ and `find` also keep raw name order.
     re-invite. A row that fails or does not match is dropped, so a page can be short.
   - The row's copied node fields must still match the node. A copy out of step is a bug: the row
     is dropped and logged.
-  - Page guard 166 (`TREE_SHARE_FILTER_PAGE_MAX_ITEMS`, also the page size cap): the worst row reads
-    18 index ranges. `list_tree_shared_roots` uses guard 176 (`TREE_SHARE_PAGE_MAX_ITEMS`, 17
-    ranges). Its rows are always open (`locked: false`).
+  - Page guard 111 (`TREE_SHARE_FILTER_PAGE_MAX_ITEMS`, also the page size cap): a published Move
+    file can read 27 index ranges. `list_tree_shared_roots` uses guard 166
+    (`TREE_SHARE_PAGE_MAX_ITEMS`, 18 ranges). Both shrink by fixed reads before the page, and cover
+    normal share docs that still point to reserved nodes. Root rows are always open (`locked: false`).
   - Refusals that need no folder read come before the folder check, so they cost nothing.
 - `useFilesSortedChildren` in `packages/app/src/hooks/files-search-hooks.ts` merges it all:
   - Per kind and segment there are six streams: the open stream, the restricted twin, and the

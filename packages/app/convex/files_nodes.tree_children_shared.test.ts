@@ -515,8 +515,8 @@ describe("list_tree_children_shared", () => {
 			// one-row page is what the other rows read.
 			// Shared with you has no workspace stream: it lists items shared with this person.
 			for (const [query, guard] of [
-				["filter", 166],
-				...(principalIndex === 3 ? [] : [["roots", 176] as const]),
+				["filter", 111],
+				...(principalIndex === 3 ? [] : [["roots", 166] as const]),
 			] as const) {
 				const one = await read_cost(1, query);
 				const six = await read_cost(6, query);

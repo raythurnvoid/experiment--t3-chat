@@ -555,8 +555,8 @@ describe("locked rows in folder lists", () => {
 		expect(six.result.page.map((row) => row.locked)).toEqual(Array(6).fill(false));
 		const perRow = (six.ranges - one.ranges) / 5;
 		expect(perRow).toBeGreaterThan(0);
-		// A metadata row also reads its node.
-		expect(375).toBeLessThanOrEqual(Math.floor(3000 / (perRow + 1)));
+		// File and metadata costs are covered in files_tree.budgets.test.ts.
+		expect(375).toBeLessThanOrEqual(Math.floor(3000 / perRow));
 	});
 
 	test("a page of rows the scope job has not reached splits under a 500-deep chain", { timeout: 120_000 }, async () => {
