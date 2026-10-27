@@ -827,7 +827,7 @@ test("stored-byte Restore keeps its bytes when unchanged Review shared old stats
 	expect(kept.pages).toEqual(remainder.pages);
 });
 
-test.each(["before preparation", "after preparation"] as const)(
+test.each(["before preparation", "after preparation", "after final validation"] as const)(
 	"Restore %s blocks only its stale Review group",
 	async (when) => {
 		const f = await fixture();
@@ -837,9 +837,15 @@ test.each(["before preparation", "after preparation"] as const)(
 			({ cohort, content, held }) =>
 				!!held &&
 				cohort.publishedAt === null &&
-				(when === "before preparation" ? !content?.prepared : content?.sealed === true),
+				(when === "before preparation"
+					? !content?.prepared
+					: when === "after preparation"
+						? content?.sealed === true
+						: cohort.phase === "ready"),
 		);
 		expect(reached.cohort.publishedAt).toBeNull();
+		if (when === "after final validation")
+			expect(reached.cohort.validatedItemCount, "Review has passed every version check").toBe(reached.cohort.itemCount);
 		const before = await f.t.run((ctx) => read_draft(ctx, review.proposal._id));
 		if (when === "after preparation") {
 			const { doc } = await f.live();
@@ -861,13 +867,19 @@ test.each(["before preparation", "after preparation"] as const)(
 			await f.t.run((ctx) => read_draft(ctx, review.proposal._id)),
 			"Restore keeps the exact held draft family",
 		).toEqual(before);
-		expect((await review.state()).cohort, "stale prepared Review cannot publish after Restore").toMatchObject({
-			phase: "aborting",
-			publishedAt: null,
-			errorCode: "needs_review",
-		});
+		// The ready case checks final bytes even when the stop is broken.
+		if (when !== "after final validation")
+			expect((await review.state()).cohort, "stale prepared Review cannot publish after Restore").toMatchObject({
+				phase: "aborting",
+				publishedAt: null,
+				errorCode: "needs_review",
+			});
 		await review.finish();
-		await f.expect_content("Original text\n");
+		await f.expect_content(
+			"Original text\n",
+			"/overlap.txt",
+			"finished Review never replaces restored text with its stale candidate",
+		);
 		const activity = await f.t.run((ctx) => ctx.db.get("activities", review.activityId));
 		expect(activity, "an independent Review group still completes").toMatchObject({
 			status: "partial",
