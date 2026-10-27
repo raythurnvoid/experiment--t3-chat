@@ -175,6 +175,16 @@ Use an existing collaboration-off QA file. Save its exact text and version count
 4. For the fix-off proof, intercept only the plain editor module in that tab. Disable the `saveRequestRef` reuse condition after requiring one exact match in the served code. Reload and confirm that the changed module ran. The same retry check must fail at the request-ID assertion, after both actions succeed. Do not edit or deploy the shared backend for this check.
 5. Remove that route, reload, and repeat the proof with normal code. Restore the client method and disconnect test observers. Restore the file through Save, check its exact stored text after reload, and check that its temporary metadata and text no longer match search. Keep existing history.
 
+### Large Non-Collaborative Save QA
+
+1. Reuse a collaboration-off QA file and keep its exact original text. Use the dense frontmatter fixture from `convex/files_nodes_content.save.test.ts`; check its UTF-8 byte count against the current editable-text limit.
+2. Prepare the large text with Monaco's `executeEdits`, then click the real Save button. This tests large Save, not native large paste. After Save, compare the full stored text and editor text with the input. Record byte counts and hashes instead of printing the document.
+3. Reload and wait for the Monaco handle before reading the model. An empty handle just after navigation can mean the editor is still loading. Check alerts too. Make a short edit through the keyboard, Save again, and repeat the exact readback after reload.
+4. Check content and a late frontmatter field through Search. Quote values with spaces, press Enter to commit the filter, and wait until `Searching…` ends. Use the button named `Clear search` between filters. Assert the target path and snippet; content search can also return partial word matches.
+5. Restore the original text through Save. Reload, check its exact bytes, and confirm the test text and frontmatter no longer match this file. An empty search says `No matching files`. Keep existing versions and close only the owned tab.
+
+For Save timing, measure the real action call with `performance.now()` inside the page. Record tab visibility and follow the profiling skill. A few dev runs are observations, not a speed benchmark.
+
 ### Sync And Undo QA
 
 Use this after changing how the plain editor writes content into its Monaco model. It proves that a sync keeps the user's undo history instead of resetting it. This recipe uses the editor handle to make each undo step explicit.
