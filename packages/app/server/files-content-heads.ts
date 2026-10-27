@@ -121,6 +121,22 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 		contents.clear();
 	}
 
+	// Rollout only: old writers keep their current owner while cleanup learns that identity.
+	async function capture_cleanup_owner(table: TableNames, value: Fields) {
+		if (table === "files_yjs_cleanup_tasks" && value.logOwnerId === undefined && value.fileNodeId) {
+			const head = await files_saved_content_db_get_head(raw, value.fileNodeId as Id<"files_nodes">);
+			return { ...value, logOwnerId: head?._id ?? null, ...(head ? {} : { historyPending: false }) };
+		}
+		if (table === "files_move_waiters" && value.worker) {
+			const worker = value.worker as Doc<"files_move_waiters">["worker"];
+			if ((worker.kind === "content_cleanup" || worker.kind === "yjs_covered") && worker.logOwnerId === undefined) {
+				const head = await files_saved_content_db_get_head(raw, worker.nodeId);
+				if (head) return { ...value, worker: { ...worker, logOwnerId: head._id } };
+			}
+		}
+		return value;
+	}
+
 	async function values(node: Doc<"files_nodes"> | Doc<"files_saved_places">, sequence?: Head["sequence"]) {
 		const [snapshot, physicalSequence] = await Promise.all([
 			node.yjsSnapshotId ? raw.get("files_yjs_snapshots", node.yjsSnapshotId) : null,
@@ -192,10 +208,13 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 						organizationId: node.organizationId,
 						workspaceId: node.workspaceId,
 						fileNodeId: node._id,
+						yjsContentHeadId: null,
 						...(await values(place ?? node, content.afterSequence ? (sequence as NonNullable<Head["sequence"]>) : null)),
 						ready: content.sealed,
 						retired: false,
 					});
+					const next = (await raw.get("files_saved_content_heads", after))!;
+					if (next.yjsLastSequenceId) await raw.patch("files_saved_content_heads", after, { yjsContentHeadId: after });
 				}
 				if (content.beforeHeadId !== before || content.afterHeadId !== after)
 					await raw.patch("files_move_cohort_content", contentId, { beforeHeadId: before, afterHeadId: after });
@@ -351,6 +370,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 			if (property === WRITES) return writes;
 			if (property === "insert")
 				return async (table: TableNames, value: Fields) => {
+					value = await capture_cleanup_owner(table, value);
 					const changesOwner = OWNER_TABLES.has(table);
 					if (changesOwner) forget_reads();
 					let id: Id<TableNames>;
@@ -365,10 +385,12 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 							organizationId: node.organizationId,
 							workspaceId: node.workspaceId,
 							fileNodeId: node._id,
+							yjsContentHeadId: null,
 							...(await values(node)),
 							ready: true,
 							retired: false,
 						});
+						if (node.yjsLastSequenceId) await raw.patch("files_saved_content_heads", headId, { yjsContentHeadId: headId });
 						await raw.patch("files_nodes", node._id, { contentHeadId: headId });
 						nodes.set(node._id, Promise.resolve(headId));
 					}
@@ -388,6 +410,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 					}
 					const table = args[0] as TableNames;
 					const id = args[1] as Id<TableNames>;
+					if (property !== "delete") args[2] = await capture_cleanup_owner(table, args[2] as Fields);
 					const patch = property === "delete" ? null : (args[2] as Fields);
 					const changesOwner = OWNER_TABLES.has(table);
 					const write = async () => {
@@ -449,6 +472,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	});
 
 	async function sync_head(old: Head, next: Partial<WithoutSystemFields<Head>>) {
+		const sequenceId = next.yjsLastSequenceId === undefined ? old.yjsLastSequenceId : next.yjsLastSequenceId;
+		next.yjsContentHeadId = sequenceId ? old._id : null;
 		if (Object.entries(next).some(([key, value]) => JSON.stringify(old[key as keyof Head]) !== JSON.stringify(value)))
 			await raw.patch("files_saved_content_heads", old._id, next);
 	}

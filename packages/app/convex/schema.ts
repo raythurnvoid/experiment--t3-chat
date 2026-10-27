@@ -2423,6 +2423,7 @@ const app_convex_schema = defineSchema({
 			v.object({ kind: v.literal("content"), id: v.id("files_content_materialization_jobs"), userId: v.id("users") }),
 			v.object({
 				kind: v.literal("content_cleanup"),
+				logOwnerId: v.optional(v.id("files_saved_content_heads")),
 				id: v.id("files_yjs_docs_last_sequences"),
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
@@ -2432,6 +2433,7 @@ const app_convex_schema = defineSchema({
 			v.object({ kind: v.literal("yjs_task"), id: v.id("files_yjs_cleanup_tasks") }),
 			v.object({
 				kind: v.literal("yjs_covered"),
+				logOwnerId: v.optional(v.id("files_saved_content_heads")),
 				id: v.id("files_r2_assets"),
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
@@ -4828,6 +4830,8 @@ const app_convex_schema = defineSchema({
 		organizationId: files_committed_index_fields.organizationId,
 		workspaceId: files_committed_index_fields.workspaceId,
 		fileNodeId: v.id("files_nodes"),
+		// Filled before source versions and live logs can have separate owners.
+		yjsContentHeadId: v.optional(v.union(v.id("files_saved_content_heads"), v.null())),
 		contentType: files_saved_placement_fields.contentType,
 		assetId: files_saved_placement_fields.assetId,
 		pendingContentVersion: files_saved_placement_fields.pendingContentVersion,
@@ -5776,6 +5780,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
+		logOwnerId: v.optional(v.union(v.id("files_saved_content_heads"), v.null())),
 		throughSequence: v.number(),
 		supersededYjsAssetId: v.id("files_r2_assets"),
 		putMayArriveUntil: v.union(v.number(), v.null()),
