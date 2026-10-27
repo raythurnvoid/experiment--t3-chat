@@ -70,6 +70,10 @@ field jobs keep their unfinished candidate cursor, discard it if its source chan
 Access checks use the current saved node. Catalog suggestions keep the delayed behavior below.
 See [Save](../files-editable-text/SKILL.md#save-and-background-indexing).
 
+Canceling an upload wakes its index cleanup, even if indexing already finished. A deleted file
+keeps neither index view. Cleanup releases its queue slot and does not start scope or place jobs
+for the missing file, so the next file can publish.
+
 Search copies have two size limits, in `shared/files-metadata.ts`. The Markdown always keeps
 the full text.
 
@@ -394,7 +398,7 @@ catalog is not proof of current access. They load the saved node with
 `files_metadata_db_get_table_node`: it checks the organization, workspace and active state, then
 calls `access_control_db_authorize_membership` with `content.read` and the node. A private target,
 a missing node, or a refusal returns null. Each field value comes from
-`files_metadata_db_get_table_field`, which throws when the committed field doc does not belong to
+`files_saved_index_db_get_table_field`, which throws when the committed field doc does not belong to
 the node.
 
 Rows use committed metadata and frontmatter, also while their owner edits pending text.

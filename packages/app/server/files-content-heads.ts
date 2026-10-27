@@ -2,6 +2,7 @@
 // Keep this module a leaf: every mutation loads it through functions.ts.
 
 import type { WithoutSystemFields } from "convex/server";
+import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx } from "../convex/_generated/server.js";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
@@ -473,10 +474,10 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 					if (old && table === "files_move_cohort_content" && property === "delete") {
 						const content = old as Doc<"files_move_cohort_content">;
 						const node = await raw.get("files_nodes", content.nodeId);
-						// History cleanup only removes its old owners. It never selects current content.
+						// Old exact text can retire, but a later source may still use its live Yjs log.
 						for (const headId of new Set([content.beforeHeadId, content.afterHeadId]))
-							if (headId && headId !== node?.contentHeadId && !await files_content_retention_db_index_uses_head(raw, headId))
-								await raw.delete("files_saved_content_heads", headId);
+							if (headId && headId !== node?.contentHeadId)
+								await ctx.scheduler.runAfter(0, internal.files_content_saves.retire, { headId });
 					}
 					await write();
 					// Location and text edits keep the owner assigned above. Do not read each chunk twice.
@@ -490,6 +491,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 							const node = old as Doc<"files_nodes"> | null;
 							if (node?.contentHeadId && await raw.get("files_saved_content_heads", node.contentHeadId))
 								await raw.delete("files_saved_content_heads", node.contentHeadId);
+							if (node && await raw.query("files_index_states").withIndex("by_fileNode", (q) => q.eq("fileNodeId", node._id)).first())
+								await ctx.scheduler.runAfter(0, internal.files_index.start, { nodeId: node._id });
 						} else if (old && "fileNodeId" in old) dirty.add(old.fileNodeId as Id<"files_nodes">);
 						return;
 					}

@@ -4,6 +4,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { runToCompletion } from "@convex-dev/migrations";
 import migrations_test from "@convex-dev/migrations/test";
+import { getFunctionName } from "convex/server";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import {
@@ -17,6 +18,8 @@ import {
 } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
 import { files_content_sources_action_prepare } from "./files_content_sources.ts";
+import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
+import { upsert_file_pending_update_public_for_test } from "./files_pending_updates.setup.test.ts";
 import {
 	files_db_yjs_push_update,
 	files_line_range_from_text,
@@ -31,9 +34,11 @@ import {
 	test_drain_billing_usage_event_outbox,
 	test_create_saved_text_file,
 	test_finish_file_index,
+	test_finish_pending_update_run,
 	test_get_file_yjs_pointers,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -3054,6 +3059,114 @@ describe("files_nodes.get_file_next_yjs_update", () => {
 });
 
 describe("materialization guards", () => {
+	test("Review history cleanup keeps the live log owner after materialization", async () => {
+		vi.useFakeTimers();
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const objects = test_setup_r2_capture();
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId, path: "/review-log.txt", textContent: "Original\n",
+		});
+		expect(await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: db.membershipId, nodeId, stagedMarkdown: "Reviewed\n", unstagedMarkdown: "Reviewed\n",
+		})).toHaveProperty("_yay");
+		const proposal = (await t.run((ctx) => ctx.db.query("files_pending_updates")
+			.withIndex("by_user_target", (q) => q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", nodeId))
+			.unique()))!;
+		const started = await asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: db.membershipId, requestId: crypto.randomUUID(), kind: "accept", expectedItemCount: 1,
+			items: [{ pendingUpdateId: proposal._id, reviewedRevision: proposal.revision, selectedContentStateId: proposal.content!.stagedStateId }],
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const runId = started._yay.runId;
+		expect(await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: db.membershipId, runId })).toHaveProperty("_yay");
+		await test_finish_pending_update_run(asUser, runId);
+		const reviewed = await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", nodeId))!;
+			const head = (await ctx.db.get("files_saved_content_heads", node.contentHeadId!))!;
+			const snapshot = (await ctx.db.get("files_yjs_snapshots", head.yjsSnapshotId!))!;
+			const cohort = (await ctx.db.query("files_move_cohorts")
+				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "review").eq("origin.runId", runId)).first())!;
+			return { head, cohort, asset: (await ctx.db.get("files_r2_assets", snapshot.assetId))! };
+		});
+		expect(reviewed.cohort.phase).toBe("complete");
+		expect(reviewed.head.yjsContentHeadId).toBe(reviewed.head._id);
+		const editor = new YjsDoc();
+		const stored = objects.get(reviewed.asset.r2Key!);
+		if (!stored) throw new Error("Expected the reviewed editor bytes");
+		applyUpdate(editor, new Uint8Array(await new Response(stored).arrayBuffer()));
+		const text = editor.getText(files_YJS_DOC_KEYS.plainText);
+		const push = async (addition: string) => {
+			const before = encodeStateVector(editor);
+			text.insert(text.length, addition);
+			const result = await asUser.mutation(api.files_nodes.yjs_push_update, {
+				membershipId: db.membershipId, nodeId, expectedYjsLastSequenceId: reviewed.head.yjsLastSequenceId!,
+				update: files_u8_to_array_buffer(encodeStateAsUpdate(editor, before)), sessionId: "review-log-editor",
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			return result._yay.newSequence;
+		};
+		const cleaned = new Set<string>();
+		const cleanup_sources = async () => {
+			for (let step = 0; step < 100; step++) {
+				const jobs = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+				const job = jobs.find((job) => !cleaned.has(job._id) && job.state.kind === "pending" && job.scheduledTime <= Date.now() &&
+					[getFunctionName(internal.files_content_saves.retire), getFunctionName(internal.files_content_saves.discard)].includes(job.name));
+				if (!job) return;
+				cleaned.add(job._id);
+				await t.mutation(job.name === getFunctionName(internal.files_content_saves.retire)
+					? internal.files_content_saves.retire : internal.files_content_saves.discard,
+					job.args[0] as { headId: Id<"files_saved_content_heads"> });
+			}
+			throw new Error("Source cleanup did not finish");
+		};
+		try {
+			const sequence = await push("Before cleanup\n");
+			expect(await t.action(internal.files_nodes_content.materialize_file_content, {
+				organizationId: db.organizationId, workspaceId: db.workspaceId, nodeId, userId: db.userId, targetSequence: sequence,
+			})).toHaveProperty("_yay");
+			await test_finish_file_index(t, nodeId);
+			await cleanup_sources();
+			const current = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+			expect(current.contentHeadId).not.toBe(reviewed.head._id);
+			expect(await t.run((ctx) => ctx.db.get("files_saved_content_heads", current.contentHeadId!)))
+				.toMatchObject({ yjsContentHeadId: reviewed.head._id });
+			expect(await t.run((ctx) => ctx.db.get("files_saved_content_heads", reviewed.head._id)))
+				.toMatchObject({ retired: true, statsId: null });
+			for (let step = 0; step < 100; step++) {
+				const content = await t.run((ctx) => ctx.db.query("files_move_cohort_content")
+					.withIndex("by_cohort_node", (q) => q.eq("cohortId", reviewed.cohort._id).eq("nodeId", nodeId)).first());
+				if (content?.storageResourceCount === 0) break;
+				await t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
+				if (step === 99) throw new Error("Review resource cleanup did not finish");
+			}
+			for (let step = 0; step < 100; step++) {
+				const removed = await test_run_with_flush(t, (ctx) => files_pending_update_runs_db_delete_run_batch(ctx, { runId }));
+				if (removed.done) break;
+				if (step === 99) throw new Error("Review history cleanup did not finish");
+			}
+			await t.mutation(internal.files_move_cohorts.cleanup, { cohortId: reviewed.cohort._id });
+			expect(await t.run((ctx) => ctx.db.query("files_move_cohort_content")
+				.withIndex("by_cohort_node", (q) => q.eq("cohortId", reviewed.cohort._id).eq("nodeId", nodeId)).first())).toBeNull();
+			await cleanup_sources();
+			expect(await t.run((ctx) => ctx.db.get("files_saved_content_heads", reviewed.head._id)),
+				"history cleanup keeps the live Yjs owner").toMatchObject({ retired: true, statsId: null });
+			expect(await t.run((ctx) => ctx.db.query("files_text_chunks")
+				.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", reviewed.head._id)).first()),
+				"retired source chunks are removed while the live log owner stays").toBeNull();
+			await push("After cleanup\n");
+			const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
+				subject: { kind: "user", userId: db.userId, plugin: null }, path: "/review-log.txt", includePending: false,
+			});
+			expect(read?.content, "later edits remain readable after Review history cleanup")
+				.toBe("Reviewed\nBefore cleanup\nAfter cleanup\n");
+		} finally {
+			editor.destroy();
+		}
+	});
+
 	test.each([false, true])("materialization keeps a later editor update across source rotation: migrated %s", async (migrate) => {
 		vi.useFakeTimers();
 		const t = test_convex({ transactionLimits: true });

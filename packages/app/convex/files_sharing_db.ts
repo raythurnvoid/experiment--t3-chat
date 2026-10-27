@@ -105,8 +105,6 @@ export async function files_nodes_db_set_restricted_scope(args: {
 			});
 			await files_metadata_db_patch_file_scope(ctx, {
 				...args,
-				isRestrictedScopeRoot,
-				restrictedScopeNodeId,
 				fixedView,
 			});
 		}
@@ -125,8 +123,6 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
-		isRestrictedScopeRoot,
-		restrictedScopeNodeId: args.restrictedScopeNodeId,
 	});
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
 }

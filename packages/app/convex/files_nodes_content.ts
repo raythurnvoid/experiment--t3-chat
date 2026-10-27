@@ -159,7 +159,7 @@ import {
 	files_nodes_db_insert_file_content_docs,
 	type files_nodes_create_Result,
 } from "./files_nodes_create.ts";
-import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
+import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version, files_nodes_db_resume_file_content_materialization } from "./files_nodes_db.ts";
 import { files_nodes_db_copied_from_policy_fields } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
@@ -4143,7 +4143,45 @@ export const pause_file_content_materialization = internalMutation({
 	handler: db_pause_file_materialization,
 });
 
+// Rollout only: old actions lack the pinned source fields. Retry from a fresh read.
+async function db_retry_old_materialization(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		userId: Id<"users">;
+		targetSequence: number;
+		expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
+	},
+) {
+	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+	if (
+		!node ||
+		node.organizationId !== args.organizationId ||
+		node.workspaceId !== args.workspaceId ||
+		!files_node_has_editable_yjs_state(node) ||
+		node.yjsLastSequenceId !== args.expectedYjsLastSequenceId
+	) return;
+	const sequence = await files_saved_placement_db_get_sequence(ctx.db, node);
+	if (!sequence) return;
+
+	const job = await ctx.db
+		.query("files_content_materialization_jobs")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+		.first();
+	if (job) {
+		// A later edit already owns its retry. Never cancel or replace that work.
+		if (job.targetSequence > args.targetSequence) return;
+		await ctx.db.patch("files_content_materialization_jobs", job._id, { targetSequence: sequence.lastSequence });
+		await files_nodes_db_resume_file_content_materialization(ctx, { jobId: job._id, userId: args.userId });
+	} else {
+		await enqueue_file_content_materialization(ctx, { ...args, targetSequence: sequence.lastSequence, delayMs: 0 });
+	}
+}
+
 export const finalize_file_content_materialization = internalMutation({
+	// Rollout only: the handler checks old/new fields together before any write.
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -4151,12 +4189,13 @@ export const finalize_file_content_materialization = internalMutation({
 		userId: v.id("users"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		expectedYjsSnapshotAssetId: v.id("files_r2_assets"),
-		expectedContentAssetId: v.id("files_r2_assets"),
+		expectedContentAssetId: v.optional(v.id("files_r2_assets")),
 		sequence: v.number(),
 		targetSequence: v.number(),
-		preparedSourceHeadId: v.id("files_saved_content_heads"),
-		coveredUpdateCount: v.number(),
-		coveredUpdateBytes: v.number(),
+		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
+		coveredUpdateCount: v.optional(v.number()),
+		coveredUpdateBytes: v.optional(v.number()),
+		text: v.optional(v.string()),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		textSize: v.number(),
@@ -4169,6 +4208,32 @@ export const finalize_file_content_materialization = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
+		if (args.text !== undefined) {
+			if (
+				args.preparedSourceHeadId !== undefined ||
+				args.expectedContentAssetId !== undefined ||
+				args.coveredUpdateCount !== undefined ||
+				args.coveredUpdateBytes !== undefined
+			) {
+				throw should_never_happen("Mixed materialization inputs");
+			}
+			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetIds: [args.yjsSnapshotAssetId, args.versionSnapshotAssetId],
+				reason: "failed_create",
+			});
+			await db_retry_old_materialization(ctx, args);
+			return Result({ _yay: null });
+		}
+		if (
+			args.preparedSourceHeadId === undefined ||
+			args.expectedContentAssetId === undefined ||
+			args.coveredUpdateCount === undefined ||
+			args.coveredUpdateBytes === undefined
+		) {
+			throw should_never_happen("Incomplete materialization inputs");
+		}
 		if (await db_pause_file_materialization(ctx, args)) {
 			await ctx.scheduler.runAfter(0, internal.files_content_saves.retire, { headId: args.preparedSourceHeadId });
 			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
@@ -4545,14 +4610,8 @@ export const mark_file_content_yjs_state_too_large = internalMutation({
 	},
 });
 
-/**
- * Settle a materialization whose rendered Markdown text carries more frontmatter than the caps
- * allow (`files_metadata_MAX_FRONTMATTER_FIELDS` fields, or
- * `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS` total index documents including `maybe_date`
- * companions). Retrying cannot shrink the frontmatter, and letting the insert helper throw would
- * block the infinite-retry workpool for every other file. Same staleness gate and job settlement
- * as the other markers; the next successful finalization clears both fields.
- */
+// Rollout only: old materializers can reach this door before their finalizer.
+// New materializers index all parsed fields and must not restore an old cap marker.
 export const mark_file_content_frontmatter_too_large = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
@@ -4567,42 +4626,7 @@ export const mark_file_content_frontmatter_too_large = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		if (await db_pause_file_materialization(ctx, args)) return null;
-		const header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			targetSequence: args.targetSequence,
-		})) as get_file_content_materialization_header_Result;
-		if (!header) {
-			return null;
-		}
-
-		// Use the same lineage and sequence checks as finalization. A newer push
-		// already replaced this job; its own materialization decides again.
-		if (
-			header.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			header.yjsLastSequenceDoc.lastSequence !== args.sequence ||
-			args.sequence !== args.targetSequence
-		) {
-			return null;
-		}
-
-		const jobs = await ctx.db
-			.query("files_content_materialization_jobs")
-			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
-			.collect();
-
-		await Promise.all([
-			ctx.db.patch("files_nodes", args.nodeId, {
-				contentFrontmatterTooLargeFieldCount: args.fieldCount,
-				contentFrontmatterTooLargeIndexDocumentCount: args.indexDocumentCount,
-			}),
-			...jobs
-				.filter((job) => job.targetSequence <= args.targetSequence)
-				.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
-		]);
-
+		await db_retry_old_materialization(ctx, args);
 		return null;
 	},
 });
@@ -5125,7 +5149,8 @@ export const replace_file_content = action({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		requestId: v.string(),
+		// Rollout only: old open editors do not send a request ID.
+		requestId: v.optional(v.string()),
 	},
 	returns: v_result({ _yay: v.object({ requestId: v.string(), contentRevision: v.number() }) }),
 	// The annotation breaks same-file generated-API circularity.
@@ -5155,7 +5180,7 @@ export const replace_file_content = action({
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 			text: args.text,
-			requestId: args.requestId,
+			requestId: args.requestId ?? crypto.randomUUID(),
 		});
 	},
 });
@@ -5652,9 +5677,8 @@ async function db_install_file_content_replacement(
 		yjsSequenceForChunks = 0;
 	}
 
-	// Do what the materializer does with frontmatter. When the frontmatter is too big for the
-	// index, the chunks are still saved, the index is skipped, and the marker pair stays set.
-	// So a big frontmatter never makes this write fail.
+	// Bad frontmatter does not block the source commit. The worker indexes parsed fields
+	// in small steps, so their count does not need a refusal marker here.
 	const frontmatter =
 		args.yjsRootKind === "rich_text" && args.text !== undefined
 			? files_metadata_preflight_frontmatter(args.text)
@@ -6077,7 +6101,8 @@ export const restore_snapshot = internalMutation({
 		snapshotId: v.id("files_snapshots"),
 		sessionId: v.string(),
 		snapshotMarkdownContent: v.string(),
-		preparedSourceHeadId: v.id("files_saved_content_heads"),
+		// Rollout only: old in-flight actions still carry their text inline.
+		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
 		/**
 		 * The staged server-built restore update (kind `snapshot_restore`), so this commit call
 		 * carries only one large value (`snapshotMarkdownContent`). Consumed here.
@@ -6357,7 +6382,7 @@ export const restore_snapshot = internalMutation({
 					previousHeadId,
 					yjsSequence: yjsLastSequenceDoc.lastSequence,
 					textContent: args.snapshotMarkdownContent,
-					prepared: true,
+					prepared: args.preparedSourceHeadId !== undefined,
 		});
 
 		// Throw so a failure rolls back the source switch and its Yjs update together.
@@ -7492,7 +7517,8 @@ export const finalize_file_yjs_repair = internalMutation({
 		 * One bounded text value; every other input travels as ids/scalars.
 		 */
 		text: v.string(),
-		preparedSourceHeadId: v.id("files_saved_content_heads"),
+		// Rollout only: old in-flight actions still carry their text inline.
+		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
 		textByteSize: v.number(),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		yjsSnapshotSize: v.number(),
@@ -7601,12 +7627,8 @@ export const finalize_file_yjs_repair = internalMutation({
 			lineageGeneration: nextLineageGeneration,
 		});
 
-		// Mirror the materializer's frontmatter preflight. A frontmatter-marked file usually
-		// still carries over-cap frontmatter at repair time, and letting the metadata insert
-		// helper's backstop throw would roll the whole repair back and leave the file
-		// deadlocked. When the frontmatter is over the caps, commit the chunks without the
-		// metadata index and keep the marker pair set with the fresh counts; the user's next
-		// fitting edit clears them through normal materialization.
+		// Repair commits source first. The worker indexes all parsed frontmatter fields
+		// in small steps, including files that carried an old field-count marker.
 		const repairRootKind = state.fileNode.textKind;
 		const frontmatter = repairRootKind === "rich_text" ? files_metadata_preflight_frontmatter(args.text) : null;
 		// Bad frontmatter does not prevent source repair. The index worker skips its metadata.
@@ -7681,7 +7703,7 @@ export const finalize_file_yjs_repair = internalMutation({
 			yjsSequence: args.targetSequence,
 			previousHeadId,
 			textContent: args.text,
-			prepared: true,
+			prepared: args.preparedSourceHeadId !== undefined,
 		});
 		if (repairWriteResult._nay || chunks._nay) {
 			// Throw so Convex rolls back every related write above; returning would commit a
@@ -8468,7 +8490,8 @@ export const finalize_file_collaboration_enable = internalMutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		preparedSourceHeadId: v.id("files_saved_content_heads"),
+		// Rollout only: old in-flight actions still carry their text inline.
+		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
 		textSize: v.number(),
 		baseAssetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
@@ -8587,9 +8610,8 @@ export const finalize_file_collaboration_enable = internalMutation({
 
 		const enableWriteResult = Result_all(
 			await Promise.all([
-				// Point the node at the new document and at the text that document produced. The
-				// text markers go: the action proved the text fits, and the frontmatter counts are
-				// rewritten from this same text.
+				// Point the node at the new document and its source. Clear old refusal markers;
+				// the worker builds frontmatter indexes from this source in small steps.
 				ctx.db.patch("files_nodes", args.nodeId, {
 					collaborationEnabled: true,
 					pendingContentVersion: fileNode.pendingContentVersion + 1,
@@ -8646,7 +8668,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 			yjsSequence: 0,
 			previousHeadId,
 			textContent: args.text,
-			prepared: true,
+			prepared: args.preparedSourceHeadId !== undefined,
 		});
 		if (enableWriteResult._nay || chunks._nay) {
 			const errorMessage = "Failed to turn collaboration on";

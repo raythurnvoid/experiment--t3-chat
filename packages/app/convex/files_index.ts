@@ -96,6 +96,12 @@ async function progress(
 	return { runId: run._id, step: next.step, generation: next.generation };
 }
 
+async function forget_deleted_file(ctx: MutationCtx, state: Doc<"files_index_states">) {
+	await ctx.db.delete("files_index_states", state._id);
+	for (const headId of new Set([state.requestedHeadId, state.publishedHeadId]))
+		if (headId) await ctx.scheduler.runAfter(0, internal.files_content_saves.retire, { headId });
+}
+
 export const start = internalMutation({
 	args: { nodeId: v.id("files_nodes") },
 	returns: v.null(),
@@ -104,11 +110,14 @@ export const start = internalMutation({
 			.query("files_index_states")
 			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
 			.unique();
-		if (!state || state.activeRunId || state.movePublication || state.requestedRevision <= state.publishedRevision)
-			return null;
+		if (!state || state.activeRunId || state.movePublication) return null;
 		if (!(await workspace_live(ctx, state))) return null;
 		const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-		if (!node) return null;
+		if (!node) {
+			await forget_deleted_file(ctx, state);
+			return null;
+		}
+		if (state.requestedRevision <= state.publishedRevision) return null;
 		const head = state.requestedHeadId ? await ctx.db.get("files_saved_content_heads", state.requestedHeadId) : null;
 		if (state.requestedHeadId && (!head || head.fileNodeId !== node._id))
 			throw should_never_happen("Index request lost its source head", { nodeId: node._id });
@@ -540,7 +549,8 @@ async function publish(ctx: MutationCtx, run: Run) {
 async function cleanup(ctx: MutationCtx, run: Run) {
 	await slot_for(ctx, run);
 	const table = run.phase === "cleanup_text" ? "files_plain_text_chunks" : "files_metadata_docs";
-	const kept = run.published ? "after" : "before";
+	// A canceled upload has no selected side left to restore.
+	const kept = await ctx.db.get("files_nodes", run.fileNodeId) ? (run.published ? "after" : "before") : null;
 	const page = await ctx.db
 		.query(table)
 		.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", run._id))
@@ -588,13 +598,14 @@ async function finish(ctx: MutationCtx, run: Run) {
 		owner: { kind: "index", runId: run._id },
 	});
 	await ctx.db.delete("files_index_runs", run._id);
-	if (run.slotGeneration !== null)
+	const node = await ctx.db.get("files_nodes", run.fileNodeId);
+	if (node && run.slotGeneration !== null)
 		await files_pending_overlay_db_schedule_saved_places(ctx, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
 			_id: run.fileNodeId,
 		}, { fieldsChanged: true });
-	if (await files_pending_overlay_db_has_saved_scope_job(ctx, run.fileNodeId))
+	if (node && await files_pending_overlay_db_has_saved_scope_job(ctx, run.fileNodeId))
 		await files_pending_overlay_db_schedule_saved_scope(ctx, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
@@ -607,6 +618,10 @@ async function finish(ctx: MutationCtx, run: Run) {
 		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", run.fileNodeId))
 		.unique();
 	if (state?.activeRunId === run._id) {
+		if (!node) {
+			await forget_deleted_file(ctx, state);
+			return null;
+		}
 		await ctx.db.patch("files_index_states", state._id, {
 			activeRunId: null, needsRun: state.requestedRevision > state.publishedRevision,
 			nextAttemptAt: Date.now() + RECOVER_MS,
@@ -623,7 +638,10 @@ export const advance = internalMutation({
 	handler: async (ctx, args) => {
 		const run = await current(ctx, args);
 		if (!run) return null;
-		if (!run.published && !run.aborting && !(await workspace_live(ctx, run))) {
+		if (!run.aborting && (
+			!await ctx.db.get("files_nodes", run.fileNodeId) ||
+			(!run.published && !await workspace_live(ctx, run))
+		)) {
 			if (run.slotGeneration !== null) {
 				const slot = await slot_for(ctx, run);
 				await ctx.db.patch("files_move_workspace_slots", slot._id, {

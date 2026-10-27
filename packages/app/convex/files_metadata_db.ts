@@ -316,6 +316,9 @@ export async function files_metadata_db_write_entries(
 	]);
 }
 
+/**
+ * Follow the node's current scope after its access fields have changed.
+ */
 export async function files_metadata_db_patch_file_scope(
 	ctx: MutationCtx,
 	args: {
@@ -323,10 +326,6 @@ export async function files_metadata_db_patch_file_scope(
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		nodeId: Id<"files_nodes">;
 		fixedView?: files_saved_placement_FixedView;
-		/** Written to committed field docs only, like every folder table sort field. */
-		isRestrictedScopeRoot: boolean;
-		/** The node's area, written to every committed doc. */
-		restrictedScopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
 	// Move keeps both access headers current. Its saved scope job waits for the chosen side to normalize.

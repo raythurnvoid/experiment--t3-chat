@@ -29,8 +29,7 @@ import app_convex_schema, {
 } from "./schema.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create, files_saved_stream_db_create_directory } from "../server/files-saved-stream.ts";
-import { files_saved_index_db_get_directory } from "../server/files-saved-index.ts";
-import { files_metadata_db_get_table_field } from "./files_metadata.ts";
+import { files_saved_index_db_get_directory, files_saved_index_db_get_table_field } from "../server/files-saved-index.ts";
 import {
 	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_view,
@@ -1384,7 +1383,7 @@ export const list_tree_children_shared = query({
 		const fieldDocs = await Promise.all(
 			rows.map(async ({ shareRow }) => {
 				const node = await files_saved_placement_db_get_node(ctx.db, shareRow.nodeId);
-				return node ? files_metadata_db_get_table_field(ctx, { fileNode: node, field: metadataField }) : null;
+				return node ? files_saved_index_db_get_table_field(ctx, { fileNode: node, field: metadataField }) : null;
 			}),
 		);
 		const start = filter.op === "present" ? null : files_sort_text_key(filter.value);

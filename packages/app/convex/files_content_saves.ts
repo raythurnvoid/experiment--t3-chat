@@ -440,7 +440,7 @@ export const retire = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const head = await ctx.db.get("files_saved_content_heads", args.headId);
-		if (!head || head.retired) return;
+		if (!head) return;
 		const node = await ctx.db.get("files_nodes", head.fileNodeId);
 		if (node?.contentHeadId === head._id || (await files_content_retention_db_index_uses_head(ctx.db, head._id)))
 			return;
@@ -456,7 +456,7 @@ export const retire = internalMutation({
 				.unique();
 			if (content?.beforeHeadId === head._id || content?.afterHeadId === head._id) return;
 		}
-		await ctx.db.patch("files_saved_content_heads", head._id, { retired: true, ready: false });
+		if (!head.retired) await ctx.db.patch("files_saved_content_heads", head._id, { retired: true, ready: false });
 		await ctx.scheduler.runAfter(0, internal.files_content_saves.discard, { headId: head._id });
 	},
 });
@@ -481,7 +481,9 @@ export const discard = internalMutation({
 				.query("files_saved_content_heads")
 				.withIndex("by_stats", (q) => q.eq("statsId", head.statsId))
 				.take(2);
-			if (users.every((candidate) => candidate._id === head._id)) await ctx.db.delete("file_stats", head.statsId);
+			// Move may have removed the losing head's stats before history retires its owner.
+			if (users.every((candidate) => candidate._id === head._id) && await ctx.db.get("file_stats", head.statsId))
+				await ctx.db.delete("file_stats", head.statsId);
 		}
 		const logUsers = await ctx.db
 			.query("files_saved_content_heads")

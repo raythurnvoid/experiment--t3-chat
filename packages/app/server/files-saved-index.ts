@@ -97,3 +97,68 @@ export async function files_saved_index_db_get_directory(
 		empty: args.stream === "cohort" && directoryView === null,
 	};
 }
+
+export function files_saved_index_check_table_field_source(
+	metadataDoc: Doc<"files_metadata_docs">,
+	fileNode: Doc<"files_nodes">,
+): asserts metadataDoc is Extract<Doc<"files_metadata_docs">, { sourceKind: "committed" }> {
+	const valid =
+		metadataDoc.organizationId === fileNode.organizationId &&
+		metadataDoc.workspaceId === fileNode.workspaceId &&
+		metadataDoc.archiveOperationId === undefined &&
+		metadataDoc.sourceKind === "committed" &&
+		metadataDoc.fileNodeId === fileNode._id;
+	if (!valid) {
+		const errorMessage = "metadataDoc source is mismatched";
+		const errorData = { metadataDocId: metadataDoc._id, fileNodeId: fileNode._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+}
+
+/**
+ * Read one folder table field from the complete selected index.
+ * The range holds only this key's field doc and its value docs.
+ */
+export async function files_saved_index_db_get_table_field(
+	ctx: QueryCtx,
+	args: { fileNode: Doc<"files_nodes">; field: string },
+) {
+	const selected = await files_saved_index_db_get_view(ctx.db, args.fileNode);
+	const views =
+		selected.cohortId && selected.view
+			? [undefined, { cohortId: selected.cohortId, view: selected.view }]
+			: [undefined];
+	const candidates = await Promise.all(
+		views.map((moveView) =>
+			ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", args.fileNode.organizationId)
+						.eq("workspaceId", args.fileNode.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", args.fileNode._id)
+						.eq("moveView.cohortId", moveView?.cohortId)
+						.eq("moveView.view", moveView?.view)
+						.eq("fieldPath", args.field),
+				)
+				.filter((q) => q.eq(q.field("docKind"), "field"))
+				.first(),
+		),
+	);
+	// Staging and cleanup move each bounded field between these two exact ranges.
+	const metadataDoc = candidates.find((candidate) => candidate !== null);
+	if (!metadataDoc) return null;
+	// Restore keeps the old archive id until the saved scope job reaches this doc.
+	if (
+		metadataDoc.archiveOperationId !== undefined &&
+		(await ctx.db
+			.query("files_pending_overlay_jobs")
+			.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", args.fileNode._id))
+			.unique()) !== null
+	)
+		return null;
+	files_saved_index_check_table_field_source(metadataDoc, args.fileNode);
+	return metadataDoc;
+}

@@ -829,12 +829,10 @@ describe("metadata catalog", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId: node._id,
-				isRestrictedScopeRoot: true,
-				restrictedScopeNodeId: node._id,
 			});
 		});
 		await test_finish_saved_scope_jobs(t);
-		// Separate pages may emit more than one delta for the same catalog row.
+		// Separate pages may emit more than one delta for the same catalog doc.
 		const deltas = await t.run((ctx) => ctx.db.query("files_metadata_catalog_deltas").collect());
 		expect(
 			new Set(deltas.map((row) => JSON.stringify([row.family, row.parentId, row.fieldPath, row.stringValue]))).size,

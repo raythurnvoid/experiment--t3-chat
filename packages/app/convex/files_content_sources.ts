@@ -1,4 +1,4 @@
-// Bounded exact source preparation for background materialization.
+// Prepare exact source in bounded steps before publication.
 
 import { Result } from "common/errors-as-values-utils.ts";
 import { v } from "convex/values";

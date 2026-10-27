@@ -49,6 +49,8 @@ import { files_saved_content_db_get_head } from "../server/files-saved-content-h
 import {
 	files_saved_index_db_get_stream,
 	files_saved_index_db_get_view,
+	files_saved_index_db_get_table_field,
+	files_saved_index_check_table_field_source,
 	type files_saved_index_ViewTag,
 } from "../server/files-saved-index.ts";
 import {
@@ -868,69 +870,6 @@ export async function files_metadata_db_get_table_node(
 	return readable._nay ? null : fileNode;
 }
 
-function check_table_field_source(
-	metadataDoc: Doc<"files_metadata_docs">,
-	fileNode: Doc<"files_nodes">,
-): asserts metadataDoc is Extract<Doc<"files_metadata_docs">, { sourceKind: "committed" }> {
-	const valid =
-		metadataDoc.organizationId === fileNode.organizationId &&
-		metadataDoc.workspaceId === fileNode.workspaceId &&
-		metadataDoc.archiveOperationId === undefined &&
-		metadataDoc.sourceKind === "committed" &&
-		metadataDoc.fileNodeId === fileNode._id;
-	if (!valid) {
-		const errorMessage = "metadataDoc source is mismatched";
-		const errorData = { metadataDocId: metadataDoc._id, fileNodeId: fileNode._id };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-}
-
-/**
- * The committed field doc of one key of a folder table row, or null when the node has no value for
- * it. The range holds only this key's field doc and its value docs.
- */
-export async function files_metadata_db_get_table_field(
-	ctx: QueryCtx,
-	args: { fileNode: Doc<"files_nodes">; field: string },
-) {
-	const selected = await files_saved_index_db_get_view(ctx.db, args.fileNode);
-	const views =
-		selected.cohortId && selected.view
-			? [undefined, { cohortId: selected.cohortId, view: selected.view }]
-			: [undefined];
-	const candidates = await Promise.all(
-		views.map((moveView) =>
-			ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-					q
-						.eq("organizationId", args.fileNode.organizationId)
-						.eq("workspaceId", args.fileNode.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", args.fileNode._id)
-						.eq("moveView.cohortId", moveView?.cohortId)
-						.eq("moveView.view", moveView?.view)
-						.eq("fieldPath", args.field),
-				)
-				.filter((q) => q.eq(q.field("docKind"), "field"))
-				.first(),
-		),
-	);
-	// Staging and cleanup move each bounded field between these two exact ranges.
-	const metadataDoc = candidates.find((candidate) => candidate !== null);
-	if (!metadataDoc) return null;
-	// After a Restore of a node with many saved docs, the doc keeps its archive id until the saved
-	// scope job runs. Show no value until then.
-	if (
-		metadataDoc.archiveOperationId !== undefined &&
-		(await files_pending_overlay_db_has_saved_scope_job(ctx, args.fileNode._id))
-	)
-		return null;
-	check_table_field_source(metadataDoc, args.fileNode);
-	return metadataDoc;
-}
-
 /**
  * One page of the keys on a folder's saved children whose path starts with `prefix`, ignoring case,
  * for the folder's Columns menu and filter bar. The page is one range of the catalog, in one stream
@@ -1095,7 +1034,7 @@ export const list_node_fields = query({
 			const inTransit =
 				metadataDoc.archiveOperationId !== undefined &&
 				(await files_pending_overlay_db_has_saved_scope_job(ctx, fileNode._id));
-			if (!inTransit) check_table_field_source(metadataDoc, fileNode);
+			if (!inTransit) files_saved_index_check_table_field_source(metadataDoc, fileNode);
 			afterField = metadataDoc.fieldPath;
 			completed++;
 			if (!inTransit && search_field_path_is_valid(afterField)) fields.push(afterField);
@@ -1153,7 +1092,7 @@ export const get_field_values = query({
 		const start = afterField === null ? 0 : args.fields.indexOf(afterField) + 1;
 		for (const field of args.fields.slice(start)) {
 			if (!(await fits_table_read_budget({ ctx, budget, reserve: true }))) break;
-			const metadataDoc = await files_metadata_db_get_table_field(ctx, { fileNode, field });
+			const metadataDoc = await files_saved_index_db_get_table_field(ctx, { fileNode, field });
 			count_table_doc(budget, metadataDoc);
 			if (!(await fits_table_read_budget({ ctx, budget }))) break;
 			values.push({

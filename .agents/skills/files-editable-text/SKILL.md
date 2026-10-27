@@ -330,10 +330,11 @@ Each materialization uploads a fresh Yjs snapshot asset and a fresh version asse
 
 Materialization starts bounded cleanup of covered update and job docs immediately. It keeps the old Yjs object for 35 minutes for readers that already loaded its header, then checks its references before deleting it. This covers the default runtime's 30-minute action lifetime plus the five-minute upload margin. The separate `putMayArriveUntil` used by OFF, repair, and replacement is a deletion-job settlement deadline: DELETE starts immediately, but a successful early delete keeps the job for another attempt after the deadline. The hourly recovery schedules due jobs. It is not a promise that the first DELETE waits 35 minutes.
 
-Saved text and Yjs updates belong to a content head. Exact reads and covered-update cleanup use
-that head's index range. Cleanup also keeps its sequence and lineage checks. A preparing or current
-head retains both its content asset and Yjs snapshot asset. Review preserves the editor's public
-sequence ID; each content head stores its own counters until cleanup adopts the selected head.
+Exact text belongs to its source head. Yjs updates belong to the separate log-owner head named by
+`yjsContentHeadId`. Exact reads and covered-update cleanup use these separate ranges. Cleanup also
+keeps its sequence and lineage checks. A preparing or current head retains both its content asset
+and Yjs snapshot asset. Review preserves the editor's public sequence ID; each content head stores
+its own counters until cleanup adopts the selected head.
 
 The content write wrapper reuses owner IDs within one mutation, including parallel chunk and
 frontmatter writes. Node, Review content, cohort and content-head writes clear these reads before

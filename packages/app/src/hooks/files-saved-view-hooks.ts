@@ -15,7 +15,9 @@ export function useFilesSavedView(membershipId: app_convex_Id<"organizations_wor
 	return { normal, cohort, searchGeneration: view?.searchGeneration ?? null, loading: enabled && view === undefined };
 }
 
-/** Search can publish without changing the saved tree or source. */
+/**
+ * Search can publish without changing the saved tree or source.
+ */
 export function useFilesSavedIndexView(membershipId: app_convex_Id<"organizations_workspaces_users">, enabled = true) {
 	const view = useQuery(app_convex_api.files_metadata.get_workspace_index_view, enabled ? { membershipId } : "skip");
 	const normal: files_IndexStream | null = view ? { kind: "normal", generation: view.generation } : null;
