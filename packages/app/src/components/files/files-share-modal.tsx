@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
-import { MyButton } from "@/components/my-button.tsx";
+import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import {
 	MyModal,
@@ -187,18 +187,23 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 						value={level}
 						setValue={(value) => onLevelChange(principal, value as access_control_FileShareLevel)}
 					>
-						{/* The row being saved keeps its own control enabled. Disabling the element the user
-						    just used drops keyboard focus to the page, and they lose their place in the list.
-						    A second write cannot start anyway: the handlers refuse while one is running. */}
+						{/* The row being saved keeps its value and uses `aria-disabled`, not `disabled`. A real
+						    `disabled` drops keyboard focus to the page, and the user loses their place in the
+						    list. `aria-disabled` keeps focus, and the trigger does not open while it is set.
+						    `aria-busy` gives the wait cursor (`MyButton` CSS). */}
 						<MySelectTrigger disabled={busy && !pending}>
 							<MyButton
 								type="button"
 								variant="outline"
-								className={"FilesShareModalEntry-level-trigger" satisfies FilesShareModalEntry_ClassNames}
+								className={cn(
+									"FilesShareModalEntry-level-trigger" satisfies FilesShareModalEntry_ClassNames,
+									pending && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
+								)}
 								aria-label={`Access level for ${name}`}
+								aria-disabled={pending || undefined}
 								aria-busy={pending || undefined}
 							>
-								<span>{pending ? "Saving..." : access_control_FILE_SHARE_LEVELS[level].label}</span>
+								<span>{access_control_FILE_SHARE_LEVELS[level].label}</span>
 								<MySelectOpenIndicator />
 							</MyButton>
 						</MySelectTrigger>
@@ -389,16 +394,20 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 								}
 							}}
 						>
-							{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
+							{/* Uses `aria-disabled` while its own write runs, same reason as a row's level trigger. */}
 							<MySelectTrigger disabled={busy && !pending}>
 								<MyButton
 									type="button"
 									variant="outline"
-									className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
+									className={cn(
+										"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames,
+										pending && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
+									)}
 									aria-label="Anyone with the link"
+									aria-disabled={pending || undefined}
 									aria-busy={pending || undefined}
 								>
-									<span>{pending ? "Saving..." : levelLabel}</span>
+									<span>{levelLabel}</span>
 									<MySelectOpenIndicator />
 								</MyButton>
 							</MySelectTrigger>
@@ -457,16 +466,20 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 								}
 							}}
 						>
-							{/* Stays enabled while its own write runs, same reason as a row's level trigger. */}
+							{/* Uses `aria-disabled` while its own write runs, same reason as a row's level trigger. */}
 							<MySelectTrigger disabled={busy && !publicPending}>
 								<MyButton
 									type="button"
 									variant="outline"
-									className={"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames}
+									className={cn(
+										"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames,
+										publicPending && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
+									)}
 									aria-label="Inside public documents"
+									aria-disabled={publicPending || undefined}
 									aria-busy={publicPending || undefined}
 								>
-									<span>{publicPending ? "Saving..." : publicFlag.isPublic ? "Shown" : "Not shown"}</span>
+									<span>{publicFlag.isPublic ? "Shown" : "Not shown"}</span>
 									<MySelectOpenIndicator />
 								</MyButton>
 							</MySelectTrigger>
@@ -1571,7 +1584,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 												aria-busy={busy || undefined}
 												onClick={() => runChange(confirmChange, true)}
 											>
-												{busy ? "Saving..." : confirmText.action}
+												{confirmText.action}
 											</MyButton>
 										</div>
 									</div>
