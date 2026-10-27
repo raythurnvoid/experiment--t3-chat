@@ -380,10 +380,16 @@ test("expired asset cleanup keeps a staged cohort asset", async () => {
 test("accepted Yjs cleanup keeps a claimed asset and deletes it after release", async () => {
 	const f = await fixture();
 	const { assetId, claimId } = await claimed_asset(f);
+	const logOwnerId = await f.t.run(async (ctx) => {
+		const node = (await ctx.db.get("files_nodes", f.nodeId))!;
+		const head = (await ctx.db.get("files_saved_content_heads", node.contentHeadId!))!;
+		return head.yjsContentHeadId!;
+	});
 	const args = {
 		organizationId: f.db.organizationId,
 		workspaceId: f.db.workspaceId,
 		nodeId: f.nodeId,
+		logOwnerId,
 		throughSequence: 0,
 		supersededYjsAssetId: assetId,
 	};

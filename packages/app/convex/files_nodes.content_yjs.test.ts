@@ -309,6 +309,7 @@ test("materialize_file_content writes nonempty version and Yjs snapshots to R2 a
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		nodeId: createdFileId,
+		logOwnerId: (await test_get_file_yjs_pointers(t, createdFileId)).logOwnerId,
 		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFileId)).yjsLastSequenceId,
 		throughSequence: 1,
 	});
@@ -636,7 +637,10 @@ test("materialize_file_content saves and indexes every field beyond the old fron
 	});
 	expect(materialized._nay).toBeUndefined();
 	await t.mutation(internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
-		organizationId: db.organizationId, workspaceId: db.workspaceId, nodeId,
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		nodeId,
+		logOwnerId: (await test_get_file_yjs_pointers(t, nodeId)).logOwnerId,
 		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
 		throughSequence: pushResult._yay.newSequence,
 	});
@@ -2079,84 +2083,6 @@ describe("non-collaborative files", () => {
 		expect(afterRefusals).toEqual({ assetId, assets: 1, versions: 0 });
 	});
 
-	test("the replacement finalizer rechecks a lock added after preflight", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Replacement Final Lock User",
-		});
-		const original = "# Final lock\n\noriginal body\n";
-		const nextText = "# Final lock\n\nreplacement body\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file({
-			t,
-			db,
-			path: "/replacement-final-lock.md",
-			markdown: original,
-		});
-
-		const preflight = await t.query(internal.files_nodes_content.get_replace_file_content_preflight, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-		});
-		expect(preflight?.canWrite).toBe(true);
-		const versionSnapshotAssetId = await t.run(async (ctx) => {
-			const now = Date.now();
-			return await ctx.db.insert("files_r2_assets", {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				kind: "content_snapshot",
-				r2Bucket: "test-bucket",
-				size: files_get_utf8_byte_size(nextText),
-				createdBy: db.userId,
-				unfinalizedExpiresAt: now + 60_000,
-				updatedAt: now,
-			});
-		});
-
-		// The action already passed its cheap check and uploaded. A lock added now must still stop
-		// the final transaction before it publishes the asset or changes the committed text.
-		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
-			membershipId: db.membershipId,
-			nodeId,
-		});
-		expect(locked._nay).toBeUndefined();
-		const refused = await t.mutation(internal.files_nodes_content.finalize_file_content_replacement, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			nodeId,
-			text: nextText,
-			textSize: files_get_utf8_byte_size(nextText),
-			versionSnapshotAssetId,
-		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect(refused._nay?.message).toBe("This item is read-only.");
-
-		const after = await t.run(async (ctx) => ({
-			node: await ctx.db.get("files_nodes", nodeId),
-			newAsset: await ctx.db.get("files_r2_assets", versionSnapshotAssetId),
-			versions: (await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === nodeId),
-		}));
-		expect(after.node?.assetId).toBe(assetId);
-		expect(after.newAsset?.r2Key).toBeUndefined();
-		expect(after.newAsset?.unfinalizedExpiresAt).toBeDefined();
-		expect(after.versions).toEqual([]);
-		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			subject: { kind: "user", userId: db.userId, plugin: null },
-			path: "/replacement-final-lock.md",
-			mode: { kind: "full", maxBytes: 100_000 },
-		});
-		expect(readBack?.content).toBe(original);
-	});
-
 	test("the replace door refuses a member who cannot write the file", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -2576,6 +2502,7 @@ describe("non-collaborative files", () => {
 			path: "/stale-cleanup.md",
 			markdown: "# Kept\n",
 		});
+		const oldLogOwnerId = (await test_get_file_yjs_pointers(t, nodeId)).logOwnerId;
 		const oldSnapshot = await t.run(async (ctx) => {
 			const pointers = await ctx.db.get("files_nodes", nodeId);
 			if (!pointers?.yjsSnapshotId) throw new Error("Missing Yjs snapshot");
@@ -2599,6 +2526,7 @@ describe("non-collaborative files", () => {
 				workspaceId: db.workspaceId,
 				fileNodeId: nodeId,
 				throughSequence: oldSnapshot.sequence,
+				logOwnerId: oldLogOwnerId,
 				supersededYjsAssetId: oldSnapshot.assetId,
 				putMayArriveUntil: null,
 				historyPending: true,
@@ -2669,8 +2597,10 @@ describe("non-collaborative files", () => {
 			const lastSequence = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
 			const snapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
 			if (!lastSequence || !snapshot) throw new Error("Expected the old Yjs lineage");
+			const head = (await ctx.db.get("files_saved_content_heads", node.contentHeadId!))!;
 			return {
 				lastSequenceId: lastSequence._id,
+				logOwnerId: head.yjsContentHeadId!,
 				snapshotId: snapshot._id,
 				throughSequence: lastSequence.lastSequence,
 				snapshotAssetId: snapshot.assetId,
@@ -2765,6 +2695,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId,
+			logOwnerId: oldLineage.logOwnerId,
 			expectedYjsLastSequenceId: oldLineage.lastSequenceId,
 			throughSequence: oldLineage.throughSequence,
 		});
@@ -2772,6 +2703,7 @@ describe("non-collaborative files", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId,
+			logOwnerId: oldLineage.logOwnerId,
 			throughSequence: oldLineage.throughSequence,
 			supersededYjsAssetId: oldLineage.snapshotAssetId,
 			expectedActiveYjsLastSequenceId: oldLineage.lastSequenceId,

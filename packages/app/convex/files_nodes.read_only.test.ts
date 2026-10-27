@@ -6175,7 +6175,8 @@ describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 			});
 			await ctx.db.patch("files_yjs_snapshots", snapshot._id, { assetId: replacementAssetId });
 
-			return { assetId: asset._id, key: asset.r2Key, throughSequence: snapshot.sequence };
+			const head = (await ctx.db.get("files_saved_content_heads", node.contentHeadId!))!;
+			return { assetId: asset._id, key: asset.r2Key, throughSequence: snapshot.sequence, logOwnerId: head.yjsContentHeadId! };
 		});
 
 		const finiteDeleteSpy = vi.spyOn(R2.prototype, "deleteObject");
@@ -6187,6 +6188,7 @@ describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId: createdId,
+			logOwnerId: superseded.logOwnerId,
 			throughSequence: superseded.throughSequence,
 			supersededYjsAssetId: superseded.assetId,
 		});

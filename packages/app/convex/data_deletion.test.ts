@@ -4975,6 +4975,7 @@ describe("process_workspace_deletion_request", () => {
 				const taskId = await ctx.db.insert("files_yjs_cleanup_tasks", {
 					...scope,
 					fileNodeId: nodeId,
+					logOwnerId: null,
 					throughSequence: 2,
 					supersededYjsAssetId: assetId,
 					putMayArriveUntil,

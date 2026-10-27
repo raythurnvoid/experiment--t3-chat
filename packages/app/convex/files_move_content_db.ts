@@ -25,7 +25,6 @@ import {
 import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { files_move_reservations_db_enter } from "../server/files-move-reservations.ts";
 import { files_content_retention_db_index_uses_head } from "../server/files-content-retention.ts";
-import { files_saved_content_yjs_owner } from "../server/files-saved-content-head.ts";
 import {
 	files_pending_overlay_db_can_join_step,
 	files_pending_overlay_db_set_cohort_materialization,
@@ -437,7 +436,7 @@ async function db_cleanup_part_page(
 		if (ownsContent && (rowHeadId === undefined || headId === undefined))
 			throw should_never_happen("Content cleanup lost its owner", { contentId: content._id, table, id: row._id });
 		// Search may still own an older source. Its derived rows belong to the Move side, not that source.
-		const ownsRow = !ownsContent || rowHeadId === (kind === 2 && logHead ? files_saved_content_yjs_owner(logHead) : headId);
+		const ownsRow = !ownsContent || rowHeadId === (kind === 2 && logHead ? logHead.yjsContentHeadId : headId);
 		if (remove && ownsRow && !keepExact) await ctx.db.delete(table, row._id);
 		else await ctx.db.patch(table, row._id, { moveView: undefined });
 	}

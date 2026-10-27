@@ -59,7 +59,7 @@ import {
 import { files_content_type_index_fields, files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
 import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
-import { files_saved_content_apply_header, files_saved_content_db_get_head, files_saved_content_yjs_owner } from "../server/files-saved-content-head.ts";
+import { files_saved_content_apply_header, files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
 import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
 import { files_content_heads_db_for_head } from "../server/files-content-heads.ts";
 import { files_index_db_request } from "../server/files-index.ts";
@@ -159,7 +159,7 @@ import {
 	files_nodes_db_insert_file_content_docs,
 	type files_nodes_create_Result,
 } from "./files_nodes_create.ts";
-import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version, files_nodes_db_resume_file_content_materialization } from "./files_nodes_db.ts";
+import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import { files_nodes_db_copied_from_policy_fields } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
@@ -252,7 +252,7 @@ async function db_begin_content_replacement(
 	const values = {
 		...fields,
 		statsId: prepared?.statsId ?? null,
-		yjsContentHeadId: files_saved_content_yjs_owner(previous),
+		yjsContentHeadId: previous.yjsContentHeadId,
 	};
 	const headId = prepared?._id ?? (await ctx.db.insert("files_saved_content_heads", values));
 	if (prepared) await ctx.db.patch("files_saved_content_heads", prepared._id, values);
@@ -4090,17 +4090,15 @@ async function db_delete_covered_file_content_docs(
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 		throughSequence: number;
-		logOwnerId?: Id<"files_saved_content_heads">;
+		logOwnerId: Id<"files_saved_content_heads">;
 	},
 ) {
 	const head = await files_saved_content_db_get_head(ctx.db, args.nodeId);
 	if (!head) return false;
-	// Old queued cleanup calls used the source head as their log owner.
-	const logOwner = args.logOwnerId ?? files_saved_content_yjs_owner(head) ?? head._id;
 	const coveredUpdateDocs = await ctx.db
 		.query("files_yjs_updates")
 		.withIndex("by_contentHead_sequence", (q) =>
-			q.eq("contentHeadId", logOwner).lte("sequence", args.throughSequence),
+			q.eq("contentHeadId", args.logOwnerId).lte("sequence", args.throughSequence),
 		)
 		.take(FILE_CONTENT_CLEANUP_BATCH_SIZE);
 	await Promise.all(coveredUpdateDocs.map((doc) => ctx.db.delete("files_yjs_updates", doc._id)));
@@ -4143,45 +4141,7 @@ export const pause_file_content_materialization = internalMutation({
 	handler: db_pause_file_materialization,
 });
 
-// Rollout only: old actions lack the pinned source fields. Retry from a fresh read.
-async function db_retry_old_materialization(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-		userId: Id<"users">;
-		targetSequence: number;
-		expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
-	},
-) {
-	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-	if (
-		!node ||
-		node.organizationId !== args.organizationId ||
-		node.workspaceId !== args.workspaceId ||
-		!files_node_has_editable_yjs_state(node) ||
-		node.yjsLastSequenceId !== args.expectedYjsLastSequenceId
-	) return;
-	const sequence = await files_saved_placement_db_get_sequence(ctx.db, node);
-	if (!sequence) return;
-
-	const job = await ctx.db
-		.query("files_content_materialization_jobs")
-		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
-		.first();
-	if (job) {
-		// A later edit already owns its retry. Never cancel or replace that work.
-		if (job.targetSequence > args.targetSequence) return;
-		await ctx.db.patch("files_content_materialization_jobs", job._id, { targetSequence: sequence.lastSequence });
-		await files_nodes_db_resume_file_content_materialization(ctx, { jobId: job._id, userId: args.userId });
-	} else {
-		await enqueue_file_content_materialization(ctx, { ...args, targetSequence: sequence.lastSequence, delayMs: 0 });
-	}
-}
-
 export const finalize_file_content_materialization = internalMutation({
-	// Rollout only: the handler checks old/new fields together before any write.
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -4189,13 +4149,12 @@ export const finalize_file_content_materialization = internalMutation({
 		userId: v.id("users"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		expectedYjsSnapshotAssetId: v.id("files_r2_assets"),
-		expectedContentAssetId: v.optional(v.id("files_r2_assets")),
+		expectedContentAssetId: v.id("files_r2_assets"),
 		sequence: v.number(),
 		targetSequence: v.number(),
-		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
-		coveredUpdateCount: v.optional(v.number()),
-		coveredUpdateBytes: v.optional(v.number()),
-		text: v.optional(v.string()),
+		preparedSourceHeadId: v.id("files_saved_content_heads"),
+		coveredUpdateCount: v.number(),
+		coveredUpdateBytes: v.number(),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		textSize: v.number(),
@@ -4208,32 +4167,6 @@ export const finalize_file_content_materialization = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		if (args.text !== undefined) {
-			if (
-				args.preparedSourceHeadId !== undefined ||
-				args.expectedContentAssetId !== undefined ||
-				args.coveredUpdateCount !== undefined ||
-				args.coveredUpdateBytes !== undefined
-			) {
-				throw should_never_happen("Mixed materialization inputs");
-			}
-			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				assetIds: [args.yjsSnapshotAssetId, args.versionSnapshotAssetId],
-				reason: "failed_create",
-			});
-			await db_retry_old_materialization(ctx, args);
-			return Result({ _yay: null });
-		}
-		if (
-			args.preparedSourceHeadId === undefined ||
-			args.expectedContentAssetId === undefined ||
-			args.coveredUpdateCount === undefined ||
-			args.coveredUpdateBytes === undefined
-		) {
-			throw should_never_happen("Incomplete materialization inputs");
-		}
 		if (await db_pause_file_materialization(ctx, args)) {
 			await ctx.scheduler.runAfter(0, internal.files_content_saves.retire, { headId: args.preparedSourceHeadId });
 			await files_nodes_db_hand_unpublished_assets_to_deletion_ledger(ctx, {
@@ -4359,7 +4292,7 @@ export const finalize_file_content_materialization = internalMutation({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-			logOwnerId: files_saved_content_yjs_owner((await ctx.db.get("files_saved_content_heads", previousHeadId))!)!,
+			logOwnerId: (await ctx.db.get("files_saved_content_heads", previousHeadId))!.yjsContentHeadId!,
 			expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
 			throughSequence: args.sequence,
 		});
@@ -4372,7 +4305,7 @@ export const finalize_file_content_materialization = internalMutation({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
-				logOwnerId: files_saved_content_yjs_owner((await ctx.db.get("files_saved_content_heads", previousHeadId))!)!,
+				logOwnerId: (await ctx.db.get("files_saved_content_heads", previousHeadId))!.yjsContentHeadId!,
 				throughSequence: args.sequence,
 				supersededYjsAssetId: header.yjsSnapshotAsset._id,
 				expectedActiveYjsLastSequenceId: args.expectedYjsLastSequenceId,
@@ -4403,7 +4336,7 @@ export const cleanup_file_materialization_covered_rows = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		logOwnerId: v.optional(v.id("files_saved_content_heads")),
+		logOwnerId: v.id("files_saved_content_heads"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		throughSequence: v.number(),
 	},
@@ -4606,27 +4539,6 @@ export const mark_file_content_yjs_state_too_large = internalMutation({
 				.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
 		]);
 
-		return null;
-	},
-});
-
-// Rollout only: old materializers can reach this door before their finalizer.
-// New materializers index all parsed fields and must not restore an old cap marker.
-export const mark_file_content_frontmatter_too_large = internalMutation({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		nodeId: v.id("files_nodes"),
-		userId: v.id("users"),
-		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		sequence: v.number(),
-		targetSequence: v.number(),
-		fieldCount: v.number(),
-		indexDocumentCount: v.number(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		await db_retry_old_materialization(ctx, args);
 		return null;
 	},
 });
@@ -4911,65 +4823,10 @@ export const materialize_file_content = internalAction({
 });
 
 /**
- * Read everything the replace door needs to refuse early, before it writes an asset doc or uploads
- * anything. The final mutation checks all of it again, because this query and that mutation are two
- * separate transactions.
- */
-export const get_replace_file_content_preflight = internalQuery({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		nodeId: v.id("files_nodes"),
-	},
-	returns: v.union(
-		v.object({
-			rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
-			contentType: v.optional(v.string()),
-			canWrite: v.boolean(),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const membership = await db_get_active_membership_in_workspace(ctx, args);
-		if (!membership) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth: { id: args.userId },
-			membership,
-			nodeId: args.nodeId,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== args.organizationId ||
-			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.collaborationEnabled !== false ||
-			!files_node_has_editable_text_content(fileNode)
-		) {
-			return null;
-		}
-
-		return {
-			rootKind: fileNode.textKind,
-			contentType: fileNode.contentType ?? undefined,
-			canWrite: !(await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId }))._nay,
-		};
-	},
-});
-
-/**
  * `v_result` infers `_nay.message` as the exact literal union its validator saw, so an action that
  * can refuse with more messages than its final mutation cannot be annotated with that mutation's
- * result type. The public content doors all answer `null` on success and a free-form refusal
- * message, so they share this hand-written shape instead.
+ * result type. The collaboration action answers `null` on success and a free-form refusal
+ * message, so it uses this hand-written shape instead.
  */
 type files_content_public_action_Result =
 	| { _yay: null; _nay?: undefined }
@@ -4983,7 +4840,7 @@ type files_content_public_action_Result =
  *
  * This is an action and not a mutation because the save writes a version-history entry, and a
  * version entry needs its bytes in R2 first. A Convex mutation cannot reach R2, so the action
- * uploads and the mutation below publishes, the same split the materializer uses.
+ * uploads and `files_content_saves.publish` commits, the same split the materializer uses.
  *
  * A non-collaborative file has no Yjs document to merge with, so each save replaces the whole
  * text. The last save to commit wins, and each saved text stays in version history.
@@ -5149,8 +5006,7 @@ export const replace_file_content = action({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		// Rollout only: old open editors do not send a request ID.
-		requestId: v.optional(v.string()),
+		requestId: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ requestId: v.string(), contentRevision: v.number() }) }),
 	// The annotation breaks same-file generated-API circularity.
@@ -5180,15 +5036,15 @@ export const replace_file_content = action({
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 			text: args.text,
-			requestId: args.requestId ?? crypto.randomUUID(),
+			requestId: args.requestId,
 		});
 	},
 });
 
 /**
  * Publish new text on a file with collaboration off: point the node at the version snapshot,
- * finalize that asset, replace the committed chunks, and add the version row. The member save
- * door and the pending-update Accept both end here. Throw on a failed write so Convex rolls back
+ * finalize that asset, replace the committed chunks, and add the version row. Pending-update
+ * Accept commits through this helper. Throw on a failed write so Convex rolls back
  * every write of the calling mutation. Returning `_nay` would commit the node and asset changes
  * after the chunk replacement had already failed.
  */
@@ -5258,135 +5114,6 @@ export async function files_nodes_db_commit_text_replacement(
 	}
 	await files_updated_by_db_sync_node(ctx, { nodeId: fileNode._id });
 }
-
-export const finalize_file_content_replacement = internalMutation({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		nodeId: v.id("files_nodes"),
-		text: v.string(),
-		textSize: v.number(),
-		versionSnapshotAssetId: v.id("files_r2_assets"),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const user = await ctx.db.get("users", args.userId);
-		if (!user) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-		// Ask again in the transaction that writes. The action checked the same things, but a
-		// membership can end or a grant can be taken away while the text was uploading.
-		const membership = await db_get_active_membership_in_workspace(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: user._id,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth: { id: user._id },
-			membership,
-			nodeId: args.nodeId,
-			permission: "content.write",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== args.organizationId ||
-			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.collaborationEnabled !== false ||
-			!files_node_has_editable_text_content(fileNode)
-		) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		// Check the lock after access and before the first write, like every other write door.
-		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId });
-		if (writable._nay) {
-			return writable;
-		}
-
-		const organization = await ctx.db.get("organizations", membership.organizationId);
-		if (!organization) {
-			const errorMessage = "membership.organizationId points to a missing organizations doc";
-			const errorData = {
-				membershipId: membership._id,
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-
-		const billedUserId = billing_pick_billed_user_id({ userId: user._id, organization });
-		const billedUser = await ctx.db.get("users", billedUserId);
-		if (!billedUser) {
-			const errorMessage = "billedUserId points to a missing users doc";
-			const errorData = { userId: user._id, organizationId: organization._id, billedUserId };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-
-		// A save costs the same here as through the Yjs door. Without this charge, turning
-		// collaboration off would be the free way to run a metered operation.
-		const check = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 });
-		if (!check.hasCredits) {
-			return Result({ _nay: { message: "Insufficient funds" } });
-		}
-
-		await files_nodes_db_commit_text_replacement(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			fileNode,
-			userId: user._id,
-			text: args.text,
-			textSize: args.textSize,
-			versionSnapshotAssetId: args.versionSnapshotAssetId,
-		});
-
-		await billing_ingest_events(ctx, {
-			billedUserEvents: [
-				{
-					billedUser,
-					event: billing_event({
-						name: "file_save",
-						externalCustomerId: billedUser._id,
-						externalMemberId: user._id,
-						externalId: composite_id(
-							"billing",
-							"file_save",
-							billedUser._id,
-							user._id,
-							membership.organizationId,
-							membership.workspaceId,
-							args.nodeId,
-							args.versionSnapshotAssetId,
-						),
-						metadata: {
-							amount: 1,
-							actorUserId: user._id,
-							billedUserId: billedUser._id,
-							organizationId: fileNode.organizationId,
-							workspaceId: fileNode.workspaceId,
-							nodeId: args.nodeId,
-							version: args.versionSnapshotAssetId,
-						},
-					}),
-				},
-			],
-		});
-
-		return Result({ _yay: null });
-	},
-});
 
 /**
  * Install new content on a file as a whole. Everything that describes the content changes
@@ -5625,7 +5352,7 @@ async function db_install_file_content_replacement(
 			nextYjsSnapshotId = yjsSnapshotDoc._id;
 			yjsSequenceForChunks = yjsLastSequenceDoc.lastSequence;
 			yjsCleanup = {
-				logOwnerId: files_saved_content_yjs_owner((await ctx.db.get("files_saved_content_heads", previousHeadId))!)!,
+				logOwnerId: (await ctx.db.get("files_saved_content_heads", previousHeadId))!.yjsContentHeadId!,
 				throughSequence: yjsLastSequenceDoc.lastSequence,
 				supersededYjsAssetId: yjsSnapshotDoc.assetId,
 				expectedActiveYjsLastSequenceId: nextYjsLastSequenceId,
@@ -5641,7 +5368,7 @@ async function db_install_file_content_replacement(
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				fileNodeId: nodeId,
-				logOwnerId: files_saved_content_yjs_owner((await ctx.db.get("files_saved_content_heads", previousHeadId))!)!,
+				logOwnerId: (await ctx.db.get("files_saved_content_heads", previousHeadId))!.yjsContentHeadId!,
 				throughSequence: yjsLastSequenceDoc.lastSequence,
 				supersededYjsAssetId: yjsSnapshotDoc.assetId,
 				putMayArriveUntil: now + FILE_MATERIALIZATION_LATE_PUT_WINDOW_MS,
@@ -6101,8 +5828,7 @@ export const restore_snapshot = internalMutation({
 		snapshotId: v.id("files_snapshots"),
 		sessionId: v.string(),
 		snapshotMarkdownContent: v.string(),
-		// Rollout only: old in-flight actions still carry their text inline.
-		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
+		preparedSourceHeadId: v.id("files_saved_content_heads"),
 		/**
 		 * The staged server-built restore update (kind `snapshot_restore`), so this commit call
 		 * carries only one large value (`snapshotMarkdownContent`). Consumed here.
@@ -6382,7 +6108,7 @@ export const restore_snapshot = internalMutation({
 					previousHeadId,
 					yjsSequence: yjsLastSequenceDoc.lastSequence,
 					textContent: args.snapshotMarkdownContent,
-					prepared: args.preparedSourceHeadId !== undefined,
+					prepared: true,
 		});
 
 		// Throw so a failure rolls back the source switch and its Yjs update together.
@@ -7517,8 +7243,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		 * One bounded text value; every other input travels as ids/scalars.
 		 */
 		text: v.string(),
-		// Rollout only: old in-flight actions still carry their text inline.
-		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
+		preparedSourceHeadId: v.id("files_saved_content_heads"),
 		textByteSize: v.number(),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		yjsSnapshotSize: v.number(),
@@ -7703,7 +7428,7 @@ export const finalize_file_yjs_repair = internalMutation({
 			yjsSequence: args.targetSequence,
 			previousHeadId,
 			textContent: args.text,
-			prepared: args.preparedSourceHeadId !== undefined,
+			prepared: true,
 		});
 		if (repairWriteResult._nay || chunks._nay) {
 			// Throw so Convex rolls back every related write above; returning would commit a
@@ -7722,7 +7447,7 @@ export const finalize_file_yjs_repair = internalMutation({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-			logOwnerId: files_saved_content_yjs_owner((await ctx.db.get("files_saved_content_heads", previousHeadId))!)!,
+			logOwnerId: (await ctx.db.get("files_saved_content_heads", previousHeadId))!.yjsContentHeadId!,
 			throughSequence: args.targetSequence,
 			supersededYjsAssetId: args.supersededYjsAssetId,
 			expectedActiveYjsLastSequenceId: nextYjsLastSequenceId,
@@ -7800,7 +7525,7 @@ export const cleanup_file_yjs_task = internalMutation({
 					organizationId: task.organizationId,
 					workspaceId: task.workspaceId,
 					nodeId: task.fileNodeId,
-					logOwnerId: task.logOwnerId ?? undefined,
+					logOwnerId: task.logOwnerId!,
 					throughSequence: task.throughSequence,
 				})
 			) {
@@ -7859,7 +7584,7 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		logOwnerId: v.optional(v.id("files_saved_content_heads")),
+		logOwnerId: v.id("files_saved_content_heads"),
 		throughSequence: v.number(),
 		supersededYjsAssetId: v.id("files_r2_assets"),
 		expectedActiveYjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
@@ -8074,7 +7799,7 @@ export const set_file_non_collaborative = mutation({
 		await cancel_file_content_materialization(ctx, { nodeId: args.nodeId });
 
 		const now = Date.now();
-		const logOwnerId = files_saved_content_yjs_owner((await files_saved_content_db_get_head(ctx.db, fileNode))!)!;
+		const logOwnerId = (await files_saved_content_db_get_head(ctx.db, fileNode))!.yjsContentHeadId!;
 		const discardsUnmaterializedState = yjsLastSequenceDoc.lastSequence > yjsSnapshotDoc.sequence;
 		await Promise.all([
 			ctx.db.delete("files_yjs_snapshots", yjsSnapshotDoc._id),
@@ -8493,8 +8218,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		// Rollout only: old in-flight actions still carry their text inline.
-		preparedSourceHeadId: v.optional(v.id("files_saved_content_heads")),
+		preparedSourceHeadId: v.id("files_saved_content_heads"),
 		textSize: v.number(),
 		baseAssetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
@@ -8671,7 +8395,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 			yjsSequence: 0,
 			previousHeadId,
 			textContent: args.text,
-			prepared: args.preparedSourceHeadId !== undefined,
+			prepared: true,
 		});
 		if (enableWriteResult._nay || chunks._nay) {
 			const errorMessage = "Failed to turn collaboration on";

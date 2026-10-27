@@ -24,7 +24,6 @@ import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { files_stored_uploads_cost_cents, files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
-import { files_saved_content_yjs_owner } from "../server/files-saved-content-head.ts";
 import {
 	files_chunk_markdown_add_plain_text,
 	files_chunk_markdown_bounds,
@@ -199,7 +198,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				: 0;
 	const input = (role: "staged" | "unstaged") => (step.inputs[role] ??= db_input(ctx, content, role));
 	const sourceHead = content.beforeHeadId ? await ctx.db.get("files_saved_content_heads", content.beforeHeadId) : null;
-	const logOwnerId = sourceHead ? files_saved_content_yjs_owner(sourceHead) : null;
+	const logOwnerId = sourceHead?.yjsContentHeadId ?? null;
 	// Each probe below uses the same range as its page.
 	const source_chunks = (table: "files_text_chunks" | "files_plain_text_chunks") =>
 		table === "files_text_chunks" && content.beforeHeadId

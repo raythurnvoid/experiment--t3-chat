@@ -85,6 +85,75 @@ async function expect_saved_text(f: Awaited<ReturnType<typeof create_file>>, tex
 	);
 }
 
+test("Save publication rechecks a lock added during upload", async () => {
+	const f = await create_file();
+	const before = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
+	const history = await read_history(f);
+	const uploaded = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const capturedFetch = fetch;
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			const response = await capturedFetch(input, init);
+			if (init?.method === "PUT" && init.body === "Replacement text\n") {
+				uploaded.resolve();
+				await resume.promise;
+			}
+			return response;
+		}),
+	);
+	const saving = f.asU.action(api.files_nodes_content.replace_file_content, {
+		membershipId: f.db.membershipId,
+		nodeId: f.nodeId,
+		requestId: "lock-during-upload",
+		text: "Replacement text\n",
+	});
+	await uploaded.promise;
+	try {
+		expect(
+			await f.asU.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		).toHaveProperty("_yay");
+		resume.resolve();
+		expect(await saving, "publication refuses the lock added after Save began").toMatchObject({
+			_nay: { name: "read_only", message: "This item is read-only." },
+		});
+		const request = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_content_save_requests")
+				.withIndex("by_user_workspace_request", (q) =>
+					q.eq("userId", f.u.userId).eq("workspaceId", f.u.workspaceId).eq("requestId", "lock-during-upload"),
+				)
+				.unique(),
+		);
+		if (request?.progress.state !== "ready") throw new Error("Expected a complete unpublished Save");
+		expect(
+			await f.t.mutation(internal.files_content_saves.publish, {
+				saveId: request._id,
+				generation: request.progress.generation,
+			}),
+			"repeating publication still checks the current lock",
+		).toMatchObject({ _nay: { name: "read_only" } });
+		const assetId = request.progress.assetId;
+		const after = await f.t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", f.nodeId),
+			asset: await ctx.db.get("files_r2_assets", assetId),
+		}));
+		expect(after.node?.assetId).toBe(before?.assetId);
+		expect(after.asset?.r2Key).toBeUndefined();
+		expect(after.asset?.unfinalizedExpiresAt).toBeDefined();
+		expect(await read_history(f)).toEqual(history);
+		await expect_saved_text(f, "Original text\n");
+	} finally {
+		resume.resolve();
+		await saving;
+	}
+});
+
 test("retry after a lost reply keeps the newer Save and does not charge or write history twice", async () => {
 	const f = await create_file();
 	const firstArgs = { membershipId: f.db.membershipId, nodeId: f.nodeId, requestId: "save-a", text: "First Save\n" };

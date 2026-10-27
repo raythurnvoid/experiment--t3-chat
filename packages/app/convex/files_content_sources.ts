@@ -6,7 +6,7 @@ import type { Id } from "./_generated/dataModel.js";
 import type { ActionCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import { internalMutation } from "./functions.ts";
-import { files_saved_content_db_get_head, files_saved_content_yjs_owner } from "../server/files-saved-content-head.ts";
+import { files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
 import { files_content_heads_db_for_head } from "../server/files-content-heads.ts";
 import { files_chunk_markdown_bounds } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
@@ -98,7 +98,7 @@ export const begin = internalMutation({
 			contentByteSize: args.textByteSize,
 			statsId: null,
 			ready: false,
-			yjsContentHeadId: files_saved_content_yjs_owner(previous),
+			yjsContentHeadId: previous.yjsContentHeadId,
 		});
 		await ctx.scheduler.runAfter(r2_UNFINALIZED_ASSET_TTL_MS, internal.files_content_saves.retire, { headId });
 		return { headId, textKind };

@@ -401,6 +401,7 @@ describe("cleanup_file_yjs_task", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				fileNodeId: nodeId,
+				logOwnerId: null,
 				throughSequence: 0,
 				supersededYjsAssetId: snapshot.assetId,
 				putMayArriveUntil: null,

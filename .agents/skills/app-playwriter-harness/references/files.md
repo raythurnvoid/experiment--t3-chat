@@ -2013,9 +2013,10 @@ shown paths before using Discard all. Do not discard unrelated pending work.
 The full shape, proven end to end with a second identity (see `second-user-fixtures.md`):
 
 1. The owner's agent proposes content on a **collaboration-off** file (`printf ... > <path>`).
-   `replace_file_content` only works on collaboration-off files — `get_replace_file_content_preflight`
-   returns `null` (surfacing as `{"_nay":{"message":"Not found"}}`) when `collaborationEnabled !== false`.
-2. The member calls `files_nodes_content.replace_file_content` on that same node. The committed text
+   `replace_file_content` only works on collaboration-off files. Its Save preparation returns
+   `{"_nay":{"message":"Not found"}}` when `collaborationEnabled !== false`.
+2. The member calls `files_nodes_content.replace_file_content` on that same node with a new
+   `requestId`. Reuse that ID only when retrying the same text. The committed text
    moves; the proposal is untouched and `contentNeedsRebase` stays `null` (an ordinary save's
    staleness is derived from the base asset, not from that flag).
 3. The owner's row caption becomes `<path>, review to update`.

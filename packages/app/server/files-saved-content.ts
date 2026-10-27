@@ -2,7 +2,7 @@ import { compareValues, type Value } from "convex/values";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_saved_content_db_get_head, files_saved_content_yjs_owner } from "./files-saved-content-head.ts";
+import { files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 import { files_saved_index_db_get_view } from "./files-saved-index.ts";
 import { type files_saved_placement_FixedView } from "./files-saved-placement.ts";
 
@@ -257,7 +257,7 @@ export async function* files_saved_content_db_yjs_updates(
 	const head = await files_saved_content_db_get_head(db, args.nodeId, args.fixedView);
 	if (!head || head.organizationId !== organizationId || head.workspaceId !== workspaceId) return;
 	if (!head.yjsLastSequenceId) return;
-	const logOwner = files_saved_content_yjs_owner(head);
+	const logOwner = head.yjsContentHeadId;
 	if (!logOwner) throw should_never_happen("Yjs content owner is missing", { headId: head._id });
 	yield* db
 		.query("files_yjs_updates")

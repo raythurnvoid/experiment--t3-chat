@@ -2,8 +2,6 @@
 // files can run at the same time.
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
-import { runToCompletion } from "@convex-dev/migrations";
-import migrations_test from "@convex-dev/migrations/test";
 import { getFunctionName } from "convex/server";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
@@ -3188,7 +3186,7 @@ describe("materialization guards", () => {
 		}
 	});
 
-	test.each([false, true])("materialization keeps a later editor update across source rotation: migrated %s", async (migrate) => {
+	test("materialization keeps a later editor update across source rotation", async () => {
 		vi.useFakeTimers();
 		const t = test_convex({ transactionLimits: true });
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -3215,14 +3213,6 @@ describe("materialization guards", () => {
 			update: files_u8_to_array_buffer(encodeStateAsUpdate(editor, firstVector)), sessionId: "first-editor",
 		});
 		if (first._nay) throw new Error(first._nay.message);
-		if (migrate) {
-			migrations_test.register(t as unknown as Parameters<typeof migrations_test.register>[0]);
-			const rows = await t.run((ctx) => ctx.db.query("files_yjs_updates").collect());
-			await t.run((ctx) => ctx.db.patch("files_saved_content_heads", original.headId, { yjsContentHeadId: undefined }));
-			await t.run((ctx) => runToCompletion(ctx, components.migrations, internal.migrations.backfill_saved_content_yjs_owner));
-			expect(await t.run((ctx) => ctx.db.query("files_yjs_updates").collect()), "migration keeps every stored update and owner ID").toEqual(rows);
-			expect(await t.run((ctx) => ctx.db.get("files_saved_content_heads", original.headId))).toMatchObject({ yjsContentHeadId: original.headId });
-		}
 		const entered = Promise.withResolvers<void>();
 		const resume = Promise.withResolvers<void>();
 		const capturedFetch = fetch;

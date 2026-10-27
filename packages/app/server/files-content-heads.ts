@@ -7,7 +7,7 @@ import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx } from "../convex/_generated/server.js";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_saved_content_db_get_head, files_saved_content_yjs_owner } from "./files-saved-content-head.ts";
+import { files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 import { files_content_retention_db_index_uses_head } from "./files-content-retention.ts";
 
 const WRITES = Symbol("files_content_heads");
@@ -288,7 +288,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 		let contentHeadId = await owner(doc);
 		if (contentHeadId && table === "files_yjs_updates") {
 			const head = await raw.get("files_saved_content_heads", contentHeadId);
-			const logOwner = head ? files_saved_content_yjs_owner(head) : null;
+			const logOwner = head?.yjsContentHeadId;
 			if (!logOwner) throw should_never_happen("Yjs content owner is missing", { contentHeadId });
 			contentHeadId = logOwner;
 		}
@@ -505,7 +505,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	});
 
 	async function sync_head(old: Head, next: Partial<WithoutSystemFields<Head>>) {
-		if ("yjsLastSequenceId" in next && !old.yjsContentHeadId)
+		if ("yjsLastSequenceId" in next && old.yjsContentHeadId === null)
 			next.yjsContentHeadId = next.yjsLastSequenceId ? old._id : null;
 		if (Object.entries(next).some(([key, value]) => JSON.stringify(old[key as keyof Head]) !== JSON.stringify(value)))
 			await raw.patch("files_saved_content_heads", old._id, next);

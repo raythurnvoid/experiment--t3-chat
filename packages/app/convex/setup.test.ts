@@ -1023,10 +1023,12 @@ export async function test_get_file_yjs_pointers(t: ReturnType<typeof test_conve
 		if (!node?.yjsLastSequenceId || !node.yjsSnapshotId) {
 			throw new Error("Expected the test file to have Yjs pointers");
 		}
+		const head = (await ctx.db.get("files_saved_content_heads", node.contentHeadId!))!;
 
 		return {
 			yjsLastSequenceId: node.yjsLastSequenceId,
 			yjsSnapshotId: node.yjsSnapshotId,
+			logOwnerId: head.yjsContentHeadId!,
 		};
 	});
 }

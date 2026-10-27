@@ -4,11 +4,6 @@ import { files_content_type_index_fields } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import type { files_saved_placement_FixedView } from "./files-saved-placement.ts";
 
-// Migration bridge: old heads owned their live log themselves. Remove after the owner audit.
-export function files_saved_content_yjs_owner(head: Doc<"files_saved_content_heads">) {
-	return head.yjsContentHeadId === undefined ? (head.yjsLastSequenceId ? head._id : null) : head.yjsContentHeadId;
-}
-
 export async function files_saved_content_db_get_head(
 	db: QueryCtx["db"],
 	nodeOrId: Doc<"files_nodes"> | Id<"files_nodes">,
