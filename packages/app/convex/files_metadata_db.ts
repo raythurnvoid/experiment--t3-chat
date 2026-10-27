@@ -16,7 +16,7 @@ import {
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
 import { files_sort_text_key, files_sort_value_of } from "../shared/files-sort.ts";
-import type { files_saved_placement_FixedView } from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_node, type files_saved_placement_FixedView } from "../server/files-saved-placement.ts";
 import {
 	files_pending_update_index_revision,
 	type files_VisibleEntry,
@@ -92,7 +92,7 @@ export async function files_metadata_db_insert_committed(
 		markdownContent: string;
 	},
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.organizationId ||

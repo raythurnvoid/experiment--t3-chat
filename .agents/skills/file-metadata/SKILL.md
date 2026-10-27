@@ -97,6 +97,8 @@ Pending docs always belong to a real organization and workspace. Committed Mount
 volume id as the storage scope and keep the real owning organization. Saved move and cleanup paths query both
 the committed file index and the pending target index. Retained draft frontmatter stays visible
 to its owner until preparation replaces its indexes.
+Committed frontmatter uses the selected placement; when Restore runs before Move publishes, Move
+rebuilds the affected copies through its existing paged steps before publication.
 
 # Rules
 

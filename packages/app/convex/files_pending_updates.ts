@@ -70,6 +70,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	files_move_reservations_db_enter,
+	files_move_reservations_db_enter_restore,
 	files_move_reservations_db_find_blocker,
 	files_move_reservations_db_check_node_write,
 	files_move_reservations_db_note_source,
@@ -2043,6 +2044,9 @@ export const stage_trusted_yjs_update = internalMutation({
 		if (args.update.byteLength > files_MAX_YJS_WIRE_BYTES) {
 			return Result({ _nay: { message: "Update too large" } });
 		}
+		if (args.kind === "snapshot_restore") {
+			files_move_reservations_db_enter_restore(ctx, { nodeId: args.nodeId, userId: args.userId, mode: "stage" });
+		}
 
 		let operationBatchId: Id<"files_pending_update_operation_batches"> | undefined;
 		if (args.pendingReview) {
@@ -2150,6 +2154,9 @@ export const retire_trusted_yjs_update_stage = internalMutation({
 			stage.userId === args.userId &&
 			stage.fileNodeId === args.nodeId
 		) {
+			if (stage.kind === "snapshot_restore") {
+				files_move_reservations_db_enter_restore(ctx, { nodeId: args.nodeId, userId: args.userId, mode: "stage" });
+			}
 			await ctx.db.delete("files_yjs_trusted_update_stages", stage._id);
 			if (stage.kind !== "public_fill") {
 				await files_private_storage_db_release_deleted_resource(ctx, { kind: "trusted_stage", id: stage._id });

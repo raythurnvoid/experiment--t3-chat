@@ -7,6 +7,7 @@ import { validate } from "convex-helpers/validators";
 import type { Doc, Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import type { files_PendingParent } from "../shared/files.ts";
+import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
 
@@ -29,6 +30,7 @@ type State = {
 	raw: QueryCtx["db"];
 	capability: Capability | null;
 	securityNodes: Set<Id<"files_nodes">>;
+	restoreNodes: Map<Id<"files_nodes">, { userId: Id<"users">; mode: "stage" | "publish" }>;
 	knownScopes: Map<string, Scope>;
 	nodes: Map<string, Promise<Doc<"files_nodes"> | Doc<"files_pending_nodes"> | null>>;
 	sourceReads: Map<string, Promise<Doc<"files_move_source_reservations"> | null>>;
@@ -172,7 +174,7 @@ export async function files_move_reservations_db_check(db: QueryCtx["db"], args:
 		!args.parent &&
 		!args.slot &&
 		!args.wholeWorkspace &&
-		state?.securityNodes.has(args.source.id)
+		(state?.securityNodes.has(args.source.id) || state?.restoreNodes.get(args.source.id)?.mode === "publish")
 	)
 		return Result({ _yay: null });
 	return Result({ _nay: BUSY });
@@ -328,6 +330,18 @@ export function files_move_reservations_db_enter_security(ctx: MutationCtx, args
 	const state = (ctx.db as GuardedDb)[STATE];
 	if (!state) throw new Error("Security writes need the mutation wrapper.");
 	state.securityNodes.add(args.nodeId);
+}
+
+/**
+ * Restore changes one saved file's content. Staging alone may write only its trusted update.
+ */
+export function files_move_reservations_db_enter_restore(
+	ctx: MutationCtx,
+	args: { nodeId: Id<"files_nodes">; userId: Id<"users">; mode: "stage" | "publish" },
+) {
+	const state = (ctx.db as GuardedDb)[STATE];
+	if (!state) throw new Error("Restore writes need the mutation wrapper.");
+	state.restoreNodes.set(args.nodeId, { userId: args.userId, mode: args.mode });
 }
 
 /**
@@ -503,6 +517,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 		raw,
 		capability: null,
 		securityNodes: new Set(),
+		restoreNodes: new Map(),
 		knownScopes: new Map(),
 		nodes: new Map(),
 		sourceReads: new Map(),
@@ -632,6 +647,50 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			const blocker = await find_blocker(check);
 			if (!blocker) continue;
 			const nodeId = table === "files_nodes" ? id : value.fileNodeId;
+			const restore = check.source?.kind === "saved" ? state.restoreNodes.get(check.source.id) : undefined;
+			if (restore && scopes.every((doc) => (table === "files_nodes" ? id : doc.fileNodeId) === check.source?.id)) {
+				if (
+					table === "files_yjs_trusted_update_stages" &&
+					scopes.every((doc) => doc.kind === "snapshot_restore" && doc.userId === restore.userId && !doc.cohortContentId)
+				)
+					continue;
+				if (restore.mode === "publish") {
+					const fields = [
+						"assetId",
+						"pendingContentVersion",
+						"contentType",
+						"contentTypeEssence",
+						"contentTypeFamily",
+						"contentByteSize",
+						"textKind",
+						"collaborationEnabled",
+						"yjsSnapshotId",
+						"yjsLastSequenceId",
+						"statsId",
+						"contentTooLargeByteSize",
+						"contentShapeMismatchAt",
+						"contentYjsStateTooLargeByteSize",
+						"contentFrontmatterTooLargeFieldCount",
+						"contentFrontmatterTooLargeIndexDocumentCount",
+						"updatedAt",
+						"updatedBy",
+					];
+					if (table === "files_nodes" && patch && Object.keys(patch).every((field) => fields.includes(field))) continue;
+					if (
+						["files_yjs_snapshots", "files_yjs_updates", "files_yjs_docs_last_sequences", "files_snapshots", "file_stats"].includes(table)
+					)
+						continue;
+					if (
+						["files_text_chunks", "files_plain_text_chunks", "files_metadata_docs"].includes(table) &&
+						scopes.every((doc) =>
+							doc.sourceKind === "committed" &&
+							(table !== "files_metadata_docs" ||
+								(typeof doc.fieldPath === "string" && doc.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX))),
+						)
+					)
+						continue;
+				}
+			}
 			if (patch && state.securityNodes.has(nodeId as Id<"files_nodes">)) {
 				const fields =
 					table === "files_nodes"

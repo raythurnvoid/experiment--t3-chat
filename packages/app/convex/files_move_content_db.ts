@@ -669,10 +669,12 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: files
 			: node.contentHeadId
 				? await ctx.db.get("files_saved_content_heads", node.contentHeadId)
 				: null;
+		// A shape-changing Restore may have retired this shared sequence already.
 		if (
 			before.yjsLastSequenceId &&
 			before.yjsLastSequenceId !== after.yjsLastSequenceId &&
-			before.yjsLastSequenceId !== current?.yjsLastSequenceId
+			before.yjsLastSequenceId !== current?.yjsLastSequenceId &&
+			(await ctx.db.get("files_yjs_docs_last_sequences", before.yjsLastSequenceId))
 		)
 			await ctx.db.delete("files_yjs_docs_last_sequences", before.yjsLastSequenceId);
 		if (
@@ -681,7 +683,13 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: files
 			before.yjsSnapshotId !== current?.yjsSnapshotId
 		)
 			await ctx.db.delete("files_yjs_snapshots", before.yjsSnapshotId);
-		if (before.statsId && before.statsId !== after.statsId && before.statsId !== current?.statsId)
+		// A stored-byte Restore may have removed these shared stats already.
+		if (
+			before.statsId &&
+			before.statsId !== after.statsId &&
+			before.statsId !== current?.statsId &&
+			(await ctx.db.get("file_stats", before.statsId))
+		)
 			await ctx.db.delete("file_stats", before.statsId);
 	}
 	for (const role of ["previousVersion", "acceptedVersion"] as const) {

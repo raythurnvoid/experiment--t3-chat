@@ -137,7 +137,9 @@ import { files_nodes_reconstruct_latest_file_content_from_materialization_state 
 import {
 	files_move_reservations_db_pause_worker,
 	files_move_reservations_db_check_node_write,
+	files_move_reservations_db_enter_restore,
 } from "../server/files-move-reservations.ts";
+import { files_move_cohorts_db_follow_restore } from "./files_move_cohorts.ts";
 import {
 	r2,
 	r2_copy_object_to_immutable_key,
@@ -6240,12 +6242,6 @@ export const restore_snapshot = internalMutation({
 			});
 			return writable;
 		}
-		const reservation = await files_move_reservations_db_check_node_write(ctx.db, {
-			target: { kind: "saved", id: args.nodeId },
-			pendingUpdate: null,
-			membership: false,
-		});
-		if (reservation._nay) return reservation;
 
 		const userDoc = await ctx.db.get("users", userAuth.id);
 		if (!userDoc) {
@@ -6293,9 +6289,9 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
-		// Consume the staged restore update. The delete commits even when a later step throws is
-		// not a concern here (a throw rolls the whole transaction back), and a refused consume
-		// happens before any other write.
+		// This permission includes consuming the trusted stage. Later write failures must throw
+		// so the whole Restore rolls back.
+		files_move_reservations_db_enter_restore(ctx, { nodeId: args.nodeId, userId: userAuth.id, mode: "publish" });
 		let restoreUpdate: ArrayBuffer | null = null;
 		if (args.restoreUpdateStageId) {
 			const consumed = await files_db_consume_trusted_yjs_update_stage(ctx, {
@@ -6483,6 +6479,7 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
+		await files_move_cohorts_db_follow_restore(ctx, { nodeId: args.nodeId });
 		return Result({
 			_yay: null,
 		});
@@ -6634,7 +6631,8 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			return Result({ _nay: { message: "Insufficient funds" } });
 		}
 
-		return await db_install_file_content_replacement(ctx, {
+		files_move_reservations_db_enter_restore(ctx, { nodeId: args.nodeId, userId: userAuth.id, mode: "publish" });
+		const restored = await db_install_file_content_replacement(ctx, {
 			membership,
 			user,
 			billedUser,
@@ -6650,6 +6648,8 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			yjsSnapshot: args.yjsSnapshot,
 			text: args.text,
 		});
+		if (!restored._nay) await files_move_cohorts_db_follow_restore(ctx, { nodeId: args.nodeId });
+		return restored;
 	},
 });
 

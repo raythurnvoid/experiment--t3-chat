@@ -29,7 +29,7 @@ import {
 	files_pending_overlay_db_schedule_saved_scope,
 	files_pending_overlay_db_wake_job,
 } from "../server/files-pending-overlay.ts";
-import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
+import { files_move_reservations_db_check, files_move_reservations_db_get_source } from "../server/files-move-reservations.ts";
 import {
 	files_saved_placement_db_bump_search_generation,
 	files_saved_placement_db_get_node,
@@ -588,7 +588,7 @@ export async function files_move_cohorts_db_schedule(
 
 export async function files_move_cohorts_db_request_stop(
 	ctx: MutationCtx,
-	args: { cohortId: Id<"files_move_cohorts"> },
+	args: { cohortId: Id<"files_move_cohorts">; error?: { name: string; message: string } },
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (!cohort || cohort.phase === "complete") return;
@@ -598,12 +598,50 @@ export async function files_move_cohorts_db_request_stop(
 			workPhase: "abort_content",
 			step: cohort.step + 1,
 			cleanupCursor: null,
-			errorCode: "stopped",
-			errorMessage: "This Move stopped before it was saved.",
+			errorCode: args.error?.name ?? "stopped",
+			errorMessage: args.error?.message ?? "This Move stopped before it was saved.",
 		});
 		await db_save_slot_abort(ctx, cohort);
 	}
 	await files_move_cohorts_db_schedule(ctx, args);
+}
+
+/**
+ * Keep restored content and its search location before an active Move or Review publishes.
+ */
+export async function files_move_cohorts_db_follow_restore(
+	ctx: MutationCtx,
+	args: { nodeId: Id<"files_nodes"> },
+) {
+	const reservation = await files_move_reservations_db_get_source(ctx.db, { kind: "saved", id: args.nodeId });
+	const cohort = reservation ? await ctx.db.get("files_move_cohorts", reservation.cohortId) : null;
+	if (!cohort || cohort.publishedAt !== null) return;
+	if (cohort.origin.kind === "transfer") {
+		const record = await ctx.db
+			.query("files_move_cohort_nodes")
+			.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", args.nodeId))
+			.unique();
+		if (record?.role !== "replacement") {
+			if (!record || !["sides", "owners_stage", "validate", "publish"].includes(cohort.workPhase)) return;
+			// Restore may replace metadata that was already copied. Stage its new docs before publication.
+			let order = record.order - 1;
+			if (cohort.workPhase === "sides" && cohort.stagingCursor) {
+				const cursor = JSON.parse(cohort.stagingCursor) as { order: number };
+				order = Math.min(order, cursor.order);
+			}
+			await db_save_step(ctx, cohort, {
+				phase: "staging",
+				workPhase: "sides",
+				stagingCursor: JSON.stringify({ order, part: 0, page: null }),
+				validationCursor: null,
+			});
+			return;
+		}
+	}
+	await files_move_cohorts_db_request_stop(ctx, {
+		cohortId: cohort._id,
+		error: { name: "needs_review", message: "A file was restored. Review these changes again." },
+	});
 }
 
 /**
@@ -2047,7 +2085,9 @@ async function db_validate(
 	if (record) {
 		const access = await db_authorize_record(ctx, cohort, actor, record);
 		if (access._nay) return access;
-		if (record.beforePlaceId && record.role !== "anchor") {
+		// A plain Move changes location only. Replacing an occupant still checks its content.
+		const movesSource = cohort.origin.kind === "transfer" && (record.role === "selected" || record.role === "descendant");
+		if (record.beforePlaceId && record.role !== "anchor" && !movesSource) {
 			const before = await files_saved_placement_db_get_node(ctx.db, record.nodeId, {
 				cohortId: cohort._id,
 				view: "before",

@@ -1022,7 +1022,7 @@ test("a refused Review capture keeps only its proposal hold and cannot resume pu
 	expect(await f.snapshot(), "the late capture reply cannot change content").toEqual(before);
 });
 
-test("Restore waits for the exact Review target, then late content cannot undo it after release", async () => {
+test("Restore after exact target release cannot be undone by late Review content", async () => {
 	// Ten items make release span several pages, so other proposal holds remain after this target is free.
 	const f = await start_review_rotation(10);
 	const snapshotId = await f.t.run(async (ctx) => {
@@ -1056,15 +1056,7 @@ test("Restore waits for the exact Review target, then late content cannot undo i
 				.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", f.nodeId))
 				.unique(),
 		);
-		if (reservation && !held) {
-			const before = await f.snapshot();
-			await expect(
-				restore(),
-				"Restore returns a typed refusal for the exact saved-target hold",
-			).resolves.toMatchObject({ _nay: { name: "move_busy" } });
-			expect(await f.snapshot()).toEqual(before);
-			held = true;
-		}
+		if (reservation) held = true;
 		const content = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_move_cohort_content")

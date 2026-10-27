@@ -16,6 +16,7 @@ import {
 	files_move_reservations_db_check,
 	files_move_reservations_db_enter,
 	files_move_reservations_db_enter_security,
+	files_move_reservations_db_enter_restore,
 	files_move_reservations_db_find_blocker,
 	files_move_reservations_db_get_source,
 	files_move_reservations_db_is_rename_allocation,
@@ -550,6 +551,57 @@ describe("Move write reservations", () => {
 				await guarded.db.patch("files_nodes", f.nodeId, { contentByteSize: 100 });
 			}),
 		).rejects.toThrow("This item is being moved");
+	});
+
+	test("Restore permission covers only its saved content and own trusted stage", async () => {
+		const f = await fixture();
+		await f.t.run(async (ctx) => {
+			for (const nodeId of [f.nodeId, f.parentId])
+				await ctx.db.insert("files_move_source_reservations", {
+					cohortId: f.cohortId,
+					source: { kind: "saved", id: nodeId },
+					mode: "placement",
+					userId: null,
+					generation: 1,
+				});
+		});
+		const with_restore = (mode: "stage" | "publish", write: (ctx: MutationCtx) => Promise<unknown>) =>
+			f.t.run(async (ctx) => {
+				const guarded = { ...ctx, ...files_move_reservations_db_wrap(ctx) };
+				files_move_reservations_db_enter_restore(guarded, { nodeId: f.nodeId, userId: f.db.userId, mode });
+				return await write(guarded);
+			});
+		const stage = {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			fileNodeId: f.nodeId,
+			kind: "snapshot_restore" as const,
+			update: new ArrayBuffer(1),
+		};
+		await with_restore("stage", async (ctx) => {
+			expect(await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: f.nodeId } })).toMatchObject({
+				_nay: { name: "move_busy" },
+			});
+			const id = await ctx.db.insert("files_yjs_trusted_update_stages", stage);
+			await ctx.db.patch("files_yjs_trusted_update_stages", id, { update: new ArrayBuffer(2) });
+			await ctx.db.delete("files_yjs_trusted_update_stages", id);
+		});
+		await with_restore("publish", async (ctx) => {
+			expect(await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: f.nodeId } })).toEqual({ _yay: null });
+			await ctx.db.patch("files_nodes", f.nodeId, { contentByteSize: 10 });
+		});
+		const blocked: Array<(ctx: MutationCtx) => Promise<unknown>> = [
+			(ctx) => ctx.db.patch("files_nodes", f.nodeId, { name: "wrong.txt" }),
+			(ctx) => ctx.db.patch("files_nodes", f.nodeId, { writePolicy: { mode: "read_only" } }),
+			(ctx) => ctx.db.delete("files_nodes", f.nodeId),
+			(ctx) => ctx.db.patch("files_nodes", f.parentId, { contentByteSize: 10 }),
+			(ctx) => ctx.db.patch("files_pending_updates", f.proposal._id, { updatedAt: Date.now() + 1 }),
+			(ctx) => ctx.db.insert("files_yjs_trusted_update_stages", { ...stage, kind: "pending_accept" }),
+		];
+		for (const write of blocked)
+			await expect(with_restore("publish", write), "Restore does not grant another held write").rejects.toThrow("This item is being moved");
+		await expect(with_restore("stage", (ctx) => ctx.db.patch("files_nodes", f.nodeId, { contentByteSize: 11 }))).rejects.toThrow("This item is being moved");
 	});
 
 	test("a public protection change stays live and invalidates old proof during a Move", async () => {

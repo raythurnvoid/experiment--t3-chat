@@ -44,9 +44,15 @@ copy an old content header over the current head. Review captures the exact draf
 assets it consumes before publication. Cleanup retires those resources, not a later draft family.
 Preparing and current heads keep their assets alive until their owner retires.
 
-Restore still uses the existing Move and Review guards. Whole-file replacement keeps the current
-head and the existing version and Yjs lineage checks. Removing these guards needs the separate
-copied-field refresh work and overlap tests first.
+Restore has permission to write only its exact saved file's content while Move holds it. Access,
+write policies, content-version checks and Yjs lineage checks still apply. A plain Move of this file
+keeps going and keeps the restored content. If this file is an unpublished Move's replacement
+destination, Restore stops that Move so its old replacement consent cannot discard the restored text.
+A successful Restore aborts the affected unpublished Review group
+with `needs_review`; independent groups continue. A refused Restore or an uploaded stage alone
+does not abort Review. Published Review cleanup keeps the current content head and retained drafts.
+This permission does not allow structural or proposal changes. Copy and ordinary edits keep their
+existing reservation checks.
 
 A content proposal stores one `content` object. Its `base` is `{ kind: "yjs", sequence, lineageGeneration, pendingContentVersion }` for a collaborative file, `{ kind: "asset", assetId, pendingContentVersion }` for a file with collaboration off, or `{ kind: "new" }` for private new content. Its `rootKind` describes all three sealed states:
 
@@ -227,7 +233,8 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   it before and after the write. Each new step still checks current access and capability fences.
   Existing parent folders that keep their placement do not collect unrelated drafts. Changed
   sources still collect affected owners, including drafts inside a moved folder.
-  A saved item stays writable until Move captures that exact item. Capturing a saved folder
+  Ordinary writes stay allowed until Move captures that exact saved item. Restore has the exact
+  content permission described above. Capturing a saved folder
   closes only its direct child and proposal membership. It does not lock its saved descendants.
   Content edits to an existing, uncaptured draft can continue. Creating, removing, or moving a
   proposal checks its physical parent and its old and new destination claims before any write.
