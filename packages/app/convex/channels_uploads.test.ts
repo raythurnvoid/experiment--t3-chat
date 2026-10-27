@@ -51,6 +51,8 @@ async function fixture(plan: "Pay As You Go" | "Free" = "Pay As You Go") {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: owner.organizationId,
@@ -717,6 +719,8 @@ describe("get_upload_url", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 		downloadUrlSpy.mockClear();

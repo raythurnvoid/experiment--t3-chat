@@ -397,21 +397,8 @@
 		gap: 8px;
 	}
 
-	/* The person picker takes the leftover width; the level picker stays as wide as its longest
-	   label, so the two never resize as the selection changes. */
-	.FilesShareModal-add-principal-trigger {
-		flex: 1;
-		justify-content: space-between;
-
-		min-width: 0;
-	}
-
-	.FilesShareModal-add-principal-trigger > span:first-child {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
+	/* The level picker stays as wide as its longest label, so it never resizes as the selection
+	   changes. The person field takes the leftover width. */
 	.FilesShareModal-add-level-trigger {
 		flex: none;
 		justify-content: space-between;
@@ -419,6 +406,82 @@
 		min-width: 130px;
 	}
 	/* #endregion add row */
+
+	/* #region principal picker */
+	.FilesShareModalPrincipalPicker {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.FilesShareModalPrincipalPicker-popover {
+		display: flex;
+		flex-direction: column;
+
+		max-height: 360px;
+	}
+
+	.FilesShareModalPrincipalPicker-popover-scrollable-area {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+
+		.MyComboboxList {
+			min-height: 0;
+		}
+	}
+
+	.FilesShareModalPrincipalPicker-option {
+		gap: 12px;
+		min-height: 36px;
+	}
+
+	/* Same box as a 28px avatar, so people, roles, and apps line up. */
+	.FilesShareModalPrincipalPicker-option-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+
+		width: 28px;
+		height: 28px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 6px;
+
+		color: var(--color-fg-09);
+
+		svg {
+			width: 16px;
+			height: 16px;
+		}
+	}
+
+	.FilesShareModalPrincipalPicker-option-name {
+		flex: 1;
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 16px;
+		color: var(--color-fg-11);
+	}
+
+	.FilesShareModalPrincipalPicker-option-note {
+		flex: none;
+
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+
+	.FilesShareModalPrincipalPicker-status {
+		margin: 0;
+		padding: 8px 12px;
+
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+	/* #endregion principal picker */
 
 	/* #region entry row */
 	.FilesShareModal-list {
@@ -521,7 +584,7 @@
 			flex-wrap: wrap;
 		}
 
-		.FilesShareModal-add-principal-trigger,
+		.FilesShareModalPrincipalPicker,
 		.FilesShareModalSkeleton-add-principal {
 			flex-basis: 100%;
 		}

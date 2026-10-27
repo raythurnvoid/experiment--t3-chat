@@ -180,6 +180,8 @@ describe("install_version service accounts", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});
@@ -352,6 +354,8 @@ describe("install_version service accounts", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			for (const permission of [
 				"workspace.service_accounts.manage",
@@ -3327,6 +3331,8 @@ describe("plugins Phase 0", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: fixture.membership.organizationId,
@@ -4759,6 +4765,8 @@ describe("plugins Phase 0", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: membership.organizationId,
@@ -4828,6 +4836,8 @@ describe("plugins Phase 0", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				const roleId = await ctx.db.insert("access_control_roles", {
 					organizationId: fixture.membership.organizationId,
@@ -4963,6 +4973,8 @@ describe("plugins Phase 0", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			const roleId = await ctx.db.insert("access_control_roles", {
 				organizationId: fixture.membership.organizationId,
@@ -6205,6 +6217,8 @@ describe("plugins get_installation_health", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: fixture.membership.organizationId,
@@ -6286,6 +6300,8 @@ describe("plugins get_installation_storage_usage", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			const roleId = await ctx.db.insert("access_control_roles", {
 				organizationId: args.organizationId,
@@ -6647,6 +6663,8 @@ describe("plugins update_installation_configuration", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: membershipA.organizationId,
@@ -7611,6 +7629,8 @@ describe("plugins metadata file doors", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: fixture.membership.organizationId,
@@ -8576,6 +8596,8 @@ describe("plugins metadata file doors", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: fixture.membership.organizationId,
@@ -10191,6 +10213,8 @@ describe("plugins users.account.deleted dispatch", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 			return userId;

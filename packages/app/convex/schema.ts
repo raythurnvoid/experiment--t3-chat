@@ -9567,7 +9567,11 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_organization_workspace_revokedAt", ["organizationId", "workspaceId", "revokedAt"])
-		.index("by_organization_role", ["organizationId", "role"]),
+		.index("by_organization_role", ["organizationId", "role"])
+		.searchIndex("search_name", {
+			searchField: "name",
+			filterFields: ["organizationId", "workspaceId", "revokedAt"],
+		}),
 
 	/**
 	 * Custom roles, which always apply to the whole organization. System roles live in code, so they
@@ -9807,9 +9811,9 @@ const app_convex_schema = defineSchema({
 		 * name with an index. A name change updates it later, in batches
 		 * (`organizations_member_names.drain_user_name`).
 		 */
-		displayName: v.optional(v.string()),
+		displayName: v.string(),
 		/** `files_sort_text_key(displayName)`. */
-		sortDisplayName: v.optional(v.string()),
+		sortDisplayName: v.string(),
 	})
 		.index("by_workspace_user_active", ["workspaceId", "userId", "active"])
 		.index("by_user_organization_workspace_active", ["userId", "organizationId", "workspaceId", "active"])

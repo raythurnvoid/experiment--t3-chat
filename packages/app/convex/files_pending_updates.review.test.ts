@@ -480,6 +480,8 @@ describe("prepare_file_pending_update_for_review", () => {
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: Date.now(),
+						displayName: "",
+						sortDisplayName: "",
 					});
 					await access_control_db_ensure_role_assignment(ctx, {
 						organizationId: file.organizationId,

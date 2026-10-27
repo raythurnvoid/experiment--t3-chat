@@ -502,6 +502,8 @@ test.each([false, true])(
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				const membership = await ctx.db.get("organizations_workspaces_users", membershipId);
 				if (!membership) throw new Error("Expected the new membership");

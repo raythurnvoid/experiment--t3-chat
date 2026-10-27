@@ -576,6 +576,8 @@ describe("public plugin writer access", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("organizations_membership_lifetimes", {
 				organizationId: fixture.organizationId,
@@ -1246,6 +1248,8 @@ describe("external file writes", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("organizations_membership_lifetimes", {
 				organizationId: fixture.organizationId,
@@ -1800,6 +1804,8 @@ describe("ensure_writer", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.patch("organizations", fixture.organizationId, { ownerUserId: nextOwnerId });
 				const roleId = await ctx.db.insert("access_control_roles", {
@@ -2323,6 +2329,8 @@ describe("rollback_readers", () => {
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: Date.now(),
+						displayName: "",
+						sortDisplayName: "",
 					});
 					await ctx.db.insert("organizations_membership_lifetimes", {
 						organizationId: fixture.organizationId,
@@ -2606,6 +2614,8 @@ describe("rollback_readers", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			const lifetimeId = await ctx.db.insert("organizations_membership_lifetimes", {
 				organizationId: fixture.organizationId,
@@ -2770,6 +2780,8 @@ describe("external file readers", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.insert("organizations_membership_lifetimes", {
 					organizationId: fixture.organizationId,
@@ -2990,6 +3002,8 @@ describe("external file readers", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.insert("organizations_membership_lifetimes", {
 					organizationId: fixture.organizationId,
@@ -3161,6 +3175,8 @@ describe("external file readers", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			const lifetimeId = await ctx.db.insert("organizations_membership_lifetimes", {
 				organizationId: fixture.organizationId,

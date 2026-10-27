@@ -103,6 +103,8 @@ describe("paged Move runs", () => {
 					workspaceId: fixture.db.workspaceId,
 					userId, active: true, updatedAt: Date.now(),
 					pendingOrganizationRemoval: false,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.insert("access_control_role_assignments", {
 					organizationId: fixture.db.organizationId,

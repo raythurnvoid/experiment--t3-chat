@@ -1781,6 +1781,8 @@ describe("init_user_deletion", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			const extraWorkspace = await organizations_db_create_workspace(ctx, {
@@ -1801,6 +1803,8 @@ describe("init_user_deletion", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			return {
@@ -1983,6 +1987,8 @@ describe("init_user_deletion", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			return created._yay;
@@ -2070,6 +2076,8 @@ describe("init_user_deletion", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Clear the saved tenant pointers to test cleanup recovery.
 			await ctx.db.patch("users", collaborator.userId, {
@@ -2348,6 +2356,8 @@ describe("creator-owned private chat deletion", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.insert("access_control_role_assignments", {
 					...scope,
@@ -2720,6 +2730,8 @@ describe("process_user_deletion_request", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			await files_db_insert_pending_update(ctx, {
@@ -3760,6 +3772,8 @@ describe("process_user_deletion_request", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Creating a workspace needs `workspace.create`, which comes from the member role.
 			await ctx.db.insert("access_control_role_assignments", {
@@ -7760,6 +7774,8 @@ describe("hard_delete_user_data", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			const extraWorkspace = await organizations_db_create_workspace(ctx, {
@@ -7951,6 +7967,8 @@ describe("hard_delete_user_data", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			const soloWorkspace = await organizations_db_create_workspace(ctx, {
@@ -7981,6 +7999,8 @@ describe("hard_delete_user_data", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			await Promise.all([
@@ -8200,6 +8220,8 @@ describe("finalize_user_deletion_data", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return created._yay;
 		});
@@ -8936,6 +8958,8 @@ describe("finalize_user_deletion_data", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			const installation = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
 				userId: survivor.userId,
@@ -9084,6 +9108,8 @@ describe("finalize_user_deletion_data", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				}),
 				ctx.db.insert("access_control_role_assignments", {
 					organizationId: created._yay.organizationId,
@@ -9100,6 +9126,8 @@ describe("finalize_user_deletion_data", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				}),
 				ctx.db.insert("access_control_role_assignments", {
 					organizationId: created._yay.organizationId,
@@ -9286,6 +9314,8 @@ describe("finalize_user_deletion_data", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				}),
 				ctx.db.insert("access_control_role_assignments", {
 					organizationId: created._yay.organizationId,
@@ -9913,6 +9943,8 @@ describe("finalize_user_deletion_data", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			const extraWorkspace = await organizations_db_create_workspace(ctx, {
@@ -12089,6 +12121,8 @@ describe("mcp docs", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			const threadId = await ctx.db.insert("ai_chat_threads", {
 				...tenant,

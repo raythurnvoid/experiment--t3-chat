@@ -132,6 +132,9 @@ does not revive a check from a previous membership lifetime.
 
 - **Fields:** `organizations_workspaces_users.active` is required. `false` keeps a membership non-effective during account-deletion retention or a bounded organization-removal drain. `pendingOrganizationRemoval` is required and is `true` only for the second case. Account recovery reactivates ordinary inactive rows and skips marked rows.
 - **Indexes:** `by_workspace_user_active`, `by_user_organization_workspace_active`, `by_active_organization_workspace_user`, `by_active_user_organization_workspace` — prefix with `eq("active", true)` so hot paths avoid post-query filtering.
+- **Member names.** Each membership keeps a copy of the user's name: `displayName` and `sortDisplayName` (`files_sort_text_key(displayName)`). It exists so a workspace's members can be searched and listed by name with an index, one page at a time, at any workspace size. Every insert spreads `organizations_member_names_db_fields`. A name change in `users.db_upsert_anagraphic` schedules `organizations_member_names.drain_user_name`, which updates all of the user's memberships in pages of 100, inactive ones too. Each page reads the name again, so the newest name wins.
+  - `organizations_member_names.search_workspace_members` serves the Share dialog's add field. Empty text lists active members by name (`by_active_organization_workspace_sortDisplayName`). Other text uses the `search_displayName` search index with `active`, organization and workspace filters, best match first. Pages hold at most 50 rows and add the avatar from the user's anagraphic. A membership that is not the caller's gets an empty page.
+  - Other screens still load the whole member list into the browser (`list_organization_workspace_users` in `channels-people.ts`, the Users page, plugin access, and the Properties writers dialog). Move them to this search when you touch them.
 
 # Creating extra workspaces
 

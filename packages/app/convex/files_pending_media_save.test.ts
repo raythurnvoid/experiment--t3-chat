@@ -283,6 +283,8 @@ describe("Save near a draft move into a folder the member can no longer read", (
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...f.scope, userId, role: "member", now: Date.now() });
 			return { userId, membershipId };

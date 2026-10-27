@@ -92,6 +92,8 @@ export async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		};
@@ -493,6 +495,8 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			if (role) {
 				await access_control_db_ensure_role_assignment(ctx, {
@@ -889,6 +893,8 @@ export async function seed_grant_only_member(args: {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		return { userId, membershipId };
 	});

@@ -255,6 +255,8 @@ async function add_member(f: Awaited<ReturnType<typeof fixture>>, clerkUserId: s
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: f.db.organizationId,

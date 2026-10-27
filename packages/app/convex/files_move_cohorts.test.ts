@@ -1431,6 +1431,8 @@ describe("Move cohort repair retries", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});
@@ -1619,6 +1621,8 @@ describe("Move cohort share rows", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return userId;
 		});

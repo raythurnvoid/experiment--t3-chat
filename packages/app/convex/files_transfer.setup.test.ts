@@ -252,6 +252,8 @@ export async function add_member(fixture: Awaited<ReturnType<typeof create_folde
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await ctx.db.insert("access_control_role_assignments", {
 			organizationId: fixture.db.organizationId,

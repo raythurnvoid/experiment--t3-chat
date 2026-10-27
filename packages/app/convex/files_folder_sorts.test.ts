@@ -30,6 +30,8 @@ async function fixture() {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: scope.organizationId,
@@ -265,6 +267,8 @@ describe("get_folder_sort", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});

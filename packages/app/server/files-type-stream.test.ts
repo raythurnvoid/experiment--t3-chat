@@ -109,6 +109,8 @@ test("keeps readable file boundaries and skips locked subtrees before reading th
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: runner.seeded.organizationId,
@@ -196,6 +198,8 @@ test.each(["to_selected", "to_normal"] as const)(
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: Date.now(),
+						displayName: "",
+						sortDisplayName: "",
 					});
 					writers.push({ kind: "user", userId });
 				}

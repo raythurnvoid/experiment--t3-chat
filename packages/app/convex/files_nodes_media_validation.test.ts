@@ -925,6 +925,8 @@ describe("saved file media validation clocks", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await access_control_db_ensure_role_assignment(ctx, { ...f.scope, userId, role: "viewer", now: Date.now() });
 				return { userId, membershipId };
@@ -964,6 +966,8 @@ describe("saved file media validation clocks", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...f.scope, userId, role: "member", now: Date.now() });
 			return { userId, membershipId };
@@ -1018,6 +1022,8 @@ describe("saved file media validation clocks", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...f.scope, userId, role: "admin", now: Date.now() });
 			return { userId, membershipId };

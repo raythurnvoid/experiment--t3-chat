@@ -407,6 +407,8 @@ describe("get_snapshot", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				return userId;
 			});
@@ -489,6 +491,8 @@ describe("get_snapshot", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 		});

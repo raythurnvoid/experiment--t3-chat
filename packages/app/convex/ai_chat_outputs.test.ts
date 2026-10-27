@@ -243,6 +243,8 @@ describe("ai_chat_tool_output_keep", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: f.db.organizationId,

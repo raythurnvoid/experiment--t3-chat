@@ -1528,6 +1528,8 @@ async function review_seed_two_shared_memberships(ctx: MutationCtx, userId: Id<"
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await quotas_db_ensure(ctx, {
 			quotaName: "active_api_credentials",
@@ -1889,6 +1891,8 @@ async function review_seed_organization_structure(
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",

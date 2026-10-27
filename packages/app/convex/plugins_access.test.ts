@@ -1150,6 +1150,8 @@ describe("list_bash_volume_mounts", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});

@@ -187,6 +187,8 @@ async function seed_member_page_token(args: {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		for (const permission of args.permissions ?? ["content.read"]) {
 			await ctx.db.insert("access_control_permission_grants", {

@@ -1664,6 +1664,8 @@ describe("get_workspace_member_anagraphic", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: created._yay.organizationId,
@@ -1769,6 +1771,8 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: sharedOrganization._yay.organizationId,
@@ -1805,6 +1809,8 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// A strong role inside one workspace must not be shown as organization ownership.
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -1883,6 +1889,8 @@ describe("delete_current_user_account", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
@@ -2855,6 +2863,8 @@ describe("delete_current_user_account", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await quotas_db_ensure(ctx, {
 					quotaName: "active_api_credentials",

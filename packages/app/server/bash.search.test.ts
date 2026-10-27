@@ -1976,6 +1976,8 @@ describe("recursive reads stop at a locked folder", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: seeded.organizationId,

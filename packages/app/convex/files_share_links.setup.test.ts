@@ -51,6 +51,8 @@ export async function fixture(args: { memberRole?: "member" | "admin" } = {}) {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: db.organizationId,

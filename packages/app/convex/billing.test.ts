@@ -402,6 +402,8 @@ async function seed_organization_billing_scope(
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: ownerMembership.organizationId,

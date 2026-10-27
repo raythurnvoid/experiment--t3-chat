@@ -1599,6 +1599,8 @@ describe("get_path_by_id", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -1660,6 +1662,8 @@ describe("get_path_by_id", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -2654,6 +2658,8 @@ async function seed_upload_folder_limits(args: { depth: number; move: boolean })
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "member", now });
 		await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });

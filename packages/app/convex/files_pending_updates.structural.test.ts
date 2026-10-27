@@ -1404,6 +1404,8 @@ describe("apply_file_pending_move", () => {
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: Date.now(),
+						displayName: "",
+						sortDisplayName: "",
 					});
 					await access_control_db_ensure_role_assignment(ctx, {
 						organizationId: seeded.organizationId,
@@ -2208,6 +2210,8 @@ describe("apply_file_pending_move", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: seeded.organizationId,
@@ -5233,6 +5237,8 @@ describe("discard_file_pending_structural", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Writing files needs `content.write`, which comes from the member role.
 			await ctx.db.insert("access_control_role_assignments", {
@@ -5334,6 +5340,8 @@ describe("discard_file_pending_structural", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Writing files needs `content.write`, which comes from the member role.
 			await ctx.db.insert("access_control_role_assignments", {
@@ -6011,6 +6019,8 @@ describe("expire_file_pending_updates structural rows", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Writing files needs `content.write`, which comes from the member role.
 			await ctx.db.insert("access_control_role_assignments", {

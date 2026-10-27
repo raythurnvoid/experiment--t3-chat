@@ -293,6 +293,8 @@ describe("paged review graph", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: f.db.organizationId,

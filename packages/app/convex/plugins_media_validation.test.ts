@@ -134,6 +134,8 @@ async function fixture() {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await ctx.db.insert("organizations_membership_lifetimes", {
 			organizationId: membership.organizationId,

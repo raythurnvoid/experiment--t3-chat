@@ -163,6 +163,8 @@ describe("begin_browser_invocation", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 		expect((await f.begin())._nay).toBeDefined();

@@ -196,11 +196,6 @@ export const create_anonymous_user = internalMutation({
 			now,
 		});
 
-		await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
-			userId,
-			now,
-		});
-
 		const [tokenId] = await Promise.all([
 			ctx.db
 				.insert("users_anon_tokens", {
@@ -232,6 +227,13 @@ export const create_anonymous_user = internalMutation({
 
 			billing_db_ensure_anonymous_user_usage_snapshot(ctx, { userId, now }),
 		]);
+
+		// Create the workspace after the profile. Its membership copies the user's name, and no name
+		// change comes later to fill it in.
+		await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
+			userId,
+			now,
+		});
 
 		return {
 			userId,

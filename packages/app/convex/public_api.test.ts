@@ -811,6 +811,8 @@ describe("file write policy API", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -1159,6 +1161,8 @@ describe("service-bound API credentials", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "admin", now: Date.now() });
 			await quotas_db_ensure(ctx, { ...db, quotaName: "active_api_credentials", userId, now: Date.now() });
@@ -1376,6 +1380,8 @@ describe("service-bound API credentials", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "admin", now: Date.now() });
 			await quotas_db_ensure(ctx, { ...db, quotaName: "active_api_credentials", userId, now: Date.now() });
@@ -1560,6 +1566,8 @@ describe("service-bound API credentials", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});
@@ -2931,6 +2939,8 @@ describe("public files API", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -3152,6 +3162,8 @@ describe("public files API", () => {
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: now,
+						displayName: "",
+						sortDisplayName: "",
 					});
 				}
 				// "member" carries workspace-level content.write, so no refusal below can come from the
@@ -3640,6 +3652,8 @@ describe("public files API", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -3697,6 +3711,8 @@ describe("public files API", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await quotas_db_ensure(ctx, {
 				quotaName: "active_api_credentials",
@@ -3980,6 +3996,8 @@ describe("public files API", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("api_credentials", {
 				serviceAccountId: null,
@@ -4037,6 +4055,8 @@ describe("public files API", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 			// The write route checks credits first, so the viewer pays and reaches the permission check.
@@ -4302,6 +4322,8 @@ describe("locked and missing paths", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -4758,6 +4780,8 @@ describe("locked and missing paths", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			for (const permission of ["content.read", "content.write"] as const) {
 				await ctx.db.insert("access_control_permission_grants", {
@@ -6767,6 +6791,8 @@ describe("files upload-urls", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -8120,6 +8146,8 @@ describe("files read-only locks", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -10634,6 +10662,8 @@ describe("service file writes", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -10736,6 +10766,8 @@ describe("service file writes", () => {
 						active: true,
 						pendingOrganizationRemoval: false,
 						updatedAt: now,
+						displayName: "",
+						sortDisplayName: "",
 					});
 					await access_control_db_ensure_role_assignment(ctx, {
 						organizationId: db.organizationId,

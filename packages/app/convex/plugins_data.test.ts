@@ -749,6 +749,8 @@ async function join_member_with_role(args: {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: fixture.organizationId,
@@ -5972,6 +5974,8 @@ describe("user_append_document", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -10604,6 +10608,8 @@ describe("user_manage_scope", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				userIds.push(userId);
 			}
@@ -11117,6 +11123,8 @@ describe("user_manage_scope", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: fixture.organizationId,

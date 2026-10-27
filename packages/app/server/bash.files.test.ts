@@ -474,6 +474,8 @@ describe("bash_run_command", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
 					organizationId: seeded.organizationId,
@@ -2573,6 +2575,8 @@ describe("locked paths", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: seeded.organizationId,
@@ -2913,6 +2917,8 @@ describe("guests", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});

@@ -121,8 +121,9 @@ async function fixture(args: { displayName?: string } = {}) {
 
 	const scheduled_drains = () =>
 		t.run(async (ctx) =>
+			// The member name drain has the same function name in another module, so match this module.
 			(await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
-				job.name.endsWith("drain_user_name"),
+				job.name.endsWith("files_updated_by:drain_user_name"),
 			),
 		);
 

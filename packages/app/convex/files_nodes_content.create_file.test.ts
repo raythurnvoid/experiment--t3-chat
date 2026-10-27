@@ -21,6 +21,8 @@ async function fixture() {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "member", now: Date.now() });
 		return { userId, membershipId };

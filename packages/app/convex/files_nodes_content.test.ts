@@ -1201,6 +1201,8 @@ describe("copy_transfer_file", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.patch("organizations", db.organizationId, { billingMode: "organization_owner" });
 				return newOwner.userId;

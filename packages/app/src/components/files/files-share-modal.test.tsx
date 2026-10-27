@@ -42,8 +42,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			set_node_public: "set_public",
 		},
 		files_share_links: { set_node_share_link: "set_link" },
-		organizations: { list_organization_workspace_users: "users" },
-		access_control: { list_roles: "roles", list_service_accounts: "accounts" },
+		organizations_member_names: { search_workspace_members: "members" },
+		access_control: { list_roles: "roles", search_service_accounts: "accounts" },
 		users: { get_anagraphic: "anagraphic" },
 	},
 }));
@@ -149,8 +149,38 @@ const LINK = { token: "token_1", createdBy: "user_1", createdAt: Date.UTC(2026, 
 
 function mockShareState(shareState: object) {
 	queryMock.mockImplementation((query: string) =>
-		query === "sharing" ? shareState : query === "users" ? ["owner_1", "user_1"] : query === "roles" ? [] : undefined,
+		query === "sharing" ? shareState : query === "roles" ? [] : undefined,
 	);
+}
+
+/**
+ * One page of the picker searches: two members and one app. A skipped search has no rows and, like
+ * Convex's own hook, stays at "LoadingFirstPage".
+ */
+function mockPickerPages() {
+	pageMock.mockImplementation((query: string, args: unknown) =>
+		args === "skip"
+			? { results: [], status: "LoadingFirstPage", loadMore: vi.fn() }
+			: {
+					results:
+						query === "members"
+							? [
+									{ userId: "owner_1", displayName: "Owner", avatarUrl: null },
+									{ userId: "user_1", displayName: "Ada", avatarUrl: null },
+								]
+							: [{ _id: "account_1", name: "Report bot", revokedAt: null }],
+					status: "Exhausted",
+					loadMore: vi.fn(),
+				},
+	);
+}
+
+/**
+ * Open the add picker's menu.
+ */
+async function openPicker() {
+	await waitForDialogFocus();
+	fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
 }
 
 function generalSection() {
@@ -186,13 +216,10 @@ beforeEach(() => {
 	queryMock
 		.mockReset()
 		.mockImplementation((query: string) =>
-			query === "sharing" ? SHARE : query === "users" ? ["owner_1", "user_1"] : query === "roles" ? [] : undefined,
+			query === "sharing" ? SHARE : query === "roles" ? [] : undefined,
 		);
-	pageMock.mockReset().mockReturnValue({
-		results: [{ _id: "account_1", name: "Report bot", revokedAt: null }],
-		status: "Exhausted",
-		loadMore: vi.fn(),
-	});
+	pageMock.mockReset();
+	mockPickerPages();
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
 	anagraphicsMock.mockReset().mockReturnValue({ owner_1: { displayName: "Owner" }, user_1: { displayName: "Ada" } });
 	toastSuccessMock.mockReset();
@@ -206,7 +233,7 @@ afterEach(() => {
 
 describe("FilesShareModal", () => {
 	test("renders while the share state is still loading", () => {
-		queryMock.mockImplementation((query: string) => (query === "users" ? ["owner_1", "user_1"] : undefined));
+		queryMock.mockImplementation(() => undefined);
 		renderModal();
 
 		expect(screen.getByRole("status", { name: "Loading sharing" }).getAttribute("aria-busy")).toBe("true");
@@ -214,8 +241,7 @@ describe("FilesShareModal", () => {
 
 	test("adds an active service account with a permitted level", async () => {
 		renderModal();
-		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
+		await openPicker();
 		fireEvent.click(await screen.findByRole("option", { name: "Report bot" }));
 		fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
@@ -227,17 +253,12 @@ describe("FilesShareModal", () => {
 				level: "read",
 			}),
 		);
-		expect(pageMock).toHaveBeenCalledWith(
-			"accounts",
-			{ membershipId: "membership_1", includeRevoked: false },
-			{ initialNumItems: 50 },
-		);
+		expect(pageMock).toHaveBeenCalledWith("accounts", { membershipId: "membership_1", text: "" }, { initialNumItems: 20 });
 	});
 
 	test("disables levels above the service grant ceiling", async () => {
 		renderModal();
-		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
+		await openPicker();
 		fireEvent.click(await screen.findByRole("option", { name: "Report bot" }));
 		fireEvent.click(screen.getByRole("combobox", { name: "Access level for the new person, role, or app" }));
 
@@ -258,9 +279,7 @@ describe("FilesShareModal", () => {
 							},
 						],
 					}
-				: query === "users"
-					? ["owner_1"]
-					: [],
+				: [],
 		);
 
 		renderModal();
@@ -604,16 +623,61 @@ describe("FilesShareModal", () => {
 		queryMock.mockImplementation((query: string) =>
 			query === "sharing"
 				? { ...SHARE, canShareWithServiceAccounts: false }
-				: query === "users"
-					? ["owner_1", "user_1"]
-					: [],
+				: [],
 		);
 
 		renderModal();
-		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or app to add" }));
+		await openPicker();
 
+		expect(await screen.findByRole("option", { name: /Ada/ })).toBeTruthy();
 		expect(screen.queryByRole("option", { name: "Report bot" })).toBeNull();
-		expect(await screen.findByRole("option", { name: "Ada" })).toBeTruthy();
+	});
+
+	test("shows the owner and people on the list in the picker, but does not pick them", async () => {
+		mockShareState({
+			...SHARE,
+			entries: [
+				{
+					principal: { kind: "user", userId: "user_1" },
+					level: "read",
+					serviceAccountName: null,
+					servicePluginName: null,
+					coverage: null,
+				},
+			],
+		});
+		renderModal();
+		await openPicker();
+
+		const owner = await screen.findByRole("option", { name: /Owner/ });
+		const ada = screen.getByRole("option", { name: /Ada/ });
+		expect([owner.getAttribute("aria-disabled"), ada.getAttribute("aria-disabled")]).toEqual(["true", "true"]);
+		expect(ada.textContent).toContain("Added");
+
+		fireEvent.click(ada);
+		expect(
+			screen.getByRole("combobox", { name: "Person, role, or app to add" }).getAttribute("data-share-add-principal"),
+		).toBe("");
+	});
+
+	test("a filter key searches only that kind", async () => {
+		renderModal();
+		await openPicker();
+		fireEvent.click(await screen.findByRole("option", { name: /^app:/ }));
+
+		expect(await screen.findByRole("option", { name: "Report bot" })).toBeTruthy();
+		expect(pageMock).toHaveBeenCalledWith("members", "skip", { initialNumItems: 20 });
+	});
+
+	test("says no matches when the only search left is skipped", async () => {
+		renderModal();
+		await openPicker();
+		fireEvent.change(screen.getByRole("combobox", { name: "Person, role, or app to add" }), {
+			target: { value: "role:nobody" },
+		});
+
+		expect(await screen.findByText("No matches.")).toBeTruthy();
+		expect(screen.queryByRole("option", { name: /Ada/ })).toBeNull();
 	});
 
 	test("shows the public link section to a manager of a file, and the flag alone to an image editor", () => {

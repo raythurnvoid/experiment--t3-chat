@@ -70,6 +70,8 @@ async function add_member(f: Awaited<ReturnType<typeof fixture>>) {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: f.db.organizationId,

@@ -219,6 +219,8 @@ describe("create_folder_node", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...db, userId, role: "viewer", now: Date.now() });
 			return { userId, membershipId };

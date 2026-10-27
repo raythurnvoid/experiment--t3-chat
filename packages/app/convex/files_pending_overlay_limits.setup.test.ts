@@ -264,6 +264,8 @@ export async function add_member(ctx: MutationCtx, db: Db, clerkUserId: string) 
 		active: true,
 		pendingOrganizationRemoval: false,
 		updatedAt: Date.now(),
+		displayName: "",
+		sortDisplayName: "",
 	});
 	await access_control_db_ensure_role_assignment(ctx, {
 		organizationId: db.organizationId,

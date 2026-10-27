@@ -255,6 +255,8 @@ async function seed_reader_member(
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		const grantId = await ctx.db.insert("access_control_permission_grants", {
 			organizationId: fixture.membership.organizationId,
@@ -1793,6 +1795,8 @@ describe("plugin ui file view sessions", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.membership.organizationId,

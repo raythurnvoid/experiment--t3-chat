@@ -41,6 +41,8 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 		active: true,
 		pendingOrganizationRemoval: false,
 		updatedAt: now,
+		displayName: "",
+		sortDisplayName: "",
 	});
 
 	return { userId, otherUserId, organizationId, workspaceId };

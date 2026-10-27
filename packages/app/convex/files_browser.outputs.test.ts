@@ -591,6 +591,8 @@ describe("get_file_read_source", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { ...scope, userId, role: "member", now: Date.now() });
 			return { userId, membershipId };

@@ -39,6 +39,8 @@ async function shared_fixture() {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await ctx.db.patch("files_nodes", f.nodeId, { restrictedScopeNodeId: f.nodeId, isRestrictedScopeRoot: true });
 		for (const view of ["before", "after"] as const) {
@@ -183,6 +185,8 @@ describe("share rows during a Move", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
 					organizationId: db.organizationId,

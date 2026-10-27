@@ -28,6 +28,8 @@ describe("ensure_plugin_folder", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.insert("access_control_role_assignments", {
 					organizationId: owner.organizationId,

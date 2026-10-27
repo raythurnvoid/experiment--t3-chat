@@ -1213,6 +1213,14 @@ inside it. Everybody who had access before keeps it: added people only add acces
   (null when the caller may not see that folder's names). `linksInside` says a restricted folder
   holds public links (one `.first()` read), and `pluginArea` names the plugin that owns the folder's
   list.
+- **The add field.** The dialog picks who to add with a search field, not a full list. People come
+  from `organizations_member_names.search_workspace_members` and apps from
+  `access_control.search_service_accounts` (search index `search_name`, live accounts only), 20 per
+  page with "Show more". Roles are filtered in the browser, because the list is bounded: the system
+  roles plus at most 20 custom roles. `people:`, `role:` and `app:` narrow the search to one kind.
+  The owner and anybody already on the list stay in the menu as disabled rows marked "Owner" or
+  "Added", so a search for them explains why they cannot be added. The dialog reads profiles only
+  for the people it names: the owner, the list rows, and the link's creator.
 - The dialog has two parts, like Google Drive and Notion. "People with access" is the list: the
   folders above with added people, the owner as a fixed row (always, so the list is never empty),
   then the people, roles, and apps added here. Roles read "Everyone with this workspace

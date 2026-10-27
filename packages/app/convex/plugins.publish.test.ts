@@ -4773,6 +4773,8 @@ describe("plugins list_bash_source_mounts", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { ...membership, userId, membershipId };
 		});

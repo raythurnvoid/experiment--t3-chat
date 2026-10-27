@@ -197,6 +197,8 @@ describe("upload plan gate", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Ownership carries every permission, so the acting member needs a role of their own once the
 			// organization belongs to someone else. `admin` is the role that has everything except billing.
@@ -1591,6 +1593,8 @@ describe("get_visible_target_by_path", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -1931,6 +1935,8 @@ describe("files_nodes.set_node_write_policy", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});
@@ -2390,6 +2396,8 @@ describe("selected file writers", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,
@@ -3236,6 +3244,8 @@ describe("files_nodes destination conflict privacy", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: db.organizationId,
@@ -3728,6 +3738,8 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Archiving needs `content.write`, which comes from the member role.
 			await ctx.db.insert("access_control_role_assignments", {
@@ -4727,6 +4739,8 @@ describe("files_nodes public read-only view", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_permission_grants", {
 				organizationId: db.organizationId,
@@ -4968,6 +4982,8 @@ describe("member controls on plugin-labeled nodes", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { userId, membershipId };
 		});
@@ -5402,6 +5418,8 @@ describe("files_nodes_create.create_file_node read-only barrier", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("access_control_role_assignments", {
 				organizationId: db.organizationId,

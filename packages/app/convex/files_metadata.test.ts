@@ -36,6 +36,8 @@ async function fixture(options: Parameters<typeof test_convex>[0] = { transactio
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, { ...owner, userId, role: "viewer", now: Date.now() });
 		return { userId, membershipId };

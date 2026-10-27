@@ -407,6 +407,8 @@ test("text_search_files searches pending unstaged content instead of stale commi
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await ctx.db.insert("access_control_role_assignments", {
 			organizationId: db.organizationId,
@@ -702,6 +704,8 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: db.organizationId,
@@ -1753,6 +1757,8 @@ describe("folder metadata", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: db.organizationId,

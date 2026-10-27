@@ -876,6 +876,8 @@ describe("service upload plan gate", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// Ownership carries every permission, so the acting member needs a role of their own once the
 			// organization belongs to someone else. `admin` is the role that has everything except billing.
@@ -1452,6 +1454,8 @@ describe("service upload targets", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -1853,6 +1857,8 @@ describe("service upload targets", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -3457,6 +3463,8 @@ describe("service upload delete", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -4831,6 +4839,8 @@ describe("service upload archive", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,

@@ -92,6 +92,8 @@ export async function fixture(transactionLimits?: NonNullable<Parameters<typeof 
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: db.organizationId,
@@ -438,6 +440,8 @@ export async function add_member(ctx: MutationCtx, scope: Omit<Scope, "userId">,
 		active: true,
 		updatedAt: Date.now(),
 		pendingOrganizationRemoval: false,
+		displayName: "",
+		sortDisplayName: "",
 	});
 	await access_control_db_ensure_role_assignment(ctx, { ...scope, userId, role: "member", now: Date.now() });
 	return { ...scope, userId };

@@ -151,6 +151,8 @@ async function access_control_test_seed_organization(
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: now,
+			displayName: "",
+			sortDisplayName: "",
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
 			organizationId: created._yay.organizationId,
@@ -819,6 +821,41 @@ describe("service account controls", () => {
 			).page.map((account) => account._id),
 		).toContain(serviceAccountId);
 		await expect(t.query(api.access_control.get_service_account, args)).rejects.toThrow("Unauthenticated");
+	});
+
+	test("search fills each page with live matches when many accounts do not match", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account search",
+			suffix: "account-search",
+		});
+		await t.run(async (ctx) => {
+			const add_account = (name: string, revokedAt: number | null) =>
+				ctx.db.insert("access_control_service_accounts", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					name,
+					createdBy: fixture.ownerId,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+					revokedAt,
+				});
+			// Add the revoked match first, so it would fill the first page if search kept revoked accounts.
+			await add_account("Backup old", Date.now());
+			for (let index = 0; index < 60; index += 1) {
+				await add_account(`Other ${index}`, null);
+			}
+			await add_account("Backup daily", null);
+			await add_account("Backup weekly", null);
+		});
+
+		const first = await fixture.asMember.query(api.access_control.search_service_accounts, {
+			membershipId: fixture.memberMembershipId,
+			text: "backup",
+			paginationOpts: { cursor: null, numItems: 2 },
+		});
+
+		expect(first.page.map((account) => account.name).sort()).toEqual(["Backup daily", "Backup weekly"]);
 	});
 
 	test("requires account management and the exact resource ceiling, without workspace content authority", async () => {
@@ -2260,6 +2297,8 @@ describe("plugin role grant ceilings", () => {
 				active: false,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -3903,6 +3942,8 @@ describe("system roles", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			return await access_control_db_has_permission(ctx, {
@@ -4456,6 +4497,8 @@ describe("custom roles", () => {
 				active: false,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -4556,6 +4599,8 @@ describe("custom roles", () => {
 				active: false,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -4760,6 +4805,8 @@ describe("custom roles", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -4876,6 +4923,8 @@ describe("custom roles", () => {
 				active: false,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -4945,6 +4994,8 @@ describe("custom roles", () => {
 				active: false,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -5043,6 +5094,8 @@ describe("custom roles", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await access_control_db_ensure_role_assignment(ctx, {
 					organizationId: organization.organizationId,
@@ -5236,6 +5289,8 @@ describe("set_user_role", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5326,6 +5381,8 @@ describe("set_user_role", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 			await access_control_db_ensure_role_assignment(ctx, {
@@ -5386,6 +5443,8 @@ describe("set_user_role", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			const assignment = await ctx.db
 				.query("access_control_role_assignments")
@@ -5482,6 +5541,8 @@ describe("set_user_role", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: organization.organizationId,
@@ -5490,6 +5551,8 @@ describe("set_user_role", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 
 			return workspace._yay.workspaceId;
@@ -5531,6 +5594,8 @@ describe("set_user_role", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 		await access_control_test_reset_write_rate_limit(t, managerId);
@@ -5589,6 +5654,8 @@ describe("set_user_role", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return { workspaceId: workspace._yay.workspaceId, membershipId };
 		});
@@ -5710,6 +5777,8 @@ describe("set_user_role", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return workspace._yay.workspaceId;
 		});
@@ -5767,6 +5836,8 @@ describe("set_user_role", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 				await ctx.db.insert("organizations_workspaces_users", {
 					organizationId: organization.organizationId,
@@ -5775,6 +5846,8 @@ describe("set_user_role", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 			return workspace._yay.workspaceId;
@@ -5854,6 +5927,8 @@ describe("set_user_role", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 			await ctx.db.insert("organizations_workspaces_users", {
@@ -5863,6 +5938,8 @@ describe("set_user_role", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -5971,6 +6048,8 @@ describe("role and permission queries", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -6042,6 +6121,8 @@ describe("role and permission queries", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -6070,6 +6151,8 @@ describe("role and permission queries", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			return workspace._yay.workspaceId;
 		});
@@ -6121,6 +6204,8 @@ describe("role and permission queries", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: organization.organizationId,
@@ -6807,6 +6892,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -6956,6 +7043,8 @@ describe("file sharing", () => {
 				active: false,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -7090,6 +7179,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -7212,6 +7303,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			// The inviter IS in the side workspace, so the refusal below is about the folder and not
 			// about her being a stranger to that workspace.
@@ -7222,6 +7315,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
 			return workspace._yay.workspaceId;
@@ -7597,6 +7692,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 
@@ -7869,6 +7966,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
 			return workspace._yay.workspaceId;
@@ -7975,6 +8074,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, {
 				organizationId: fixture.organizationId,
@@ -8096,6 +8197,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 
@@ -8171,6 +8274,8 @@ describe("file sharing", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: now,
+					displayName: "",
+					sortDisplayName: "",
 				});
 			}
 			// Bob is in the side workspace. Alice is not, and that is the whole test.
@@ -8181,6 +8286,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await test_mocks_cancel_pending_home_file_seeds(ctx);
 			return workspace._yay.workspaceId;
@@ -8267,6 +8374,8 @@ describe("file sharing", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 

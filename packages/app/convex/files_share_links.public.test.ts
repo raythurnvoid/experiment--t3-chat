@@ -113,6 +113,8 @@ async function insert_guest(f: Fixture, clerkUserId: string) {
 			active: true,
 			pendingOrganizationRemoval: false,
 			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
 		});
 		// The membership is inserted directly, so its plan and API key quota are too. An API write costs a cent.
 		await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });

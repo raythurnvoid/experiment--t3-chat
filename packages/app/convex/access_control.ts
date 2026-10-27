@@ -2540,6 +2540,56 @@ export const list_service_accounts = query({
 	},
 });
 
+/**
+ * One page of the live service accounts of the caller's workspace, for the Share dialog's picker.
+ * Empty text lists them in creation order. Other text matches whole words and word starts of the
+ * name, best match first.
+ */
+export const search_service_accounts = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		text: v.string(),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(service_account_validator),
+	handler: async (ctx, args) => {
+		const context = await db_get_service_account_context(ctx, args.membershipId);
+		if (context._nay?.message === "Unauthenticated") {
+			throw convex_error(context._nay);
+		}
+		if (context._nay) {
+			return { page: [], continueCursor: "", isDone: true };
+		}
+
+		const { membership } = context._yay;
+		const text = args.text.trim();
+		const accounts = text
+			? ctx.db
+					.query("access_control_service_accounts")
+					.withSearchIndex("search_name", (q) =>
+						q
+							.search("name", text)
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("revokedAt", null),
+					)
+			: ctx.db
+					.query("access_control_service_accounts")
+					.withIndex("by_organization_workspace_revokedAt", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("revokedAt", null),
+					);
+		const page = await accounts.paginate({
+			...args.paginationOpts,
+			numItems: Math.min(50, args.paginationOpts.numItems),
+		});
+
+		return { ...page, page: page.page.map(get_public_service_account_fields) };
+	},
+});
+
 export const get_service_account = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),

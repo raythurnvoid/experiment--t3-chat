@@ -1027,6 +1027,8 @@ describe("advance", () => {
 					active: true,
 					pendingOrganizationRemoval: false,
 					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
 				});
 				const membership = await ctx.db.get("organizations_workspaces_users", membershipId);
 				if (!membership) throw new Error("Missing membership");

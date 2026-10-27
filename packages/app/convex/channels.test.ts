@@ -50,6 +50,8 @@ async function fixture() {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
 			});
 			await access_control_db_ensure_role_assignment(ctx, { organizationId, workspaceId, userId, role, now });
 			await quotas_db_ensure(ctx, { quotaName: "active_api_credentials", organizationId, workspaceId, userId, now });
@@ -174,6 +176,8 @@ describe("get_channel", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 		expect(
@@ -319,6 +323,8 @@ describe("open_direct_channel", () => {
 				active: true,
 				pendingOrganizationRemoval: false,
 				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
 			});
 		});
 		expect(
