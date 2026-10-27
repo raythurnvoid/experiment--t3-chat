@@ -7810,6 +7810,9 @@ export const cleanup_file_yjs_task = internalMutation({
 		}
 
 		await ctx.db.patch("files_yjs_cleanup_tasks", task._id, { historyPending: false });
+		// OFF clears the live owner's pointer before this cleanup finishes.
+		if (task.logOwnerId)
+			await ctx.scheduler.runAfter(0, internal.files_content_saves.retire, { headId: task.logOwnerId });
 
 		// Asset cleanup needs only the live reference check, even when history authority was retired.
 		await db_delete_superseded_yjs_asset(ctx, {

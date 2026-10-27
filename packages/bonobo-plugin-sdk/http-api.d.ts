@@ -715,9 +715,9 @@ export type BonoboHttpApi = {
 							writerGeneration: number;
 							operationId: string;
 							sequence: number;
+							contentRevision: string | null;
 							operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
-							contentRevision: string | null;
 							readerRevision: number | null;
 						};
 						message?: undefined;
@@ -1208,9 +1208,9 @@ export type BonoboHttpApi = {
 							writerGeneration: number;
 							operationId: string;
 							sequence: number;
+							contentRevision: string | null;
 							operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
-							contentRevision: string | null;
 							readerRevision: number | null;
 						};
 					} | {
@@ -1319,9 +1319,9 @@ export type BonoboHttpApi = {
 							writerGeneration: number;
 							operationId: string;
 							sequence: number;
+							contentRevision: string | null;
 							operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
-							contentRevision: string | null;
 							readerRevision: number | null;
 						};
 					} | {
@@ -1586,9 +1586,9 @@ export type BonoboHttpApi = {
 						writerGeneration: number;
 						operationId: string;
 						sequence: number;
+						contentRevision: string | null;
 						operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
 						fingerprint: string;
-						contentRevision: string | null;
 						readerRevision: number | null;
 					};
 				};

@@ -185,7 +185,10 @@ test("the old field-cap door retries without bringing back its marker", async ()
 		...f.u, nodeId: f.nodeId, expectedYjsLastSequenceId: f.pointers.yjsLastSequenceId, targetSequence: 0,
 		sequence: 0, fieldCount: 129, indexDocumentCount: 129,
 	});
-	expect(await f.t.run((ctx) => ctx.db.query("files_yjs_repair_markers").first())).toBeNull();
+	expect((await read_source(f)).node).toMatchObject({
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+	});
 	expect(await f.t.run((ctx) => ctx.db.query("files_content_materialization_jobs").first())).not.toBeNull();
 });
 

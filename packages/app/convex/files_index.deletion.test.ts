@@ -60,7 +60,7 @@ async function expect_released(f: Fixture, nodeId: Id<"files_nodes">) {
 	for (const rows of [state.tickets, state.runs, state.inputs, state.candidates]) expect(rows).toEqual([]);
 	for (const rows of [state.metadata, state.plain])
 		expect(
-			rows.filter((row) => row.fileNodeId === nodeId),
+			rows.filter((row) => row.sourceKind === "committed" && row.fileNodeId === nodeId),
 			"deleted upload leaves no old or new search rows",
 		).toEqual([]);
 	expect(

@@ -3162,6 +3162,27 @@ describe("materialization guards", () => {
 			});
 			expect(read?.content, "later edits remain readable after Review history cleanup")
 				.toBe("Reviewed\nBefore cleanup\nAfter cleanup\n");
+
+			const nextSequence = await t.run(async (ctx) =>
+				(await ctx.db.get("files_yjs_docs_last_sequences", reviewed.head.yjsLastSequenceId!))!.lastSequence);
+			expect(await t.action(internal.files_nodes_content.materialize_file_content, {
+				organizationId: db.organizationId, workspaceId: db.workspaceId, nodeId, userId: db.userId,
+				targetSequence: nextSequence,
+			})).toHaveProperty("_yay");
+			await test_finish_file_index(t, nodeId);
+			await cleanup_sources();
+			expect(await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: db.membershipId, nodeId, acknowledgeDropCollaborativeHistory: true,
+			})).toHaveProperty("_yay");
+			for (let step = 0; step < 100; step++) {
+				const task = await t.run((ctx) => ctx.db.query("files_yjs_cleanup_tasks").first());
+				if (!task) break;
+				await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
+				if (step === 99) throw new Error("OFF cleanup did not finish");
+			}
+			await cleanup_sources();
+			expect(await t.run((ctx) => ctx.db.get("files_saved_content_heads", reviewed.head._id)),
+				"turning collaboration off releases its unused log owner").toBeNull();
 		} finally {
 			editor.destroy();
 		}

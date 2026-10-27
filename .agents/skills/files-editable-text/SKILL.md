@@ -335,6 +335,8 @@ Exact text belongs to its source head. Yjs updates belong to the separate log-ow
 keeps its sequence and lineage checks. A preparing or current head retains both its content asset
 and Yjs snapshot asset. Review preserves the editor's public sequence ID; each content head stores
 its own counters until cleanup adopts the selected head.
+After collaboration turns off, history cleanup also retires its captured log owner. The owner
+stays while a current source, index or Review still needs it.
 
 The content write wrapper reuses owner IDs within one mutation, including parallel chunk and
 frontmatter writes. Node, Review content, cohort and content-head writes clear these reads before

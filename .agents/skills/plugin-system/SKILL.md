@@ -938,6 +938,10 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
+The current SDK folder has an unmirrored generated ordering update: four `contentRevision` fields
+in `http-api.d.ts` moved without changing their types. The public API is unchanged. Include this
+update in the next SDK release; the current folder is not byte-equal to the 0.23.0 mirror.
+
 SDK 0.23.0 was mirrored on 2026-10-20 at `ea875be3eaf4c51df85233a52fad095b8625c1b5`. Its tree equals
 the folder in host commit `5990f1f71fe4ae7189b7a2788432a6eff43957d3`, which adds `order: "asc" | "desc"`
 to `/api/v1/files/list` (direct children only). It also carries the README changes made since 0.22.0.
