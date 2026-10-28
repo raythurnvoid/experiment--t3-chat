@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { Result } from "common/errors-as-values-utils.ts";
+import type { FunctionArgs } from "convex/server";
+import { getConvexSize } from "convex/values";
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
+import type { MutationCtx } from "./_generated/server.js";
+import { stage_page } from "./files_content_saves.ts";
 import { fixture } from "./files_pending_overlay.setup.test.ts";
 import { mock_nodes_content_storage, objects } from "./files_nodes_content.setup.test.ts";
 import {
@@ -10,10 +14,15 @@ import {
 	test_finish_file_index,
 	test_finish_saved_scope_jobs,
 	test_max_chunks_markdown,
+	test_spy_handler,
 } from "./setup.test.ts";
 import { seed_billing_snapshot_for_user } from "./files_nodes.setup.test.ts";
 import { upsert_file_pending_update_public_for_test } from "./files_pending_updates.setup.test.ts";
-import { files_get_utf8_byte_size } from "../shared/files.ts";
+import {
+	files_get_utf8_byte_size,
+	files_SAVE_SOURCE_PAGE_BYTES,
+	files_SAVE_SOURCE_PAGE_CHUNKS,
+} from "../shared/files.ts";
 import * as markdown_chunks from "../server/files-markdown-chunking-mastra.ts";
 import {
 	files_metadata_MAX_FRONTMATTER_FIELDS,
@@ -85,6 +94,184 @@ async function expect_saved_text(f: Awaited<ReturnType<typeof create_file>>, tex
 		text,
 	);
 }
+
+function record_source_pages() {
+	const pages: {
+		args: FunctionArgs<typeof internal.files_content_saves.stage_page>;
+		metrics: Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>;
+	}[] = [];
+	test_spy_handler(stage_page, async (handler, ctx, args) => {
+		const result = await handler(ctx, args);
+		pages.push({
+			args: args as FunctionArgs<typeof internal.files_content_saves.stage_page>,
+			metrics: await ctx.meta.getTransactionMetrics(),
+		});
+		return result;
+	});
+	return pages;
+}
+
+async function expect_source_chunks(
+	f: Awaited<ReturnType<typeof create_file>>,
+	chunks: FunctionArgs<typeof internal.files_content_saves.stage_page>["chunks"],
+) {
+	const source = await f.t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", f.nodeId);
+		if (!node?.contentHeadId) throw new Error("Expected a saved source");
+		return await ctx.db
+			.query("files_text_chunks")
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", node.contentHeadId!))
+			.collect();
+	});
+	expect(
+		source.map(({ chunkIndex, textChunk, startIndex, endIndex, lineStart, lineEnd, chunkFlags }) => ({
+			chunkIndex,
+			textChunk,
+			startIndex,
+			endIndex,
+			lineStart,
+			lineEnd,
+			chunkFlags,
+		})),
+		"batching keeps every exact chunk and its offsets, lines and flags",
+	).toEqual(chunks);
+}
+
+test("Save resumes mixed 100-chunk and larger pages without repeating source", async () => {
+	const f = await create_file();
+	const text = `x\n\n${"lorem ipsum ".repeat(100)}\n\n`.repeat(101);
+	const parsed = await markdown_chunks.files_chunk_markdown_bounds(text);
+	if (parsed._nay) throw new Error(parsed._nay.message);
+	const chunks = parsed._yay.map(({ chunkIndex, textChunk, startIndex, endIndex, lineStart, lineEnd, chunkFlags }) => ({
+		chunkIndex,
+		textChunk,
+		startIndex,
+		endIndex,
+		lineStart,
+		lineEnd,
+		chunkFlags,
+	}));
+	expect(chunks).toHaveLength(405);
+	let calls = 0;
+	test_spy_handler(stage_page, async (handler, ctx, input) => {
+		const args = input as FunctionArgs<typeof internal.files_content_saves.stage_page>;
+		if (calls++ === 0) {
+			// An older caller commits its first page while the new caller has prepared a larger one.
+			expect(await handler(ctx, { ...args, chunks: args.chunks.slice(0, 100) })).toMatchObject({ _yay: 100 });
+			const replay = await handler(ctx, args);
+			expect(replay).toMatchObject({ _yay: 100 });
+			return replay;
+		}
+		const result = await handler(ctx, args);
+		// An old 100-chunk retry also accepts the cursor returned after a larger page.
+		expect(await handler(ctx, { ...args, firstChunkIndex: 0, chunks: chunks.slice(0, 100) })).toMatchObject({
+			_yay: args.firstChunkIndex + args.chunks.length,
+		});
+		return result;
+	});
+	const pages = record_source_pages();
+	expect(
+		await f.asU.action(api.files_nodes_content.replace_file_content, {
+			membershipId: f.db.membershipId,
+			nodeId: f.nodeId,
+			requestId: "mixed-source-pages",
+			text,
+		}),
+	).toHaveProperty("_yay");
+	expect(
+		pages.map(({ args }) => [args.firstChunkIndex, args.chunks.length]),
+		"two larger page calls replace five old calls and resume from the server cursor",
+	).toEqual([
+		[0, 400],
+		[100, 305],
+	]);
+	for (const { args } of pages) expect(getConvexSize(args)).toBeLessThanOrEqual(files_SAVE_SOURCE_PAGE_BYTES);
+	await expect_source_chunks(f, chunks);
+	await expect_saved_text(f, text);
+});
+
+test("invalid pages and expiry leave the saved file safe after a large staged page", async () => {
+	const f = await create_file();
+	const before = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
+	const history = await read_history(f);
+	const chunks = Array.from({ length: 401 }, (_, chunkIndex) => ({
+		chunkIndex,
+		textChunk: "é\n",
+		startIndex: chunkIndex * 2,
+		endIndex: (chunkIndex + 1) * 2,
+		lineStart: chunkIndex + 1,
+		lineEnd: chunkIndex + 2,
+		chunkFlags: 0,
+	}));
+	const begun = await f.t.mutation(internal.files_content_saves.begin, {
+		...f.u,
+		nodeId: f.nodeId,
+		requestId: "expired-source-pages",
+		requestHash: "expired-source-pages",
+		textByteSize: files_get_utf8_byte_size(chunks.map((chunk) => chunk.textChunk).join("")),
+	});
+	if (begun._nay) throw new Error(begun._nay.message);
+	const request = begun._yay.request;
+	if (request.progress.state !== "preparing") throw new Error("Expected an unpublished Save");
+	const { headId, generation } = request.progress;
+	const args = { saveId: request._id, generation, firstChunkIndex: 0, chunks };
+	expect((await f.t.mutation(internal.files_content_saves.stage_page, args))._nay?.message).toBe("Invalid Save page");
+	const oversized = { ...args, chunks: [{ ...chunks[0]!, textChunk: "x".repeat(files_SAVE_SOURCE_PAGE_BYTES - 1) }] };
+	expect(getConvexSize(oversized)).toBeGreaterThan(files_SAVE_SOURCE_PAGE_BYTES);
+	expect(files_get_utf8_byte_size(oversized.chunks[0]!.textChunk)).toBeLessThan(files_SAVE_SOURCE_PAGE_BYTES);
+	expect(
+		(await f.t.mutation(internal.files_content_saves.stage_page, oversized))._nay?.message,
+		"the byte guard counts the complete argument, not just its text",
+	).toBe("Invalid Save page");
+	const page = { ...args, chunks: chunks.slice(0, files_SAVE_SOURCE_PAGE_CHUNKS) };
+	expect(
+		(await f.t.mutation(internal.files_content_saves.stage_page, { ...page, firstChunkIndex: 1 }))._nay?.message,
+	).toBe("Invalid Save page");
+	expect(
+		(await f.t.mutation(internal.files_content_saves.stage_page, { ...page, generation: generation + 1 }))._nay
+			?.message,
+	).toBe("Save attempt changed");
+	expect(
+		(
+			await f.t.mutation(internal.files_content_saves.stage_page, {
+				...page,
+				chunks: page.chunks.map((chunk, index) =>
+					index === 399 ? { ...chunk, startIndex: chunk.startIndex + 1 } : chunk,
+				),
+			})
+		)._nay?.message,
+	).toBe("Save chunks are not complete");
+	expect(await f.t.run((ctx) => ctx.db.get("files_content_save_requests", request._id))).toEqual(request);
+	expect(await f.t.mutation(internal.files_content_saves.stage_page, page)).toMatchObject({ _yay: 400 });
+	vi.setSystemTime(request.expiresAt! + 1);
+	await f.t.mutation(internal.files_content_saves.expire, { saveId: request._id });
+	expect(
+		(
+			await f.t.mutation(internal.files_content_saves.stage_page, {
+				...args,
+				firstChunkIndex: 400,
+				chunks: chunks.slice(400),
+			})
+		)._nay?.message,
+	).toBe("Save expired");
+	expect(
+		(await f.t.mutation(internal.files_content_saves.publish, { saveId: request._id, generation }))._nay?.message,
+	).toBe("Save expired");
+	for (let pageIndex = 0; pageIndex < 5; pageIndex++)
+		await f.t.mutation(internal.files_content_saves.discard, { headId });
+	expect(await f.t.run((ctx) => ctx.db.get("files_saved_content_heads", headId))).toBeNull();
+	expect(
+		await f.t.run((ctx) =>
+			ctx.db
+				.query("files_text_chunks")
+				.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", headId))
+				.collect(),
+		),
+	).toEqual([]);
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId))).toEqual(before);
+	expect(await read_history(f)).toEqual(history);
+	await expect_saved_text(f, "Original text\n");
+});
 
 test("Save stages source during upload and publishes only after both finish", async () => {
 	const f = await create_file();
@@ -930,9 +1117,10 @@ test(
 	"public Save replaces the exact dense 886414-byte file at the maximum path",
 	{ tags: ["full-size"], timeout: 300_000 },
 	async () => {
-		const oldText = dense_frontmatter("old");
+		// Creating the starting file uses the editor's blank line after frontmatter.
+		const oldText = dense_frontmatter("old").replace("\n---\nBody.\n", "\n---\n\nBody.\n");
 		const newText = dense_frontmatter("new");
-		expect(files_get_utf8_byte_size(oldText)).toBe(886_414);
+		expect(files_get_utf8_byte_size(oldText)).toBe(886_415);
 		expect(files_get_utf8_byte_size(newText)).toBe(886_414);
 		expect(longestPath).toHaveLength(1024);
 		const metadata = files_metadata_preflight_frontmatter(oldText);
@@ -941,6 +1129,9 @@ test(
 		expect(metadata._yay.metadata.values).toHaveLength(384);
 		const f = await create_file(longestPath, oldText);
 		await expect_saved_text(f, oldText);
+		const parsed = await markdown_chunks.files_chunk_markdown_bounds(newText);
+		if (parsed._nay) throw new Error(parsed._nay.message);
+		const pages = record_source_pages();
 		const saved = await f.asU
 			.action(api.files_nodes_content.replace_file_content, {
 				membershipId: f.db.membershipId,
@@ -950,6 +1141,46 @@ test(
 			})
 			.catch((error: unknown) => ({ _nay: error }));
 		expect(saved._nay, "native dense replacement completes under unchanged limits").toBeUndefined();
+		expect(pages, "byte-heavy source uses two pages instead of four").toHaveLength(2);
+		expect(pages[0]!.args.chunks.length, "bytes stop the dense page before its count bound").toBeLessThan(
+			files_SAVE_SOURCE_PAGE_CHUNKS,
+		);
+		for (const { args, metrics } of pages) {
+			expect(getConvexSize(args)).toBeLessThanOrEqual(files_SAVE_SOURCE_PAGE_BYTES);
+			expect(metrics.bytesWritten.used).toBeLessThan(metrics.bytesWritten.remaining);
+			expect(metrics.documentsWritten.used).toBeLessThan(metrics.documentsWritten.remaining);
+			expect(metrics.databaseQueries.used).toBeLessThan(metrics.databaseQueries.remaining);
+		}
+		expect(
+			getConvexSize({
+				...pages[0]!.args,
+				chunks: [...pages[0]!.args.chunks, pages[1]!.args.chunks[0]!],
+			}),
+			"the next chunk would exceed the whole argument bound",
+		).toBeGreaterThan(files_SAVE_SOURCE_PAGE_BYTES);
+		const sourceChunks = parsed._yay.map(
+			({ chunkIndex, textChunk, startIndex, endIndex, lineStart, lineEnd, chunkFlags }) => ({
+				chunkIndex,
+				textChunk,
+				startIndex,
+				endIndex,
+				lineStart,
+				lineEnd,
+				chunkFlags,
+			}),
+		);
+		expect(pages.flatMap(({ args }) => args.chunks)).toEqual(sourceChunks);
+		await expect_source_chunks(f, sourceChunks);
+		console.info(
+			"dense Save source page costs",
+			JSON.stringify(
+				pages.map(({ args, metrics }) => ({
+					chunks: args.chunks.length,
+					argumentBytes: getConvexSize(args),
+					metrics,
+				})),
+			),
+		);
 		await expect_saved_text(f, newText);
 		const indexingError = await test_finish_file_index(f.t, f.nodeId).then(
 			() => null,
@@ -1019,5 +1250,48 @@ test(
 			chunksAfter.map((chunk) => chunk.plainTextChunk).join(""),
 			"the old high-chunk search docs are replaced",
 		).toBe("Small replacement");
+		const pages = record_source_pages();
+		expect(
+			await f.asU.action(api.files_nodes_content.replace_file_content, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+				requestId: "high-chunk-incoming",
+				text: oldText,
+			}),
+		).toHaveProperty("_yay");
+		expect(
+			pages.map(({ args }) => args.chunks.length),
+			"the incoming 2,985 chunks use eight pages instead of thirty",
+		).toEqual([400, 400, 400, 400, 400, 400, 400, 185]);
+		for (const { args, metrics } of pages) {
+			expect(getConvexSize(args)).toBeLessThanOrEqual(files_SAVE_SOURCE_PAGE_BYTES);
+			expect(metrics.bytesWritten.used).toBeLessThan(metrics.bytesWritten.remaining);
+			expect(metrics.documentsWritten.used).toBeLessThan(metrics.documentsWritten.remaining);
+			expect(metrics.databaseQueries.used).toBeLessThan(metrics.databaseQueries.remaining);
+		}
+		const sourceChunks = chunks._yay.map(
+			({ chunkIndex, textChunk, startIndex, endIndex, lineStart, lineEnd, chunkFlags }) => ({
+				chunkIndex,
+				textChunk,
+				startIndex,
+				endIndex,
+				lineStart,
+				lineEnd,
+				chunkFlags,
+			}),
+		);
+		expect(pages.flatMap(({ args }) => args.chunks)).toEqual(sourceChunks);
+		await expect_source_chunks(f, sourceChunks);
+		await expect_saved_text(f, oldText);
+		console.info(
+			"incoming high-chunk Save source page costs",
+			JSON.stringify(
+				pages.map(({ args, metrics }) => ({
+					chunks: args.chunks.length,
+					argumentBytes: getConvexSize(args),
+					metrics,
+				})),
+			),
+		);
 	},
 );

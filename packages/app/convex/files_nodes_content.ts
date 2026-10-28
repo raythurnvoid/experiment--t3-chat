@@ -21,11 +21,11 @@ import {
 import { internalMutation, mutation } from "./functions.ts";
 import { files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import type { Doc, Id } from "./_generated/dataModel";
-import { type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
+import { type FunctionArgs, type RegisteredAction, type RegisteredMutation, type RegisteredQuery } from "convex/server";
 import type { Editor } from "@tiptap/core";
 import { vWorkId } from "@convex-dev/workpool";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { ConvexError, v, type Infer } from "convex/values";
+import { ConvexError, getConvexSize, v, type Infer } from "convex/values";
 import {
 	files_INITIAL_CONTENT,
 	files_u8_to_array_buffer,
@@ -56,7 +56,7 @@ import {
 	type files_SpecialFileName,
 	type files_YjsRootKind,
 } from "../server/files.ts";
-import { files_content_type_index_fields, files_pending_update_content_of, files_ROOT_ID } from "../shared/files.ts";
+import { files_content_type_index_fields, files_pending_update_content_of, files_ROOT_ID, files_SAVE_SOURCE_PAGE_BYTES, files_SAVE_SOURCE_PAGE_CHUNKS } from "../shared/files.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_proposal, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
 import { files_saved_content_collect, files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
 import { files_saved_content_apply_header, files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
@@ -4905,15 +4905,29 @@ async function action_replace_file_content(
 				if (chunks._nay) return Result({ _nay: { message: chunks._nay.message } });
 				let nextChunkIndex = progress.nextChunkIndex;
 				while (nextChunkIndex < chunks._yay.length) {
-					const page = await ctx.runMutation(internal.files_content_saves.stage_page, {
+					const pageArgs: FunctionArgs<typeof internal.files_content_saves.stage_page> = {
 						saveId: request._id, generation: progress.generation, firstChunkIndex: nextChunkIndex,
-						chunks: chunks._yay.slice(nextChunkIndex, nextChunkIndex + 100).map((chunk) => ({
+						chunks: [],
+					};
+					let pageBytes = getConvexSize(pageArgs);
+					while (
+						nextChunkIndex + pageArgs.chunks.length < chunks._yay.length &&
+						pageArgs.chunks.length < files_SAVE_SOURCE_PAGE_CHUNKS
+					) {
+						const chunk = chunks._yay[nextChunkIndex + pageArgs.chunks.length]!;
+						const sourceChunk = {
 							chunkIndex: chunk.chunkIndex, textChunk: chunk.textChunk, startIndex: chunk.startIndex,
 							endIndex: chunk.endIndex, lineStart: chunk.lineStart, lineEnd: chunk.lineEnd, chunkFlags: chunk.chunkFlags,
-						})),
-					});
+						};
+						const chunkBytes = getConvexSize(sourceChunk);
+						if (pageBytes + chunkBytes > files_SAVE_SOURCE_PAGE_BYTES) break;
+						pageArgs.chunks.push(sourceChunk);
+						pageBytes += chunkBytes;
+					}
+					const page = await ctx.runMutation(internal.files_content_saves.stage_page, pageArgs);
 					if (page._nay) return page;
 					if (page._yay === -1) break;
+					// A retry may have used other page sizes. Resume at its saved cursor.
 					nextChunkIndex = page._yay;
 				}
 				return Result({ _yay: chunks._yay.length });

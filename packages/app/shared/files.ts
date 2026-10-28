@@ -274,6 +274,10 @@ export const files_WRITE_POLICY_INVALID_WRITERS_MESSAGE = "Choose at least one w
 
 export const files_MAX_TEXT_CONTENT_BYTES = 900_000;
 
+// Bound each source write. Larger files continue in later pages.
+export const files_SAVE_SOURCE_PAGE_CHUNKS = 400;
+export const files_SAVE_SOURCE_PAGE_BYTES = 512 * 1024;
+
 /**
  * Max bytes for one transported Yjs value: one `files_yjs_updates.update` and one pending state
  * page. Convex rejects values close to 1 MiB, so this cap keeps headroom above the visible

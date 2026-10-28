@@ -382,6 +382,8 @@ an older completed Save does not overwrite it.
 
 `files_content_saves.ts` stages exact source chunks in separate transactions and selects the ready
 head in one final mutation. Save uploads the version and stages its private source pages together.
+Source pages stay sequential. Each page fits both the chunk count and the full argument byte limit.
+Continue from the returned chunk cursor, so retries can use different page sizes without gaps.
 It waits for both tasks, also on failure, before sealing. A ready receipt must always mean the
 upload finished, because a retry can publish it. Permission and write-policy checks run again at publication. Other
 members' drafts stay intact. Exact source stays while a live source, index build, published index

@@ -1,7 +1,7 @@
 // Private source preparation and durable receipts for editor Saves.
 
 import { Result } from "common/errors-as-values-utils.ts";
-import { v } from "convex/values";
+import { getConvexSize, v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
@@ -18,6 +18,7 @@ import { files_index_db_request } from "../server/files-index.ts";
 import { files_move_reservations_db_enter_save } from "../server/files-move-reservations.ts";
 import { files_get_utf8_byte_size, files_node_has_editable_text_content } from "../server/files.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import { files_SAVE_SOURCE_PAGE_BYTES, files_SAVE_SOURCE_PAGE_CHUNKS } from "../shared/files.ts";
 import { billing_event } from "../server/billing.ts";
 import { access_control_db_authorize_node } from "./access_control.ts";
 import { billing_db_check_credits, billing_ingest_events, billing_pick_billed_user_id } from "./billing_db.ts";
@@ -220,7 +221,12 @@ export const stage_page = internalMutation({
 		const progress = request.progress;
 		if (progress.generation !== args.generation) return Result({ _nay: { message: "Save attempt changed" } });
 		if (args.firstChunkIndex < progress.nextChunkIndex) return Result({ _yay: progress.nextChunkIndex });
-		if (args.firstChunkIndex !== progress.nextChunkIndex || args.chunks.length === 0 || args.chunks.length > 100)
+		if (
+			args.firstChunkIndex !== progress.nextChunkIndex ||
+			args.chunks.length === 0 ||
+			args.chunks.length > files_SAVE_SOURCE_PAGE_CHUNKS ||
+			getConvexSize(args) > files_SAVE_SOURCE_PAGE_BYTES
+		)
 			return Result({ _nay: { message: "Invalid Save page" } });
 		let nextStartIndex = progress.nextStartIndex;
 		let stagedByteSize = progress.stagedByteSize;
