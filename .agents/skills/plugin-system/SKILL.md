@@ -938,10 +938,23 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
-SDK 0.24.0 is prepared but not mirrored. It replaces the old Read-only capability and policy
+SDK 0.24.0 was mirrored on 2026-10-28 at `00fb32707c6c8e48be2cfb9e1074f64c4011a6ff`.
+Its tree `815f85021c03c47078c90c0250510af0603e919c` equals the SDK folder in host commit
+`8d68c5f628c425dd850096b4fb55a559214472ed`. It replaces the old Read-only capability and policy
 routes, adds explicit force to supported requests, and types partial archive results. It also
-includes the earlier generated `contentRevision` field ordering change. Host data migration,
-caller pins, deployment and native checks remain open; this source change is not a live release.
+includes the earlier generated `contentRevision` field ordering change. SDK typecheck passed;
+tests passed 48 cases with one generated-route assertion also failing on the unchanged baseline.
+Host data migration, caller releases and native checks remain open. The source push did not deploy
+the new host contract.
+
+The Read-only caller source is pushed but not deployed or published: Council plugin 0.2.17 at
+`7e2bf27dddf0c7a3b57c71d4851a1186b40d9523`, Chitchat 0.8.13 at
+`006a69972147d12d192dab81db24d46c854f0b9b`, and Council Worker at
+`65b53c07cea8c87e03b8a8b5e4c2a9aca09a0909`. Both plugins pin the real 0.24.0 mirror. Their
+typechecks, manifest tests and host manifest validation pass; repeated builds match all release
+files. Keep parent gitlinks at the published versions until release. Council still needs its
+separate release approval, D1 `0012`, and new capability consent. Drain old prepared requests
+before changing callers to force; never rewrite an accepted request to add force.
 
 SDK 0.23.0 was mirrored on 2026-10-20 at `ea875be3eaf4c51df85233a52fad095b8625c1b5`. Its tree equals
 the folder in host commit `5990f1f71fe4ae7189b7a2788432a6eff43957d3`, which adds `order: "asc" | "desc"`
