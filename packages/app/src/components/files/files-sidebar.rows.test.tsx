@@ -151,7 +151,10 @@ vi.mock("convex/react", async (importOriginal) => {
 			)
 				return undefined;
 			if (getFunctionName(query) === "files_transfer_status:get") return null;
-			if (getFunctionName(query) === "files_tree:get_workspace_move_view")
+			if (
+				getFunctionName(query) === "files_tree:get_workspace_move_view" ||
+				getFunctionName(query) === "files_metadata:get_workspace_index_view"
+			)
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];

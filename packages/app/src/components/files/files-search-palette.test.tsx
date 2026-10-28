@@ -31,7 +31,12 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 }));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
-		useContext: () => ({ membershipId: "membership_1", organizationName: "team", workspaceName: "home" }),
+		useContext: () => ({
+			membershipId: "membership_1",
+			workspaceId: "workspace_1",
+			organizationName: "team",
+			workspaceName: "home",
+		}),
 	},
 }));
 
@@ -62,9 +67,10 @@ vi.mock("convex/react", async (importOriginal) => {
 		useQuery: (query: FunctionReference<"query">, args: Record<string, unknown> | "skip") => {
 			if (args === "skip") return undefined;
 			const name = getFunctionName(query);
-			if (name === "files_tree:get_workspace_move_view") {
+			if (name === "files_tree:get_workspace_move_view" || name === "files_metadata:get_workspace_index_view") {
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			}
+			if (name === "organizations:list") return { workspaceIdsPermissionsDict: { workspace_1: "all" } };
 			if (name === "files_metadata:get_search_field") return null;
 			throw new Error(`Unexpected query: ${name}`);
 		},

@@ -3,7 +3,12 @@ import { R2 } from "@convex-dev/r2";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server.js";
-import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_mocks_cancel_pending_home_file_seeds,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -4553,7 +4558,7 @@ describe("access_control", () => {
 		}
 		const organization = created._yay;
 
-		const result = await t.run(async (ctx) => {
+		const result = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const [nodeId, otherNodeId] = await Promise.all([
 				ctx.db.insert("files_nodes", {
