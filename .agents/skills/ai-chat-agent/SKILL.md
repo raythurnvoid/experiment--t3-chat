@@ -639,7 +639,11 @@ Read editable text with Bash. Read or transform other bytes through `execute_cod
 Human Messages use the read-only `channels` Bash command in Ask and Agent mode.
 The command lives in `server/bash-channels-command.ts`. See the [channels spec](../channels/SKILL.md).
 
-- `channels ls` lists readable channels. `--kind` accepts public, private, direct, or file.
+- `channels ls` lists public channels, plus the private, direct and file channels the user is in.
+  `--kind` accepts public, private, direct, or file. A joined channel the user can no longer open
+  prints as `(locked)`, with no name, path, or time. A guest without workspace read gets
+  "Permission denied" for `--kind public`; without `--kind`, public channels are skipped with a
+  notice on stderr.
 - `channels members <ref>` lists every member row with id, name and status. A person who left the
   workspace shows `left`; a person who can no longer read the channel shows `locked`.
 - `channels read <ref>` reads roots and replies in time order. Use `--thread <rootMessageId>` for one thread.

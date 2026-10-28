@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import type { FunctionArgs } from "convex/server";
+import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import {
@@ -1602,8 +1602,13 @@ describe("agent_read", () => {
 			"agent must not read a private non-member channel",
 		).toBe("Not found");
 		expect(
-			(await f.t.query(internal.channels_messages.agent_list, { ...context, paginationOpts: args.paginationOpts }))
-				._yay!.page,
+			(
+				await f.t.query(internal.channels_messages.agent_list, {
+					...context,
+					kind: "private",
+					paginationOpts: args.paginationOpts,
+				})
+			)._yay!.page,
 		).toEqual([]);
 		await f.as(f.member).mutation(api.channels.add_channel_members, {
 			membershipId: f.member.membershipId,
@@ -1889,6 +1894,160 @@ describe("search_messages", () => {
 					.query(api.channels_messages.search_messages, { ...args, membershipId: f.owner.membershipId })
 			).page,
 		).toHaveLength(1);
+	});
+});
+
+describe("agent_list", () => {
+	test("lists the user's own private and file channels without reading others", async () => {
+		const f = await fixture();
+		const publicId = await create(f, "public");
+		const joinedId = await create(f, "private");
+		// A file channel the other person is not in must not show, even as a locked row.
+		// The one they joined must show.
+		const [, joinedFileId] = await test_run_with_flush(f.t, async (ctx) => {
+			const channelIds = [];
+			for (const name of ["unjoined.md", "joined.md"]) {
+				const fileNodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.organizationId,
+					workspaceId: f.workspaceId,
+					kind: "file",
+					name,
+					path: `/${name}`,
+					treePath: `/${name}`,
+					textKind: "rich_text",
+					createdBy: f.owner.userId,
+					updatedBy: f.owner.userId,
+				});
+				const channel = await channels_db_ensure_file_channel(ctx, {
+					membership: (await ctx.db.get("organizations_workspaces_users", f.member.membershipId))!,
+					userId: f.member.userId,
+					fileNodeId,
+				});
+				channelIds.push(channel._id);
+			}
+			return channelIds;
+		});
+		expect(
+			(
+				await f.as(f.other).mutation(api.channels.join_channel, {
+					membershipId: f.other.membershipId,
+					channelId: joinedFileId!,
+				})
+			)._nay,
+		).toBeUndefined();
+		await f.as(f.member).mutation(api.channels.add_channel_members, {
+			membershipId: f.member.membershipId,
+			channelId: joinedId,
+			userIds: [f.other.userId],
+			level: "member",
+		});
+		// More private channels the other person is not in than one page can read.
+		await f.t.run(async (ctx) => {
+			const joined = await ctx.db.get("channels", joinedId);
+			if (joined?.kind !== "private") throw new Error("Expected the joined private channel");
+			const { _id, _creationTime, ...fields } = joined;
+			for (let index = 0; index < 60; index++)
+				await ctx.db.insert("channels", { ...fields, name: `aaa-hidden-${index}` });
+		});
+		const context = await agent_context(f, f.other);
+
+		const privatePage = await f.t.query(internal.channels_messages.agent_list, {
+			...context,
+			kind: "private",
+			paginationOpts: { numItems: 50, cursor: null },
+		});
+		expect(
+			privatePage._yay!.page.map((row) => row.channelId),
+			"the first page must hold the joined channel, not end after hidden ones",
+		).toEqual([joinedId]);
+
+		// Without a kind, the pages walk every kind once and then end.
+		const seen = [];
+		let cursor: string | null = null;
+		let done = false;
+		for (let index = 0; index < 10 && !done; index++) {
+			const result: FunctionReturnType<typeof internal.channels_messages.agent_list> = await f.t.query(
+				internal.channels_messages.agent_list,
+				{
+					...context,
+					paginationOpts: { numItems: 50, cursor },
+				},
+			);
+			seen.push(...result._yay!.page.map((row) => row.channelId));
+			done = result._yay!.isDone;
+			cursor = result._yay!.continueCursor;
+		}
+		expect(done).toBe(true);
+		expect(seen).toEqual([publicId, joinedId, joinedFileId]);
+	});
+	test("a guest cannot browse public channels but still lists their own", async () => {
+		const f = await fixture();
+		const publicId = await create(f, "public");
+		const second = await f.as(f.member).mutation(api.channels.create_channel, {
+			membershipId: f.member.membershipId,
+			kind: "public",
+			name: "second",
+			topic: "",
+			layout: "messages",
+		});
+		const joinedId = await create(f, "private");
+		await f.as(f.member).mutation(api.channels.add_channel_members, {
+			membershipId: f.member.membershipId,
+			channelId: joinedId,
+			userIds: [f.other.userId],
+			level: "member",
+		});
+		const context = await agent_context(f, f.other);
+		// Take a cursor in the middle of the public channels while the person can still read them.
+		const before = await f.t.query(internal.channels_messages.agent_list, {
+			...context,
+			paginationOpts: { numItems: 1, cursor: null },
+		});
+		expect(before._yay!.isDone).toBe(false);
+		// A member with no role has no workspace read: a guest.
+		await f.t.run(async (ctx) => {
+			const assignments = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_user_workspace", (q) =>
+					q.eq("organizationId", f.organizationId).eq("userId", f.other.userId),
+				)
+				.collect();
+			for (const assignment of assignments) await ctx.db.delete("access_control_role_assignments", assignment._id);
+		});
+
+		expect(
+			(
+				await f.t.query(internal.channels_messages.agent_list, {
+					...context,
+					kind: "public",
+					paginationOpts: { numItems: 50, cursor: null },
+				})
+			)._nay?.message,
+		).toMatch(/^Permission denied/);
+
+		// Resume the old public cursor. It must skip the rest of the public channels.
+		const rows = [];
+		let cursor: string | null = before._yay!.continueCursor;
+		let done = false;
+		for (let index = 0; index < 10 && !done; index++) {
+			const result: FunctionReturnType<typeof internal.channels_messages.agent_list> = await f.t.query(
+				internal.channels_messages.agent_list,
+				{ ...context, paginationOpts: { numItems: 1, cursor } },
+			);
+			expect(result._yay!.publicSkipped, "every page must say that public channels were skipped").toBe(true);
+			rows.push(...result._yay!.page);
+			done = result._yay!.isDone;
+			cursor = result._yay!.continueCursor;
+		}
+		expect(done).toBe(true);
+		expect(
+			rows.map((row) => row.channelId),
+			"no public channel, not even as a locked row",
+		).not.toContain(second._yay!.channelId);
+		expect(rows.map((row) => row.channelId)).not.toContain(publicId);
+		// The guest cannot read the private channel any more, so it shows only its id and kind.
+		expect(rows).toEqual([{ channelId: joinedId, access: "locked", kind: "private" }]);
 	});
 });
 

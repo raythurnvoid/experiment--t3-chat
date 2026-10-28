@@ -9223,7 +9223,7 @@ const app_convex_schema = defineSchema({
 		/** Pin access to this membership. Account restore keeps it; re-invite does not. */
 		workspaceMembershipId: v.id("organizations_workspaces_users"),
 		/** Copy of the channel's kind, which never changes. It lets a user's channels be listed by kind. */
-		channelKind: v.optional(v.union(v.literal("public"), v.literal("private"), v.literal("direct"), v.literal("file"))),
+		channelKind: v.union(v.literal("public"), v.literal("private"), v.literal("direct"), v.literal("file")),
 		level: v.union(v.literal("member"), v.literal("manager")),
 		addedBy: v.union(v.id("users"), v.null()),
 		notify: v.union(v.literal("all"), v.literal("mentions"), v.literal("none")),
@@ -9234,13 +9234,7 @@ const app_convex_schema = defineSchema({
 		.index("by_channel_user", ["channelId", "userId"])
 		.index("by_channel_level", ["channelId", "level"])
 		.index("by_organization_workspace_user_channel", ["organizationId", "workspaceId", "userId", "channelId"])
-		.index("by_organization_workspace_user_channelKind_channel", [
-			"organizationId",
-			"workspaceId",
-			"userId",
-			"channelKind",
-			"channelId",
-		])
+		.index("by_workspaceMembership_channelKind_channel", ["workspaceMembershipId", "channelKind", "channelId"])
 		.index("by_organization_user", ["organizationId", "userId"])
 		.index("by_user", ["userId"]),
 

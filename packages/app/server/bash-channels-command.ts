@@ -217,6 +217,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 			return { stdout: `${JSON.stringify({ messages: page.page, nextCursor })}\n`, stderr: "", exitCode: 0 };
 		const lines = page.page.map((item) => {
 			if ("channelId" in item) {
+				if (item.access === "locked") return `${item.channelId}\t-\t${item.kind}\t(locked)\t-`;
 				const path = item.filePath
 					? bash_db_files_path_to_current_workspace_path(root.currentWorkspacePath, item.filePath)
 					: null;
@@ -250,6 +251,11 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 				"",
 			].join("\n");
 		});
-		return { stdout: `${lines.join("\n")}${lines.length ? "\n" : ""}${next}`, stderr: "", exitCode: 0 };
+		// Print the notice on every page, so the agent does not read a short list as "no public channels".
+		const stderr =
+			"publicSkipped" in page && page.publicSkipped
+				? "channels: Public channel browsing was skipped because you lack workspace read access. Ask an owner or admin for access.\n"
+				: "";
+		return { stdout: `${lines.join("\n")}${lines.length ? "\n" : ""}${next}`, stderr, exitCode: 0 };
 	});
 }

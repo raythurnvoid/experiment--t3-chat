@@ -182,6 +182,31 @@ Read dates are UTC; until is exclusive. Pages cap at 50 and short cursors last 2
 workspace, source, reference, query, author, attachment/date filters, and page size.
 See the [agent spec](../ai-chat-agent/SKILL.md).
 
+`channels ls` never reads a channel the user is not in, except public channels. Private, direct
+and file channels come from the user's own member rows through `channels_members.channelKind`, a
+copy of the channel's kind, which never changes. This matches Slack and Discord, which hide private
+channels from non-members. The owner can still open any private channel by id, but `ls` lists only
+the ones they joined. File channels are listed this way too. Listing every file channel would show
+which files in locked folders have comments. A readable file the user never joined is read with
+`channels read file:<path>`.
+
+A joined channel the user can no longer open stays in the page as a locked row with only its id
+and kind. Its file may now sit in a locked folder. Platforms differ here: Teams keeps old group
+chats readable, Dropbox removes unshared files, and Linear removes subscriptions. So this rule is
+our own choice, not a copy of one product.
+
+Public channels come from the workspace channel index and need workspace `content.read`. A guest
+cannot browse them, like guests in Slack, Google Chat and Mattermost. `--kind public` then answers
+"Permission denied: public channel browsing needs workspace read access. Ask an owner or admin for
+access." Without `--kind`, the public part is skipped and every page prints a notice on stderr, so
+the agent does not read a short list as "no public channels". The check runs on each call, so an
+old cursor into public channels is skipped after access is lost. The check stays in `agent_list`,
+not in the shared agent context, because a guest can still use `read`, `members` and `search` on
+shared files.
+
+Without `--kind`, pages walk public, private, direct, then file. Each page reads one kind, so a page
+can be short or empty where a kind ends.
+
 Search reads the stored body index. Use 1–16 words and at most 512 characters; the shared schema
 checks UI, Bash and backend inputs. Tenant equality is inside the search index. Optional channel,
 author and attachment equality filters precede the inclusive Since and exclusive Until filter.

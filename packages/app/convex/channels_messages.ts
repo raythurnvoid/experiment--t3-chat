@@ -11,7 +11,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
-import { access_control_db_authorize_node } from "./access_control.ts";
+import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	channels_db_get_access,
@@ -1022,39 +1022,112 @@ export const agent_list = internalQuery({
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: v_result({
-		_yay: paginationResultValidator(
-			v.object({
-				channelId: v.id("channels"),
-				reference: v.string(),
-				kind: v.string(),
-				name: v.string(),
-				filePath: v.union(v.string(), v.null()),
-				lastMessageAt: v.number(),
-			}),
-		),
+		_yay: v.object({
+			...paginationResultValidator(
+				v.union(
+					v.object({
+						channelId: v.id("channels"),
+						access: v.literal("open"),
+						reference: v.string(),
+						kind: v.string(),
+						name: v.string(),
+						filePath: v.union(v.string(), v.null()),
+						lastMessageAt: v.number(),
+					}),
+					v.object({ channelId: v.id("channels"), access: v.literal("locked"), kind: v.string() }),
+				),
+			).fields,
+			/** True when a list without a kind left out public channels because the user lacks workspace read. */
+			publicSkipped: v.boolean(),
+		}),
 	}),
 	handler: async (ctx, args) => {
 		const context = await get_agent_context(ctx, args);
 		if (context._nay) return context;
 		const { membership } = context._yay;
-		const rows = await ctx.db
-			.query("channels")
-			.withIndex("by_organization_workspace_kind_name", (q) => {
-				const scope = q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId);
-				return args.kind ? scope.eq("kind", args.kind) : scope;
-			})
-			.paginate({
-				...args.paginationOpts,
-				numItems: Math.min(50, args.paginationOpts.numItems),
-				maximumRowsRead: 50,
-			});
+
+		// Without a kind, list one kind after another in this order. Convex allows one paginated
+		// query per function, so a page stops where a kind ends and can be short or empty.
+		// The cursor is then "<kind>:<Convex cursor>", with nothing after ":" at the start of a kind.
+		const kinds = ["public", "private", "direct", "file"] as const;
+		let kind = args.kind ?? kinds[0];
+		let cursor = args.paginationOpts.cursor;
+		if (!args.kind && cursor !== null) {
+			const separator = cursor.indexOf(":");
+			const storedKind = kinds.find((item) => item === cursor!.slice(0, separator));
+			if (!storedKind) return Result({ _nay: { message: "Invalid cursor" } });
+			kind = storedKind;
+			cursor = cursor.slice(separator + 1) || null;
+		}
+
+		// Browsing public channels needs workspace read. A guest without it can still list their
+		// own channels, the way Slack, Google Chat and Mattermost limit guests to invited channels.
+		// Check every call, so an old cursor into public channels is skipped after access is lost.
+		const workspaceRead = await access_control_db_authorize_membership(ctx, {
+			...context._yay,
+			permission: "content.read",
+		});
+		const publicSkipped = !args.kind && workspaceRead._nay !== undefined;
+		if (workspaceRead._nay && kind === "public") {
+			if (args.kind)
+				return Result({
+					_nay: {
+						message:
+							"Permission denied: public channel browsing needs workspace read access. Ask an owner or admin for access.",
+					},
+				});
+			kind = "private";
+			cursor = null;
+		}
+		const paginationOpts = {
+			...args.paginationOpts,
+			cursor,
+			numItems: Math.min(50, args.paginationOpts.numItems),
+			maximumRowsRead: 50,
+		};
+
+		// Private, direct and file channels come from the user's own member rows, so a channel the
+		// user is not in is never read. The owner can open others by id but does not list them.
+		// Listing every file channel would show which files in locked folders have comments.
+		// A readable file the user never joined is read with `channels read file:<path>`.
+		// Public channels are listed for the whole workspace.
+		const rows =
+			kind !== "public"
+				? await ctx.db
+						.query("channels_members")
+						.withIndex("by_workspaceMembership_channelKind_channel", (q) =>
+							q.eq("workspaceMembershipId", membership._id).eq("channelKind", kind),
+						)
+						.paginate(paginationOpts)
+						.then(async (result) => ({
+							...result,
+							// A member row is deleted before its channel.
+							page: await Promise.all(
+								result.page.map(async (member) => (await ctx.db.get("channels", member.channelId))!),
+							),
+						}))
+				: await ctx.db
+						.query("channels")
+						.withIndex("by_organization_workspace_kind_name", (q) =>
+							q
+								.eq("organizationId", membership.organizationId)
+								.eq("workspaceId", membership.workspaceId)
+								.eq("kind", kind),
+						)
+						.paginate(paginationOpts);
+
 		const page = [];
 		for (const channel of rows.page) {
 			const access = await channels_db_get_access(ctx, {
 				...context._yay,
 				channel,
 			});
-			if (access._nay) continue;
+			// Keep a joined channel the user can no longer open as a locked row instead of dropping it.
+			// Show no name, path or time: the file may now sit in a folder the user cannot open.
+			if (access._nay) {
+				page.push({ channelId: channel._id, access: "locked" as const, kind: channel.kind });
+				continue;
+			}
 			let name: string;
 			if (channel.kind === "direct") {
 				const names = [];
@@ -1075,6 +1148,7 @@ export const agent_list = internalQuery({
 				.unique();
 			page.push({
 				channelId: channel._id,
+				access: "open" as const,
 				kind: channel.kind,
 				name,
 				reference: channel.kind === "public" ? `#${channel.name}` : channel._id,
@@ -1082,7 +1156,17 @@ export const agent_list = internalQuery({
 				lastMessageAt: activity!.lastMessageAt,
 			});
 		}
-		return Result({ _yay: { ...rows, page } });
+		if (args.kind)
+			return Result({ _yay: { page, isDone: rows.isDone, continueCursor: rows.continueCursor, publicSkipped } });
+		const nextKind = kinds[kinds.indexOf(kind) + 1];
+		return Result({
+			_yay: {
+				page,
+				publicSkipped,
+				isDone: rows.isDone && !nextKind,
+				continueCursor: rows.isDone ? `${nextKind ?? kind}:` : `${kind}:${rows.continueCursor}`,
+			},
+		});
 	},
 });
 
