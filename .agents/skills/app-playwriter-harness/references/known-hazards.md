@@ -1429,6 +1429,11 @@ yourself (`urlIncludes: "m=probe"`), or the page object you opened. Read the `ur
 you did not open as an observation to confirm on a clean page — never as a defect. If it does turn
 out to be real, route it to the agent that owns that surface instead of filing it yourself.
 
+A subagent you start can do the same to you. On 2026-10-28 a delegated agent drove the parent's tab,
+which moved to `/messages/search` in the middle of the parent's check. The parent's next calls then
+timed out on selectors that had worked a moment before. When you hand browser QA to a subagent, tell
+it to open its own tab, and read `state.page.url()` again after any unexpected timeout.
+
 ## `getLatestLogs({ page })` returns console errors from other tabs, not only yours
 
 Passing `page` does not scope the buffer to that page. The browser is shared, so the lines you read
