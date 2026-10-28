@@ -350,6 +350,8 @@ function node_insert_fields(args: {
 		extendedScopeNodeId: args.extendedScopeNodeId,
 		writePolicy: args.writePolicy ?? null,
 		newChildWritePolicy: args.newChildWritePolicy ?? null,
+		readOnly: args.writePolicy != null,
+		readOnlyDecisionId: args.writePolicy != null ? crypto.randomUUID() : null,
 		archiveOperationId: args.archiveOperationId ?? null,
 		createdBy: args.userId,
 		updatedBy: args.userId,

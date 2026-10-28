@@ -1232,6 +1232,7 @@ export const files_pending_update_header_validator = v.object({
 			 */
 			sourceWritePolicy: v.optional(files_nodes_write_policy_validator),
 			sourceNewChildWritePolicy: v.optional(files_nodes_write_policy_validator),
+			sourceReadOnly: v.optional(v.boolean()),
 		}),
 	),
 	/**
@@ -2196,6 +2197,8 @@ const app_convex_schema = defineSchema({
 	public_api_file_write_stages: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		force: v.optional(v.boolean()),
+		requestReadOnly: v.optional(v.boolean()),
 		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
 		userId: v.id("users"),
 		/**
@@ -2229,6 +2232,7 @@ const app_convex_schema = defineSchema({
 				contentType: v.string(),
 				nonCollaborative: v.boolean(),
 				requestReadOnly: v.boolean(),
+				force: v.optional(v.boolean()),
 			}),
 		),
 		/**
@@ -3790,6 +3794,7 @@ const app_convex_schema = defineSchema({
 		proposalRevision: v.number(),
 		savedNodeId: v.id("files_nodes"),
 		copiedWritePolicy: v.optional(files_nodes_write_policy_validator),
+		copiedReadOnlyDecisionId: v.optional(v.string()),
 		copiedPath: v.optional(v.string()),
 		createdAt: v.number(),
 	})
@@ -5273,6 +5278,9 @@ const app_convex_schema = defineSchema({
 		 */
 		isPublic: v.optional(v.literal(true)),
 		writePolicy: files_nodes_write_policy_validator,
+		// Temporary bridge. Old readers still use writePolicy until the backfill passes.
+		readOnly: v.optional(v.boolean()),
+		readOnlyDecisionId: v.optional(v.union(v.string(), v.null())),
 		/**
 		 * Starting protection copied once to brand-new files and subfolders.
 		 * Only folders use it; files store null.
@@ -6471,6 +6479,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		force: v.optional(v.boolean()),
 		// Activity stays in the workspace that started the transfer. Files keep their own scopes.
 		sourceScope: files_transfer_scope_validator,
 		destinationScope: files_transfer_scope_validator,
@@ -6713,6 +6722,7 @@ const app_convex_schema = defineSchema({
 		 * Merged or private targets store nothing: the run did not write that policy.
 		 */
 		outputWritePolicy: v.optional(files_nodes_write_policy_validator),
+		outputReadOnlyDecisionId: v.optional(v.string()),
 		errorMessage: v.union(v.string(), v.null()),
 		/**
 		 * Why a skipped item was skipped. `permission_denied`: a Copy met a child its user cannot open.
@@ -6764,6 +6774,7 @@ const app_convex_schema = defineSchema({
 		 * The rule the person confirmed. Later edits to the folder do not change a running job.
 		 */
 		writePolicy: files_nodes_write_policy_validator,
+		targetReadOnly: v.optional(v.boolean()),
 		/**
 		 * Where the next step starts. null means just after the folder itself. `inclusive` is true only
 		 * after a skipped locked folder, when the bound is the first path after its contents.
@@ -6795,6 +6806,7 @@ const app_convex_schema = defineSchema({
 		 */
 		credentialId: v.optional(v.id("api_credentials")),
 		kind: v.union(v.literal("archive"), v.literal("restore")),
+		force: v.optional(v.boolean()),
 		/**
 		 * Archive: the operation id this job writes. Restore: the operation id this job brings back.
 		 */
@@ -6936,6 +6948,7 @@ const app_convex_schema = defineSchema({
 	 */
 	files_archive_run_items: defineTable({
 		runId: v.id("files_archive_runs"),
+		kind: v.optional(v.literal("restore")),
 		/**
 		 * The job's count of handled items when this item landed, so pages follow the job's order.
 		 */
@@ -8534,6 +8547,7 @@ const app_convex_schema = defineSchema({
 		 */
 		requestFingerprint: v.string(),
 		readOnly: v.boolean(),
+		force: v.optional(v.boolean()),
 		nonCollaborative: v.boolean(),
 		/**
 		 * The authoritative sealed replay fence and its stable destination node id at create time.

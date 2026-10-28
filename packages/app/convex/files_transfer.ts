@@ -1584,6 +1584,7 @@ async function db_start(
 	const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
 	const runId = await ctx.db.insert("files_transfer_runs", {
 		...scope,
+		force: false,
 		sourceScope,
 		destinationScope,
 		requestId: args.requestId,
@@ -2660,6 +2661,7 @@ export const retry_remaining = mutation({
 		const { _id, _creationTime, ...fields } = run;
 		const runId = await ctx.db.insert("files_transfer_runs", {
 			...fields,
+			force: false,
 			requestId: args.requestId,
 			requestHash,
 			retryOf: _id,

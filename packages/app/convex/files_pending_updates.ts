@@ -3547,6 +3547,14 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			unstagedStateId: args.unstagedStateId,
 		} satisfies NonNullable<app_convex_Doc<"files_pending_updates">["content"]>;
 		let pendingUpdateId: Id<"files_pending_updates">;
+		const copiedFrom = args.copiedFrom
+			? {
+					...args.copiedFrom,
+					...(args.copiedFrom.sourceWritePolicy === undefined
+						? {}
+						: { sourceReadOnly: args.copiedFrom.sourceWritePolicy !== null }),
+				}
+			: undefined;
 		if (!existingPendingUpdate) {
 			pendingUpdateId = await files_db_insert_pending_update(ctx, {
 				organizationId: args.organizationId,
@@ -3555,7 +3563,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 				target: { kind: "saved", id: args.nodeId },
 				revision: 1,
 				content,
-				...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+				...(copiedFrom ? { copiedFrom } : {}),
 				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				size: unstagedSize,
 				updatedAt: now,
@@ -3569,7 +3577,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 					revision: existingPendingUpdate.revision + 1,
 					content,
 					// The newest structural intent wins: a later cp re-records where the content comes from.
-					...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+					...(copiedFrom ? { copiedFrom } : {}),
 					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 					...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
 					updatedAt: now,

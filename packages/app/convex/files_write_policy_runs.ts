@@ -256,6 +256,7 @@ export const start = mutation({
 			folderId: folder._id,
 			folderTreePath: folder.treePath,
 			writePolicy: args.writePolicy,
+			targetReadOnly: args.writePolicy !== null,
 			cursor: null,
 		});
 		// Keep targets empty. The Activity must not name the folder or anything inside it.
@@ -418,7 +419,16 @@ export const advance = internalMutation({
 					if (JSON.stringify(node.writePolicy) === JSON.stringify(run.writePolicy)) {
 						progress.skipped += 1;
 					} else {
-						await ctx.db.patch("files_nodes", node._id, { writePolicy: run.writePolicy });
+						await ctx.db.patch("files_nodes", node._id, {
+							writePolicy: run.writePolicy,
+							readOnly: run.writePolicy !== null,
+							readOnlyDecisionId:
+								run.writePolicy === null
+									? null
+									: node.writePolicy === null
+										? crypto.randomUUID()
+										: (node.readOnlyDecisionId ?? crypto.randomUUID()),
+						});
 						progress.completed += 1;
 						isUpdated = true;
 					}

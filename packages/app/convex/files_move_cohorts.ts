@@ -132,6 +132,8 @@ function placement_header(node: Doc<"files_nodes">) {
 		createdBy: _createdBy,
 		writePolicy: _writePolicy,
 		newChildWritePolicy: _newChildWritePolicy,
+		readOnly: _readOnly,
+		readOnlyDecisionId: _readOnlyDecisionId,
 		moveCohortId: _moveCohortId,
 		scopeOpId: _scopeOpId,
 		...header
@@ -817,6 +819,8 @@ async function db_allocate_private(
 		archiveOperationId: null,
 		writePolicy: proposal.copiedFrom?.sourceWritePolicy ?? null,
 		newChildWritePolicy: proposal.copiedFrom?.sourceNewChildWritePolicy ?? null,
+		readOnly: proposal.copiedFrom?.sourceWritePolicy != null,
+		readOnlyDecisionId: proposal.copiedFrom?.sourceWritePolicy != null ? crypto.randomUUID() : null,
 		createdBy: cohort.userId,
 		updatedBy: cohort.userId,
 		updatedAt: cohort.operationTime,
@@ -976,7 +980,20 @@ async function db_items(
 		!settlementOnly && !proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
 			? (() => {
 					const { _id: _id, _creationTime: _time, moveCohortId: _marker, ...header } = proposal;
-					return { ...header, pendingMove: undefined, pendingArchive: undefined, revision: proposal.revision + 1 };
+					return {
+						...header,
+						copiedFrom: header.copiedFrom
+							? {
+									...header.copiedFrom,
+									...(header.copiedFrom.sourceWritePolicy === undefined
+										? {}
+										: { sourceReadOnly: header.copiedFrom.sourceWritePolicy !== null }),
+								}
+							: undefined,
+						pendingMove: undefined,
+						pendingArchive: undefined,
+						revision: proposal.revision + 1,
+					};
 				})()
 			: null;
 	const itemId = await ctx.db.insert("files_move_cohort_items", {
@@ -1131,6 +1148,8 @@ async function db_rename_parents(
 			archiveOperationId: cursor.parentArchiveOperationId,
 			writePolicy: parent?.newChildWritePolicy ?? null,
 			newChildWritePolicy: parent?.newChildWritePolicy ?? null,
+			readOnly: parent?.newChildWritePolicy != null,
+			readOnlyDecisionId: parent?.newChildWritePolicy != null ? crypto.randomUUID() : null,
 			createdBy: cohort.userId,
 			updatedBy: cohort.userId,
 			updatedAt: cohort.operationTime,
@@ -2319,7 +2338,17 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 				if (!finish) await ctx.db.patch("files_pending_updates", proposal._id, { moveCohortId: undefined });
 				else if (item.afterProposal) {
 					await files_db_advance_pending_review_version(ctx, proposal);
-					await ctx.db.replace("files_pending_updates", proposal._id, item.afterProposal);
+					await ctx.db.replace("files_pending_updates", proposal._id, {
+						...item.afterProposal,
+						copiedFrom: item.afterProposal.copiedFrom
+							? {
+									...item.afterProposal.copiedFrom,
+									...(item.afterProposal.copiedFrom.sourceWritePolicy === undefined
+										? {}
+										: { sourceReadOnly: item.afterProposal.copiedFrom.sourceWritePolicy !== null }),
+								}
+							: undefined,
+					});
 					if (item.target.kind === "private")
 						await files_metadata_maps_db_delete(ctx.db, { kind: "pending", id: proposal._id });
 					if (cohort.origin.kind === "review" && item.target.kind === "private") {

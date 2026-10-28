@@ -726,6 +726,8 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						? [
 								"writePolicy",
 								"newChildWritePolicy",
+								"readOnly",
+								"readOnlyDecisionId",
 								"restrictedScopeNodeId",
 								"isRestrictedScopeRoot",
 								"parentScopeNodeId",

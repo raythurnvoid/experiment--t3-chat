@@ -848,6 +848,13 @@ async function db_set_write_policy(
 		files_move_reservations_db_enter_security(ctx, { nodeId: args.node._id });
 	await ctx.db.patch("files_nodes", args.node._id, {
 		writePolicy: args.writePolicy,
+		readOnly: args.writePolicy !== null,
+		readOnlyDecisionId:
+			args.writePolicy === null
+				? null
+				: args.node.writePolicy === null
+					? crypto.randomUUID()
+					: (args.node.readOnlyDecisionId ?? crypto.randomUUID()),
 	});
 	await files_media_validation_db_advance_version(ctx, args.node);
 }

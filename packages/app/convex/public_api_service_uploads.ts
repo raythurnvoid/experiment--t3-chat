@@ -1140,6 +1140,7 @@ export const create_upload_target = internalMutation({
 		});
 
 		const targetId = await ctx.db.insert("plugin_service_storage_targets", {
+			force: false,
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			installationId: installation._id,

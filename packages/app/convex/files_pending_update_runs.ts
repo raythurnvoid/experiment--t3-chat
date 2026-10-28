@@ -515,7 +515,21 @@ async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_
 		)
 			expectedDestinationParentPath = saved.path;
 	}
-	return { reviewHeader, reviewSource, expectedDestinationParentPath };
+	return {
+		reviewHeader: {
+			...reviewHeader,
+			copiedFrom: reviewHeader.copiedFrom
+				? {
+						...reviewHeader.copiedFrom,
+						...(reviewHeader.copiedFrom.sourceWritePolicy === undefined
+							? {}
+							: { sourceReadOnly: reviewHeader.copiedFrom.sourceWritePolicy !== null }),
+					}
+				: undefined,
+		},
+		reviewSource,
+		expectedDestinationParentPath,
+	};
 }
 
 async function db_get_plan_context(ctx: QueryCtx | MutationCtx, proposal: Doc<"files_pending_updates">) {

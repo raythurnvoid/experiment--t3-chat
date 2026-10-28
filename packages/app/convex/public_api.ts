@@ -3183,6 +3183,8 @@ async function db_abandon_file_write_stage_conflict(
 
 export const prepare_file_write = internalMutation({
 	args: {
+		// Old actions may omit this. Keep unknown intent unset until they finish.
+		requestReadOnly: v.optional(v.boolean()),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
@@ -3278,6 +3280,8 @@ export const prepare_file_write = internalMutation({
 		]);
 
 		const stageId = await ctx.db.insert("public_api_file_write_stages", {
+			force: false,
+			requestReadOnly: args.requestReadOnly ?? args.externalFileWrite?.requestReadOnly,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -3288,7 +3292,7 @@ export const prepare_file_write = internalMutation({
 					: { credentialId: args.principalRef.credentialId }),
 			path: args.path,
 			expectedParentNodeId,
-			externalFileWrite: args.externalFileWrite,
+			externalFileWrite: args.externalFileWrite ? { ...args.externalFileWrite, force: false } : undefined,
 			overwrite: args.overwrite,
 			contentType: args.contentType,
 			yjsRootKind: args.yjsRootKind,
@@ -5202,6 +5206,7 @@ export async function public_api_write_one_text_file(
 		if (fileRefs._nay) return fileRefs;
 
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+			requestReadOnly: args.requestReadOnly,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -5409,6 +5414,7 @@ export async function public_api_write_one_text_file(
 			}
 
 			const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+				requestReadOnly: args.requestReadOnly,
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
@@ -5618,6 +5624,7 @@ export async function public_api_write_one_text_file(
 	}
 
 	const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+		requestReadOnly: args.requestReadOnly,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
@@ -7479,6 +7486,7 @@ export async function public_api_http_touch_files(args: {
 
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
 			organizationId: principal.organizationId,
+			requestReadOnly: false,
 			workspaceId: principal.workspaceId,
 			userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
 			principalRef,

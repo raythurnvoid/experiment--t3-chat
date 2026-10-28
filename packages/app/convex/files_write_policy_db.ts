@@ -237,6 +237,7 @@ export function files_nodes_db_copied_from_policy_fields(args: {
 	if (args.prev?.sourceWritePolicy !== undefined) {
 		return {
 			sourceWritePolicy: args.prev.sourceWritePolicy,
+			sourceReadOnly: args.prev.sourceWritePolicy !== null,
 			...(args.prev.sourceNewChildWritePolicy === undefined
 				? {}
 				: { sourceNewChildWritePolicy: args.prev.sourceNewChildWritePolicy }),
@@ -244,7 +245,12 @@ export function files_nodes_db_copied_from_policy_fields(args: {
 	}
 
 	return {
-		...(args.sourceWritePolicy === undefined ? {} : { sourceWritePolicy: args.sourceWritePolicy }),
+		...(args.sourceWritePolicy === undefined
+			? {}
+			: {
+					sourceWritePolicy: args.sourceWritePolicy,
+					sourceReadOnly: args.sourceWritePolicy !== null,
+				}),
 		...(args.sourceNewChildWritePolicy === undefined
 			? {}
 			: { sourceNewChildWritePolicy: args.sourceNewChildWritePolicy }),

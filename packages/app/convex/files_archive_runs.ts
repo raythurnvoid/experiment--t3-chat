@@ -1388,6 +1388,7 @@ async function db_land_node(
 		// Nobody saw the clash of an API job, so list the item. It stays in the Trash.
 		if (isSkipped && run.credentialId !== undefined) {
 			await ctx.db.insert("files_archive_run_items", {
+				kind: "restore",
 				runId: args.runId,
 				order: progress.completed + progress.skipped,
 				// The item keeps its old path in the Trash. `path` is where it would have landed.
@@ -1422,6 +1423,7 @@ async function db_land_node(
 	// Nobody saw the clash of an API job, so list the new name. Otherwise the caller cannot find the item.
 	if (name !== node.name && run.credentialId !== undefined) {
 		await ctx.db.insert("files_archive_run_items", {
+			kind: "restore",
 			runId: args.runId,
 			order: progress.completed + progress.skipped,
 			path: node.path,
@@ -1997,6 +1999,7 @@ export async function files_archive_runs_db_start(
 
 	const now = Date.now();
 	const run: RunFields = {
+		force: false,
 		organizationId: args.membership.organizationId,
 		workspaceId: args.membership.workspaceId,
 		userId: args.userAuth.id,
