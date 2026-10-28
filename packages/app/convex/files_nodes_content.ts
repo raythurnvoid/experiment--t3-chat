@@ -4912,7 +4912,7 @@ async function action_replace_file_content(
 					let pageBytes = getConvexSize(pageArgs);
 					while (
 						nextChunkIndex + pageArgs.chunks.length < chunks._yay.length &&
-						pageArgs.chunks.length < files_SAVE_SOURCE_PAGE_CHUNKS
+						pageArgs.chunks.length < Math.min(files_SAVE_SOURCE_PAGE_CHUNKS, 100)
 					) {
 						const chunk = chunks._yay[nextChunkIndex + pageArgs.chunks.length]!;
 						const sourceChunk = {
