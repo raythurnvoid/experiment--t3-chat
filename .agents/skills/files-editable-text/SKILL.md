@@ -512,8 +512,8 @@ Exact content uses `files_text_chunks.textChunk` for both document shapes. Searc
 (`packages/app/convex/files_share_links.ts`, `get_share_link_view`). For editable text it follows
 these rules.
 
-- It reads only committed text. It reads the `sourceKind: "committed"` docs of `files_text_chunks`
-  for the file, by the `by_organization_workspace_source_fileNode_yjsSeq_chunk` prefix, and joins
+- It reads only committed text. `files_saved_content_db_text_chunks` selects the file's saved
+  content head and reads its `files_text_chunks` through `by_contentHead_yjsSeq_chunk`. It joins
   them with `files_merge_contiguous_chunks`. It never reads pending chunks, proposal branches,
   unsaved editor text, or the live Yjs head, and it never asks for materialization. So a
   collaborative file shows its last materialized text, usually a few seconds behind live typing. A

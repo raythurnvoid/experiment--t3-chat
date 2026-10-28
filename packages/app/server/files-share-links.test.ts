@@ -81,30 +81,31 @@ test("a before-only token stays readable until the switch and then grants nothin
 	expect(await f.read(), "a before-only token stops at the saved group switch").toBeNull();
 });
 
-test("the public token merges normal and selected chunks once during preparation", async () => {
+test("the public token reads the selected content head once during preparation", async () => {
 	const f = await linked_fixture();
 	await f.t.run(async (ctx) => {
+		const head = f.saved.contentHeadId
+			? await ctx.db.get("files_saved_content_heads", f.saved.contentHeadId)
+			: null;
+		if (!head) throw new Error("Expected the saved content owner");
 		const chunk = await ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", f.db.organizationId)
-					.eq("workspaceId", f.db.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", f.nodeId)
-					.eq("moveView.cohortId", undefined)
-					.eq("moveView.view", undefined),
-			)
+			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id))
 			.first();
-		if (!chunk) throw new Error("Expected saved text");
+		if (!chunk || chunk.sourceKind !== "committed") throw new Error("Expected saved text");
+		// Retained and selected sources may share chunk indexes, but each has its own head.
+		const { _id: _headId, _creationTime: _headTime, ...headFields } = head;
+		const selectedHeadId = await ctx.db.insert("files_saved_content_heads", headFields);
+		await ctx.db.patch("files_nodes", f.nodeId, { contentHeadId: selectedHeadId });
 		const { _id: _id, _creationTime: _time, ...fields } = chunk;
 		await ctx.db.insert("files_text_chunks", {
 			...fields,
+			contentHeadId: selectedHeadId,
 			moveView: { cohortId: f.cohortId, view: "before" },
 			textChunk: "new text",
 		});
 	});
-	expect(await f.read(), "selected chunks win duplicate keys before public text is built").toMatchObject({
+	expect(await f.read(), "public text uses the selected head and ignores the retained head").toMatchObject({
 		content: { kind: "plain_text", text: "new text" },
 	});
 });

@@ -5737,26 +5737,6 @@ const app_convex_schema = defineSchema({
 			"yjsSequence",
 			"chunkIndex",
 		])
-		.index("by_organization_workspace_source_fileNode_lineEnd_chunk", [
-			"organizationId",
-			"workspaceId",
-			"sourceKind",
-			"fileNodeId",
-			"moveView.cohortId",
-			"moveView.view",
-			"lineEnd",
-			"chunkIndex",
-		])
-		.index("by_organization_workspace_source_fileNode_endIndex_chunk", [
-			"organizationId",
-			"workspaceId",
-			"sourceKind",
-			"fileNodeId",
-			"moveView.cohortId",
-			"moveView.view",
-			"endIndex",
-			"chunkIndex",
-		])
 		.index("by_organization_workspace_fileNode_chunkIndex", [
 			"organizationId",
 			"workspaceId",
