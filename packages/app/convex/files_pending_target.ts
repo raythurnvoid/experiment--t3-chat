@@ -105,7 +105,7 @@ export async function files_pending_target_db_get_private(
 const pending_target_entry_validator = v.union(
 	v.object({
 		kind: v.literal("saved"),
-		node: doc(app_convex_schema, "files_nodes").omit("readOnlyDecisionId"),
+		node: doc(app_convex_schema, "files_nodes").omit("readOnlyDecisionId", "writePolicy", "newChildWritePolicy"),
 		pendingUpdate: v.union(doc(app_convex_schema, "files_pending_updates"), v.null()),
 		path: v.string(),
 	}),
@@ -412,7 +412,7 @@ async function db_get_public_pending_target_view(
 				? { ...entry, pendingUpdate: await files_pending_target_db_redact_copy_source(ctx, entry.pendingUpdate) }
 				: {
 						...entry,
-						node: omit(entry.node, ["readOnlyDecisionId"]),
+						node: omit(entry.node, ["readOnlyDecisionId", "writePolicy", "newChildWritePolicy"]),
 						pendingUpdate: pendingUpdate ? await files_pending_target_db_redact_copy_source(ctx, pendingUpdate) : null,
 					},
 		...(copyDestination ? { copyDestination } : {}),

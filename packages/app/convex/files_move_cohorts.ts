@@ -18,7 +18,10 @@ import {
 	files_nodes_user_write_context,
 	type files_nodes_WriteContext,
 } from "../server/files-write-policy.ts";
-import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
+import {
+	files_write_policy_db_has_write_context_permission,
+	files_nodes_copied_from_without_old_policy,
+} from "./files_write_policy_db.ts";
 import { files_subtree_ops_db_find_repair, files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
@@ -132,6 +135,8 @@ function placement_header(node: Doc<"files_nodes">) {
 		createdBy: _createdBy,
 		readOnly: _readOnly,
 		readOnlyDecisionId: _readOnlyDecisionId,
+		writePolicy: _writePolicy,
+		newChildWritePolicy: _newChildWritePolicy,
 		moveCohortId: _moveCohortId,
 		scopeOpId: _scopeOpId,
 		...header
@@ -973,6 +978,7 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 		!settlementOnly && !proposal?.pendingArchive && (proposal?.content || proposal?.pendingReplacement)
 			? (() => {
 					const { _id: _id, _creationTime: _time, moveCohortId: _marker, ...header } = proposal;
+					header.copiedFrom = files_nodes_copied_from_without_old_policy(header.copiedFrom);
 					return { ...header, pendingMove: undefined, pendingArchive: undefined, revision: proposal.revision + 1 };
 				})()
 			: null;

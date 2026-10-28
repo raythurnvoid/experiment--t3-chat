@@ -3023,6 +3023,7 @@ describe("public files API", () => {
 		// The writer cannot write /outer, but the recreate starts at /outer/inner, so the replace works. A
 		// recreate that fails still throws, so the old file is never lost.
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId,
 			content: "# Replacement",
 			// This is the file that `prepare_file_write` would remember.
@@ -8767,6 +8768,7 @@ describe("files read-only locks", () => {
 
 		// The public vocabulary is 409/conflict; the internal refusal keeps its `read_only` name.
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9105,6 +9107,7 @@ describe("files read-only locks", () => {
 		const occupantNodeId = occupant._yay!.nodeId;
 
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9126,6 +9129,7 @@ describe("files read-only locks", () => {
 		await set_lock({ writer, nodeId: occupantNodeId, locked: true });
 
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay!.stageId,
 			content: "# New\n",
 			targetAnchor: prepared._yay!.targetAnchor,
@@ -9158,6 +9162,7 @@ describe("files read-only locks", () => {
 		// Unlock the file and prove the same write now works.
 		await set_lock({ writer, nodeId: occupantNodeId, locked: false });
 		const prepared2 = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9172,6 +9177,7 @@ describe("files read-only locks", () => {
 		expect(prepared2._nay).toBeUndefined();
 		expect(prepared2._yay!.targetAnchor).toMatchObject({ kind: "existing" });
 		const published2 = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared2._yay!.stageId,
 			content: "# New\n",
 			targetAnchor: prepared2._yay!.targetAnchor,
@@ -9198,6 +9204,7 @@ describe("files read-only locks", () => {
 		const occupantNodeId = occupant._yay!.nodeId;
 
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9216,6 +9223,7 @@ describe("files read-only locks", () => {
 		await set_lock({ writer, nodeId: occupantNodeId, locked: false });
 
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay!.stageId,
 			content: "# New\n",
 			targetAnchor: prepared._yay!.targetAnchor,
@@ -9242,6 +9250,7 @@ describe("files read-only locks", () => {
 		});
 
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9259,6 +9268,7 @@ describe("files read-only locks", () => {
 		await set_lock({ writer, nodeId, locked: true });
 
 		const published = await t.mutation(internal.public_api.publish_file_fill, {
+			writeFormat: "read_only",
 			stageId: prepared._yay!.stageId,
 			content: "# Change\n",
 			expectedNodeId: nodeId,
@@ -9288,6 +9298,7 @@ describe("files read-only locks", () => {
 		// Unlock the file and prove a new stage can publish.
 		await set_lock({ writer, nodeId, locked: false });
 		const prepared2 = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9322,6 +9333,7 @@ describe("files read-only locks", () => {
 		// Numeric sequence and generation can repeat after a document reset. The exact sequence-doc
 		// id stops a staged fill from publishing into that new lineage.
 		const staleLineage = await t.mutation(internal.public_api.publish_file_fill, {
+			writeFormat: "read_only",
 			stageId: prepared2._yay!.stageId,
 			content: "# Change\n",
 			expectedNodeId: nodeId,
@@ -9339,6 +9351,7 @@ describe("files read-only locks", () => {
 			{ expectedContentAssetId: prepared2._yay!.contentSnapshotAssetId },
 		]) {
 			const stale = await t.mutation(internal.public_api.publish_file_fill, {
+				writeFormat: "read_only",
 				stageId: prepared2._yay!.stageId,
 				content: "# Change\n",
 				expectedNodeId: nodeId,
@@ -9349,6 +9362,7 @@ describe("files read-only locks", () => {
 		}
 
 		const published2 = await t.mutation(internal.public_api.publish_file_fill, {
+			writeFormat: "read_only",
 			stageId: prepared2._yay!.stageId,
 			content: "# Change\n",
 			expectedNodeId: nodeId,
@@ -9369,6 +9383,7 @@ describe("files read-only locks", () => {
 		expect(seeded.status).toBe(200);
 
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9395,6 +9410,7 @@ describe("files read-only locks", () => {
 		expect(winner.status).toBe(200);
 
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay!.stageId,
 			content: "# Loser\n",
 			targetAnchor: prepared._yay!.targetAnchor,
@@ -9421,6 +9437,7 @@ describe("files read-only locks", () => {
 
 		const prepare_stage = async () =>
 			await t.mutation(internal.public_api.prepare_file_write, {
+				writeFormat: "read_only",
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				userId: writer.db.userId,
@@ -9481,6 +9498,7 @@ describe("files read-only locks", () => {
 
 		// Stage 1 sees the current lock and refuses.
 		const published1 = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: stage1._yay!.stageId,
 			content: "# One\n",
 			targetAnchor: stage1._yay!.targetAnchor,
@@ -9492,6 +9510,7 @@ describe("files read-only locks", () => {
 		await t.run(async (ctx) => ctx.db.delete("files_nodes", midId));
 
 		const published3 = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: stage3._yay!.stageId,
 			content: "# Three\n",
 			targetAnchor: stage3._yay!.targetAnchor,
@@ -9767,6 +9786,7 @@ describe("files read-only locks", () => {
 
 		// Create branch: the destination folder locks between staging and publish.
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9781,6 +9801,7 @@ describe("files read-only locks", () => {
 		expect(prepared._nay).toBeUndefined();
 		await set_lock({ writer, nodeId: folder!._id, locked: true });
 		const published = await t.mutation(internal.public_api.publish_file_touch, {
+			writeFormat: "read_only",
 			stageId: prepared._yay!.stageId,
 			targetAnchor: prepared._yay!.targetAnchor,
 		});
@@ -9791,6 +9812,7 @@ describe("files read-only locks", () => {
 		// Exists branch: the target appears during staging and is locked. The touch must refuse
 		// instead of answering satisfied on a locked file.
 		const prepared2 = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9813,6 +9835,7 @@ describe("files read-only locks", () => {
 		const appearedNode = await find_active_node({ t, db: writer.db, path: "/tlock/appeared.md" });
 		await set_lock({ writer, nodeId: appearedNode!._id, locked: true });
 		const published2 = await t.mutation(internal.public_api.publish_file_touch, {
+			writeFormat: "read_only",
 			stageId: prepared2._yay!.stageId,
 			targetAnchor: prepared2._yay!.targetAnchor,
 		});
@@ -9821,6 +9844,7 @@ describe("files read-only locks", () => {
 
 		// Unlock the folder and prove the same staged touch can create the file.
 		const prepared3 = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
 			userId: writer.db.userId,
@@ -9833,6 +9857,7 @@ describe("files read-only locks", () => {
 			yjsSnapshotSize: 7,
 		});
 		const published3 = await t.mutation(internal.public_api.publish_file_touch, {
+			writeFormat: "read_only",
 			stageId: prepared3._yay!.stageId,
 			targetAnchor: prepared3._yay!.targetAnchor,
 		});
@@ -10137,6 +10162,7 @@ describe("files read-only locks", () => {
 		});
 		const prepare = (folders: number, name: string) =>
 			t.mutation(internal.public_api.prepare_file_write, {
+				writeFormat: "read_only",
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				userId: writer.db.userId,
@@ -10599,6 +10625,7 @@ describe("service file writes", () => {
 		const service = await seed_sealed_service({ t, db });
 
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
@@ -10618,6 +10645,7 @@ describe("service file writes", () => {
 		});
 
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: stage.stageId,
 			content: "# Report\n",
 			targetAnchor: stage.targetAnchor,

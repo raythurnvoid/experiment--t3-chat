@@ -3168,6 +3168,8 @@ async function db_abandon_file_write_stage_conflict(
 
 export const prepare_file_write = internalMutation({
 	args: {
+		// Refuse actions that started before the Read-only switch. Remove after they drain.
+		writeFormat: v.literal("read_only"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
@@ -3302,6 +3304,7 @@ type prepare_file_write_Result =
 
 export const publish_file_write = internalMutation({
 	args: {
+		writeFormat: v.literal("read_only"),
 		stageId: v.id("public_api_file_write_stages"),
 		content: v.string(),
 		/** The target state saved by `prepare_file_write`. Publish requires it to stay the same. */
@@ -3702,6 +3705,7 @@ type publish_file_write_Result =
  */
 export const publish_file_fill = internalMutation({
 	args: {
+		writeFormat: v.literal("read_only"),
 		stageId: v.id("public_api_file_write_stages"),
 		content: v.string(),
 		expectedNodeId: v.id("files_nodes"),
@@ -3988,6 +3992,7 @@ type publish_file_fill_Result =
  */
 export const publish_file_touch = internalMutation({
 	args: {
+		writeFormat: v.literal("read_only"),
 		stageId: v.id("public_api_file_write_stages"),
 		/** The target state saved by `prepare_file_write`. Publish requires it to stay the same. */
 		targetAnchor: file_write_target_anchor_validator,
@@ -5157,6 +5162,7 @@ export async function public_api_write_one_text_file(
 		if (fileRefs._nay) return fileRefs;
 
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -5243,6 +5249,7 @@ export async function public_api_write_one_text_file(
 		}
 
 		const published: publish_file_fill_Result = await ctx.runMutation(internal.public_api.publish_file_fill, {
+			writeFormat: "read_only",
 			stageId: prepared._yay.stageId,
 			content: args.content,
 			expectedNodeId: activeNode._id,
@@ -5368,6 +5375,7 @@ export async function public_api_write_one_text_file(
 			}
 
 			const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+				writeFormat: "read_only",
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.userId,
@@ -5500,6 +5508,7 @@ export async function public_api_write_one_text_file(
 			let published: publish_file_fill_Result;
 			try {
 				published = await ctx.runMutation(internal.public_api.publish_file_fill, {
+					writeFormat: "read_only",
 					stageId: prepared._yay.stageId,
 					content: args.content,
 					expectedNodeId: activeNode._id,
@@ -5579,6 +5588,7 @@ export async function public_api_write_one_text_file(
 	}
 
 	const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+		writeFormat: "read_only",
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
@@ -5661,6 +5671,7 @@ export async function public_api_write_one_text_file(
 	}
 
 	const published: publish_file_write_Result = await ctx.runMutation(internal.public_api.publish_file_write, {
+		writeFormat: "read_only",
 		stageId,
 		content: args.content,
 		targetAnchor: prepared._yay.targetAnchor,
@@ -7423,6 +7434,7 @@ export async function public_api_http_touch_files(args: {
 		}
 
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
@@ -7509,6 +7521,7 @@ export async function public_api_http_touch_files(args: {
 		}
 
 		const published: publish_file_touch_Result = await ctx.runMutation(internal.public_api.publish_file_touch, {
+			writeFormat: "read_only",
 			stageId,
 			targetAnchor: prepared._yay.targetAnchor,
 		});

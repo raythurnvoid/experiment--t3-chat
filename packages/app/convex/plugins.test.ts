@@ -3181,6 +3181,7 @@ describe("plugins Phase 0", () => {
 			throw new Error(consumed._nay.message);
 		}
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			userId: fixture.membership.userId,
@@ -3204,6 +3205,7 @@ describe("plugins Phase 0", () => {
 			}),
 		);
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay.stageId,
 			content: "# New",
 			targetAnchor: prepared._yay.targetAnchor,
@@ -3260,6 +3262,7 @@ describe("plugins Phase 0", () => {
 			throw new Error(consumed._nay.message);
 		}
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			userId: fixture.membership.userId,
@@ -3284,6 +3287,7 @@ describe("plugins Phase 0", () => {
 		expect(locked._nay).toBeUndefined();
 
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay.stageId,
 			content: "# New\n",
 			targetAnchor: prepared._yay.targetAnchor,
@@ -3374,6 +3378,7 @@ describe("plugins Phase 0", () => {
 				throw new Error(consumed._nay.message);
 			}
 			return await t.mutation(internal.public_api.prepare_file_write, {
+				writeFormat: "read_only",
 				organizationId: fixture.membership.organizationId,
 				workspaceId: fixture.membership.workspaceId,
 				userId: actorUserId,
@@ -3443,6 +3448,7 @@ describe("plugins Phase 0", () => {
 			throw new Error(consumed._nay.message);
 		}
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			userId: fixture.membership.userId,
@@ -3712,6 +3718,7 @@ describe("plugins Phase 0", () => {
 		});
 		if (claimed._nay) throw new Error(claimed._nay.message);
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			userId: fixture.membership.userId,
@@ -4017,6 +4024,7 @@ describe("plugins Phase 0", () => {
 		});
 		if (consumed._nay) throw new Error(consumed._nay.message);
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			userId: fixture.membership.userId,
@@ -4060,6 +4068,7 @@ describe("plugins Phase 0", () => {
 			errorCode: "run_ended",
 		});
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay.stageId,
 			content: "# New",
 			targetAnchor: prepared._yay.targetAnchor,

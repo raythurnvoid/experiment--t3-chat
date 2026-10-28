@@ -1904,6 +1904,7 @@ describe("invoke file write preconditions", () => {
 		const { t, fixture, expectedParentNodeId = fixture.parentId } = args;
 
 		return await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			userId: fixture.userId,
@@ -1956,6 +1957,7 @@ describe("invoke file write preconditions", () => {
 				const prepared = await prepare_file({ t, fixture });
 				if (prepared._nay) throw new Error(prepared._nay.message);
 				const created = await t.mutation(internal.public_api.publish_file_write, {
+					writeFormat: "read_only",
 					stageId: prepared._yay.stageId,
 					targetAnchor: prepared._yay.targetAnchor,
 					content: "# Original\n",
@@ -2016,6 +2018,7 @@ describe("invoke file write preconditions", () => {
 			const published =
 				kind === "file"
 					? await t.mutation(internal.public_api.publish_file_fill, {
+						writeFormat: "read_only",
 							stageId: prepared._yay.stageId,
 							expectedNodeId: restrictedNodeId,
 							content: "# Changed\n",
@@ -2023,6 +2026,7 @@ describe("invoke file write preconditions", () => {
 							nonCollaborative: true,
 						})
 					: await t.mutation(internal.public_api.publish_file_write, {
+						writeFormat: "read_only",
 							stageId: prepared._yay.stageId,
 							targetAnchor: prepared._yay.targetAnchor,
 							content: "# Changed\n",
@@ -2066,6 +2070,7 @@ describe("invoke file write preconditions", () => {
 					const prepared = await prepare_file({ t, fixture });
 					if (prepared._nay) throw new Error(prepared._nay.message);
 					const created = await t.mutation(internal.public_api.publish_file_write, {
+						writeFormat: "read_only",
 						stageId: prepared._yay.stageId,
 						targetAnchor: prepared._yay.targetAnchor,
 						content: "# Original\n",
@@ -2129,6 +2134,7 @@ describe("invoke file write preconditions", () => {
 				const published =
 					mode !== "create"
 						? await t.mutation(internal.public_api.publish_file_fill, {
+							writeFormat: "read_only",
 								stageId: prepared._yay.stageId,
 								expectedNodeId: nodeId!,
 								content: "# Changed\n",
@@ -2136,6 +2142,7 @@ describe("invoke file write preconditions", () => {
 								nonCollaborative: mode !== "collaborative fill",
 							})
 						: await t.mutation(internal.public_api.publish_file_write, {
+							writeFormat: "read_only",
 								stageId: prepared._yay.stageId,
 								targetAnchor: prepared._yay.targetAnchor,
 								content: "# Changed\n",
@@ -2198,6 +2205,7 @@ describe("invoke file write preconditions", () => {
 		const prepared = await prepare_file({ t, fixture });
 		if (prepared._nay) throw new Error(prepared._nay.message);
 		const created = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay.stageId,
 			targetAnchor: prepared._yay.targetAnchor,
 			content: "# Original\n",
@@ -2224,6 +2232,7 @@ describe("invoke file write preconditions", () => {
 		expect(
 			(
 				await t.mutation(internal.public_api.publish_file_fill, {
+					writeFormat: "read_only",
 					stageId: fillStage._yay.stageId,
 					expectedNodeId: created._yay.nodeId,
 					content: "# Original\n",
@@ -2262,6 +2271,7 @@ describe("invoke file write preconditions", () => {
 			const prepared = await prepare_file({ t, fixture });
 			if (prepared._nay) throw new Error(prepared._nay.message);
 			const created = await t.mutation(internal.public_api.publish_file_write, {
+				writeFormat: "read_only",
 				stageId: prepared._yay.stageId,
 				targetAnchor: prepared._yay.targetAnchor,
 				content: "# Original\n",
@@ -2286,6 +2296,7 @@ describe("invoke file write preconditions", () => {
 		const published =
 			mode === "fill"
 				? await t.mutation(internal.public_api.publish_file_fill, {
+					writeFormat: "read_only",
 						stageId: prepared._yay.stageId,
 						expectedNodeId: fileNodeId,
 						content: "# Changed\n",
@@ -2293,6 +2304,7 @@ describe("invoke file write preconditions", () => {
 						nonCollaborative: true,
 					})
 				: await t.mutation(internal.public_api.publish_file_write, {
+					writeFormat: "read_only",
 						stageId: prepared._yay.stageId,
 						targetAnchor: prepared._yay.targetAnchor,
 						content: "# Changed\n",

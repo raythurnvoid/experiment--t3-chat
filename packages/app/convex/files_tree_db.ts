@@ -112,6 +112,8 @@ export function files_tree_db_get_public_node_fields(
 ) {
 	const {
 		readOnlyDecisionId: _readOnlyDecisionId,
+		writePolicy: _writePolicy,
+		newChildWritePolicy: _newChildWritePolicy,
 		sortName: _sortName,
 		isRestrictedScopeRoot: _isRestrictedScopeRoot,
 		parentScopeNodeId: _parentScopeNodeId,

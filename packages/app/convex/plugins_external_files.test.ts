@@ -328,6 +328,7 @@ describe("public conditional file writes", () => {
 		async (changed) => {
 			const { t, fixture, root, rootPath, credentials } = await setup({ publicWriter: true });
 			const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+				writeFormat: "read_only",
 				force: true,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
@@ -368,6 +369,7 @@ describe("public conditional file writes", () => {
 				);
 
 			const result = await t.mutation(internal.public_api.publish_file_write, {
+				writeFormat: "read_only",
 				stageId: prepared._yay.stageId,
 				targetAnchor: prepared._yay.targetAnchor,
 				content: changed === "content" ? "Other" : "Notes",
@@ -1541,6 +1543,7 @@ describe("external file writes", () => {
 		const { t, fixture, credentials, root } = await setup();
 		const path = `${ROOT}/general.md`;
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			writeFormat: "read_only",
 			force: true,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -1585,6 +1588,7 @@ describe("external file writes", () => {
 		).toBeUndefined();
 
 		const published = await t.mutation(internal.public_api.publish_file_write, {
+			writeFormat: "read_only",
 			stageId: prepared._yay.stageId,
 			targetAnchor: prepared._yay.targetAnchor,
 			content: "old",

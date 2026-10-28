@@ -14,6 +14,21 @@ import { plugins_CAPABILITIES } from "../shared/plugins-capabilities.ts";
 
 const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
 
+// Accepted only until the one-time Read-only strip finishes. New writers never set these fields.
+const files_nodes_write_policy_validator = v.union(
+	v.null(),
+	v.object({ mode: v.literal("read_only") }),
+	v.object({
+		mode: v.literal("writer"),
+		writers: v.array(
+			v.union(
+				v.object({ kind: v.literal("user"), userId: v.id("users") }),
+				v.object({ kind: v.literal("service_account"), serviceAccountId: v.id("access_control_service_accounts") }),
+			),
+		),
+	}),
+);
+
 /**
  * The full list of permissions. Users build roles out of these, but can never add a new one.
  **/
@@ -1209,6 +1224,8 @@ export const files_pending_update_header_validator = v.object({
 			 * reuses the target and never overwrites these with later source rules.
 			 */
 			sourceReadOnly: v.optional(v.boolean()),
+			sourceWritePolicy: v.optional(files_nodes_write_policy_validator),
+			sourceNewChildWritePolicy: v.optional(files_nodes_write_policy_validator),
 		}),
 	),
 	/**
@@ -3771,6 +3788,7 @@ const app_convex_schema = defineSchema({
 		proposalRevision: v.number(),
 		savedNodeId: v.id("files_nodes"),
 		copiedReadOnlyDecisionId: v.optional(v.string()),
+		copiedWritePolicy: v.optional(files_nodes_write_policy_validator),
 		copiedPath: v.optional(v.string()),
 		createdAt: v.number(),
 	})
@@ -5258,6 +5276,8 @@ const app_convex_schema = defineSchema({
 		 * A new ID on each false-to-true change. Clearing the flag invalidates copy/Restore receipts.
 		 */
 		readOnlyDecisionId: v.union(v.string(), v.null()),
+		writePolicy: v.optional(files_nodes_write_policy_validator),
+		newChildWritePolicy: v.optional(files_nodes_write_policy_validator),
 		// Lifecycle and authorship
 		/**
 		 * Archive operation UUID, or null for an active node.
@@ -6692,6 +6712,7 @@ const app_convex_schema = defineSchema({
 		 * Merged or private targets store nothing.
 		 */
 		outputReadOnlyDecisionId: v.optional(v.string()),
+		outputWritePolicy: v.optional(files_nodes_write_policy_validator),
 		errorMessage: v.union(v.string(), v.null()),
 		/**
 		 * Why a skipped item was skipped. `permission_denied`: a Copy met a child its user cannot open.
@@ -6743,6 +6764,7 @@ const app_convex_schema = defineSchema({
 		 * The value the person confirmed. Later edits to the folder do not change a running job.
 		 */
 		targetReadOnly: v.boolean(),
+		writePolicy: v.optional(files_nodes_write_policy_validator),
 		/**
 		 * Where the next step starts. null means just after the folder itself. `inclusive` is true only
 		 * after a skipped locked folder, when the bound is the first path after its contents.

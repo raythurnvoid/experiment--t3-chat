@@ -50,6 +50,7 @@ import {
 	type get_file_pending_update_state_page_internal_Result,
 } from "./files_pending_updates.ts";
 import { files_pending_target_db_get_view } from "./files_pending_target.ts";
+import { files_nodes_copied_from_without_old_policy } from "./files_write_policy_db.ts";
 import {
 	files_pending_update_plans_db_get,
 	files_pending_update_plans_db_delete_run_batch,
@@ -450,6 +451,7 @@ async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_
 		indexRevision: _indexRevision,
 		...reviewHeader
 	} = proposal;
+	reviewHeader.copiedFrom = files_nodes_copied_from_without_old_policy(reviewHeader.copiedFrom);
 	let reviewSource: Doc<"files_pending_update_run_items">["reviewSource"] = null;
 	if (proposal.target.kind === "saved") {
 		const node = await files_saved_placement_db_get_node(ctx.db, proposal.target.id);

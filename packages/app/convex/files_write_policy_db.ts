@@ -152,6 +152,17 @@ export function files_nodes_db_copied_from_read_only_fields(args: {
 			: { sourceReadOnly: args.sourceReadOnly };
 }
 
+// Temporary phase B: new headers must not copy old fields back into a stripped table.
+export function files_nodes_copied_from_without_old_policy(copiedFrom: Doc<"files_pending_updates">["copiedFrom"]) {
+	if (!copiedFrom) return copiedFrom;
+	const {
+		sourceWritePolicy: _sourceWritePolicy,
+		sourceNewChildWritePolicy: _sourceNewChildWritePolicy,
+		...next
+	} = copiedFrom;
+	return next;
+}
+
 /**
  * Validate all management before a create or a larger operation starts writing.
  */

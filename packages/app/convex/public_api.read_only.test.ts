@@ -88,6 +88,7 @@ test("a prepared forced write rechecks the key grant before publication", async 
 		await owner.mutation(api.files_nodes.read_only_set, { membershipId: db.membershipId, nodeId, readOnly: true }),
 	).toEqual({ _yay: null });
 	const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+		writeFormat: "read_only",
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
 		userId: db.userId,
@@ -109,6 +110,7 @@ test("a prepared forced write rechecks the key grant before publication", async 
 	});
 	await t.run((ctx) => ctx.db.patch("api_credentials", writer.credentialId, { scopes: ["files:write"] }));
 	const published = await t.mutation(internal.public_api.publish_file_write, {
+		writeFormat: "read_only",
 		stageId: prepared._yay.stageId,
 		content: "text",
 		targetAnchor: prepared._yay.targetAnchor,
