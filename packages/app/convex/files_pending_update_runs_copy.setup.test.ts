@@ -101,7 +101,7 @@ export async function copied_folders(args: {
 						pendingUpdateId: created._yay.pendingUpdateId,
 						value: {
 							createIntent: { kind: "folder" },
-							copiedFrom: { target: { kind: "saved", id: f.sourceId }, path: "/source", sourceWritePolicy: null },
+							copiedFrom: { target: { kind: "saved", id: f.sourceId }, path: "/source", sourceReadOnly: false },
 						},
 					});
 					const proposal = await ctx.db.get("files_pending_updates", created._yay.pendingUpdateId);

@@ -48,6 +48,7 @@ type FilesConvexYjsStream_Args = {
 	onSync: (currentStateUpdate: Uint8Array) => void;
 	onLoadFailedChange: (failed: boolean) => void;
 	onPushRefusedChange: (reason: files_yjs_PushRefusalReason | null, persistent?: boolean) => void;
+	onBeforeDrop: (reason: files_yjs_PushRefusalReason) => void;
 };
 
 type FilesConvexYjsOutgoingBatch = {
@@ -71,6 +72,7 @@ class FilesConvexYjsStream {
 	private onSync: FilesConvexYjsStream_Args["onSync"];
 	private onLoadFailedChange: FilesConvexYjsStream_Args["onLoadFailedChange"];
 	private onPushRefusedChange: FilesConvexYjsStream_Args["onPushRefusedChange"];
+	private onBeforeDrop: FilesConvexYjsStream_Args["onBeforeDrop"];
 
 	private watcher: app_convex_Watch<
 		app_convex_FunctionReturnType<typeof app_convex_api.files_yjs_load.yjs_get_incremental_updates>
@@ -103,6 +105,7 @@ class FilesConvexYjsStream {
 		this.onSync = args.onSync;
 		this.onLoadFailedChange = args.onLoadFailedChange;
 		this.onPushRefusedChange = args.onPushRefusedChange;
+		this.onBeforeDrop = args.onBeforeDrop;
 
 		this.watcher = app_convex.watchQuery(app_convex_api.files_yjs_load.yjs_get_incremental_updates, {
 			membershipId: args.membershipId,
@@ -235,11 +238,13 @@ class FilesConvexYjsStream {
 							if (result._nay) {
 								console.warn("[FilesConvexYjsStream] yjs_push_update failed", result._nay);
 
-								// A read-only refusal is final. Drop the queued edits and show the warning now.
-								// Do not retry these edits after the file is unlocked.
-								if (result._nay.name === "read_only") {
+								// Access refusals are final. Keep text before dropping the queued edits.
+								// Do not replay them after access returns.
+								if (result._nay.name === "read_only" || result._nay.message === "Permission denied") {
+									const reason = result._nay.name === "read_only" ? "read_only" : "permission";
+									this.onBeforeDrop(reason);
 									this.dropPendingUpdates();
-									this.onPushRefusedChange("read_only", true);
+									this.onPushRefusedChange(reason, true);
 									break;
 								}
 
@@ -267,9 +272,9 @@ class FilesConvexYjsStream {
 									continue;
 								}
 
-								// Show the warning on the first permission refusal or other final refusal.
+								// Show the warning for other final refusals.
 								// Keep this batch. A later edit can try it again.
-								this.onPushRefusedChange(result._nay.message === "Permission denied" ? "permission" : "other");
+								this.onPushRefusedChange("other");
 								return;
 							}
 
@@ -577,6 +582,10 @@ export type files_yjs_Provider_Args = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	/** Set this to false to keep sync active without collecting local edits. */
 	editable: boolean;
+	/**
+	 * Capture local text synchronously while this provider still owns its document.
+	 */
+	onBeforeDrop?: (doc: Doc, reason: files_yjs_PushRefusalReason) => void;
 };
 
 /** `sync` and `status` are required by `IYjsProvider`; `synced` is the Yjs-style alias. */
@@ -714,6 +723,7 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 			membershipId: this.args.membershipId,
 			expectedYjsLastSequenceId: this.args.expectedYjsLastSequenceId,
 			presenceStore: args.presenceStore,
+			onBeforeDrop: (reason) => this.args.onBeforeDrop?.(this.rootDoc, reason),
 			onGoodUpdatePacket: (updateItem) => {
 				args.yDocHandler.handleServerUpdate({
 					update: new Uint8Array(updateItem.update),
@@ -786,6 +796,9 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 	}) {
 		this.args.editable = args.editable;
 
+		if ([...this.convexStreams.values()].some((stream) => stream.hasPendingUpdates())) {
+			this.args.onBeforeDrop?.(this.rootDoc, args.editBlockReason ?? "other");
+		}
 		let dropped = false;
 		for (const stream of this.convexStreams.values()) {
 			dropped = stream.dropPendingUpdates() || dropped;
@@ -835,6 +848,9 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 	}
 
 	destroy(): void {
+		if ([...this.convexStreams.values()].some((stream) => stream.hasPendingUpdates())) {
+			this.args.onBeforeDrop?.(this.rootDoc, "other");
+		}
 		this.unsubscribers.forEach((unsub) => unsub());
 		this.awareness.destroy();
 		this.rootDocHandler.destroy();

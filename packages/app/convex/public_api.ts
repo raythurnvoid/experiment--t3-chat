@@ -40,7 +40,6 @@ import {
 	files_normalize_name,
 	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
-	files_WRITE_POLICY_INVALID_WRITERS_MESSAGE,
 	files_check_name_and_path_length,
 	files_check_new_folder_count,
 	files_check_request_path_length,
@@ -68,17 +67,27 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_sequence } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_sequence,
+} from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_media_refs_added, files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
 import { encodeStateVector } from "yjs";
-import { files_nodes_db_archive_nodes, files_nodes_db_get_write_policy_management_state, files_nodes_db_set_write_policy, files_nodes_write_policy_management_state_validator, type files_nodes_get_by_path_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
+import {
+	files_nodes_db_archive_nodes,
+	files_nodes_db_get_read_only_state,
+	files_nodes_db_set_read_only,
+	files_nodes_read_only_state_validator,
+	type files_nodes_get_by_path_Result,
+	type files_nodes_read_file_content_from_chunks_Result,
+	type get_file_content_materialization_state_Result,
+} from "./files_nodes.ts";
 import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
-import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
 import { files_sharing_db_set_node_public } from "./files_sharing_db.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_nodes_db_finalize_editable_text_node_creation } from "./files_nodes_create_db.ts";
@@ -248,6 +257,7 @@ const user_credential_scopes_validator = v.array(
 		v.literal("files:write" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
 		v.literal("files:permissions" satisfies public_api_Scope),
+		v.literal("files:read-only" satisfies public_api_Scope),
 		v.literal("files:publish" satisfies public_api_Scope),
 		v.literal("ai_chat:read" satisfies public_api_Scope),
 		v.literal("plugin_data:read" satisfies public_api_Scope),
@@ -2189,7 +2199,7 @@ async function db_authorize_file_policy_request(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		nodeId: string;
-		requiredScope: "files:read" | "files:permissions" | "files:publish";
+		requiredScope: "files:read" | "files:read-only" | "files:publish";
 	},
 ) {
 	const liveCredential = await db_revalidate_user_credential(ctx, args);
@@ -2217,12 +2227,7 @@ async function db_authorize_file_policy_request(
 			subject,
 			fileNode: node,
 			// The public flag needs only "edit", like the app's `set_node_public`.
-			permission:
-				args.requiredScope === "files:read"
-					? "content.read"
-					: args.requiredScope === "files:publish"
-						? "content.write"
-						: "content.permissions.manage",
+			permission: args.requiredScope === "files:read" ? "content.read" : "content.write",
 		}))
 	) {
 		return Result({ _nay: { message: "Not found" } });
@@ -2230,19 +2235,15 @@ async function db_authorize_file_policy_request(
 
 	const writeContext: files_nodes_WriteContext = {
 		subject,
-		writer:
-			credential.serviceAccountId === null
-				? { kind: "user", userId: credential.userId }
-				: { kind: "service_account", serviceAccountId: credential.serviceAccountId },
+		force: false,
 		actorUserId: credential.userId,
 		resourceScope: { kind: "workspace" },
-		policyReach: "ancestors",
 	};
 
 	return Result({ _yay: { node, writeContext } });
 }
 
-export const get_file_write_policy = internalQuery({
+export const get_file_read_only = internalQuery({
 	args: {
 		credentialId: v.id("api_credentials"),
 		organizationId: v.id("organizations"),
@@ -2250,79 +2251,44 @@ export const get_file_write_policy = internalQuery({
 		userId: v.id("users"),
 		nodeId: v.string(),
 	},
-	returns: v_result({ _yay: files_nodes_write_policy_management_state_validator }),
+	returns: v_result({ _yay: files_nodes_read_only_state_validator }),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:read" });
 		if (authorized._nay) {
 			return authorized;
 		}
 
-		return Result({ _yay: await files_nodes_db_get_write_policy_management_state(ctx, authorized._yay) });
+		return Result({ _yay: await files_nodes_db_get_read_only_state(ctx, authorized._yay) });
 	},
 });
 
-type get_file_write_policy_Result =
-	typeof get_file_write_policy extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+type get_file_read_only_Result =
+	typeof get_file_read_only extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
-export const set_file_write_policy = internalMutation({
+export const set_file_read_only = internalMutation({
 	args: {
 		credentialId: v.id("api_credentials"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.string(),
-		writePolicy: v.union(
-			v.null(),
-			v.object({ mode: v.literal("read_only") }),
-			v.object({
-				mode: v.literal("writer"),
-				writers: v.array(
-					v.union(
-						v.object({ kind: v.literal("user"), userId: v.string() }),
-						v.object({ kind: v.literal("service_account"), serviceAccountId: v.string() }),
-					),
-				),
-			}),
-		),
+		readOnly: v.boolean(),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:permissions" });
+		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:read-only" });
 		if (authorized._nay) {
 			return authorized;
 		}
 
-		let writePolicy: Doc<"files_nodes">["writePolicy"];
-		if (args.writePolicy?.mode === "writer") {
-			const writers: files_nodes_WriteContext["writer"][] = [];
-			for (const writer of args.writePolicy.writers) {
-				if (writer.kind === "user") {
-					const userId = ctx.db.normalizeId("users", writer.userId);
-					if (!userId) {
-						return Result({ _nay: { message: "Writer is not available" } });
-					}
-					writers.push({ kind: "user", userId });
-				} else {
-					const serviceAccountId = ctx.db.normalizeId("access_control_service_accounts", writer.serviceAccountId);
-					if (!serviceAccountId) {
-						return Result({ _nay: { message: "Writer is not available" } });
-					}
-					writers.push({ kind: "service_account", serviceAccountId });
-				}
-			}
-			writePolicy = { mode: "writer", writers };
-		} else {
-			writePolicy = args.writePolicy;
-		}
-
-		return await files_nodes_db_set_write_policy(ctx, { ...authorized._yay, writePolicy });
+		return await files_nodes_db_set_read_only(ctx, { ...authorized._yay, readOnly: args.readOnly });
 	},
 });
 
-type set_file_write_policy_Result =
-	typeof set_file_write_policy extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+type set_file_read_only_Result =
+	typeof set_file_read_only extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -2568,6 +2534,8 @@ export async function public_api_db_revalidate_file_write_principal(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
+		force?: boolean;
+		requestReadOnly?: boolean;
 		path: string;
 		expectedParentNodeId?: Id<"files_nodes">;
 		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
@@ -2620,6 +2588,13 @@ export async function public_api_db_revalidate_file_write_principal(
 			return liveRun;
 		}
 		const { pluginRun, installation } = liveRun._yay;
+		if (
+			(args.force === true || args.requestReadOnly === true) &&
+			(!pluginRun.acceptedCapabilities.includes("workspace.files.manage-read-only") ||
+				!installation.acceptedCapabilities.includes("workspace.files.manage-read-only"))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		if (pluginRun.actorUserId !== args.userId) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
@@ -2684,15 +2659,16 @@ export async function public_api_db_revalidate_file_write_principal(
 
 			return Result({
 				_yay: {
+					receipt: null,
+					fingerprint: null,
 					pluginRun,
 					installation,
 					serviceGrant: null,
 					writeContext: {
 						subject,
-						writer: { kind: "service_account", serviceAccountId: pluginRun.serviceAccountId },
+						force: args.force === true,
 						actorUserId: args.userId,
 						resourceScope,
-						policyReach: "ancestors",
 					} satisfies files_nodes_WriteContext,
 				},
 			});
@@ -2756,15 +2732,16 @@ export async function public_api_db_revalidate_file_write_principal(
 
 		return Result({
 			_yay: {
+				receipt: null,
+				fingerprint: null,
 				pluginRun,
 				installation,
 				serviceGrant: null,
 				writeContext: {
 					subject,
-					writer: { kind: "service_account", serviceAccountId: pluginRun.serviceAccountId },
+					force: args.force === true,
 					actorUserId: args.userId,
 					resourceScope,
-					policyReach: "none",
 				} satisfies files_nodes_WriteContext,
 			},
 		});
@@ -2802,6 +2779,12 @@ export async function public_api_db_revalidate_file_write_principal(
 			!installation.acceptedCapabilities.includes("workspace.files.write")
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (
+			(args.force === true || args.requestReadOnly === true) &&
+			!installation.acceptedCapabilities.includes("workspace.files.manage-read-only")
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
 		}
 		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))) {
 			return Result({ _nay: { message: "Unauthenticated" } });
@@ -2863,15 +2846,16 @@ export async function public_api_db_revalidate_file_write_principal(
 
 		return Result({
 			_yay: {
+				receipt: null,
+				fingerprint: null,
 				pluginRun: null,
 				installation,
 				serviceGrant: grant,
 				writeContext: {
 					subject,
-					writer: { kind: "service_account", serviceAccountId: grant.serviceAccountId },
+					force: args.force === true,
 					actorUserId: args.userId,
 					resourceScope: targetNode ? { kind: "node", nodeId: targetNode._id } : resourceScope,
-					policyReach: "direct",
 				} satisfies files_nodes_WriteContext,
 			},
 		});
@@ -2886,6 +2870,9 @@ export async function public_api_db_revalidate_file_write_principal(
 		return liveCredential;
 	}
 	const credential = liveCredential._yay;
+	if ((args.force === true || args.requestReadOnly === true) && !credential.scopes.includes("files:read-only")) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
 	const subject = credential_subject(credential);
 	// A person's key needs write on the target, or on the deepest folder that exists on the way, so a
 	// guest writes only into a folder shared with them. A key bound to an account is checked on the
@@ -2905,18 +2892,16 @@ export async function public_api_db_revalidate_file_write_principal(
 	}
 	return Result({
 		_yay: {
+			receipt: null,
+			fingerprint: null,
 			pluginRun: null,
 			installation: null,
 			serviceGrant: null,
 			writeContext: {
 				subject,
-				writer:
-					credential.serviceAccountId === null
-						? { kind: "user", userId: credential.userId }
-						: { kind: "service_account", serviceAccountId: credential.serviceAccountId },
+				force: args.force === true,
 				actorUserId: credential.userId,
 				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
 			} satisfies files_nodes_WriteContext,
 		},
 	});
@@ -3188,6 +3173,8 @@ export const prepare_file_write = internalMutation({
 		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
 		userId: v.id("users"),
 		principalRef: file_write_principal_ref_validator,
+		force: v.optional(v.boolean()),
+		requestReadOnly: v.optional(v.boolean()),
 		path: v.string(),
 		expectedParentNodeId: v.optional(v.string()),
 		externalFileWrite: doc(app_convex_schema, "public_api_file_write_stages").fields.externalFileWrite,
@@ -3225,6 +3212,8 @@ export const prepare_file_write = internalMutation({
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: args.principalRef,
+			force: args.force === true,
+			requestReadOnly: args.requestReadOnly === true,
 			path: args.path,
 			expectedParentNodeId,
 			externalFileWrite: args.externalFileWrite,
@@ -3278,6 +3267,8 @@ export const prepare_file_write = internalMutation({
 		]);
 
 		const stageId = await ctx.db.insert("public_api_file_write_stages", {
+			force: args.force === true,
+			requestReadOnly: args.requestReadOnly === true,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -3363,6 +3354,8 @@ export const publish_file_write = internalMutation({
 			userId: stage.userId,
 			principalRef,
 			path: stage.path,
+			force: stage.force,
+			requestReadOnly: stage.requestReadOnly,
 			expectedParentNodeId: stage.expectedParentNodeId,
 			externalFileWrite: stage.externalFileWrite,
 			now,
@@ -3484,9 +3477,9 @@ export const publish_file_write = internalMutation({
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			// Replacing a plugin output changes its sharing. Copying a local policy also needs management.
+			// Replacing a plugin output changes its sharing.
 			if (
-				(revalidated._yay.installation || activeNode.writePolicy !== null) &&
+				revalidated._yay.installation &&
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: stage.organizationId,
 					workspaceId: stage.workspaceId,
@@ -3533,37 +3526,8 @@ export const publish_file_write = internalMutation({
 			});
 			return canCreate;
 		}
-		let writePolicy = activeNode?.writePolicy ?? undefined;
-		// A replace keeps the old file's rule. Check only the manage permission for it, not its writers:
-		// a writer who left since the rule was set must not stop the others.
-		let keepsReplacedPolicy = writePolicy !== undefined;
-		if (args.requestReadOnly === true) {
-			const installation = revalidated._yay.installation;
-			if (!installation || writeContext.writer.kind !== "service_account") {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-			const canSelectWriter = revalidated._yay.pluginRun
-				? revalidated._yay.pluginRun.event === "ui.invoke.requested" &&
-					installation.acceptedCapabilities.includes("workspace.files.own-access")
-				: installation.acceptedCapabilities.includes("workspace.files.create-read-only");
-			if (!canSelectWriter) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-			writePolicy = { mode: "writer", writers: [writeContext.writer] };
-			keepsReplacedPolicy = false;
-		}
-		if (writePolicy !== undefined) {
-			const managed = await files_nodes_db_require_write_policy_management(ctx, {
-				organizationId: stage.organizationId,
-				workspaceId: stage.workspaceId,
-				writeContext: createContext,
-				target: createTarget,
-				writePolicy: keepsReplacedPolicy ? null : writePolicy,
-			});
-			if (managed._nay) {
-				return managed;
-			}
-		}
+		// A replacement keeps the saved flag and decision. A new item gets its own decision.
+		const readOnly = activeNode?.readOnly ?? stage.requestReadOnly;
 		const refsChecked = await db_check_plugin_added_file_refs(ctx, {
 			stage,
 			facts: revalidated._yay,
@@ -3596,8 +3560,10 @@ export const publish_file_write = internalMutation({
 			assetId: stage.contentSnapshotAssetId,
 			expectsTextContent: true,
 			writeContext: createContext,
-			writePolicy,
-			...(keepsReplacedPolicy ? { keepsReplacedPolicy: true as const } : {}),
+			readOnly,
+			...(activeNode
+				? { keepsReplacedReadOnly: true as const, preservedReadOnlyDecisionId: activeNode.readOnlyDecisionId }
+				: {}),
 			...(activeNode ? { replacesArchivedFile: true as const } : {}),
 			...(pluginName
 				? {
@@ -3709,7 +3675,7 @@ export const publish_file_write = internalMutation({
 		});
 
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
-		if (stage.externalFileWrite && "fingerprint" in revalidated._yay) {
+		if (stage.externalFileWrite && typeof revalidated._yay.fingerprint === "string") {
 			const node = await files_saved_placement_db_get_node(ctx.db, created._yay);
 			await plugins_external_files_db_record_write(ctx, {
 				stage,
@@ -3788,6 +3754,8 @@ export const publish_file_fill = internalMutation({
 			userId: stage.userId,
 			principalRef,
 			path: stage.path,
+			force: stage.force,
+			requestReadOnly: stage.requestReadOnly,
 			expectedParentNodeId: stage.expectedParentNodeId,
 			externalFileWrite: stage.externalFileWrite,
 			now,
@@ -3995,7 +3963,7 @@ export const publish_file_fill = internalMutation({
 
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
 
-		if (stage.externalFileWrite && "fingerprint" in revalidated._yay) {
+		if (stage.externalFileWrite && typeof revalidated._yay.fingerprint === "string") {
 			const node = await files_saved_placement_db_get_node(ctx.db, fileNode._id);
 			await plugins_external_files_db_record_write(ctx, {
 				stage,
@@ -4058,6 +4026,8 @@ export const publish_file_touch = internalMutation({
 			workspaceId: stage.workspaceId,
 			userId: stage.userId,
 			principalRef,
+			force: stage.force,
+			requestReadOnly: stage.requestReadOnly,
 			path: stage.path,
 			now,
 			lookups,
@@ -4303,6 +4273,8 @@ export const can_write_file_node = internalQuery({
 		nodeId: v.id("files_nodes"),
 		path: v.string(),
 		principalRef: file_write_principal_ref_validator,
+		force: v.optional(v.boolean()),
+		requestReadOnly: v.optional(v.boolean()),
 	},
 	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
 	handler: async (ctx, args) => {
@@ -4459,6 +4431,7 @@ export const create_file_upload_targets = internalMutation({
 		/** The credential owner. */
 		userId: v.id("users"),
 		principalRef: file_write_principal_ref_validator,
+		force: v.optional(v.boolean()),
 		items: v.array(
 			v.object({
 				path: v.string(),
@@ -4494,6 +4467,7 @@ export const create_file_upload_targets = internalMutation({
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: args.principalRef,
+			force: args.force === true,
 			path: "/",
 			eachPathChecked: true,
 			now,
@@ -4520,7 +4494,8 @@ export const create_file_upload_targets = internalMutation({
 			contentType: string;
 			size: number;
 			collidingNodeId: Id<"files_nodes"> | null;
-			writePolicy?: Doc<"files_nodes">["writePolicy"];
+			readOnly: boolean;
+			readOnlyDecisionId: string | null;
 			parent: { node: Doc<"files_nodes"> | null; depth: number };
 		}> = [];
 		// One set of lookups for the whole call: during a Move, each folder on the way is read once.
@@ -4659,18 +4634,6 @@ export const create_file_upload_targets = internalMutation({
 				if (args.overwrite === "fail") {
 					return Result({ _nay: { message: "A file already exists at this path", data: { path: item.path } } });
 				}
-				if (
-					existingNode.writePolicy !== null &&
-					!(await has_workspace_content_permission(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						subject: writeContext.subject,
-						fileNode: existingNode,
-						permission: "content.permissions.manage",
-					}))
-				) {
-					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
-				}
 			}
 
 			// The caller's type is stored when it is valid, so a text type here makes the upload an
@@ -4685,7 +4648,8 @@ export const create_file_upload_targets = internalMutation({
 				contentType,
 				size: item.size,
 				collidingNodeId: existingNode?._id ?? null,
-				writePolicy: existingNode?.writePolicy ?? undefined,
+				readOnly: existingNode?.readOnly ?? false,
+				readOnlyDecisionId: existingNode?.readOnlyDecisionId ?? null,
 				parent: { node: parentNode, depth: found.depth },
 			});
 		}
@@ -4738,20 +4702,6 @@ export const create_file_upload_targets = internalMutation({
 			});
 			if (writable._nay) {
 				return { ...writable, _nay: { ...writable._nay, data: { path: item.path } } };
-			}
-			// A replace keeps the old file's rule. Check only the manage permission for it, not its writers:
-			// a writer who left since the rule was set must not stop the others.
-			if (item.writePolicy !== undefined) {
-				const managed = await files_nodes_db_require_write_policy_management(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					writeContext,
-					target,
-					writePolicy: null,
-				});
-				if (managed._nay) {
-					return Result({ _nay: { ...managed._nay, data: { path: item.path } } });
-				}
 			}
 		}
 
@@ -4808,8 +4758,10 @@ export const create_file_upload_targets = internalMutation({
 				assetId,
 				metadata: [{ key: "source", value: "api" }],
 				writeContext,
-				writePolicy: item.writePolicy,
-				...(item.writePolicy !== undefined ? { keepsReplacedPolicy: true as const } : {}),
+				readOnly: item.readOnly,
+				...(item.collidingNodeId
+					? { keepsReplacedReadOnly: true as const, preservedReadOnlyDecisionId: item.readOnlyDecisionId }
+					: {}),
 				...(item.collidingNodeId ? { replacesArchivedFile: true as const } : {}),
 				folders,
 				now,
@@ -5026,6 +4978,7 @@ export async function public_api_write_one_text_file(
 		/** Who the read checks act as. */
 		subject: access_control_Subject;
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
+		force?: boolean;
 		path: string;
 		expectedParentNodeId?: string;
 		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
@@ -5167,6 +5120,8 @@ export async function public_api_write_one_text_file(
 					nodeId: activeNode._id,
 					path: args.path,
 					principalRef: args.principalRef,
+					force: args.force === true,
+					requestReadOnly: args.requestReadOnly,
 				})) as "ok" | "permission_denied" | "read_only";
 				if (canWriteNode === "ok") {
 					return Result({
@@ -5206,6 +5161,8 @@ export async function public_api_write_one_text_file(
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: args.principalRef,
+			force: args.force === true,
+			requestReadOnly: args.requestReadOnly,
 			path: args.path,
 			expectedParentNodeId: args.expectedParentNodeId,
 			externalFileWrite: args.externalFileWrite,
@@ -5395,6 +5352,8 @@ export async function public_api_write_one_text_file(
 					nodeId: activeNode._id,
 					path: args.path,
 					principalRef: args.principalRef,
+					force: args.force === true,
+					requestReadOnly: args.requestReadOnly,
 				})) as "ok" | "permission_denied" | "read_only";
 				if (canWriteNode === "ok") {
 					return Result({
@@ -5413,6 +5372,8 @@ export async function public_api_write_one_text_file(
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				principalRef: args.principalRef,
+				force: args.force === true,
+				requestReadOnly: args.requestReadOnly,
 				path: args.path,
 				expectedParentNodeId: args.expectedParentNodeId,
 				externalFileWrite: args.externalFileWrite,
@@ -5622,6 +5583,8 @@ export async function public_api_write_one_text_file(
 		workspaceId: args.workspaceId,
 		userId: args.userId,
 		principalRef: args.principalRef,
+		force: args.force === true,
+		requestReadOnly: args.requestReadOnly,
 		path: args.path,
 		expectedParentNodeId: args.expectedParentNodeId,
 		externalFileWrite: args.externalFileWrite,
@@ -6236,14 +6199,14 @@ export async function public_api_http_read_bytes(args: {
 	return result;
 }
 
-const get_file_write_policy_body_validator = z.object({ nodeId: z.string() });
+const get_file_read_only_body_validator = z.object({ nodeId: z.string() });
 
-export type public_api_http_get_file_write_policy_Body = z.infer<typeof get_file_write_policy_body_validator>;
+export type public_api_http_get_file_read_only_Body = z.infer<typeof get_file_read_only_body_validator>;
 
-export async function public_api_http_get_file_write_policy(args: {
+export async function public_api_http_get_file_read_only(args: {
 	ctx: ActionCtx;
 	request: Request;
-	path: "/api/v1/files/write-policy/get";
+	path: "/api/v1/files/read-only/get";
 }) {
 	const { ctx, request, path } = args;
 
@@ -6258,19 +6221,19 @@ export async function public_api_http_get_file_write_policy(args: {
 		return auth._nay;
 	}
 
-	const body = await server_request_json_parse_and_validate(request, get_file_write_policy_body_validator);
+	const body = await server_request_json_parse_and_validate(request, get_file_read_only_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
 
 	const principal = auth._yay.principal;
-	const result = (await ctx.runQuery(internal.public_api.get_file_write_policy, {
+	const result = (await ctx.runQuery(internal.public_api.get_file_read_only, {
 		credentialId: principal.credentialId,
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
 		userId: principal.userId,
 		nodeId: body._yay.nodeId,
-	})) as get_file_write_policy_Result;
+	})) as get_file_read_only_Result;
 	if (result._nay) {
 		return {
 			status: result._nay.message === "Unauthenticated" ? 401 : result._nay.message === "Not found" ? 404 : 403,
@@ -6281,36 +6244,26 @@ export async function public_api_http_get_file_write_policy(args: {
 	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
 }
 
-const set_file_write_policy_body_validator = z.object({
-	nodeId: z.string(),
-	writePolicy: z.union([
-		z.null(),
-		z.object({ mode: z.literal("read_only") }),
-		z.object({
-			mode: z.literal("writer"),
-			writers: z.array(
-				z.union([
-					z.object({ kind: z.literal("user"), userId: z.string() }),
-					z.object({ kind: z.literal("service_account"), serviceAccountId: z.string() }),
-				]),
-			),
-		}),
-	]),
-});
+const set_file_read_only_body_validator = z
+	.object({
+		nodeId: z.string(),
+		readOnly: z.boolean(),
+	})
+	.strict();
 
-export type public_api_http_set_file_write_policy_Body = z.infer<typeof set_file_write_policy_body_validator>;
+export type public_api_http_set_file_read_only_Body = z.infer<typeof set_file_read_only_body_validator>;
 
-export async function public_api_http_set_file_write_policy(args: {
+export async function public_api_http_set_file_read_only(args: {
 	ctx: ActionCtx;
 	request: Request;
-	path: "/api/v1/files/write-policy/set";
+	path: "/api/v1/files/read-only/set";
 }) {
 	const { ctx, request, path } = args;
 
 	const auth = await public_api_authorize_request({
 		ctx,
 		request,
-		requiredScope: "files:permissions",
+		requiredScope: "files:read-only",
 		allowedKinds: ["user_api_key"],
 		route: path,
 	});
@@ -6318,30 +6271,22 @@ export async function public_api_http_set_file_write_policy(args: {
 		return auth._nay;
 	}
 
-	const body = await server_request_json_parse_and_validate(request, set_file_write_policy_body_validator);
+	const body = await server_request_json_parse_and_validate(request, set_file_read_only_body_validator);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
 
 	const principal = auth._yay.principal;
-	const result = (await ctx.runMutation(internal.public_api.set_file_write_policy, {
+	const result = (await ctx.runMutation(internal.public_api.set_file_read_only, {
 		credentialId: principal.credentialId,
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
 		userId: principal.userId,
 		...body._yay,
-	})) as set_file_write_policy_Result;
+	})) as set_file_read_only_Result;
 	if (result._nay) {
 		return {
-			status:
-				result._nay.message === "Unauthenticated"
-					? 401
-					: result._nay.message === "Not found"
-						? 404
-						: result._nay.message === "Writer is not available" ||
-							  result._nay.message === files_WRITE_POLICY_INVALID_WRITERS_MESSAGE
-							? 400
-							: 403,
+			status: result._nay.message === "Unauthenticated" ? 401 : result._nay.message === "Not found" ? 404 : 403,
 			body: { message: result._nay.message },
 		} as const;
 	}
@@ -6418,6 +6363,7 @@ export async function public_api_http_set_file_public(args: {
 }
 
 const write_file_body_validator = z.object({
+	force: z.boolean().optional(),
 	path: z.string(),
 	/**
 	 * Invoke and conditional service writes can pin the immediate parent.
@@ -6676,13 +6622,6 @@ export async function public_api_http_write_file(args: {
 			}),
 		} as const;
 	}
-	// The `access` option is a plugin feature: a user key holder locks files through the app.
-	if (body._yay.access?.readOnly === true && principal.kind === "user_api_key") {
-		return {
-			status: 403,
-			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
-		} as const;
-	}
 	let overwrite = body._yay.overwrite ?? "replace";
 	let externalFileWrite: Doc<"public_api_file_write_stages">["externalFileWrite"];
 	let receiptArgs:
@@ -6752,6 +6691,7 @@ export async function public_api_http_write_file(args: {
 			contentType: shape.contentType,
 			nonCollaborative: body._yay.nonCollaborative === true,
 			requestReadOnly: body._yay.access?.readOnly === true,
+			force: body._yay.force === true,
 		};
 		receiptArgs = {
 			grantId: principal.grantId,
@@ -6825,6 +6765,7 @@ export async function public_api_http_write_file(args: {
 		shape,
 		nonCollaborative: body._yay.nonCollaborative ?? false,
 		requestReadOnly: body._yay.access?.readOnly === true,
+		force: body._yay.force === true,
 	});
 	if (written._nay) {
 		const failBody = await fail({
@@ -6923,6 +6864,7 @@ export async function public_api_http_write_file(args: {
 }
 
 const write_many_body_validator = z.object({
+	force: z.boolean().optional(),
 	files: z
 		.array(
 			z.object({
@@ -7175,8 +7117,9 @@ export async function public_api_http_write_many(args: {
 						skipIfUnchanged: body.data.skipIfUnchanged ?? false,
 						shape: file.shape,
 						nonCollaborative: file.nonCollaborative ?? false,
-						// Write-many stays a user-key route, and the lock option is a plugin feature.
+						// Write-many creates ordinary writable files.
 						requestReadOnly: false,
+						force: body.data.force === true,
 					});
 					if (
 						result._nay &&
@@ -7264,6 +7207,7 @@ export async function public_api_http_write_many(args: {
 }
 
 const touch_files_body_validator = z.object({
+	force: z.boolean().optional(),
 	paths: z.array(z.string()).min(1).max(FILES_TOUCH_MAX_PATHS),
 });
 
@@ -7434,6 +7378,7 @@ export async function public_api_http_touch_files(args: {
 				nodeId: activeNode._id,
 				path: requestedPath,
 				principalRef,
+				force: body._yay.force === true,
 			})) as "ok" | "permission_denied" | "read_only";
 			if (canWriteNode === "permission_denied") {
 				return {
@@ -7482,6 +7427,7 @@ export async function public_api_http_touch_files(args: {
 			workspaceId: principal.workspaceId,
 			userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
 			principalRef,
+			force: body._yay.force === true,
 			path: requestedPath,
 			overwrite: "fail",
 			contentSize: 0,
@@ -7988,6 +7934,7 @@ export async function public_api_http_download_urls(args: {
 }
 
 const upload_urls_body_validator = z.object({
+	force: z.boolean().optional(),
 	files: z
 		.array(
 			z.object({
@@ -8054,6 +8001,7 @@ export async function public_api_http_upload_urls(args: {
 		workspaceId: principal.workspaceId,
 		userId: principal.userId,
 		principalRef: { kind: "user_api_key", credentialId: principal.credentialId },
+		force: body._yay.force === true,
 		items: body._yay.files,
 		skipProcessing: body._yay.skipProcessing ?? false,
 		overwrite: body._yay.overwrite ?? "replace",

@@ -147,12 +147,13 @@ export async function files_pending_nodes_db_publish(
 	}
 
 	const now = Date.now();
-	const copiedWritePolicy = node.kind === "folder" ? pendingUpdate.copiedFrom?.sourceWritePolicy : undefined;
+	let copiedReadOnlyDecisionId: string | undefined;
 	let copiedPath: string | undefined;
-	if (copiedWritePolicy !== undefined) {
+	if (node.kind === "folder" && pendingUpdate.copiedFrom?.sourceReadOnly) {
 		const saved = await ctx.db.get("files_nodes", args.savedNodeId);
-		if (!saved || JSON.stringify(saved.writePolicy) !== JSON.stringify(copiedWritePolicy))
-			throw should_never_happen("Copied folder policy changed during publication", { privateNodeId: node._id });
+		if (!saved?.readOnly || !saved.readOnlyDecisionId)
+			throw should_never_happen("Copied folder Read-only changed during publication", { privateNodeId: node._id });
+		copiedReadOnlyDecisionId = saved.readOnlyDecisionId;
 		copiedPath = saved.path;
 	}
 	// The receipt below is deleted after a week. Store the same link on the saved node, so an old
@@ -167,7 +168,7 @@ export async function files_pending_nodes_db_publish(
 		structuralRevision: node.structuralRevision,
 		proposalRevision: pendingUpdate.revision,
 		savedNodeId: args.savedNodeId,
-		copiedWritePolicy,
+		copiedReadOnlyDecisionId,
 		copiedPath,
 		createdAt: now,
 	});

@@ -29,6 +29,7 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	"files:list": null,
 	"files:read": null,
 	"files:write": null,
+	"files:read-only": null,
 	"files:download": null,
 	// Policy management is checked on the actual file, including restricted folders.
 	"files:permissions": null,
@@ -361,6 +362,8 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 	// Claim the call before the route's kind and cached scope checks.
 	let pluginCallId: Id<"plugins_event_run_calls"> | null = null;
 	if (principal.kind === "plugin_run") {
+		if (args.requiredScope === "files:read-only")
+			return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
 		const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
 			internal.plugins_runtime.consume_run_api_call,
 			{

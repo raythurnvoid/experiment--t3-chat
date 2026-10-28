@@ -44,7 +44,7 @@ export type FileEditorSidebar_Props = {
 	/** The route-resolved node, or null while nothing (or the root folder) is selected. */
 	node: Omit<
 		app_convex_Doc<"files_nodes">,
-		"writePolicy" | "newChildWritePolicy" | "sortName" | "isRestrictedScopeRoot" | "extendedScopeNodeId"
+		"readOnlyDecisionId" | "sortName" | "isRestrictedScopeRoot" | "extendedScopeNodeId"
 	> | null;
 	isPrivate?: boolean;
 	commentsContainerRef: Ref<HTMLDivElement>;

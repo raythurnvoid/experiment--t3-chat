@@ -984,10 +984,10 @@ async function start_review_rotation(
 test("a refused Review capture keeps only its proposal hold and cannot resume publication", async () => {
 	const f = await start_review_rotation(2, async (f) => {
 		expect(
-			await f.mover.mutation(api.files_nodes.set_node_write_policy, {
+			await f.mover.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
 	});

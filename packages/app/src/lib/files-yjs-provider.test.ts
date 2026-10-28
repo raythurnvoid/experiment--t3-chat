@@ -1115,7 +1115,10 @@ describe("files_yjs_Provider outgoing update queue", () => {
 		await advanceTimersByTime(500);
 
 		expect(provider.pushRefusedReason).toBe("permission");
-		expect(pushRefused).toHaveBeenCalledWith("permission", false);
+		expect(pushRefused).toHaveBeenCalledWith("permission", true);
+		insertText(rootDoc, " still not saved");
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
 
 		provider.destroy();
 	});

@@ -7,6 +7,8 @@ import { restore_paths } from "./public_api_files_organize.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { test_mocks, test_spy_handler } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { test_run_with_flush } from "./setup.test.ts";
 import {
 	fixture,
 	add_member,
@@ -66,7 +68,7 @@ async function post(f: Fixture, route: string, credential: string, body: unknown
 }
 
 async function insert_root_file(f: Fixture, args: { name: string; archiveOperationId: string | null }) {
-	return await f.t.run((ctx) =>
+	return await test_run_with_flush(f.t, (ctx) =>
 		ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: f.db.organizationId,
@@ -167,17 +169,39 @@ describe("files/restore", () => {
 	test("a retry with the same requestId answers the same jobs and restores nothing again", async () => {
 		const f = await fixture();
 		const ownerKey = await create_owner_key(f);
+		await f.t.run((ctx) =>
+			ctx.db.patch("api_credentials", ownerKey.credentialId, {
+				scopes: ["files:list", "files:write", "files:read-only"],
+			}),
+		);
 		const tree = await seed_tree(f, { name: "again", folderCount: 1, filesPerFolder: 1 });
 		await archive_to_end(f, tree.topId);
 		const body = { paths: ["/again"], requestId: "retry" };
 
 		const first = await post(f, "/api/v1/files/restore", ownerKey.credential, body);
 		expect(first).toEqual({ status: 200, body: { jobIds: [expect.any(String)], isDone: true, refused: [] } });
+		const run = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_archive_runs")
+				.withIndex("by_user_workspace_apiRequest", (q) =>
+					q
+						.eq("userId", f.db.userId)
+						.eq("workspaceId", f.db.workspaceId)
+						.eq("apiRequest.requestId", `api:${ownerKey.credentialId}:retry`),
+				)
+				.unique(),
+		);
+		expect(run?.apiRequest?.inputHash).toBe(await crypto_sha256_hex(JSON.stringify([body.paths, "keep_both"])));
 		expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 
 		// Delete the folder again. A late retry must not bring it back a second time.
 		await archive_to_end(f, tree.topId);
 		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, body)).toEqual(first);
+		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { ...body, force: false })).toEqual(first);
+		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { ...body, force: true })).toEqual({
+			status: 409,
+			body: { message: "This requestId was already used for another request. Send a new requestId." },
+		});
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
 		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { ...body, onConflict: "skip" })).toEqual({
 			status: 409,
@@ -218,7 +242,7 @@ describe("files/restore", () => {
 		// The owner still writes everything, so only the revoked key stops the job.
 		expect(ended.activity).toMatchObject({
 			status: "failed",
-			errorMessage: "The API key that started this job was revoked or lost files:write.",
+			errorMessage: "The API key that started this job was revoked or lost a required file scope.",
 		});
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
 	});

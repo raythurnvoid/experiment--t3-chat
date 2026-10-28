@@ -554,7 +554,7 @@ describe("AppNotifications", () => {
 			blocked: 1,
 			isDone: true,
 			line: "Updated 3 of 4 items.",
-			label: "Completed",
+			label: "Partly completed",
 		},
 		{
 			status: "canceled",

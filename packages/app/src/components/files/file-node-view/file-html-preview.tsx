@@ -49,7 +49,7 @@ type FileHtmlPreview_ClassNames =
 
 type FileHtmlPreview_Node = Omit<
 	Extract<files_VisibleEntry, { kind: "saved" }>["node"],
-	"writePolicy" | "newChildWritePolicy" | "sortName" | "isRestrictedScopeRoot" | "extendedScopeNodeId"
+	"readOnlyDecisionId" | "sortName" | "isRestrictedScopeRoot" | "extendedScopeNodeId"
 >;
 type FileHtmlPreview_Entry =
 	| Extract<files_VisibleEntry, { kind: "private" }>

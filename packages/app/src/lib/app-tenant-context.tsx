@@ -6,6 +6,7 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 
 export type AppTenantContextValue = {
+	userId: app_convex_Id<"users">;
 	/** Convex `organizations_workspaces_users` document id for the current user and tenant. */
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
@@ -17,7 +18,6 @@ export type AppTenantContextValue = {
 const AppTenantContext = createContext<AppTenantContextValue | null>(null);
 
 type AppTenantProvider_Props = AppTenantContextValue & {
-	userId: app_convex_Id<"users">;
 	children: ReactNode;
 };
 
@@ -26,7 +26,9 @@ const AppTenantProvider = Object.assign(
 		const { userId, membershipId, organizationId, organizationName, workspaceId, workspaceName, children } = props;
 
 		return (
-			<AppTenantContext.Provider value={{ membershipId, organizationId, organizationName, workspaceId, workspaceName }}>
+			<AppTenantContext.Provider
+				value={{ userId, membershipId, organizationId, organizationName, workspaceId, workspaceName }}
+			>
 				<FilesTreeProvider key={membershipId} membershipId={membershipId} workspaceId={workspaceId}>
 					<AppActivitiesProvider key={membershipId} membershipId={membershipId}>
 						<FilesClipboardProvider key={membershipId} userId={userId} membershipId={membershipId}>

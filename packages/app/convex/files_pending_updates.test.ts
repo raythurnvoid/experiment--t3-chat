@@ -9,6 +9,7 @@ import {
 	test_finish_pending_update_run,
 	test_convex,
 	test_drain_billing_usage_event_outbox,
+	test_finish_file_index,
 	test_get_file_yjs_pointers,
 	test_meta_search,
 	test_mocks_fill_db_with,
@@ -2172,8 +2173,8 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			external_id: seeded.userId,
 			name: "Test User",
 		});
-		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -2721,6 +2722,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		expect(await title_by_path()).toBe("proposal");
 
 		await save_as_member({ t, seeded, text: "---\ntitle: saved\n---\n\n# Body\n" });
+		await test_finish_file_index(t, seeded.nodeId);
 		expect(await search_saved_title("saved")).toEqual([seeded.nodeId]);
 		expect(await search_saved_title("proposal")).toEqual([]);
 		expect(await title_by_path()).toBe("proposal");
@@ -2920,17 +2922,17 @@ describe("pending content version reads", () => {
 		expect(
 			(await t.query(internal.files_nodes.text_search_files, searchArgs)).items.map((item) => item.path),
 		).toContain("/mark.txt");
-		await test_run_with_flush(t, async ctx => {
+		await test_run_with_flush(t, async (ctx) => {
 			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
 			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
 		});
-		await test_run_with_flush(t, async ctx => {
+		await test_run_with_flush(t, async (ctx) => {
 			const node = (await ctx.db.get("files_nodes", seeded.nodeId))!;
 			await ctx.db.patch("files_nodes", node._id, { pendingContentVersion: node.pendingContentVersion + 1 });
 		});
-		expect((await t.query(internal.files_nodes.text_search_files, searchArgs)).items.map((item) => item.path)).toContain(
-			"/mark.txt",
-		);
+		expect(
+			(await t.query(internal.files_nodes.text_search_files, searchArgs)).items.map((item) => item.path),
+		).toContain("/mark.txt");
 		const content = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,

@@ -98,10 +98,10 @@ describe("cross-workspace Copy from public Save", () => {
 				afterPlan: async () => {
 					// Lock after selection and planning, so the worker must recheck the plan and write policy.
 					expect(
-						await destination.asUser.mutation(api.files_nodes.set_node_write_policy, {
+						await destination.asUser.mutation(api.files_nodes.read_only_set, {
 							membershipId: destination.membershipId,
 							nodeId: imageNodeId,
-							writePolicy: { mode: "read_only" },
+							readOnly: true,
 						}),
 					).toEqual({ _yay: null });
 					imageBefore = await f.t.run((ctx) => ctx.db.get("files_nodes", imageNodeId));

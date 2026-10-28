@@ -4,7 +4,7 @@ import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with, test_mocks, test_run_with_flush } from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -88,8 +88,8 @@ describe("create_folder_node", () => {
 				statsId: null,
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
-				newChildWritePolicy: null,
+				readOnly: false,
+
 				archiveOperationId: null,
 				createdBy: db.userId,
 				updatedBy: db.userId,
@@ -129,10 +129,23 @@ describe("create_folder_node", () => {
 		"refuses %s without partial writes",
 		async (kind) => {
 			const { t, db, asOwner, folder, readState } = await fixture();
-			const parentId = await folder("docs");
-			if (kind === "file prefix" || kind === "file parent") {
-				await t.run((ctx) => ctx.db.patch("files_nodes", parentId, { kind: "file", treePath: "/docs" }));
-			}
+			const parentId =
+				kind === "file prefix" || kind === "file parent"
+					? await test_run_with_flush(t, (ctx) =>
+							ctx.db.insert("files_nodes", {
+								...test_mocks.files.base(),
+								organizationId: db.organizationId,
+								workspaceId: db.workspaceId,
+								createdBy: db.userId,
+								updatedBy: db.userId,
+								parentId: "root",
+								kind: "file",
+								name: "docs",
+								path: "/docs",
+								treePath: "/docs",
+							}),
+						)
+					: await folder("docs");
 			if (kind === "archived parent") {
 				await t.run((ctx) => ctx.db.patch("files_nodes", parentId, { archiveOperationId: "archived-test" }));
 			}
@@ -149,50 +162,34 @@ describe("create_folder_node", () => {
 		},
 	);
 
-	test.each(["read only", "matching writer", "other writer"] as const)(
-		"checks the destination rule: %s",
-		async (rule) => {
-			const { t, db, asOwner, folder, readState } = await fixture();
-			const parentId = await folder("docs");
-			const otherId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "other_writer" }));
-			await t.run((ctx) =>
-				ctx.db.patch("files_nodes", parentId, {
-					writePolicy:
-						rule === "read only"
-							? { mode: "read_only" }
-							: {
-									mode: "writer",
-									writers: [{ kind: "user", userId: rule === "matching writer" ? db.userId : otherId }],
-								},
-				}),
-			);
-			const before = await readState();
-			const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
-				membershipId: db.membershipId,
-				parentId: files_ROOT_ID,
-				path: "docs/a/b",
-			});
-			if (rule === "matching writer") {
-				expect(created._nay).toBeUndefined();
-				expect((await readState()).nodes).toHaveLength(before.nodes.length + 2);
-			} else {
-				expect(created._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
-				expect(await readState()).toEqual(before);
-			}
-		},
-	);
+	test.each([false, true])("checks the destination Read-only flag: %s", async (readOnly) => {
+		const { t, db, asOwner, folder, readState } = await fixture();
+		const parentId = await folder("docs");
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", parentId, {
+				readOnly,
+				readOnlyDecisionId: readOnly ? crypto.randomUUID() : null,
+			}),
+		);
+		const before = await readState();
+		const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "docs/a/b",
+		});
+		if (!readOnly) {
+			expect(created._nay).toBeUndefined();
+			expect((await readState()).nodes).toHaveLength(before.nodes.length + 2);
+		} else {
+			expect(created._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+			expect(await readState()).toEqual(before);
+		}
+	});
 
-	test("copies the parent's default onto every missing folder without changing old children", async () => {
+	test("creates writable folders without changing old children", async () => {
 		const { t, db, asOwner, folder } = await fixture();
 		const parentId = await folder("docs");
 		const oldChildId = await folder("old", parentId);
-		const policy = { mode: "read_only" } as const;
-		const changed = await asOwner.mutation(api.files_nodes.set_node_new_child_write_policy, {
-			membershipId: db.membershipId,
-			nodeId: parentId,
-			newChildWritePolicy: policy,
-		});
-		expect(changed._nay).toBeUndefined();
 		const created = await asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
 			parentId,
@@ -201,10 +198,10 @@ describe("create_folder_node", () => {
 		expect(created._nay).toBeUndefined();
 		const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
 		for (const node of nodes.filter((node) => node.path === "/docs/a" || node.path === "/docs/a/b")) {
-			expect(node.writePolicy).toEqual(policy);
-			expect(node.newChildWritePolicy).toEqual(policy);
+			expect(node.readOnly).toBe(false);
+			expect(node.readOnlyDecisionId).toBeNull();
 		}
-		expect(nodes.find((node) => node._id === oldChildId)?.writePolicy).toBeNull();
+		expect(nodes.find((node) => node._id === oldChildId)?.readOnly).toBe(false);
 	});
 
 	test("a restricted-folder grant allows nested creates and preserves the scope", async () => {

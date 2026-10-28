@@ -164,7 +164,9 @@ describe("set_folder_sort", () => {
 	test("a read-only folder refuses a save and reports that nobody can save", async () => {
 		const { t, scope, asOwner, create_folder, read_rows } = await fixture();
 		const folderId = await create_folder("/locked");
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", folderId, { writePolicy: { mode: "read_only" } }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_nodes", folderId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+		);
 
 		const refused = await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,

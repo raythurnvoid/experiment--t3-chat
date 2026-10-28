@@ -813,7 +813,8 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
 				organizationId: db.organizationId,
@@ -833,7 +834,6 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
-				newChildWritePolicy: null,
 			});
 			return { nodeId, assetId };
 		});

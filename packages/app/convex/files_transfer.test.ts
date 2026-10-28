@@ -18,6 +18,7 @@ import {
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
 import {
@@ -57,6 +58,33 @@ describe("start", () => {
 		};
 		const first = await start_transfer(asUser, args);
 		if (first._nay) throw new Error(first._nay.message);
+		const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", first._yay.runId));
+		if (!run) throw new Error("Missing transfer run");
+		const scope = {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			membershipId: db.membershipId,
+			membershipLifetime: run.sourceScope.membershipLifetime,
+		};
+		expect(run.requestHash).toBe(
+			await crypto_sha256_hex(
+				JSON.stringify([
+					"copy",
+					scope,
+					scope,
+					3,
+					args.sourceIds.map((id) => ({ kind: "saved", id })),
+					{ kind: "saved", id: args.targetParentId },
+					"/target",
+					null,
+					[],
+					{ file: "ask", folder: "ask" },
+					{ kind: "clipboard" },
+					null,
+					false,
+				]),
+			),
+		);
 		expect(await start_transfer(asUser, args)).toEqual(first);
 		// The same request ID with other sources is a new request, not a retry of this one.
 		expect((await start_transfer(asUser, { ...args, sourceIds: [folders.get("/source/child")!] }))._nay).toMatchObject({
@@ -1113,67 +1141,49 @@ describe("start_for_agent", () => {
 		},
 	);
 
-	test.each(["writePolicy", "newChildWritePolicy"] as const)(
-		"refuses a copied folder's %s when its writer has no destination access",
-		async (field) => {
-			const fixture = await create_folder_fixture(["/source"]);
-			const { t, db, asUser, folders } = fixture;
-			const member = await add_member(fixture);
-			const writePolicy = { mode: "writer" as const, writers: [{ kind: "user" as const, userId: member.userId }] };
-			const policyResult =
-				field === "writePolicy"
-					? await asUser.mutation(api.files_nodes.set_node_write_policy, {
-							membershipId: db.membershipId,
-							nodeId: folders.get("/source")!,
-							writePolicy,
-						})
-					: await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
-							membershipId: db.membershipId,
-							nodeId: folders.get("/source")!,
-							newChildWritePolicy: writePolicy,
-						});
-			if (policyResult._nay) throw new Error(policyResult._nay.message);
-			const thread = await asUser.mutation(api.ai_chat.thread_create, {
-				membershipId: db.membershipId,
-				clientGeneratedId: "copied-writer",
-				lastMessageAt: Date.now(),
-			});
-			if (thread._nay) throw new Error(thread._nay.message);
-			const started = await start_agent_transfer(t, {
-				membershipId: db.membershipId,
-				threadId: thread._yay.threadId,
-				sourceWorkspace: "current",
-				destinationWorkspace: "personal",
-				requestId: "writer-copy",
-				kind: "copy",
-				sources: [{ kind: "saved", id: folders.get("/source")! }],
-				targetParent: { kind: "root" },
-				targetPath: "/",
-				targetName: null,
-				missingParentNames: [],
-				conflictPolicy: { file: "error", folder: "error" },
-			});
-			if (started._nay) throw new Error(started._nay.message);
-			expect((await finish_folder_copy(fixture, started._yay.runId)).activity).toMatchObject({
-				status: "failed",
-				progress: { completed: 0, failed: 1 },
-			});
-			const items = await t.run((ctx) =>
-				ctx.db
-					.query("files_transfer_items")
-					.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
-					.collect(),
-			);
-			expect(items[0]?.errorMessage).toBe(
-				"The copied protection names a writer who cannot edit this destination. Change the source rule or pick a writer with access first.",
-			);
-			expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toEqual([]);
-			expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get("/source")!))).toMatchObject({
-				[field]: writePolicy,
-				archiveOperationId: null,
-			});
-		},
-	);
+	test("copying a Read-only folder to a personal workspace keeps its flag", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const result = await asUser.mutation(api.files_nodes.read_only_set, {
+			membershipId: db.membershipId,
+			nodeId: folders.get("/source")!,
+			readOnly: true,
+		});
+		if (result._nay) throw new Error(result._nay.message);
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "copied-read-only",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await start_agent_transfer(t, {
+			membershipId: db.membershipId,
+			threadId: thread._yay.threadId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "personal",
+			requestId: "read-only-copy",
+			kind: "copy",
+			sources: [{ kind: "saved", id: folders.get("/source")! }],
+			targetParent: { kind: "root" },
+			targetPath: "/",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "error", folder: "error" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect((await finish_folder_copy(fixture, started._yay.runId)).activity).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1, failed: 0 },
+		});
+		const drafts = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+		expect(drafts).toHaveLength(1);
+		const proposal = await t.run((ctx) => ctx.db.query("files_pending_updates").first());
+		expect(proposal?.copiedFrom).toMatchObject({ sourceReadOnly: true });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", folders.get("/source")!))).toMatchObject({
+			readOnly: true,
+			archiveOperationId: null,
+		});
+	});
 
 	test.each(["", ".", "../hidden", "nested/name", "nested\\name"])(
 		"rejects a destination that is not one name: %j",
@@ -2595,6 +2605,8 @@ describe("move", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		// Metadata indexes are built in the background. Finish them before taking the baseline.
+		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 		const occupant = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
 			parentId: folders.get("/target")!,
@@ -2636,6 +2648,7 @@ describe("move", () => {
 		// the wrong reason.
 		expect(versionsBefore.length).toBeGreaterThan(0);
 		expect(entriesBefore.length).toBeGreaterThan(0);
+		expect(metadataDocsBefore.length).toBeGreaterThan(0);
 
 		const started = await start_transfer(asUser, {
 			membershipId: db.membershipId,

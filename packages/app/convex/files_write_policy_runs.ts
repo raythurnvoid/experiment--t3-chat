@@ -2,7 +2,6 @@
 // fit in one mutation, so a background job walks the folder in path order, a few items per step.
 
 import { v } from "convex/values";
-import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -17,10 +16,10 @@ import {
 	activities_get_result_status,
 	activities_is_active,
 } from "./activities_db.ts";
-import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
+import { files_nodes_db_set_read_only } from "./files_nodes.ts";
 import {
-	files_nodes_db_authorize_write_policy_management,
-	files_nodes_db_require_write_policy_management,
+	files_nodes_db_authorize_read_only_management,
+	files_nodes_db_require_read_only_management,
 } from "./files_write_policy_db.ts";
 import { type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
@@ -29,7 +28,6 @@ import {
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -180,7 +178,7 @@ export const start = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
-		writePolicy: doc(app_convex_schema, "files_nodes").fields.writePolicy,
+		targetReadOnly: v.boolean(),
 	},
 	returns: v_result({ _yay: v.object({ activityId: v.id("activities") }) }),
 	handler: async (ctx, args) => {
@@ -194,7 +192,7 @@ export const start = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorized = await files_nodes_db_authorize_write_policy_management(ctx, {
+		const authorized = await files_nodes_db_authorize_read_only_management(ctx, {
 			userAuth,
 			membershipId: args.membershipId,
 			nodeId: args.nodeId,
@@ -211,24 +209,6 @@ export const start = mutation({
 		const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);
 		if (!workspace || workspace.pluginDataPurgeStartedAt !== undefined) {
 			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		// The new rule's writers need one check, on the folder being confirmed.
-		const writerAllowed = await files_nodes_db_require_write_policy_management(ctx, {
-			organizationId: folder.organizationId,
-			workspaceId: folder.workspaceId,
-			writeContext: {
-				subject: { kind: "user", userId: userAuth.id, plugin: null },
-				writer: { kind: "user", userId: userAuth.id },
-				actorUserId: userAuth.id,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
-			target: { kind: "node", node: folder },
-			writePolicy: args.writePolicy,
-		});
-		if (writerAllowed._nay) {
-			return writerAllowed;
 		}
 
 		// One job per person and workspace. It bounds what one rate-limit token can start.
@@ -255,7 +235,7 @@ export const start = mutation({
 			userId: userAuth.id,
 			folderId: folder._id,
 			folderTreePath: folder.treePath,
-			writePolicy: args.writePolicy,
+			targetReadOnly: args.targetReadOnly,
 			cursor: null,
 		});
 		// Keep targets empty. The Activity must not name the folder or anything inside it.
@@ -266,7 +246,7 @@ export const start = mutation({
 			membershipId: membership._id,
 			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
 			source: { kind: "files_write_policy_run", id: runId },
-			title: "Apply protection to folder contents",
+			title: args.targetReadOnly ? "Make folder contents Read-only" : "Clear Read-only from folder contents",
 			targets: [],
 			visibility: "requester",
 			feedVisible: true,
@@ -325,17 +305,15 @@ export const advance = internalMutation({
 		}
 		const writeContext: files_nodes_WriteContext = {
 			subject: { kind: "user", userId: run.userId, plugin: null },
-			writer: { kind: "user", userId: run.userId },
 			actorUserId: run.userId,
 			resourceScope: { kind: "workspace" },
-			policyReach: "ancestors",
+			force: false,
 		};
-		const folderManaged = await files_nodes_db_require_write_policy_management(ctx, {
+		const folderManaged = await files_nodes_db_require_read_only_management(ctx, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
 			writeContext,
 			target: { kind: "node", node: folder },
-			writePolicy: run.writePolicy,
 		});
 		if (folderManaged._nay) {
 			await db_fail_run({ ctx, run, errorMessage: "You can no longer change this folder's protection.", now });
@@ -367,7 +345,6 @@ export const advance = internalMutation({
 		let checkedCount = 0;
 		// Start with the items that earlier steps counted but did not show.
 		let countedCount = progress.discovered - activity.progress.discovered;
-		let isUpdated = false;
 		let isFolderDone = false;
 		while (
 			!isFolderDone &&
@@ -404,23 +381,16 @@ export const advance = internalMutation({
 				checkedCount += 1;
 				cursor = { treePath: node.treePath, inclusive: false };
 
-				// The folder check above already checked the rule's writers. Check only the manage permission
-				// here, so a step does not read every writer again for each item.
-				const managed = await files_nodes_db_require_write_policy_management(ctx, {
-					organizationId: run.organizationId,
-					workspaceId: run.workspaceId,
+				const changed = await files_nodes_db_set_read_only(ctx, {
+					node,
 					writeContext,
-					target: { kind: "node", node },
-					writePolicy: null,
+					readOnly: run.targetReadOnly,
 				});
-				// An item the person can manage but not read is still updated, like any managed item.
-				if (!managed._nay) {
-					if (JSON.stringify(node.writePolicy) === JSON.stringify(run.writePolicy)) {
+				if (!changed._nay) {
+					if (node.readOnly === run.targetReadOnly) {
 						progress.skipped += 1;
 					} else {
-						await ctx.db.patch("files_nodes", node._id, { writePolicy: run.writePolicy });
 						progress.completed += 1;
-						isUpdated = true;
 					}
 					progress.discovered += 1;
 					countedCount += 1;
@@ -451,10 +421,6 @@ export const advance = internalMutation({
 					cursor = { treePath: path_tree_prefix_upper_bound(node.treePath), inclusive: true };
 				}
 			}
-		}
-
-		if (isUpdated) {
-			await files_media_validation_db_advance_version(ctx, run);
 		}
 
 		if (isFolderDone) {

@@ -34,6 +34,7 @@ import app_convex_schema from "./schema.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_db_create_path_lookups, files_db_get_path_access } from "../server/files.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { files_ROOT_ID, files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
@@ -212,6 +213,7 @@ const mkdir_failure_validator = z.object({
  */
 export const create_folders = internalMutation({
 	args: {
+		force: v.optional(v.boolean()),
 		credentialId: v.id("api_credentials"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -232,6 +234,7 @@ export const create_folders = internalMutation({
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: { kind: "user_api_key", credentialId: args.credentialId },
+			force: args.force === true,
 			path: args.paths[0],
 			eachPathChecked: true,
 			now,
@@ -320,6 +323,7 @@ type create_folders_Result =
 		: never;
 
 const mkdir_body_validator = z.object({
+	force: z.boolean().optional(),
 	paths: z.array(z.string()).min(1),
 });
 
@@ -383,6 +387,7 @@ export async function public_api_files_organize_http_mkdir(args: {
 	try {
 		items = (await ctx.runMutation(internal.public_api_files_organize.create_folders, {
 			credentialId: principal.credentialId,
+			force: body._yay.force === true,
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
@@ -416,6 +421,7 @@ const delete_failure_validator = z.object({
  */
 export const delete_paths = internalMutation({
 	args: {
+		force: v.optional(v.boolean()),
 		credentialId: v.id("api_credentials"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -443,6 +449,7 @@ export const delete_paths = internalMutation({
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: { kind: "user_api_key", credentialId: args.credentialId },
+			force: args.force === true,
 			path: args.paths[0],
 			eachPathChecked: true,
 			now: Date.now(),
@@ -495,6 +502,7 @@ export const delete_paths = internalMutation({
 			membership,
 			nodeIds: [...pathByNodeId.keys()],
 			credentialId: args.credentialId,
+			force: args.force === true,
 		});
 		const refusedData = archived._nay?.data && "refusedItems" in archived._nay.data ? archived._nay.data : null;
 		// The job stopped inside the request. Its one message is for every found path.
@@ -540,6 +548,7 @@ type delete_paths_Result =
 		: never;
 
 const delete_body_validator = z.object({
+	force: z.boolean().optional(),
 	paths: z.array(z.string()).min(1),
 });
 
@@ -604,6 +613,7 @@ export async function public_api_files_organize_http_delete(args: {
 	try {
 		result = (await ctx.runMutation(internal.public_api_files_organize.delete_paths, {
 			credentialId: principal.credentialId,
+			force: body._yay.force === true,
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
@@ -642,6 +652,7 @@ const restore_failure_validator = z.object({
  */
 export const restore_paths = internalMutation({
 	args: {
+		force: v.optional(v.boolean()),
 		credentialId: v.id("api_credentials"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -671,6 +682,7 @@ export const restore_paths = internalMutation({
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: { kind: "user_api_key", credentialId: args.credentialId },
+			force: args.force === true,
 			path: args.paths[0],
 			eachPathChecked: true,
 			now: Date.now(),
@@ -705,7 +717,10 @@ export const restore_paths = internalMutation({
 		// Look for an earlier run first: after a finished restore, the paths are no longer archived. The
 		// key's id in the request id keeps it apart from the request ids of other keys.
 		const requestId = `api:${args.credentialId}:${args.requestId}`;
-		const inputHash = await crypto_sha256_hex(JSON.stringify([args.paths, args.onConflict]));
+		// Only opting into force changes the request identity.
+		const inputHash = await crypto_sha256_hex(
+			JSON.stringify([args.paths, args.onConflict, ...(args.force === true ? [true] : [])]),
+		);
 		const previous = await ctx.db
 			.query("files_archive_runs")
 			.withIndex("by_user_workspace_apiRequest", (q) =>
@@ -816,6 +831,7 @@ export const restore_paths = internalMutation({
 			membership,
 			nodes,
 			credentialId: args.credentialId,
+			force: args.force === true,
 			// Nobody can answer a question for an API job, so the choice is made up front.
 			applyToRemaining: { file: args.onConflict, folder: args.onConflict },
 			stopAtRefusal: false,
@@ -847,6 +863,7 @@ type restore_paths_Result =
 		: never;
 
 const restore_body_validator = z.object({
+	force: z.boolean().optional(),
 	paths: z.array(z.string()).min(1),
 	onConflict: z.union([z.literal("keep_both"), z.literal("skip")]).optional(),
 	/**
@@ -916,6 +933,7 @@ export async function public_api_files_organize_http_restore(args: {
 	try {
 		result = (await ctx.runMutation(internal.public_api_files_organize.restore_paths, {
 			credentialId: principal.credentialId,
+			force: body._yay.force === true,
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
@@ -950,6 +968,7 @@ const transfer_failure_validator = z.object({
  */
 export const transfer_paths = internalMutation({
 	args: {
+		force: v.optional(v.boolean()),
 		credentialId: v.id("api_credentials"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -982,6 +1001,7 @@ export const transfer_paths = internalMutation({
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: { kind: "user_api_key", credentialId: args.credentialId },
+			force: args.force === true,
 			path: args.to,
 			eachPathChecked: true,
 			now: Date.now(),
@@ -1011,7 +1031,9 @@ export const transfer_paths = internalMutation({
 		// Look for an earlier run first: after a finished Move, the `from` paths no longer exist. The key's
 		// id in the request id keeps it apart from the app's and the agent's request ids.
 		const requestId = `api:${args.credentialId}:${args.requestId}`;
-		const inputHash = await crypto_sha256_hex(JSON.stringify([args.kind, args.from, args.to, args.onConflict]));
+		const inputHash = await crypto_sha256_hex(
+			JSON.stringify([args.kind, args.from, args.to, args.onConflict, ...(args.force === true ? [true] : [])]),
+		);
 		const previous = await ctx.db
 			.query("files_transfer_runs")
 			.withIndex("by_user_workspace_request", (q) =>
@@ -1127,6 +1149,7 @@ export const transfer_paths = internalMutation({
 		}
 
 		const started = await files_transfer_db_start_for_api(ctx, {
+			force: args.force === true,
 			membership,
 			requestId,
 			kind: args.kind,
@@ -1170,6 +1193,7 @@ type transfer_paths_Result =
 		: never;
 
 const transfer_body_validator = z.object({
+	force: z.boolean().optional(),
 	from: z.array(z.string()).min(1),
 	to: z.string(),
 	onConflict: z.union([z.literal("error"), z.literal("replace"), z.literal("skip")]).optional(),
@@ -1258,6 +1282,7 @@ export async function public_api_files_organize_http_transfer(args: {
 	try {
 		result = (await ctx.runMutation(internal.public_api_files_organize.transfer_paths, {
 			credentialId: principal.credentialId,
+			force: body._yay.force === true,
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
@@ -1406,15 +1431,14 @@ export const get_job = internalQuery({
 				: null;
 		if (leftNode) nodes.push(leftNode);
 		// Name an item only while the key may still read it, like the app's job card.
+		const writeContext = await public_api_credentials_db_get_write_context(ctx, {
+			credentialId: args.credentialId,
+			userId: args.userId,
+		});
 		const readableNodes = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
-			subject: (
-				await public_api_credentials_db_get_write_context(ctx, {
-					credentialId: args.credentialId,
-					userId: args.userId,
-				})
-			).subject,
+			subject: writeContext.subject,
 			nodes,
 		});
 		const pathByNodeId = new Map(readableNodes.map((node) => [node._id, node.path]));
@@ -1427,6 +1451,29 @@ export const get_job = internalQuery({
 			.withIndex("by_run_order", (q) => q.eq("runId", run._id).gt("order", afterOrder))
 			.take(JOB_REFUSED_PAGE_SIZE);
 
+		const forcedRefused = [];
+		for (const item of items) {
+			if (item.kind !== "force_archive") continue;
+			const node = await files_saved_placement_db_get_node(ctx.db, item.nodeId);
+			const readable =
+				node &&
+				(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					subject: writeContext.subject,
+					fileNode: node,
+					permission: "content.read",
+				}));
+			forcedRefused.push({
+				path: readable ? node.path : null,
+				message:
+					!readable || item.reason === "permission"
+						? "Permission denied"
+						: item.reason === "not_empty"
+							? "This folder still holds items that could not be archived."
+							: "This item changed. Try again.",
+			});
+		}
 		return {
 			jobId: activity._id,
 			kind: run.kind === "archive" ? ("delete" as const) : ("restore" as const),
@@ -1454,8 +1501,9 @@ export const get_job = internalQuery({
 							},
 						]
 					: []),
+				...forcedRefused,
 				...items.flatMap((item) =>
-					item.newPath === null
+					item.kind === "restore" && item.newPath === null
 						? [
 								{
 									path: item.path,
@@ -1465,7 +1513,9 @@ export const get_job = internalQuery({
 						: [],
 				),
 			],
-			renamed: items.flatMap((item) => (item.newPath === null ? [] : [{ path: item.path, newPath: item.newPath }])),
+			renamed: items.flatMap((item) =>
+				item.kind === "restore" && item.newPath !== null ? [{ path: item.path, newPath: item.newPath }] : [],
+			),
 			refusedCursor: items.length === JOB_REFUSED_PAGE_SIZE ? `items:${items.at(-1)!.order}` : null,
 		};
 	},

@@ -84,6 +84,8 @@ export async function plugins_external_files_db_authorize(
 		serviceSecretHash: string;
 		path: string;
 		allowSealRoot?: boolean;
+		force?: boolean;
+		requestReadOnly?: boolean;
 		exactNodeId?: Id<"files_nodes">;
 		recoverEmptySetup?: { writerId: Id<"plugins_external_file_writers"> };
 	},
@@ -185,15 +187,20 @@ export async function plugins_external_files_db_authorize(
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
+	if (
+		(args.force === true || args.requestReadOnly === true) &&
+		!installation.acceptedCapabilities.includes("workspace.files.manage-read-only")
+	) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
 	const writeContext: files_nodes_WriteContext = {
 		subject: await plugins_external_files_db_request_subject(ctx, {
 			installation,
 			actorUserId: grant.actorUserId,
 			node: aclNode,
 		}),
-		writer: { kind: "service_account", serviceAccountId: grant.serviceAccountId },
+		force: args.force === true,
 		actorUserId: grant.actorUserId,
-		policyReach: "ancestors",
 		resourceScope: node
 			? { kind: node.kind === "folder" ? "subtree" : "node", nodeId: node._id }
 			: { kind: "create", parentNodeId: parentNode?._id ?? files_ROOT_ID, path: args.path },
@@ -265,12 +272,6 @@ export async function plugins_external_files_db_authorize(
 		}))
 	)
 		return Result({ _nay: { message: "Permission denied" } });
-	const writable = await files_nodes_db_require_writable(ctx, {
-		...scope,
-		writeContext,
-		target: node ? { kind: "node", node } : { kind: "create", parentNode, path: args.path },
-	});
-	if (writable._nay) return writable;
 	return Result({
 		_yay: { installation, membership, serviceGrant: grant, pluginRun: null, writeContext, node, parentNode },
 	});
@@ -331,6 +332,7 @@ export async function plugins_external_files_db_check_write(
 		.query("plugins_external_file_receipts")
 		.withIndex("by_writer_operationId", (q) => q.eq("writerId", writer._id).eq("operationId", args.write.operationId))
 		.first();
+	// Keep ordinary retries identical when force is omitted or false.
 	const fingerprint = JSON.stringify([
 		args.path,
 		args.write.writerGeneration,
@@ -343,6 +345,7 @@ export async function plugins_external_files_db_check_write(
 		args.write.contentType,
 		args.write.nonCollaborative,
 		args.write.requestReadOnly,
+		...(args.write.force ? [true] : []),
 	]);
 	if (receipt) {
 		if (receipt.operation !== "write" || receipt.fingerprint !== fingerprint) {
@@ -375,6 +378,13 @@ export async function plugins_external_files_db_check_write(
 		return Result({ _nay: { name: "stale_write", message: "The file changed during the write" } });
 	}
 
+	const writable = await files_nodes_db_require_writable(ctx, {
+		organizationId: facts._yay.installation.organizationId,
+		workspaceId: facts._yay.installation.workspaceId,
+		writeContext: facts._yay.writeContext,
+		target: node ? { kind: "node", node } : { kind: "create", parentNode: facts._yay.parentNode, path: args.path },
+	});
+	if (writable._nay) return Result({ _nay: writable._nay });
 	return Result({ _yay: { ...facts._yay, writer, binding, fingerprint, receipt: null } });
 }
 

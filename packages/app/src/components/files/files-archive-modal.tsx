@@ -1,7 +1,7 @@
 import "./files-archive-modal.css";
 
 import { memo, useId, useRef, useState, type RefObject } from "react";
-import { useConvex, useQuery } from "convex/react";
+import { useConvex, usePaginatedQuery, useQuery } from "convex/react";
 import { toast } from "sonner";
 
 import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
@@ -226,6 +226,42 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 	);
 });
 
+const FilesArchiveRunOutcomes = memo(function FilesArchiveRunOutcomes(props: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	runId: app_convex_Id<"files_archive_runs">;
+}) {
+	const outcomes = usePaginatedQuery(app_convex_api.files_archive_runs.list_outcomes, props, { initialNumItems: 50 });
+	return (
+		<section aria-label="Items that remain">
+			<h3>Items that remain</h3>
+			{outcomes.status === "LoadingFirstPage" ? <p role="status">Loading results…</p> : null}
+			{outcomes.results.map((item) => (
+				<div key={item.order}>
+					{item.path !== null ? <p>{item.path}</p> : null}
+					<p>
+						{item.path === null
+							? "Permission denied"
+							: item.kind === "retained_folder"
+								? "This folder remains because it still contains items."
+								: item.message}
+					</p>
+				</div>
+			))}
+			{outcomes.status === "CanLoadMore" || outcomes.status === "LoadingMore" ? (
+				<MyButton
+					variant="outline"
+					aria-busy={outcomes.status === "LoadingMore" || undefined}
+					onClick={() => {
+						if (outcomes.status === "CanLoadMore") outcomes.loadMore(50);
+					}}
+				>
+					{outcomes.status === "LoadingMore" ? "Loading…" : "Load more"}
+				</MyButton>
+			) : null}
+		</section>
+	);
+});
+
 type FilesArchiveRunModal_ResolveArgs = app_convex_FunctionArgs<
 	typeof app_convex_api.files_archive_runs.resolve_conflicts
 >;
@@ -303,7 +339,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 	// Match the Activity card: a refused item, like a read-only file, is expected and does not make the
 	// archive look partly failed. The "Not archived" section below names each refused item.
 	const isRefusalOnly =
-		run?.kind === "archive" && status === "partial" && progress?.failed === 0 && progress.canceled === 0;
+		run?.kind === "archive" && !run.force && status === "partial" && progress?.failed === 0 && progress.canceled === 0;
 	const handledCount = progress
 		? progress.completed + progress.skipped + progress.failed + progress.blocked + progress.canceled
 		: 0;
@@ -394,9 +430,11 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 									? progress.total === null
 										? `${verbs[0]}…`
 										: `${verbs[0]} ${handledCount} of ${progress.total} items…`
-									: missedCount > 0
-										? `${verbs[1]} ${progress.completed} of ${progress.completed + missedCount} items.`
-										: `${verbs[1]} ${progress.completed} ${progress.completed === 1 ? "item" : "items"}.`}
+									: run?.force && status === "partial"
+										? `${progress.completed} items moved to Trash. Some items remain.`
+										: missedCount > 0
+											? `${verbs[1]} ${progress.completed} of ${progress.completed + missedCount} items.`
+											: `${verbs[1]} ${progress.completed} ${progress.completed === 1 ? "item" : "items"}.`}
 							</p>
 						) : null}
 						{/* The paths the person picked. A folder counts with everything inside, so the line above can
@@ -458,6 +496,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 								))}
 							</section>
 						) : null}
+						{run?.force ? <FilesArchiveRunOutcomes membershipId={membershipId} runId={runId} /> : null}
 						{conflict ? (
 							<fieldset
 								className={"FilesArchiveRunModal-conflict" satisfies FilesArchiveRunModal_ClassNames}

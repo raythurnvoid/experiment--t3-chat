@@ -1954,7 +1954,7 @@ test("reserved private allocation does not start a normal saved overlay job", as
 			publishedFromPrivateNodeId: privateNodeId,
 		};
 		const nodeId = await ctx.db.insert("files_nodes", fields);
-		const { createdBy, writePolicy, newChildWritePolicy, moveCohortId, ...header } = fields;
+		const { createdBy, readOnly, readOnlyDecisionId, moveCohortId, ...header } = fields;
 		await ctx.db.insert("files_saved_places", {
 			...header,
 			organizationId: f.db.organizationId,

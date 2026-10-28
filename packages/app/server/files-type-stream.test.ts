@@ -186,28 +186,6 @@ test.each(["to_selected", "to_normal"] as const)(
 	async (direction) => {
 		const paths = Array.from({ length: 41 }, (_, index) => `/typed/${String(index).padStart(2, "0")}.txt`);
 		const f = await test_create_saved_placement_fixture({ normalPaths: paths });
-		if (direction === "to_selected") {
-			const writers = await f.t.run(async (ctx) => {
-				const writers: Array<{ kind: "user"; userId: typeof f.db.userId }> = [];
-				for (let index = 0; index < 2_400; index++) {
-					const userId = await ctx.db.insert("users", { clerkUserId: null });
-					await ctx.db.insert("organizations_workspaces_users", {
-						organizationId: f.db.organizationId,
-						workspaceId: f.db.workspaceId,
-						userId,
-						active: true,
-						pendingOrganizationRemoval: false,
-						updatedAt: Date.now(),
-						displayName: "",
-						sortDisplayName: "",
-					});
-					writers.push({ kind: "user", userId });
-				}
-				return writers;
-			});
-			for (const nodeId of f.normalNodes.values())
-				await f.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "writer", writers } }));
-		}
 		const selected = paths.filter((_, index) => index % 2 === 0);
 		for (const path of selected) await f.stageNode(f.normalNodes.get(path)!);
 		if (direction === "to_normal") await f.publish();
@@ -238,13 +216,10 @@ test.each(["to_selected", "to_normal"] as const)(
 			}),
 		);
 		const read = typeStream.files_type_stream_db_saved_page;
-		let byteSplit = false;
-		vi.spyOn(typeStream, "files_type_stream_db_saved_page").mockImplementation(async (db, args) => {
-			const page = await read(db, args);
-			if (!args.restricted && page.items.length > 0 && page.items.length < args.limit && !page.phaseDone)
-				byteSplit = true;
-			return page;
-		});
+		// Keep the real index cursor, but make each read small enough to span several rounds.
+		vi.spyOn(typeStream, "files_type_stream_db_saved_page").mockImplementation((db, args) =>
+			read(db, { ...args, limit: 3 }),
+		);
 		const fill = () =>
 			f.t.run(async (ctx) => {
 				const query = (await ctx.db.get("files_type_queries", queryId))!;
@@ -257,7 +232,6 @@ test.each(["to_selected", "to_normal"] as const)(
 				);
 			});
 		await fill();
-		if (direction === "to_selected") expect(byteSplit).toBe(true);
 		expect((await f.t.run((ctx) => ctx.db.get("files_type_query_streams", streamId)))!.buffer.length).toBeGreaterThan(
 			0,
 		);

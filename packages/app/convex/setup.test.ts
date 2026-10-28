@@ -191,31 +191,58 @@ export async function test_move_nodes(
 		if (args.replaceNodeId) {
 			const view = await asUser.query(api.files_transfer_status.get, { membershipId: args.membershipId, runId });
 			const items = await asUser.query(api.files_transfer_status.list_items, {
-				membershipId: args.membershipId, runId, state: "conflict", paginationOpts: { numItems: 1, cursor: null },
+				membershipId: args.membershipId,
+				runId,
+				state: "conflict",
+				paginationOpts: { numItems: 1, cursor: null },
 			});
 			const conflict = items?.page[0];
 			if (!view || conflict?.conflict?.target.kind !== "saved" || conflict.conflict.target.id !== args.replaceNodeId)
 				throw new Error("Expected the reviewed replacement conflict");
 			const resolved = await asUser.mutation(api.files_transfer.resolve_conflicts, {
-				membershipId: args.membershipId, runId, revision: view.revision,
-				choices: [{ itemId: conflict.itemId, choice: "replace", reviewedTarget: conflict.conflict.target, reviewedVersion: conflict.conflict.version }],
+				membershipId: args.membershipId,
+				runId,
+				revision: view.revision,
+				choices: [
+					{
+						itemId: conflict.itemId,
+						choice: "replace",
+						reviewedTarget: conflict.conflict.target,
+						reviewedVersion: conflict.conflict.version,
+					},
+				],
 				applyToRemaining: { file: null, folder: null },
 			});
 			if (resolved._nay) return Result({ _nay: resolved._nay });
 			await test_finish_transfer_run(asUser, runId);
 		}
-		const activity = await t.run(ctx => ctx.db.get("activities", activityId));
+		const activity = await t.run((ctx) => ctx.db.get("activities", activityId));
 		if (activity?.status === "succeeded") return Result({ _yay: null });
-		const cohort = await t.run(ctx => ctx.db.query("files_move_cohorts")
-			.withIndex("by_origin_run", q => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).order("desc").first());
-		const conflicts = activity?.status === "awaiting_input" ? await asUser.query(api.files_transfer_status.list_items, {
-			membershipId: args.membershipId, runId, state: "conflict", paginationOpts: { numItems: 1, cursor: null },
-		}) : null;
+		const cohort = await t.run((ctx) =>
+			ctx.db
+				.query("files_move_cohorts")
+				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+				.order("desc")
+				.first(),
+		);
+		const conflicts =
+			activity?.status === "awaiting_input"
+				? await asUser.query(api.files_transfer_status.list_items, {
+						membershipId: args.membershipId,
+						runId,
+						state: "conflict",
+						paginationOpts: { numItems: 1, cursor: null },
+					})
+				: null;
 		const conflict = conflicts?.page[0];
-		const message = cohort?.errorMessage ?? activity?.errorMessage ?? conflict?.errorMessage ?? "Move needs a conflict choice";
+		const message =
+			cohort?.errorMessage ?? activity?.errorMessage ?? conflict?.errorMessage ?? "Move needs a conflict choice";
 		// A refused test operation must not leave a paused job behind for the next assertion.
-		if (activity?.status === "awaiting_input") await asUser.mutation(api.files_transfer.stop, { membershipId: args.membershipId, runId });
-		return Result({ _nay: { name: cohort?.errorCode ?? activity?.errorCode ?? conflict?.conflictKind ?? undefined, message } });
+		if (activity?.status === "awaiting_input")
+			await asUser.mutation(api.files_transfer.stop, { membershipId: args.membershipId, runId });
+		return Result({
+			_nay: { name: cohort?.errorCode ?? activity?.errorCode ?? conflict?.conflictKind ?? undefined, message },
+		});
 	} finally {
 		if (!hadFakeTimers) vi.useRealTimers();
 	}
@@ -227,11 +254,18 @@ async function test_run_pending_overlay_job(
 	allowFuture: boolean,
 	jobs?: Doc<"files_pending_overlay_jobs">[],
 ) {
-	jobs ??= await asUser.run(ctx => ctx.db.query("files_pending_overlay_jobs")
-		.withIndex("by_org_ws", q => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId)).collect());
-	const ready = jobs.find(job => !job.blockedByCohortId && job.nextAttemptAt <= Date.now());
-	const job = ready ?? (allowFuture ? jobs.filter(job => !job.blockedByCohortId)
-		.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt)[0] : undefined);
+	jobs ??= await asUser.run((ctx) =>
+		ctx.db
+			.query("files_pending_overlay_jobs")
+			.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+			.collect(),
+	);
+	const ready = jobs.find((job) => !job.blockedByCohortId && job.nextAttemptAt <= Date.now());
+	const job =
+		ready ??
+		(allowFuture
+			? jobs.filter((job) => !job.blockedByCohortId).sort((a, b) => a.nextAttemptAt - b.nextAttemptAt)[0]
+			: undefined);
 	if (!job) return false;
 	if (job.nextAttemptAt > Date.now()) {
 		if (!vi.isFakeTimers()) throw new Error("A deferred overlay job needs fake timers");
@@ -243,7 +277,7 @@ async function test_run_pending_overlay_job(
 		key: job.key,
 		nextAttemptAt: job.nextAttemptAt,
 	});
-	const after = await asUser.run(ctx => ctx.db.get("files_pending_overlay_jobs", job._id));
+	const after = await asUser.run((ctx) => ctx.db.get("files_pending_overlay_jobs", job._id));
 	if (JSON.stringify(after) === JSON.stringify(job)) throw new Error("Pending overlay job made no progress");
 	return true;
 }
@@ -254,19 +288,27 @@ async function test_wake_move_cohort(
 ) {
 	// Each native wake page removes waiters or clears their blocked cohort. Do not fire the workers.
 	while (true) {
-		const waiter = await asUser.run(ctx => ctx.db.query("files_move_waiters")
-			.withIndex("by_cohort", q => q.eq("cohortId", cohortId)).first());
+		const waiter = await asUser.run((ctx) =>
+			ctx.db
+				.query("files_move_waiters")
+				.withIndex("by_cohort", (q) => q.eq("cohortId", cohortId))
+				.first(),
+		);
 		if (!waiter) break;
 		await asUser.mutation(internal.files_move_cohorts.wake_waiters, { cohortId });
-		if (await asUser.run(ctx => ctx.db.get("files_move_waiters", waiter._id)))
+		if (await asUser.run((ctx) => ctx.db.get("files_move_waiters", waiter._id)))
 			throw new Error("Move waiter wake made no progress");
 	}
 	while (true) {
-		const job = await asUser.run(ctx => ctx.db.query("files_pending_overlay_jobs")
-			.withIndex("by_blockedCohort", q => q.eq("blockedByCohortId", cohortId)).first());
+		const job = await asUser.run((ctx) =>
+			ctx.db
+				.query("files_pending_overlay_jobs")
+				.withIndex("by_blockedCohort", (q) => q.eq("blockedByCohortId", cohortId))
+				.first(),
+		);
 		if (!job) break;
 		await asUser.mutation(internal.files_move_cohorts.wake_owner_jobs, { cohortId });
-		if ((await asUser.run(ctx => ctx.db.get("files_pending_overlay_jobs", job._id)))?.blockedByCohortId === cohortId)
+		if ((await asUser.run((ctx) => ctx.db.get("files_pending_overlay_jobs", job._id)))?.blockedByCohortId === cohortId)
 			throw new Error("Move owner job wake made no progress");
 	}
 }
@@ -283,23 +325,44 @@ export async function test_finish_transfer_run(
 	let previous: string | undefined;
 	while (true) {
 		await onStep?.();
-		const { run, activity, active, jobs, repair, ownedCohort, discoveryItem } = await asUser.run(async ctx => {
+		const { run, activity, active, jobs, repair, ownedCohort, discoveryItem } = await asUser.run(async (ctx) => {
 			const run = await ctx.db.get("files_transfer_runs", runId);
 			if (!run) throw new Error("Missing transfer run");
 			const activity = await activities_db_require_by_source_id(ctx, runId);
 			const active = ["queued", "running", "stopping"].includes(activity.status);
-			const jobs = await ctx.db.query("files_pending_overlay_jobs")
-				.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect();
-			const hasOverlayJob = jobs.some(job => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
-			const ownedCohort = active && !hasOverlayJob ? await ctx.db.query("files_move_cohorts")
-				.withIndex("by_origin_run", q => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).order("desc").first() : null;
-			const op = active && !hasOverlayJob && (!ownedCohort || ownedCohort.phase === "complete") ? await files_subtree_ops_db_find_repair(ctx, run) : null;
+			const jobs = await ctx.db
+				.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", (q) => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId))
+				.collect();
+			const hasOverlayJob = jobs.some((job) => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
+			const ownedCohort =
+				active && !hasOverlayJob
+					? await ctx.db
+							.query("files_move_cohorts")
+							.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+							.order("desc")
+							.first()
+					: null;
+			const op =
+				active && !hasOverlayJob && (!ownedCohort || ownedCohort.phase === "complete")
+					? await files_subtree_ops_db_find_repair(ctx, run)
+					: null;
 			if (op?.kind === "archive" || op?.kind === "restore") throw new Error("Transfer waits for Archive or Restore");
-			const walk = op ? await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique() : null;
+			const walk = op
+				? await ctx.db
+						.query("files_subtree_op_walks")
+						.withIndex("by_op", (q) => q.eq("opId", op._id))
+						.unique()
+				: null;
 			if (op && !walk) throw new Error("Missing repair walk");
 			const repair = op && walk ? { opId: op._id, step: walk.step } : null;
-			const discoveryItem = active && run.kind === "copy" && run.step === "discover" ? await ctx.db.query("files_transfer_items")
-				.withIndex("by_run_discoveryDone_order", q => q.eq("runId", runId).eq("discoveryDone", false)).first() : null;
+			const discoveryItem =
+				active && run.kind === "copy" && run.step === "discover"
+					? await ctx.db
+							.query("files_transfer_items")
+							.withIndex("by_run_discoveryDone_order", (q) => q.eq("runId", runId).eq("discoveryDone", false))
+							.first()
+					: null;
 			return { run, activity, active, jobs, repair, ownedCohort, discoveryItem };
 		});
 		if (await test_run_pending_overlay_job(asUser, run, active, jobs)) {
@@ -309,8 +372,12 @@ export async function test_finish_transfer_run(
 		if (!active) return;
 		if (repair) {
 			await asUser.mutation(internal.files_subtree_ops.advance, repair);
-			const walk = await asUser.run(ctx => ctx.db.query("files_subtree_op_walks")
-				.withIndex("by_op", q => q.eq("opId", repair.opId)).unique());
+			const walk = await asUser.run((ctx) =>
+				ctx.db
+					.query("files_subtree_op_walks")
+					.withIndex("by_op", (q) => q.eq("opId", repair.opId))
+					.unique(),
+			);
 			if (walk?.step === repair.step) throw new Error("Transfer repair made no progress");
 			previous = undefined;
 			continue;
@@ -333,9 +400,13 @@ export async function test_finish_transfer_run(
 		let cohort = activity.status === "running" && ownedCohort?.phase !== "complete" ? ownedCohort : null;
 		if (!cohort) {
 			await asUser.mutation(internal.files_transfer.advance, { runId });
-			cohort = await asUser.run(async ctx => {
-				const slot = await ctx.db.query("files_move_workspace_slots")
-					.withIndex("by_workspace", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).unique();
+			cohort = await asUser.run(async (ctx) => {
+				const slot = await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) =>
+						q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId),
+					)
+					.unique();
 				if (!slot?.cohortId) return null;
 				const cohort = await ctx.db.get("files_move_cohorts", slot.cohortId);
 				if (!cohort) throw new Error("Transfer waits for another Move");
@@ -381,9 +452,10 @@ export async function test_db_get_overlay_job(
 	ctx: MutationCtx,
 	scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
 ) {
-	return await ctx.db.query("files_pending_overlay_jobs")
-		.withIndex("by_org_ws", q => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
-		.filter(q => q.eq(q.field("blockedByCohortId"), undefined))
+	return await ctx.db
+		.query("files_pending_overlay_jobs")
+		.withIndex("by_org_ws", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+		.filter((q) => q.eq(q.field("blockedByCohortId"), undefined))
 		.first();
 }
 
@@ -443,8 +515,10 @@ export async function test_db_get_slot_cohort(
 	ctx: MutationCtx,
 	scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
 ) {
-	const slot = await ctx.db.query("files_move_workspace_slots")
-		.withIndex("by_workspace", q => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId)).unique();
+	const slot = await ctx.db
+		.query("files_move_workspace_slots")
+		.withIndex("by_workspace", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+		.unique();
 	return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
 }
 
@@ -617,24 +691,44 @@ export async function test_apply_file_pending_move(
 	const hadFakeTimers = vi.isFakeTimers();
 	if (!hadFakeTimers) vi.useFakeTimers();
 	try {
-		const proposal = await asUser.run(ctx => ctx.db.get("files_pending_updates", args.pendingUpdateId));
+		const proposal = await asUser.run((ctx) => ctx.db.get("files_pending_updates", args.pendingUpdateId));
 		const started = await asUser.mutation(api.files_pending_update_runs.start, {
 			membershipId: args.membershipId,
 			requestId: crypto.randomUUID(),
 			kind: "accept",
 			expectedItemCount: 1,
-			items: [{ pendingUpdateId: args.pendingUpdateId, reviewedRevision: args.reviewedRevision, selectedContentStateId: proposal?.content?.stagedStateId ?? null }],
+			items: [
+				{
+					pendingUpdateId: args.pendingUpdateId,
+					reviewedRevision: args.reviewedRevision,
+					selectedContentStateId: proposal?.content?.stagedStateId ?? null,
+				},
+			],
 		});
 		if (started._nay) return Result({ _nay: started._nay });
 		const { runId, activityId } = started._yay;
-		const sealed = await asUser.mutation(api.files_pending_update_runs.seal, { membershipId: args.membershipId, runId });
+		const sealed = await asUser.mutation(api.files_pending_update_runs.seal, {
+			membershipId: args.membershipId,
+			runId,
+		});
 		if (sealed._nay) return Result({ _nay: sealed._nay });
 		await test_finish_pending_update_run(asUser, runId);
-		const activity = await asUser.run(ctx => ctx.db.get("activities", activityId));
+		const activity = await asUser.run((ctx) => ctx.db.get("activities", activityId));
 		if (activity?.status === "succeeded") return Result({ _yay: null });
-		const unit = await asUser.run(async ctx => (await ctx.db.query("files_pending_update_run_units")
-			.withIndex("by_run_order", q => q.eq("runId", runId)).collect()).find(row => row.errorMessage !== null));
-		return Result({ _nay: { name: unit?.errorCode ?? activity?.errorCode ?? undefined, message: unit?.errorMessage ?? activity?.errorMessage ?? "Review did not finish" } });
+		const unit = await asUser.run(async (ctx) =>
+			(
+				await ctx.db
+					.query("files_pending_update_run_units")
+					.withIndex("by_run_order", (q) => q.eq("runId", runId))
+					.collect()
+			).find((row) => row.errorMessage !== null),
+		);
+		return Result({
+			_nay: {
+				name: unit?.errorCode ?? activity?.errorCode ?? undefined,
+				message: unit?.errorMessage ?? activity?.errorMessage ?? "Review did not finish",
+			},
+		});
 	} finally {
 		if (!hadFakeTimers) vi.useRealTimers();
 	}
@@ -642,15 +736,27 @@ export async function test_apply_file_pending_move(
 
 async function test_save_file_pending_update_core(
 	ctx: ActionCtx,
-	args: { membershipId: Id<"organizations_workspaces_users">; target: files_PendingTarget; pendingUpdateId: Id<"files_pending_updates">; reviewedRevision: number },
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		target: files_PendingTarget;
+		pendingUpdateId: Id<"files_pending_updates">;
+		reviewedRevision: number;
+	},
 ) {
 	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 	if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
-	const prepared = await files_pending_updates_action_prepare_content(ctx, { ...args, userId: userAuth.id, reviewedPrivateParentIds: [] });
+	const prepared = await files_pending_updates_action_prepare_content(ctx, {
+		...args,
+		userId: userAuth.id,
+		reviewedPrivateParentIds: [],
+	});
 	if (prepared._nay) return prepared;
 	if (prepared._yay.kind === "private") throw new Error("Saved-content core received a private draft");
 	try {
-		return await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, { userId: userAuth.id, prepared: prepared._yay });
+		return await ctx.runMutation(internal.files_pending_updates.commit_prepared_content, {
+			userId: userAuth.id,
+			prepared: prepared._yay,
+		});
 	} finally {
 		await ctx.runMutation(internal.files_pending_updates.retire_prepared_content, { prepared: prepared._yay });
 	}
@@ -666,37 +772,60 @@ export async function test_finish_pending_update_run(
 ) {
 	let previous: string | undefined;
 	while (true) {
-		const { run, activity, active, jobs, repair, ...worker } = await asUser.run(async ctx => {
+		const { run, activity, active, jobs, repair, ...worker } = await asUser.run(async (ctx) => {
 			const run = await ctx.db.get("files_pending_update_runs", runId);
 			if (!run) throw new Error("Missing review run");
 			const activity = await activities_db_require_by_source_id(ctx, runId);
 			const active = run.step !== "finished";
-			const jobs = await ctx.db.query("files_pending_overlay_jobs")
-				.withIndex("by_org_ws", q => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId)).collect();
-			const hasOverlayJob = jobs.some(job => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
-			const unit = active && !hasOverlayJob ? await ctx.db.query("files_pending_update_run_units")
-				.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first() : null;
+			const jobs = await ctx.db
+				.query("files_pending_overlay_jobs")
+				.withIndex("by_org_ws", (q) => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId))
+				.collect();
+			const hasOverlayJob = jobs.some((job) => !job.blockedByCohortId && (active || job.nextAttemptAt <= Date.now()));
+			const unit =
+				active && !hasOverlayJob
+					? await ctx.db
+							.query("files_pending_update_run_units")
+							.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
+							.first()
+					: null;
 			const cohort = unit?.cohortId ? await ctx.db.get("files_move_cohorts", unit.cohortId) : null;
-			const op = active && !hasOverlayJob && (!cohort || cohort.phase === "complete") ? await files_subtree_ops_db_find_repair(ctx, run) : null;
+			const op =
+				active && !hasOverlayJob && (!cohort || cohort.phase === "complete")
+					? await files_subtree_ops_db_find_repair(ctx, run)
+					: null;
 			if (op?.kind === "archive" || op?.kind === "restore") throw new Error("Review waits for Archive or Restore");
-			const walk = op ? await ctx.db.query("files_subtree_op_walks").withIndex("by_op", q => q.eq("opId", op._id)).unique() : null;
+			const walk = op
+				? await ctx.db
+						.query("files_subtree_op_walks")
+						.withIndex("by_op", (q) => q.eq("opId", op._id))
+						.unique()
+				: null;
 			if (op && !walk) throw new Error("Missing repair walk");
 			const repair = op && walk ? { opId: op._id, step: walk.step } : null;
 			const driveWorker = active && !hasOverlayJob && !repair;
-			const plan = driveWorker && run.graphPlanId ? await ctx.db.get("files_pending_update_plans", run.graphPlanId) : null;
+			const plan =
+				driveWorker && run.graphPlanId ? await ctx.db.get("files_pending_update_plans", run.graphPlanId) : null;
 			let settlingUnit: Doc<"files_pending_update_run_units"> | null = null;
 			// A dependency page can finish before the next unit starts.
 			if (driveWorker && run.step === "running" && !unit && run.finishedUnitCount > 0) {
 				for (const status of ["completed", "blocked", "failed"] as const) {
-					settlingUnit = await ctx.db.query("files_pending_update_run_units")
-						.withIndex("by_run_status_dependentsSettled_order", q =>
-							q.eq("runId", runId).eq("status", status).eq("dependentsSettled", false)).first();
+					settlingUnit = await ctx.db
+						.query("files_pending_update_run_units")
+						.withIndex("by_run_status_dependentsSettled_order", (q) =>
+							q.eq("runId", runId).eq("status", status).eq("dependentsSettled", false),
+						)
+						.first();
 					if (settlingUnit) break;
 				}
 			}
 			const requiredUnitId = settlingUnit?._id;
-			const dependency = requiredUnitId ? await ctx.db.query("files_pending_update_run_dependencies")
-				.withIndex("by_required_settled", q => q.eq("requiredUnitId", requiredUnitId).eq("settled", false)).first() : null;
+			const dependency = requiredUnitId
+				? await ctx.db
+						.query("files_pending_update_run_dependencies")
+						.withIndex("by_required_settled", (q) => q.eq("requiredUnitId", requiredUnitId).eq("settled", false))
+						.first()
+				: null;
 			return { run, activity, active, jobs, repair, plan, unit, cohort, settlingUnit, dependency };
 		});
 		if (await test_run_pending_overlay_job(asUser, run, active, jobs)) {
@@ -706,8 +835,12 @@ export async function test_finish_pending_update_run(
 		if (!active) return;
 		if (repair) {
 			await asUser.mutation(internal.files_subtree_ops.advance, repair);
-			const walk = await asUser.run(ctx => ctx.db.query("files_subtree_op_walks")
-				.withIndex("by_op", q => q.eq("opId", repair.opId)).unique());
+			const walk = await asUser.run((ctx) =>
+				ctx.db
+					.query("files_subtree_op_walks")
+					.withIndex("by_op", (q) => q.eq("opId", repair.opId))
+					.unique(),
+			);
 			if (walk?.step === repair.step) throw new Error("Review repair made no progress");
 			previous = undefined;
 			continue;
@@ -719,17 +852,25 @@ export async function test_finish_pending_update_run(
 		});
 		if (previous === current) throw new Error("Review made no progress. Finish its waiting work first.");
 		previous = current;
-		if (run.step === "uploading") await asUser.mutation(internal.files_pending_update_runs.append_single_save_input, { runId, fence: run.fence, offset: run.itemCount });
-		else if (run.step === "planning") await asUser.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
+		if (run.step === "uploading")
+			await asUser.mutation(internal.files_pending_update_runs.append_single_save_input, {
+				runId,
+				fence: run.fence,
+				offset: run.itemCount,
+			});
+		else if (run.step === "planning")
+			await asUser.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
 		else {
 			let unit = worker.unit;
 			let cohort = activity.status === "running" && unit?.kind === "cohort" ? worker.cohort : null;
 			// A running cohort schedules its own pages. Atomic retries still need Review.advance.
 			if (!cohort) {
 				await asUser.mutation(internal.files_pending_update_runs.advance, { runId });
-				({ unit, cohort } = await asUser.run(async ctx => {
-					const unit = await ctx.db.query("files_pending_update_run_units")
-						.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first();
+				({ unit, cohort } = await asUser.run(async (ctx) => {
+					const unit = await ctx.db
+						.query("files_pending_update_run_units")
+						.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
+						.first();
 					const cohort = unit?.cohortId ? await ctx.db.get("files_move_cohorts", unit.cohortId) : null;
 					return { unit, cohort };
 				}));
@@ -763,15 +904,28 @@ export async function test_finish_pending_update_run(
 export async function test_db_get_review_state(ctx: MutationCtx, runId: Id<"files_pending_update_runs">) {
 	const run = await ctx.db.get("files_pending_update_runs", runId);
 	if (!run) throw new Error("Missing review run");
-	const plan = await ctx.db.query("files_pending_update_plans").withIndex("by_run_epoch", q => q.eq("runId", runId)).order("desc").first();
+	const plan = await ctx.db
+		.query("files_pending_update_plans")
+		.withIndex("by_run_epoch", (q) => q.eq("runId", runId))
+		.order("desc")
+		.first();
 	// advance can settle one page of dependents and change nothing else, so the next edge counts as progress.
 	let settling: Id<"files_pending_update_run_units"> | Id<"files_pending_update_run_dependencies"> | null = null;
 	for (const status of ["completed", "blocked", "failed"] as const) {
-		const finished = await ctx.db.query("files_pending_update_run_units")
-			.withIndex("by_run_status_dependentsSettled_order", q => q.eq("runId", runId).eq("status", status).eq("dependentsSettled", false)).first();
+		const finished = await ctx.db
+			.query("files_pending_update_run_units")
+			.withIndex("by_run_status_dependentsSettled_order", (q) =>
+				q.eq("runId", runId).eq("status", status).eq("dependentsSettled", false),
+			)
+			.first();
 		if (!finished) continue;
-		settling = (await ctx.db.query("files_pending_update_run_dependencies")
-			.withIndex("by_required_settled", q => q.eq("requiredUnitId", finished._id).eq("settled", false)).first())?._id ?? finished._id;
+		settling =
+			(
+				await ctx.db
+					.query("files_pending_update_run_dependencies")
+					.withIndex("by_required_settled", (q) => q.eq("requiredUnitId", finished._id).eq("settled", false))
+					.first()
+			)?._id ?? finished._id;
 		break;
 	}
 	return {
@@ -785,8 +939,10 @@ export async function test_db_get_review_state(ctx: MutationCtx, runId: Id<"file
 }
 
 async function test_db_get_review_cohort(ctx: MutationCtx, runId: Id<"files_pending_update_runs">) {
-	const unit = await ctx.db.query("files_pending_update_run_units")
-		.withIndex("by_run_status_deleteLast_order", q => q.eq("runId", runId).eq("status", "preparing")).first();
+	const unit = await ctx.db
+		.query("files_pending_update_run_units")
+		.withIndex("by_run_status_deleteLast_order", (q) => q.eq("runId", runId).eq("status", "preparing"))
+		.first();
 	return { unit, cohort: unit?.cohortId ? await ctx.db.get("files_move_cohorts", unit.cohortId) : null };
 }
 
@@ -795,11 +951,16 @@ async function test_db_get_review_cohort(ctx: MutationCtx, runId: Id<"files_pend
  */
 export async function test_save_file_pending_update(
 	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
-	args: { membershipId: Id<"organizations_workspaces_users">; target: files_PendingTarget; pendingUpdateId: Id<"files_pending_updates">; reviewedRevision: number },
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		target: files_PendingTarget;
+		pendingUpdateId: Id<"files_pending_updates">;
+		reviewedRevision: number;
+	},
 ): Promise<Awaited<ReturnType<typeof test_save_file_pending_update_core>>> {
 	if (args.target.kind === "saved") {
-		const proposal = await asUser.run(ctx => ctx.db.get("files_pending_updates", args.pendingUpdateId));
-		if (!proposal?.pendingMove) return await asUser.action(ctx => test_save_file_pending_update_core(ctx, args));
+		const proposal = await asUser.run((ctx) => ctx.db.get("files_pending_updates", args.pendingUpdateId));
+		if (!proposal?.pendingMove) return await asUser.action((ctx) => test_save_file_pending_update_core(ctx, args));
 	}
 	const hadFakeTimers = vi.isFakeTimers();
 	if (!hadFakeTimers) vi.useFakeTimers();
@@ -809,22 +970,46 @@ export async function test_save_file_pending_update(
 		if (!("kind" in queued._yay)) return Result({ _yay: queued._yay });
 		const { runId, activityId } = queued._yay;
 		await test_finish_pending_update_run(asUser, runId);
-		const activity = await asUser.run(ctx => ctx.db.get("activities", activityId));
+		const activity = await asUser.run((ctx) => ctx.db.get("activities", activityId));
 		if (activity?.status !== "succeeded") {
-			const unit = await asUser.run(async ctx => (await ctx.db.query("files_pending_update_run_units")
-				.withIndex("by_run_order", q => q.eq("runId", runId)).collect()).find(row => row.errorMessage !== null));
-			return Result({ _nay: { name: unit?.errorCode ?? activity?.errorCode ?? undefined, message: unit?.errorMessage ?? activity?.errorMessage ?? "Single Save did not finish" } });
+			const unit = await asUser.run(async (ctx) =>
+				(
+					await ctx.db
+						.query("files_pending_update_run_units")
+						.withIndex("by_run_order", (q) => q.eq("runId", runId))
+						.collect()
+				).find((row) => row.errorMessage !== null),
+			);
+			return Result({
+				_nay: {
+					name: unit?.errorCode ?? activity?.errorCode ?? undefined,
+					message: unit?.errorMessage ?? activity?.errorMessage ?? "Single Save did not finish",
+				},
+			});
 		}
-		const nodeId = args.target.kind === "saved" ? args.target.id : await asUser.run(async ctx => {
-			const receipt = await ctx.db.query("files_pending_node_publish_receipts")
-				.withIndex("by_privateNode", q => q.eq("privateNodeId", args.target.id as Id<"files_pending_nodes">)).first();
-			if (!receipt) throw new Error("Missing single Save receipt");
-			return receipt.savedNodeId;
+		const nodeId =
+			args.target.kind === "saved"
+				? args.target.id
+				: await asUser.run(async (ctx) => {
+						const receipt = await ctx.db
+							.query("files_pending_node_publish_receipts")
+							.withIndex("by_privateNode", (q) => q.eq("privateNodeId", args.target.id as Id<"files_pending_nodes">))
+							.first();
+						if (!receipt) throw new Error("Missing single Save receipt");
+						return receipt.savedNodeId;
+					});
+		const node = await asUser.run((ctx) => ctx.db.get("files_nodes", nodeId));
+		const sequence = node?.yjsLastSequenceId
+			? await asUser.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId!))
+			: null;
+		const proposal = await asUser.run((ctx) => ctx.db.get("files_pending_updates", args.pendingUpdateId));
+		return Result({
+			_yay: {
+				target: { kind: "saved" as const, id: nodeId },
+				newSequence: sequence?.lastSequence ?? null,
+				pendingUpdateRevision: proposal?.revision ?? null,
+			},
 		});
-		const node = await asUser.run(ctx => ctx.db.get("files_nodes", nodeId));
-		const sequence = node?.yjsLastSequenceId ? await asUser.run(ctx => ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId!)) : null;
-		const proposal = await asUser.run(ctx => ctx.db.get("files_pending_updates", args.pendingUpdateId));
-		return Result({ _yay: { target: { kind: "saved" as const, id: nodeId }, newSequence: sequence?.lastSequence ?? null, pendingUpdateRevision: proposal?.revision ?? null } });
 	} finally {
 		if (!hadFakeTimers) vi.useRealTimers();
 	}
@@ -1337,8 +1522,8 @@ export const test_mocks = {
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				extendedScopeNodeId: null,
-				writePolicy: null,
-				newChildWritePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 				archiveOperationId: null,
 			});
 		};

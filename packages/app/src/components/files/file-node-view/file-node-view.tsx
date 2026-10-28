@@ -909,7 +909,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									// tooltip of a locked file, because on a locked file the icon is the warning.
 									tooltip={currentNode?.canWrite ? "Properties" : "Read-only. Open properties"}
 									aria-label={`Properties of ${currentNode?.name}`}
-									data-file-write-policy={currentNode?.writePolicyState ?? undefined}
+									data-file-read-only={currentNode?.readOnly ?? undefined}
 									onClick={handlePropertiesClick}
 								>
 									<MyIconButtonIcon>
@@ -4133,7 +4133,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	const readOnlyLabels = files_get_read_only_row_labels({
 		canWrite: child.canWrite,
 		writeBlockedReason: child.writeBlockedReason,
-		writePolicyState: child.writePolicyState,
+		readOnly: child.readOnly,
 	});
 
 	const rowRef = useRef<HTMLDivElement | null>(null);
@@ -4493,10 +4493,16 @@ const FileNodeViewFolderExplorerColumnsGroup = memo(function FileNodeViewFolderE
 			aria-label={title}
 			className={"FileNodeViewFolderExplorerColumns-group" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
 		>
-			<p className={"FileNodeViewFolderExplorerColumns-group-title" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
+			<p
+				className={
+					"FileNodeViewFolderExplorerColumns-group-title" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+				}
+			>
 				{title}
 			</p>
-			<div className={"FileNodeViewFolderExplorerColumns-fields" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
+			<div
+				className={"FileNodeViewFolderExplorerColumns-fields" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+			>
 				{fields.map((field) => (
 					<div
 						key={field}
@@ -4508,9 +4514,7 @@ const FileNodeViewFolderExplorerColumnsGroup = memo(function FileNodeViewFolderE
 							variant="outline"
 							checked={columns.includes(field)}
 							disabled={
-								disabled ||
-								field === "name" ||
-								(!columns.includes(field) && columns.length >= files_table_MAX_COLUMNS)
+								disabled || field === "name" || (!columns.includes(field) && columns.length >= files_table_MAX_COLUMNS)
 							}
 							onCheckedChange={(checked) =>
 								onColumnsChange(checked ? [...columns, field] : columns.filter((column) => column !== field))
@@ -4535,7 +4539,9 @@ const FileNodeViewFolderExplorerColumnsError = memo(function FileNodeViewFolderE
 	return (
 		<div
 			data-fields-state="failed"
-			className={"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+			className={
+				"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+			}
 		>
 			{builtInGroup}
 			<p role="status">Fields could not be loaded</p>
@@ -4558,7 +4564,9 @@ const FileNodeViewFolderExplorerColumnsSkeleton = memo(function FileNodeViewFold
 	return (
 		<div
 			data-fields-state="loading"
-			className={"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+			className={
+				"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+			}
 		>
 			{groups
 				.filter((group) => group.rows > 0)
@@ -4575,7 +4583,11 @@ const FileNodeViewFolderExplorerColumnsSkeleton = memo(function FileNodeViewFold
 						>
 							{group.title}
 						</p>
-						<div className={"FileNodeViewFolderExplorerColumns-fields" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
+						<div
+							className={
+								"FileNodeViewFolderExplorerColumns-fields" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+							}
+						>
 							{Array.from({ length: group.rows }, (_, index) => (
 								<div
 									key={index}
@@ -4647,7 +4659,9 @@ const FileNodeViewFolderExplorerColumnsFields = memo(function FileNodeViewFolder
 	return (
 		<div
 			data-fields-state={isDisabled ? "loading" : "ready"}
-			className={"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+			className={
+				"FileNodeViewFolderExplorerColumns-fields-state" satisfies FileNodeViewFolderExplorerColumns_ClassNames
+			}
 		>
 			{builtInGroup}
 			{fields.length > 0 && (
@@ -4716,7 +4730,11 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 		onOpenChange(nextOpen);
 	});
 	const handleKeysError = useFn((error: unknown) =>
-		console.error("[FileNodeViewFolderExplorerColumns] Failed to load the folder keys", { error, membershipId, folderId }),
+		console.error("[FileNodeViewFolderExplorerColumns] Failed to load the folder keys", {
+			error,
+			membershipId,
+			folderId,
+		}),
 	);
 
 	return (
@@ -4776,7 +4794,9 @@ const FileNodeViewFolderExplorerColumns = memo(function FileNodeViewFolderExplor
 					</CatchBoundary>
 				</FileNodeViewFolderExplorerColumnsBuiltInContext.Provider>
 				{columns.length >= files_table_MAX_COLUMNS && <p>Show up to 8 columns. Hide one to add another.</p>}
-				<div className={"FileNodeViewFolderExplorerColumns-actions" satisfies FileNodeViewFolderExplorerColumns_ClassNames}>
+				<div
+					className={"FileNodeViewFolderExplorerColumns-actions" satisfies FileNodeViewFolderExplorerColumns_ClassNames}
+				>
 					<MyButton variant="outline" onClick={() => onColumnsChange([...files_table_DEFAULT_COLUMNS])}>
 						Reset
 					</MyButton>
@@ -5548,7 +5568,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 										)}
 									>
 										<MySkeleton
-											className={"FileNodeViewFolderExplorer-skeleton-icon" satisfies FileNodeViewFolderExplorer_ClassNames}
+											className={
+												"FileNodeViewFolderExplorer-skeleton-icon" satisfies FileNodeViewFolderExplorer_ClassNames
+											}
 										/>
 										<MySkeleton
 											className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
@@ -5562,7 +5584,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 												className={"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 											>
 												<MySkeleton
-													className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+													className={
+														"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames
+													}
 												/>
 											</MyGridTableCell>
 										))}
@@ -5612,7 +5636,9 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					className={"FileNodeViewFolderExplorer-show-more-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
 					aria-hidden="true"
 				>
-					<MySkeleton className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames} />
+					<MySkeleton
+						className={"FileNodeViewFolderExplorer-skeleton" satisfies FileNodeViewFolderExplorer_ClassNames}
+					/>
 				</div>
 			)}
 			{canShowLess && (
@@ -6228,8 +6254,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const defaultFileView = isHtmlFile
 		? "code"
 		: resolvedNode?.kind === "file" &&
-			!resolvedNodeHasEditableTextContent &&
-			!(requestedView === "diff_editor" && (retainedDraftRootKind !== undefined || selectedTargetView === undefined))
+			  !resolvedNodeHasEditableTextContent &&
+			  !(requestedView === "diff_editor" && (retainedDraftRootKind !== undefined || selectedTargetView === undefined))
 			? "details"
 			: undefined;
 	// Resolve the default here, not after the URL write, so the children get the same value before

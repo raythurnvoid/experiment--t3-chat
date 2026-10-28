@@ -130,8 +130,8 @@ function placement_header(node: Doc<"files_nodes">) {
 		organizationId: _organizationId,
 		workspaceId: _workspaceId,
 		createdBy: _createdBy,
-		writePolicy: _writePolicy,
-		newChildWritePolicy: _newChildWritePolicy,
+		readOnly: _readOnly,
+		readOnlyDecisionId: _readOnlyDecisionId,
 		moveCohortId: _moveCohortId,
 		scopeOpId: _scopeOpId,
 		...header
@@ -815,8 +815,8 @@ async function db_allocate_private(
 		isRestrictedScopeRoot: false,
 		extendedScopeNodeId: null,
 		archiveOperationId: null,
-		writePolicy: proposal.copiedFrom?.sourceWritePolicy ?? null,
-		newChildWritePolicy: proposal.copiedFrom?.sourceNewChildWritePolicy ?? null,
+		readOnly: proposal.copiedFrom?.sourceReadOnly ?? false,
+		readOnlyDecisionId: proposal.copiedFrom?.sourceReadOnly ? crypto.randomUUID() : null,
 		createdBy: cohort.userId,
 		updatedBy: cohort.userId,
 		updatedAt: cohort.operationTime,
@@ -868,16 +868,13 @@ async function db_allocate_private(
 		savedNodeId: nodeId,
 		createdAt: cohort.operationTime,
 		moveView: { cohortId: cohort._id, view: "after" },
-		copiedWritePolicy: node.kind === "folder" ? proposal.copiedFrom?.sourceWritePolicy : undefined,
+		copiedReadOnlyDecisionId:
+			saved.kind === "folder" && saved.readOnly ? (saved.readOnlyDecisionId ?? undefined) : undefined,
 	});
 	return Result({ _yay: nodeRecordId });
 }
 
-async function db_items(
-	ctx: MutationCtx,
-	cohort: Doc<"files_move_cohorts">,
-	actor: MoveActor,
-) {
+async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, actor: MoveActor) {
 	const order = cohort.stagedItemCount;
 	let target: Doc<"files_move_cohort_items">["target"];
 	let origin: Doc<"files_move_cohort_items">["origin"];
@@ -1129,8 +1126,8 @@ async function db_rename_parents(
 			isRestrictedScopeRoot: false,
 			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
 			archiveOperationId: cursor.parentArchiveOperationId,
-			writePolicy: parent?.newChildWritePolicy ?? null,
-			newChildWritePolicy: parent?.newChildWritePolicy ?? null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 			createdBy: cohort.userId,
 			updatedBy: cohort.userId,
 			updatedAt: cohort.operationTime,
@@ -1501,11 +1498,13 @@ async function db_headers(
 				view: "before",
 			});
 			if (sourceParent) {
-				const writable = await files_nodes_db_require_writable(ctx, {
-					...cohort,
-					writeContext: actor.writeContext,
-					target: { kind: "node", node: sourceParent },
-				});
+				const writable = actor.writeContext.force
+					? await db_authorize_node(ctx, cohort, actor, sourceParent)
+					: await files_nodes_db_require_writable(ctx, {
+							...cohort,
+							writeContext: actor.writeContext,
+							target: { kind: "node", node: sourceParent },
+						});
 				if (writable._nay) return writable;
 			}
 		}
@@ -1727,7 +1726,7 @@ async function db_headers(
 	if (
 		item?.target.kind === "private" &&
 		physical.kind === "folder" &&
-		proposal?.copiedFrom?.sourceWritePolicy !== undefined
+		proposal?.copiedFrom?.sourceReadOnly !== undefined
 	) {
 		const privateNodeId = item.target.id;
 		const receipt = await ctx.db
@@ -1765,18 +1764,19 @@ async function db_authorize_record(
 		return await db_authorize_node(ctx, cohort, actor, parent);
 	}
 	let sourceId = record.nodeId;
+	let archiveDescendant = false;
 	if (record.role === "descendant" && record.itemId) {
 		const item = (await ctx.db.get("files_move_cohort_items", record.itemId))!;
-		// A Move carries locked descendants, so it checks only the moved item. A delete archives every
-		// descendant, archived ones too, so each one must pass its own lock and access check. Every
-		// check runs before the group switch, so the delete proposal still exists here.
+		// Move carries descendants. Delete checks each active descendant; older Trash keeps its stamp.
 		const proposal = item.pendingUpdateId ? await ctx.db.get("files_pending_updates", item.pendingUpdateId) : null;
+		archiveDescendant = Boolean(proposal?.pendingArchive);
 		if (!proposal?.pendingArchive) {
 			const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
 			sourceId = root.nodeId;
 		}
 	}
 	const node = await files_saved_placement_db_get_node(ctx.db, sourceId, { cohortId: cohort._id, view: "before" });
+	if (archiveDescendant && node && node.archiveOperationId !== null) return Result({ _yay: null });
 	if (record.role === "allocated") {
 		const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 		const privateNode =
@@ -2611,7 +2611,7 @@ async function db_get_running_write_context(
 			credentialId: run.origin.credentialId,
 			userId: run.userId,
 			workspaceId: run.workspaceId,
-			scopes: ["files:write"],
+			scopes: run.force ? ["files:write", "files:read-only"] : ["files:write"],
 		}))
 	)
 		return null;
@@ -2621,6 +2621,7 @@ async function db_get_running_write_context(
 		writeContext: await public_api_credentials_db_get_write_context(ctx, {
 			credentialId: run.origin.kind === "api" ? run.origin.credentialId : null,
 			userId: run.userId,
+			force: run.force,
 		}),
 		apiRun: run.origin.kind === "api",
 	};

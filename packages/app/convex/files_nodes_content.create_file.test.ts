@@ -158,8 +158,8 @@ describe("create_file_node", () => {
 			assetId: assets.versionSnapshotAssetId,
 			createdBy: member.userId,
 			updatedBy: member.userId,
-			writePolicy: null,
-			newChildWritePolicy: null,
+			readOnly: false,
+
 			restrictedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
 			archiveOperationId: null,
@@ -247,27 +247,16 @@ describe("create_file_node", () => {
 		expect(published.jobs).toEqual([]);
 	});
 
-	test("creates nested folders and inherits their default", async () => {
-		const { t, db, asOwner, member, finalize, folder, readFileDocs } = await fixture();
+	test("creates nested folders and files writable", async () => {
+		const { finalize, folder, readFileDocs } = await fixture();
 		const parentId = await folder("docs");
-		await t.run((ctx) =>
-			ctx.db.patch("files_nodes", parentId, {
-				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: member.userId }] },
-			}),
-		);
-		const defaultChanged = await asOwner.mutation(api.files_nodes.set_node_new_child_write_policy, {
-			membershipId: db.membershipId,
-			nodeId: parentId,
-			newChildWritePolicy: { mode: "read_only" },
-		});
-		expect(defaultChanged._nay).toBeUndefined();
 		const created = await finalize({ parentId, path: "a/b/note.md" });
 		if (created._nay) throw new Error(created._nay.message);
 		const state = await readFileDocs();
 		expect(state.nodes.map((node) => node.path)).toEqual(["/docs", "/docs/a", "/docs/a/b", "/docs/a/b/note.md"]);
 		for (const node of state.nodes.slice(1)) {
-			expect(node.writePolicy).toEqual({ mode: "read_only" });
-			expect(node.newChildWritePolicy).toEqual(node.kind === "folder" ? { mode: "read_only" } : null);
+			expect(node.readOnly).toBe(false);
+			expect(node.readOnlyDecisionId).toBeNull();
 		}
 		expect(state.plainChunks[0]?.path).toBe("/docs/a/b/note.md");
 		expect(state.snapshots[0]?.fileNodeId).toBe(created._yay.nodeId);
@@ -278,10 +267,15 @@ describe("create_file_node", () => {
 		const parentId = await folder("docs");
 		const destination = { parentId, path: "note.md" };
 		expect(
-			await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, { ...scope, ...destination }),
+			await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
+				...scope,
+				...destination,
+			}),
 		).toEqual({ canWrite: true, targetNodeId: null });
 		await folder("note.md", parentId);
-		await t.run((ctx) => ctx.db.patch("files_nodes", parentId, { writePolicy: { mode: "read_only" } }));
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", parentId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+		);
 		const before = await readFileDocs();
 		const refused = await finalize(destination);
 		expect(refused._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });

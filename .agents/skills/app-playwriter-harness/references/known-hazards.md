@@ -2641,12 +2641,13 @@ takes 5–10 seconds to reach its Stop, and one push inside that window is enoug
 Its args are `{ membershipId, fileNodeId }`, not `{ membershipId, nodeId }`.
 
 It returns `v.union(v.object(files_node_public_doc_fields), v.null())` — **not** a `Result`. So
-`result._yay.node.writePolicy` is `undefined` and every field silently reads as missing, which
-looks like "the node has no policy" instead of "you used the wrong path". Read `node.path`,
-`node.collaborationEnabled`, `node.writePolicyState` directly off the returned object.
+`result._yay.node.readOnly` is `undefined` and every field silently reads as missing. Read `node.path`,
+`node.collaborationEnabled`, and `node.readOnly` directly off the returned object.
 
-Two more things the public shape does not have: there is no `writePolicy` field (the public fields
-expose `writePolicyState`, `writePolicySourceNodeId` and `writePolicySourcePath`), and there is no
+The current source exposes the local `readOnly` boolean, `canWrite`, and `writeBlockedReason`.
+It has no writer list, folder default, or public `readOnlyDecisionId`. The checkbox query is
+`files_nodes.read_only_get({ membershipId, nodeId })`, returning `{ nodeId, readOnly, canEdit } | null`.
+These new shapes are source contracts pending native QA. There is also no
 `updatedAt`-adjacent `metadata`; read metadata with `files_metadata.get_entries({membershipId,
 fileNodeId})`. When a readback comes back all-`undefined`, print `Object.keys(...)` once before
 assuming the data is missing.

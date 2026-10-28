@@ -177,8 +177,8 @@ describe("tree page read budgets", () => {
 					_id,
 					_creationTime,
 					createdBy: _createdBy,
-					writePolicy: _writePolicy,
-					newChildWritePolicy: _newChildWritePolicy,
+					readOnly: _readOnly,
+					readOnlyDecisionId: _readOnlyDecisionId,
 					moveCohortId: _moveCohortId,
 					scopeOpId: _scopeOpId,
 					...header

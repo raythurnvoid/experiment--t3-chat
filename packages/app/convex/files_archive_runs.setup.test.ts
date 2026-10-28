@@ -4,6 +4,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { activities_is_active } from "./activities_db.ts";
 import { test_convex, test_finish_saved_scope_jobs, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 export async function fixture(options: Parameters<typeof test_convex>[0] = { transactionLimits: true }) {
@@ -50,6 +51,7 @@ export async function add_member(f: Fixture) {
  */
 export async function seed_tree(f: Fixture, args: { name: string; folderCount: number; filesPerFolder: number }) {
 	return await f.t.run(async (ctx) => {
+		ctx = { ...ctx, ...files_content_heads_db_wrap(ctx) };
 		const insert_node = (fields: {
 			parentId: Doc<"files_nodes">["parentId"];
 			name: string;
@@ -150,6 +152,7 @@ export async function seed_same_path(
 	args: { name: string; count: number; archiveOperationId: string | null },
 ) {
 	return await f.t.run(async (ctx) => {
+		ctx = { ...ctx, ...files_content_heads_db_wrap(ctx) };
 		const fields = {
 			...test_mocks.files.base(),
 			organizationId: f.db.organizationId,
@@ -320,10 +323,10 @@ export async function lock(args: { f: Fixture; nodeId: Id<"files_nodes">; locked
 	const { f, locked, nodeId } = args;
 
 	expect(
-		await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+		await f.asOwner.mutation(api.files_nodes.read_only_set, {
 			membershipId: f.db.membershipId,
 			nodeId,
-			writePolicy: locked ? { mode: "read_only" } : null,
+			readOnly: locked,
 		}),
 	).toEqual({ _yay: null });
 }
@@ -351,25 +354,39 @@ export async function find_node(f: Fixture, path: string) {
 }
 
 /**
- * Give a node a writer list that lists `userId`. The check lets that person through, but the request's
- * index reads cannot tell who a list names, so an archive of a folder that holds this node runs the check.
+ * A running scope repair makes the request use the full archive check.
  */
-export async function lock_writer(args: { f: Fixture; nodeId: Id<"files_nodes">; userId: Id<"users"> }) {
-	const { f, nodeId, userId } = args;
-
-	await f.t.run((ctx) =>
-		ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "writer", writers: [{ kind: "user", userId }] } }),
+export async function with_scope_repair<T>(f: Fixture, request: () => Promise<T>) {
+	const opId = await f.t.run((ctx) =>
+		ctx.db.insert("files_subtree_ops", {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: f.db.userId,
+			kind: "scope",
+			status: "running",
+			rootNodeIds: [],
+			treePaths: [],
+			blockedByOpId: null,
+		}),
 	);
+	try {
+		return await request();
+	} finally {
+		await f.t.run((ctx) => ctx.db.delete("files_subtree_ops", opId));
+	}
+}
+
+export async function archive_with_check(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
+	return await with_scope_repair(f, () => archive(f, nodeIds));
 }
 
 /**
  * Make an archived node read-only. The lock API works on active nodes, so copy the policy from one.
  */
 export async function lock_archived(f: Fixture, nodeId: Id<"files_nodes">) {
-	const lockedFolder = await folder(f, `/locked-${nodeId}`);
-	await lock({ f, nodeId: lockedFolder, locked: true });
-	const writePolicy = (await read_node(f, lockedFolder)).writePolicy;
-	await f.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { writePolicy }));
+	await f.t.run((ctx) =>
+		ctx.db.patch("files_nodes", nodeId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+	);
 }
 
 /**

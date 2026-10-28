@@ -152,7 +152,8 @@ async function test_insert_searchable_markdown_file(args: {
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
 			organizationId: db.organizationId,
@@ -169,7 +170,6 @@ async function test_insert_searchable_markdown_file(args: {
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: now,
-			newChildWritePolicy: null,
 		});
 		const chunks = await db_insert_file_text_content(ctx, {
 			organizationId: db.organizationId,
@@ -932,7 +932,8 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
 			organizationId: db.organizationId,
@@ -948,7 +949,6 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: Date.now(),
-			newChildWritePolicy: null,
 		}),
 	);
 
@@ -1299,8 +1299,8 @@ test("set_entries accepts folders and refuses bad YAML and read-only nodes", asy
 			fileNodeId: folder._yay.nodeId,
 		}),
 	).toEqual([{ key: "title", value: "on a folder" }]);
-	const lockedFolder = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-		writePolicy: { mode: "read_only" },
+	const lockedFolder = await asUser.mutation(api.files_nodes.read_only_set, {
+		readOnly: true,
 		membershipId: db.membershipId,
 		nodeId: folder._yay.nodeId,
 	});
@@ -1309,8 +1309,8 @@ test("set_entries accepts folders and refuses bad YAML and read-only nodes", asy
 		_nay: { name: "read_only", message: "This item is read-only." },
 	});
 
-	const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-		writePolicy: { mode: "read_only" },
+	const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+		readOnly: true,
 		membershipId: db.membershipId,
 		nodeId,
 	});
@@ -1411,8 +1411,8 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 		_nay: { message: expect.stringContaining("may contain only letters") },
 	});
 
-	const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-		writePolicy: { mode: "read_only" },
+	const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+		readOnly: true,
 		membershipId: db.membershipId,
 		nodeId,
 	});
@@ -1516,8 +1516,8 @@ describe("folder metadata", () => {
 			const lockId = lockKind === "direct" ? nestedId : folderId;
 			expect(
 				(
-					await asOwner.mutation(api.files_nodes.set_node_write_policy, {
-						writePolicy: { mode: "read_only" },
+					await asOwner.mutation(api.files_nodes.read_only_set, {
+						readOnly: true,
 						membershipId: db.membershipId,
 						nodeId: lockId,
 					})
@@ -1548,8 +1548,8 @@ describe("folder metadata", () => {
 				).toEqual([]);
 				expect(
 					(
-						await asOwner.mutation(api.files_nodes.set_node_write_policy, {
-							writePolicy: null,
+						await asOwner.mutation(api.files_nodes.read_only_set, {
+							readOnly: false,
 							membershipId: db.membershipId,
 							nodeId: lockId,
 						})
@@ -3536,7 +3536,8 @@ test("text_search_files updates unified search scope when files are renamed and 
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
 			organizationId: db.organizationId,
@@ -3552,7 +3553,6 @@ test("text_search_files updates unified search scope when files are renamed and 
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			updatedAt: Date.now(),
-			newChildWritePolicy: null,
 		}),
 	);
 

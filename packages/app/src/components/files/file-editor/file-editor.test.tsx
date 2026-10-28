@@ -1,4 +1,5 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
+import { files_unsaved_text_set_user, files_unsaved_text_get_snapshot } from "@/lib/files-unsaved-text.ts";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import * as Y from "yjs";
 import { FileEditor, type FileEditor_Props } from "./file-editor.tsx";
@@ -61,10 +62,12 @@ vi.mock("./file-editor-rich-text/file-editor-rich-text.tsx", async () => {
 	const { useFilesYjs } = await import("@/hooks/files-hooks.ts");
 	return {
 		FileEditorRichText: function FileEditorRichText(
-			props: Omit<import("@/hooks/files-hooks.ts").useFilesYjs_Props, "membershipId">,
+			props: Omit<import("@/hooks/files-hooks.ts").useFilesYjs_Props, "membershipId" | "userId" | "rootKind">,
 		) {
 			const filesYjs = useFilesYjs({
 				...props,
+				userId: "user",
+				rootKind: "plain_text",
 				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 			});
 			return <div>{`${filesYjs?.syncStatus ?? "loading"} ${props.editable ? "editable" : "read-only"}`}</div>;
@@ -97,6 +100,7 @@ async function flushProvider() {
 }
 
 beforeEach(() => {
+	files_unsaved_text_set_user("user");
 	vi.useFakeTimers();
 	permission.value = undefined;
 	permission.listeners.clear();
@@ -110,7 +114,7 @@ beforeEach(() => {
 	registerProvider.mockClear();
 	watchers.clear();
 	const snapshot = new Y.Doc();
-	snapshot.getText("content").insert(0, "Welcome");
+	snapshot.getText("plain_text").insert(0, "Welcome");
 	const bytes = new Uint8Array(Y.encodeStateAsUpdate(snapshot)).buffer;
 	fetchMock = vi.fn(async () => new Response(bytes));
 	vi.stubGlobal("fetch", fetchMock);
@@ -148,6 +152,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	files_unsaved_text_set_user(null);
 	presenceStore.dispose();
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
@@ -167,7 +172,7 @@ test.each([true, false])("waits for initial write access before taking the prelo
 	await flushProvider();
 	expect(screen.getByText(`synchronized ${canWrite ? "editable" : "read-only"}`)).toBeTruthy();
 	expect(registerProvider).toHaveBeenCalledOnce();
-	expect(registerProvider.mock.calls[0]?.[0].getYDoc().getText("content").toString()).toBe("Welcome");
+	expect(registerProvider.mock.calls[0]?.[0].getYDoc().getText("plain_text").toString()).toBe("Welcome");
 	expect(client.action).toHaveBeenCalledOnce();
 	expect(fetchMock).toHaveBeenCalledOnce();
 });
@@ -199,7 +204,7 @@ test("still replaces the provider and drops queued edits after real write access
 	const first = registerProvider.mock.calls[0]?.[0];
 	if (!first) throw new Error("Missing initial provider");
 	const destroy = vi.spyOn(first, "destroy");
-	act(() => first.getYDoc().getText("content").insert(7, " unsaved"));
+	act(() => first.getYDoc().getText("plain_text").insert(7, " unsaved"));
 	act(() => {
 		permission.value = false;
 		for (const listener of permission.listeners) listener();
@@ -207,6 +212,9 @@ test("still replaces the provider and drops queued edits after real write access
 	await flushProvider();
 	expect(screen.getByText("synchronized read-only")).toBeTruthy();
 	expect(destroy).toHaveBeenCalledOnce();
+	expect(files_unsaved_text_get_snapshot()).toEqual([
+		expect.objectContaining({ text: "Welcome unsaved", reason: "permission" }),
+	]);
 	expect(registerProvider).toHaveBeenCalledTimes(2);
 	expect(client.action).toHaveBeenCalledTimes(2);
 	expect(client.mutation).not.toHaveBeenCalled();

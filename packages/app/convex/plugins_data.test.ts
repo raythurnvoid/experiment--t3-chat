@@ -1853,7 +1853,11 @@ describe("public API routes", () => {
 describe("invoke file write preconditions", () => {
 	async function seed_file_writer(t: ReturnType<typeof test_convex>) {
 		const userId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "invoke-file-writer" }));
-		const capabilities: plugins_Capability[] = ["workspace.files.own-write", "workspace.files.own-access"];
+		const capabilities: plugins_Capability[] = [
+			"workspace.files.own-write",
+			"workspace.files.own-access",
+			"workspace.files.manage-read-only",
+		];
 		const fixture = await seed_installation(t, { userId, acceptedCapabilities: capabilities, plan: "Pay As You Go" });
 		const run = await start_plugin_run({ t, fixture, acceptedCapabilities: capabilities, tokenSeed: "e" });
 		await t.run((ctx) =>
@@ -1895,6 +1899,7 @@ describe("invoke file write preconditions", () => {
 		t: ReturnType<typeof test_convex>;
 		fixture: Awaited<ReturnType<typeof seed_file_writer>>;
 		expectedParentNodeId?: string;
+		force?: boolean;
 	}) {
 		const { t, fixture, expectedParentNodeId = fixture.parentId } = args;
 
@@ -1905,6 +1910,7 @@ describe("invoke file write preconditions", () => {
 			principalRef: { kind: "plugin_run", runId: fixture.runId, callId: fixture.callId },
 			path: "/mirror/private/doc.md",
 			expectedParentNodeId,
+			force: args.force,
 			overwrite: "replace",
 			contentType: "text/markdown",
 			yjsRootKind: "rich_text",
@@ -2304,7 +2310,7 @@ describe("invoke file write preconditions", () => {
 		await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: prepared._yay.stageId });
 	});
 
-	test("a member lock outside a nested plugin lock does not block the write", async () => {
+	test("a nested Read-only parent needs force; an outer flag adds no inherited guard", async () => {
 		const t = test_convex();
 		const fixture = await seed_file_writer(t);
 		const parent = await t.run((ctx) => ctx.db.get("files_nodes", fixture.parentId));
@@ -2324,14 +2330,15 @@ describe("invoke file write preconditions", () => {
 		if (!parent || parent.parentId === files_ROOT_ID) throw new Error("Expected a nested folder");
 		expect(
 			(
-				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
-					writePolicy: { mode: "read_only" },
+				await fixture.asUser.mutation(api.files_nodes.read_only_set, {
+					readOnly: true,
 					membershipId: fixture.membershipId,
 					nodeId: parent.parentId,
 				})
 			)._nay,
 		).toBeUndefined();
-		expect((await prepare_file({ t, fixture }))._nay).toBeUndefined();
+		expect((await prepare_file({ t, fixture }))._nay?.name).toBe("read_only");
+		expect((await prepare_file({ t, fixture, force: true }))._nay).toBeUndefined();
 	});
 });
 
@@ -13175,10 +13182,8 @@ describe("files_sharing.set_node_share_grant", () => {
 		expect((await apply_binding({ t, fixture, nodeId, readScopeId: "p/takeover" }))._nay).toBeUndefined();
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, {
-				writePolicy: {
-					mode: "writer",
-					writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
-				},
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
 			});
 		});
 		const before = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));

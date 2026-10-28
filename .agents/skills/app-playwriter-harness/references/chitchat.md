@@ -1031,8 +1031,9 @@ channel's scope. Before the fix that table was empty across the whole deployment
 >
 > Defect 1 hid defect 2: while the call refused, nobody could see that the folder would not have been
 > locked anyway. Fixing only the refusal produces a private folder that is NOT read-only — a worse
-> outcome than the 409. For the current model, assert the folder's own `writePolicy`, including
-> the selected account, as well as the status code.
+> outcome than the 409. This is historical behavior. The current model uses each folder's own
+> `readOnly` flag. Creating a direct child under a Read-only folder needs explicit force and the
+> new plugin grant. Assert that the flag stays set, as well as checking the status code.
 
 Two things that will mislead you while setting this up, both hit 2026-09-01:
 

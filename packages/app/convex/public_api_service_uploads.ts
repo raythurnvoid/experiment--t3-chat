@@ -24,17 +24,21 @@ import {
 } from "./access_control.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
-import { files_nodes_db_archive_nodes, files_nodes_db_hard_delete_node, files_nodes_db_set_write_policy } from "./files_nodes.ts";
+import { files_nodes_db_archive_nodes, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import {
 	files_nodes_db_check_create_busy,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes_create_db.ts";
-import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
+import {
+	public_api_file_archives_db_archive,
+	public_api_file_archives_db_check_node,
+	public_api_file_archives_db_prepare,
+	public_api_file_archives_db_result,
+	public_api_file_archives_result_validator,
+} from "./public_api_file_archives.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
-import {
-	r2,
-} from "./r2_client.ts";
+import { r2 } from "./r2_client.ts";
 import {
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
@@ -436,29 +440,6 @@ async function db_validate_target_node(
 		return false;
 	}
 
-	// Passing a protected target retains its capability and human management ceiling.
-	// An ordinary unprotected content update needs only its normal write authority.
-	if (node.writePolicy?.mode === "writer") {
-		if (!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
-			return false;
-		}
-
-		const organization = await ctx.db.get("organizations", args.organizationId);
-		if (!organization?.defaultWorkspaceId) {
-			return false;
-		}
-
-		return await access_control_db_has_permission(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			defaultWorkspaceId: organization.defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: node.restrictedScopeNodeId },
-			userId: args.actorUserId,
-			permission: "content.permissions.manage",
-		});
-	}
-
 	return true;
 }
 
@@ -774,6 +755,7 @@ export const create_upload_target = internalMutation({
 		contentType: v.string(),
 		size: v.number(),
 		readOnly: v.boolean(),
+		force: v.optional(v.boolean()),
 		nonCollaborative: v.boolean(),
 	},
 	returns: v_result({
@@ -785,6 +767,11 @@ export const create_upload_target = internalMutation({
 			return authorized;
 		}
 		const installation = authorized._yay.installation;
+		if (
+			(args.force === true || args.readOnly) &&
+			!installation.acceptedCapabilities.includes("workspace.files.manage-read-only")
+		)
+			return Result({ _nay: { message: "Permission denied" } });
 
 		const idempotencyKey = validate_key(args.idempotencyKey, "Idempotency keys");
 		if (idempotencyKey._nay) {
@@ -838,12 +825,13 @@ export const create_upload_target = internalMutation({
 
 		const now = Date.now();
 		// Fingerprint the normalized type, so a replay that spells the same type differently
-		// (`Text/Plain`) still matches its first request.
+		// (`Text/Plain`) still matches its first request. Only opting into force changes its identity.
 		const requestFingerprint = JSON.stringify({
 			path: args.path,
 			contentType,
 			size: args.size,
 			readOnly: args.readOnly,
+			...(args.force === true ? { force: true } : {}),
 			nonCollaborative: args.nonCollaborative,
 		});
 		const existingTarget = await db_get_target(ctx, {
@@ -968,14 +956,13 @@ export const create_upload_target = internalMutation({
 
 		const writeContext: files_nodes_WriteContext = {
 			subject: authorized._yay.subject,
-			writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
+			force: args.force === true,
 			actorUserId: args.principal.actorUserId,
 			resourceScope: {
 				kind: "create",
 				parentNodeId: effectiveDestinationAclNode?._id ?? files_ROOT_ID,
 				path: args.path,
 			},
-			policyReach: "direct",
 		};
 		const writeTarget = { kind: "create" as const, parentNode: effectiveDestinationAclNode, path: args.path };
 		const writable = await files_nodes_db_require_writable(ctx, {
@@ -1008,25 +995,6 @@ export const create_upload_target = internalMutation({
 		if (busy._nay) {
 			return busy;
 		}
-		const writePolicy = args.readOnly ? { mode: "writer" as const, writers: [writeContext.writer] } : undefined;
-
-		if (args.readOnly && !installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		if (writePolicy) {
-			const management = await files_nodes_db_require_write_policy_management(ctx, {
-				organizationId: args.principal.organizationId,
-				workspaceId: args.principal.workspaceId,
-				writeContext,
-				target: writeTarget,
-				writePolicy,
-			});
-			if (management._nay) {
-				return management;
-			}
-		}
-
 		const runTargets = await ctx.db
 			.query("plugin_service_storage_targets")
 			.withIndex("by_organization_workspace_installation_idempotencyKey_targetKey", (q) =>
@@ -1094,7 +1062,7 @@ export const create_upload_target = internalMutation({
 			],
 			metadata: [{ key: "original-name", value: name }],
 			writeContext,
-			...(writePolicy ? { writePolicy } : {}),
+			readOnly: args.readOnly,
 			now,
 		});
 		// The validation above cleared every failure this helper can hit. Throw so a surprise rolls
@@ -1147,6 +1115,7 @@ export const create_upload_target = internalMutation({
 			targetKey: targetKey._yay,
 			requestFingerprint,
 			readOnly: args.readOnly,
+			force: args.force === true,
 			nonCollaborative: args.nonCollaborative,
 			destinationPath: args.principal.pathPrefix,
 			destinationNodeId: destination._id,
@@ -1513,6 +1482,7 @@ export type public_api_service_uploads_finalize_upload_target_Result =
  */
 export const delete_upload_target = internalMutation({
 	args: {
+		force: v.optional(v.boolean()),
 		principal: service_upload_principal_validator,
 		idempotencyKey: v.string(),
 		targetKey: v.string(),
@@ -1529,6 +1499,8 @@ export const delete_upload_target = internalMutation({
 			return authorized;
 		}
 		const installation = authorized._yay.installation;
+		if (args.force === true && !installation.acceptedCapabilities.includes("workspace.files.manage-read-only"))
+			return Result({ _nay: { message: "Permission denied" } });
 
 		const idempotencyKey = validate_key(args.idempotencyKey, "Idempotency keys");
 		if (idempotencyKey._nay) {
@@ -1585,18 +1557,16 @@ export const delete_upload_target = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Preflight every matching node before changing policies or archiving files.
-		const policiesToClear: Array<{ node: Doc<"files_nodes">; writeContext: files_nodes_WriteContext }> = [];
+		// Check every matching node before deleting targets or archiving files.
 		for (const match of matches) {
 			if (!match.node) {
 				continue;
 			}
 			const writeContext: files_nodes_WriteContext = {
 				subject: authorized._yay.subject,
-				writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
+				force: args.force === true,
 				actorUserId: args.principal.actorUserId,
 				resourceScope: { kind: "node", nodeId: match.node._id },
-				policyReach: "direct",
 			};
 			if (
 				!(await access_control_db_can_act_on_file_node(ctx, {
@@ -1609,12 +1579,7 @@ export const delete_upload_target = internalMutation({
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			const writable = await files_nodes_db_require_writable(ctx, {
-				organizationId: args.principal.organizationId,
-				workspaceId: args.principal.workspaceId,
-				writeContext,
-				target: { kind: "node", node: match.node },
-			});
+			const writable = await public_api_file_archives_db_check_node(ctx, { node: match.node, writeContext });
 			if (writable._nay) {
 				return writable;
 			}
@@ -1632,19 +1597,6 @@ export const delete_upload_target = internalMutation({
 			) {
 				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This upload target is no longer available" } });
 			}
-			if (match.target.state === "committed" && match.node.writePolicy !== null) {
-				const management = await files_nodes_db_require_write_policy_management(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					writeContext,
-					target: { kind: "node", node: match.node },
-					writePolicy: null,
-				});
-				if (management._nay) {
-					return management;
-				}
-				policiesToClear.push({ node: match.node, writeContext });
-			}
 		}
 		for (const match of matches) {
 			const busy = await files_move_reservations_db_check_node_write(ctx.db, {
@@ -1660,14 +1612,6 @@ export const delete_upload_target = internalMutation({
 			match.target.state === "committed" && match.node && match.node.archiveOperationId === null ? [match.node] : [],
 		);
 		if (committedNodes.length > 0) {
-			for (const plan of policiesToClear) {
-				const cleared = await files_nodes_db_set_write_policy(ctx, { ...plan, writePolicy: null });
-				if (cleared._nay) {
-					const message = "Service archive policy clear failed after validation";
-					console.error(message, { nodeId: plan.node._id, nay: cleared._nay });
-					throw should_never_happen(message, { nodeId: plan.node._id, nay: cleared._nay });
-				}
-			}
 			// Archive every committed match together, like one member delete action.
 			await files_nodes_db_archive_nodes({
 				ctx,
@@ -1804,293 +1748,191 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
 }
 
 /**
- * Archive the folder this grant was sealed to, with everything still active inside it.
- *
- * The meeting is gone, so its files must leave the workspace tree. They are real committed files
- * though, and in this product deleting a file means archiving it, so the service archives too. One
- * operation id covers the folder and its whole subtree. Local policies are cleared only when the
- * actor, inside the sandbox roots, can manage them, so a member can restore the set later. The stored
- * bytes stay charged. This quota only grows, so neither archive nor physical deletion gives bytes
- * back.
- *
- * The seal is the fence. The door takes no path, so a grant can only ever archive its own
- * destination. The folder must be one this plugin made. Either a live upload target of this
- * installation created it, or, when this installation has no upload target at the destination at
- * all, the folder carries the `plugin-name` label of this plugin. The host writes that label on
- * every node a `files/write` by the grant creates. A member may also set the label by hand, and a
- * folder at the destination with no such label answers zero. The accepted capability, the actor's
- * permissions inside the sandbox roots, and current policies must all allow the archive. A member can
- * still have put something of their own in the folder, so a refusal anywhere in the subtree
- * refuses the whole call. The delete workflow fails visibly on a refusal and can be retried once
- * the member clears what blocked it.
- *
- * No idempotency key: a replay finds nothing active at the destination and archives zero nodes.
+ * Archive a sealed destination with a durable request receipt. Force keeps allowed branches;
+ * a partial result keeps the destination epoch open. A retry stays on the original folder ID.
+ * Flags stay intact, and stored bytes stay charged.
  */
 export const archive_destination = internalMutation({
 	args: {
 		principal: service_upload_principal_validator,
+		force: v.optional(v.boolean()),
+		requestId: v.string(),
+		previousRequestId: v.optional(v.string()),
 	},
-	returns: v_result({ _yay: v.object({ archivedNodes: v.number() }) }),
+	returns: v_result({ _yay: public_api_file_archives_result_validator }),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_service_upload(ctx, args.principal);
-		if (authorized._nay) {
-			return authorized;
-		}
+		if (authorized._nay) return authorized;
+		const { installation, subject } = authorized._yay;
+		if (args.force === true && !installation.acceptedCapabilities.includes("workspace.files.manage-read-only"))
+			return Result({ _nay: { message: "Permission denied" } });
 		const now = Date.now();
-
-		const stableTarget = await ctx.db
-			.query("plugin_service_storage_targets")
-			.withIndex("by_organization_workspace_installation_destinationPath", (q) =>
-				q
-					.eq("organizationId", args.principal.organizationId)
-					.eq("workspaceId", args.principal.workspaceId)
-					.eq("installationId", authorized._yay.installation._id)
-					.eq("destinationPath", args.principal.pathPrefix),
-			)
-			// A later run can recreate an archived destination at the same path. Follow that newest
-			// generation, while the stable node id still preserves a member rename.
-			.order("desc")
-			.first();
-
-		let destination: Doc<"files_nodes">;
-		let throughEpoch: number;
-		// Without an upload target, nothing proves this plugin made the folder. A `files/write` by
-		// this grant can still have created it, for example a meeting note written before any
-		// recording. So follow the active folder at the destination only when its `plugin-name`
-		// label names this plugin. A folder with no label, or with another plugin's label, answers
-		// zero, the same as a folder nobody made.
-		if (!stableTarget) {
-			const record = await db_get_destination(ctx, {
-				organizationId: args.principal.organizationId,
-				workspaceId: args.principal.workspaceId,
-				installationId: authorized._yay.installation._id,
-				destinationPath: args.principal.pathPrefix,
+		const writeContext: files_nodes_WriteContext = {
+			subject,
+			actorUserId: args.principal.actorUserId,
+			resourceScope: { kind: "workspace" },
+			force: args.force === true,
+		};
+		const identity = {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			installationId: installation._id,
+			principalKey: args.principal.principalKey,
+			actorUserId: args.principal.actorUserId,
+			operation: "service_archive" as const,
+			path: args.principal.pathPrefix,
+			force: args.force === true,
+			requestId: args.requestId,
+		};
+		const prepared = await public_api_file_archives_db_prepare(ctx, {
+			...identity,
+			previousRequestId: args.previousRequestId,
+		});
+		if (prepared._nay) return prepared;
+		if (prepared._yay.receipt)
+			return Result({
+				_yay: await public_api_file_archives_db_result(ctx, { receipt: prepared._yay.receipt, writeContext }),
 			});
-			// Answer zero when a service archive already closed this destination. A member restore
-			// does not reopen it. Only a new upload target opens the next epoch.
-			if (record && record.closedEpoch >= record.currentEpoch) {
-				return Result({ _yay: { archivedNodes: 0 } });
-			}
-			throughEpoch = record?.currentEpoch ?? 1;
-
-			const labelledFolder = await files_db_get_visible_node_by_path(ctx, {
-				organizationId: args.principal.organizationId,
-				workspaceId: args.principal.workspaceId,
-				path: args.principal.pathPrefix,
-			});
+		const record = await db_get_destination(ctx, { ...args.principal, destinationPath: args.principal.pathPrefix });
+		const previous = prepared._yay.previous;
+		let destination: Doc<"files_nodes"> | null = null;
+		let throughEpoch = record?.currentEpoch ?? 1;
+		if (previous) {
+			destination = previous.destinationNodeId
+				? await files_saved_placement_db_get_node(ctx.db, previous.destinationNodeId)
+				: null;
+			throughEpoch = previous.destinationEpoch!;
 			if (
-				labelledFolder?.kind !== "folder" ||
-				(await files_metadata_db_read_entry(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					fileNodeId: labelledFolder._id,
-					key: "plugin-name",
-				})) !== authorized._yay.installation.pluginName
+				!destination ||
+				destination.path !== args.principal.pathPrefix ||
+				destination.archiveOperationId !== null ||
+				(record && (record.currentEpoch !== throughEpoch || record.closedEpoch >= throughEpoch))
 			) {
-				return Result({ _yay: { archivedNodes: 0 } });
+				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "The original archive destination changed" } });
 			}
-			destination = labelledFolder;
-		} else {
-			if (await db_target_destination_is_closed(ctx, stableTarget)) {
-				return Result({ _yay: { archivedNodes: 0 } });
-			}
-			throughEpoch = stableTarget.destinationEpoch;
-
-			const targetFolder = await files_saved_placement_db_get_node(ctx.db, stableTarget.destinationNodeId);
-			if (!targetFolder) {
-				// A target proves this folder existed. Refuse instead of telling the caller its delete worked.
-				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination folder no longer exists" } });
-			}
-			if (
-				targetFolder.organizationId !== args.principal.organizationId ||
-				targetFolder.workspaceId !== args.principal.workspaceId ||
-				targetFolder.kind !== "folder"
-			) {
-				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination is no longer a meeting folder" } });
-			}
-			destination = targetFolder;
-			// A member can restore an older generation after a newer folder used the same path. Follow
-			// that active folder only when a target proves this installation created that exact node.
-			if (targetFolder.archiveOperationId !== null) {
-				const restoredDestination = await files_db_get_visible_node_by_path(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
+		} else if (!record || record.closedEpoch < record.currentEpoch) {
+			const target = await ctx.db
+				.query("plugin_service_storage_targets")
+				.withIndex("by_organization_workspace_installation_destinationPath", (q) =>
+					q
+						.eq("organizationId", args.principal.organizationId)
+						.eq("workspaceId", args.principal.workspaceId)
+						.eq("installationId", installation._id)
+						.eq("destinationPath", args.principal.pathPrefix),
+				)
+				.order("desc")
+				.first();
+			if (target) {
+				throughEpoch = target.destinationEpoch;
+				if (!(await db_target_destination_is_closed(ctx, target))) {
+					destination = await files_saved_placement_db_get_node(ctx.db, target.destinationNodeId);
+					if (!destination || destination.kind !== "folder" || destination.path !== args.principal.pathPrefix)
+						return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination folder changed" } });
+					if (destination.archiveOperationId !== null) {
+						// A restored earlier folder needs its own saved target proof.
+						const restored = await files_db_get_visible_node_by_path(ctx, {
+							...args.principal,
+							path: args.principal.pathPrefix,
+						});
+						const proof =
+							restored?.kind === "folder"
+								? await ctx.db
+										.query("plugin_service_storage_targets")
+										.withIndex("by_org_workspace_installation_destinationPath_destinationNode", (q) =>
+											q
+												.eq("organizationId", args.principal.organizationId)
+												.eq("workspaceId", args.principal.workspaceId)
+												.eq("installationId", installation._id)
+												.eq("destinationPath", args.principal.pathPrefix)
+												.eq("destinationNodeId", restored._id),
+										)
+										.first()
+								: null;
+						destination = restored && proof && !(await db_target_destination_is_closed(ctx, proof)) ? restored : null;
+					}
+				}
+			} else {
+				const folder = await files_db_get_visible_node_by_path(ctx, {
+					...args.principal,
 					path: args.principal.pathPrefix,
 				});
-				const restoredTarget =
-					restoredDestination?.kind === "folder"
-						? await ctx.db
-								.query("plugin_service_storage_targets")
-								.withIndex("by_org_workspace_installation_destinationPath_destinationNode", (q) =>
-									q
-										.eq("organizationId", args.principal.organizationId)
-										.eq("workspaceId", args.principal.workspaceId)
-										.eq("installationId", authorized._yay.installation._id)
-										.eq("destinationPath", args.principal.pathPrefix)
-										.eq("destinationNodeId", restoredDestination._id),
-								)
-								.first()
-						: null;
-				if (!restoredDestination || !restoredTarget || (await db_target_destination_is_closed(ctx, restoredTarget))) {
-					await db_close_destination(ctx, {
-						organizationId: args.principal.organizationId,
-						workspaceId: args.principal.workspaceId,
-						installationId: authorized._yay.installation._id,
-						destinationPath: args.principal.pathPrefix,
-						throughEpoch,
-						now,
-					});
-					return Result({ _yay: { archivedNodes: 0 } });
-				}
-				destination = restoredDestination;
+				if (
+					folder?.kind === "folder" &&
+					(await files_metadata_db_read_entry(ctx, {
+						...args.principal,
+						fileNodeId: folder._id,
+						key: "plugin-name",
+					})) === installation.pluginName
+				)
+					destination = folder;
 			}
 		}
-
-		// Follow parent ids, not paths. Active and archived trees can hold the same path.
-		const descendants = await public_api_service_uploads_db_collect_bounded_descendants(ctx, {
-			organizationId: args.principal.organizationId,
-			workspaceId: args.principal.workspaceId,
-			parentId: destination._id,
-			maxNodes: public_api_service_uploads_MAX_ARCHIVE_NODES - 1,
-		});
-		if (descendants === null) {
-			return Result({
-				_nay: {
-					message: `A destination archives at most ${public_api_service_uploads_MAX_ARCHIVE_NODES} files and folders; move some out and try again`,
-				},
-			});
-		}
-
-		const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === null);
-
-		const writeContext: files_nodes_WriteContext = {
-			subject: authorized._yay.subject,
-			writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
-			actorUserId: args.principal.actorUserId,
-			resourceScope: { kind: "subtree", nodeId: destination._id },
-			policyReach: "direct",
-		};
-		const policiesToClear: Array<Doc<"files_nodes">> = [];
-
-		// Archived descendants also need to remain restorable after this archive.
-		for (const node of [destination, ...descendants]) {
-			if (
-				!(await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					subject: authorized._yay.subject,
-					fileNode: node,
-					permission: "content.write",
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-
-			const writable = await files_nodes_db_require_writable(ctx, {
-				organizationId: args.principal.organizationId,
-				workspaceId: args.principal.workspaceId,
-				writeContext,
-				target: { kind: "node", node },
-			});
-			if (writable._nay) {
-				return writable;
-			}
-
-			const target = await ctx.db
-				.query("plugin_service_storage_targets")
-				.withIndex("by_node", (q) => q.eq("nodeId", node._id))
-				.first();
-			// A completed delete keeps its archived node and target as history.
-			if (node.archiveOperationId !== null && target?.state === "released" && target.deleteRequestedAt !== undefined) {
-				continue;
-			}
-			if (
-				target &&
-				!(await db_validate_target_node(ctx, {
-					target,
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					installation: authorized._yay.installation,
-					actorUserId: args.principal.actorUserId,
-					pathPrefix: args.principal.pathPrefix,
-					destinationNodeId: destination._id,
-					node,
-				}))
-			) {
-				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This upload target is no longer available" } });
-			}
-
-			if (node.writePolicy !== null) {
-				if (!authorized._yay.installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
-					return Result({ _nay: { message: "Permission denied" } });
-				}
-
-				const management = await files_nodes_db_require_write_policy_management(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
+		const archived = destination
+			? await public_api_file_archives_db_archive(ctx, {
+					root: destination,
+					organizationId: installation.organizationId,
+					workspaceId: installation.workspaceId,
 					writeContext,
-					target: { kind: "node", node },
-					writePolicy: null,
-				});
-				if (management._nay) {
-					return management;
-				}
-				policiesToClear.push(node);
-			}
-		}
-
-		await db_close_destination(ctx, {
-			organizationId: args.principal.organizationId,
-			workspaceId: args.principal.workspaceId,
-			installationId: authorized._yay.installation._id,
-			destinationPath: args.principal.pathPrefix,
-			throughEpoch,
-			now,
-		});
-
-		// A service archive ends this destination's service lifecycle. Keep the files restorable for
-		// members, but do not let their old targets consume the cap or reopen old service calls.
-		for (const node of descendants) {
-			if (node.kind !== "file") {
-				continue;
-			}
+					maxNodes: public_api_service_uploads_MAX_ARCHIVE_NODES,
+					accept: async (node) => {
+						const target = await ctx.db
+							.query("plugin_service_storage_targets")
+							.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+							.first();
+						return target &&
+							!(await db_validate_target_node(ctx, {
+								target,
+								...args.principal,
+								installation,
+								destinationNodeId: destination!._id,
+								node,
+							}))
+							? { name: REFUSAL_CONFLICT, message: "This upload target is no longer available" }
+							: null;
+					},
+				})
+			: Result({ _yay: { archivedNodes: 0, complete: true, refused: [], archivedNodeIds: [] } });
+		if (archived._nay) return archived;
+		if (archived._yay.complete && (destination || record))
+			await db_close_destination(ctx, {
+				...args.principal,
+				destinationPath: args.principal.pathPrefix,
+				throughEpoch,
+				now,
+			});
+		// Only completed nodes lose their service targets. Retained branches can be retried.
+		for (const nodeId of archived._yay.archivedNodeIds) {
 			const target = await ctx.db
 				.query("plugin_service_storage_targets")
-				.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+				.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
 				.first();
 			if (
 				target &&
-				target.state !== "released" &&
-				target.organizationId === args.principal.organizationId &&
-				target.workspaceId === args.principal.workspaceId &&
-				target.installationId === authorized._yay.installation._id &&
+				target.installationId === installation._id &&
 				target.destinationPath === args.principal.pathPrefix &&
 				target.movedOutAt === undefined
 			) {
-				await ctx.db.patch("plugin_service_storage_targets", target._id, {
-					movedOutAt: now,
-					updatedAt: now,
-				});
+				await ctx.db.patch("plugin_service_storage_targets", target._id, { movedOutAt: now, updatedAt: now });
 			}
 		}
-
-		for (const node of policiesToClear) {
-			const cleared = await files_nodes_db_set_write_policy(ctx, { node, writeContext, writePolicy: null });
-			if (cleared._nay) {
-				const message = "Service archive policy clear failed after validation";
-				console.error(message, { nodeId: node._id, nay: cleared._nay });
-				throw should_never_happen(message, { nodeId: node._id, nay: cleared._nay });
-			}
-		}
-
-		await files_nodes_db_archive_nodes({
-			ctx,
-			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],
-			updatedBy: args.principal.actorUserId,
-			now,
+		const receiptId = await ctx.db.insert("plugins_file_archive_receipts", {
+			...identity,
+			membershipLifetime: prepared._yay.membershipLifetime,
+			inputHash: prepared._yay.inputHash,
+			previousRequestId: args.previousRequestId ?? null,
+			destinationNodeId: destination?._id ?? null,
+			destinationEpoch: throughEpoch,
+			archivedNodes: archived._yay.archivedNodes,
+			complete: archived._yay.complete,
+			refused: [...archived._yay.refused],
+			createdAt: now,
 		});
-
-		return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
+		return Result({
+			_yay: await public_api_file_archives_db_result(ctx, {
+				receipt: (await ctx.db.get("plugins_file_archive_receipts", receiptId))!,
+				writeContext,
+			}),
+		});
 	},
 });
 

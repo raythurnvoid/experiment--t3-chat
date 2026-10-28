@@ -145,10 +145,10 @@ Private lifetime and cleanup (`packages/app/convex/files_pending_nodes.ts`):
   `files_move_waiters` after repair. Expiry retries that workspace after 60 seconds.
 - A published parent resolves through its owner-scoped saved receipt; Discard does not remove that saved identity. Daily receipt cleanup keeps the private identity for seven days and while any child, proposal, copy source, state, batch, review item, transfer item or parent, or a Bash shell's cwd still refers to it. It pages past retained identities so they cannot block later cleanup. Removing the unused private identity and receipt never removes the saved file.
 - Every private Save records `files_nodes.publishedFromPrivateNodeId`. Read-only target lookup can use this indexed origin after private cleanup, then checks the saved file's current ACL. Private mutation lookup remains strict. Old chat links therefore survive Save, rename and move without granting access.
-- Copied-folder receipts can carry `copiedWritePolicy` and `copiedPath`. Only Save may use this proof
+- Copied-folder receipts can carry `copiedReadOnlyDecisionId` and `copiedPath`. Only Save may use this proof
   to finish a child under its unchanged copied parent. Check owner, private generation, structural
-  revision, saved origin, frozen path and policy, and current ACL. Normal editing and new-child
-  creation still obey the parent's write policy.
+  revision, saved origin, frozen path, exact decision ID, and current ACL. Normal editing and new-child
+  creation inside the saved folder still obey its Read-only flag.
 - A new draft under an archived saved parent has a narrow recovery read. It requires the owner,
   live membership, and current read access to that saved ancestor. Pending and the private detail
   view expose Copy/Download, the expiry date, and an `Open archived folder` link. A user who may
@@ -687,22 +687,27 @@ cache or chat result.
 - the phone chat passes `onReview`, because a phone has no Files page. Then the strip shows only the current-workspace row (not the personal home row), and its Review button calls `onReview` instead of linking. `AiChatPendingReview` (`src/components/ai-chat/ai-chat-pending-review.tsx`) opens `FileEditorSidebarPending` in a full-screen modal with `initialThreadId` set to the chat, so the source selector starts on that chat and Accept all does not touch other chats. Row path links are not tappable in the modal. A row that needs the diff editor still needs a desktop
 - the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
 
-# Write Policies
+# Read-only
 
-Current file policy protects both proposal creation and proposal commit. Ordinary app, agent, and
-Bash proposals use the human actor as writer. Selecting that user does not grant file access.
-Only destination, occupant, and immediate-parent checks apply. The full contract lives in
+Read-only protects both proposal creation and commit. Ordinary app, agent, and Bash proposals
+use the human actor and never force. Destination, occupant, and direct-parent checks apply.
+The full contract lives in
 `../files-read-only/SKILL.md`.
 
-- New content checks the destination folder. Move checks the named item and its immediate parent.
-  Replace, archive, and delete still check every removed or replaced item. Copy may read a locked
-  source, but its destination and replacement occupant must be writable.
-- Proposal creation, rebase, Save, and Accept check ACL and policy before their action work. The final
-  mutation checks current policy again before its first write. It checks the destination,
+- New content checks the destination folder. Move checks the named item and direct source and
+  destination parents, and carries descendant flags. Delete checks active descendants; older Trash
+  keeps its stamp and does not block it. Copy may read a Read-only source, but its destination and
+  replacement occupant must be writable.
+- Proposal creation, rebase, Save, and Accept check ACL and Read-only before action work. The final
+  mutation checks again before its first write. It checks the destination,
   replacement occupant, and the occupant a replace-move archives.
-- A proposal created before a policy change stays visible. Accept and Save refuse while any affected
-  node refuses the human writer. They may finish when every affected node permits the writer again.
-  There is no policy history counter. UI controls use actual `canWrite`, not policy presence.
+- A proposal created before a flag change stays visible. Accept and Save refuse while an affected
+  item is Read-only. Clearing it may allow the save. UI write controls use actual `canWrite`.
+- Copy preserves the source flag on a new saved copy, with a fresh internal decision ID. A copied
+  parent's receipt allows its original children only while that exact ID and the existing creator,
+  generation, and copied path still match. A sibling can save later. Merging into an existing folder
+  grants no exception. True-to-true keeps the ID; clear and re-lock invalidates the receipt.
+- Move snapshots never overwrite a newer flag. Public Pending views omit decision IDs.
 - A replace flow also stores the ordered source node ids. This is not policy history. It stops Accept
   from changing different files from the ones the user reviewed.
 - Whole-proposal Discard and Discard all stay available. They delete only the caller's pending docs.

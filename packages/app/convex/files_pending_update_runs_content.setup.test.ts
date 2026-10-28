@@ -288,7 +288,7 @@ export async function private_media(args: {
 				ctx,
 				pendingUpdateId: entry.pendingUpdate._id,
 				value: {
-					copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceWritePolicy: null },
+					copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceReadOnly: false },
 				},
 			});
 		return {
@@ -313,7 +313,7 @@ export async function mark_copied(args: {
 			ctx,
 			pendingUpdateId: pending._id,
 			value: {
-				copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceWritePolicy: null },
+				copiedFrom: { target: { kind: "saved", id: sourceId }, path: "/source", sourceReadOnly: false },
 			},
 		});
 		return (await ctx.db.get("files_pending_updates", pending._id))!;

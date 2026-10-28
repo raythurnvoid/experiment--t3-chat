@@ -20,6 +20,7 @@ import {
 	folder,
 	read_node,
 	lock_archived,
+	lock,
 	archive_to_end,
 } from "./files_archive_runs.setup.test.ts";
 
@@ -326,7 +327,7 @@ describe("unarchive_nodes", () => {
 			expect(refused._nay?.message).toBe("The conflicts changed. Review them again.");
 		});
 
-		test("Replace asks again when the folder in the way gets an archived read-only item", async () => {
+		test("Replace ignores an archived read-only child of the empty active folder", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "hidden", folderCount: 1, filesPerFolder: 1 });
 			await archive_to_end(f, tree.folderIds[0]!);
@@ -341,18 +342,18 @@ describe("unarchive_nodes", () => {
 			await lock_archived(f, inside);
 			await step(f, job.runId);
 
-			// Replace would hide the read-only item inside an archived folder.
-			expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
+			expect((await read_activity(f, job.activityId)).status).toBe("succeeded");
 			const shown = await f.asOwner.query(api.files_archive_runs.get, {
 				membershipId: f.db.membershipId,
 				runId: job.runId,
 			});
-			expect(shown?.conflict?.canReplace).toBe(false);
-			expect((await read_node(f, occupant)).archiveOperationId).toBeNull();
-			expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).not.toBeNull();
+			expect(shown?.conflict).toBeNull();
+			expect((await read_node(f, occupant)).archiveOperationId).not.toBeNull();
+			expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).toBeNull();
+			expect((await read_node(f, inside)).readOnly).toBe(true);
 		});
 
-		test("a node kept archived with its skipped folder must still be writable", async () => {
+		test("a read-only node kept in Trash follows its skipped folder", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "tag", folderCount: 1, filesPerFolder: 2 });
 			await archive_to_end(f, tree.folderIds[0]!);
@@ -366,8 +367,9 @@ describe("unarchive_nodes", () => {
 			expect(await resolve({ f, runId: job.runId, choice: "skip" })).toEqual({ _yay: null });
 			await step(f, job.runId);
 
-			expect((await read_activity(f, job.activityId)).status).toBe("failed");
-			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBe(operationId);
+			expect((await read_activity(f, job.activityId)).status).toBe("succeeded");
+			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).not.toBe(operationId);
+			expect((await read_node(f, tree.fileIds[0]!)).readOnly).toBe(true);
 			await expect_consistent(f);
 		});
 
@@ -393,7 +395,7 @@ describe("unarchive_nodes", () => {
 			expect((await read_run(f, job.runId)).revision).toBe(run.revision);
 		});
 
-		test("Replace is not offered when the folder in the way holds more than 500 items", async () => {
+		test("Replace stays available with more than 500 archived children", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "wide", folderCount: 1, filesPerFolder: 1 });
 			await archive_to_end(f, tree.topId);
@@ -407,7 +409,7 @@ describe("unarchive_nodes", () => {
 				runId: restored._yay!.runId,
 			});
 
-			expect(shown?.conflict?.canReplace).toBe(false);
+			expect(shown?.conflict?.canReplace).toBe(true);
 		});
 
 		test("a refused restore keeps the item a Replace would archive", async () => {
@@ -419,11 +421,11 @@ describe("unarchive_nodes", () => {
 			const restored = await restore(f, [tree.folderIds[0]!]);
 			const job = restored._yay!;
 			expect(await resolve({ f, runId: job.runId, choice: "replace" })).toEqual({ _yay: null });
-			// The lock comes after the choice, so the restore of `d0` is refused when the step runs.
-			await lock_archived(f, tree.folderIds[0]!);
+			// Replace never overwrites a live read-only occupant.
+			await lock({ f, nodeId: occupant, locked: true });
 			await step(f, job.runId);
 
-			expect((await read_activity(f, job.activityId)).status).toBe("failed");
+			expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
 			expect((await read_node(f, occupant)).archiveOperationId).toBeNull();
 			expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).not.toBeNull();
 			await expect_consistent(f);

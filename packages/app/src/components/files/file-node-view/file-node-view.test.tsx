@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { getFunctionName } from "convex/server";
+import { getFunctionName, type FunctionReturnType } from "convex/server";
 import { toast } from "sonner";
 import { encodeStateAsUpdate } from "yjs";
 import { files_yjs_doc_create_from_text } from "../../../../shared/files-tiptap.ts";
@@ -24,7 +24,7 @@ import type {
 import type { FileHtmlPreview } from "./file-html-preview.tsx";
 import { FilesClipboardProvider } from "../files-clipboard.tsx";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import type { files_VisibleEntry } from "@/lib/files.ts";
 import type { useFilesSortedChildren } from "@/hooks/files-search-hooks.ts";
@@ -305,9 +305,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 		search?: Record<string, unknown> | ((prev: Record<string, unknown>) => Record<string, unknown>);
 	}) => {
 		const search =
-			typeof props.search === "function"
-				? props.search({ filter: "file.name:a*", view_q: "typed" })
-				: props.search;
+			typeof props.search === "function" ? props.search({ filter: "file.name:a*", view_q: "typed" }) : props.search;
 		return (
 			<a
 				href="#"
@@ -346,7 +344,7 @@ const NODE = {
 	restrictedScopeNodeId: null,
 	canWrite: true,
 	writeBlockedReason: null,
-	writePolicyState: "none",
+	readOnly: false,
 };
 const PLUGIN = {
 	pluginName: "file-viewer",
@@ -438,7 +436,9 @@ let workspacePermissions: "all" | string[];
 let folderSort: unknown;
 let privateView:
 	| {
-			entry: files_VisibleEntry;
+			entry: NonNullable<
+				FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_target>
+			>["entry"];
 			readiness: "ready" | "preparing";
 			canEdit: boolean;
 			canAccept: boolean;
@@ -1126,8 +1126,6 @@ describe("FileNodeView private targets", () => {
 					treePath: `/${NODE._id}`,
 					pathDepth: 1,
 					lowercaseExtension: "html",
-					writePolicy: null,
-					newChildWritePolicy: null,
 					statsId: null,
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
@@ -1987,7 +1985,11 @@ describe("FileNodeView folder sort", () => {
 			within(table)
 				.getAllByRole("columnheader")
 				.filter((cell) => cell.getAttribute("data-column-field") !== "actions")
-				.map((cell) => within(cell).getAllByRole("button").map((button) => button.getAttribute("aria-label"))),
+				.map((cell) =>
+					within(cell)
+						.getAllByRole("button")
+						.map((button) => button.getAttribute("aria-label")),
+				),
 		).toEqual([
 			["Column options for file.name"],
 			["Column options for file.updated_by"],
@@ -2028,7 +2030,11 @@ describe("FileNodeView folder sort", () => {
 		folderSort = { sort: [{ field: "size", direction: "desc" }], canSave: true };
 		const query = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference: never, args: { kind?: string; segment?: string; stream?: string }) => {
-			if (getFunctionName(reference) !== "files_tree:list_tree_children_sorted" || args.segment !== "value" || args.stream === "cohort") {
+			if (
+				getFunctionName(reference) !== "files_tree:list_tree_children_sorted" ||
+				args.segment !== "value" ||
+				args.stream === "cohort"
+			) {
 				return query(reference, args);
 			}
 			return args.kind === "file"
@@ -2381,9 +2387,7 @@ describe("FileNodeView folder columns", () => {
 		treeNodes = [node];
 		const previousQuery = queryMock.getMockImplementation()!;
 		queryMock.mockImplementation((reference, args) =>
-			getFunctionName(reference) === "files_metadata:list_folder_fields"
-				? []
-				: previousQuery(reference, args),
+			getFunctionName(reference) === "files_metadata:list_folder_fields" ? [] : previousQuery(reference, args),
 		);
 		renderFileView({ nodeId: node._id, columns: "name,metadata.old" });
 		const trigger = await screen.findByRole("button", { name: "Columns" });

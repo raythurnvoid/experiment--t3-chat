@@ -7,6 +7,7 @@ import { LogIn } from "lucide-react";
 import { memo, useLayoutEffect, useRef, type Ref } from "react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { FilesUnsavedText } from "@/components/files/files-unsaved-text.tsx";
 import { Logo } from "@/components/logo.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MainAppHeader } from "@/components/main-app-header.tsx";
@@ -80,6 +81,7 @@ const RouteTenantOrganizationWorkspaceLogin = memo(function RouteTenantOrganizat
 					<LogIn aria-hidden />
 					Log in
 				</MyButton>
+				<FilesUnsavedText />
 			</div>
 		</main>
 	);
@@ -172,7 +174,8 @@ function RouteTenantOrganizationWorkspaceLayout() {
 	if (membership === null) {
 		return (
 			<main ref={handleStandaloneFocusTargetRef} role="alert" aria-label="Organization access denied" tabIndex={-1}>
-				You do not have access to this organization/workspace.
+				<p>You do not have access to this organization/workspace.</p>
+				<FilesUnsavedText />
 			</main>
 		);
 	}

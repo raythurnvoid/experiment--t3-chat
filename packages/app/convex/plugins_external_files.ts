@@ -12,8 +12,8 @@ import {
 } from "./access_control.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
-import { files_nodes_db_require_write_policy_management } from "./files_write_policy_db.ts";
-import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
+import { files_nodes_db_require_read_only_management } from "./files_write_policy_db.ts";
+import { files_nodes_db_archive_nodes, files_nodes_db_set_read_only } from "./files_nodes.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
@@ -26,6 +26,7 @@ import {
 } from "./plugins_external_files_access.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
+import { public_api_file_archives_db_check_node } from "./public_api_file_archives.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { server_path_parent_of } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -157,6 +158,7 @@ export const ensure_writer = internalMutation({
 		path: v.string(),
 		readers: v.optional(v.array(v.object({ userId: v.id("users"), membershipLifetime: v.number() }))),
 		readOnly: v.boolean(),
+		force: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -183,6 +185,7 @@ export const ensure_writer = internalMutation({
 		const facts = await plugins_external_files_db_authorize(ctx, {
 			...args,
 			allowSealRoot: true,
+			requestReadOnly: args.readOnly,
 			recoverEmptySetup: existing ? { writerId: existing._id } : undefined,
 		});
 		if (facts._nay) return facts;
@@ -258,16 +261,15 @@ export const ensure_writer = internalMutation({
 		}
 
 		if (args.readOnly || args.readers) {
-			if (!installation.acceptedCapabilities.includes("workspace.files.own-access"))
+			if (args.readers && !installation.acceptedCapabilities.includes("workspace.files.own-access"))
 				return Result({ _nay: { message: "Permission denied" } });
-			const managed = await files_nodes_db_require_write_policy_management(ctx, {
+			const managed = await files_nodes_db_require_read_only_management(ctx, {
 				organizationId: installation.organizationId,
 				workspaceId: installation.workspaceId,
 				writeContext,
 				target: facts._yay.node
 					? { kind: "node", node: facts._yay.node }
 					: { kind: "create", parentNode: facts._yay.parentNode, path: args.path },
-				writePolicy: args.readOnly ? { mode: "writer", writers: [writeContext.writer] } : null,
 			});
 			if (managed._nay) return managed;
 		}
@@ -306,7 +308,7 @@ export const ensure_writer = internalMutation({
 				path: args.path,
 				kind: "folder",
 				writeContext,
-				writePolicy: args.readOnly ? { mode: "writer", writers: [writeContext.writer] } : undefined,
+				readOnly: args.readOnly,
 				createdNodesMetadata: [
 					{ key: "source", value: "plugin" },
 					{ key: "plugin-name", value: installation.pluginName },
@@ -489,9 +491,11 @@ export const change_scope = internalMutation({
 		writerId: v.id("plugins_external_file_writers"),
 		operationId: v.string(),
 		writerGeneration: v.number(),
+		force: v.optional(v.boolean()),
 		expectedPath: v.optional(v.string()),
 		change: v.union(
 			v.object({ kind: v.literal("fence"), nextGeneration: v.number() }),
+			v.object({ kind: v.literal("read_only"), readOnly: v.boolean() }),
 			v.object({
 				kind: v.literal("readers"),
 				expectedReaderRevision: v.number(),
@@ -521,6 +525,7 @@ export const change_scope = internalMutation({
 			path,
 			allowSealRoot: true,
 			exactNodeId: args.change.kind === "archive" ? args.change.nodeId : undefined,
+			requestReadOnly: args.change.kind === "read_only",
 		});
 		if (facts._nay) return facts;
 
@@ -556,7 +561,7 @@ export const change_scope = internalMutation({
 				return Result({ _nay: { name: "stale_write", message: "The file changed" } });
 		}
 
-		const fingerprint = JSON.stringify([args.writerGeneration, args.change]);
+		const fingerprint = JSON.stringify([args.writerGeneration, args.change, ...(args.force === true ? [true] : [])]);
 		// A retry is accepted only when it repeats the original operation and payload exactly.
 		if (existing)
 			return existing.operation === args.change.kind && existing.fingerprint === fingerprint
@@ -576,6 +581,13 @@ export const change_scope = internalMutation({
 			}
 			generation = args.change.nextGeneration;
 			await ctx.db.patch("plugins_external_file_writers", writer._id, { generation, updatedAt: Date.now() });
+		} else if (args.change.kind === "read_only") {
+			const changed = await files_nodes_db_set_read_only(ctx, {
+				node: folder,
+				writeContext: facts._yay.writeContext,
+				readOnly: args.change.readOnly,
+			});
+			if (changed._nay) return changed;
 		} else if (args.change.kind === "readers") {
 			if (!binding || binding.detachedAt !== null || binding.revision !== args.change.expectedReaderRevision) {
 				return Result({ _nay: { name: "stale_write", message: "The file reader binding changed" } });
@@ -643,6 +655,13 @@ export const change_scope = internalMutation({
 			}
 
 			nodeId = node._id;
+			if (node.archiveOperationId === null) {
+				const writable = await public_api_file_archives_db_check_node(ctx, {
+					node,
+					writeContext: facts._yay.writeContext,
+				});
+				if (writable._nay) return writable;
+			}
 			// An earlier Files archive already did the work. Keep its identity and dates.
 			if (node.archiveOperationId === null)
 				await files_nodes_db_archive_nodes({

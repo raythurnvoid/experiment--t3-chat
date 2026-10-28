@@ -331,11 +331,11 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 				: writePolicyRun
 					? { verbs: ["Updating", "Updated"], onOpen: null }
 					: null;
-	// An archive or a protection job refuses the items the person may not change, like a read-only file.
-	// That is expected, so a job that changed everything else still shows as completed. The result line
-	// keeps the refused items in its "N of M" count, and the job dialog names them.
+	// Ordinary archive keeps its existing selected-root display. Forced partial archive and
+	// bulk Read-only changes must say that some work remains.
 	const isRefusalOnly =
-		(archiveRun?.archiveKind === "archive" || writePolicyRun !== null) &&
+		archiveRun?.archiveKind === "archive" &&
+		!archiveRun.force &&
 		activity.status === "partial" &&
 		progress?.failed === 0 &&
 		progress.canceled === 0;

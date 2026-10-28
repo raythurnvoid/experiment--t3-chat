@@ -151,10 +151,10 @@ describe("copy_transfer_file scopes", () => {
 				}),
 			).toEqual({ _yay: null });
 			expect(
-				await (sourceWorkspace === "current" ? f.asOwner : f.asUser).mutation(api.files_nodes.set_node_write_policy, {
+				await (sourceWorkspace === "current" ? f.asOwner : f.asUser).mutation(api.files_nodes.read_only_set, {
 					membershipId: sourceWorkspace === "current" ? f.owner.membershipId : f.personal.membershipId,
 					nodeId: sourceId,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				}),
 			).toEqual({ _yay: null });
 			const copy = await start_copy({
@@ -197,13 +197,15 @@ describe("copy_transfer_file scopes", () => {
 				copiedFrom: {
 					target: { kind: "saved", id: sourceId },
 					path: "/source.txt",
-					sourceWritePolicy: { mode: "read_only" },
+					sourceReadOnly: true,
 				},
 				threadIds: [f.threadId],
 			});
 			expect(proposal!.copiedFrom).not.toHaveProperty("sourceNewChildWritePolicy");
-			expect((await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "pending", id: proposal!._id })))?.entries,
-				"Copy keeps the captured full map in the destination proposal").toEqual(entries);
+			expect(
+				(await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "pending", id: proposal!._id })))?.entries,
+				"Copy keeps the captured full map in the destination proposal",
+			).toEqual(entries);
 			expect(
 				(
 					await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {

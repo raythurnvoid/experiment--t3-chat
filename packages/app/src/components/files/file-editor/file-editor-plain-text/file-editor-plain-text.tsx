@@ -20,7 +20,6 @@ import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
 	file_editor_get_size_status_message,
-	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
 import { memo, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
@@ -29,6 +28,7 @@ import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useMutation } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { files_unsaved_text_capture } from "@/lib/files-unsaved-text.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
@@ -286,6 +286,7 @@ type FileEditorPlainTextInner_Props = {
 	isActive: boolean;
 	target: files_PendingTarget;
 	editable: boolean;
+	editBlockReason?: "read_only" | "permission" | null;
 	/** The node's document shape, resolved by the snapshot fetch; Save/Sync dispatch on it. */
 	rootKind: files_YjsRootKind;
 	/**
@@ -324,9 +325,21 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		onTargetChange,
 	} = props;
 
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, userId } = AppTenantProvider.useContext();
 	const { openReviewRun } = AppActivitiesProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
+	const [recoveryDocumentId] = useState(() => crypto.randomUUID());
+	const retainUnsavedText = useFn((text: string, reason: "read_only" | "permission" | "closed" = "closed") => {
+		files_unsaved_text_capture({
+			userId,
+			membershipId,
+			target,
+			documentId: recoveryDocumentId,
+			rootKind,
+			text,
+			reason,
+		});
+	});
 
 	const pushYjsUpdateMutation = useMutation(api.files_nodes.yjs_push_update);
 
@@ -663,6 +676,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					requestId: saveRequestRef.current.requestId,
 				});
 				if (replaced._nay) {
+					if (replaced._nay.name === "read_only" || replaced._nay.message === "Permission denied") {
+						retainUnsavedText(
+							modelRef.current?.getValue() ?? localMarkdown,
+							replaced._nay.name === "read_only" ? "read_only" : "permission",
+						);
+					}
 					if (replaced._nay.name === "save_expired") saveRequestRef.current = null;
 					console.error("[FileEditorPlainText.handleClickSave] Error while replacing the file content", {
 						nay: replaced._nay,
@@ -731,6 +750,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				});
 
 				if (result._nay) {
+					if (result._nay.name === "read_only" || result._nay.message === "Permission denied") {
+						retainUnsavedText(
+							modelRef.current?.getValue() ?? localMarkdown,
+							result._nay.name === "read_only" ? "read_only" : "permission",
+						);
+					}
 					toast.error(result._nay.message ?? "Failed to save");
 					return;
 				}
@@ -937,28 +962,25 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	}, [editable, mountedEditor, target.kind, isSaving]);
 
 	/**
-	 * Warn before this editor goes away with text that was never saved.
+	 * Keep a copy before this editor closes or loses write access.
 	 *
-	 * This warning covers files with collaboration off. Read the model because the debounced dirty
+	 * Read the model because the debounced dirty
 	 * state is up to 250 ms behind and would miss the last words typed.
 	 */
 	const warnIfUnsavedTextIsDropped = useFn(() => {
-		if (initialData.kind === "collaborative") {
-			return;
-		}
-
 		const currentMarkdown = modelRef.current?.getValue();
 		if (currentMarkdown === undefined || currentMarkdown === baselineMarkdownRef.current) {
 			return;
 		}
 
-		file_editor_warn_unsaved_text_dropped(currentMarkdown);
+		retainUnsavedText(currentMarkdown, props.editBlockReason ?? "closed");
 	});
 
-	// Run only on unmount, and before the cleanup below drops the model reference. The cleanup
-	// reads a stable callback, so no other change may re-run it: a rerun would warn about text
-	// that is still on screen.
+	// Capture on unmount before the model is disposed, and when write access is lost.
 	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
+	useEffect(() => {
+		if (!editable) warnIfUnsavedTextIsDropped();
+	}, [editable, warnIfUnsavedTextIsDropped]);
 
 	useEffect(() => {
 		return () => {
@@ -1021,6 +1043,7 @@ export type FileEditorPlainText_Props = {
 	isActive?: boolean;
 	target: files_PendingTarget;
 	editable: boolean;
+	editBlockReason?: "read_only" | "permission" | null;
 	/**
 	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
 	 */
@@ -1156,6 +1179,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 			}
 			target={target}
 			editable={editable}
+			editBlockReason={props.editBlockReason}
 			rootKind={fileContentData.rootKind}
 			monacoLanguageId={monacoLanguageId}
 			initialData={fileContentData}

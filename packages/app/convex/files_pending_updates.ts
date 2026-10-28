@@ -5106,10 +5106,9 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			workspaceId: args.workspaceId,
 			writeContext: {
 				subject: { kind: "user", userId: args.userId, plugin: null },
-				writer: { kind: "user", userId: args.userId },
 				actorUserId: args.userId,
 				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
+				force: false,
 			},
 			node,
 		});
@@ -9239,7 +9238,9 @@ async function action_save_private_file_pending_update(args: {
 	billedUserId: Id<"users">;
 	selectedContentStateId: Id<"files_pending_update_yjs_states"> | null;
 	reviewedPrivateParentIds: Id<"files_pending_nodes">[];
-	data: NonNullable<files_pending_target_get_file_pending_target_Result> & { entry: Extract<files_VisibleEntry, { kind: "private" }> };
+	data: NonNullable<files_pending_target_get_file_pending_target_Result> & {
+		entry: Extract<files_VisibleEntry, { kind: "private" }>;
+	};
 }): Promise<files_pending_updates_PrepareContentResult> {
 	const { ctx, data } = args;
 

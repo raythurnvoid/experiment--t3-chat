@@ -175,9 +175,9 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/read-bytes": ReturnType<typeof public_api_http_routes>["/api/v1/files/read-bytes"];
 
-	"/api/v1/files/write-policy/get": ReturnType<typeof public_api_http_routes>["/api/v1/files/write-policy/get"];
+	"/api/v1/files/read-only/get": ReturnType<typeof public_api_http_routes>["/api/v1/files/read-only/get"];
 
-	"/api/v1/files/write-policy/set": ReturnType<typeof public_api_http_routes>["/api/v1/files/write-policy/set"];
+	"/api/v1/files/read-only/set": ReturnType<typeof public_api_http_routes>["/api/v1/files/read-only/set"];
 
 	"/api/v1/files/public/set": ReturnType<typeof public_api_http_routes>["/api/v1/files/public/set"];
 

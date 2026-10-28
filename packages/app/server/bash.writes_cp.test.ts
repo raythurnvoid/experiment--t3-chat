@@ -91,7 +91,8 @@ describe("bash_run_command", () => {
 					(node.path === "/docs" || node.path.startsWith("/docs/"))
 				) {
 					await ctx.db.patch("files_nodes", node._id, {
-						writePolicy: node._id === docsId ? { mode: "read_only" } : null,
+						readOnly: node._id === docsId,
+						readOnlyDecisionId: node._id === docsId ? crypto.randomUUID() : null,
 					});
 				}
 			}
@@ -131,7 +132,7 @@ describe("bash_run_command", () => {
 			id: await get_seeded_node_id(runner, "/reports"),
 		});
 		expect(await get_seeded_node(runner, "/docs/readme.md")).toMatchObject({
-			writePolicy: null,
+			readOnly: false,
 		});
 
 		const activePaths = await runner.t.run(async (ctx) =>
@@ -180,7 +181,7 @@ describe("bash_run_command", () => {
 		expect(pendingRows).toHaveLength(3);
 		const savedCopyId = await save_private_copy_for_test(runner, "/reports/copied-out.md");
 		expect(await runner.t.run((ctx) => ctx.db.get("files_nodes", savedCopyId))).toMatchObject({
-			writePolicy: null,
+			readOnly: false,
 		});
 	});
 
@@ -822,7 +823,12 @@ describe("bash_run_command", () => {
 		const savedOverId = await get_seeded_node_id(runner, "/data/settings.yaml");
 
 		// Lock: the copy is refused before anything is staged.
-		await runner.t.run((ctx) => ctx.db.patch("files_nodes", lockedId, { writePolicy: { mode: "read_only" } }));
+		await runner.t.run((ctx) =>
+			ctx.db.patch("files_nodes", lockedId, {
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
+			}),
+		);
 		const locked = await runner.run({
 			command: `cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/locked.yaml`,
 		});

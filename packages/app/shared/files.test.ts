@@ -328,9 +328,9 @@ describe("files_get_read_only_row_labels", () => {
 			files_get_read_only_row_labels({
 				canWrite: false,
 				writeBlockedReason: "read_only",
-				writePolicyState: "read_only",
+				readOnly: true,
 			}),
-		).toEqual({ description: "Read-only", tooltip: "This item is read-only." });
+		).toEqual({ description: "Read-only", tooltip: "This item is Read-only." });
 	});
 
 	test("an ACL refusal explains the missing permission", () => {
@@ -338,19 +338,9 @@ describe("files_get_read_only_row_labels", () => {
 			files_get_read_only_row_labels({
 				canWrite: false,
 				writeBlockedReason: "permission",
-				writePolicyState: "none",
+				readOnly: false,
 			}),
-		).toEqual({ description: "read-only", tooltip: "You don't have permission to edit this item" });
-	});
-
-	test("a selected-writer rule shows even when this user can edit", () => {
-		expect(
-			files_get_read_only_row_labels({
-				canWrite: true,
-				writeBlockedReason: null,
-				writePolicyState: "writer",
-			}),
-		).toEqual({ description: "Protected: selected writer", tooltip: "Only the selected writer can edit" });
+		).toEqual({ description: "View only", tooltip: "You need Can edit permission to change this item." });
 	});
 
 	test("a writable folder that only holds protected children has no lock", () => {
@@ -358,7 +348,7 @@ describe("files_get_read_only_row_labels", () => {
 			files_get_read_only_row_labels({
 				canWrite: true,
 				writeBlockedReason: null,
-				writePolicyState: "none",
+				readOnly: false,
 			}),
 		).toBe(null);
 	});
@@ -368,7 +358,7 @@ describe("files_get_read_only_row_labels", () => {
 			files_get_read_only_row_labels({
 				canWrite: true,
 				writeBlockedReason: null,
-				writePolicyState: "none",
+				readOnly: false,
 			}),
 		).toBe(null);
 	});
@@ -2411,7 +2401,7 @@ describe("hidden HTML tags round-trip through Yjs", () => {
 
 	test("keeps inline tags and comments that the editor cannot show", () => {
 		const input =
-			"# Draft <name>\n\nReplace <Owner> with Array<T>, call <Foo /> and close </div>. a <!-- note --> b\n\n- [ ] ask <who>\n\n| a | b |\n| --- | --- |\n| <x y=\"1\"> | c |\n";
+			'# Draft <name>\n\nReplace <Owner> with Array<T>, call <Foo /> and close </div>. a <!-- note --> b\n\n- [ ] ask <who>\n\n| a | b |\n| --- | --- |\n| <x y="1"> | c |\n';
 		expect(round_trip_markdown(input)).toBe(input);
 	});
 

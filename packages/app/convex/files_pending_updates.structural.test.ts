@@ -11,6 +11,7 @@ import {
 	test_move_nodes,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
@@ -214,7 +215,7 @@ describe("upsert_file_pending_move_in_db", () => {
 		expect(renamedToJson._nay).toBeUndefined();
 
 		// A stored file follows the same rule: the name is free, the type stays.
-		const uploadNodeId = await t.run(async (ctx) =>
+		const uploadNodeId = await test_run_with_flush(t, async (ctx) =>
 			ctx.db.insert("files_nodes", {
 				pendingContentVersion: 1,
 				organizationId: markdownSeeded.organizationId,
@@ -246,10 +247,10 @@ describe("upsert_file_pending_move_in_db", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
+				readOnlyDecisionId: null,
 			}),
 		);
 		const relabeled = await upsert_file_pending_move_for_test({
@@ -1129,10 +1130,17 @@ describe("apply_file_pending_move", () => {
 			expect(node?.path).toBe("/apply-dest/renamed.md");
 			expect(node?.treePath).toBe("/apply-dest/renamed.md");
 
-			const plainTextChunk = await ctx.db.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", q => q.eq("organizationId", seeded.organizationId)
-					.eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId)
-					.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)).unique();
+			const plainTextChunk = await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				)
+				.unique();
 			expect(plainTextChunk?._id, "a pure file Move keeps its original plain chunk").toBe(plainTextChunkId);
 			expect(plainTextChunk).not.toHaveProperty("moveView");
 			expect(plainTextChunk?.textChunk).toBe(seeded.baseMarkdown);
@@ -1140,10 +1148,18 @@ describe("apply_file_pending_move", () => {
 			expect(plainTextChunk?.path).toBe("/apply-dest/renamed.md");
 
 			expect(await ctx.db.get("files_metadata_docs", metadataDocId)).toBeNull();
-			const metadataDoc = await ctx.db.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", q => q.eq("organizationId", seeded.organizationId)
-					.eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId)
-					.eq("moveView.cohortId", undefined).eq("moveView.view", undefined).eq("fieldPath", "meta.topic")).first();
+			const metadataDoc = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined)
+						.eq("fieldPath", "meta.topic"),
+				)
+				.first();
 			expect(metadataDoc?.path).toBe("/apply-dest/renamed.md");
 			expect(metadataDoc?.treePath).toBe("/apply-dest/renamed.md");
 
@@ -1280,10 +1296,17 @@ describe("apply_file_pending_move", () => {
 			const child = await ctx.db.get("files_nodes", seeded.nodeId);
 			expect(child?.path).toBe("/apply-folder-dest/apply-folder/child.md");
 
-			const childChunk = await ctx.db.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", q => q.eq("organizationId", seeded.organizationId)
-					.eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId)
-					.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)).unique();
+			const childChunk = await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("fileNodeId", seeded.nodeId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined),
+				)
+				.unique();
 			expect(childChunk?._id, "a pure folder Move keeps its child's original plain chunk").toBe(
 				childChunkIds.plainTextChunkId,
 			);
@@ -3948,7 +3971,7 @@ describe("pending delete accept", () => {
 		});
 	});
 
-	test("a true archived descendant still blocks a pending folder archive at accept time", async () => {
+	test("a Read-only descendant already in Trash does not block saving a folder delete", async () => {
 		const t = test_convex();
 		const membership = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const tree = await t.run(async (ctx) => {
@@ -3994,8 +4017,9 @@ describe("pending delete accept", () => {
 			throw new Error(archived._nay.message);
 		}
 		await set_pending_test_read_only({ asUser, membershipId: membership.membershipId, nodeId: tree.childId });
+		const childBefore = await t.run((ctx) => ctx.db.get("files_nodes", tree.childId));
 
-		const refused = await test_apply_file_pending_move(asUser, {
+		const saved = await test_apply_file_pending_move(asUser, {
 			membershipId: membership.membershipId,
 			target: { kind: "saved", id: tree.rootId },
 			...(await reviewed_pending_for_test(t, {
@@ -4003,8 +4027,13 @@ describe("pending delete accept", () => {
 				target: { kind: "saved", id: tree.rootId },
 			})),
 		});
-		expect(refused._nay?.name).toBe("read_only");
-		expect((await t.run((ctx) => ctx.db.get("files_nodes", tree.rootId)))?.archiveOperationId).toBeNull();
+		expect(saved._nay).toBeUndefined();
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", tree.rootId)))?.archiveOperationId).not.toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", tree.childId))).toMatchObject({
+			archiveOperationId: childBefore?.archiveOperationId,
+			readOnly: true,
+			readOnlyDecisionId: childBefore?.readOnlyDecisionId,
+		});
 		expect(
 			await t.run((ctx) =>
 				read_pending_update_row({
@@ -4015,9 +4044,8 @@ describe("pending delete accept", () => {
 					nodeId: tree.rootId,
 				}),
 			),
-		).not.toBeNull();
+		).toBeNull();
 	});
-
 });
 
 describe("pending delete discard, save, expiry, and overlay reads", () => {
@@ -6319,7 +6347,7 @@ describe("pending path overlay reads", () => {
 
 		// Another user commits a rename of the source node and a newcomer file takes the old
 		// path. The newcomer is untouched by the overlay, so it stays visible to the proposer.
-		const newcomerNodeId = await t.run(async (ctx) => {
+		const newcomerNodeId = await test_run_with_flush(t, async (ctx) => {
 			await ctx.db.patch("files_nodes", seeded.nodeId, {
 				path: "/overlay-moved-away.md",
 				treePath: "/overlay-moved-away.md",
@@ -6356,10 +6384,10 @@ describe("pending path overlay reads", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
+				readOnlyDecisionId: null,
 			});
 		});
 		const newcomer = await t.query(internal.files_nodes.get_by_path, {
@@ -8931,9 +8959,10 @@ describe("pending update read-only checks", () => {
 			})),
 		});
 		expect(refusedOccupant._nay?.name).toBe("read_only");
-		expect((await t.run(ctx => ctx.db.get("files_nodes", seeded.sourceFolderId)))?.path)
-			.toBe("/pending-read-only-move-src-folder");
-		expect((await t.run(ctx => ctx.db.get("files_nodes", seeded.occupantFolderId)))?.archiveOperationId).toBeNull();
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.sourceFolderId)))?.path).toBe(
+			"/pending-read-only-move-src-folder",
+		);
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.occupantFolderId)))?.archiveOperationId).toBeNull();
 		expect(
 			await t.run((ctx) =>
 				read_pending_update_row({

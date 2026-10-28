@@ -439,7 +439,6 @@ describe("Move write reservations", () => {
 			createdBy: f.db.userId,
 			updatedBy: f.db.userId,
 			moveCohortId: f.cohortId,
-			newChildWritePolicy: null,
 		};
 		const allocate = (value = node) =>
 			f.t.run(async (ctx) => {
@@ -541,9 +540,9 @@ describe("Move write reservations", () => {
 					slot: { ...f.db, parentId: f.parentId, name: "new.txt" },
 				}),
 			).toMatchObject({ _nay: { name: "move_busy" } });
-			await guarded.db.patch("files_nodes", f.nodeId, { writePolicy: { mode: "read_only" } });
+			await guarded.db.patch("files_nodes", f.nodeId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() });
 		});
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.writePolicy).toEqual({ mode: "read_only" });
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.readOnly).toBe(true);
 		await expect(
 			f.t.run(async (ctx) => {
 				const guarded = { ...ctx, ...files_move_reservations_db_wrap(ctx) };
@@ -580,28 +579,36 @@ describe("Move write reservations", () => {
 			update: new ArrayBuffer(1),
 		};
 		await with_restore("stage", async (ctx) => {
-			expect(await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: f.nodeId } })).toMatchObject({
-				_nay: { name: "move_busy" },
-			});
+			expect(await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: f.nodeId } })).toMatchObject(
+				{
+					_nay: { name: "move_busy" },
+				},
+			);
 			const id = await ctx.db.insert("files_yjs_trusted_update_stages", stage);
 			await ctx.db.patch("files_yjs_trusted_update_stages", id, { update: new ArrayBuffer(2) });
 			await ctx.db.delete("files_yjs_trusted_update_stages", id);
 		});
 		await with_restore("publish", async (ctx) => {
-			expect(await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: f.nodeId } })).toEqual({ _yay: null });
+			expect(await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: f.nodeId } })).toEqual({
+				_yay: null,
+			});
 			await ctx.db.patch("files_nodes", f.nodeId, { contentByteSize: 10 });
 		});
 		const blocked: Array<(ctx: MutationCtx) => Promise<unknown>> = [
 			(ctx) => ctx.db.patch("files_nodes", f.nodeId, { name: "wrong.txt" }),
-			(ctx) => ctx.db.patch("files_nodes", f.nodeId, { writePolicy: { mode: "read_only" } }),
+			(ctx) => ctx.db.patch("files_nodes", f.nodeId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
 			(ctx) => ctx.db.delete("files_nodes", f.nodeId),
 			(ctx) => ctx.db.patch("files_nodes", f.parentId, { contentByteSize: 10 }),
 			(ctx) => ctx.db.patch("files_pending_updates", f.proposal._id, { updatedAt: Date.now() + 1 }),
 			(ctx) => ctx.db.insert("files_yjs_trusted_update_stages", { ...stage, kind: "pending_accept" }),
 		];
 		for (const write of blocked)
-			await expect(with_restore("publish", write), "Restore does not grant another held write").rejects.toThrow("This item is being moved");
-		await expect(with_restore("stage", (ctx) => ctx.db.patch("files_nodes", f.nodeId, { contentByteSize: 11 }))).rejects.toThrow("This item is being moved");
+			await expect(with_restore("publish", write), "Restore does not grant another held write").rejects.toThrow(
+				"This item is being moved",
+			);
+		await expect(
+			with_restore("stage", (ctx) => ctx.db.patch("files_nodes", f.nodeId, { contentByteSize: 11 })),
+		).rejects.toThrow("This item is being moved");
 	});
 
 	test("a public protection change stays live and invalidates old proof during a Move", async () => {
@@ -615,16 +622,16 @@ describe("Move write reservations", () => {
 				.unique(),
 		);
 		expect(
-			await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asUser.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.writePolicy,
+			(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.readOnly,
 			"the current public policy change commits while placement is reserved",
-		).toEqual({ mode: "read_only" });
+		).toBe(true);
 		const after = await f.t.run((ctx) =>
 			ctx.db
 				.query("files_media_validation_versions")

@@ -3341,6 +3341,7 @@ describe("ai_chat_files_db_delete_job_batch", () => {
 				sourceScope: scope,
 				destinationScope: scope,
 				requestId: "jobs-run",
+				force: false,
 				reserveCursor: null,
 				requestHash: "hash",
 				kind: "copy",

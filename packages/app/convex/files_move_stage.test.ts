@@ -418,30 +418,59 @@ describe("Move content stage route", () => {
 				expect(await s.f.t.run((ctx) => ctx.db.get("organizations_workspaces_users", s.f.db.membershipId))).toBeNull();
 				// The next normal organization write needs its five-second wait.
 				vi.setSystemTime(Date.now() + 5_000);
-				expect(await member.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
-					organizationId: s.f.db.organizationId,
-					workspaceId: s.f.db.workspaceId,
-					userIdToAdd: s.f.db.userId,
-				})).toEqual({ _yay: null });
-				const lifetime = await s.f.t.run((ctx) => ctx.db.query("organizations_membership_lifetimes")
-					.withIndex("by_workspace_user", (q) => q.eq("workspaceId", s.f.db.workspaceId).eq("userId", s.f.db.userId)).unique());
+				expect(
+					await member.asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+						organizationId: s.f.db.organizationId,
+						workspaceId: s.f.db.workspaceId,
+						userIdToAdd: s.f.db.userId,
+					}),
+				).toEqual({ _yay: null });
+				const lifetime = await s.f.t.run((ctx) =>
+					ctx.db
+						.query("organizations_membership_lifetimes")
+						.withIndex("by_workspace_user", (q) => q.eq("workspaceId", s.f.db.workspaceId).eq("userId", s.f.db.userId))
+						.unique(),
+				);
 				expect(lifetime).toMatchObject({ active: true });
 				expect(lifetime?.lifetime).toBeGreaterThan((await stage_state(s)).cohort!.membershipLifetime);
 				if (!lifetime?.membershipId) throw new Error("Expected the new membership");
-				expect(await s.f.asUser.query(api.access_control.get_current_user_workspace_permission, {
-					membershipId: lifetime.membershipId,
-					permission: "content.write",
-				})).toBe(true);
+				expect(
+					await s.f.asUser.query(api.access_control.get_current_user_workspace_permission, {
+						membershipId: lifetime.membershipId,
+						permission: "content.write",
+					}),
+				).toBe(true);
 			} else if (change === "scope") {
-				expect(await member.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: member.owner.membershipId, nodeId: s.targetId })).toEqual({ _yay: null });
-				expect((await s.f.t.run((ctx) => ctx.db.get("files_nodes", s.targetId)))?.restrictedScopeNodeId).toBe(s.targetId);
-				expect(await s.f.asUser.query(api.files_tree.get_file_node_for_membership, { membershipId: s.f.db.membershipId, fileNodeId: s.targetId })).toBeNull();
+				expect(
+					await member.asOwner.mutation(api.files_sharing.restrict_node, {
+						membershipId: member.owner.membershipId,
+						nodeId: s.targetId,
+					}),
+				).toEqual({ _yay: null });
+				expect((await s.f.t.run((ctx) => ctx.db.get("files_nodes", s.targetId)))?.restrictedScopeNodeId).toBe(
+					s.targetId,
+				);
+				expect(
+					await s.f.asUser.query(api.files_tree.get_file_node_for_membership, {
+						membershipId: s.f.db.membershipId,
+						fileNodeId: s.targetId,
+					}),
+				).toBeNull();
 			} else {
-				expect(await member.asOwner.mutation(api.files_nodes.set_node_write_policy, { membershipId: member.owner.membershipId, nodeId: s.targetId, writePolicy: { mode: "read_only" } })).toEqual({ _yay: null });
-				expect((await s.f.t.run((ctx) => ctx.db.get("files_nodes", s.targetId)))?.writePolicy).toEqual({ mode: "read_only" });
+				expect(
+					await member.asOwner.mutation(api.files_nodes.read_only_set, {
+						membershipId: member.owner.membershipId,
+						nodeId: s.targetId,
+						readOnly: true,
+					}),
+				).toEqual({ _yay: null });
+				expect((await s.f.t.run((ctx) => ctx.db.get("files_nodes", s.targetId)))?.readOnly).toBe(true);
 			}
 			const before = await stage_state(s);
-			expect(await s.f.t.mutation(internal.files_move_content.advance_stage, s.args), "content stage checks current authority in its own transaction").toBeNull();
+			expect(
+				await s.f.t.mutation(internal.files_move_content.advance_stage, s.args),
+				"content stage checks current authority in its own transaction",
+			).toBeNull();
 			const after = await stage_state(s);
 			expect(after.content, "no stage page is added after access changes").toEqual(before.content);
 			expect(after.chunks).toEqual(before.chunks);

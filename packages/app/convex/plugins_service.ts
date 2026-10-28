@@ -41,10 +41,8 @@ import { public_api_PLUGIN_SERVICE_TOKEN_REGEX, public_api_PLUGIN_UI_TOKEN_REGEX
  * warns about. Asking for every gating capability up front means a half-consented install fails
  * at the exchange instead of halfway through the service's work.
  *
- * `workspace.files.create-read-only` is deliberately NOT required here. `create-target` still
- * checks it on every call, and nothing real is lost: a workspace accepts a version's whole
- * capability list or none of it, so a service that got a grant already accepted that capability
- * too when its plugin declares it.
+	 * Read-only changes and force check `workspace.files.manage-read-only` at each final write.
+	 * The exchange itself grants no authority to bypass a file's flag.
  */
 const SCOPE_GATING_CAPABILITY = {
 	"plugin_data:read": "plugin.data.read",

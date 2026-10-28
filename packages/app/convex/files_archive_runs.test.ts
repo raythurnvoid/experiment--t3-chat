@@ -13,7 +13,8 @@ import {
 	restore,
 	folder,
 	read_node,
-	lock_writer,
+	archive_with_check,
+	with_scope_repair,
 	add_member,
 	read_activity,
 } from "./files_archive_runs.setup.test.ts";
@@ -117,9 +118,7 @@ describe("archive_nodes", () => {
 	test("a folder the indexes cannot clear stays in the tree until the check passes", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "slow", folderCount: 6, filesPerFolder: 20 });
-		await lock_writer({ f, nodeId: tree.fileIds.at(-1)!, userId: f.db.userId });
-
-		const archived = await archive(f, [tree.topId]);
+		const archived = await archive_with_check(f, [tree.topId]);
 		const job = archived._yay!;
 		// The check of 127 nodes does not fit in the 100 reads of the request, so nothing is stamped yet.
 		expect(job.waitingNodeIds).toEqual([tree.topId]);
@@ -134,11 +133,9 @@ describe("archive_nodes", () => {
 	test("a folder created inside during the check is archived with the rest", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "grow", folderCount: 6, filesPerFolder: 20 });
-		await lock_writer({ f, nodeId: tree.fileIds.at(-1)!, userId: f.db.userId });
-
-		const archived = await archive(f, [tree.topId]);
+		const archived = await archive_with_check(f, [tree.topId]);
 		const job = archived._yay!;
-		// The writer list makes the job check first, so `d0` is still active here.
+		// The running repair made the job check first, so `d0` is still active here.
 		expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).toBeNull();
 		const created = await folder(f, "/grow/d0/new");
 
@@ -191,14 +188,15 @@ describe("archive_nodes", () => {
 		});
 		const job = archived._yay!;
 
-		// A later job still in its check. The writer list makes it check first.
+		// A later job still in its check.
 		const later = await seed_tree(f, { name: "later", folderCount: 1, filesPerFolder: 150 });
-		await lock_writer({ f, nodeId: later.fileIds[0]!, userId: member.userId });
 		const laterJob = (
-			await member.asUser.mutation(api.files_nodes.archive_nodes, {
-				membershipId: member.membershipId,
-				nodeIds: [later.topId],
-			})
+			await with_scope_repair(f, () =>
+				member.asUser.mutation(api.files_nodes.archive_nodes, {
+					membershipId: member.membershipId,
+					nodeIds: [later.topId],
+				}),
+			)
 		)._yay!;
 		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", laterJob.runId)))?.phase).toBe("check");
 

@@ -232,10 +232,10 @@ async function organizations_test_seed_workspace_scoped_rows(
 		restrictedScopeNodeId: null,
 		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
-		writePolicy: null,
+		readOnly: false,
+		readOnlyDecisionId: null,
 
 		archiveOperationId: null,
-		newChildWritePolicy: null,
 	});
 	const assetId = await ctx.db.insert("files_r2_assets", {
 		organizationId: args.organizationId,
@@ -4592,10 +4592,10 @@ describe("access_control", () => {
 					restrictedScopeNodeId: null,
 					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
-					writePolicy: null,
+					readOnly: false,
+					readOnlyDecisionId: null,
 
 					archiveOperationId: null,
-					newChildWritePolicy: null,
 				}),
 				ctx.db.insert("files_nodes", {
 					organizationId: organization.organizationId,
@@ -4628,10 +4628,10 @@ describe("access_control", () => {
 					restrictedScopeNodeId: null,
 					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
-					writePolicy: null,
+					readOnly: false,
+					readOnlyDecisionId: null,
 
 					archiveOperationId: null,
-					newChildWritePolicy: null,
 				}),
 			]);
 

@@ -405,7 +405,8 @@ describe("data_import.create_upload_targets", () => {
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", occupantNodeId, {
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
 			});
 		});
 
@@ -439,7 +440,8 @@ describe("data_import.create_upload_targets", () => {
 		// Unlocking allows the same import to replace the old file.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", occupantNodeId, {
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 			});
 		});
 		const retried = await t.mutation(internal.data_import.create_upload_targets, {
@@ -471,7 +473,8 @@ describe("data_import.create_upload_targets", () => {
 				throw new Error(folder._nay.message);
 			}
 			await ctx.db.patch("files_nodes", folder._yay, {
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
 			});
 		});
 
@@ -705,10 +708,10 @@ describe("data_import.create_upload_targets", () => {
 		}
 
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
 			membershipId: db.membershipId,
 			nodeId: created._yay[0]!.nodeId,
-			writePolicy: { mode: "read_only" },
+			readOnly: true,
 		});
 		expect(locked._nay).toBeUndefined();
 
@@ -718,7 +721,7 @@ describe("data_import.create_upload_targets", () => {
 			node: await ctx.db.get("files_nodes", created._yay[0]!.nodeId),
 			asset: await ctx.db.get("files_r2_assets", created._yay[0]!.assetId),
 		}));
-		expect(docs.node?.writePolicy).toEqual({ mode: "read_only" });
+		expect(docs.node?.readOnly).toBe(true);
 		expect(docs.asset?.r2Key).toBeUndefined();
 		expect(docs.asset?.unfinalizedExpiresAt).toEqual(expect.any(Number));
 	});

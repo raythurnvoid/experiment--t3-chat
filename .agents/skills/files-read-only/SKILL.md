@@ -1,66 +1,43 @@
 ---
 name: files-read-only
-description: Spec for local file write policies, folder new-item defaults, selected human and service-account writers, policy management, accepted-upload completion, exact-key R2 deletion jobs, and the stable read_only conflict. Use when changing file write checks, creation, moves, pending work, snapshot writes, public file doors, or the Files policy controls.
+description: Spec for the local Read-only flag, machine force grants, Copy and Restore receipts, bulk changes, editor recovery, accepted uploads, and exact-key R2 cleanup. Use when changing file write checks, creation, moves, pending work, public file doors, or Files controls.
 ---
 
 # Mental Model
 
-File access and write policy are separate checks. Access control decides whether the current actor
-and any bound service account have the requested permission. A write policy then limits which writer
-may change the node. Selecting a writer grants no file access.
+Read-only stops normal changes. It is separate from sharing. A person with Can edit can set or
+clear it. Can manage still controls sharing. Owners and admins do not bypass Read-only.
 
-A writer rule lists one or more writers. Each writer is a human user or a service account, and any
-listed writer may edit. Ordinary app, agent, and Bash operations use
-the human. A service-bound key or plugin backend writes as its bound account. A bound key's access is
-the account's own; a plugin's access is its human's inside the sandbox roots. Plugin names, labels, run IDs, and upload targets do not identify a
-writer. They remain separate integration constraints.
+Each file and folder has one local flag. A folder's flag guards the folder and its direct child
+list. It does not guard content deeper inside. Rename and Move check the named item, its source
+parent, and its destination. They carry descendants without changing their flags.
 
-Each file and folder has its own `writePolicy`. A parent rule never blocks a child by itself.
-A folder also has `newChildWritePolicy`. That default is copied once onto a brand-new child.
-Later default changes do not touch existing children. Owners and admins do not bypass policy.
-Management permission lets them change the policy through the common setter. Named tenant,
-workspace, and account deletion flows remove their whole scope and remain lifecycle exceptions.
+Normal app, agent, and Bash writes never force. A machine request may pass explicit `force: true`
+only with its current Manage Read-only grant. Force skips the flag check only. It never grants
+access, clears a flag, changes a destination seal, or removes a content-version check.
 
-Rename and move check the named item and its immediate parent. Delete, archive, and replace still
-check every removed or replaced item. A writable folder can be renamed or moved while it holds
-protected children. Readable files may still be copied out. Copy and Duplicate keep the source
-`writePolicy` and a folder's `newChildWritePolicy`. The synthetic root has no local policy.
-
-A read-only folder blocks rename and move-out of all its direct children, restricted children
-included, even ones the person who locked it cannot see. This matches write access on a Linux or
-macOS folder. This also covers a move to the workspace root. Anyone who manages the folder can
-unlock it.
-
-Human clipboard Cut needs write access on the source entry and on the destination folder. The
-source's parent folder must not be protected, but its sharing is not checked.
-See [Files transfer runs](../files-explorer-tree/references/transfer.md#conflicts-and-concurrent-changes).
+There are no selected writers or new-item defaults. Ordinary new items start writable.
+Copy preserves Read-only on new copies. Restore preserves it on the same item. These operations
+need their normal authority; preserving a flag does not require permission to set arbitrary flags.
+The synthetic workspace root has no flag.
 
 # Data Model
 
-`files_nodes` stores these fields beside `restrictedScopeNodeId`:
+`files_nodes` stores `readOnly: boolean` and the internal `readOnlyDecisionId: string | null`.
 
-- `writePolicy`: `null` means the item is writable (subject to ACL);
-  `{ mode: "read_only" }` blocks content writes;
-  `{ mode: "writer", writers }` lists the humans and service accounts that may edit. Every write
-  door keeps at least one entry with no duplicates, and refuses anything else with
-  `files_WRITE_POLICY_INVALID_WRITERS_MESSAGE` (`shared/files.ts`). There is no max count: every
-  writer must be an active member or account, so the workspace size limits the list.
-- `newChildWritePolicy`: same union. Folders copy this onto a brand-new child once. Files store
-  `null`.
+- False means null ID. Setting false to true mints one server UUID.
+- True to true keeps its ID. Clearing and setting again makes a new ID.
+- Move, Rename, Restore, and forced writes preserve both fields.
+- An independent copy gets a fresh ID when it is Read-only.
+- Flag changes do not change the item's modified time.
+- Public node views expose the boolean and write access, never the decision ID.
 
-Transfer items store the policy value the run wrote on a produced node, and compare values:
-a child may be created inside it while the node's current policy still equals that value,
-even when it is a lock. A different current value refuses the child; a value restored to
-what the run wrote allows it again. Pending proposals keep no receipt: Save and Accept check
-the live lock. Uploads keep no receipt: an accepted upload always finishes.
+The ID identifies one decision to make an item Read-only. It is not permission. Copy and Restore
+receipts use it with their existing target, generation, path, and run proofs. A matching receipt
+does not replace current ACL, credential, scope, content, or placement checks.
 
-Each writer entry is `{ kind: "user", userId }` or `{ kind: "service_account", serviceAccountId }`.
-Transfer and pending receipts compare whole policy values, so the list order counts there.
-Moving or restoring a node keeps that node's own policy. Policy writes do not change `updatedAt`
-or `updatedBy`.
-
-Credential, ACL, scope, and content staleness checks still apply. Editable `plugin-name` metadata
-changes neither policies nor grants.
+Flag fields stay outside Move placement snapshots. Publishing a prepared Move must not restore
+an old flag over a later change.
 
 ## Upload fields
 
@@ -106,387 +83,176 @@ delete flow does not prove that the file was deleted.
 
 # Operation Matrix
 
-The table describes a node whose policy refuses the current writer. ACL still applies in every row.
+ACL applies in every row. A machine force request still needs current access and its extra grant.
 
-| Operation | Result |
+| Operation | Read-only behavior |
 | --- | --- |
-| Open, read, search, download, copy path/link/ID | Allow |
-| Copy readable content or subtree out | Allow; destination policy applies |
-| Edit/save content, metadata, Yjs marks, or collaboration mode | Refuse |
-| Create children, upload, import, or paste media | Refuse if the destination folder itself is protected |
-| Rename or move | Refuse if the named item or its immediate parent is protected |
-| Replace, archive, restore, or delete | Refuse if any removed or replaced item is protected; restore also refuses when the old or the landing folder is protected. An archive of several items refuses only each named item that is protected or holds a protected item, and archives the others |
-| Browse or download snapshots | Allow |
-| Restore, archive, or unarchive snapshots | Refuse |
-| Share or change policy | Require management permission separately |
-| General comment, reply, resolve, or reopen | Allow with file `content.write`; these do not change the file |
-| Create an anchored comment | Refuse; this changes a Yjs mark |
-| Discard a whole pending proposal | Allow; retire owned private work and keep saved nodes |
-| Accept, save, or rebase pending work | Refuse |
-| Finish an already accepted upload | Allow; a later lock stops new writes, not this one |
-| Finish committed Yjs materialization | Allow |
-| Delete a tenant, workspace, or account | Use the named deletion workflow |
+| Read, search, download, copy path/link/ID | Allow |
+| Copy readable content out | Allow; check the destination and replacement occupant |
+| Edit content, metadata, Yjs marks, or collaboration mode | Refuse normal writes |
+| Create, upload, import, or paste media | Check the direct destination folder |
+| Rename or Move | Check the item and direct source/destination parents; carry descendants |
+| Ordinary Archive or reviewed Delete | Check active items and their directly changed parent lists; older Trash does not block |
+| Forced Archive | Archive allowed children first; keep denied children and their ancestors |
+| Restore | Preserve the item's own flag; check the live parent and any replacement occupant |
+| Restore, archive, or unarchive snapshots | Check the file's current flag |
+| Set or clear Read-only | Require Can edit; the flag itself does not block the setter |
+| Share | Require Can manage separately |
+| General comment, reply, resolve, reopen | Require content.write; do not change file content |
+| Add a comment anchor | Check Read-only because this adds a Yjs mark |
+| Discard a whole pending proposal | Allow owner cleanup; keep saved nodes |
+| Finish an accepted upload or committed Yjs materialization | Finish the already accepted work |
+| Delete a tenant, workspace, or account | Use the named lifecycle workflow |
 
-File comments use the same channel doors and composer as Messages. New anchors require a writable
-file and a saved mark. General posts, replies, resolve, and reopen check file access without changing
-content. Resolve hides the mark through plugin metadata. The Yjs gate checks any new mark again.
+# Read-only Management
 
-# Policy Management
+`files_nodes.read_only_get` returns the safe flag and underlying `canEdit`.
+`files_nodes.read_only_set` and `files_nodes_db_set_read_only` use
+`content.write` on the target. They check membership, resource scope, Move holds, and current
+authority before changing the flag. A parent flag does not block changing a child's own flag.
 
-`files_nodes.ts` owns `set_node_write_policy`, `get_node_write_policy_management_state`, and the shared
-internal management helpers. HTTP and plugin adapters use the same helpers after their own live
-identity, token, capability, and resource checks.
+Machine setters and arbitrary create-time flags also need the new grant:
+`files:read-only` for API keys, or `workspace.files.manage-read-only` for plugins.
+The former protection grant is not an alias. Old consent does not grant the new capability.
 
-The shared local policy checks live in `server/files-write-policy.ts`. File writers and saved tree
-reads import the same checks. The tree can read current write access without loading editor code.
+Registered writer setup remains an access operation. Its first private setup can grant its exact
+account Can manage after the existing parent grant ceiling and service-account checks. Repeating
+ensure does not restore removed grants or overwrite manual sharing. Read-only creates no grant.
 
-Folder management (`files_nodes_db_require_write_policy_management`) checks only the target. It
-reads no children, so Properties and policy saves cost the same on a folder like `/people` (about
-9,700 children) as on an empty one. A folder's rule never changes a child's own rule. It only limits
-rename and move-out of its direct children (see above). Each restricted child keeps its own
-`content.permissions.manage` for its own rule.
+## Change contents
 
-The setter requires `content.permissions.manage` on the actual target for the request's subject
-(a person, a plugin inside its sandbox roots, or an account). Apply to contents runs from Save only
-when the person checks it and confirms (see UI Capability Model). Every listed user must be an
-active workspace member, and every listed account must be active in the same workspace, or the
-save refuses with
-"Writer is not available". A stored writer who left or was revoked stays in the stored rule and
-still counts for the write check. The management state hides it (see UI Capability Model), so a
-manager who saves the rule again drops or replaces it. Only a new or changed rule checks its
-writers. A rule that stays as it is checks only `content.permissions.manage`, so a writer who left
-cannot block the others. This covers a public API replace that copies the old file's rule to the
-new node (`keepsReplacedPolicy` on the create helper), a plugin access call that keeps the stored
-rule, and each item in Apply to contents (the run checks the writers once per step, on the folder).
+`files_write_policy_runs` keeps its stored job name. It takes `targetReadOnly: boolean` and runs
+one of two explicit actions: Make contents Read-only, or Clear Read-only from contents.
+The action is separate from saving the folder's own checkbox.
 
-Creation copies the destination folder's `newChildWritePolicy` once when the caller omits a policy.
-An explicit `writePolicy` or `newChildWritePolicy` override needs a management check. Intermediate
-folders created on a path get the same copied default. A refusal commits no partial folders, assets,
-policy, or sharing changes.
+Start checks Can edit on the folder. Every step checks the original membership lifetime, current
+folder, Move holds, and Can edit again. Each changed child goes through the common setter.
+Already matching flags count as skipped; true-to-true never renews an ID. Clear also removes
+hand-set flags. The job is a live pass and may miss items added or moved during the pass.
 
-Registered writer setup with explicit readers is a separate access operation. On first creation,
-it restricts the empty folder and grants the exact bound service account **Can manage** there in the
-same transaction. The actor must pass service-account management and the full parent grant ceiling;
-the account must already pass parent write and management checks. This keeps the account usable when
-the new restriction stops inherited access. Human reader permissions stay unchanged. Existing-folder
-retries never restore this grant or replace manual sharing. Later grant changes use normal Files
-sharing. A writer policy by itself still creates no access.
+The existing worker walks active nodes by treePath. Readable items without Can edit count as
+blocked. Locked folders and their contents are skipped without exposing counts. Stop and lost
+authority keep completed changes. There is no undo claim.
 
-Editable (`null`) clears only that node's local policy. It does not change children. Repeating the
-same local choice is an idempotent success. Management stays separate from effective content write
-access. `files_write_policy_runs.start` is the only door that rewrites descendant rules.
-
-## Apply to contents
-
-`files_write_policy_runs.ts` runs "Apply to contents" as a background job with an Activity
-(`source.kind: "files_write_policy_run"`). `start` checks management and the writer rule on the folder,
-refuses while a data reset deletes the workspace files, allows one queued or running job per person
-and workspace, saves the confirmed rule, and schedules `advance`. The Activity title is "Apply protection to folder contents" and its targets stay `[]`, so it
-never names the folder or anything inside it.
-
-Each `advance` step first checks again: the Activity is still active and inside its deadline, the saved
-membership is still the same one (a leave and re-join stops the job), the folder has the same
-`treePath` and is not archived, and the person still manages the folder with the saved rule. A failed
-check ends the job. Items updated before that keep the new rule.
-
-The step then walks active nodes inside the folder in `treePath` order
-(`by_organization_workspace_archiveOperation_treePath` with `archiveOperationId = null`, so archived
-items keep their rules):
-
-- Managed: set the rule (`completed`), or count it as `skipped` when it already matches.
-- Readable but not managed: count it as `blocked`. Walk on into a folder like that, because items
-  inside it may have their own grant.
-- Locked (not readable): do not count it. A locked folder is skipped with everything inside
-  it, like `chmod -R` skips a folder it cannot read. Its contents are skipped inside the same page,
-  and the next page starts at the first path after them. A locked file skips only itself.
-
-A step ends after 50 counted items, 200 checked nodes, or 1,000 read nodes. The read limit matters
-because the contents of a locked folder are read but not checked. A step that stops before 50 counted
-items passed locked items, so it keeps its counts on the run (`unpublishedProgress`) and leaves the
-Activity as it is. The next step fills those counts up to 50. So the Activity progress, `updatedAt`, and the 30-minute
-`deadlineAt` change only at a full 50 or at the end, and the requester never sees how many locked
-items a step passed. The deadline is an idle limit. A long job that keeps showing progress never
-times out. A step that updated anything advances the media validation clock once. The last step sets
-`total` and finishes with `activities_get_result_status`. Only blocked items give `failed`, and a mix
-gives `partial`. Stop, the deadline cron, and a failed check finish the Activity at once. They add
-the kept `unpublishedProgress` first, so "Stopped. N items were updated." counts every updated item.
-A step that was already scheduled then does nothing. A long stretch with nothing visible does not move
-the deadline, so a job can time out while it walks well over a million locked items. That is the cost
-of not counting locked items.
+The worker retains its existing progress batches: 50 counted, 200 checked, or 1,000 read nodes per
+step. It publishes full progress batches so gaps do not expose hidden counts. A long hidden range
+can still reach its idle deadline. This existing limitation is not a new scalable read pattern.
 
 # Enforcement Rules
 
-- Use this order: current auth and membership, the subject's ACL, resource scope and policy, conflict
-  details, then writes. Policy is outside ACL because owner permission does not bypass a policy.
-- `files_nodes_db_require_writable` accepts trusted writer, actor, resource scope, and policy reach.
-  It does not read plugin docs or infer identity from labels. Its callers establish current credentials
-  and ACL. `files_nodes_db_require_user_writable` supplies the explicit human writer for ordinary
-  callers. Action preflights use the Result query `get_user_file_write_access`, preserving `read_only`.
-- A scope is workspace, subtree, exact node, or create at a pinned nearest existing parent/root plus
-  normalized intended path. Check subtree membership through parent IDs, including after moves.
-- Reach is a service limit, not folder inheritance. Reach `none` passes no policy. Reach `direct`
-  may match only the named node's own selected-writer rule. Reach `ancestors` may also match a
-  destination folder's selected-writer rule when creating a child there. A parent read-only rule
-  still never blocks an unlocked child. Generic sealed service doors use direct reach and keep
-  their destination and target limits. Public service writer requests may use ancestor reach only
-  after their sealed destination, current service secret, `workspace.files.own-write`, the subject's
-  ACL, labels, and pinned output scope pass.
-- Generic account keys use account permissions and their validated resource scope. Invoke plugins
-  also keep accepted capability, editable label, source, and current installation checks. UI sessions
-  keep their read-only backend contract. The generic helper adds no integration bypass.
-- Every final content, Yjs, create, snapshot, repair, or pending transaction checks current
-  policy before its first write. Both collaboration toggles require content write, not
-  policy-management permission. Accepted upload finish (R2 publish, text conversion) is not
-  a new write: it always completes, even after a later lock.
-  A Move hold is separate from write policy. Completion waits while the exact file is captured,
-  then resumes with the accepted bytes. A saved parent's child hold alone does not block a size
-  update. Cleanup that removes a placeholder must also wait for that parent's child hold.
-- Rename and move check the named item and its immediate parent before any write. Archive, unarchive,
-  replace, and delete check every removed or replaced item. Archived descendants use their real parent
-  links. Equal paths in separate archived and active trees are not the same node. A refusal about a
-  locked node reveals no name, ID, or path the person cannot already see. Cleanup of an upload that never landed deletes its
-  placeholder even when locked. Cancel (discard) does the same for the creator.
-- The up-front check of a folder's contents (`files_nodes_db_require_subtree_writable`) reads at most
-  2,000 items, archived ones too. Above that it returns `subtree_too_large`, never a thrown limit
-  error. An agent delete of a bigger folder still gets its proposal. Move and reviewed Save check
-  descendants in indexed pages before their group switches. Replacement has no total item cap.
-  A locked archived descendant still blocks replacement.
-- Archive and restore run through one archive job (`files_archive_runs`, Activity source
-  `files_archive_run`). The job is the `archive` or `restore` kind of a `files_subtree_ops` op, and it
-  walks the folder by `parentId`. The request runs a small first step itself: at most 10 stamps and
-  100 checked nodes (`files_archive_runs_REQUEST_MAX_NODES`, `files_archive_runs_REQUEST_MAX_CHECK_NODES`),
-  so it answers fast. The archive request stamps only the named items. A named folder with an active
-  child goes on in the job, with the usual "Archiving in the background" toast and Activity card, so
-  the click does not wait for child stamps (about 60 ms each on dev). Up to 10 named files and empty
-  folders end in the request. When the request finishes the work, no run doc, no op, and no Activity
-  exist. A bigger restore, or an archive of a folder with items inside, continues in the background,
-  at most 30 stamps and 500 checked nodes per step. An archive
-  op keeps at most 64 busy paths too, merged the same way as a restore's below.
-  - Design principle: Archive decides in the request with index reads only. When the indexes cannot
-    decide, the request does a small share of the full check and the job does the rest. The request
-    never walks a big folder.
-  - Fast archive (`files_archive_runs_db_check_fast`). The request first refuses each named item the
-    person cannot write ("Permission denied") or that has its own lock. Then it reads a few index
-    ranges for each other named item. When they prove that the check would pass for every one, the
-    request stamps the named items at once, so they leave the tree before the toast shows. The job
-    starts in `apply` and runs no check. Its Activity shows a count with no total until the last stamp.
-    The indexes prove it only when all of these hold:
-    - at most 10 named items are left, so the request stamps all of them;
-    - no Move holds the workspace, no `scope` or `move` op runs, and no op overlaps a named path. These
-      rewrite paths and scopes page by page, so the index answers would be stale;
-    - no active restricted folder inside the item's area (`by_org_ws_parentScope_archive_treePath`;
-      skipped for the owner, who may write every area). "Add people" only adds access;
-    - no read-only or writer-list node inside, active or archived (`by_org_ws_writePolicyMode_treePath`).
-    An active read-only node in the item's own area refuses that named item in the request and names
-    the node, because the person may read it. Any other lock or restricted folder means only the check
-    can decide.
-  - One path per request: when even one named item is not proven, the whole archive runs the check,
-    and every named item stays in the tree until the check passes. `archive_nodes` lists them as
-    `waitingNodeIds` with `isChecking` true, and the Archive dialog says that they are being checked.
-    A named item can also wait after the check, when the request ran out of stamps. One job keeps one set
-    of rules: the check's queue numbers, the "every item refused" rule, the public-link cleanup, and
-    the refusal answers. Windows also handles a whole selection as one unit.
-  - Accepted: a running "Apply to contents" job can lock a child after the request, and the stamp walk
-    then hides it. The same window exists between the check and the apply. A stopped archive can leave
-    an archived restricted folder with active items inside; the fast path does not see it, and the
-    apply skips folders that another archive stamped, so it writes nothing there.
-  - A restore first pages through its archive operation in creation order to find all top items. It
-    keeps at most 64 folder paths that hold them: past 64, the two paths with the longest shared
-    folder merge into that folder, up to `/`. It checks those paths for a running subtree job, and its
-    op keeps them as busy paths. If another job overlaps, it waits as `queued`. After promotion it finds the roots and checks their paths again, because archived items
-    can move while it waits. The job then checks every item's permission and writes nothing. One
-    protected item refuses the whole restore.
-    The archive check walks each named item by `parentId`. It follows `rm` with several files: a
-    refusal leaves out only the named item it is in, with everything inside it, and the other named
-    items are still archived. The run keeps the named item the check is on in `checkNamedItem`, and
-    each refused named item with its reason in `refusedItems`. Every read-only reason names the item
-    to unlock and the fix, because a refusal must name the item and say how to fix it. A read-only
-    named item says "This item is read-only. Unlock it, then try again." A lock on an item inside
-    names that item: `"/Reports/plan.md" is read-only. Unlock it, then try again.`, so it does not
-    blame the named folder. The check says read-only only for a node the person may read, so the path
-    is safe to save. Another refusal inside says "You cannot change an item inside it." and names
-    nothing. A `needs_review` refusal keeps its own message. `archive_nodes` returns these reasons as
-    `refusedItems`. The Archive dialog's toast names the item and its reason when one named item was
-    refused, and gives the count when several were.
-    A named item that is gone when the check reaches it is refused as "Not found". A named item that
-    somebody archived meanwhile keeps that archive and is no error, like `rm -f`. It counts once and
-    ends as `skipped`.
-    A refused named item counts once in `total` and in `progress.blocked`. Nothing inside it counts,
-    so the counts add up to `total`. The Activity is then `partial`, or `failed` when nothing is
-    archived. The card and the job dialog show a `partial` archive with only refused items as
-    Completed, because a refusal is expected (see `../activities/SKILL.md` Feed cards). A job that archives nothing without refusing every named item (for example, some were
-    skipped and the rest refused) keeps `errorMessage` null, like the protection job: the card counts
-    and the job dialog list say what was not archived.
-    When the check refuses every named item, one item gets its own refusal, and several items get
-    "None of these items can be archived. …". If the request's own check or its index reads did it,
-    the request answers with that error and makes no job. If a later check step did it, the job fails with it as
-    `errorMessage`. Otherwise, during the check, only a lost membership ends the whole job. Every
-    check step asks for it first, even a step that only drops the rows of a refused item, so the
-    apply never starts for somebody who left. Once the apply has started, the stamp walk finishes
-    even without the person: stopping it would leave active items inside an archived folder. An
-    agent's delete names one item, so the same rule refuses the whole delete.
-    `archive_nodes` answers the named ids refused before the job and the named ids refused so far as
-    `notArchivedNodeIds`, with the named ids inside the refused ones. `get` lists them as
-    `notArchived`, each with its full `path`. It shows only items of the run's workspace that the person can still read. An
-    archive that refused a named item keeps its job and Activity, even when it finished inside the
-    request.
-    The restore check pages the operation's items by `treePath`. Archived items can share one path. When a restore check page ends inside such
-    a group, the check reads up to 500 more of them at once; more refuse ("Too many archived items
-    share one path."). Files with the same name in different folders can span discovery pages.
-  - Archive has no Stop. After the check, it stamps every named item before anything inside them. The
-    request stamps at most 10 items and a background step at most 30, so with more named items the
-    rest leave the tree in the next steps.
-    Then it stamps the active children of each stamped folder, page
-    by page, until no active child is left. It ends inside the first named item before it goes inside
-    the second. It does not check locks or access again, so a lock set during the job does not stop
-    it. A child the person moved out is no longer under the folder. A child archived on its own keeps
-    its own `archiveOperationId` and its own Restore.
-  - Restore does not keep a list of its top items. When its queue is empty, it pulls up to 50 items
-    still in the operation, queues the top item of each, and lands them. A pull that finds only the
-    top items the last pull of the same step queued is a bug, and the step throws.
-  - Restore checks each item again when it lands. An item inside a restored folder also checks that
-    folder, because a folder's lock does not block its children. A lock or lost access set during the
-    job stops it as failed ("Stopped partway"). The done part keeps its one archive operation id, so Restore brings
-    back exactly that part.
-  - A node and its side docs (plain text chunks and metadata docs) change in the same mutation when it
-    has at most 16 of each. A bigger item gets a saved scope job that copies the new scope a few seconds
-    later, and readers skip its docs until then. One job per item made each step wait for 2 job runs
-    per item, so small items do not get one. Each doc keeps its own path, treePath, and
-    archiveOperationId. Until the job stamps a child, the child keeps
-    an empty stamp under a stamped folder. Owner text search still finds it (see the
-    [pending spec](../files-agent-pending-updates/SKILL.md)).
-  - Restore brings back one archive operation. Several operations named in one call run in the order
-    of each operation's top item, so a parent operation comes back first. Items archived earlier on
-    their own keep their own operation. An item whose parent is active lands under the parent's current
-    path. An item whose parent is missing or in another archived operation lands at the workspace root,
-    which is a move: it needs root write and permission to leave its restricted folder. If a restore job
-    of the parent's operation is running, the item joins that operation instead and comes back with it.
-    If an archive job of the parent's operation is running, the restore is refused as busy.
-  - The operations of one restore call share the request's first step. After the first job starts, each
-    later job waits as a `queued` op behind the last earlier job that did not end inside the request, so
-    their steps never write the same docs at the same time. A job that ended has no op left to wait for,
-    even when its run stays to list kept items or for an API retry. A restore also waits while any of its busy paths overlaps another subtree op. Each job saves
-    the first job's id in `requestFirstRunId`. When an op ends, `files_subtree_ops_db_delete` starts each
-    waiter that overlaps nothing any more. It stops near the transaction limits, and
-    `release_waiters` goes on with the rest. A queued job has no Stop and a 24-hour deadline; when it
-    passes, the job gets 24 more hours. A later job checks its items only when it starts. If an earlier
-    job failed and left their folder archived, the items land at the root, and their refusals show in
-    the Activity, not in the Unarchive answer.
-  - A restored folder that lands on a new path or scope (at the root, or renamed by Keep both) does not
-    move the items inside in the same mutation. The restore walk gives each child that stays archived on
-    its own the new path, treePath, and scope from its live parent, with its side docs. There is no size
-    limit for this.
-  - Restore refuses when the item's old folder or landing folder is read-only. The message names the
-    folder only to a caller who may read it.
-  - A restore name clash pauses the job (`awaiting_input`) for up to 24 hours and asks like a paste.
-    This holds for a top item and for an item that comes back inside a restored folder, when somebody
-    made an item with its name there. The clashing item waits first on its folder's queue row, and that
-    row runs before the folders its page restored. A choice counts only for the clash it answered. If a
-    clash in one of those folders asked first, the choice for this item would be lost. It asks:
-    Keep both (`name-2.ext`), Skip (the item stays archived), or Replace (the item in the way is
-    archived with a new operation id). Replace needs the same kind, a folder with no active child, and
-    write access to the item in the way and to every archived item inside it (at most 500 items;
-    a bigger folder cannot be replaced). `get` returns `canReplace`, and `resolve_conflicts` refuses a
-    Replace that is not possible. A Replace that became impossible after the choice asks again. The
-    item in the way is archived only after the restore of the clashing item worked. Apply-to-remaining choices are kept for the rest of the
-    job. `resolve_conflicts` takes the shown `revision`. `get` shows the clash name and paths only to a caller who may read them.
-    There is no Merge. Stop (Cancel) is offered only while the job waits for this choice. It ends the
-    whole request: the queued restore jobs of the same request end too. A choice not made in 24 hours
-    ends the job as `timed_out`.
-  - Busy check: a restore of an operation that already has an active job is refused. An archive starts
-    at once, even over a folder another job is archiving: each job stamps only active items, so neither
-    overwrites the other's stamp.
-  - A request whose first step fails after some writes returns the error ("Stopped partway") and keeps a
-    failed Activity. A restore refusal before any write makes no job. An archive makes no job when
-    it ends in the request with no refusal, or when the request refuses every named item, in its own
-    check or in its index reads. When it refuses
-    only some, it keeps the job, so the Activity can list them. In `archive_nodes`, a named id that is
-    missing or in another workspace is "Not found" for that item alone. One the person cannot open (a
-    locked item, archived or not) or can read but not change is "Permission denied". The job lists it
-    and archives the others. When nothing else is left to archive, the request answers with the reason
-    when one item was refused, or with "None of these items can be archived. You cannot change them or
-    items inside them." when several were. A malformed id still refuses the whole request.
-    `unarchive_nodes` answers "Permission denied"
-    for an item the person cannot change, locked or not.
-  - Reviewed agent delete (`pendingArchive`) uses the Save cohort worker. It checks all descendants
-    in pages, then switches the whole group and removes its proposals. Each descendant, archived ones
-    too, must pass its own lock and access check, so a locked item inside refuses the whole delete
-    ("This item is read-only."). A Move checks only the moved item and carries locked descendants.
-    Stop before the switch keeps the saved tree and proposals. Stop after the switch lets required
-    repair finish. Direct Archive and Restore still use the archive job. Plugin archive and service
-    uploads keep their existing synchronous limits.
-- Keep expected target IDs and ordered pending source IDs. These stop stale work from changing a
-  different file; they are separate from policy history.
-- If an external write already happened before a final refusal, queue every exact key for durable
-  cleanup before removing its temporary docs. Do not treat starting a vendor retry as final deletion.
-- Plugin policy changes use common management checks. A requested `readOnly: true` maps to a local
-  selected-account policy (`writers: [account]`), including below a matching account parent. On an
-  existing folder, plugin `ensure` keeps a writer rule that already lists the account, so a repeated
-  ensure never removes writers a manager added. Ensure keeps existing folders'
-  access unchanged. Policy changes never restore removed account grants.
-  External ensure may recover only the IDs of an exact empty, attached private setup while its account
-  awaits a file grant. Live credentials, pinned scope, labels, and sponsor read access still apply.
-  This metadata-only path changes no files or grants; all write and policy doors stay unchanged.
-- Service archive may clear an allowed direct policy only through the common managed setter in the
-  same transaction. It still checks each swept node. A parent policy does not block an unlocked child.
-  Reader binding edits preserve independently managed account grants; ordinary reader refreshes cannot
-  add them back.
-- External transcript writes keep their writer generation and expected content/reader revisions in
-  the trusted file stage. The final transaction repeats these checks and saves the write receipt
-  with publication. A worker abort or a receipt stored only in the external app cannot replace this.
-  File archive can also pin `expectedContentRevision`, checked in its final transaction.
-- The external `rollback-readers` door is a narrow ACL undo after a failed native private change.
-  Its saved receipt, original credential proof, live service/account binding, and exact current reader
-  revision/generation replace sponsor write authority only for restoring the recorded previous readers.
-  The saved service writer still checks the current target policy before an undo.
-  A new lock returns the normal `read_only` conflict and leaves the native change blocked.
-  It changes no content or policy, preserves account grants, filters stale lifetimes, and leaves manual
-  or newer sharing untouched. It is not a general file or sharing permission bypass.
-  If the original HTTP result was lost, the worker can name the original operation ID. An unapplied
-  operation is cancelled with a durable receipt before success is returned; late reader calls refuse.
-  This cancellation changes no sharing and requires a recognized sealed grant for the pinned root.
-  After an upgrade or account rebind, an old proof cannot authorize the undo. A current sealed
-  grant for the same installation and exact root may recover that recorded operation. The plugin, as
-  the current actor inside its sandbox roots, needs Files write and sharing-management access. In its
-  own output folder the account's live grant sets the level. Current labels, policies,
-  membership lifetimes, writer generation, and reader revision still apply. A detached binding is
-  acknowledged without changing sharing. No old credential grants new authority.
-- Private draft moves check current access and policy on their saved source and destination parents.
-  Replacing a saved occupant also checks that occupant and its affected descendants. Save repeats
-  these checks and the exact saved content-version check in its paged worker and at publication.
-  Old names and content stay visible until the group switches. Replacing an owned private occupant
-  requires a ready draft and an empty folder when
-  applicable; all checks pass before its private generation closes.
-- Discard and expiry retire owned private work without deleting saved nodes. A private replacement
-  keeps its saved occupant until Save. Discard, expiry, and moving the draft elsewhere leave that
-  occupant unchanged, including after a policy refusal. Bash `/tmp` and readable copy-out stay usable.
-- Raw path/overlay resolution remains unfiltered so locked occupied paths still conflict. Authorized
-  read entrypoints apply the request subject's visibility after lookup. Lists never expose raw
-  policy fields or hidden writer/source identity.
+- Check current identity, membership, ACL, resource scope, and then Read-only before writes or
+  conflict details. `server/files-write-policy.ts` owns the local flag and resource-scope checks.
+  Callers prove current credentials and ACL. Labels and plugin names grant nothing.
+- Trusted write context carries `subject`, `actorUserId`, `resourceScope`, and `force`.
+  Only a machine door that checked the current grant may set force true. Persist it with the
+  request and fingerprint; workers recheck the live key or installation before each step.
+  Existing request fingerprints encode force only when true. False and omission keep the same
+  ordinary request identity; changing to true needs a new request ID.
+- Scope may be workspace, subtree, exact node, or creation at a pinned parent and path. Parent-ID
+  lineage, seals, registered-writer generation, content/reader revision, and target identity remain
+  required. Force never broadens those bounds.
+- Final content, Yjs, create, snapshot, repair, and pending transactions repeat current checks.
+  Accepted upload completion is separate: the first accepted bytes may finish after a later flag.
+- A refusal names an item only while the caller may read it. Locked folders stop recursive reads.
+  Never use a stored path as proof that it is still safe to show.
+- Keep exact expected node IDs and ordered pending source IDs. Never retarget a retry to a new
+  occupant at the same path.
+- If external bytes exist before a refusal, queue their exact keys for durable cleanup before
+  dropping temporary records. Starting vendor retries does not prove deletion.
+
+## Copy and pending Save
+
+A newly copied Read-only folder may receive only the original captured children while its exact
+decision ID still matches. The receipt also pins the saved parent, creator, generation, and copied
+path. Saving one child does not invalidate a sibling saved later. Clear and re-lock invalidates
+the receipt, even when the visible boolean is true again.
+
+Merging into an existing folder creates no such receipt. Replacing content keeps the destination's
+flag and ID. Private copied parents mint their ID when allocated as saved nodes, once, and record
+that same ID in their publish receipt.
+
+Pending proposals stay visible through a refusal. Save, Accept, and rebase recheck current access.
+Whole-proposal Discard and owner expiry keep saved files intact. App agents and Bash cannot force.
+
+## Archive and Restore
+
+`files_archive_runs` uses the existing `files_subtree_ops` scheduling and Activity records.
+Requests do a bounded first step; larger work continues in indexed pages.
+
+Ordinary archive checks each named item's current direct parent for Can edit and Read-only in
+both its fast and background checks. It then keeps the existing check-then-stamp behavior. Its fast path queries active
+Read-only nodes with `by_org_ws_archive_readOnly_treePath`; archived and false nodes are outside
+that range. Restricted areas still need the existing authority checks. Older Trash keeps its own
+archive operation and never blocks deletion of its active parent.
+
+Accepted limitation: an ordinary archive does not repeat flag or ACL checks during its later stamp
+walk. A flag set after its check may not stop that archive. This window also exists when a bulk job
+sets flags. Do not describe ordinary archive as checking each final stamp.
+
+Forced archive uses postorder work: children first, then their parent. Every step checks current
+authority. It enters a Restricted folder only when allowed. A denied branch stays active with all
+its ancestors; allowed siblings remain archived. Before archiving a folder, check that it has no
+active child, including a child added behind the cursor. A queued item moved elsewhere is not
+archived at its new location. Stop or revocation keeps the completed part.
+
+Force waits for overlapping Move, scope, or running Restore work. A Restore queued behind the
+archive does not make it wait in a cycle. Outcomes are stored and paged, with current read checks
+when shown. A retained parent is not counted as archived. Activity shows partial results.
+
+Restore preserves an item's own flag and decision ID. A Read-only live parent normally blocks
+landing. The narrow exception is a parent restored by this same run with the exact recorded
+decision ID, including null. Repair-only docs grant no exception. Clearing and setting again breaks
+the receipt. Current ACL and placement checks still apply.
+
+Restore name clashes keep Keep both, Skip, and Replace. Replace always refuses a Read-only occupant,
+even for a forced request. It keeps its existing empty-folder and bounded archived-content rules.
+Separate archive operations remain separate. Moving an item to root still needs its root and
+restricted-scope exit permissions.
+
+Reviewed pending Delete uses the Save cohort. It checks active descendants before the group switch;
+already archived descendants keep their stamps and do not block it. Stop before the switch keeps
+saved files and proposals; after the switch, required repair finishes.
+
+## Plugin and service partial deletion
+
+Bounded plugin/service archive keeps its existing synchronous size limit. It returns an exact
+request receipt with completed count, completion state, and safe refusals. A new attempt names the
+previous receipt and must still match its original destination ID, epoch, and seal. Same-request
+replay returns the saved result without archiving twice. Receipts do not expire into fresh authority.
+
+A partial service delete retires only targets actually archived. It does not close the destination
+epoch, remove remaining grants, or tell the caller all artifacts were deleted. Full completion
+closes once. Council retains its attempt and prior receipt across retries.
 
 # Error Contract
 
-- Internal: `Result({ _nay: { name: "read_only", message: "This item is read-only." } })`.
-  Branch on `_nay.name`. Do not turn a policy refusal into a generic permission refusal.
-- HTTP: `409 Conflict`, existing code `conflict`, same message. Missing ACL remains a permission error.
-- `/files/write-many` keeps per-item conflicts and continues. `/files/touch` keeps its sequential,
-  request-level conflict. `/files/upload-urls` preflights the batch and mints nothing on refusal.
-  Single and plugin routes keep their existing error shapes. `skipIfUnchanged` still checks policy.
+- Internal Read-only refusals keep `name: "read_only"`. Missing ACL remains a permission refusal.
+- Preserve each public door's existing envelope and status mapping. Do not force every route into
+  one HTTP status shape.
+- `/files/write-many` keeps per-item results. Touch keeps sequential request-level failure.
+  Upload URL batches preflight before minting. Atomic batch doors remain atomic.
+- Partial archive reports completed work and refusals. It does not roll back completed siblings.
+- `skipIfUnchanged` still checks current authority and the flag.
 
 # Race Rules
 
-- A final transaction checks current policy again after action work. If the writer is allowed then,
-  the write can finish subject to its other checks. Revoked credentials and changed resource identity
-  still refuse. An absent destination is resolved again before publication.
-- Upload acceptance (mint) checks the live lock, then creates the node, asset, and signed
-  create-only target. The finish always completes, even after a later lock, unlock, or lock
-  again. A reused URL cannot overwrite a published object. Cancel deletes the unfinished file.
-- `yjs_push_update` applies the current rule. A final `read_only` refusal drops queued local edits,
-  reloads the saved document, and explains that the unsaved changes were not saved. A permission
-  refusal keeps its existing warning. Network/rate failures keep edits and retry every five seconds.
-  Compaction retries five times with the existing delay, then shows the final refusal on the sixth.
-- Pending proposals remain visible through policy changes. Save, Accept, and rebase can resume when
-  every affected node allows the writer. Whole-proposal Discard stays available.
+Final writes check the current flag, with only the exact Copy/Restore and accepted-work exceptions
+above. Old success acknowledgements do not grant new access.
+
+Before an editor drops queued local edits, rebuilds, or closes after losing access, capture the
+current unsaved text, including the last keystroke. Use the live Y.Doc or editor model. Keep separate
+captures for distinct refused drafts and coalesce duplicate signals for one draft.
+Review also captures changed panes before each preparation or history reset. A later reset must not
+replace an earlier recovery copy. These copies remain available after the editor closes.
+
+Recovery lives in memory in the current tab, outside the editor. Files and the workspace access-denied
+or login screen offer Unsaved text for the current user's copies, even without current workspace membership.
+Each name read uses the copy's own membership. Offer Copy, Download, and Discard.
+Use generic names after read access is lost. Warn that reload or tab closure loses this text and
+register beforeunload while captures remain. Clear on discard or sign-out/user replacement.
+Never upload, log, persist, broadcast, or automatically replay captured text.
+
+Network and rate failures keep their existing retry behavior. Pending proposals remain reviewable.
 
 # Accepted Upload Completion
 
@@ -507,8 +273,8 @@ so remint can revive it.
 
 Pending service remint and create replay rotate the node and target to a fresh asset in one mutation.
 That mutation queues the old key before removing the old asset. It does not wait for old cleanup.
-A committed target stays terminal. Only a named tenant, workspace, or account deletion bypasses file policy;
-these use `db_purge_organization_workspace_content_batch` in `data_deletion.ts`.
+A committed target stays terminal. Named tenant, workspace, and account deletion use their lifecycle
+authority through `db_purge_organization_workspace_content_batch` in `data_deletion.ts`.
 
 Those retry doors still recheck the target's original destination seal, active current path, and
 current subject authority and restricted-file ACL. Fresh attempts also repeat paid-plan and
@@ -545,84 +311,52 @@ replacements, renames, moves, and deletes still check that policy.
 
 # UI Capability Model
 
-Public node queries return `canWrite`, `writeBlockedReason` (`null`, `permission`, or `read_only`), and
-`writePolicyState` (`none`, `read_only`, or `writer`). They hide raw `writePolicy` and
-`newChildWritePolicy`. A selected human can edit while a policy is present.
-Lists do not join account names or expose raw authority fields.
+Public views return `readOnly`, `canWrite`, and `writeBlockedReason` (null, permission, or read_only).
+Missing Can edit is shown as View only. Sharing and Read-only remain separate.
 
-Operation capabilities use actual `canWrite` plus the immediate parent write for rename and move.
-Delete and archive also look at visible protected descendants. The server checks locked descendants
-again. Rows stay readable, selectable, searchable, and expandable. A folder that only holds protected
-children has no lock. Policy and restricted-sharing indicators stay separate.
+Properties has one native Read-only checkbox. It uses underlying Can edit, so a person can clear
+the flag even while content writes are blocked. Explain the direct-child rule for folders and that
+a machine with Manage Read-only can force changes. Work accepted earlier may finish.
 
-Files Properties shows three option cards under "Who can edit": Everyone with access (`editable`), No one
-(read-only) (`read_only`), and Custom (`writer`). Custom picks one or more people and plugins; the UI
-says "plugin" where the code says service account. Custom shows the chosen writers as chips and a
-"Manage writers" button. The button opens the writers dialog (`files-write-policy-writers-modal.tsx`):
-one search field, no type menu, and People and Plugins lists. The field menu opens on focus and Ctrl+Space.
-People come from `organizations_member_names.search_workspace_members` and plugins from
-`access_control.search_service_accounts`, 20 per page with "Show more", so the dialog never loads the whole
-workspace. `people:` or `plugin:` in the text narrows the search to one kind. A writer who is already on the
-list stays in the menu as a disabled row marked "Added". Choosing Custom
-with nobody chosen opens the dialog. The dialog only changes the draft; the footer Save writes it. Folders also have a "Rule for items inside" block with
-the same cards. It is the folder's `newChildWritePolicy`. There is no inherited text and no Open parent policy. The shared management state
-returns `canManage`, safe `localPolicy`, `localDefault`, and write access. A writer policy there is
-`{ mode: "writer", writers, hiddenWriterCount }`: `writers` holds only the writers the caller may see,
-with names, and `hiddenWriterCount` counts the hidden or revoked ones without their ids. Apply to contents copies the rule for items inside, not the folder's
-own rule. Under that block, the person checks "Also apply it to the items already inside". Save then
-asks in a confirm dialog ("Change the rule of all items inside?", "Save and apply"). After the changed
-rules save, it starts the job, clears the box, and says the job runs in the background. Its progress and
-result show in Activity: "Updated N items so far", "Updated N items, M already set, K not allowed",
-"Stopped. N items were updated.", or "No items could be changed. K are not allowed."
+When enabling Read-only with dirty metadata, save metadata first and then the flag. When clearing
+it, save the flag first and then metadata. If the second part fails, keep that draft and say which
+part saved. Never silently force or roll back the first success.
 
-Status copy: the checked card is the state, so there is no separate status sentence. Sidebar create of a protected default asks
-for the name first. Cancel creates nothing. The sidebar learns the default from
-`files_nodes.get_folder_new_child_write_policy_state`, which reads only the folder's own
-`newChildWritePolicy` and returns `none`, `read_only`, or `writer` (no account names). Do not use the
-management state there: it does more work than a create needs, because it checks management, write
-access and the blocking rule, and looks up account names. If the lookup fails, the sidebar shows
-a toast and creates nothing.
-
-Policy saves use the dedicated setter. Metadata Save remains a separate action. Keep keyboard focus,
-clear pending feedback, accessible labels, and usable layout at 200% zoom. Do not disable a focused
-control only because its save is running. Folder radio groups use unique names.
+Folder contents actions are separate, explicit confirmations. Clear says it removes hand-set flags.
+Both explain the live pass and report progress, skipped items, and partial completion.
+Keep visible labels, keyboard and focus behavior, and usable layout at 200% zoom.
 
 # Requirements
 
 | ID | Requirement |
 | --- | --- |
-| RO-01 | Every content write passes ACL and the named node's current local policy |
-| RO-02 | Rename and move check the named item and its immediate parent, locked restricted children included; delete checks every removed item |
-| RO-03 | Owners/admins do not bypass policies; selecting a writer grants no access |
-| RO-04 | Policy configuration requires actual target/creation-scope management |
-| RO-05 | A folder default is copied once onto brand-new children; later default changes do not rewrite them |
-| RO-06 | Reads, sharing, safe comment replies, downloads, and readable copy-out keep working |
-| RO-07 | Final transactions check current actor, account, scope, and policy before writes |
-| RO-08 | Past policy state does not replace current checks or content-staleness checks |
-| RO-09 | Pending work remains visible; Discard remains available through a refusal |
-| RO-10 | Queries and refusals hide inaccessible source and writer identity |
-| RO-11 | Accepted uploads and committed Yjs convergence finish; dead-upload cleanup removes placeholders even when locked |
-| RO-12 | UI uses actual human write access and remains keyboard/zoom accessible |
-| RO-13 | Policy refusal keeps the stable read_only and HTTP conflict vocabulary |
-| RO-14 | Refused operations commit no partial state and retain durable external cleanup |
+| RO-01 | Normal writes pass current ACL and Read-only checks |
+| RO-02 | Move checks the item and direct parents, and carries descendant flags |
+| RO-03 | Owners do not bypass the flag; force never grants access |
+| RO-04 | Can edit changes Read-only; Can manage controls sharing |
+| RO-05 | New items are writable; Copy and Restore preserve flags under their normal authority |
+| RO-06 | Reads, safe comments, downloads, and copy-out keep working |
+| RO-07 | Machine force needs an explicit request and current new grant |
+| RO-08 | Decision IDs prevent clear/re-lock from reviving a Copy or Restore exception |
+| RO-09 | Pending work and whole-proposal Discard remain available after refusal |
+| RO-10 | Public responses hide decision IDs and inaccessible paths |
+| RO-11 | Accepted uploads and committed materialization finish; failed placeholders can be cleaned |
+| RO-12 | Capture unsaved text before reset; keep recovery reachable within the tab |
+| RO-13 | Keep read_only and each door's existing error shape |
+| RO-14 | Partial archive keeps completed work and retained parents; atomic doors stay atomic |
 
 # Test Map
 
-- `convex/files_nodes.read_only.test.ts`: selected writers, ACL independence, local create defaults, folder-only
-  management, creation management, unlock one child, redaction, and writes. The service-account writer
-  policy check is in `convex/files_nodes.move_nodes.test.ts`.
-- `convex/files_write_policy_runs.test.ts`: Apply to contents steps, blocked and locked items, rechecks,
-  Stop, deadline, and history cleanup.
-- `convex/files_pending_updates.structural.test.ts`: current-policy proposal, commit, and private discard checks.
-- `convex/files_nodes_content*.test.ts`: replacement, collaboration, snapshots, and materialization.
-- `convex/public_api*.test.ts`: bound accounts, current credentials/scopes, service targets, conflicts,
-  policy management, accepted uploads, and no partial publication.
-- `convex/access_control.test.ts`: human/account permissions, management authority, and source privacy.
-- `convex/r2.test.ts`: accepted-upload completion and exact-key cleanup generations and tombstones.
-- `convex/data_deletion*.test.ts`: lifecycle deletion and durable asset ownership.
-- `convex/data_import.test.ts`, `server/bash.test.ts`, `server/bash.*.test.ts`: ordinary imports and human pending writes.
-- Frontend policy, pending sidebar, editor, and Yjs provider tests: safe state, actual write access,
-  current-policy refusals, and retry behavior.
+- `convex/files_nodes.read_only*.test.ts`: flags, decision IDs, Can edit, direct children, privacy.
+- `convex/files_write_policy_runs.test.ts`: bulk changes, authority loss, Stop, retries.
+- `convex/files_transfer*.test.ts`, `files_pending_nodes.test.ts`, pending structural tests:
+  Copy/Save receipts, clear/re-lock, partial Save, Trash, Move.
+- `convex/files_archive_runs*.test.ts`: Restore receipts, forced partial archive, current authority.
+- `convex/public_api*.test.ts`, `plugins_external_files*.test.ts`: grant checks, force, exact retries,
+  sealed destinations, partial completion, accepted uploads.
+- `convex/files_nodes_content*.test.ts`, `r2.test.ts`: final content checks and durable cleanup.
+- Properties, editor, provider, recovery, archive-modal and Activity tests: UI state, save order,
+  retained drafts, recovery, and partial outcomes.
 
 # Related Skills
 

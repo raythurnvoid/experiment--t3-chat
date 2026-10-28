@@ -12,8 +12,8 @@ function placement_header(node: Doc<"files_nodes">) {
 		organizationId: _org,
 		workspaceId: _ws,
 		createdBy: _creator,
-		writePolicy: _policy,
-		newChildWritePolicy: _childPolicy,
+		readOnly: _readOnly,
+		readOnlyDecisionId: _readOnlyDecisionId,
 		moveCohortId: _marker,
 		scopeOpId: _scopeOp,
 		...header

@@ -412,17 +412,16 @@ The rich editor serializes the whole document back to Markdown on save, so the f
 
 Adding a comment in the rich editor saves the file at once — the thread anchor must live in a committed version, or resolving from the sidebar would target text nobody saved. The Comment button is disabled while unsaved edits exist; the member saves first, then comments. A comment added from a tab with older text saves that older text plus the mark. It does not re-read or merge another tab's changes. The other text stays in the File Snapshots dialog.
 
-# Write Policy Check
+# Read-only Check
 
-The file write policies are checked after ACL and before both content-write doors. `yjs_push_update`,
-snapshot restore, and operator Yjs repair check them in their final mutation before any node, asset,
-chunk, snapshot, or Yjs write. The actor must satisfy each policy on the node and its ancestors.
-A policy refusal returns `read_only`. A policy removed before the final mutation does not refuse
-the write. See `../files-read-only/SKILL.md` for selected writers and inherited policies.
+Read-only is checked after ACL and before both content-write doors. `yjs_push_update`, snapshot
+restore, and operator Yjs repair check the file's own flag in their final mutation before writes.
+A refusal returns `read_only`. Clearing it before the final mutation allows an otherwise valid
+write. A parent flag does not block a child's content. See `../files-read-only/SKILL.md`.
 
-When the editor becomes read-only, the Yjs provider removes queued local updates. It reloads the saved
-document and shows a warning that the local changes were not saved. The server does not keep policy
-history. Materialization still processes Yjs updates committed before a policy refused further edits.
+When the editor loses write access, capture unsaved text before dropping queued updates or reloading
+the saved document. Files' Unsaved text entry keeps that capture in the current tab for Copy,
+Download, or Discard. Materialization still processes Yjs updates committed before the refusal.
 This work finishes already saved content; it does not accept a new user edit.
 
 # Limits

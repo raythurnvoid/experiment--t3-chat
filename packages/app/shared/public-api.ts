@@ -2,6 +2,7 @@ export type public_api_Scope =
 	| "files:list"
 	| "files:read"
 	| "files:write"
+	| "files:read-only"
 	| "files:download"
 	| "files:permissions"
 	| "files:publish"
@@ -19,6 +20,7 @@ export const public_api_SERVICE_ACCOUNT_SCOPES = [
 	"files:list",
 	"files:read",
 	"files:write",
+	"files:read-only",
 	"files:download",
 	"files:permissions",
 ] as const satisfies readonly public_api_Scope[];

@@ -569,7 +569,7 @@ function makeNode(args: {
 		parentId: args.parentId ?? "root",
 		canWrite: args.canWrite ?? true,
 		writeBlockedReason: args.canWrite === false ? "read_only" : null,
-		writePolicyState: "none",
+		readOnly: false,
 		archiveOperationId: args.archived ? `archive_op_${args.id}` : null,
 		assetId: null,
 		textKind: null,

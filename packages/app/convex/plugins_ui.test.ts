@@ -1122,9 +1122,9 @@ describe("plugin ui sessions", () => {
 					restrictedScopeNodeId: null,
 					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
-					writePolicy: null,
+					readOnly: false,
+					readOnlyDecisionId: null,
 					archiveOperationId: null,
-					newChildWritePolicy: null,
 				});
 			}
 		});

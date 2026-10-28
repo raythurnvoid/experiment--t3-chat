@@ -680,277 +680,313 @@ describe("cleanup_published_nodes", () => {
 });
 
 describe("files_pending_nodes_db_publish", () => {
-	test.each(["unchanged", "policy", "ancestor_path", "acl", "owner", "whole_folder", "whole_folder_move"] as const)(
-		"copied parent lock: %s",
-		async (change) => {
-			const t = test_convex({ transactionLimits: true });
-			const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-			const author = await t.run((ctx) =>
-				test_mocks_fill_db_with.membership(ctx, { organizationName: "author", workspaceName: "home" }),
-			);
-			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
-			expect(
-				await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
-					organizationId: owner.organizationId,
-					workspaceId: owner.workspaceId,
-					userIdToAdd: author.userId,
-				}),
-			).toEqual({ _yay: null });
-			const membership = await t.run((ctx) =>
-				ctx.db
-					.query("organizations_workspaces_users")
-					.withIndex("by_workspace_user_active", (q) =>
-						q.eq("workspaceId", owner.workspaceId).eq("userId", author.userId).eq("active", true),
-					)
-					.unique(),
-			);
-			if (!membership) throw new Error("Expected the author's membership");
-			const db = { ...owner, userId: author.userId, membershipId: membership._id };
-			const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
-			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-			const source = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source" });
-			const destination = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
-				...scope,
-				path: "/destination",
-			});
-			if (source._nay || destination._nay) throw new Error("Expected the saved folders");
-			expect(
-				(await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source/child" }))._nay,
-			).toBeUndefined();
-			if (change === "whole_folder" || change === "whole_folder_move")
-				expect(
-					(
-						await t.mutation(internal.files_nodes.create_folder_node_by_path, {
-							...scope,
-							path: "/source/child/grandchild",
-						})
-					)._nay,
-				).toBeUndefined();
-			expect(
-				await asOwner.mutation(api.files_nodes.set_node_write_policy, {
-					membershipId: owner.membershipId,
-					nodeId: source._yay.nodeId,
-					writePolicy: { mode: "read_only" },
-				}),
-			).toEqual({ _yay: null });
-			const thread = await asUser.mutation(api.ai_chat.thread_create, {
-				membershipId: db.membershipId,
-				clientGeneratedId: "copied-parent",
-				lastMessageAt: Date.now(),
-			});
-			if (thread._nay) throw new Error(thread._nay.message);
-			const started = await t.mutation(internal.files_transfer.start_for_agent, {
-				membershipId: db.membershipId,
-				threadId: thread._yay.threadId,
-				requestId: "copied-parent",
-				sourceWorkspace: "current",
-				destinationWorkspace: "current",
-				kind: "copy",
-				expectedSourceCount: 1,
-				sources: [{ kind: "saved", id: source._yay.nodeId }],
-				targetParent: { kind: "saved", id: destination._yay.nodeId },
-				targetPath: "/destination",
-				targetName: null,
-				missingParentNames: [],
-				conflictPolicy: { file: "error", folder: "error" },
-			});
-			if (started._nay) throw new Error(started._nay.message);
-			expect(
-				await t.mutation(internal.files_transfer.seal_for_agent, {
-					membershipId: db.membershipId,
-					threadId: thread._yay.threadId,
-					runId: started._yay.runId,
-				}),
-			).toEqual({ _yay: null });
-			for (let step = 0; step < 25; step++) {
-				await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
-				const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
-				if (activity?.status === "succeeded") break;
-			}
-			expect(await t.run((ctx) => ctx.db.get("activities", started._yay.activityId))).toMatchObject({
-				status: "succeeded",
-			});
-			const nodes = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
-			const parent = nodes.find((node) => node.name === "source")!;
-			const child = nodes.find((node) => node.name === "child")!;
-			const proposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
-			const parentProposal = proposals.find((proposal) => proposal.target.id === parent._id)!;
-			const childProposal = proposals.find((proposal) => proposal.target.id === child._id)!;
-			if (change === "whole_folder" || change === "whole_folder_move") {
-				const grandchild = nodes.find((node) => node.name === "grandchild")!;
-				const proposal = proposals.find((proposal) => proposal.target.id === grandchild._id)!;
-				if (change === "whole_folder_move") {
-					expect(
-						(
-							await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-								...scope,
-								target: { kind: "saved", id: destination._yay.nodeId },
-								destParent: { kind: "root" },
-								destName: "moved-destination",
-							})
-						)._nay,
-					).toBeUndefined();
-					const move = await t.run((ctx) =>
-						ctx.db
-							.query("files_pending_updates")
-							.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", destination._yay.nodeId))
-							.unique(),
-					);
-					if (!move) throw new Error("Expected the destination Move proposal");
-					const selected = [parentProposal, childProposal, proposal, move];
-					const started = await asUser.mutation(api.files_pending_update_runs.start, {
-						membershipId: db.membershipId,
-						requestId: "copied-parent-with-ancestor-move",
-						kind: "accept",
-						expectedItemCount: selected.length,
-						items: selected.map((item) => ({
-							pendingUpdateId: item._id,
-							reviewedRevision: item.revision,
-							selectedContentStateId: null,
-						})),
-					});
-					if (started._nay) throw new Error(started._nay.message);
-					expect(
-						await asUser.mutation(api.files_pending_update_runs.seal, {
-							membershipId: db.membershipId,
-							runId: started._yay.runId,
-						}),
-					).toEqual({ _yay: null });
-					await test_finish_pending_update_run(asUser, started._yay.runId);
-					const result = await asUser.query(api.files_pending_update_runs.get, {
-						membershipId: db.membershipId,
-						runId: started._yay.runId,
-					});
-					expect(result?.run.unitCount, "the selected ancestor Move joins all copied folders in one review unit").toBe(
-						1,
-					);
-					const units = await t.run((ctx) =>
-						ctx.db
-							.query("files_pending_update_run_units")
-							.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
-							.collect(),
-					);
-					expect(units).toHaveLength(1);
-					expect(units[0]?.cohortId).not.toBeNull();
-					expect(
-						result?.activity.status,
-						"one cohort saves the copied locked parent and children with their ancestor Move",
-					).toBe("succeeded");
-				} else {
-					const saved = await test_save_file_pending_update(asUser, {
-						membershipId: db.membershipId,
-						target: proposal.target,
-						pendingUpdateId: proposal._id,
-						reviewedRevision: proposal.revision,
-					});
-					expect(
-						saved._nay,
-						"one native Save publishes the copied locked parent and both private descendants",
-					).toBeUndefined();
-				}
-				await t.run(async (ctx) => {
-					for (const [privateNode, path] of [
-						[parent, "/destination/source"],
-						[child, "/destination/source/child"],
-						[grandchild, "/destination/source/child/grandchild"],
-					] as const) {
-						const receipt = await ctx.db
-							.query("files_pending_node_publish_receipts")
-							.withIndex("by_privateNode", (q) => q.eq("privateNodeId", privateNode._id))
-							.unique();
-						expect(await ctx.db.get("files_pending_nodes", privateNode._id)).toMatchObject({ state: "published" });
-						expect(await ctx.db.get("files_nodes", receipt!.savedNodeId)).toMatchObject({
-							path: change === "whole_folder_move" ? path.replace("/destination/", "/moved-destination/") : path,
-						});
-					}
-				});
-				return;
-			}
-			const saved = await test_save_file_pending_update(asUser, {
-				membershipId: db.membershipId,
-				target: parentProposal.target,
-				pendingUpdateId: parentProposal._id,
-				reviewedRevision: parentProposal.revision,
-			});
-			if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved parent");
-			expect(
-				await t.run((ctx) =>
-					ctx.db
-						.query("files_pending_node_publish_receipts")
-						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parent._id))
-						.unique(),
-				),
-			).toMatchObject({
-				copiedWritePolicy: { mode: "read_only" },
-				copiedPath: "/destination/source",
-			});
-			expect(
-				await asUser.query(api.files_pending_target.get_file_pending_target, {
-					membershipId: db.membershipId,
-					target: childProposal.target,
-				}),
-			).toMatchObject({ canEdit: false, canAccept: true, canAcceptWithParents: true });
+	test.each([
+		"unchanged",
+		"same_decision",
+		"siblings",
+		"relock",
+		"ancestor_path",
+		"acl",
+		"owner",
+		"whole_folder",
+		"whole_folder_move",
+	] as const)("copied parent lock: %s", async (change) => {
+		const t = test_convex({ transactionLimits: true });
+		const owner = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const author = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "author", workspaceName: "home" }),
+		);
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		expect(
+			await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userIdToAdd: author.userId,
+			}),
+		).toEqual({ _yay: null });
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", owner.workspaceId).eq("userId", author.userId).eq("active", true),
+				)
+				.unique(),
+		);
+		if (!membership) throw new Error("Expected the author's membership");
+		const db = { ...owner, userId: author.userId, membershipId: membership._id };
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const source = await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source" });
+		const destination = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			...scope,
+			path: "/destination",
+		});
+		if (source._nay || destination._nay) throw new Error("Expected the saved folders");
+		expect(
+			(await t.mutation(internal.files_nodes.create_folder_node_by_path, { ...scope, path: "/source/child" }))._nay,
+		).toBeUndefined();
+		if (change === "siblings")
 			expect(
 				(
-					await t.mutation(internal.files_nodes.create_private_node_by_path, {
+					await t.mutation(internal.files_nodes.create_folder_node_by_path, {
 						...scope,
-						path: "/destination/source/new",
-						kind: "folder",
+						path: "/source/sibling",
 					})
 				)._nay,
-			).toBeDefined();
-			if (change === "policy")
-				expect(
-					await asOwner.mutation(api.files_nodes.set_node_write_policy, {
-						membershipId: owner.membershipId,
-						nodeId: saved._yay.target.id,
-						writePolicy: { mode: "writer", writers: [{ kind: "user", userId: owner.userId }] },
-					}),
-				).toEqual({ _yay: null });
-			if (change === "ancestor_path")
-				expect(
-					await test_rename_node(t, asOwner, {
-						membershipId: owner.membershipId,
-						nodeId: destination._yay.nodeId,
-						path: "moved",
-					}),
-				).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
-			if (change === "acl")
+			).toBeUndefined();
+		if (change === "whole_folder" || change === "whole_folder_move")
+			expect(
+				(
+					await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+						...scope,
+						path: "/source/child/grandchild",
+					})
+				)._nay,
+			).toBeUndefined();
+		expect(
+			await asOwner.mutation(api.files_nodes.read_only_set, {
+				membershipId: owner.membershipId,
+				nodeId: source._yay.nodeId,
+				readOnly: true,
+			}),
+		).toEqual({ _yay: null });
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "copied-parent",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await t.mutation(internal.files_transfer.start_for_agent, {
+			membershipId: db.membershipId,
+			threadId: thread._yay.threadId,
+			requestId: "copied-parent",
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
+			kind: "copy",
+			expectedSourceCount: 1,
+			sources: [{ kind: "saved", id: source._yay.nodeId }],
+			targetParent: { kind: "saved", id: destination._yay.nodeId },
+			targetPath: "/destination",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "error", folder: "error" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		expect(
+			await t.mutation(internal.files_transfer.seal_for_agent, {
+				membershipId: db.membershipId,
+				threadId: thread._yay.threadId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		for (let step = 0; step < 25; step++) {
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+			const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
+			if (activity?.status === "succeeded") break;
+		}
+		expect(await t.run((ctx) => ctx.db.get("activities", started._yay.activityId))).toMatchObject({
+			status: "succeeded",
+		});
+		const nodes = await t.run((ctx) => ctx.db.query("files_pending_nodes").collect());
+		const parent = nodes.find((node) => node.name === "source")!;
+		const child = nodes.find((node) => node.name === "child")!;
+		const proposals = await t.run((ctx) => ctx.db.query("files_pending_updates").collect());
+		const parentProposal = proposals.find((proposal) => proposal.target.id === parent._id)!;
+		const childProposal = proposals.find((proposal) => proposal.target.id === child._id)!;
+		if (change === "whole_folder" || change === "whole_folder_move") {
+			const grandchild = nodes.find((node) => node.name === "grandchild")!;
+			const proposal = proposals.find((proposal) => proposal.target.id === grandchild._id)!;
+			if (change === "whole_folder_move") {
 				expect(
 					(
-						await asOwner.mutation(api.files_sharing.restrict_node, {
-							membershipId: owner.membershipId,
-							nodeId: saved._yay.target.id,
+						await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+							...scope,
+							target: { kind: "saved", id: destination._yay.nodeId },
+							destParent: { kind: "root" },
+							destName: "moved-destination",
 						})
 					)._nay,
 				).toBeUndefined();
-			const caller = change === "owner" ? asOwner : asUser;
-			const membershipId = change === "owner" ? owner.membershipId : db.membershipId;
-			const before = await t.run(async (ctx) => ({
-				proposal: await ctx.db.get("files_pending_updates", childProposal._id),
-				nodes: await ctx.db.query("files_nodes").collect(),
-			}));
-			const savedChild = await test_save_file_pending_update(caller, {
-				membershipId,
-				target: childProposal.target,
-				pendingUpdateId: childProposal._id,
-				reviewedRevision: childProposal.revision,
-			});
-			if (change === "unchanged") {
-				expect(savedChild._nay).toBeUndefined();
-				expect(savedChild._yay?.target.kind).toBe("saved");
-				expect(await t.run((ctx) => ctx.db.get("files_pending_updates", childProposal._id))).toBeNull();
-			} else {
-				expect(savedChild._nay).toBeDefined();
-				expect(
-					await t.run(async (ctx) => ({
-						proposal: await ctx.db.get("files_pending_updates", childProposal._id),
-						nodes: await ctx.db.query("files_nodes").collect(),
+				const move = await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", destination._yay.nodeId))
+						.unique(),
+				);
+				if (!move) throw new Error("Expected the destination Move proposal");
+				const selected = [parentProposal, childProposal, proposal, move];
+				const started = await asUser.mutation(api.files_pending_update_runs.start, {
+					membershipId: db.membershipId,
+					requestId: "copied-parent-with-ancestor-move",
+					kind: "accept",
+					expectedItemCount: selected.length,
+					items: selected.map((item) => ({
+						pendingUpdateId: item._id,
+						reviewedRevision: item.revision,
+						selectedContentStateId: null,
 					})),
-				).toEqual(before);
+				});
+				if (started._nay) throw new Error(started._nay.message);
+				expect(
+					await asUser.mutation(api.files_pending_update_runs.seal, {
+						membershipId: db.membershipId,
+						runId: started._yay.runId,
+					}),
+				).toEqual({ _yay: null });
+				await test_finish_pending_update_run(asUser, started._yay.runId);
+				const result = await asUser.query(api.files_pending_update_runs.get, {
+					membershipId: db.membershipId,
+					runId: started._yay.runId,
+				});
+				expect(result?.run.unitCount, "the selected ancestor Move joins all copied folders in one review unit").toBe(1);
+				const units = await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_update_run_units")
+						.withIndex("by_run_order", (q) => q.eq("runId", started._yay.runId))
+						.collect(),
+				);
+				expect(units).toHaveLength(1);
+				expect(units[0]?.cohortId).not.toBeNull();
+				expect(
+					result?.activity.status,
+					"one cohort saves the copied locked parent and children with their ancestor Move",
+				).toBe("succeeded");
+			} else {
+				const saved = await test_save_file_pending_update(asUser, {
+					membershipId: db.membershipId,
+					target: proposal.target,
+					pendingUpdateId: proposal._id,
+					reviewedRevision: proposal.revision,
+				});
+				expect(
+					saved._nay,
+					"one native Save publishes the copied locked parent and both private descendants",
+				).toBeUndefined();
 			}
-		},
-	);
+			await t.run(async (ctx) => {
+				for (const [privateNode, path] of [
+					[parent, "/destination/source"],
+					[child, "/destination/source/child"],
+					[grandchild, "/destination/source/child/grandchild"],
+				] as const) {
+					const receipt = await ctx.db
+						.query("files_pending_node_publish_receipts")
+						.withIndex("by_privateNode", (q) => q.eq("privateNodeId", privateNode._id))
+						.unique();
+					expect(await ctx.db.get("files_pending_nodes", privateNode._id)).toMatchObject({ state: "published" });
+					expect(await ctx.db.get("files_nodes", receipt!.savedNodeId)).toMatchObject({
+						path: change === "whole_folder_move" ? path.replace("/destination/", "/moved-destination/") : path,
+					});
+				}
+			});
+			return;
+		}
+		const saved = await test_save_file_pending_update(asUser, {
+			membershipId: db.membershipId,
+			target: parentProposal.target,
+			pendingUpdateId: parentProposal._id,
+			reviewedRevision: parentProposal.revision,
+		});
+		if (saved._nay || saved._yay.target.kind !== "saved") throw new Error("Expected the saved parent");
+		const savedParentId = saved._yay.target.id;
+		const savedDecision = await t.run((ctx) => ctx.db.get("files_nodes", savedParentId));
+		const sourceDecision = await t.run((ctx) => ctx.db.get("files_nodes", source._yay.nodeId));
+		expect(savedDecision?.readOnlyDecisionId).not.toBe(sourceDecision?.readOnlyDecisionId);
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_pending_node_publish_receipts")
+					.withIndex("by_privateNode", (q) => q.eq("privateNodeId", parent._id))
+					.unique(),
+			),
+		).toMatchObject({
+			copiedReadOnlyDecisionId: expect.any(String),
+			copiedPath: "/destination/source",
+		});
+		expect(
+			await asUser.query(api.files_pending_target.get_file_pending_target, {
+				membershipId: db.membershipId,
+				target: childProposal.target,
+			}),
+		).toMatchObject({ canEdit: false, canAccept: true, canAcceptWithParents: true });
+		expect(
+			(
+				await t.mutation(internal.files_nodes.create_private_node_by_path, {
+					...scope,
+					path: "/destination/source/new",
+					kind: "folder",
+				})
+			)._nay,
+		).toBeDefined();
+		if (change === "relock" || change === "same_decision") {
+			for (const readOnly of change === "relock" ? [false, true] : [true]) {
+				expect(
+					await asOwner.mutation(api.files_nodes.read_only_set, {
+						membershipId: owner.membershipId,
+						nodeId: saved._yay.target.id,
+						readOnly,
+					}),
+				).toEqual({ _yay: null });
+			}
+		}
+		if (change === "ancestor_path")
+			expect(
+				await test_rename_node(t, asOwner, {
+					membershipId: owner.membershipId,
+					nodeId: destination._yay.nodeId,
+					path: "moved",
+				}),
+			).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
+		if (change === "acl")
+			expect(
+				(
+					await asOwner.mutation(api.files_sharing.restrict_node, {
+						membershipId: owner.membershipId,
+						nodeId: saved._yay.target.id,
+					})
+				)._nay,
+			).toBeUndefined();
+		const caller = change === "owner" ? asOwner : asUser;
+		const membershipId = change === "owner" ? owner.membershipId : db.membershipId;
+		const before = await t.run(async (ctx) => ({
+			proposal: await ctx.db.get("files_pending_updates", childProposal._id),
+			nodes: await ctx.db.query("files_nodes").collect(),
+		}));
+		const savedChild = await test_save_file_pending_update(caller, {
+			membershipId,
+			target: childProposal.target,
+			pendingUpdateId: childProposal._id,
+			reviewedRevision: childProposal.revision,
+		});
+		if (change === "unchanged" || change === "same_decision" || change === "siblings") {
+			expect(savedChild._nay).toBeUndefined();
+			expect(savedChild._yay?.target.kind).toBe("saved");
+			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", childProposal._id))).toBeNull();
+			if (change === "siblings") {
+				const sibling = nodes.find((node) => node.name === "sibling")!;
+				const siblingProposal = proposals.find((proposal) => proposal.target.id === sibling._id)!;
+				const savedSibling = await test_save_file_pending_update(asUser, {
+					membershipId: db.membershipId,
+					target: siblingProposal.target,
+					pendingUpdateId: siblingProposal._id,
+					reviewedRevision: siblingProposal.revision,
+				});
+				expect(savedSibling._nay, "a later Save keeps the same copied-parent receipt").toBeUndefined();
+				expect(savedSibling._yay?.target.kind).toBe("saved");
+				expect((await t.run((ctx) => ctx.db.get("files_nodes", savedParentId)))?.readOnlyDecisionId).toBe(
+					savedDecision?.readOnlyDecisionId,
+				);
+			}
+		} else {
+			expect(savedChild._nay).toBeDefined();
+			expect(
+				await t.run(async (ctx) => ({
+					proposal: await ctx.db.get("files_pending_updates", childProposal._id),
+					nodes: await ctx.db.query("files_nodes").collect(),
+				})),
+			).toEqual(before);
+		}
+	});
 
 	test("keeps private children on their parent receipt and releases only the published node slot", async () => {
 		const t = test_convex();

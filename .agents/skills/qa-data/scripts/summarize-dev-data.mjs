@@ -85,10 +85,9 @@ for (const [type, list] of [...byType].sort((a, b) => b[1].length - a[1].length)
 	for (const n of examples) console.log(`      ${nodeLabel(n)}`);
 }
 
-console.log("\nfiles and folders with a write rule:");
-for (const n of liveNodes.filter((n) => n.writePolicy)) {
-	const writer = n.writePolicy.mode === "writer" ? ` ${n.writePolicy.writer.kind}` : "";
-	console.log(`  ${n.writePolicy.mode}${writer}  ${nodeLabel(n)}`);
+console.log("\nRead-only files and folders:");
+for (const n of liveNodes.filter((n) => n.readOnly)) {
+	console.log(`  ${nodeLabel(n)}`);
 }
 console.log("\nrestricted scope roots:");
 for (const n of liveNodes.filter((n) => n.isRestrictedScopeRoot)) console.log(`  ${nodeLabel(n)}`);

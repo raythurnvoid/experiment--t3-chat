@@ -1,7 +1,7 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
-import { test_convex, test_rename_node, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_rename_node, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { Id } from "./_generated/dataModel";
 import type { plugins_Capability } from "../shared/plugins.ts";
@@ -24,6 +24,7 @@ async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
 			"workspace.files.write",
 			"workspace.files.own-write",
 			"workspace.files.own-access",
+			"workspace.files.manage-read-only",
 		];
 		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
 			organizationId: membership.organizationId,
@@ -147,6 +148,7 @@ async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
 			"Content-Type": "application/json",
 		},
 		body: JSON.stringify({
+			force: true,
 			path: rootPath,
 			writer: { resourceKey: "export output, 2026", rootNodeId: null },
 			access: { readOnly: true, ...(options?.privateRoot ? { readers: [] } : {}) },
@@ -186,7 +188,16 @@ afterEach(() => {
 
 describe("public conditional file writes", () => {
 	test("an unrelated plugin writes plain text above 100 KB with exact receipts and read bounds", async () => {
-		const { t, token, root, rootPath } = await setup({ publicWriter: true });
+		const { t, fixture, owner, token, root, rootPath } = await setup({ publicWriter: true });
+		expect(
+			(
+				await owner.mutation(api.files_nodes.read_only_set, {
+					membershipId: fixture.membershipId,
+					nodeId: root.folderNodeId,
+					readOnly: false,
+				})
+			)._nay,
+		).toBeUndefined();
 		install_object_uploads();
 		const headers = {
 			Authorization: `Bearer ${token}`,
@@ -213,7 +224,11 @@ describe("public conditional file writes", () => {
 			},
 		};
 
-		const sent = await t.fetch("/api/v1/files/write", { method: "POST", headers, body: JSON.stringify(body) });
+		const sent = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers,
+			body: JSON.stringify(body),
+		});
 		expect(sent.status, await sent.clone().text()).toBe(200);
 		const saved = (await sent.json()) as {
 			nodeId: Id<"files_nodes">;
@@ -221,12 +236,36 @@ describe("public conditional file writes", () => {
 			receipt: { contentRevision: string };
 		};
 		expect(saved.contentType).toBe("text/plain;charset=utf-8");
+		const receipt = await t.run((ctx) => ctx.db.query("plugins_external_file_receipts").first());
+		expect(receipt?.fingerprint).toBe(
+			JSON.stringify([
+				path,
+				1,
+				1,
+				body.writer.contentHash,
+				root.folderNodeId,
+				null,
+				null,
+				null,
+				"text/plain;charset=utf-8",
+				true,
+				false,
+			]),
+		);
 
-		const replay = await t.fetch("/api/v1/files/write", { method: "POST", headers, body: JSON.stringify(body) });
+		const replay = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ ...body, force: false }),
+		});
 		expect(replay.status, await replay.clone().text()).toBe(200);
 		expect(await replay.json()).toEqual(saved);
+		const omitted = await t.fetch("/api/v1/files/write", { method: "POST", headers, body: JSON.stringify(body) });
+		expect(omitted.status).toBe(200);
+		expect(await omitted.json()).toEqual(saved);
 
 		for (const changed of [
+			{ force: true },
 			{ contentType: "application/json" },
 			{ nonCollaborative: false },
 			{ access: { readOnly: true } },
@@ -261,6 +300,7 @@ describe("public conditional file writes", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				...body,
 				content: updatedContent,
 				nonCollaborative: false,
@@ -279,7 +319,7 @@ describe("public conditional file writes", () => {
 		expect(await updated.json()).toMatchObject({ nodeId: saved.nodeId });
 		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", saved.nodeId))).toMatchObject({
 			collaborationEnabled: false,
-			writePolicy: null,
+			readOnly: false,
 		});
 	});
 
@@ -288,6 +328,7 @@ describe("public conditional file writes", () => {
 		async (changed) => {
 			const { t, fixture, root, rootPath, credentials } = await setup({ publicWriter: true });
 			const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+				force: true,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
 				userId: fixture.userId,
@@ -295,6 +336,7 @@ describe("public conditional file writes", () => {
 				path: `${rootPath}/report.txt`,
 				expectedParentNodeId: root.folderNodeId,
 				externalFileWrite: {
+					force: true,
 					tokenHash: credentials.tokenHash,
 					serviceSecretHash: credentials.serviceSecretHash,
 					writerId: root.writerId,
@@ -355,7 +397,12 @@ describe("public conditional file writes", () => {
 		const incomplete = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify({ path: `${rootPath}/report.txt`, content: "Notes", writer: { writerId: root.writerId } }),
+			body: JSON.stringify({
+				force: true,
+				path: `${rootPath}/report.txt`,
+				content: "Notes",
+				writer: { writerId: root.writerId },
+			}),
 		});
 		expect(incomplete.status, await incomplete.clone().text()).toBe(400);
 
@@ -528,7 +575,11 @@ describe("public plugin writer access", () => {
 		const ensured = await t.fetch("/api/v1/files/plugin-folders/ensure", {
 			method: "POST",
 			headers: otherHeaders,
-			body: JSON.stringify({ path: "/daily-reports", writer: { resourceKey: "report output", rootNodeId: null } }),
+			body: JSON.stringify({
+				force: true,
+				path: "/daily-reports",
+				writer: { resourceKey: "report output", rootNodeId: null },
+			}),
 		});
 		expect(ensured.status, await ensured.clone().text()).toBe(200);
 		const otherRoot = (await ensured.json()) as { writer: { writerId: string } };
@@ -598,7 +649,7 @@ describe("public plugin writer access", () => {
 		const ensured = await t.fetch("/api/v1/files/plugin-folders/ensure", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(ensureBody),
+			body: JSON.stringify({ force: true, ...ensureBody }),
 		});
 		expect(ensured.status, await ensured.clone().text()).toBe(200);
 		const ensuredFolder = (await ensured.json()) as {
@@ -609,7 +660,7 @@ describe("public plugin writer access", () => {
 		const retry = await t.fetch("/api/v1/files/plugin-folders/ensure", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(ensureBody),
+			body: JSON.stringify({ force: true, ...ensureBody }),
 		});
 		expect(retry.status, await retry.clone().text()).toBe(200);
 		expect(await retry.json()).toMatchObject({ nodeId: ensuredFolder.nodeId, created: false });
@@ -631,6 +682,7 @@ describe("public plugin writer access", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				path: filePath,
 				content: "Private project notes",
 				contentType: "text/plain",
@@ -743,8 +795,17 @@ describe("public plugin writer access", () => {
 
 describe("public plugin writer archive", () => {
 	test("archives saved files separately in a 261-file folder and never archives a replacement at a saved path", async () => {
-		const { t, fixture, root, token, rootPath } = await setup({ publicWriter: true });
-		const files = await t.run(async (ctx) => {
+		const { t, fixture, owner, root, token, rootPath } = await setup({ publicWriter: true });
+		expect(
+			(
+				await owner.mutation(api.files_nodes.read_only_set, {
+					membershipId: fixture.membershipId,
+					nodeId: root.folderNodeId,
+					readOnly: false,
+				})
+			)._nay,
+		).toBeUndefined();
+		const files = await test_run_with_flush(t, async (ctx) => {
 			const nodes: { nodeId: Id<"files_nodes">; path: string }[] = [];
 			for (let index = 0; index < 261; index++) {
 				const path = `${rootPath}/report-${index}.txt`;
@@ -761,9 +822,8 @@ describe("public plugin writer archive", () => {
 					],
 					writeContext: {
 						subject: { kind: "user", userId: fixture.userId, plugin: null },
-						writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
 						actorUserId: fixture.userId,
-						policyReach: "ancestors",
+						force: true,
 						resourceScope: { kind: "create", parentNodeId: root.folderNodeId, path },
 					},
 					now: Date.now(),
@@ -799,6 +859,43 @@ describe("public plugin writer archive", () => {
 			});
 			expect(archived.status, await archived.clone().text()).toBe(200);
 			expect(await archived.json()).toMatchObject({ archivedNodes: 1, receipt: { nodeId: file.nodeId } });
+			const receipt = await t.run((ctx) =>
+				ctx.db
+					.query("plugins_external_file_receipts")
+					.withIndex("by_writer_operationId", (q) =>
+						q.eq("writerId", root.writerId).eq("operationId", `archive-${index}`),
+					)
+					.first(),
+			);
+			expect(receipt?.fingerprint).toBe(
+				JSON.stringify([
+					1,
+					{
+						kind: "archive",
+						nodeId: file.nodeId,
+						path: file.path,
+						sequence: 1,
+					},
+				]),
+			);
+			for (const force of [undefined, false, true]) {
+				const repeated = await t.fetch("/api/v1/files/plugin-archive", {
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						path: file.path,
+						force,
+						writer: {
+							writerId: root.writerId,
+							operationId: `archive-${index}`,
+							writerGeneration: 1,
+							sequence: 1,
+							nodeId: file.nodeId,
+						},
+					}),
+				});
+				expect(repeated.status, await repeated.clone().text()).toBe(force === true ? 409 : 200);
+			}
 		}
 
 		const first = files[0]!;
@@ -812,6 +909,7 @@ describe("public plugin writer archive", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: false,
 				path: first.path,
 				writer: {
 					writerId: root.writerId,
@@ -839,6 +937,7 @@ describe("external file writes", () => {
 
 		expect(
 			await t.mutation(internal.plugins_external_files.ensure_writer, {
+				force: true,
 				...credentials,
 				path: ROOT,
 				readOnly: true,
@@ -850,6 +949,7 @@ describe("external file writes", () => {
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.ensure_writer, {
+					force: true,
 					...credentials,
 					path: ROOT,
 					readOnly: true,
@@ -891,7 +991,7 @@ describe("external file writes", () => {
 		const sent = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(request),
+			body: JSON.stringify({ force: true, ...request }),
 		});
 		expect(sent.status, await sent.clone().text()).toBe(200);
 		const receipt = (await sent.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
@@ -899,7 +999,7 @@ describe("external file writes", () => {
 		const replay = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(request),
+			body: JSON.stringify({ force: true, ...request }),
 		});
 		expect(replay.status, await replay.clone().text()).toBe(200);
 		expect((await replay.json()).receipt).toEqual(receipt);
@@ -920,7 +1020,7 @@ describe("external file writes", () => {
 		const saved = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(second),
+			body: JSON.stringify({ force: true, ...second }),
 		});
 		expect(saved.status, await saved.clone().text()).toBe(200);
 		expect((await saved.json()).receipt).toMatchObject({ nodeId: receipt.nodeId, sequence: 2 });
@@ -936,7 +1036,11 @@ describe("external file writes", () => {
 		const stale = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify({ ...second, writer: { ...second.writer, operationId: "stale-content", sequence: 3 } }),
+			body: JSON.stringify({
+				force: true,
+				...second,
+				writer: { ...second.writer, operationId: "stale-content", sequence: 3 },
+			}),
 		});
 		expect(stale.status).toBe(409);
 
@@ -990,7 +1094,7 @@ describe("external file writes", () => {
 		const first = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(request),
+			body: JSON.stringify({ force: true, ...request }),
 		});
 		expect(first.status, await first.clone().text()).toBe(200);
 		const firstReceipt = (await first.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
@@ -1001,6 +1105,27 @@ describe("external file writes", () => {
 			body: JSON.stringify({ writerId: root.writerId, operationId: "fence-2", writerGeneration: 1, nextGeneration: 2 }),
 		});
 		expect(fence.status, await fence.clone().text()).toBe(200);
+		const fenceReceipt = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_external_file_receipts")
+				.withIndex("by_writer_operationId", (q) => q.eq("writerId", root.writerId).eq("operationId", "fence-2"))
+				.first(),
+		);
+		expect(fenceReceipt?.fingerprint).toBe(JSON.stringify([1, { kind: "fence", nextGeneration: 2 }]));
+		for (const force of [undefined, false, true]) {
+			const repeated = await t.fetch("/api/v1/files/plugin-writers/advance", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					writerId: root.writerId,
+					operationId: "fence-2",
+					writerGeneration: 1,
+					nextGeneration: 2,
+					force,
+				}),
+			});
+			expect(repeated.status, await repeated.clone().text()).toBe(force === undefined ? 200 : 400);
+		}
 
 		const replacement = {
 			...request,
@@ -1020,6 +1145,7 @@ describe("external file writes", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				...replacement,
 				writer: { ...replacement.writer, operationId: "old-generation", writerGeneration: 1, sequence: 101 },
 			}),
@@ -1029,7 +1155,7 @@ describe("external file writes", () => {
 		const rebuilt = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(replacement),
+			body: JSON.stringify({ force: true, ...replacement }),
 		});
 		expect(rebuilt.status, await rebuilt.clone().text()).toBe(200);
 		const rebuiltReceipt = (await rebuilt.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
@@ -1040,6 +1166,7 @@ describe("external file writes", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				path,
 				writer: {
 					writerId: root.writerId,
@@ -1057,6 +1184,7 @@ describe("external file writes", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				...replacement,
 				writer: {
 					...replacement.writer,
@@ -1071,6 +1199,7 @@ describe("external file writes", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				path,
 				writer: {
 					writerId: root.writerId,
@@ -1094,6 +1223,7 @@ describe("external file writes", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				path,
 				writer: {
 					writerId: root.writerId,
@@ -1110,6 +1240,7 @@ describe("external file writes", () => {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
+				force: true,
 				path,
 				writer: {
 					writerId: root.writerId,
@@ -1130,6 +1261,7 @@ describe("external file writes", () => {
 		const { t, fixture, credentials, owner, token, root } = await setup();
 		install_object_uploads();
 		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/team`,
 			readOnly: true,
@@ -1155,6 +1287,7 @@ describe("external file writes", () => {
 		};
 		const request = {
 			path: `${ROOT}/team/team.md`,
+			force: true,
 			expectedParentNodeId: ensured._yay.folderNodeId,
 			content: "Hello\n",
 			nonCollaborative: true,
@@ -1262,6 +1395,7 @@ describe("external file writes", () => {
 			return { userId, membershipLifetime: 1 };
 		});
 		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/team`,
 			readOnly: true,
@@ -1281,6 +1415,7 @@ describe("external file writes", () => {
 				method: "POST",
 				headers,
 				body: JSON.stringify({
+					force: true,
 					path: `${ROOT}/team/team.md`,
 					expectedParentNodeId: folderNodeId,
 					content,
@@ -1406,6 +1541,7 @@ describe("external file writes", () => {
 		const { t, fixture, credentials, root } = await setup();
 		const path = `${ROOT}/general.md`;
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			force: true,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			userId: fixture.userId,
@@ -1413,6 +1549,7 @@ describe("external file writes", () => {
 			path,
 			expectedParentNodeId: root.folderNodeId,
 			externalFileWrite: {
+				force: true,
 				tokenHash: credentials.tokenHash,
 				serviceSecretHash: credentials.serviceSecretHash,
 				writerId: root.writerId,
@@ -1504,17 +1641,17 @@ describe("archive", () => {
 		const published = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(write),
+			body: JSON.stringify({ force: true, ...write }),
 		});
 		expect(published.status, await published.clone().text()).toBe(200);
 		const file = (await published.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
 
 		expect(
 			(
-				await owner.mutation(api.files_nodes.set_node_write_policy, {
+				await owner.mutation(api.files_nodes.read_only_set, {
 					membershipId: fixture.membershipId,
 					nodeId: root.folderNodeId,
-					writePolicy: null,
+					readOnly: false,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -1531,7 +1668,11 @@ describe("archive", () => {
 			const replacement = await t.fetch("/api/v1/files/write", {
 				method: "POST",
 				headers,
-				body: JSON.stringify({ ...write, writer: { ...write.writer, operationId: "write-2", sequence: 2 } }),
+				body: JSON.stringify({
+					force: true,
+					...write,
+					writer: { ...write.writer, operationId: "write-2", sequence: 2 },
+				}),
 			});
 			expect(replacement.status, await replacement.clone().text()).toBe(200);
 		}
@@ -1552,7 +1693,11 @@ describe("archive", () => {
 		const changed = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
-			body: JSON.stringify({ ...archive, writer: { ...archive.writer, expectedContentRevision: "older-revision" } }),
+			body: JSON.stringify({
+				force: true,
+				...archive,
+				writer: { ...archive.writer, expectedContentRevision: "older-revision" },
+			}),
 		});
 		expect(changed.status, await changed.clone().text()).toBe(409);
 		expect(await changed.json()).toEqual({ message: "The file changed" });
@@ -1560,7 +1705,7 @@ describe("archive", () => {
 		const response = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(archive),
+			body: JSON.stringify({ force: true, ...archive }),
 		});
 		expect(response.status, await response.clone().text()).toBe(200);
 		const receipt = (await response.json()).receipt;
@@ -1569,7 +1714,7 @@ describe("archive", () => {
 		const replay = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
-			body: JSON.stringify(archive),
+			body: JSON.stringify({ force: true, ...archive }),
 		});
 		expect(replay.status, await replay.clone().text()).toBe(200);
 		expect((await replay.json()).receipt).toEqual(receipt);
@@ -1593,6 +1738,7 @@ describe("archive", () => {
 				method: "POST",
 				headers,
 				body: JSON.stringify({
+					force: true,
 					path,
 					expectedParentNodeId: root.folderNodeId,
 					content: "Saved",
@@ -1626,7 +1772,7 @@ describe("archive", () => {
 			const archived = await t.fetch("/api/v1/files/plugin-archive", {
 				method: "POST",
 				headers,
-				body: JSON.stringify(archive),
+				body: JSON.stringify({ force: true, ...archive }),
 			});
 			expect(archived.status, await archived.clone().text()).toBe(200);
 
@@ -1643,10 +1789,10 @@ describe("archive", () => {
 			} else {
 				expect(
 					(
-						await owner.mutation(api.files_nodes.set_node_write_policy, {
+						await owner.mutation(api.files_nodes.read_only_set, {
 							membershipId: fixture.membershipId,
 							nodeId: condition === "file policy" ? file.nodeId : root.folderNodeId,
-							writePolicy: { mode: "read_only" },
+							readOnly: true,
 						})
 					)._nay,
 				).toBeUndefined();
@@ -1656,11 +1802,11 @@ describe("archive", () => {
 				nodes: await ctx.db.query("files_nodes").collect(),
 				receipts: await ctx.db.query("plugins_external_file_receipts").collect(),
 			}));
-			if (condition === "parent policy") {
+			if (condition === "parent policy" || condition === "file policy") {
 				const allowed = await t.fetch("/api/v1/files/plugin-archive", {
 					method: "POST",
 					headers,
-					body: JSON.stringify(archive),
+					body: JSON.stringify({ force: true, ...archive }),
 				});
 				expect(allowed.status, await allowed.clone().text()).toBe(200);
 				return;
@@ -1672,7 +1818,7 @@ describe("archive", () => {
 				const blocked = await t.fetch("/api/v1/files/plugin-archive", {
 					method: "POST",
 					headers,
-					body: JSON.stringify(request),
+					body: JSON.stringify({ force: true, ...request }),
 				});
 				expect(blocked.status, await blocked.clone().text()).toBe(condition === "account grant" ? 403 : 409);
 				if (condition !== "account grant") expect(await blocked.json()).toEqual({ message: "This item is read-only." });
@@ -1692,6 +1838,7 @@ describe("archive", () => {
 		install_object_uploads();
 		const folderPath = `${ROOT}/team`;
 		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: folderPath,
 			readOnly: true,
@@ -1712,6 +1859,7 @@ describe("archive", () => {
 				method: "POST",
 				headers,
 				body: JSON.stringify({
+					force: true,
 					path,
 					expectedParentNodeId: folder.folderNodeId,
 					content: name,
@@ -1734,6 +1882,7 @@ describe("archive", () => {
 				method: "POST",
 				headers,
 				body: JSON.stringify({
+					force: true,
 					path,
 					writer: {
 						writerId: folder.writerId,
@@ -1749,10 +1898,10 @@ describe("archive", () => {
 			if (name === "protected")
 				expect(
 					(
-						await owner.mutation(api.files_nodes.set_node_write_policy, {
+						await owner.mutation(api.files_nodes.read_only_set, {
 							membershipId: fixture.membershipId,
 							nodeId: file.nodeId,
-							writePolicy: { mode: "read_only" },
+							readOnly: true,
 						})
 					)._nay,
 				).toBeUndefined();
@@ -1771,6 +1920,7 @@ describe("archive", () => {
 				method: "POST",
 				headers,
 				body: JSON.stringify({
+					force: true,
 					path: target.path,
 					writer: {
 						writerId: folder.writerId,
@@ -1781,8 +1931,10 @@ describe("archive", () => {
 					},
 				}),
 			});
-			expect(blocked.status, await blocked.clone().text()).toBe(409);
-			expect(await blocked.json()).toEqual({ message: target.message });
+			if (target.nodeId === folder.folderNodeId) {
+				expect(blocked.status, await blocked.clone().text()).toBe(409);
+				expect(await blocked.json()).toEqual({ message: target.message });
+			} else expect(blocked.status, await blocked.clone().text()).toBe(200);
 		}
 
 		expect(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).toEqual(before);
@@ -1791,6 +1943,41 @@ describe("archive", () => {
 });
 
 describe("ensure_writer", () => {
+	test("changes Read-only without changing readers on a locked writer root", async () => {
+		const { t, credentials, root } = await setup({ publicWriter: true, privateRoot: true });
+		const before = await t.run(async (ctx) => ({
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+			binding: await ctx.db
+				.query("plugins_external_file_bindings")
+				.withIndex("by_writer", (q) => q.eq("writerId", root.writerId))
+				.unique(),
+		}));
+		const request = {
+			...credentials,
+			writerId: root.writerId,
+			operationId: "unlock-root",
+			writerGeneration: 1,
+			change: { kind: "read_only" as const, readOnly: false },
+		};
+		expect(before.binding).toMatchObject({ revision: 1 });
+		const changed = await t.mutation(internal.plugins_external_files.change_scope, request);
+		expect(changed._nay).toBeUndefined();
+		expect(await t.mutation(internal.plugins_external_files.change_scope, request)).toEqual(changed);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", root.folderNodeId))).toMatchObject({
+			readOnly: false,
+			readOnlyDecisionId: null,
+		});
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(before.grants);
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("plugins_external_file_bindings")
+					.withIndex("by_writer", (q) => q.eq("writerId", root.writerId))
+					.unique(),
+			),
+		).toEqual(before.binding);
+	});
+
 	test.each(["workspace.service_accounts.manage", "content.permissions.manage", "content.read"])(
 		"refuses private setup without the actor's %s before creating anything",
 		async (missingPermission) => {
@@ -1849,6 +2036,7 @@ describe("ensure_writer", () => {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
+					force: true,
 					path: `${rootPath}/private/team`,
 					writer: { resourceKey: "private-team", rootNodeId: root.rootNodeId },
 					access: { readers: [], readOnly: true },
@@ -1878,6 +2066,7 @@ describe("ensure_writer", () => {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
+					force: true,
 					path,
 					access: { readers: [] },
 					writer: { resourceKey, rootNodeId: root.rootNodeId },
@@ -1909,6 +2098,7 @@ describe("ensure_writer", () => {
 		const { t, fixture, owner, token, credentials, root } = await setup();
 		const request = {
 			path: `${ROOT}/private/team`,
+			force: true,
 			access: { readOnly: true, readers: [] },
 			writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 		};
@@ -1993,6 +2183,7 @@ describe("ensure_writer", () => {
 			body: JSON.stringify({
 				path,
 				access: { readOnly: false, readers: [] },
+				force: true,
 				writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 			}),
 		};
@@ -2020,10 +2211,10 @@ describe("ensure_writer", () => {
 		).toBeUndefined();
 		expect(
 			(
-				await owner.mutation(api.files_nodes.set_node_write_policy, {
+				await owner.mutation(api.files_nodes.read_only_set, {
 					membershipId: fixture.membershipId,
 					nodeId: root.rootNodeId,
-					writePolicy: null,
+					readOnly: false,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -2080,6 +2271,7 @@ describe("ensure_writer", () => {
 			body: JSON.stringify({
 				path: `${ROOT}/team`,
 				access: { readOnly: true, readers: [] },
+				force: true,
 				writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 			}),
 		};
@@ -2126,6 +2318,7 @@ describe("rollback_readers", () => {
 		async (condition) => {
 			const { t, fixture, owner, credentials, token, root } = await setup();
 			const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+				force: true,
 				...credentials,
 				path: `${ROOT}/team`,
 				readOnly: true,
@@ -2264,10 +2457,10 @@ describe("rollback_readers", () => {
 			} else if (condition === "policy") {
 				expect(
 					(
-						await owner.mutation(api.files_nodes.set_node_write_policy, {
+						await owner.mutation(api.files_nodes.read_only_set, {
 							membershipId: fixture.membershipId,
 							nodeId: folder.folderNodeId,
-							writePolicy: { mode: "writer", writers: [{ kind: "user", userId: fixture.userId }] },
+							readOnly: true,
 						})
 					)._nay,
 				).toBeUndefined();
@@ -2287,7 +2480,7 @@ describe("rollback_readers", () => {
 					? 401
 					: condition === "write-only" || condition === "wrong-root"
 						? 403
-						: condition === "newer-readers" || condition === "policy"
+						: condition === "newer-readers"
 							? 409
 							: 200;
 			expect(result.status, await result.clone().text()).toBe(expectedStatus);
@@ -2346,6 +2539,7 @@ describe("rollback_readers", () => {
 			});
 
 			const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+				force: true,
 				...credentials,
 				path: `${ROOT}/team`,
 				readOnly: true,
@@ -2479,6 +2673,7 @@ describe("rollback_readers", () => {
 		async (condition) => {
 			const { t, fixture, owner, credentials, token, root } = await setup();
 			const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+				force: true,
 				...credentials,
 				path: `${ROOT}/team`,
 				readOnly: true,
@@ -2531,28 +2726,10 @@ describe("rollback_readers", () => {
 			} else if (condition === "policy") {
 				expect(
 					(
-						await owner.mutation(api.files_nodes.set_node_write_policy, {
+						await owner.mutation(api.files_nodes.read_only_set, {
 							membershipId: fixture.membershipId,
 							nodeId: ensured._yay.folderNodeId,
-							writePolicy: { mode: "writer", writers: [{ kind: "user", userId: fixture.userId }] },
-						})
-					)._nay,
-				).toBeUndefined();
-				const blocked = await t.fetch("/api/v1/files/plugin-access/undo", options);
-				expect(blocked.status, await blocked.clone().text()).toBe(409);
-				expect(await blocked.json()).toEqual({ message: "This item is read-only." });
-				expect(
-					await t.run(async (ctx) => await ctx.db.query("plugins_external_file_reader_changes").collect()),
-				).toEqual([]);
-				expect(
-					(
-						await owner.mutation(api.files_nodes.set_node_write_policy, {
-							membershipId: fixture.membershipId,
-							nodeId: ensured._yay.folderNodeId,
-							writePolicy: {
-								mode: "writer",
-								writers: [{ kind: "service_account", serviceAccountId: fixture.serviceAccountId }],
-							},
+							readOnly: true,
 						})
 					)._nay,
 				).toBeUndefined();
@@ -2629,6 +2806,7 @@ describe("rollback_readers", () => {
 		});
 
 		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/team`,
 			readOnly: true,
@@ -2718,10 +2896,10 @@ describe("rollback_readers", () => {
 		} else if (change === "target-policy" || change === "ancestor-policy") {
 			expect(
 				(
-					await owner.mutation(api.files_nodes.set_node_write_policy, {
+					await owner.mutation(api.files_nodes.read_only_set, {
 						membershipId: fixture.membershipId,
 						nodeId: change === "target-policy" ? nodeId : ensured._yay.rootNodeId,
-						writePolicy: { mode: "writer", writers: [{ kind: "user", userId: fixture.userId }] },
+						readOnly: true,
 					})
 				)._nay,
 			).toBeUndefined();
@@ -2744,7 +2922,7 @@ describe("rollback_readers", () => {
 		});
 
 		const expectedStatus =
-			change === "manual" || change === "old-lifetime" || change === "ancestor-policy"
+			change === "manual" || change === "old-lifetime" || change === "ancestor-policy" || change === "target-policy"
 				? 200
 				: change.startsWith("wrong-") || change === "revoked-account" || change === "uninstalled"
 					? 401
@@ -2758,8 +2936,8 @@ describe("rollback_readers", () => {
 		if (change === "manual") expect(await result.json()).toMatchObject({ restored: false, detached: true, _id: null });
 		if (change === "old-lifetime") expect(await result.json()).toMatchObject({ restored: true, detached: false });
 		if (change === "ancestor-policy") expect(await result.json()).toMatchObject({ restored: true, detached: false });
-		if (change === "target-policy") expect(await result.json()).toEqual({ message: "This item is read-only." });
-		if (change === "ancestor-policy") return;
+		if (change === "target-policy") expect(await result.json()).toMatchObject({ restored: true, detached: false });
+		if (change === "ancestor-policy" || change === "target-policy") return;
 		expect(await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect())).toEqual(
 			before,
 		);
@@ -2796,6 +2974,7 @@ describe("external file readers", () => {
 			return readers;
 		});
 		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/private/team`,
 			readOnly: true,
@@ -3018,6 +3197,7 @@ describe("external file readers", () => {
 			return readers;
 		});
 		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/private/rows`,
 			readOnly: true,
@@ -3071,6 +3251,7 @@ describe("external file readers", () => {
 	test("workspace content purge drains external file and grant receipt docs", async () => {
 		const { t, fixture, credentials, root, owner } = await setup();
 		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/private/team`,
 			readOnly: true,
@@ -3189,6 +3370,7 @@ describe("external file readers", () => {
 			return { userId, membershipId, lifetimeId };
 		});
 		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/private/team`,
 			readOnly: true,
@@ -3272,6 +3454,7 @@ describe("external file readers", () => {
 		expect(await canRead()).toBe(true);
 
 		const repeated = await t.mutation(internal.plugins_external_files.ensure_writer, {
+			force: true,
 			...credentials,
 			path: `${ROOT}/private/team`,
 			readOnly: true,

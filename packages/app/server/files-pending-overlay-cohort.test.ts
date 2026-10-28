@@ -942,10 +942,10 @@ describe("Move owner views", () => {
 			}),
 		);
 		expect(
-			await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asUser.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => ctx.db.get("files_pending_hides", hideId))).toMatchObject({

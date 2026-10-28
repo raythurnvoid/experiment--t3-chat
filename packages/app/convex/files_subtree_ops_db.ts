@@ -185,7 +185,10 @@ export async function files_subtree_ops_db_schedule_step(
 
 export async function files_subtree_ops_db_insert_node(
 	ctx: MutationCtx,
-	args: { opId: Id<"files_subtree_ops">; sequence: number; nodeId: Id<"files_nodes">; nodeDone: boolean },
+	args: Pick<
+		Doc<"files_subtree_op_nodes">,
+		"opId" | "sequence" | "nodeId" | "nodeDone" | "forceArchive" | "restoredParent"
+	>,
 ) {
 	await ctx.db.insert("files_subtree_op_nodes", { ...args, cursor: null, pending: [] });
 }
@@ -196,7 +199,10 @@ export async function files_subtree_ops_db_insert_node(
  */
 export async function files_subtree_ops_db_enqueue_nodes(
 	ctx: MutationCtx,
-	args: { opId: Id<"files_subtree_ops">; nodes: Array<{ nodeId: Id<"files_nodes">; nodeDone: boolean }> },
+	args: {
+		opId: Id<"files_subtree_ops">;
+		nodes: Array<Pick<Doc<"files_subtree_op_nodes">, "nodeId" | "nodeDone" | "forceArchive" | "restoredParent">>;
+	},
 ) {
 	if (args.nodes.length === 0) return;
 
@@ -375,12 +381,17 @@ export async function files_subtree_ops_db_save_page(
 		isDone: boolean;
 		pending: Array<Id<"files_nodes">>;
 		folderIds: Array<Id<"files_nodes">>;
+		restoredParents?: Map<Id<"files_nodes">, NonNullable<Doc<"files_subtree_op_nodes">["restoredParent"]>>;
 		isRowFirst: boolean;
 	},
 ) {
 	await files_subtree_ops_db_enqueue_nodes(ctx, {
 		opId: args.row.opId,
-		nodes: args.folderIds.map((nodeId) => ({ nodeId, nodeDone: true })),
+		nodes: args.folderIds.map((nodeId) => ({
+			nodeId,
+			nodeDone: true,
+			...(args.restoredParents?.has(nodeId) ? { restoredParent: args.restoredParents.get(nodeId)! } : {}),
+		})),
 	});
 	if (args.isDone && args.pending.length === 0) {
 		await ctx.db.delete("files_subtree_op_nodes", args.row._id);

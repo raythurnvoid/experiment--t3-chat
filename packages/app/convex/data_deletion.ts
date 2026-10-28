@@ -2331,7 +2331,7 @@ async function db_drain_user_write_policy_runs_batch(ctx: MutationCtx, args: { u
 async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId: Id<"users"> }) {
 	// Skip the stamping archives, so the user's other jobs behind them are still found.
 	for await (const run of ctx.db.query("files_archive_runs").withIndex("by_user", (q) => q.eq("userId", args.userId))) {
-		if (run.active && run.kind === "archive" && run.phase === "apply") continue;
+		if (run.active && run.kind === "archive" && run.phase === "apply" && !run.force) continue;
 		const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: run._id });
 		return purged.deletedCount;
 	}

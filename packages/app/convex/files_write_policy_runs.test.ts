@@ -5,7 +5,13 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { test_convex, test_rename_node, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_rename_node,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
 // Scheduled steps never run on their own under fake timers. Each test drives `advance` itself.
@@ -134,13 +140,13 @@ async function grant(args: { f: Fixture; nodeId: Id<"files_nodes">; level: "read
 	).toEqual({ _yay: null });
 }
 
-async function demote_to_member(f: Fixture) {
+async function demote_to_viewer(f: Fixture) {
 	expect(
 		await f.asOwner.mutation(api.access_control.set_user_role, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			userId: f.member.userId,
-			role: "member",
+			role: "viewer",
 		}),
 	).toEqual({ _yay: null });
 }
@@ -149,7 +155,7 @@ async function start_as_member(f: Fixture, nodeId: Id<"files_nodes">) {
 	const started = await f.asMember.mutation(api.files_write_policy_runs.start, {
 		membershipId: f.member.membershipId,
 		nodeId,
-		writePolicy: { mode: "read_only" },
+		targetReadOnly: true,
 	});
 	if (started._nay) throw new Error(started._nay.message);
 	return started._yay.activityId;
@@ -175,8 +181,8 @@ async function run_to_end(f: Fixture, activityId: Id<"activities">) {
 	throw new Error("The protection job did not finish");
 }
 
-async function read_policy(f: Fixture, nodeId: Id<"files_nodes">) {
-	return (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.writePolicy;
+async function read_only(f: Fixture, nodeId: Id<"files_nodes">) {
+	return (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.readOnly;
 }
 
 function progress_of(activity: Doc<"activities">) {
@@ -196,7 +202,7 @@ describe("start", () => {
 			status: "queued",
 			visibility: "requester",
 			feedVisible: true,
-			title: "Apply protection to folder contents",
+			title: "Make folder contents Read-only",
 			targets: [],
 			resultKind: "saved",
 			userId: f.member.userId,
@@ -225,20 +231,20 @@ describe("start", () => {
 		const second = await f.asMember.mutation(api.files_write_policy_runs.start, {
 			membershipId: f.member.membershipId,
 			nodeId: other,
-			writePolicy: null,
+			targetReadOnly: false,
 		});
 		expect(second._nay?.message).toBe("Another protection update is still running.");
 	});
 
-	test("refuses a person who cannot manage the folder and writes nothing", async () => {
+	test("refuses a person who cannot edit the folder and writes nothing", async () => {
 		const f = await fixture();
 		const box = await folder(f, "/box");
-		await demote_to_member(f);
+		await demote_to_viewer(f);
 
 		const refused = await f.asMember.mutation(api.files_write_policy_runs.start, {
 			membershipId: f.member.membershipId,
 			nodeId: box,
-			writePolicy: { mode: "read_only" },
+			targetReadOnly: true,
 		});
 		expect(refused._nay?.message).toBe("Permission denied");
 		expect(await f.t.run((ctx) => ctx.db.query("files_write_policy_runs").collect())).toEqual([]);
@@ -254,7 +260,7 @@ describe("start", () => {
 		const refused = await f.asMember.mutation(api.files_write_policy_runs.start, {
 			membershipId: f.member.membershipId,
 			nodeId: box,
-			writePolicy: { mode: "read_only" },
+			targetReadOnly: true,
 		});
 		expect(refused._nay?.message).toBe("Permission denied");
 		expect(await f.t.run((ctx) => ctx.db.query("files_write_policy_runs").collect())).toEqual([]);
@@ -273,10 +279,10 @@ describe("advance", () => {
 		).toEqual({ _yay: null });
 		// One item already has the rule. It is counted as skipped.
 		expect(
-			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asOwner.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: ids[7]!,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
 
@@ -293,9 +299,9 @@ describe("advance", () => {
 		expect(finished.status).toBe("succeeded");
 		expect(progress_of(finished)).toEqual({ completed: 119, skipped: 1, blocked: 0, discovered: 120, total: 120 });
 
-		for (const id of ids) expect(await read_policy(f, id)).toEqual({ mode: "read_only" });
-		expect(await read_policy(f, archived)).toBeNull();
-		expect(await read_policy(f, box)).toBeNull();
+		for (const id of ids) expect(await read_only(f, id)).toBe(true);
+		expect(await read_only(f, archived)).toBe(false);
+		expect(await read_only(f, box)).toBe(false);
 	});
 
 	test("unlocking contents clears each child's own rule", async () => {
@@ -305,25 +311,25 @@ describe("advance", () => {
 		const second = await folder(f, "/box/second");
 		for (const nodeId of [first, second])
 			expect(
-				await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				await f.asOwner.mutation(api.files_nodes.read_only_set, {
 					membershipId: f.db.membershipId,
 					nodeId,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				}),
 			).toEqual({ _yay: null });
 
 		const started = await f.asOwner.mutation(api.files_write_policy_runs.start, {
 			membershipId: f.db.membershipId,
 			nodeId: box,
-			writePolicy: null,
+			targetReadOnly: false,
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		expect((await run_to_end(f, started._yay.activityId)).status).toBe("succeeded");
-		expect(await read_policy(f, first)).toBeNull();
-		expect(await read_policy(f, second)).toBeNull();
+		expect(await read_only(f, first)).toBe(false);
+		expect(await read_only(f, second)).toBe(false);
 	});
 
-	test("counts a visible item it cannot manage as blocked, and never counts a hidden one", async () => {
+	test("counts a visible item it cannot edit as blocked, and never counts a hidden one", async () => {
 		const f = await fixture();
 		const box = await folder(f, "/box");
 		const open = await folder(f, "/box/open");
@@ -337,9 +343,9 @@ describe("advance", () => {
 		const finished = await run_to_end(f, activityId);
 		expect(finished).toMatchObject({ status: "partial", errorMessage: null, targets: [] });
 		expect(progress_of(finished)).toEqual({ completed: 1, skipped: 0, blocked: 1, discovered: 2, total: 2 });
-		expect(await read_policy(f, open)).toEqual({ mode: "read_only" });
-		expect(await read_policy(f, shown)).toBeNull();
-		expect(await read_policy(f, hidden)).toBeNull();
+		expect(await read_only(f, open)).toBe(true);
+		expect(await read_only(f, shown)).toBe(false);
+		expect(await read_only(f, hidden)).toBe(false);
 
 		// The member cannot see `hidden`. That is why it is not counted.
 		expect(
@@ -378,9 +384,9 @@ describe("advance", () => {
 
 		const finished = await run_to_end(f, await start_as_member(f, box));
 		expect(progress_of(finished)).toEqual({ completed: 1, skipped: 0, blocked: 0, discovered: 1, total: 1 });
-		expect(await read_policy(f, inner)).toBeNull();
-		expect(await read_policy(f, hidden)).toBeNull();
-		expect(await read_policy(f, after)).toEqual({ mode: "read_only" });
+		expect(await read_only(f, inner)).toBe(false);
+		expect(await read_only(f, hidden)).toBe(false);
+		expect(await read_only(f, after)).toBe(true);
 	});
 
 	test("a hidden file never hides siblings whose names start with its name", async () => {
@@ -388,7 +394,7 @@ describe("advance", () => {
 		const box = await folder(f, "/box");
 		await folder(f, "/box/b");
 		const siblings = [await folder(f, "/box/b-x"), await folder(f, "/box/bc"), await folder(f, "/box/b0")];
-		const hiddenFile = await f.t.run((ctx) =>
+		const hiddenFile = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.db.organizationId,
@@ -407,8 +413,8 @@ describe("advance", () => {
 
 		const finished = await run_to_end(f, await start_as_member(f, box));
 		expect(finished.status).toBe("succeeded");
-		for (const id of siblings) expect(await read_policy(f, id)).toEqual({ mode: "read_only" });
-		expect(await read_policy(f, hiddenFile)).toBeNull();
+		for (const id of siblings) expect(await read_only(f, id)).toBe(true);
+		expect(await read_only(f, hiddenFile)).toBe(false);
 	});
 
 	test("updates a file whose path is the first path after a hidden folder's contents", async () => {
@@ -418,7 +424,7 @@ describe("advance", () => {
 		// "/box/b0", so the next page must start at that exact path.
 		for (let index = 0; index < 49; index++) await hide(f, await folder(f, `/box/a${String(index).padStart(3, "0")}`));
 		await hide(f, await folder(f, "/box/b"));
-		const boundFile = await f.t.run((ctx) =>
+		const boundFile = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.db.organizationId,
@@ -436,7 +442,7 @@ describe("advance", () => {
 
 		const finished = await run_to_end(f, await start_as_member(f, box));
 		expect(progress_of(finished)).toEqual({ completed: 1, skipped: 0, blocked: 0, discovered: 1, total: 1 });
-		expect(await read_policy(f, boundFile)).toEqual({ mode: "read_only" });
+		expect(await read_only(f, boundFile)).toBe(true);
 	});
 
 	test("skips hidden folders inside the page instead of reading the page again", async () => {
@@ -453,7 +459,7 @@ describe("advance", () => {
 
 		const finished = await run_to_end(f, await start_as_member(f, box));
 		expect(progress_of(finished)).toEqual({ completed: 1, skipped: 0, blocked: 0, discovered: 1, total: 1 });
-		expect(await read_policy(f, after)).toEqual({ mode: "read_only" });
+		expect(await read_only(f, after)).toBe(true);
 	});
 
 	test("hidden items between managed ones still give steps of exactly 50", async () => {
@@ -509,8 +515,8 @@ describe("advance", () => {
 
 		const finished = await run_to_end(f, activityId);
 		expect(progress_of(finished)).toEqual({ completed: 2, skipped: 0, blocked: 0, discovered: 2, total: 2 });
-		expect(await read_policy(f, inner)).toBeNull();
-		expect(await read_policy(f, after)).toEqual({ mode: "read_only" });
+		expect(await read_only(f, inner)).toBe(false);
+		expect(await read_only(f, after)).toBe(true);
 	});
 
 	test("a step stops after reading 1,000 nodes, even when it checked only a few of them", async () => {
@@ -557,7 +563,7 @@ describe("advance", () => {
 		expect(progress_of(finished)).toEqual({ completed: 0, skipped: 0, blocked: 0, discovered: 0, total: 0 });
 	});
 
-	test("stops at the next step when the person loses management of the folder", async () => {
+	test("stops at the next step when the person loses edit access to the folder", async () => {
 		const f = await fixture();
 		const box = await folder(f, "/box");
 		const ids: Id<"files_nodes">[] = [];
@@ -565,7 +571,7 @@ describe("advance", () => {
 
 		const activityId = await start_as_member(f, box);
 		await step(f, activityId);
-		await demote_to_member(f);
+		await demote_to_viewer(f);
 
 		const failed = await step(f, activityId);
 		expect(failed).toMatchObject({
@@ -573,8 +579,8 @@ describe("advance", () => {
 			errorMessage: "You can no longer change this folder's protection.",
 		});
 		expect(progress_of(failed)).toMatchObject({ completed: 50 });
-		expect(await read_policy(f, ids[49]!)).toEqual({ mode: "read_only" });
-		expect(await read_policy(f, ids[50]!)).toBeNull();
+		expect(await read_only(f, ids[49]!)).toBe(true);
+		expect(await read_only(f, ids[50]!)).toBe(false);
 	});
 
 	test("stops at the next step after a leave and re-join", async () => {
@@ -609,7 +615,7 @@ describe("advance", () => {
 			status: "failed",
 			errorMessage: "You can no longer change this folder's protection.",
 		});
-		expect(await read_policy(f, ids[50]!)).toBeNull();
+		expect(await read_only(f, ids[50]!)).toBe(false);
 	});
 
 	test("stops when the folder moves during the job", async () => {
@@ -632,7 +638,7 @@ describe("advance", () => {
 			status: "failed",
 			errorMessage: "The folder moved or was archived during the update. Run it again.",
 		});
-		expect(await read_policy(f, ids[50]!)).toBeNull();
+		expect(await read_only(f, ids[50]!)).toBe(false);
 	});
 
 	test("stops when the folder is archived during the job", async () => {
@@ -644,7 +650,7 @@ describe("advance", () => {
 		const started = await f.asMember.mutation(api.files_write_policy_runs.start, {
 			membershipId: f.member.membershipId,
 			nodeId: box,
-			writePolicy: null,
+			targetReadOnly: false,
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const activityId = started._yay.activityId;
@@ -676,8 +682,8 @@ describe("advance", () => {
 		const stopped = await step(f, activityId);
 		expect(stopped).toMatchObject({ status: "canceled", errorMessage: null });
 		expect(progress_of(stopped)).toMatchObject({ completed: 50, total: null });
-		expect(await read_policy(f, ids[49]!)).toEqual({ mode: "read_only" });
-		expect(await read_policy(f, ids[50]!)).toBeNull();
+		expect(await read_only(f, ids[49]!)).toBe(true);
+		expect(await read_only(f, ids[50]!)).toBe(false);
 	});
 
 	test("Stop after a step that showed nothing still shows the items that step updated", async () => {
@@ -701,7 +707,7 @@ describe("advance", () => {
 		const stopped = await read_activity(f, activityId);
 		expect(stopped.status).toBe("canceled");
 		expect(progress_of(stopped)).toEqual({ completed: 1, skipped: 0, blocked: 0, discovered: 1, total: null });
-		expect(await read_policy(f, a)).toEqual({ mode: "read_only" });
+		expect(await read_only(f, a)).toBe(true);
 	});
 
 	test("a job that keeps making progress may run longer than the idle limit", async () => {
@@ -746,7 +752,7 @@ describe("advance", () => {
 			errorMessage: "The protection update reached its time limit.",
 		});
 		expect((await step(f, activityId)).status).toBe("timed_out");
-		expect(await read_policy(f, child)).toBeNull();
+		expect(await read_only(f, child)).toBe(false);
 	});
 });
 

@@ -152,15 +152,29 @@ import {
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
 } from "./r2_assets.ts";
-import { cancel_file_content_materialization, db_get_file_snapshot_content, enqueue_file_content_materialization, files_READ_RANGE_MAX_LINES, files_line_range_from_text, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, type files_nodes_get_visible_entry_by_path_Result, files_tail_lines_from_text, yjs_reserve_and_increment_last_sequence, type files_nodes_read_committed_file_chunk_stats_Result, type files_nodes_read_committed_file_chunks_line_range_Result, type files_nodes_read_file_content_from_chunks_Result, type get_file_content_materialization_header_Result, type get_file_content_materialization_state_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
+import {
+	cancel_file_content_materialization,
+	db_get_file_snapshot_content,
+	enqueue_file_content_materialization,
+	files_READ_RANGE_MAX_LINES,
+	files_line_range_from_text,
+	files_merge_contiguous_chunks,
+	type files_nodes_get_user_file_write_access_Result,
+	type files_nodes_get_visible_entry_by_path_Result,
+	files_tail_lines_from_text,
+	yjs_reserve_and_increment_last_sequence,
+	type files_nodes_read_committed_file_chunk_stats_Result,
+	type files_nodes_read_committed_file_chunks_line_range_Result,
+	type files_nodes_read_file_content_from_chunks_Result,
+	type get_file_content_materialization_header_Result,
+	type get_file_content_materialization_state_Result,
+	type get_file_next_yjs_update_Result,
+} from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import type { files_nodes_create_preflight_Result } from "./files_nodes_create_preflight.ts";
-import {
-	files_nodes_db_insert_file_content_docs,
-	type files_nodes_create_Result,
-} from "./files_nodes_create.ts";
+import { files_nodes_db_insert_file_content_docs, type files_nodes_create_Result } from "./files_nodes_create.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
-import { files_nodes_db_copied_from_policy_fields } from "./files_write_policy_db.ts";
+import { files_nodes_db_copied_from_read_only_fields } from "./files_write_policy_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import {
 	files_transfer_db_complete_copy_item,
@@ -963,7 +977,8 @@ export const get_transfer_file_copy_data = internalMutation({
 		if (capture === null) {
 			const metadata =
 				sourceEntry.kind === "private"
-					? (await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: sourceEntry.pendingUpdate._id }))?.entries ?? []
+					? ((await files_metadata_maps_db_read(ctx.db, { kind: "pending", id: sourceEntry.pendingUpdate._id }))
+							?.entries ?? [])
 					: await files_metadata_db_read_entries(ctx, {
 							organizationId: run.sourceScope.organizationId,
 							workspaceId: run.sourceScope.workspaceId,
@@ -1769,8 +1784,8 @@ export const finalize_transfer_file_copy = internalMutation({
 			path,
 			existing,
 			destinationMembership,
-			runWrittenWritePolicy,
-			copiedPolicies,
+			runWrittenReadOnlyDecisionId,
+			copiedFlags,
 			writeContext,
 		} = prepared._yay;
 		const now = Date.now();
@@ -1863,9 +1878,9 @@ export const finalize_transfer_file_copy = internalMutation({
 						copiedFrom: {
 							target: item.source,
 							path: item.sourcePath,
-							...files_nodes_db_copied_from_policy_fields({
+							...files_nodes_db_copied_from_read_only_fields({
 								prev: previous?.copiedFrom,
-								sourceWritePolicy: copiedPolicies.sourceWritePolicy,
+								sourceReadOnly: copiedFlags.sourceReadOnly,
 							}),
 						},
 						updatedAt: now,
@@ -1970,9 +1985,9 @@ export const finalize_transfer_file_copy = internalMutation({
 						copiedFrom: {
 							target: item.source,
 							path: item.sourcePath,
-							...files_nodes_db_copied_from_policy_fields({
+							...files_nodes_db_copied_from_read_only_fields({
 								prev: previous?.copiedFrom,
-								sourceWritePolicy: copiedPolicies.sourceWritePolicy,
+								sourceReadOnly: copiedFlags.sourceReadOnly,
 							}),
 						},
 						updatedAt: now,
@@ -2243,13 +2258,9 @@ export const finalize_transfer_file_copy = internalMutation({
 			assetId: args.contentAssetId,
 			expectsTextContent: textKind === null ? undefined : true,
 			metadata: (await files_metadata_maps_db_read(ctx.db, { kind: "capture", id: item._id }))?.entries ?? [],
-			expectedParentWritePolicy: runWrittenWritePolicy,
-			// A copy keeps the source file's own rule. Read here on the server; the destination
-			// default never replaces it. A retry that finds its already-made target keeps that
-			// target and never applies the source rule over later changes.
-			...(copiedPolicies.sourceWritePolicy !== undefined
-				? { writePolicy: copiedPolicies.sourceWritePolicy, trustPolicySource: true as const }
-				: {}),
+			expectedParentReadOnlyDecisionId: runWrittenReadOnlyDecisionId,
+			// A retry reuses its target and leaves any later flag change intact.
+			readOnly: copiedFlags.sourceReadOnly ?? false,
 			now,
 		});
 		if (created._nay) return created;

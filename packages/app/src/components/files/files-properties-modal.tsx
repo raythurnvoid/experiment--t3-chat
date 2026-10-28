@@ -1,14 +1,13 @@
 import "./files-properties-modal.css";
 
 import type { EditorProps } from "@monaco-editor/react";
-import { Check, CircleHelp, Plug, User, X } from "lucide-react";
+import { Check, CircleHelp, X } from "lucide-react";
 import { useQuery } from "convex/react";
 import { editor as monaco_editor } from "monaco-editor";
-import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Fragment, memo, useEffect, useId, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 
 import { MyButton } from "@/components/my-button.tsx";
-import { MyChipOverflowRow } from "@/components/my-chip.tsx";
 import {
 	MyCheckboxButton,
 	MyCheckboxButtonContent,
@@ -16,7 +15,6 @@ import {
 	MyCheckboxButtonLabel,
 } from "@/components/my-checkbox-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
-import { MyRadioButton, MyRadioButtonDescription, MyRadioButtonLabel } from "@/components/my-radio-button.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -42,24 +40,22 @@ import {
 	files_metadata_stringify_entries_yaml,
 } from "../../../shared/files-metadata.ts";
 import { files_get_utf8_byte_size, files_node_has_editable_text_content } from "../../../shared/files.ts";
-import { FilesWritePolicyWritersModal, type FilesWritePolicyWriter } from "./files-write-policy-writers-modal.tsx";
 import { users_SYSTEM_AUTHOR } from "../../../shared/users.ts";
 
 /**
  * What a section tells the footer. The footer has one Save button for the whole dialog. It runs the
- * `save` of every section that is `dirty`. A section that cannot save yet (for example a selected
- * writer with nobody chosen) is `invalid`, and that turns Save off. A section reports `null` when it has
+ * `save` of every section that is `dirty`. A section that cannot save yet is
+ * `invalid`, and that turns Save off. A section reports `null` when it has
  * nothing to save.
  *
  * `save` answers `true` when the write worked. The section shows its own error when it did not.
  *
- * A section whose save cannot be undone sets `confirm`. Then Save first opens a dialog with these
- * words, and nothing is written until the person confirms.
+ * `readOnly` lets the footer order metadata around an explicit flag change.
  */
 type SaveState = {
 	dirty: boolean;
 	invalid: boolean;
-	confirm: { title: string; text: string; action: string } | null;
+	readOnly?: boolean;
 	save: () => Promise<boolean>;
 };
 
@@ -261,615 +257,189 @@ const FilesPropertiesModalLockedFacts = memo(function FilesPropertiesModalLocked
 });
 // #endregion facts
 
-// #region write policy
-type FilesPropertiesModalWritePolicy_ClassNames =
-	| "FilesPropertiesModalWritePolicy"
-	| "FilesPropertiesModalWritePolicy-heading"
-	| "FilesPropertiesModalWritePolicy-choices"
-	| "FilesPropertiesModalWritePolicy-option"
-	| "FilesPropertiesModalWritePolicy-option-picker"
-	| "FilesPropertiesModalWritePolicy-description"
-	| "FilesPropertiesModalWritePolicy-error"
-	| "FilesPropertiesModalWritePolicy-new-items"
-	| "FilesPropertiesModalWritePolicy-apply";
+// #region read-only
+type FilesPropertiesModalReadOnly_ClassNames =
+	| "FilesPropertiesModalReadOnly"
+	| "FilesPropertiesModalReadOnly-checkbox"
+	| "FilesPropertiesModalReadOnly-description"
+	| "FilesPropertiesModalReadOnly-error"
+	| "FilesPropertiesModalReadOnly-actions";
 
-type PolicyDraft = {
-	mode: "editable" | "read_only" | "writer";
-	writers: FilesWritePolicyWriter[];
-};
-
-/**
- * The rule as the save calls take it: ids only, no names.
- */
-type SavedPolicy =
-	| {
-			mode: "read_only";
-	  }
-	| {
-			mode: "writer";
-			writers: (
-				| { kind: "user"; userId: app_convex_Id<"users"> }
-				| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> }
-			)[];
-	  }
-	| null;
-
-/**
- * The rule as the query returns it: names for the writers this person can see, and how many they cannot.
- */
-type VisiblePolicy =
-	| {
-			mode: "read_only";
-	  }
-	| {
-			mode: "writer";
-			writers: FilesWritePolicyWriter[];
-			hiddenWriterCount: number;
-	  }
-	| null;
-
-function policy_draft_from_visible(policy: VisiblePolicy): PolicyDraft {
-	if (policy?.mode === "writer") {
-		return { mode: "writer", writers: policy.writers };
-	}
-	return { mode: policy?.mode === "read_only" ? "read_only" : "editable", writers: [] };
-}
-
-function saved_policy_from_draft(draft: PolicyDraft): SavedPolicy {
-	if (draft.mode === "read_only") {
-		return { mode: "read_only" };
-	}
-	if (draft.mode === "writer") {
-		return {
-			mode: "writer",
-			writers: draft.writers.map((writer) =>
-				writer.kind === "user"
-					? { kind: "user", userId: writer.userId }
-					: { kind: "service_account", serviceAccountId: writer.serviceAccountId },
-			),
-		};
-	}
-	return null;
-}
-
-/**
- * Compare two rules without caring about the order of the writers.
- */
-function policy_fingerprint(policy: SavedPolicy) {
-	if (policy?.mode === "writer") {
-		return `writer:${policy.writers.map(FilesWritePolicyWritersModal.writerKey).sort().join(",")}`;
-	}
-	return policy?.mode ?? "editable";
-}
-
-function policy_choice_label(policy: SavedPolicy) {
-	if (!policy) {
-		return POLICY_LABELS.editable;
-	}
-	return policy.mode === "read_only" ? POLICY_LABELS.read_only : POLICY_LABELS.writer;
-}
-
-function policy_hidden_writer_count(policy: VisiblePolicy) {
-	return policy?.mode === "writer" ? policy.hiddenWriterCount : 0;
-}
-
-type FilesPropertiesModalWriterSummary_ClassNames =
-	| "FilesPropertiesModalWriterSummary"
-	| "FilesPropertiesModalWriterSummary-empty"
-	| "FilesPropertiesModalWriterSummary-note";
-
-type FilesPropertiesModalWriterSummary_Props = {
-	writers: FilesWritePolicyWriter[];
-	hiddenWriterCount: number;
-	disabled: boolean;
-	onManage: () => void;
-};
-
-/**
- * Show who can edit as chips, and one button that opens the dialog where the writers change.
- */
-const FilesPropertiesModalWriterSummary = memo(function FilesPropertiesModalWriterSummary(
-	props: FilesPropertiesModalWriterSummary_Props,
-) {
-	const { writers, hiddenWriterCount, disabled, onManage } = props;
-
-	const manageButton = (
-		<MyButton variant="outline" disabled={disabled} onClick={onManage}>
-			{writers.length === 0 ? "Add writers" : `Manage writers (${writers.length})`}
-		</MyButton>
-	);
-
-	return (
-		<div className={"FilesPropertiesModalWriterSummary" satisfies FilesPropertiesModalWriterSummary_ClassNames}>
-			{writers.length > 0 ? (
-				<MyChipOverflowRow
-					items={writers.map((writer) => ({
-						id: FilesWritePolicyWritersModal.writerKey(writer),
-						label: writer.name,
-						media: writer.kind === "user" ? <User /> : <Plug />,
-					}))}
-					leading={manageButton}
-				/>
-			) : (
-				<div
-					className={"FilesPropertiesModalWriterSummary-empty" satisfies FilesPropertiesModalWriterSummary_ClassNames}
-				>
-					{manageButton}
-					<p
-						className={"FilesPropertiesModalWriterSummary-note" satisfies FilesPropertiesModalWriterSummary_ClassNames}
-					>
-						Nobody is chosen yet, so this works like read-only.
-					</p>
-				</div>
-			)}
-			{hiddenWriterCount > 0 ? (
-				<p className={"FilesPropertiesModalWriterSummary-note" satisfies FilesPropertiesModalWriterSummary_ClassNames}>
-					{hiddenWriterCount === 1
-						? "1 more writer is no longer available."
-						: `${hiddenWriterCount} more writers are no longer available.`}
-				</p>
-			) : null}
-		</div>
-	);
-});
-
-type FilesPropertiesModalWritePolicy_Props = {
+type FilesPropertiesModalReadOnly_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	nodeKind: "file" | "folder";
 	onSaveStateChange: (state: SaveState | null) => void;
 };
 
-const POLICY_MODES = ["editable", "read_only", "writer"] as const;
-
-const POLICY_LABELS = {
-	editable: "Everyone with access",
-	read_only: "No one (read-only)",
-	writer: "Custom",
-} satisfies Record<(typeof POLICY_MODES)[number], string>;
-
-/**
- * Words for the three blocks: the item's own rule, and, for a folder, the rule for items inside. A person
- * sees a plugin where the code says service account, because "service account" means nothing to them.
- */
-const POLICY_COPY = {
-	file: {
-		title: "Who can edit",
-		helper: "Choose who can change this file.",
-		editable: "Anyone with edit access can change this file.",
-		read_only: "The file can be read, but not changed.",
-		writer: "Only the people and plugins you choose can edit.",
-	},
-	folder: {
-		title: "Who can change this folder",
-		helper: "Choose who can change this folder. Each item inside keeps its own rule.",
-		editable: "Anyone with edit access can add, remove, and rename items.",
-		read_only: "The folder can be read, but items cannot be added, removed, or renamed.",
-		writer: "Only the people and plugins you choose can add, remove, and rename items.",
-	},
-	default: {
-		title: "Rule for items inside",
-		helper: "Choose the rule for files and subfolders in this folder.",
-		editable: "Anyone with edit access can edit the items.",
-		read_only: "The items can be read, but not changed.",
-		writer: "Only the people and plugins you choose can edit the items.",
-	},
-} satisfies Record<string, { title: string; helper: string } & Record<(typeof POLICY_MODES)[number], string>>;
-
-/**
- * Edit this item's own rule and, for folders, the rule for items inside. New items get that rule when
- * they are created. Saving changes the items already inside only when the person also checks "Also
- * apply it to the items already inside" and confirms.
- */
-const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWritePolicy(
-	props: FilesPropertiesModalWritePolicy_Props,
+const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
+	props: FilesPropertiesModalReadOnly_Props,
 ) {
 	const { nodeId, nodeKind, onSaveStateChange } = props;
-
 	const { membershipId } = AppTenantProvider.useContext();
-	const policyGroupId = `FilesPropertiesModalWritePolicy-${useId()}`;
-	const defaultGroupId = `FilesPropertiesModalWritePolicy-default-${useId()}`;
-	const applyLabelId = useId();
-	const applyDescriptionId = useId();
-	const [isRunning, setIsRunning] = useState(false);
-	const [isDefaultRunning, setIsDefaultRunning] = useState(false);
-	const [isApplying, setIsApplying] = useState(false);
+	const state = useQuery(app_convex_api.files_nodes.read_only_get, { membershipId, nodeId });
+	const [draft, setDraft] = useState<boolean | null>(null);
+	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [defaultError, setDefaultError] = useState<string | null>(null);
-	const [applyError, setApplyError] = useState<string | null>(null);
-	const [applyResult, setApplyResult] = useState<string | null>(null);
-	const [applyToContents, setApplyToContents] = useState(false);
-	const [draft, setDraft] = useState<PolicyDraft | null>(null);
-	const [defaultDraft, setDefaultDraft] = useState<PolicyDraft | null>(null);
-	// Which rule the writers dialog edits, or `null` while it is closed.
-	const [writersDialog, setWritersDialog] = useState<"policy" | "default" | null>(null);
+	const [bulkTarget, setBulkTarget] = useState<boolean | null>(null);
+	const [startingBulk, setStartingBulk] = useState(false);
+	const [bulkResult, setBulkResult] = useState<string | null>(null);
+	const cancelBulkRef = useRef<HTMLButtonElement>(null);
+	const labelId = useId();
+	const descriptionId = useId();
+	const readOnly = draft ?? state?.readOnly ?? false;
+	const dirty = state !== undefined && state !== null && readOnly !== state.readOnly;
+	const canEdit = state?.canEdit === true;
 
-	const managementState = useQuery(app_convex_api.files_nodes.get_node_write_policy_management_state, {
-		membershipId,
-		nodeId,
-	});
-	const savedPolicy: VisiblePolicy = managementState?.localPolicy ?? null;
-	const savedDefault: VisiblePolicy = managementState?.localDefault ?? null;
-	const choice = draft ?? policy_draft_from_visible(savedPolicy);
-	const defaultChoice = defaultDraft ?? policy_draft_from_visible(savedDefault);
-	const canManage = managementState?.canManage === true;
-	const policyUnsaved =
-		draft !== null && policy_fingerprint(saved_policy_from_draft(draft)) !== policy_fingerprint(savedPolicy);
-	const defaultUnsaved =
-		defaultDraft !== null &&
-		policy_fingerprint(saved_policy_from_draft(defaultDraft)) !== policy_fingerprint(savedDefault);
-	// A Custom rule with nobody chosen cannot be saved yet.
-	const policyInvalid = policyUnsaved && choice.mode === "writer" && choice.writers.length === 0;
-	const defaultInvalid = defaultUnsaved && defaultChoice.mode === "writer" && defaultChoice.writers.length === 0;
-	// Applying copies the rule for items inside. It cannot copy writers that are hidden from this person,
-	// so it stays off until the person replaces those writers.
-	const applyUnavailable = policy_hidden_writer_count(savedDefault) > 0 && !defaultUnsaved;
-	const applyRuleLabel = applyToContents ? policy_choice_label(saved_policy_from_draft(defaultChoice)) : null;
-
-	const savePolicy = () => {
-		const writePolicy = saved_policy_from_draft(choice);
-
+	const save = useFn(() => {
+		if (!canEdit || saving) return Promise.resolve(false);
+		setSaving(true);
 		setError(null);
-		setIsRunning(true);
-
 		return app_convex
-			.mutation(app_convex_api.files_nodes.set_node_write_policy, { membershipId, nodeId, writePolicy })
+			.mutation(app_convex_api.files_nodes.read_only_set, {
+				membershipId,
+				nodeId,
+				readOnly,
+			})
 			.then((result) => {
 				if (result._nay) {
 					setError(result._nay.message);
 					return false;
 				}
-
 				setDraft(null);
 				return true;
 			})
-			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalWritePolicy.savePolicy] Failed to change protection", {
-					error: caughtError,
-					nodeId,
-				});
-				setError("Failed to change protection");
+			.catch((error) => {
+				console.error("[FilesPropertiesModalReadOnly.save] Failed to change Read-only", { error, nodeId });
+				setError("Read-only was not changed. Try again.");
 				return false;
 			})
-			.finally(() => {
-				setIsRunning(false);
-			});
-	};
-
-	const saveDefault = () => {
-		const newChildWritePolicy = saved_policy_from_draft(defaultChoice);
-
-		setDefaultError(null);
-		setIsDefaultRunning(true);
-
-		return app_convex
-			.mutation(app_convex_api.files_nodes.set_node_new_child_write_policy, {
-				membershipId,
-				nodeId,
-				newChildWritePolicy,
-			})
-			.then((result) => {
-				if (result._nay) {
-					setDefaultError(result._nay.message);
-					return false;
-				}
-
-				setDefaultDraft(null);
-				return true;
-			})
-			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalWritePolicy.saveDefault] Failed to change new-item default", {
-					error: caughtError,
-					nodeId,
-				});
-				setDefaultError("Failed to change new-item default");
-				return false;
-			})
-			.finally(() => {
-				setIsDefaultRunning(false);
-			});
-	};
-
-	const applyToItemsInside = (writePolicy: SavedPolicy) => {
-		setApplyError(null);
-		setApplyResult(null);
-		setIsApplying(true);
-
-		return app_convex
-			.mutation(app_convex_api.files_write_policy_runs.start, { membershipId, nodeId, writePolicy })
-			.then((result) => {
-				if (result._nay) {
-					setApplyError(result._nay.message);
-					return false;
-				}
-
-				// A big folder takes many steps, so the job runs in the background and reports in Activity.
-				setApplyResult("Updating the items inside in the background. Track it in Activity.");
-				setApplyToContents(false);
-				return true;
-			})
-			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalWritePolicy.applyToItemsInside] Failed to apply the rule", {
-					error: caughtError,
-					nodeId,
-				});
-				setApplyError("Failed to apply the rule to the items inside");
-				return false;
-			})
-			.finally(() => {
-				setIsApplying(false);
-			});
-	};
-
-	// The footer Save button calls this. It writes only the rules that changed, and the two rules
-	// are independent, so they run together.
-	const save = useFn(() => {
-		const writes: Promise<boolean>[] = [];
-		if (canManage && policyUnsaved && !policyInvalid && !isRunning) {
-			writes.push(savePolicy());
-		}
-		if (canManage && defaultUnsaved && !defaultInvalid && !isDefaultRunning) {
-			writes.push(saveDefault());
-		}
-		// Read the rule now. The save below clears the draft, but the job must copy what the person saw.
-		const applyPolicy = saved_policy_from_draft(defaultChoice);
-
-		return Promise.all(writes).then((results) => {
-			// Start copying the rule only after both rules are saved. If a save failed, the person
-			// should fix it first instead of getting a half-done change.
-			if (!results.every(Boolean)) {
-				return false;
-			}
-			if (canManage && applyToContents && !applyUnavailable && !isApplying) {
-				return applyToItemsInside(applyPolicy);
-			}
-			return true;
-		});
+			.finally(() => setSaving(false));
 	});
 
 	useEffect(() => {
-		onSaveStateChange({
-			dirty: policyUnsaved || defaultUnsaved || applyToContents,
-			invalid: policyInvalid || defaultInvalid || (applyToContents && applyUnavailable),
-			// Applying replaces the rules of many items and cannot be undone, so Save asks first.
-			confirm:
-				applyRuleLabel === null
-					? null
-					: {
-							title: "Change the rule of all items inside?",
-							text: `Every file and subfolder in this folder that you can manage gets “${applyRuleLabel}”. This replaces their current rule, including chosen writers. Archived items are not changed. You cannot undo this.`,
-							action: "Save and apply",
-						},
-			save,
-		});
-	}, [
-		policyUnsaved,
-		defaultUnsaved,
-		applyToContents,
-		applyUnavailable,
-		policyInvalid,
-		defaultInvalid,
-		applyRuleLabel,
-		save,
-		onSaveStateChange,
-	]);
+		onSaveStateChange({ dirty, invalid: dirty && !canEdit, readOnly, save });
+	}, [dirty, canEdit, readOnly, save, onSaveStateChange]);
 
-	const renderChoices = (args: {
-		choiceValue: PolicyDraft;
-		onChoice: (choice: PolicyDraft) => void;
-		groupId: string;
-		running: boolean;
-		groupKind: "policy" | "default";
-		writerPicker: ReactNode;
-	}) => {
-		const { choiceValue, onChoice, groupId, running, groupKind, writerPicker } = args;
-
-		const copy = POLICY_COPY[groupKind === "default" ? "default" : nodeKind];
-		const headingId = `${groupId}-heading`;
-		const helperId = `${groupId}-helper`;
-
-		return (
-			<>
-				<h3
-					id={headingId}
-					className={"FilesPropertiesModalWritePolicy-heading" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-				>
-					{copy.title}
-				</h3>
-				<p
-					id={helperId}
-					className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-				>
-					{copy.helper}
-					{managementState === null ? " This setting is not available for this item." : null}
-					{managementState?.canManage === false ? " You cannot change this setting." : null}
-				</p>
-				<fieldset
-					className={"FilesPropertiesModalWritePolicy-choices" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-					aria-labelledby={headingId}
-					aria-describedby={helperId}
-				>
-					{POLICY_MODES.map((mode) => {
-						const labelId = `${groupId}-${mode}-label`;
-						const optionDescriptionId = `${groupId}-${mode}-description`;
-
-						return (
-							<div
-								key={mode}
-								className={
-									"FilesPropertiesModalWritePolicy-option" satisfies FilesPropertiesModalWritePolicy_ClassNames
-								}
-							>
-								<MyRadioButton
-									name={groupId}
-									checked={choiceValue.mode === mode}
-									disabled={!canManage}
-									aria-busy={running || undefined}
-									aria-labelledby={labelId}
-									aria-describedby={optionDescriptionId}
-									onChange={() => {
-										if (!running) {
-											onChoice({ ...choiceValue, mode });
-											// Choosing Custom with nobody chosen opens the dialog, so the next step is clear.
-											if (mode === "writer" && choiceValue.writers.length === 0) {
-												setWritersDialog(groupKind);
-											}
-											if (groupKind === "policy") {
-												setError(null);
-											} else {
-												setDefaultError(null);
-											}
-										}
-									}}
-								>
-									<MyRadioButtonLabel id={labelId}>{POLICY_LABELS[mode]}</MyRadioButtonLabel>
-									<MyRadioButtonDescription id={optionDescriptionId}>{copy[mode]}</MyRadioButtonDescription>
-								</MyRadioButton>
-								{/* The picker is a sibling of the radio button, not a child, so a button is never inside a label. The
-							    grid draws it inside the radio button's border. */}
-								{mode === "writer" && choiceValue.mode === "writer" ? (
-									<div
-										className={
-											"FilesPropertiesModalWritePolicy-option-picker" satisfies FilesPropertiesModalWritePolicy_ClassNames
-										}
-									>
-										{writerPicker}
-									</div>
-								) : null}
-							</div>
-						);
-					})}
-				</fieldset>
-			</>
-		);
-	};
+	const startBulk = useFn(() => {
+		if (bulkTarget === null || startingBulk || !canEdit) return;
+		setStartingBulk(true);
+		setError(null);
+		setBulkResult(null);
+		void app_convex
+			.mutation(app_convex_api.files_write_policy_runs.start, {
+				membershipId,
+				nodeId,
+				targetReadOnly: bulkTarget,
+			})
+			.then((result) => {
+				if (result._nay) {
+					setError(result._nay.message);
+					return;
+				}
+				setBulkResult("Updating Read-only in the background. Track it in Activity.");
+				setBulkTarget(null);
+			})
+			.catch((error) => {
+				console.error("[FilesPropertiesModalReadOnly.startBulk] Failed to start Read-only changes", { error, nodeId });
+				setError("Read-only changes did not start. Try again.");
+			})
+			.finally(() => setStartingBulk(false));
+	});
 
 	return (
-		<div className={"FilesPropertiesModalWritePolicy" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
-			{renderChoices({
-				choiceValue: choice,
-				onChoice: (choiceValue) => setDraft(choiceValue),
-				groupId: policyGroupId,
-				running: isRunning,
-				groupKind: "policy",
-				writerPicker: (
-					<FilesPropertiesModalWriterSummary
-						writers={choice.writers}
-						hiddenWriterCount={policy_hidden_writer_count(savedPolicy)}
-						disabled={!canManage || isRunning}
-						onManage={() => setWritersDialog("policy")}
-					/>
-				),
-			})}
-			{error ? (
+		<div className={"FilesPropertiesModalReadOnly" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+			<MyCheckboxButton
+				className={"FilesPropertiesModalReadOnly-checkbox" satisfies FilesPropertiesModalReadOnly_ClassNames}
+				variant="outline"
+				checked={readOnly}
+				disabled={!canEdit}
+				aria-labelledby={labelId}
+				aria-describedby={descriptionId}
+				aria-busy={saving || undefined}
+				onCheckedChange={(checked) => {
+					// Keep the focused input enabled while saving, but ignore another change.
+					if (saving) return;
+					setDraft(checked);
+					setError(null);
+				}}
+			>
+				<MyCheckboxButtonContent>
+					<MyCheckboxButtonLabel id={labelId}>Read-only</MyCheckboxButtonLabel>
+					<MyCheckboxButtonDescription id={descriptionId}>
+						{nodeKind === "folder"
+							? "Stops normal changes to this folder and its direct list of items. Files inside keep their own settings."
+							: "Stops normal changes to this file."}
+						{" Anyone with Can edit can turn this off."}
+					</MyCheckboxButtonDescription>
+				</MyCheckboxButtonContent>
+			</MyCheckboxButton>
+			<p className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+				An API key or plugin with Manage Read-only permission can still make changes. Work accepted earlier may finish.
+			</p>
+			{!canEdit ? (
+				<p className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+					{state === null
+						? "This setting is not available for this item."
+						: "You need Can edit permission to change this setting."}
+				</p>
+			) : null}
+			{nodeKind === "folder" ? (
+				<div className={"FilesPropertiesModalReadOnly-actions" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+					<MyButton variant="outline" disabled={!canEdit || startingBulk} onClick={() => setBulkTarget(true)}>
+						Make contents Read-only
+					</MyButton>
+					<MyButton variant="outline" disabled={!canEdit || startingBulk} onClick={() => setBulkTarget(false)}>
+						Clear Read-only from contents
+					</MyButton>
+				</div>
+			) : null}
+			{bulkResult ? <p role="status">{bulkResult}</p> : null}
+			{error && bulkTarget === null ? (
 				<p
-					className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 					role="alert"
+					className={"FilesPropertiesModalReadOnly-error" satisfies FilesPropertiesModalReadOnly_ClassNames}
 				>
 					{error}
 				</p>
 			) : null}
-
-			{nodeKind === "folder" ? (
-				<div
-					className={"FilesPropertiesModalWritePolicy-new-items" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-				>
-					{renderChoices({
-						choiceValue: defaultChoice,
-						onChoice: (choiceValue) => setDefaultDraft(choiceValue),
-						groupId: defaultGroupId,
-						running: isDefaultRunning,
-						groupKind: "default",
-						writerPicker: (
-							<FilesPropertiesModalWriterSummary
-								writers={defaultChoice.writers}
-								hiddenWriterCount={policy_hidden_writer_count(savedDefault)}
-								disabled={!canManage || isDefaultRunning}
-								onManage={() => setWritersDialog("default")}
-							/>
-						),
-					})}
-					{/* Copying the rule onto the items already inside is one step of the next Save, not a setting
-					    that stays on. Do not disable the box while the job starts, or the browser throws a
-					    keyboard user out of the dialog. */}
-					<MyCheckboxButton
-						className={"FilesPropertiesModalWritePolicy-apply" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-						variant="outline"
-						checked={applyToContents}
-						disabled={!canManage || applyUnavailable}
-						aria-labelledby={applyLabelId}
-						aria-describedby={applyDescriptionId}
-						aria-busy={isApplying || undefined}
-						onCheckedChange={(checked) => {
-							if (!isApplying) {
-								setApplyToContents(checked);
-								setApplyError(null);
-								setApplyResult(null);
-							}
-						}}
-					>
-						<MyCheckboxButtonContent>
-							<MyCheckboxButtonLabel id={applyLabelId}>Also apply it to the items already inside</MyCheckboxButtonLabel>
-							<MyCheckboxButtonDescription id={applyDescriptionId}>
-								{applyUnavailable
-									? "Some chosen writers are no longer available, so this is off. Change the writers first."
-									: "Without this, only new items get the rule."}
-							</MyCheckboxButtonDescription>
-						</MyCheckboxButtonContent>
-					</MyCheckboxButton>
-					{applyResult ? (
-						<p
-							className={
-								"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
-							}
-							role="status"
-						>
-							{applyResult}
-						</p>
-					) : null}
-					{applyError ? (
-						<p
-							className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-							role="alert"
-						>
-							{applyError}
-						</p>
-					) : null}
-					{defaultError ? (
-						<p
-							className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
-							role="alert"
-						>
-							{defaultError}
-						</p>
-					) : null}
-				</div>
-			) : null}
-
-			<FilesWritePolicyWritersModal
-				open={writersDialog !== null}
+			<MyModal
+				open={bulkTarget !== null}
 				setOpen={(open) => {
-					if (!open) {
-						setWritersDialog(null);
-					}
+					if (!open && !startingBulk) setBulkTarget(null);
 				}}
-				title={writersDialog === "default" ? "Writers for items inside" : "Writers"}
-				subtitle={POLICY_COPY[writersDialog === "default" ? "default" : nodeKind].writer}
-				writers={writersDialog === "default" ? defaultChoice.writers : choice.writers}
-				hiddenWriterCount={policy_hidden_writer_count(writersDialog === "default" ? savedDefault : savedPolicy)}
-				onWritersChange={(writers) => {
-					if (writersDialog === "default") {
-						setDefaultDraft({ ...defaultChoice, writers });
-						setDefaultError(null);
-					} else {
-						setDraft({ ...choice, writers });
-						setError(null);
-					}
-				}}
-			/>
+			>
+				<MyModalPopover initialFocus={cancelBulkRef}>
+					<MyModalHeader>
+						<MyModalHeading>
+							{bulkTarget ? "Make contents Read-only?" : "Clear Read-only from contents?"}
+						</MyModalHeading>
+						<MyModalDescription>
+							This changes the current contents you can edit. It does not change this folder's own setting.
+						</MyModalDescription>
+					</MyModalHeader>
+					<MyModalScrollableArea>
+						<p>
+							This checks the contents as it runs. It may miss items added or moved during the run. Changes already made
+							stay if you stop. There is no Undo.
+						</p>
+						{bulkTarget === false ? <p>This also clears Read-only settings set by hand.</p> : null}
+						{error ? <p role="alert">{error}</p> : null}
+					</MyModalScrollableArea>
+					<MyModalFooter>
+						<MyButton ref={cancelBulkRef} variant="ghost" disabled={startingBulk} onClick={() => setBulkTarget(null)}>
+							Cancel
+						</MyButton>
+						<MyButton disabled={startingBulk} aria-busy={startingBulk || undefined} onClick={() => void startBulk()}>
+							{startingBulk ? "Starting…" : "Start"}
+						</MyButton>
+					</MyModalFooter>
+					<MyModalCloseTrigger disabled={startingBulk} />
+				</MyModalPopover>
+			</MyModal>
 		</div>
 	);
 });
-// #endregion write policy
+// #endregion read-only
 
 // #region collaboration
 type FilesPropertiesModalCollaboration_ClassNames =
@@ -1266,7 +836,8 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	});
 
 	const handleSave = useFn(() => {
-		if (saving || !editable || metadata.draftYaml === metadata.serverYaml) {
+		// The footer can call this just after an explicit unlock, before the query catches up.
+		if (saving || metadata.draftYaml === metadata.serverYaml) {
 			return Promise.resolve(false);
 		}
 
@@ -1357,7 +928,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	}, [saving, editable]);
 
 	useEffect(() => {
-		onSaveStateChange({ dirty: dirty && editable, invalid: false, confirm: null, save: handleSave });
+		onSaveStateChange({ dirty, invalid: dirty && !editable, save: handleSave });
 	}, [dirty, editable, handleSave, onSaveStateChange]);
 
 	useEffect(() => {
@@ -1827,9 +1398,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 	const [policySaveState, setPolicySaveState] = useState<SaveState | null>(null);
 	const [metadataSaveState, setMetadataSaveState] = useState<SaveState | null>(null);
 	const [saving, setSaving] = useState(false);
-	const [isConfirmingSave, setIsConfirmingSave] = useState(false);
-	const confirmSaveTextId = useId();
-	const cancelSaveRef = useRef<HTMLButtonElement>(null);
+	const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
 
 	// The sections below read these same queries. Nothing else in the app subscribes to them before
 	// the modal opens, so the first answer needs a server round trip. Wait for it here and show the
@@ -1841,7 +1410,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 		readsNode ? { membershipId, fileNodeId: nodeId } : "skip",
 	);
 	const managementState = useQuery(
-		app_convex_api.files_nodes.get_node_write_policy_management_state,
+		app_convex_api.files_nodes.read_only_get,
 		readsNode ? { membershipId, nodeId } : "skip",
 	);
 	const metadataEntries = useQuery(
@@ -1853,54 +1422,38 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 
 	const saveStates = [policySaveState, metadataSaveState];
 	const dirty = saveStates.some((saveState) => saveState?.dirty);
-	const invalid = saveStates.some((saveState) => saveState?.invalid);
-	const saveConfirm = saveStates.find((saveState) => saveState?.dirty && saveState.confirm)?.confirm ?? null;
-
-	const runSave = () => {
-		setSaving(true);
-
-		Promise.all(saveStates.map((saveState) => (saveState?.dirty ? saveState.save() : Promise.resolve(true))))
-			.then((results) => {
-				if (results.every(Boolean)) {
-					toast.success("Properties saved");
-				}
-			})
-			.catch((error: unknown) => {
-				console.error("[FilesPropertiesModal.runSave] Unexpected async error", { error });
-			})
-			.finally(() => {
-				setSaving(false);
-				// A failed save shows its error in its own section, so close the confirm dialog either way.
-				setIsConfirmingSave(false);
-			});
-	};
+	const clearingReadOnly = policySaveState?.dirty && policySaveState.readOnly === false;
+	const invalid = policySaveState?.invalid || (metadataSaveState?.invalid && !clearingReadOnly);
 
 	const handleSave = useFn(() => {
-		if (saving || !dirty || invalid) {
-			return;
-		}
-
-		if (saveConfirm) {
-			setIsConfirmingSave(true);
-			return;
-		}
-
-		runSave();
-	});
-
-	const handleConfirmSave = useFn(() => {
-		if (saving) {
-			return;
-		}
-
-		runSave();
-	});
-
-	const handleConfirmSaveOpenChange = useFn((open: boolean) => {
-		// Escape and the backdrop cannot close the dialog while the save runs.
-		if (!open && !saving) {
-			setIsConfirmingSave(false);
-		}
+		if (saving || !dirty || invalid) return;
+		setSaving(true);
+		setSaveFeedback(null);
+		// Unlock before metadata; lock only after metadata succeeds.
+		const ordered = clearingReadOnly ? [policySaveState, metadataSaveState] : [metadataSaveState, policySaveState];
+		let savedSection: "metadata" | "read_only" | null = null;
+		void (async () => {
+			for (const section of ordered) {
+				if (!section?.dirty) continue;
+				if (!(await section.save())) {
+					if (savedSection !== null) {
+						setSaveFeedback(
+							savedSection === "metadata"
+								? "Metadata was saved. Read-only was not changed."
+								: "Read-only was turned off. Metadata was not saved.",
+						);
+					}
+					return;
+				}
+				savedSection = section === policySaveState ? "read_only" : "metadata";
+			}
+			toast.success("Properties saved");
+		})()
+			.catch((error) => {
+				console.error("[FilesPropertiesModal.handleSave] Unexpected async error", { error });
+				setSaveFeedback("Some changes were not saved. Review the settings and try again.");
+			})
+			.finally(() => setSaving(false));
 	});
 
 	const handleClose = useFn(() => {
@@ -1909,7 +1462,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 		// from the file that was just closed.
 		setPolicySaveState(null);
 		setMetadataSaveState(null);
-		setIsConfirmingSave(false);
+		setSaveFeedback(null);
 		onClose();
 		queueMicrotask(() => returnFocusRef?.current?.focus());
 	});
@@ -1964,7 +1517,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 									aria-label="Protection"
 									className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
 								>
-									<FilesPropertiesModalWritePolicy
+									<FilesPropertiesModalReadOnly
 										nodeId={nodeId}
 										nodeKind={nodeKind}
 										onSaveStateChange={setPolicySaveState}
@@ -1987,6 +1540,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 				</MyModalScrollableArea>
 
 				<MyModalFooter>
+					{saveFeedback ? <p role="alert">{saveFeedback}</p> : null}
 					{/* One Save writes every changed section. Closing discards unsaved changes. */}
 					{dirty ? (
 						<p className={"FilesPropertiesModal-unsaved" satisfies FilesPropertiesModal_ClassNames}>
@@ -1997,51 +1551,15 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 					<MyButton variant="ghost" onClick={handleClose}>
 						Close
 					</MyButton>
-					<MyButton disabled={!dirty || invalid || saving} aria-busy={saving || undefined} onClick={handleSave}>
+					<MyButton
+						disabled={!dirty || !!invalid || saving}
+						aria-busy={saving || undefined}
+						onClick={() => void handleSave()}
+					>
 						{saving ? "Saving…" : "Save"}
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger />
-
-				{/* A save that cannot be undone asks in its own dialog. Start on Cancel, the safe choice. */}
-				<MyModal open={isConfirmingSave && saveConfirm !== null} setOpen={handleConfirmSaveOpenChange}>
-					<MyModalPopover
-						className={"FilesPropertiesModal-confirm-modal" satisfies FilesPropertiesModal_ClassNames}
-						initialFocus={cancelSaveRef}
-						aria-describedby={confirmSaveTextId}
-					>
-						<MyModalHeader>
-							<MyModalHeading>{saveConfirm?.title}</MyModalHeading>
-						</MyModalHeader>
-						<MyModalScrollableArea>
-							<p
-								id={confirmSaveTextId}
-								className={"FilesPropertiesModal-confirm-text" satisfies FilesPropertiesModal_ClassNames}
-							>
-								{saveConfirm?.text}
-							</p>
-						</MyModalScrollableArea>
-						<MyModalFooter>
-							<MyButton
-								ref={cancelSaveRef}
-								variant="ghost"
-								disabled={saving}
-								onClick={() => setIsConfirmingSave(false)}
-							>
-								Cancel
-							</MyButton>
-							<MyButton
-								variant="destructive"
-								disabled={saving}
-								aria-busy={saving || undefined}
-								onClick={handleConfirmSave}
-							>
-								{saving ? "Saving…" : saveConfirm?.action}
-							</MyButton>
-						</MyModalFooter>
-						<MyModalCloseTrigger disabled={saving} />
-					</MyModalPopover>
-				</MyModal>
 			</MyModalPopover>
 		</MyModal>
 	);

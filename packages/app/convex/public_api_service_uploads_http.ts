@@ -124,6 +124,7 @@ async function authorize_service_upload_request(args: { ctx: ActionCtx; request:
 
 const create_target_body_validator = z
 	.object({
+		force: z.boolean().optional(),
 		idempotencyKey: z.string().min(1).max(128),
 		targetKey: z.string().min(1).max(128),
 		path: z.string().min(1),
@@ -161,6 +162,7 @@ export async function public_api_service_uploads_http_create_target(args: {
 		internal.public_api_service_uploads.create_upload_target,
 		{
 			principal: auth._yay,
+			force: body._yay.force === true,
 			idempotencyKey: body._yay.idempotencyKey,
 			targetKey: body._yay.targetKey,
 			path: body._yay.path,
@@ -285,6 +287,7 @@ export async function public_api_service_uploads_http_finalize(args: {
 
 const delete_body_validator = z
 	.object({
+		force: z.boolean().optional(),
 		idempotencyKey: z.string().min(1).max(128),
 		targetKey: z.string().min(1).max(128),
 	})
@@ -313,6 +316,7 @@ export async function public_api_service_uploads_http_delete(args: {
 		internal.public_api_service_uploads.delete_upload_target,
 		{
 			principal: auth._yay,
+			force: body._yay.force === true,
 			idempotencyKey: body._yay.idempotencyKey,
 			targetKey: body._yay.targetKey,
 		},
@@ -333,9 +337,15 @@ export async function public_api_service_uploads_http_delete(args: {
 // #region archive
 
 /**
- * The destination comes from the grant's seal, so there is nothing for the caller to say.
+ * The seal fixes the destination. Request IDs make lost replies and partial retries safe.
  */
-const archive_destination_body_validator = z.object({}).strict();
+const archive_destination_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		requestId: z.string().min(1).max(128),
+		previousRequestId: z.string().min(1).max(128).optional(),
+	})
+	.strict();
 
 export type public_api_service_uploads_http_archive_destination_Body = z.infer<
 	typeof archive_destination_body_validator
@@ -361,7 +371,10 @@ export async function public_api_service_uploads_http_archive_destination(args: 
 	const archived: public_api_service_uploads_archive_destination_Result = await ctx.runMutation(
 		internal.public_api_service_uploads.archive_destination,
 		{
+			requestId: body._yay.requestId,
+			previousRequestId: body._yay.previousRequestId,
 			principal: auth._yay,
+			force: body._yay.force === true,
 		},
 	);
 	if (archived._nay) {
@@ -370,7 +383,7 @@ export async function public_api_service_uploads_http_archive_destination(args: 
 
 	return {
 		status: 200,
-		body: { archivedNodes: archived._yay.archivedNodes },
+		body: archived._yay,
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }

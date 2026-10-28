@@ -497,10 +497,10 @@ describe("copy_transfer_file", () => {
 		document.destroy();
 		expect(
 			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -611,7 +611,7 @@ describe("copy_transfer_file", () => {
 			contentType: before?.contentType,
 			textKind: rootKind,
 			collaborationEnabled: collaborative,
-			writePolicy: null,
+			readOnly: false,
 		});
 		expect(copied?.assetId).not.toBe(before?.assetId);
 		expect(copied?.yjsLastSequenceId === null).toBe(!collaborative);
@@ -673,10 +673,10 @@ describe("copy_transfer_file", () => {
 		const { t, db, asUser, scope, nodeId } = fixture;
 		expect(
 			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -686,7 +686,7 @@ describe("copy_transfer_file", () => {
 		const copiedId = saved_copy_id(item);
 		const copied = await t.run((ctx) => ctx.db.get("files_nodes", copiedId));
 		// A copy keeps the source file's own rule. The destination default does not unlock it.
-		expect(copied?.writePolicy).toEqual({ mode: "read_only" });
+		expect(copied?.readOnly).toBe(true);
 		const pointers = await test_get_file_yjs_pointers(t, copiedId);
 		const snapshotKey = await t.run(async (ctx) => {
 			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
@@ -707,10 +707,10 @@ describe("copy_transfer_file", () => {
 		expect(refused._nay?.message).toBe("This item is read-only.");
 		expect(
 			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId: copiedId,
-					writePolicy: null,
+					readOnly: false,
 				})
 			)._nay,
 		).toBeUndefined();

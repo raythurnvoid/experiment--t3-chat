@@ -1,4 +1,5 @@
 import "./files-sidebar.css";
+import { FilesUnsavedText } from "./files-unsaved-text.tsx";
 import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-input.tsx";
 import { useFilesSearchSaved, type FilesSearchSavedRow } from "@/hooks/files-search-hooks.ts";
 import {
@@ -85,10 +86,6 @@ import {
 } from "./files-archive-modal.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
 import { FilesPropertiesModal } from "./files-properties-modal.tsx";
-import {
-	FileNodeViewFolderCreateNodeModal,
-	type FileNodeViewFolderCreateNodeModal_Ref,
-} from "./file-node-view/file-node-view-folder-create-node-modal.tsx";
 import { FilesClipboardMenuItems, FilesClipboardProvider } from "./files-clipboard.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputHelperText } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
@@ -2545,7 +2542,7 @@ const FilesSidebarTreeRow = memo(
 			: files_get_read_only_row_labels({
 					canWrite,
 					writeBlockedReason: itemData.writeBlockedReason,
-					writePolicyState: itemData.writePolicyState,
+					readOnly: itemData.readOnly,
 				});
 		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}${isLocked ? ", you don't have access" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}${hasPublicLink ? ", public link" : ""}`;
 
@@ -3665,6 +3662,7 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 					</MyTooltipTrigger>
 					<MyTooltipContent>Open files root</MyTooltipContent>
 				</MyTooltip>
+				<FilesUnsavedText />
 			</div>
 
 			<MyIconButton
@@ -4336,7 +4334,7 @@ type FilesSidebarSharedGroup_Row = Pick<
 	| "archiveOperationId"
 	| "canWrite"
 	| "writeBlockedReason"
-	| "writePolicyState"
+	| "readOnly"
 >;
 
 type FilesSidebarSharedGroupRow_Props = {
@@ -4366,7 +4364,7 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 	const readOnlyLabels = files_get_read_only_row_labels({
 		canWrite: row.canWrite,
 		writeBlockedReason: row.writeBlockedReason,
-		writePolicyState: row.writePolicyState,
+		readOnly: row.readOnly,
 	});
 	// A share can sit on a restricted folder or on an item with added people. Only the first is restricted.
 	const isRestricted = row.restrictedScopeNodeId === row._id;
@@ -4712,7 +4710,9 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 								{parentPath}
 							</span>
 							{row.textChunk && snippetText !== null ? (
-								<span className={"FilesSidebarSearchResults-row-snippet" satisfies FilesSidebarSearchResults_ClassNames}>
+								<span
+									className={"FilesSidebarSearchResults-row-snippet" satisfies FilesSidebarSearchResults_ClassNames}
+								>
 									{search_content_snippet(row.textChunk, snippetText)}
 								</span>
 							) : null}
@@ -5104,7 +5104,6 @@ function is_tree_context_menu_open() {
 	);
 }
 
-
 /**
  * The ids of the folders above `nodeId`, nearest first, ending with the root.
  */
@@ -5218,10 +5217,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		cancelSnapshotPreload: (() => void) | null;
 	} | null>(null);
 	const snapshotPreloadRequestRef = useRef<typeof createRequestRef.current>(null);
-	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
-	const [createModalParentId, setCreateModalParentId] = useState<typeof files_ROOT_ID | app_convex_Id<"files_nodes">>(
-		files_ROOT_ID,
-	);
 	const [isUploadingSingleFile, setIsUploadingSingleFile] = useState(false);
 	const [uploadDraft, setUploadDraft] = useState<FilesSidebarUploadDraft | null>(null);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
@@ -6736,100 +6731,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		const parentId = parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">);
-		if (parentId !== files_ROOT_ID) {
-			convex
-				.query(app_convex_api.files_nodes.get_folder_new_child_write_policy_state, {
-					membershipId,
-					nodeId: parentId,
-				})
-				.then((newChildWritePolicyState) => {
-					// A protected default can make the new item read-only, so ask for the name before creating it.
-					if (newChildWritePolicyState === "read_only" || newChildWritePolicyState === "writer") {
-						setCreateModalParentId(parentId);
-						createNodeModalRef.current?.open(kind);
-						return;
-					}
-
-					createWritableSidebarNode(parentId, kind);
-				})
-				.catch((error: unknown) => {
-					console.error("[FilesSidebar.handleCreateNodeClick] Failed to read folder default", { error, parentId });
-					toast.error(`Failed to create ${kind}. Try again.`);
-				});
-			return;
-		}
-
 		createWritableSidebarNode(parentId, kind);
-	});
-
-	const handleCreateNodeModalSubmit = useFn((args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => {
-		const { kind, path } = args;
-		snapshotPreloadRequestRef.current?.cancelSnapshotPreload?.();
-		const snapshotPreloadRequest: NonNullable<typeof createRequestRef.current> = {
-			membershipId,
-			fromNodeId: selectedNodeId,
-			nodeId: null,
-			cancelSnapshotPreload: null,
-		};
-		snapshotPreloadRequestRef.current = kind === "file" && view === "rich_text_editor" ? snapshotPreloadRequest : null;
-		setIsCreatingFile(true);
-		const createNodePromise =
-			kind === "folder"
-				? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
-						membershipId,
-						parentId: createModalParentId,
-						path,
-					})
-				: convex.action(app_convex_api.files_nodes_content.create_text_node, {
-						membershipId,
-						parentId: createModalParentId,
-						path,
-					});
-
-		return createNodePromise
-			.then((result) => {
-				if (result._nay) {
-					console.error("[FilesSidebar.handleCreateNodeModalSubmit] Failed to create node", {
-						result,
-						parentId: createModalParentId,
-						kind,
-					});
-					if (result._nay.message === "Permission denied") {
-						toast.error("You don't have permission to create files in this workspace.");
-						return "You don't have permission to create files here.";
-					}
-					return result._nay.message;
-				}
-
-				if (snapshotPreloadRequestRef.current === snapshotPreloadRequest) {
-					snapshotPreloadRequest.nodeId = result._yay.nodeId;
-					snapshotPreloadRequest.cancelSnapshotPreload = files_yjs_preload_snapshot({
-						membershipId,
-						nodeId: result._yay.nodeId,
-					});
-				}
-				return navigate({
-					to: "/w/$organizationName/$workspaceName/files",
-					params: { organizationName, workspaceName },
-					search: { nodeId: result._yay.nodeId, view },
-				}).then(() => null);
-			})
-			.catch((error: unknown) => {
-				snapshotPreloadRequest.cancelSnapshotPreload?.();
-				if (snapshotPreloadRequestRef.current === snapshotPreloadRequest) snapshotPreloadRequestRef.current = null;
-				console.error("[FilesSidebar.handleCreateNodeModalSubmit] Error creating node", {
-					error,
-					parentId: createModalParentId,
-					kind,
-				});
-				return `Failed to create ${kind}.`;
-			})
-			.finally(() => {
-				if (!snapshotPreloadRequest.nodeId && snapshotPreloadRequestRef.current === snapshotPreloadRequest) {
-					snapshotPreloadRequestRef.current = null;
-				}
-				setIsCreatingFile(false);
-			});
 	});
 
 	const handleCopy = useFn<FilesSidebarTree_Props["onCopy"]>((nodeId) => {
@@ -7473,19 +7375,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onSkipExisting={handleImportConflictSkip}
 				onCancel={handleImportConflictCancel}
 			/>
-			<FileNodeViewFolderCreateNodeModal
-				ref={createNodeModalRef}
-				membershipId={membershipId}
-				folderItemId={createModalParentId}
-				fileNodesList={(treeItemsList ?? []).filter(is_open_node)}
-				siblingNames={(treeItemsList ?? [])
-					.filter((item) => item.parentId === createModalParentId && item.archiveOperationId === null)
-					.map((child) => child.name)}
-				canWrite={canWriteParentId(createModalParentId)}
-				unavailableMessage={null}
-				isCreatingNode={isCreatingFile}
-				onCreateNode={handleCreateNodeModalSubmit}
-			/>
 			<FilesSidebarTopSection
 				view={view}
 				selectedNodeIdsCount={selectedNodeIds.size}
@@ -7658,7 +7547,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			updatedBy: "test-user" as app_convex_Id<"users">,
 			canWrite: args.canWrite ?? true,
 			writeBlockedReason: args.canWrite === false ? "read_only" : null,
-			writePolicyState: args.canWrite === false ? "read_only" : "none",
+			readOnly: args.canWrite === false,
 		};
 	};
 
@@ -9316,6 +9205,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				journal: () => undefined,
 			});
 			vi.spyOn(AppTenantProvider, "useContext").mockReturnValue({
+				userId: "user" as app_convex_Id<"users">,
 				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
 				organizationId: "organization" as app_convex_Id<"organizations">,
 				organizationName: "organization",
@@ -10279,6 +10169,5 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 		});
 	});
-
 }
 // #endregion tests

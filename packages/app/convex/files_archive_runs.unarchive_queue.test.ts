@@ -298,20 +298,16 @@ describe("unarchive_nodes", () => {
 			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBeNull();
 		});
 
-		test("refuses when the archived folder it leaves is read-only", async () => {
+		test("an archived read-only parent does not block leaving Trash", async () => {
 			const f = await fixture();
 			const tree = await seed_tree(f, { name: "ro-archived", folderCount: 1, filesPerFolder: 2 });
 			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			await archive_to_end(f, tree.folderIds[0]!);
 			await lock({ f, nodeId: tree.folderIds[0]!, locked: true });
 
-			const refused = await restore(f, [tree.fileIds[0]!]);
-			expect(refused._nay?.name).toBe("read_only");
-			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).not.toBeNull();
-
-			await lock({ f, nodeId: tree.folderIds[0]!, locked: false });
 			expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/f000.md" });
+			expect((await read_node(f, tree.folderIds[0]!)).readOnly).toBe(true);
 		});
 
 		test("stops when a folder it restored is locked before the items inside come back", async () => {

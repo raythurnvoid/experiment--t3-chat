@@ -7,20 +7,25 @@ import { files_ROOT_ID } from "../server/files.ts";
 import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_slot } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_slot,
+} from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
 import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
-import { files_content_type_index_fields, files_derive_tree_path_for_file_node, files_lowercase_extension, files_check_name_and_path_length, files_check_new_folder_count } from "../shared/files.ts";
-import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
-import { type files_nodes_WriteContext, files_nodes_db_require_writable, files_nodes_db_resolve_parent_new_child_policy } from "../server/files-write-policy.ts";
 import {
-	files_write_policy_db_has_write_context_permission as db_has_write_context_permission,
-	files_nodes_db_require_copiable_write_policy,
-	files_nodes_db_require_write_policy_management,
-} from "./files_write_policy_db.ts";
+	files_content_type_index_fields,
+	files_derive_tree_path_for_file_node,
+	files_lowercase_extension,
+	files_check_name_and_path_length,
+	files_check_new_folder_count,
+} from "../shared/files.ts";
+import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
+import { type files_nodes_WriteContext, files_nodes_db_require_writable } from "../server/files-write-policy.ts";
+import { files_write_policy_db_has_write_context_permission as db_has_write_context_permission } from "./files_write_policy_db.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -314,8 +319,8 @@ function node_insert_fields(args: {
 	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
 	extendedScopeNodeId: Id<"files_nodes"> | null;
-	writePolicy?: Doc<"files_nodes">["writePolicy"];
-	newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
+	readOnly?: boolean;
+	preservedReadOnlyDecisionId?: string | null;
 	now: number;
 }) {
 	return {
@@ -348,8 +353,8 @@ function node_insert_fields(args: {
 		// A new node inherits its parent's scope, so it is never its own restricted root.
 		isRestrictedScopeRoot: false,
 		extendedScopeNodeId: args.extendedScopeNodeId,
-		writePolicy: args.writePolicy ?? null,
-		newChildWritePolicy: args.newChildWritePolicy ?? null,
+		readOnly: args.readOnly ?? false,
+		readOnlyDecisionId: args.readOnly ? (args.preservedReadOnlyDecisionId ?? crypto.randomUUID()) : null,
 		archiveOperationId: args.archiveOperationId ?? null,
 		createdBy: args.userId,
 		updatedBy: args.userId,
@@ -376,15 +381,10 @@ async function db_insert_node(
 		 */
 		expectsTextContent?: true;
 		/**
-		 * Omitted means copy the immediate parent's new-child default. An explicit value,
-		 * including null, is an override the caller already checked for management rights.
-		 * Copy operations pass the verified source settings through here instead.
+		 * Ordinary creates start editable. Copy and replacement callers pass their verified flag.
 		 */
-		writePolicy?: Doc<"files_nodes">["writePolicy"];
-		/**
-		 * Omitted on a new folder means copy the parent default too. Files always store null.
-		 */
-		newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
+		readOnly?: boolean;
+		preservedReadOnlyDecisionId?: string | null;
 		/**
 		 * The raw parent doc, when the caller just read or inserted it. It saves the two parent reads.
 		 */
@@ -403,13 +403,6 @@ async function db_insert_node(
 	// not public, a copy included: only the Sharing doors and `create_upload_node` set `isPublic`.
 	const extendedScopeNodeId = parent?.extendedScopeNodeId ?? null;
 
-	// Copying the default is an ordinary creation step. It needs no policy-management right.
-	const parentDefault = args.parent
-		? args.parent.newChildWritePolicy
-		: await files_nodes_db_resolve_parent_new_child_policy(ctx, {
-				parentId: args.parentId,
-			});
-
 	// Upload assets are inserted with their declared size, and the R2 upload event corrects it later.
 	const asset = args.assetId ? await ctx.db.get("files_r2_assets", args.assetId) : null;
 
@@ -420,13 +413,6 @@ async function db_insert_node(
 			contentByteSize: asset?.size,
 			restrictedScopeNodeId,
 			extendedScopeNodeId,
-			writePolicy: args.writePolicy !== undefined ? args.writePolicy : parentDefault,
-			newChildWritePolicy:
-				args.kind === "folder"
-					? args.newChildWritePolicy !== undefined
-						? args.newChildWritePolicy
-						: parentDefault
-					: null,
 		}),
 	);
 	// No media validation advance: a new node has a new ID, so no checked proof names it. It starts in
@@ -520,38 +506,24 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 */
 		writeContext?: files_nodes_WriteContext;
 		/**
-		 * Initial local policy on the leaf. It requires manage permission before any insert,
-		 * unless `trustPolicySource` marks it as verified source settings from a copy.
+		 * Initial leaf flag. Machine doors check their Read-only grant before passing true.
 		 */
-		writePolicy?: Doc<"files_nodes">["writePolicy"];
+		readOnly?: boolean;
 		/**
-		 * Initial default on a new leaf folder. Same manage rule as `writePolicy`, unless
-		 * `trustPolicySource` marks it as verified source settings from a copy.
+		 * An exact replacement preserves the old decision. Independent copies always mint a new ID.
 		 */
-		newChildWritePolicy?: Doc<"files_nodes">["newChildWritePolicy"];
-		/**
-		 * Set only by server copy paths that read both settings from the source doc itself.
-		 * It skips the manage check but keeps the destination writer check. Never set this
-		 * from client input.
-		 */
-		trustPolicySource?: true;
-		/**
-		 * Set only when a replace copies `writePolicy` from the file it replaces. It keeps the manage
-		 * check but skips the writer check. Those writers were checked when the rule was set, and a
-		 * writer who left since then must not stop the others from replacing the file.
-		 */
-		keepsReplacedPolicy?: true;
+		keepsReplacedReadOnly?: true;
+		preservedReadOnlyDecisionId?: string | null;
 		/**
 		 * Set only when the caller just archived the file at this same path to replace it. The new file
 		 * keeps that name and path, so an old name over the length limit stays usable.
 		 */
 		replacesArchivedFile?: true;
 		/**
-		 * Set only by a copy run that produced `parentId` itself. The create may proceed while
-		 * the parent's current policy still equals this value, even when the value is a lock.
+		 * Set only by a copy run that produced this parent. Its decision ID must still match.
 		 * Never set this from client input.
 		 */
-		expectedParentWritePolicy?: Doc<"files_nodes">["writePolicy"];
+		expectedParentReadOnlyDecisionId?: string;
 		/**
 		 * Folders by path that earlier creates of this request already found or made. Pass one new map
 		 * per request with the same writer on every call: a hit skips the folder's lookup and access
@@ -583,10 +555,9 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			? null
 			: (args.writeContext ?? {
 					subject: { kind: "user", userId: args.userId, plugin: null },
-					writer: { kind: "user", userId: args.userId },
 					actorUserId: args.userId,
 					resourceScope: { kind: "workspace" },
-					policyReach: "ancestors",
+					force: false,
 				});
 
 	// The last existing folder walked into. Once the walk goes one folder deeper, it is above where the
@@ -692,52 +663,14 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			writeContext,
 			target,
 		});
-		// A copy run may create inside the parent it produced while that parent's current
-		// policy still equals the value the run wrote. Any other refusal stands.
+		// Only the original copied children may use the unchanged parent's decision.
 		if (
 			writable._nay &&
 			(writable._nay.name !== "read_only" ||
-				args.expectedParentWritePolicy == null ||
-				JSON.stringify(parentNode?.writePolicy ?? null) !== JSON.stringify(args.expectedParentWritePolicy))
+				!args.expectedParentReadOnlyDecisionId ||
+				parentNode?.readOnlyDecisionId !== args.expectedParentReadOnlyDecisionId)
 		) {
 			return writable;
-		}
-
-		if (args.writePolicy !== undefined || args.newChildWritePolicy !== undefined) {
-			if (args.trustPolicySource) {
-				for (const policy of [args.writePolicy, args.newChildWritePolicy]) {
-					if (policy === undefined) {
-						continue;
-					}
-					const copiable = await files_nodes_db_require_copiable_write_policy(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						writePolicy: policy,
-					});
-					if (copiable._nay) {
-						return copiable;
-					}
-				}
-			} else {
-				// Check every explicit override. A default-only create must not skip
-				// the writer check by falling back to writePolicy: null.
-				for (const policy of [args.writePolicy, args.newChildWritePolicy]) {
-					if (policy === undefined) {
-						continue;
-					}
-					const managed = await files_nodes_db_require_write_policy_management(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						writeContext,
-						target,
-						// A null rule checks only the manage permission.
-						writePolicy: args.keepsReplacedPolicy ? null : policy,
-					});
-					if (managed._nay) {
-						return managed;
-					}
-				}
-			}
 		}
 	}
 
@@ -764,8 +697,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			assetId: isLeaf ? args.assetId : undefined,
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
-			writePolicy: isLeaf ? args.writePolicy : undefined,
-			newChildWritePolicy: isLeaf ? args.newChildWritePolicy : undefined,
+			readOnly: isLeaf ? args.readOnly : false,
+			preservedReadOnlyDecisionId: isLeaf && args.keepsReplacedReadOnly ? args.preservedReadOnlyDecisionId : undefined,
 			parent: createdParent,
 			now: args.now,
 		});

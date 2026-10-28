@@ -468,6 +468,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				<FileEditorRichTextNonCollab
 					target={target}
 					editable={editable}
+					editBlockReason={editBlockReason}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
@@ -512,6 +513,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 					isActive={isActive}
 					nodeId={target.id}
 					editable={editable}
+					editBlockReason={editBlockReason}
 					monacoLanguageId={monacoLanguageId}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
@@ -531,6 +533,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				isActive={isActive}
 				target={target}
 				editable={editable}
+				editBlockReason={editBlockReason}
 				rootKind={rootKind}
 				monacoLanguageId={monacoLanguageId}
 				pendingUpdateId={pendingUpdateId}
@@ -558,6 +561,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			target={target}
 			yjsLastSequenceId={yjsLastSequenceId}
 			editable={editable}
+			editBlockReason={editBlockReason}
 			monacoLanguageId={monacoLanguageId}
 			nonCollaborative={nonCollaborative}
 			presenceStore={presenceStore}
@@ -806,10 +810,10 @@ function FileEditorInner(props: FileEditorInner_Props) {
 						{proposalWentAway ? (
 							<FileEditorDiffSkeleton />
 						) : target.kind === "saved" &&
-							!nonCollaborative &&
-							effectiveEditorMode === "rich_text_editor" &&
-							savedCanWrite === undefined &&
-							files_yjs_has_preloaded_snapshot({ membershipId, nodeId: target.id }) ? (
+						  !nonCollaborative &&
+						  effectiveEditorMode === "rich_text_editor" &&
+						  savedCanWrite === undefined &&
+						  files_yjs_has_preloaded_snapshot({ membershipId, nodeId: target.id }) ? (
 							// Wait for the access answer so startup does not replace a temporary read-only provider.
 							<FileEditorRichTextSkeleton />
 						) : (

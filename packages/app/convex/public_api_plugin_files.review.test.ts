@@ -126,7 +126,8 @@ describe("ensure_plugin_folder", () => {
 					updatedAt: now,
 				});
 				const parentId = await ctx.db.insert("files_nodes", {
-					writePolicy: null,
+					readOnly: false,
+					readOnlyDecisionId: null,
 					organizationId: owner.organizationId,
 					workspaceId: owner.workspaceId,
 					parentId: files_ROOT_ID,
@@ -158,7 +159,6 @@ describe("ensure_plugin_folder", () => {
 					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
 					archiveOperationId: null,
-					newChildWritePolicy: null,
 				});
 				return { owner, userId, membershipId, pluginVersionId, installationId, parentId, serviceAccountId };
 			});
@@ -217,7 +217,7 @@ describe("ensure_plugin_folder", () => {
 			}));
 			expect(before.nodes).toEqual([expect.objectContaining({ _id: fixture.parentId, path: "/tagged" })]);
 			expect(before.nodes[0]!.restrictedScopeNodeId).toBeNull();
-			expect(before.nodes[0]!.writePolicy).toBeNull();
+			expect(before.nodes[0]!.readOnly).toBe(false);
 			expect(await t.run((ctx) => ctx.db.get("organizations_workspaces_users", fixture.membershipId))).toMatchObject({
 				active: true,
 			});

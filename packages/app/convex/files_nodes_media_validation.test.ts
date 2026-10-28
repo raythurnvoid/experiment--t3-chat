@@ -4,9 +4,21 @@ import { Workpool } from "@convex-dev/workpool";
 import type { FunctionArgs } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import { api, internal } from "./_generated/api.js";
-import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_apply_file_pending_move, test_convex, test_rename_node, test_move_nodes, test_finish_pending_update_run, test_finish_archive_jobs, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
-import { files_media_validation_db_advance_version, files_media_validation_db_capture_versions } from "./files_media_validation.ts";
+import type { Id } from "./_generated/dataModel.js";
+import {
+	test_apply_file_pending_move,
+	test_convex,
+	test_rename_node,
+	test_move_nodes,
+	test_finish_pending_update_run,
+	test_finish_archive_jobs,
+	test_create_saved_text_file,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
+import {
+	files_media_validation_db_advance_version,
+	files_media_validation_db_capture_versions,
+} from "./files_media_validation.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -602,23 +614,19 @@ describe("saved file media validation clocks", () => {
 				).toMatchObject({ _yay: { isDone: false } });
 				await test_finish_archive_jobs(f.t);
 			}
-			const policies: Array<Doc<"files_nodes">["writePolicy"]> = [
-				{ mode: "read_only" },
-				{ mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
-				null,
-			];
-			for (const writePolicy of policies) {
+			for (const readOnly of [true, false]) {
 				const before = await snapshot(f);
 				expect(
-					await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					await f.asUser.mutation(api.files_nodes.read_only_set, {
 						membershipId: f.db.membershipId,
 						nodeId,
-						writePolicy,
+						readOnly,
 					}),
 				).toEqual({ _yay: null });
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual({
 					...before.nodes.find((node) => node._id === nodeId)!,
-					writePolicy,
+					readOnly,
+					readOnlyDecisionId: readOnly ? expect.any(String) : null,
 				});
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toEqual(
 					before.nodes.find((node) => node._id === child),
@@ -627,30 +635,6 @@ describe("saved file media validation clocks", () => {
 			}
 		},
 	);
-
-	test("advances the workspace clock for each real new-child default change", async () => {
-		const f = await fixture();
-		const nodeId = await folder({ f, path: "defaults" });
-		const child = await folder({ f, path: "child", parentId: nodeId });
-		for (const newChildWritePolicy of [{ mode: "read_only" } as const, null]) {
-			const before = await snapshot(f);
-			expect(
-				await f.asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
-					membershipId: f.db.membershipId,
-					nodeId,
-					newChildWritePolicy,
-				}),
-			).toEqual({ _yay: null });
-			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual({
-				...before.nodes.find((node) => node._id === nodeId)!,
-				newChildWritePolicy,
-			});
-			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toEqual(
-				before.nodes.find((node) => node._id === child),
-			);
-			await expect_clock({ f, before, changed: true });
-		}
-	});
 
 	test("advances the workspace clock when bulk policy changes at least one descendant", async () => {
 		const f = await fixture();
@@ -662,23 +646,24 @@ describe("saved file media validation clocks", () => {
 			await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [archived] }),
 		).toEqual({ _yay: null });
 		expect(
-			await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asUser.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: first,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
-		for (const writePolicy of [{ mode: "read_only" } as const, null]) {
+		for (const targetReadOnly of [true, false]) {
 			const before = await snapshot(f);
 			expect(
-				await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, writePolicy }),
+				await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, targetReadOnly }),
 			).toEqual({
-				_yay: { status: "succeeded", completed: writePolicy ? 1 : 2 },
+				_yay: { status: "succeeded", completed: targetReadOnly ? 1 : 2 },
 			});
 			for (const id of [first, second])
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", id))).toEqual({
 					...before.nodes.find((node) => node._id === id)!,
-					writePolicy,
+					readOnly: targetReadOnly,
+					readOnlyDecisionId: targetReadOnly ? expect.any(String) : null,
 				});
 			for (const id of [nodeId, archived])
 				expect(await f.t.run((ctx) => ctx.db.get("files_nodes", id))).toEqual(
@@ -690,7 +675,6 @@ describe("saved file media validation clocks", () => {
 
 	test.each([
 		"policy",
-		"default",
 		"bulk",
 		"move",
 		"rename",
@@ -710,20 +694,12 @@ describe("saved file media validation clocks", () => {
 		const scope = { membershipId: f.db.membershipId, nodeId };
 		switch (operation) {
 			case "policy":
-				expect(await f.asUser.mutation(api.files_nodes.set_node_write_policy, { ...scope, writePolicy: null })).toEqual(
-					{ _yay: null },
-				);
-				break;
-			case "default":
-				expect(
-					await f.asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
-						...scope,
-						newChildWritePolicy: null,
-					}),
-				).toEqual({ _yay: null });
+				expect(await f.asUser.mutation(api.files_nodes.read_only_set, { ...scope, readOnly: false })).toEqual({
+					_yay: null,
+				});
 				break;
 			case "bulk":
-				expect(await apply_to_contents({ f, asUser: f.asUser, ...scope, writePolicy: null })).toEqual({
+				expect(await apply_to_contents({ f, asUser: f.asUser, ...scope, targetReadOnly: false })).toEqual({
 					_yay: { status: "succeeded", completed: 0 },
 				});
 				break;
@@ -844,44 +820,23 @@ describe("saved file media validation clocks", () => {
 		await folder({ f, path: "second", parentId: nodeId });
 		const before = await snapshot(f);
 		expect(
-			await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, writePolicy: null }),
+			await apply_to_contents({ f, asUser: f.asUser, membershipId: f.db.membershipId, nodeId, targetReadOnly: false }),
 		).toEqual({ _yay: { status: "succeeded", completed: 0 } });
 		expect((await snapshot(f)).nodes).toEqual(before.nodes);
 		await expect_clock({ f, before, changed: false });
 	});
 
-	test("keeps files and the workspace clock when a file is given a new-child default", async () => {
-		const f = await fixture();
-		const nodeId = await upload({ f, bulk: false });
-		const before = await snapshot(f);
-		const result = await f.asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
-			membershipId: f.db.membershipId,
-			nodeId,
-			newChildWritePolicy: { mode: "read_only" },
-		});
-		expect(result._nay?.message).toBe("Only folders have a new-item default.");
-		expect((await snapshot(f)).nodes).toEqual(before.nodes);
-		await expect_clock({ f, before, changed: false });
-	});
-
-	test.each(["move", "rename", "archive", "restore", "create"] as const)(
+	test.each(["move", "rename", "archive", "create"] as const)(
 		"keeps files and the workspace clock when read-only refuses: %s",
 		async (operation) => {
 			const f = await fixture();
 			const nodeId = await folder({ f, path: "locked" });
 			const destination = await folder({ f, path: "destination" });
-			if (operation === "restore")
-				expect(
-					await f.asUser.mutation(api.files_nodes.archive_nodes, {
-						membershipId: f.db.membershipId,
-						nodeIds: [nodeId],
-					}),
-				).toEqual({ _yay: null });
 			expect(
-				await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await f.asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: f.db.membershipId,
 					nodeId,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				}),
 			).toEqual({ _yay: null });
 			const before = await snapshot(f);
@@ -897,20 +852,18 @@ describe("saved file media validation clocks", () => {
 						? await test_rename_node(f.t, f.asUser, { membershipId, nodeId, path: "changed" })
 						: operation === "archive"
 							? await f.asUser.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })
-							: operation === "restore"
-								? await f.asUser.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [nodeId] })
-								: await f.asUser.mutation(api.files_nodes.create_folder_node, {
-										membershipId,
-										parentId: nodeId,
-										path: "child",
-									});
+							: await f.asUser.mutation(api.files_nodes.create_folder_node, {
+									membershipId,
+									parentId: nodeId,
+									path: "child",
+								});
 			expect(result._nay?.name).toBe("read_only");
 			expect((await snapshot(f)).nodes).toEqual(before.nodes);
 			await expect_clock({ f, before, changed: false });
 		},
 	);
 
-	test.each(["policy", "default", "bulk"] as const)(
+	test.each(["policy", "bulk"] as const)(
 		"keeps files and the workspace clock without policy management: %s",
 		async (operation) => {
 			const f = await fixture();
@@ -936,16 +889,11 @@ describe("saved file media validation clocks", () => {
 			const args = { membershipId: member.membershipId, nodeId };
 			const result =
 				operation === "policy"
-					? await asMember.mutation(api.files_nodes.set_node_write_policy, {
+					? await asMember.mutation(api.files_nodes.read_only_set, {
 							...args,
-							writePolicy: { mode: "read_only" },
+							readOnly: true,
 						})
-					: operation === "default"
-						? await asMember.mutation(api.files_nodes.set_node_new_child_write_policy, {
-								...args,
-								newChildWritePolicy: { mode: "read_only" },
-							})
-						: await apply_to_contents({ f, asUser: asMember, ...args, writePolicy: { mode: "read_only" } });
+					: await apply_to_contents({ f, asUser: asMember, ...args, targetReadOnly: true });
 			expect(result._nay).toBeDefined();
 			expect((await snapshot(f)).nodes).toEqual(before.nodes);
 			await expect_clock({ f, before, changed: false });
@@ -1047,13 +995,13 @@ describe("saved file media validation clocks", () => {
 				asUser: asMember,
 				membershipId: member.membershipId,
 				nodeId: parent,
-				writePolicy: { mode: "read_only" },
+				targetReadOnly: true,
 			}),
 		).toEqual({ _yay: { status: "succeeded", completed: 1 } });
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toEqual(
 			before.nodes.find((node) => node._id === child),
 		);
-		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", other)))?.writePolicy).toEqual({ mode: "read_only" });
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", other)))?.readOnly).toBe(true);
 		await expect_clock({ f, before, changed: true });
 	});
 });

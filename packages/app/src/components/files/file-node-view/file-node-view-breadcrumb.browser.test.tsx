@@ -34,7 +34,7 @@ const { FILE, NODES } = vi.hoisted(() => {
 		restrictedScopeNodeId: null,
 		canWrite: true,
 		writeBlockedReason: null,
-		writePolicyState: "none",
+		readOnly: false,
 	}));
 	const file = {
 		...folders[folders.length - 1]!,

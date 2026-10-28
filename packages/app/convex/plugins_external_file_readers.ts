@@ -8,13 +8,12 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
-import { files_nodes_db_require_writable } from "../server/files-write-policy.ts";
 import { plugins_external_files_db_replace_readers } from "./plugins_external_files.ts";
 import {
 	plugins_external_files_db_authorize,
 	plugins_external_files_db_request_subject,
 } from "./plugins_external_files_access.ts";
-import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -154,7 +153,6 @@ export const rollback = internalMutation({
 			recoveryGrant = presented;
 		}
 
-		const authority = recoveryGrant ?? proof;
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "public_api_principal",
 			key: `${installation._id}:rollback-readers`,
@@ -237,20 +235,6 @@ export const rollback = internalMutation({
 			)
 				return Result({ _nay: { message: "Permission denied" } });
 		}
-
-		const writable = await files_nodes_db_require_writable(ctx, {
-			organizationId: writer.organizationId,
-			workspaceId: writer.workspaceId,
-			writeContext: {
-				subject: plugins_sandbox_subject(installation, authority.actorUserId),
-				writer: { kind: "service_account", serviceAccountId: authority.serviceAccountId },
-				actorUserId: authority.actorUserId,
-				resourceScope: { kind: "node", nodeId: folder._id },
-				policyReach: "ancestors",
-			},
-			target: { kind: "node", node: folder },
-		});
-		if (writable._nay) return writable;
 
 		let readerRevision = binding.revision;
 		let originalReceiptId = receipt?._id;

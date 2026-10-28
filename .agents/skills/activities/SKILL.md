@@ -112,9 +112,12 @@ continuation and follow `isDone`; an empty visible page does not prove the feed 
 - `request_stop` accepts an Activity ID, checks scope and requester, and dispatches through an
   exhaustive source switch. A folder guest may stop their own work without workspace write.
   Repeated Stop is harmless. Plugin Stop stays unavailable until its producer supports it.
-  `activities_get_controls` gives no Stop to a move or scope job, to an archive job, or to a restore
+  `activities_get_controls` gives no Stop to a move or scope job, to an ordinary archive job, or to a restore
   job unless it is `awaiting_input` on a name clash, or to a Move whose repair is stuck
   (`errorCode: "move_repair_stuck"`). `request_stop` refuses when `canStop` is false.
+- Forced archive has Stop. It visits children before their parent and keeps denied branches active.
+  Stop, a revoked key, or a lost Read-only grant keeps completed changes and leaves unfinished parents
+  active. Its paged results keep a generic row when current access no longer allows the item's path.
 - Dismiss applies only to finished work. `activities_user_states` stores one dismissal per viewer
   and Activity. It does not change another viewer's feed or stop execution. Bulk dismiss is paged.
 - `AppActivitiesProvider` keeps pending Stop requests across dialog and bell changes. Different
@@ -139,11 +142,12 @@ progress (transfer, review, protection, archive, and restore) the same way:
   `succeeded` (green check), `partial` (lime dashed circle with a check), `failed` (red x, also timed
   out), `canceled` (gray minus). Icons never have a background. An invitation card shows a gray mail
   icon in the same column.
-- A refused item, like a read-only file, is expected. So an archive (not a restore) or a protection
+- A refused item, like a read-only file, is expected. So an ordinary archive (not a restore) or a protection
   job that is `partial` only because of blocked items shows as `Completed` with a green icon. The
   "N of M" count still includes the refused items, and the archive job dialog lists them under
   `Not archived (N)`, grouped by their reason. Items the person cannot open are only counted. The job dialog also lists the named items it archived (`files_archive_runs.get`
   returns `archived`).
+- Forced archive keeps the shared `partial` status and warning icon when it leaves any branch behind.
 - `awaiting_input` (only a transfer or a restore name clash) shows `Action needed`, the line
   `N name conflicts need your choice.`, and a `Resolve` button. It shows no bar.
 - The button is `View progress` while the job runs and `Open` when it ends, both `ghost-highlightable`.
@@ -216,7 +220,8 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   check that finds a new step clears it. A move or scope job and an archive or restore apply keep
   trying, because ending halfway would leave old access inside. An archive check or a restore
   discover or check changed nothing yet, so it ends as `failed`. A step that fails on every try is
-  then always logged, but an apply or scope step still needs a code fix to finish. A scope job's
+  then always logged, but an ordinary archive apply or scope step still needs a code fix to finish.
+  Forced archive can end safely after repeated failed steps and keeps completed changes. A scope job's
   Activity is hidden from the feed, so only the log shows its notice.
 - `files_transfer.recover_expired_attempts` only releases expired transfer attempts. Do not put
   a second job deadline or history scan back in that module.

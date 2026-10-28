@@ -14,28 +14,6 @@ import { plugins_CAPABILITIES } from "../shared/plugins-capabilities.ts";
 
 const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
 
-const files_nodes_write_policy_writer_validator = v.union(
-	v.object({ kind: v.literal("user"), userId: v.id("users") }),
-	v.object({
-		kind: v.literal("service_account"),
-		serviceAccountId: v.id("access_control_service_accounts"),
-	}),
-);
-
-/**
- * One node's local write protection. Null means editable. Copied once as a folder default;
- * never merged with a parent rule. A writer rule lists every person or plugin account that may
- * edit. The write doors keep at least one entry in the list, with no duplicates.
- */
-const files_nodes_write_policy_validator = v.union(
-	v.null(),
-	v.object({ mode: v.literal("read_only") }),
-	v.object({
-		mode: v.literal("writer"),
-		writers: v.array(files_nodes_write_policy_writer_validator),
-	}),
-);
-
 /**
  * The full list of permissions. Users build roles out of these, but can never add a new one.
  **/
@@ -1230,8 +1208,7 @@ export const files_pending_update_header_validator = v.object({
 			 * Protection read from the source when the copy target was first made. A retry
 			 * reuses the target and never overwrites these with later source rules.
 			 */
-			sourceWritePolicy: v.optional(files_nodes_write_policy_validator),
-			sourceNewChildWritePolicy: v.optional(files_nodes_write_policy_validator),
+			sourceReadOnly: v.optional(v.boolean()),
 		}),
 	),
 	/**
@@ -2151,6 +2128,7 @@ const app_convex_schema = defineSchema({
 				v.literal("files:read"),
 				v.literal("files:write"),
 				v.literal("files:permissions"),
+				v.literal("files:read-only"),
 				v.literal("files:publish"),
 				v.literal("files:download"),
 				v.literal("ai_chat:read"),
@@ -2196,6 +2174,8 @@ const app_convex_schema = defineSchema({
 	public_api_file_write_stages: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		force: v.boolean(),
+		requestReadOnly: v.boolean(),
 		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
 		userId: v.id("users"),
 		/**
@@ -2229,6 +2209,7 @@ const app_convex_schema = defineSchema({
 				contentType: v.string(),
 				nonCollaborative: v.boolean(),
 				requestReadOnly: v.boolean(),
+				force: v.boolean(),
 			}),
 		),
 		/**
@@ -3789,7 +3770,7 @@ const app_convex_schema = defineSchema({
 		structuralRevision: v.number(),
 		proposalRevision: v.number(),
 		savedNodeId: v.id("files_nodes"),
-		copiedWritePolicy: v.optional(files_nodes_write_policy_validator),
+		copiedReadOnlyDecisionId: v.optional(v.string()),
 		copiedPath: v.optional(v.string()),
 		createdAt: v.number(),
 	})
@@ -5272,12 +5253,11 @@ const app_convex_schema = defineSchema({
 		 * New files and copies start not public. A file loses it when its restricted area changes.
 		 */
 		isPublic: v.optional(v.literal(true)),
-		writePolicy: files_nodes_write_policy_validator,
+		readOnly: v.boolean(),
 		/**
-		 * Starting protection copied once to brand-new files and subfolders.
-		 * Only folders use it; files store null.
+		 * A new ID on each false-to-true change. Clearing the flag invalidates copy/Restore receipts.
 		 */
-		newChildWritePolicy: files_nodes_write_policy_validator,
+		readOnlyDecisionId: v.union(v.string(), v.null()),
 		// Lifecycle and authorship
 		/**
 		 * Archive operation UUID, or null for an active node.
@@ -5451,14 +5431,13 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "moveCohortId", "treePath"])
-		// Locked nodes (read-only or writer list) by path, active and archived together. Archive reads it
-		// to learn with one read whether a folder holds a lock. A null policy has no `mode`, so unlocked
-		// nodes are in no lock range.
-		.index("by_org_ws_writePolicyMode_treePath", [
+		// Archive can find one active Read-only descendant without reading editable or trashed nodes.
+		.index("by_org_ws_archive_readOnly_treePath", [
 			"organizationId",
 			"workspaceId",
 			"moveCohortId",
-			"writePolicy.mode",
+			"archiveOperationId",
+			"readOnly",
 			"treePath",
 		])
 		// A recursive read finds the restricted folders directly inside one restricted area.
@@ -6471,6 +6450,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		force: v.boolean(),
 		// Activity stays in the workspace that started the transfer. Files keep their own scopes.
 		sourceScope: files_transfer_scope_validator,
 		destinationScope: files_transfer_scope_validator,
@@ -6708,11 +6688,10 @@ const app_convex_schema = defineSchema({
 		outputName: v.union(v.string(), v.null()),
 		outputPath: v.union(v.string(), v.null()),
 		/**
-		 * The policy this run wrote on the produced node. Its children may be created inside it
-		 * while the node's current policy still equals this value, even when it is a lock.
-		 * Merged or private targets store nothing: the run did not write that policy.
+		 * The decision ID of a new Read-only folder. Only its original copied children may use it.
+		 * Merged or private targets store nothing.
 		 */
-		outputWritePolicy: v.optional(files_nodes_write_policy_validator),
+		outputReadOnlyDecisionId: v.optional(v.string()),
 		errorMessage: v.union(v.string(), v.null()),
 		/**
 		 * Why a skipped item was skipped. `permission_denied`: a Copy met a child its user cannot open.
@@ -6761,9 +6740,9 @@ const app_convex_schema = defineSchema({
 		 */
 		folderTreePath: v.string(),
 		/**
-		 * The rule the person confirmed. Later edits to the folder do not change a running job.
+		 * The value the person confirmed. Later edits to the folder do not change a running job.
 		 */
-		writePolicy: files_nodes_write_policy_validator,
+		targetReadOnly: v.boolean(),
 		/**
 		 * Where the next step starts. null means just after the folder itself. `inclusive` is true only
 		 * after a skipped locked folder, when the bound is the first path after its contents.
@@ -6795,6 +6774,7 @@ const app_convex_schema = defineSchema({
 		 */
 		credentialId: v.optional(v.id("api_credentials")),
 		kind: v.union(v.literal("archive"), v.literal("restore")),
+		force: v.boolean(),
 		/**
 		 * Archive: the operation id this job writes. Restore: the operation id this job brings back.
 		 */
@@ -6934,22 +6914,24 @@ const app_convex_schema = defineSchema({
 	 * with its name was there. Nobody saw the clash, so `files/jobs/get` lists these a page at a time. A
 	 * restore started in the app writes none, because it asks the person at each clash.
 	 */
-	files_archive_run_items: defineTable({
-		runId: v.id("files_archive_runs"),
-		/**
-		 * The job's count of handled items when this item landed, so pages follow the job's order.
-		 */
-		order: v.number(),
-		/**
-		 * The path the item had when it was deleted. A skipped item keeps it in the Trash, so a later
-		 * restore of this path finds it.
-		 */
-		path: v.string(),
-		/**
-		 * Where the item came back with its new name. null when the item was skipped and stays in the Trash.
-		 */
-		newPath: v.union(v.string(), v.null()),
-	}).index("by_run_order", ["runId", "order"]),
+	files_archive_run_items: defineTable(
+		v.union(
+			v.object({
+				runId: v.id("files_archive_runs"),
+				order: v.number(),
+				kind: v.literal("restore"),
+				path: v.string(),
+				newPath: v.union(v.string(), v.null()),
+			}),
+			v.object({
+				runId: v.id("files_archive_runs"),
+				order: v.number(),
+				kind: v.literal("force_archive"),
+				nodeId: v.id("files_nodes"),
+				reason: v.union(v.literal("permission"), v.literal("changed"), v.literal("not_empty")),
+			}),
+		),
+	).index("by_run_order", ["runId", "order"]),
 	// #endregion files archive runs
 
 	// #region files subtree ops
@@ -7038,6 +7020,22 @@ const app_convex_schema = defineSchema({
 		sequence: v.number(),
 		nodeId: v.id("files_nodes"),
 		nodeDone: v.boolean(),
+		forceArchive: v.optional(
+			v.object({
+				rootNodeId: v.id("files_nodes"),
+				rootTreePath: v.string(),
+				parentId: v.union(v.id("files_nodes"), v.literal("root")),
+				afterName: v.union(v.string(), v.null()),
+			}),
+		),
+		restoredParent: v.optional(
+			v.object({
+				nodeId: v.id("files_nodes"),
+				decisionId: v.union(v.string(), v.null()),
+				parentId: v.union(v.id("files_nodes"), v.literal("root")),
+				path: v.string(),
+			}),
+		),
 		/**
 		 * Where the next page of children starts. Null starts from the first child. `after` starts
 		 * after the child with this name and creation time. `tie` pages through the children that share
@@ -8295,6 +8293,7 @@ const app_convex_schema = defineSchema({
 		operationId: v.string(),
 		operation: v.union(
 			v.literal("write"),
+			v.literal("read_only"),
 			v.literal("fence"),
 			v.literal("readers"),
 			v.literal("archive"),
@@ -8312,6 +8311,38 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_writer_operationId", ["writerId", "operationId"])
 		.index("by_writer_path_writerGeneration_sequence", ["writerId", "path", "writerGeneration", "sequence"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Exact outcomes of bounded recursive deletes. Keep them for the installation's lifetime,
+	 * so an old request never becomes a fresh delete after receipt expiry.
+	 */
+	plugins_file_archive_receipts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		principalKey: v.string(),
+		actorUserId: v.id("users"),
+		membershipLifetime: v.union(v.number(), v.null()),
+		requestId: v.string(),
+		inputHash: v.string(),
+		previousRequestId: v.union(v.string(), v.null()),
+		operation: v.union(v.literal("plugin_archive"), v.literal("service_archive")),
+		destinationNodeId: v.union(v.id("files_nodes"), v.null()),
+		destinationEpoch: v.union(v.number(), v.null()),
+		path: v.string(),
+		force: v.boolean(),
+		archivedNodes: v.number(),
+		complete: v.boolean(),
+		refused: v.array(
+			v.object({
+				nodeId: v.id("files_nodes"),
+				reason: v.union(v.literal("permission"), v.literal("changed"), v.literal("read_only"), v.literal("not_empty")),
+			}),
+		),
+		createdAt: v.number(),
+	})
+		.index("by_principal_request", ["principalKey", "requestId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
@@ -8534,6 +8565,7 @@ const app_convex_schema = defineSchema({
 		 */
 		requestFingerprint: v.string(),
 		readOnly: v.boolean(),
+		force: v.boolean(),
 		nonCollaborative: v.boolean(),
 		/**
 		 * The authoritative sealed replay fence and its stable destination node id at create time.
@@ -9018,6 +9050,7 @@ const app_convex_schema = defineSchema({
 				kind: v.literal("files_archive_run"),
 				id: v.id("files_archive_runs"),
 				archiveKind: v.union(v.literal("archive"), v.literal("restore")),
+				force: v.optional(v.boolean()),
 			}),
 			/**
 			 * A move or restrict whose op has no run doc of its own. A restrict Activity is not in the feed.

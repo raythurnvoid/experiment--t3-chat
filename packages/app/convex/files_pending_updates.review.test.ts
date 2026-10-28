@@ -152,9 +152,9 @@ describe("prepare_file_pending_update_for_agent upload in flight", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
 				archiveOperationId: null,
-				newChildWritePolicy: null,
+				readOnlyDecisionId: null,
 			});
 			return { assetId, nodeId };
 		});

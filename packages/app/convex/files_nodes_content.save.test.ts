@@ -258,10 +258,10 @@ test("Save publication rechecks a lock added during upload", async () => {
 	await uploaded.promise;
 	try {
 		expect(
-			await f.asU.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asU.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodeId,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toHaveProperty("_yay");
 		resume.resolve();

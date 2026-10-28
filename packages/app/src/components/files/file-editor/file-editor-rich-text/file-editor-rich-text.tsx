@@ -39,6 +39,7 @@ import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { AI_NAME } from "./constants.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { files_unsaved_text_capture } from "@/lib/files-unsaved-text.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { check_element_is_in_allowed_areas, cn } from "@/lib/utils.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
@@ -64,7 +65,6 @@ import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
 	file_editor_get_size_status_message,
-	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
 import { file_editor_rich_text_SizeLimitExtension } from "@/lib/file-editor-rich-text-size-limit-extension.ts";
 import { file_editor_rich_text_MediaExtension } from "./file-editor-rich-text-media-extension.ts";
@@ -1098,9 +1098,9 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 
 	const pushRefusedMessage =
 		filesYjs.pushRefusedReason === "read_only"
-			? "This file became read-only, so your unsaved changes were not saved. The saved version was reloaded."
+			? "This file became Read-only. Open Unsaved text in Files to copy or download your draft."
 			: filesYjs.pushRefusedReason === "permission"
-				? "You no longer have permission to edit this file. Your unsaved changes were not saved."
+				? "You can no longer edit this file. Open Unsaved text in Files to copy or download your draft."
 				: filesYjs.pushRefusedReason === "moving"
 					? "This file is being moved. Your changes will save when the Move ends. Keep this tab open until then."
 					: filesYjs.pushRefusedReason === "other"
@@ -1315,10 +1315,12 @@ export function FileEditorRichText(props: FileEditorRichText_Props) {
 		...rest
 	} = props;
 
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, userId } = AppTenantProvider.useContext();
 
 	const filesYjs = useFilesYjs({
 		nodeId: nodeId,
+		userId,
+		rootKind: "rich_text",
 		yjsLastSequenceId,
 		membershipId,
 		presenceStore,
@@ -1590,6 +1592,7 @@ type FileEditorRichTextNonCollabInner_Props = {
 	target: files_PendingTarget;
 	pendingUpdate: app_convex_Doc<"files_pending_updates"> | null;
 	editable: boolean;
+	editBlockReason?: "read_only" | "permission" | null;
 	/**
 	 * The stored bytes the loader read; the mount-time baseline is re-serialized from them.
 	 */
@@ -1621,9 +1624,21 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 		onTargetChange,
 	} = props;
 
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, userId } = AppTenantProvider.useContext();
 	const { openReviewRun } = AppActivitiesProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
+	const [recoveryDocumentId] = useState(() => crypto.randomUUID());
+	const retainUnsavedText = useFn((text: string, reason: "read_only" | "permission" | "closed" = "closed") => {
+		files_unsaved_text_capture({
+			userId,
+			membershipId,
+			target,
+			documentId: recoveryDocumentId,
+			rootKind: "rich_text",
+			text,
+			reason,
+		});
+	});
 
 	const [editor, setEditor] = useState<Editor | null>(null);
 
@@ -1801,6 +1816,12 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				requestId: saveRequestRef.current.requestId,
 			});
 			if (replaced._nay) {
+				if (replaced._nay.name === "read_only" || replaced._nay.message === "Permission denied") {
+					retainUnsavedText(
+						editor.isDestroyed ? textToSave : serialize_editor_markdown(editor),
+						replaced._nay.name === "read_only" ? "read_only" : "permission",
+					);
+				}
 				if (replaced._nay.name === "save_expired") saveRequestRef.current = null;
 				console.error("[FileEditorRichTextNonCollab.handleClickSave] Error while replacing the file content", {
 					nay: replaced._nay,
@@ -1937,7 +1958,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	};
 
 	/**
-	 * Warn before this editor goes away with text that was never saved.
+	 * Keep a copy before this editor closes or loses write access.
 	 *
 	 * Serialize the live document instead of reading the debounced dirty state. That state is up
 	 * to 400 ms behind, so the last words typed would not count as a change.
@@ -1952,12 +1973,14 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 			return;
 		}
 
-		file_editor_warn_unsaved_text_dropped(currentText);
+		retainUnsavedText(currentText, props.editBlockReason ?? "closed");
 	});
 
-	// Run only on unmount. The cleanup reads the editor through a stable callback, so no other
-	// change may re-run it: a rerun would warn about text that is still on screen.
+	// Capture on unmount before the editor is disposed, and when write access is lost.
 	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
+	useEffect(() => {
+		if (!editable) warnIfUnsavedTextIsDropped();
+	}, [editable, warnIfUnsavedTextIsDropped]);
 
 	// Same pattern as the comments composer: the editor instance is created once, so a later answer
 	// to "may this user write here" has to go through `setEditable`.
@@ -2179,6 +2202,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 export type FileEditorRichTextNonCollab_Props = {
 	target: files_PendingTarget;
 	editable: boolean;
+	editBlockReason?: "read_only" | "permission" | null;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -2259,6 +2283,7 @@ export const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCo
 				target={target}
 				pendingUpdate={fileContentData.pendingUpdate}
 				editable={editable}
+				editBlockReason={props.editBlockReason}
 				initialText={fileContentData.text}
 				initialJson={fileContentData.initialJson}
 				presenceStore={presenceStore}

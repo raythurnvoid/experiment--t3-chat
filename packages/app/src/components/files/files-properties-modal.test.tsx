@@ -89,8 +89,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
 		},
 		files_nodes: {
-			get_node_write_policy_management_state: "get_node_write_policy_management_state",
-			set_node_write_policy: "set_node_write_policy",
+			read_only_get: "read_only_get",
+			read_only_set: "read_only_set",
 		},
 		files_write_policy_runs: {
 			start: "files_write_policy_runs.start",
@@ -180,34 +180,16 @@ const NODE = {
 	updatedAt: 1_700_000_000_000,
 	canWrite: true,
 	writeBlockedReason: null as "read_only" | "permission" | null,
-	writePolicyState: "none" as const,
+	readOnly: false,
 };
 
 // A file whose text can be edited. `assetId` plus `textKind` is what marks one, and the plain
 // NODE above deliberately has neither, so an image gets no collaboration section.
 const TEXT_NODE = { ...NODE, assetId: "asset_1", textKind: "rich_text" as const, collaborationEnabled: true };
 
-type ManagementState = {
-	canManage: boolean;
-	canWrite: boolean;
-	writeBlockedReason: "read_only" | "permission" | null;
-	localPolicy:
-		| null
-		| { mode: "read_only" }
-		| { mode: "writer"; writers: { kind: "user"; userId: string; name: string }[]; hiddenWriterCount: number };
-	localDefault:
-		| null
-		| { mode: "read_only" }
-		| { mode: "writer"; writers: { kind: "user"; userId: string; name: string }[]; hiddenWriterCount: number };
-};
+type ManagementState = { canEdit: boolean; readOnly: boolean };
 
-const WRITABLE_POLICY: ManagementState = {
-	canManage: true,
-	canWrite: true,
-	writeBlockedReason: null,
-	localPolicy: null,
-	localDefault: null,
-};
+const WRITABLE_POLICY: ManagementState = { canEdit: true, readOnly: false };
 
 function mockQueries(args: {
 	management?: ManagementState;
@@ -221,7 +203,7 @@ function mockQueries(args: {
 		if (queryArgs === "skip") {
 			return undefined;
 		}
-		if (query === "get_node_write_policy_management_state") {
+		if (query === "read_only_get") {
 			return { nodeId: NODE_ID, ...WRITABLE_POLICY, ...args.management };
 		}
 		if (query === "get_file_node_for_membership") {
@@ -301,15 +283,13 @@ describe("FilesPropertiesModal", () => {
 	test("shows only the skeleton until the protection state arrives, then the saved value", () => {
 		const view = renderModal();
 
-		expect(screen.queryAllByRole("radio")).toHaveLength(0);
+		expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
 		expect(document.querySelector(".FilesPropertiesModalSkeleton-protection")).not.toBeNull();
 
 		mockQueries({
 			management: {
 				...WRITABLE_POLICY,
-				canWrite: false,
-				writeBlockedReason: "read_only",
-				localPolicy: { mode: "read_only" },
+				readOnly: true,
 			},
 			entries: [],
 			canWrite: false,
@@ -317,8 +297,7 @@ describe("FilesPropertiesModal", () => {
 		view.rerender(<FilesPropertiesModal nodeId={NODE_ID} nodeName="notes.md" nodeKind="file" onClose={() => {}} />);
 
 		expect(document.querySelector(".FilesPropertiesModalSkeleton-protection")).toBeNull();
-		expect((screen.getByRole("radio", { name: "No one (read-only)" }) as HTMLInputElement).checked).toBe(true);
-		expect((screen.getByRole("radio", { name: "Everyone with access" }) as HTMLInputElement).checked).toBe(false);
+		expect((screen.getByRole("checkbox", { name: "Read-only" }) as HTMLInputElement).checked).toBe(true);
 	});
 });
 
@@ -360,7 +339,7 @@ describe("FilesPropertiesModalFacts", () => {
 				return NODE;
 			}
 			// The modal shows its own skeleton until these two answer.
-			if (query === "get_node_write_policy_management_state") {
+			if (query === "read_only_get") {
 				return { nodeId: NODE_ID, ...WRITABLE_POLICY };
 			}
 			if (query === "get_entries") {
@@ -379,135 +358,121 @@ describe("FilesPropertiesModalFacts", () => {
 	});
 });
 
-describe("FilesPropertiesModalWritePolicy", () => {
-	test("saves an explicit policy and ignores a second press while saving", async () => {
+describe("FilesPropertiesModalReadOnly", () => {
+	test("saves the checkbox once while a request is in flight", async () => {
 		mockQueries({ entries: [], canWrite: true });
-		let finishMutation: (result: { _yay: null }) => void = () => {};
+		let finish: (result: { _yay: null }) => void = () => {};
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
-				finishMutation = resolve;
+				finish = resolve;
 			}),
 		);
 		renderModal();
-		fireEvent.click(screen.getByRole("radio", { name: "No one (read-only)" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: "Read-only" }));
 		expect(mutationMock).not.toHaveBeenCalled();
-		const save = screen.getByRole("button", { name: /^Save$/ });
+		const save = screen.getByRole("button", { name: "Save" });
 		fireEvent.click(save);
-		// The button is disabled while the save runs, so a second press does nothing.
-		expect(save.hasAttribute("disabled")).toBe(true);
 		fireEvent.click(save);
 		expect(mutationMock).toHaveBeenCalledTimes(1);
-		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
+		expect(mutationMock).toHaveBeenCalledWith("read_only_set", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: NODE_ID,
-			writePolicy: { mode: "read_only" },
+			readOnly: true,
 		});
 		await act(async () => {
-			finishMutation({ _yay: null });
+			finish({ _yay: null });
 		});
 	});
 
-	test("saves Editable to clear a local read-only rule", () => {
-		mockQueries({
-			management: {
-				...WRITABLE_POLICY,
-				localPolicy: { mode: "read_only" },
-				canWrite: false,
-				writeBlockedReason: "read_only",
-			},
-			entries: [],
-			canWrite: false,
-		});
+	test("lets a member with Can edit clear Read-only", async () => {
+		mockQueries({ management: { canEdit: true, readOnly: true }, entries: [], canWrite: false });
 		renderModal();
-		fireEvent.click(screen.getByRole("radio", { name: "Everyone with access" }));
-		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
-		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
-			membershipId: MEMBERSHIP_ID,
-			nodeId: NODE_ID,
-			writePolicy: null,
-		});
+		const checkbox = screen.getByRole("checkbox", { name: "Read-only" }) as HTMLInputElement;
+		expect(checkbox.disabled).toBe(false);
+		fireEvent.click(checkbox);
+		clickSave();
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("read_only_set", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				readOnly: false,
+			}),
+		);
 	});
 
-	test("keeps local radios enabled when the item is read-only", () => {
-		mockQueries({
-			management: {
-				...WRITABLE_POLICY,
-				localPolicy: { mode: "read_only" },
-				canWrite: false,
-				writeBlockedReason: "read_only",
-			},
-			entries: [],
-			canWrite: false,
-		});
+	test("requires Can edit for the setting", () => {
+		mockQueries({ management: { canEdit: false, readOnly: false }, entries: [], canWrite: false });
 		renderModal();
-		expect((screen.getByRole("radio", { name: "No one (read-only)" }) as HTMLInputElement).disabled).toBe(false);
-		expect(screen.queryByRole("button", { name: "Open parent policy" })).toBeNull();
+		expect((screen.getByRole("checkbox", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(true);
 	});
 
-	test("keeps a hidden writer protected without making a write", () => {
-		mockQueries({
-			management: { ...WRITABLE_POLICY, localPolicy: { mode: "writer", writers: [], hiddenWriterCount: 1 } },
-			entries: [],
-			canWrite: true,
-		});
-		renderModal();
-		expect((screen.getByRole("radio", { name: "Custom" }) as HTMLInputElement).checked).toBe(true);
-		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
-	test("opens the writers dialog for Custom and keeps Save off until somebody is chosen", async () => {
+	test("keeps a refused flag draft open", async () => {
 		mockQueries({ entries: [], canWrite: true });
-		renderModal();
-		fireEvent.click(screen.getByRole("radio", { name: "Custom" }));
-		expect(await screen.findByRole("combobox", { name: "Add a person or plugin" })).toBeTruthy();
-		expect(screen.getByRole("button", { name: /^Save$/ }).hasAttribute("disabled")).toBe(true);
-		expect(mutationMock).not.toHaveBeenCalled();
-	});
-
-	test("separates policy management from content write permission", () => {
-		mockQueries({ management: { ...WRITABLE_POLICY, canManage: false }, entries: [], canWrite: true });
-		renderModal();
-		expect((screen.getByRole("radio", { name: "No one (read-only)" }) as HTMLInputElement).disabled).toBe(true);
-		expect(screen.getByText("You cannot change this setting.", { exact: false })).toBeTruthy();
-		expect(editorHandle.options.readOnly).toBe(false);
-	});
-
-	test("shows a refused policy change without closing", async () => {
-		mockQueries({ entries: [], canWrite: true });
-		mutationMock.mockResolvedValue({ _nay: { message: "The policy changed in another tab" } });
+		mutationMock.mockResolvedValue({ _nay: { message: "Permission denied" } });
 		const onClose = vi.fn();
 		renderModal({ onClose });
-		fireEvent.click(screen.getByRole("radio", { name: "No one (read-only)" }));
-		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
-		expect((await screen.findByRole("alert")).textContent).toBe("The policy changed in another tab");
+		fireEvent.click(screen.getByRole("checkbox", { name: "Read-only" }));
+		clickSave();
+		expect((await screen.findByRole("alert")).textContent).toBe("Permission denied");
 		expect(onClose).not.toHaveBeenCalled();
+		expect((screen.getByRole("checkbox", { name: "Read-only" }) as HTMLInputElement).checked).toBe(true);
 	});
 
-	test("applies the rule for items inside to existing items only after the Save confirm", async () => {
-		mockQueries({
-			management: { ...WRITABLE_POLICY, localDefault: { mode: "read_only" } },
-			node: { ...NODE, kind: "folder", name: "docs", path: "/docs" },
-			entries: [],
-			canWrite: true,
-		});
+	test.each([true, false])("starts a separate contents pass with target %s", async (targetReadOnly) => {
+		mockQueries({ node: { ...NODE, kind: "folder", name: "docs", path: "/docs" }, entries: [], canWrite: true });
 		mutationMock.mockResolvedValue({ _yay: { activityId: "activity_1" } });
 		renderModal({ nodeKind: "folder", nodeName: "docs" });
-		fireEvent.click(screen.getByRole("checkbox", { name: "Also apply it to the items already inside" }));
-		fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
-		expect(await screen.findByRole("dialog", { name: "Change the rule of all items inside?" })).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: targetReadOnly ? "Make contents Read-only" : "Clear Read-only from contents",
+			}),
+		);
 		expect(mutationMock).not.toHaveBeenCalled();
+		expect(screen.getByText(/There is no Undo/)).toBeTruthy();
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: "Save and apply" }));
+			fireEvent.click(screen.getByRole("button", { name: "Start" }));
 		});
 		expect(mutationMock).toHaveBeenCalledWith("files_write_policy_runs.start", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: NODE_ID,
-			writePolicy: { mode: "read_only" },
+			targetReadOnly,
 		});
-		expect(
-			(screen.getByRole("checkbox", { name: "Also apply it to the items already inside" }) as HTMLInputElement).checked,
-		).toBe(false);
+	});
+
+	test("saves metadata before enabling Read-only and stops if it fails", async () => {
+		mockQueries({ entries: [], canWrite: true });
+		mutationMock.mockResolvedValue({ _nay: { message: "Metadata failed" } });
+		renderModal();
+		typeDraft("color: blue");
+		fireEvent.click(screen.getByRole("checkbox", { name: "Read-only" }));
+		clickSave();
+		await screen.findByText("Metadata failed");
+		expect(mutationMock.mock.calls.map((call) => call[0])).toEqual(["set_entries"]);
+		expect((screen.getByRole("textbox", { name: "Metadata YAML" }) as HTMLTextAreaElement).value).toBe("color: blue");
+	});
+
+	test("clears a late lock before saving metadata and keeps the failed metadata draft", async () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+		typeDraft("color: blue");
+		mockQueries({
+			management: { canEdit: true, readOnly: true },
+			node: { ...NODE, readOnly: true, writeBlockedReason: "read_only" },
+			entries: [],
+			canWrite: false,
+		});
+		await act(async () => {
+			for (const listener of queryPushListeners) listener();
+		});
+		fireEvent.click(screen.getByRole("checkbox", { name: "Read-only" }));
+		mutationMock.mockImplementation((name) =>
+			Promise.resolve(name === "read_only_set" ? { _yay: null } : { _nay: { message: "Metadata failed" } }),
+		);
+		clickSave();
+		await screen.findByText("Metadata failed");
+		expect(mutationMock.mock.calls.map((call) => call[0])).toEqual(["read_only_set", "set_entries"]);
+		expect(screen.getByText("Read-only was turned off. Metadata was not saved.")).toBeTruthy();
+		expect((screen.getByRole("textbox", { name: "Metadata YAML" }) as HTMLTextAreaElement).value).toBe("color: blue");
 	});
 
 	test("restores focus to the control that opened the dialog", async () => {

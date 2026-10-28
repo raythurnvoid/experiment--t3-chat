@@ -679,7 +679,7 @@ describe("review job content", () => {
 				ctx,
 				pendingUpdateId: unrelated._id,
 				value: {
-					copiedFrom: { target: { kind: "saved", id: source._yay.nodeId }, path: "/source", sourceWritePolicy: null },
+					copiedFrom: { target: { kind: "saved", id: source._yay.nodeId }, path: "/source", sourceReadOnly: false },
 				},
 			});
 			return (await ctx.db.get("files_pending_updates", unrelated._id))!;

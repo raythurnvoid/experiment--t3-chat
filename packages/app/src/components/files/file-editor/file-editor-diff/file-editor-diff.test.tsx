@@ -1,7 +1,32 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { files_unsaved_text_set_user, files_unsaved_text_get_snapshot } from "@/lib/files-unsaved-text.ts";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 import { createRef, type Ref } from "react";
+
+test.each(["read_only", "permission"] as const)("keeps a live draft before access becomes %s", async (reason) => {
+	vi.useFakeTimers();
+	try {
+		resolveQueryWithNonCollaborativeContent("alpha\n");
+		const view = renderNonCollabDiffEditor();
+		await flushEditorMount();
+		await typeIntoModifiedPane("alpha beta\n");
+		view.rerender(
+			<FileEditorDiffNonCollab
+				nodeId={NODE_ID}
+				editable={false}
+				editBlockReason={reason}
+				monacoLanguageId="markdown"
+				presenceStore={presenceStore}
+				commentsPortalHost={null}
+				toolbarPortalHost={view.toolbarPortalHost}
+			/>,
+		);
+		expect(files_unsaved_text_get_snapshot()).toEqual([expect.objectContaining({ text: "alpha beta\n", reason })]);
+	} finally {
+		vi.useRealTimers();
+	}
+});
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { FileEditor_Ref } from "../file-editor.tsx";
@@ -290,8 +315,10 @@ async function typeIntoModifiedPane(text: string) {
 }
 
 beforeEach(() => {
+	files_unsaved_text_set_user("user_1");
 	tenantContextMock.mockReturnValue({
 		membershipId: MEMBERSHIP_ID,
+		userId: "user_1",
 		organizationId: "organization_1",
 		organizationName: "team",
 		workspaceId: "workspace_1",
@@ -326,6 +353,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	files_unsaved_text_set_user(null);
 	document.getElementById("app_monaco_hoisting_container")?.remove();
 });
 
@@ -440,7 +468,9 @@ describe("FileEditorDiffNonCollab", () => {
 			await act(async () => {});
 			const retry = convexActionMock.mock.calls[1]?.[1];
 			expect(retry?.text).toBe(changed ? "alpha beta gamma\n" : firstRequest.text);
-			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(!changed);
+			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(
+				!changed,
+			);
 			expect(getPanes().original.getValue()).toBe(retry.text);
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
 		} finally {
@@ -490,7 +520,7 @@ describe("FileEditorDiffNonCollab", () => {
 		}
 	});
 
-	test("warns with the lost text when the editor closes on unsaved changes", async () => {
+	test("keeps the full draft when the editor closes on unsaved changes", async () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
@@ -500,22 +530,7 @@ describe("FileEditorDiffNonCollab", () => {
 			await typeIntoModifiedPane("alpha beta\n");
 			unmount();
 
-			expect(toast.warning).toHaveBeenCalledWith("Your unsaved changes to this file were discarded.", {
-				duration: 30_000,
-				action: { label: "Copy text", onClick: expect.any(Function) },
-			});
-
-			// The action has to hand back exactly what was in the pane, or the offer is useless.
-			const clipboardWrite = vi.fn();
-			vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
-			const warningAction = vi.mocked(toast.warning).mock.calls[0]?.[1]?.action;
-			if (typeof warningAction !== "object" || warningAction === null || !("onClick" in warningAction)) {
-				throw new Error("Expected the warning to carry a Copy text action");
-			}
-			// The handler ignores its event, so an empty stand-in is enough to run the action.
-			warningAction.onClick({} as Parameters<typeof warningAction.onClick>[0]);
-			expect(clipboardWrite).toHaveBeenCalledWith("alpha beta\n");
-			vi.unstubAllGlobals();
+			expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual(["alpha beta\n"]);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -593,10 +608,7 @@ describe("FileEditorDiffNonCollab", () => {
 			await typeIntoModifiedPane("alpha beta gamma\n");
 			unmount();
 
-			expect(toast.warning).toHaveBeenCalledWith("Your unsaved changes to this file were discarded.", {
-				duration: 30_000,
-				action: { label: "Copy text", onClick: expect.any(Function) },
-			});
+			expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual(["alpha beta gamma\n"]);
 			await act(async () => {
 				settleSave({ _yay: null });
 			});
@@ -632,10 +644,7 @@ describe("FileEditorDiffNonCollab", () => {
 				settleSave({ _nay: { message: "Not found" } });
 			});
 			expect(toast.error).toHaveBeenCalledWith("Not found");
-			expect(toast.warning).toHaveBeenCalledWith("Your unsaved changes to this file were discarded.", {
-				duration: 30_000,
-				action: { label: "Copy text", onClick: expect.any(Function) },
-			});
+			expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual(["alpha beta\n"]);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2440,7 +2449,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 	});
 
 	test.each([true, false])(
-		"a changed file keeps unsent text after preparation with a toggle marker: %s",
+		"repeated preparation keeps distinct unsent drafts with a toggle marker: %s",
 		async (marked) => {
 			vi.useFakeTimers();
 			const writeText = vi.fn().mockResolvedValue(undefined);
@@ -2449,7 +2458,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
 				resolveStatePages({ base: "base\n", staged: "base\n", unstaged: "proposed\n" });
 				convexActionMock.mockReturnValue(new Promise(() => {}));
-				const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+				const { rerenderWith, unmount } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 				await flushNonCollabProposalMount();
 				act(() => {
 					getPanes().modified.setValue("unsent typing\n");
@@ -2486,6 +2495,43 @@ describe("FileEditorDiff after a collaboration change", () => {
 				fireEvent.click(screen.getByRole("button", { name: "Copy unsaved proposed text" }));
 				await act(async () => {});
 				expect(writeText).toHaveBeenCalledWith("unsent typing\n");
+
+				act(() => {
+					getPanes().original.setValue("second unsent accepted\n");
+					getPanes().modified.setValue("second unsent proposed\n");
+					monacoHarness.changeListeners.forEach((listener) => listener());
+				});
+				useStableQueryMock.mockReturnValue({ ...prepared, currentPendingContentVersion: marked ? 3 : 1 });
+				rerenderWith({ committedAssetId: "asset_3" });
+				await flushNonCollabProposalMount();
+				useStableQueryMock.mockReturnValue({
+					...prepared,
+					currentPendingContentVersion: marked ? 3 : 1,
+					revision: 3,
+					updatedAt: 3,
+					content: {
+						...prepared.content,
+						base: { kind: "asset", assetId: "asset_3", pendingContentVersion: marked ? 3 : 1 },
+						baseStateId: "base_3",
+						stagedStateId: "staged_3",
+						unstagedStateId: "unstaged_3",
+					},
+				});
+				Object.assign(texts, { base_3: "third\n", staged_3: "third\n", unstaged_3: "third proposed\n" });
+				rerenderWith({ committedAssetId: "asset_3" });
+				await flushNonCollabProposalMount();
+				expect(getPanes().modified.getValue()).toBe("third proposed\n");
+				unmount();
+				expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual([
+					"unsent typing\n",
+					"second unsent accepted\n",
+					"second unsent proposed\n",
+				]);
+				expect(files_unsaved_text_get_snapshot().every((capture) => capture.reason === "changed")).toBe(true);
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(250);
+				});
+				expect(convexMutationMock).not.toHaveBeenCalled();
 			} finally {
 				vi.useRealTimers();
 				vi.unstubAllGlobals();
@@ -2518,24 +2564,8 @@ describe("FileEditorDiff after a collaboration change", () => {
 			}
 			// FileEditor removes Review immediately when another tab's preparation settles its doc.
 			unmount();
-			const warnings = vi.mocked(toast.warning).mock.calls;
-			expect(warnings).toHaveLength(acceptedChanged ? 2 : 1);
-			expect(warnings.map(([message]) => message)).toEqual(
-				acceptedChanged
-					? ["Review closed with unsaved accepted text.", "Review closed with unsaved proposed text."]
-					: ["Review closed with unsaved proposed text."],
-			);
-			for (const [, options] of warnings) {
-				expect(options?.duration).toBe(30_000);
-				const action = options?.action;
-				if (!action || typeof action !== "object" || !("onClick" in action)) {
-					throw new Error("Expected a copy action");
-				}
-				action.onClick({} as never);
-			}
-			await act(async () => {});
-			expect(writeText.mock.calls).toEqual(
-				acceptedChanged ? [["unsent accepted\n"], ["unsent proposed\n"]] : [["unsent proposed\n"]],
+			expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual(
+				acceptedChanged ? ["unsent accepted\n", "unsent proposed\n"] : ["unsent proposed\n"],
 			);
 			expect(convexMutationMock).not.toHaveBeenCalled();
 		} finally {

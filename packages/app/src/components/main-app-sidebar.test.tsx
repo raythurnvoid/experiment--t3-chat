@@ -227,6 +227,7 @@ import { MainAppSidebar } from "./main-app-sidebar.tsx";
 
 function createTenantContext() {
 	return {
+		userId: "user_1" as AppTenantContextValue["userId"],
 		membershipId: "membership_1" as AppTenantContextValue["membershipId"],
 		workspaceId: "workspace_1" as AppTenantContextValue["workspaceId"],
 		workspaceName: "home",

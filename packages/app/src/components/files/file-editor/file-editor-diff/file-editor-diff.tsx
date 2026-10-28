@@ -10,6 +10,7 @@ import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useConvex, useQuery } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { files_unsaved_text_capture, type files_UnsavedText } from "@/lib/files-unsaved-text.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { cn, copy_to_clipboard, should_never_happen, sx } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
@@ -21,7 +22,6 @@ import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
 	file_editor_get_size_status_message,
-	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
 import type { files_PresenceStore } from "@/lib/files.ts";
 import {
@@ -800,6 +800,7 @@ export type FileEditorDiff_Props = {
 	className?: string;
 	target: files_PendingTarget;
 	editable: boolean;
+	editBlockReason?: "read_only" | "permission" | null;
 	/**
 	 * The node's document shape, threaded from the node the ROUTE already resolved — never from
 	 * the nullable content fetch, which has no value in exactly the refused case.
@@ -909,7 +910,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		topViewZoneSlot,
 	} = props;
 
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, userId } = AppTenantProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
 
 	const id = useId();
@@ -2016,6 +2017,29 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		}
 	});
 
+	const warnIfUnsavedTextIsDropped = useFn((confirmed = getConfirmedDraft(), reason?: files_UnsavedText["reason"]) => {
+		for (const [role, field, changed, model] of [
+			["accepted", "stagedMarkdown", "stagedChanged", editorModelsRef.current?.original],
+			["proposed", "unstagedMarkdown", "unstagedChanged", editorModelsRef.current?.modified],
+		] as const) {
+			const copies = new Set<string>();
+			if (savedLocalDraft?.[changed]) copies.add(savedLocalDraft[field]);
+			const currentText = model?.getValue();
+			if (currentText !== undefined && currentText !== confirmed[field]) copies.add(currentText);
+			for (const text of copies) {
+				files_unsaved_text_capture({
+					userId,
+					membershipId,
+					target,
+					documentId: `${id}:${role}`,
+					rootKind,
+					text,
+					reason: reason ?? props.editBlockReason ?? "closed",
+				});
+			}
+		}
+	});
+
 	// Stop queued writes immediately when the document changes. Keep local text available even
 	// when preparation replaces the stored branches while this editor stays mounted.
 	useLayoutEffect(() => {
@@ -2042,6 +2066,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			(editorModels.original.getValue() !== previous.stagedMarkdown ||
 				editorModels.modified.getValue() !== previous.unstagedMarkdown)
 		) {
+			// Keep each draft before another reset replaces the inline recovery copy.
+			warnIfUnsavedTextIsDropped(previous, "changed");
 			setSavedLocalDraft({
 				stagedMarkdown: editorModels.original.getValue(),
 				unstagedMarkdown: editorModels.modified.getValue(),
@@ -2136,6 +2162,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				editorModels.original.getValue() !== previousRemoteEditorContentState.stagedMarkdown ||
 				editorModels.modified.getValue() !== previousRemoteEditorContentState.unstagedMarkdown
 			) {
+				warnIfUnsavedTextIsDropped(previousRemoteEditorContentState, "changed");
 				setSavedLocalDraft({
 					stagedMarkdown: editorModels.original.getValue(),
 					unstagedMarkdown: editorModels.modified.getValue(),
@@ -2315,28 +2342,12 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		editorRef.current?.getModifiedEditor().updateOptions({ ariaLabel: "Modified file content" });
 	}, [mountedModifiedEditor]);
 
-	const warnIfUnsavedTextIsDropped = useFn(() => {
-		const confirmed = getConfirmedDraft();
-		for (const [role, field, changed, model] of [
-			["accepted", "stagedMarkdown", "stagedChanged", editorModelsRef.current?.original],
-			["proposed", "unstagedMarkdown", "unstagedChanged", editorModelsRef.current?.modified],
-		] as const) {
-			const copies = new Set<string>();
-			if (savedLocalDraft?.[changed]) copies.add(savedLocalDraft[field]);
-			const currentText = model?.getValue();
-			if (currentText !== undefined && currentText !== confirmed[field]) copies.add(currentText);
-			for (const text of copies) {
-				toast.warning(`Review closed with unsaved ${role} text.`, {
-					duration: 30_000,
-					action: { label: `Copy ${role} text`, onClick: () => copyText(text) },
-				});
-			}
-		}
-	});
-
 	// Preparation can settle the proposal before its action returns. The parent then unmounts
 	// Review immediately, so keep copies outside the editor before the models are disposed.
 	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
+	useEffect(() => {
+		if (!editable) warnIfUnsavedTextIsDropped();
+	}, [editable, warnIfUnsavedTextIsDropped]);
 
 	useEffect(() => {
 		// React can clean up and run this effect again on the same component (Fast Refresh does in dev).
@@ -3528,6 +3539,7 @@ type FileEditorDiffNonCollabInner_Props = {
 	isActive: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
+	editBlockReason?: "read_only" | "permission" | null;
 	/**
 	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
 	 */
@@ -3561,7 +3573,19 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 		onPreviewSnapshotChange,
 	} = props;
 
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, userId } = AppTenantProvider.useContext();
+	const [recoveryDocumentId] = useState(() => crypto.randomUUID());
+	const retainUnsavedText = useFn((text: string, reason: "read_only" | "permission" | "closed" = "closed") => {
+		files_unsaved_text_capture({
+			userId,
+			membershipId,
+			target: { kind: "saved", id: nodeId },
+			documentId: recoveryDocumentId,
+			rootKind: initialData.rootKind,
+			text,
+			reason,
+		});
+	});
 
 	const editorRef = useRef<monaco_editor.IStandaloneDiffEditor | null>(null);
 	const [mountedModifiedEditor, setMountedModifiedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
@@ -3819,10 +3843,26 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 					nay: replaced._nay,
 				});
 				toast.error(replaced._nay.message);
+				if (
+					editorModelsRef.current &&
+					(replaced._nay.name === "read_only" || replaced._nay.message === "Permission denied")
+				) {
+					retainUnsavedText(
+						editorModelsRef.current.modified.getValue(),
+						replaced._nay.name === "read_only" ? "read_only" : "permission",
+					);
+				}
 				// The view was replaced while the save waited (see below), so the refused text is off the
 				// screen now: warn the way the unmount would have.
 				if (!editorModelsRef.current) {
-					file_editor_warn_unsaved_text_dropped(localMarkdown);
+					retainUnsavedText(
+						localMarkdown,
+						replaced._nay.name === "read_only"
+							? "read_only"
+							: replaced._nay.message === "Permission denied"
+								? "permission"
+								: "closed",
+					);
 				}
 				return;
 			}
@@ -3847,7 +3887,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 				console.error("[FileEditorDiffNonCollab.handleClickSave] Save failed", err);
 				toast.error(err?.message ?? "Failed to save");
 				if (!editorModelsRef.current) {
-					file_editor_warn_unsaved_text_dropped(localMarkdown);
+					retainUnsavedText(localMarkdown);
 				}
 			})
 			.finally(() => {
@@ -3937,7 +3977,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 	}, [mountedModifiedEditor]);
 
 	/**
-	 * Warn before this editor goes away with text that was never saved.
+	 * Keep a copy before this editor closes or loses write access.
 	 *
 	 * The committed pane is the baseline, so the unsaved text is whatever the modified pane holds
 	 * on top of it. Read both models instead of the debounced dirty state, because that state is
@@ -3958,13 +3998,14 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			return;
 		}
 
-		file_editor_warn_unsaved_text_dropped(currentModified);
+		retainUnsavedText(currentModified, props.editBlockReason ?? "closed");
 	});
 
-	// Run only on unmount, and before the cleanup below disposes the models. The cleanup reads a
-	// stable callback, so no other change may re-run it: a rerun would warn about text that is
-	// still on screen.
+	// Capture on unmount before the models are disposed, and when write access is lost.
 	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
+	useEffect(() => {
+		if (!editable) warnIfUnsavedTextIsDropped();
+	}, [editable, warnIfUnsavedTextIsDropped]);
 
 	useEffect(() => {
 		return () => {
@@ -4039,6 +4080,7 @@ export type FileEditorDiffNonCollab_Props = {
 	isActive?: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
+	editBlockReason?: "read_only" | "permission" | null;
 	/**
 	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
 	 */
@@ -4114,6 +4156,7 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 			isActive={isActive}
 			nodeId={nodeId}
 			editable={editable}
+			editBlockReason={props.editBlockReason}
 			monacoLanguageId={monacoLanguageId}
 			initialData={fileContentData}
 			topSafeArea={topSafeArea}

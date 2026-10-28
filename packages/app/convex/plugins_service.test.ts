@@ -24,7 +24,7 @@ const SERVICE_CAPABILITIES: plugins_Capability[] = [
 	"plugin.data.read",
 	"plugin.data.write",
 	"workspace.files.write",
-	"workspace.files.create-read-only",
+	"workspace.files.manage-read-only",
 ];
 
 /**
@@ -526,13 +526,12 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 	});
 
 	// The capability rule asks only for the gates of the REGISTERED scopes plus the connect
-	// consent. `create-target` still checks `workspace.files.create-read-only` on every call, so
-	// nothing is lost by not asking for it here.
-	test("exchanges without workspace.files.create-read-only, which is no longer required here", async () => {
+	// consent. Each explicit Read-only change or force request checks its separate grant.
+	test("exchanges without workspace.files.manage-read-only", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, {
 			acceptedCapabilities: SERVICE_CAPABILITIES.filter(
-				(capability) => capability !== ("workspace.files.create-read-only" satisfies plugins_Capability),
+				(capability) => capability !== ("workspace.files.manage-read-only" satisfies plugins_Capability),
 			),
 		});
 		const pageToken = await seed_page_token({ t, fixture });

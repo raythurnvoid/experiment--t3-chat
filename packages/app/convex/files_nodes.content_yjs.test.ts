@@ -1267,7 +1267,8 @@ async function test_insert_committed_external_markdown(args: {
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
@@ -1284,7 +1285,6 @@ async function test_insert_committed_external_markdown(args: {
 			createdBy: users_SYSTEM_AUTHOR,
 			updatedBy: users_SYSTEM_AUTHOR,
 			updatedAt: now,
-			newChildWritePolicy: null,
 		});
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
@@ -1582,7 +1582,8 @@ describe("non-collaborative files", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
 				organizationId: db.organizationId,
@@ -1601,7 +1602,6 @@ describe("non-collaborative files", () => {
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
-				newChildWritePolicy: null,
 			});
 
 			await files_nodes_db_insert_file_content_docs(ctx, {
@@ -2056,8 +2056,8 @@ describe("non-collaborative files", () => {
 		expect(tooBig._nay?.message).toContain("exceeds");
 
 		// The read-only lock blocks this write door like every other one.
-		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -2752,8 +2752,8 @@ describe("non-collaborative files", () => {
 		});
 		expect(unacknowledged._nay?.message).toContain("acknowledgement flag");
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -2772,8 +2772,8 @@ describe("non-collaborative files", () => {
 		// direction can be checked on a locked non-collaborative file.
 		expect(await t.run(async (ctx) => (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length)).toBe(1);
 
-		await asUser.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: null,
+		await asUser.mutation(api.files_nodes.read_only_set, {
+			readOnly: false,
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -2785,8 +2785,8 @@ describe("non-collaborative files", () => {
 		expect(off._nay).toBeUndefined();
 		await drain_scheduled_continuations(t);
 
-		await asUser.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		await asUser.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -2840,8 +2840,8 @@ describe("non-collaborative files", () => {
 
 		// The action already passed its cheap check and uploaded both objects. A lock added now must
 		// still stop the final transaction before it creates or publishes a new Yjs lineage.
-		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: db.membershipId,
 			nodeId,
 		});

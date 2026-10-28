@@ -314,9 +314,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 		search?: Record<string, unknown> | ((prev: Record<string, unknown>) => Record<string, unknown>);
 	}) => {
 		const search =
-			typeof props.search === "function"
-				? props.search({ filter: "file.name:a*", view_q: "typed" })
-				: props.search;
+			typeof props.search === "function" ? props.search({ filter: "file.name:a*", view_q: "typed" }) : props.search;
 		return (
 			<a
 				href="#"
@@ -354,7 +352,7 @@ const NODE = {
 	restrictedScopeNodeId: null,
 	canWrite: true,
 	writeBlockedReason: null,
-	writePolicyState: "none",
+	readOnly: false,
 };
 const PLUGIN = {
 	pluginName: "file-viewer",
@@ -956,12 +954,9 @@ describe("FileNodeView folder filter", () => {
 
 		fireEvent.change(input, { target: { value: "file.name:abc*" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-		expect(onNavigateSearch).toHaveBeenLastCalledWith(
-			expect.objectContaining({ filter: "file.name:abc*" }),
-			{
-				replace: false,
-			},
-		);
+		expect(onNavigateSearch).toHaveBeenLastCalledWith(expect.objectContaining({ filter: "file.name:abc*" }), {
+			replace: false,
+		});
 
 		fireEvent.change(input, { target: { value: "file.name:xyz*" } });
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
@@ -992,7 +987,10 @@ describe("FileNodeView folder filter", () => {
 		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
 			wrapper: ({ children }) => (
 				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+					<FilesClipboardProvider
+						userId={"user_1" as app_convex_Id<"users">}
+						membershipId={tenantContextMock().membershipId}
+					>
 						{children}
 					</FilesClipboardProvider>
 				</AppActivitiesProvider>
@@ -1003,7 +1001,10 @@ describe("FileNodeView folder filter", () => {
 		const labels = (heading: string) =>
 			within(screen.getByRole("group", { name: heading }))
 				.getAllByRole("option")
-				.map((option) => option.querySelector(".FileNodeViewFolderFilterBar-suggestion-label")?.textContent ?? option.textContent);
+				.map(
+					(option) =>
+						option.querySelector(".FileNodeViewFolderFilterBar-suggestion-label")?.textContent ?? option.textContent,
+				);
 
 		// A key prefix asks the server, one prefix per namespace, without case.
 		fireEvent.change(input, { target: { value: "ST" } });
@@ -1026,7 +1027,9 @@ describe("FileNodeView folder filter", () => {
 		await waitFor(() => expect(labels("Values for metadata.status")).toEqual(["open", "opened"]));
 		// While another key's values load, the held values of this key do not show.
 		fireEvent.change(input, { target: { value: "metadata.stage:op" } });
-		expect(within(screen.getByRole("group", { name: "Values for metadata.stage" })).queryAllByRole("option")).toEqual([]);
+		expect(within(screen.getByRole("group", { name: "Values for metadata.stage" })).queryAllByRole("option")).toEqual(
+			[],
+		);
 
 		// New typed text clears a failed list, without Retry.
 		failed = true;
@@ -1126,13 +1129,19 @@ describe("FileNodeView folder filter", () => {
 		queryMock.mockImplementation((reference, args) => {
 			if (getFunctionName(reference) !== "files_metadata:list_folder_fields") return previousQuery(reference, args);
 			const page = test_folder_keys(keys, args);
-			return { results: page.slice(0, pageCount * 50), status: page.length > pageCount * 50 ? "CanLoadMore" : "Exhausted" };
+			return {
+				results: page.slice(0, pageCount * 50),
+				status: page.length > pageCount * 50 ? "CanLoadMore" : "Exhausted",
+			};
 		});
 		// Render by hand: the debounce writes from an effect, and the harness would rerender inside it.
 		render(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={vi.fn()} />, {
 			wrapper: ({ children }) => (
 				<AppActivitiesProvider membershipId={tenantContextMock().membershipId}>
-					<FilesClipboardProvider userId={"user_1" as app_convex_Id<"users">} membershipId={tenantContextMock().membershipId}>
+					<FilesClipboardProvider
+						userId={"user_1" as app_convex_Id<"users">}
+						membershipId={tenantContextMock().membershipId}
+					>
 						{children}
 					</FilesClipboardProvider>
 				</AppActivitiesProvider>
@@ -1177,9 +1186,7 @@ describe("FileNodeView folder filter", () => {
 		expect(screen.getByText("Type bytes for is")).toBeTruthy();
 
 		// With no other filter, the range forms and the missing form show.
-		view.rerender(
-			<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={view.onNavigateSearch} />,
-		);
+		view.rerender(<FileNodeView searchParams={{ nodeId: node._id }} onNavigateSearch={view.onNavigateSearch} />);
 		expect(suggestions("How to compare file.size")).toEqual([":>=bytes", ":<=bytes", ":>bytes", ":<bytes", "!…:*"]);
 		fireEvent.change(input, { target: { value: "file.size:<" } });
 		expect(suggestions("How to compare file.size")).toEqual([":<=bytes"]);
@@ -1259,12 +1266,9 @@ describe("FileNodeView folder filter", () => {
 		expect(document.activeElement).toBe(removeButton);
 
 		fireEvent.click(removeButton);
-		expect(onNavigateSearch).toHaveBeenLastCalledWith(
-			expect.objectContaining({ filter: "file.name:abc*" }),
-			{
-				replace: false,
-			},
-		);
+		expect(onNavigateSearch).toHaveBeenLastCalledWith(expect.objectContaining({ filter: "file.name:abc*" }), {
+			replace: false,
+		});
 	});
 
 	test("a day filter covers the local calendar day, 25 hours on the day the clocks go back", async () => {

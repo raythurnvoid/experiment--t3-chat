@@ -509,8 +509,8 @@ export async function files_move_reservations_db_is_rename_allocation(
 		node.archiveOperationId === cursor.parentArchiveOperationId &&
 		node.restrictedScopeNodeId === (parent?.restrictedScopeNodeId ?? null) &&
 		!node.isRestrictedScopeRoot &&
-		JSON.stringify(node.writePolicy) === JSON.stringify(parent?.newChildWritePolicy ?? null) &&
-		JSON.stringify(node.newChildWritePolicy) === JSON.stringify(parent?.newChildWritePolicy ?? null) &&
+		!node.readOnly &&
+		node.readOnlyDecisionId === null &&
 		node.createdBy === cohort.userId &&
 		node.updatedBy === cohort.userId &&
 		[
@@ -724,8 +724,8 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 				const fields =
 					table === "files_nodes"
 						? [
-								"writePolicy",
-								"newChildWritePolicy",
+								"readOnly",
+								"readOnlyDecisionId",
 								"restrictedScopeNodeId",
 								"isRestrictedScopeRoot",
 								"parentScopeNodeId",

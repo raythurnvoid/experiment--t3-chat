@@ -6642,6 +6642,18 @@ export async function plugins_data_db_drain_batch(
 		}
 	}
 
+	const archiveReceipts = await ctx.db
+		.query("plugins_file_archive_receipts")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (archiveReceipts.length > 0) {
+		await Promise.all(archiveReceipts.map((receipt) => ctx.db.delete("plugins_file_archive_receipts", receipt._id)));
+		return { done: false, deletedCount: archiveReceipts.length };
+	}
+
 	// Setup and run-as grants name this installation. Remove role slots with the deleted resource.
 	const installationGrants = await ctx.db
 		.query("access_control_permission_grants")

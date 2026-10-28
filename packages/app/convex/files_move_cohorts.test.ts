@@ -658,7 +658,9 @@ describe("Move cohort publication", () => {
 		await finish_cohort(f, async () => {
 			const next = await read();
 			if (JSON.stringify(next.slot) !== JSON.stringify(last.slot))
-				slotChanges.push(next.slot?.cohortId ? `${next.slot.visibleView}/${next.slot.migrationDirection}` : "null/null");
+				slotChanges.push(
+					next.slot?.cohortId ? `${next.slot.visibleView}/${next.slot.migrationDirection}` : "null/null",
+				);
 			last = next;
 		});
 		// Only folders with staged places read this slot.
@@ -1013,7 +1015,7 @@ describe("Move cohort and folder-wide jobs", () => {
 		const started = await w.asUser.mutation(api.files_write_policy_runs.start, {
 			membershipId: w.db.membershipId,
 			nodeId: P,
-			writePolicy: { mode: "read_only" },
+			targetReadOnly: true,
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const runId = (await w.t.run((ctx) => ctx.db.query("files_write_policy_runs").first()))!._id;
@@ -1032,8 +1034,8 @@ describe("Move cohort and folder-wide jobs", () => {
 		vi.setSystemTime(Date.now() + 31 * 60_000);
 		await w.finish();
 		expect((await activity())?.status).toBe("succeeded");
-		expect((await w.node(sub))?.writePolicy, "the held destination gets the protection").toEqual({ mode: "read_only" });
-		expect((await w.node(deep))?.writePolicy).toEqual({ mode: "read_only" });
+		expect((await w.node(sub))?.readOnly, "the held destination gets the protection").toBe(true);
+		expect((await w.node(deep))?.readOnly).toBe(true);
 	});
 
 	test("folder protection resumes at the Activity sweep when the Move wake was lost", async () => {
@@ -1045,7 +1047,7 @@ describe("Move cohort and folder-wide jobs", () => {
 		const started = await w.asUser.mutation(api.files_write_policy_runs.start, {
 			membershipId: w.db.membershipId,
 			nodeId: P,
-			writePolicy: { mode: "read_only" },
+			targetReadOnly: true,
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const runId = (await w.t.run((ctx) => ctx.db.query("files_write_policy_runs").first()))!._id;
@@ -1084,7 +1086,7 @@ describe("Move cohort and folder-wide jobs", () => {
 			(await w.t.run((ctx) => ctx.db.get("activities", started._yay.activityId)))?.status,
 			"the sweep resumes a run whose Move already ended",
 		).toBe("succeeded");
-		expect((await w.node(sub))?.writePolicy).toEqual({ mode: "read_only" });
+		expect((await w.node(sub))?.readOnly).toBe(true);
 		expect(await w.t.run((ctx) => ctx.db.query("files_move_waiters").collect())).toEqual([]);
 	});
 

@@ -139,10 +139,10 @@ async function data_deletion_test_seed_page(
 		restrictedScopeNodeId: null,
 		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
-		writePolicy: null,
+		readOnly: false,
+		readOnlyDecisionId: null,
 
 		archiveOperationId: null,
-		newChildWritePolicy: null,
 	});
 
 	const markdown = `# ${args.tag}`;
@@ -302,10 +302,10 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
-			newChildWritePolicy: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
 		const yjsR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/yjs`;
@@ -1237,10 +1237,10 @@ async function review_seed_all_workspace_content(
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
-			newChildWritePolicy: null,
 		});
 		const uploadAssetId = await ctx.db.insert("files_r2_assets", {
 			...tenant,
@@ -1281,10 +1281,10 @@ async function review_seed_all_workspace_content(
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
-			newChildWritePolicy: null,
 		});
 		await ctx.db.insert("plugin_service_storage_destinations", {
 			...tenant,
@@ -1295,6 +1295,7 @@ async function review_seed_all_workspace_content(
 			updatedAt: now,
 		});
 		const uploadTargetId = await ctx.db.insert("plugin_service_storage_targets", {
+			force: false,
 			...tenant,
 			installationId,
 			idempotencyKey: "upload",
@@ -1356,6 +1357,8 @@ async function review_seed_all_workspace_content(
 			sortUserName: "reviewer",
 		});
 		await ctx.db.insert("public_api_file_write_stages", {
+			force: false,
+			requestReadOnly: false,
 			...tenant,
 			userId: args.userId,
 			runId,
@@ -1974,12 +1977,18 @@ describe("organization structure at batch size one", () => {
 		for (let index = 0; index < 101; index++) {
 			vi.setSystemTime(Date.now() + 5000);
 			const created = await asUser.mutation(api.files_nodes.create_folder_node, {
-				membershipId: membership._id, parentId: "root", path: `metadata-${index}`,
+				membershipId: membership._id,
+				parentId: "root",
+				path: `metadata-${index}`,
 			});
 			if (created._nay) throw new Error(created._nay.message);
-			expect(await asUser.mutation(api.files_metadata.set_entries, {
-				membershipId: membership._id, fileNodeId: created._yay.nodeId, metadataYaml,
-			})).toEqual({ _yay: null });
+			expect(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: membership._id,
+					fileNodeId: created._yay.nodeId,
+					metadataYaml,
+				}),
+			).toEqual({ _yay: null });
 		}
 		let lastBytesRead = 0;
 		let lastBytesWritten = 0;

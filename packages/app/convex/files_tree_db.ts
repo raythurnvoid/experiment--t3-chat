@@ -36,8 +36,7 @@ export function files_tree_db_page_split_required(result: PaginationResult<unkno
 /**
  * Fields for a node returned by public queries.
  *
- * Raw policy fields stay private. They are write authority, and a writer choice names accounts
- * the reader may not see. Return the actor's write access and only the local rule kind.
+ * Return the local flag and current write access. Decision IDs stay on the server.
  */
 export const files_node_public_doc_fields = {
 	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
@@ -67,7 +66,8 @@ export const files_node_public_doc_fields = {
 	contentFrontmatterTooLargeIndexDocumentCount: doc(app_convex_schema, "files_nodes").fields
 		.contentFrontmatterTooLargeIndexDocumentCount,
 	restrictedScopeNodeId: doc(app_convex_schema, "files_nodes").fields.restrictedScopeNodeId,
-	// Leave writePolicy and newChildWritePolicy out. They name accounts a reader may not see.
+	readOnly: doc(app_convex_schema, "files_nodes").fields.readOnly,
+	// Leave readOnlyDecisionId out. Only server copy/Restore receipts use it.
 	// Leave sortName, isRestrictedScopeRoot, parentScopeNodeId, scopeOpId, extendedScopeNodeId,
 	// parentExtendedScopeNodeId, isPublic, contentTypeEssence, contentTypeFamily and
 	// ancestor1..12 out too. Only the server reads them.
@@ -79,7 +79,6 @@ export const files_node_public_doc_fields = {
 	_creationTime: doc(app_convex_schema, "files_nodes").fields._creationTime,
 	canWrite: v.boolean(),
 	writeBlockedReason: v.union(v.null(), v.literal("permission"), v.literal("read_only")),
-	writePolicyState: v.union(v.literal("none"), v.literal("read_only"), v.literal("writer")),
 };
 
 /**
@@ -112,8 +111,7 @@ export function files_tree_db_get_public_node_fields(
 	writeBlockedReason: "permission" | "read_only" | null,
 ) {
 	const {
-		writePolicy,
-		newChildWritePolicy: _newChildWritePolicy,
+		readOnlyDecisionId: _readOnlyDecisionId,
 		sortName: _sortName,
 		isRestrictedScopeRoot: _isRestrictedScopeRoot,
 		parentScopeNodeId: _parentScopeNodeId,
@@ -133,19 +131,10 @@ export function files_tree_db_get_public_node_fields(
 		Object.entries(fields).filter(([field]) => !files_is_ancestor_field(field)),
 	) as typeof fields;
 
-	// Keep these values as exact literals so they match the return validator.
-	const writePolicyState =
-		writePolicy === null
-			? ("none" as const)
-			: writePolicy.mode === "read_only"
-				? ("read_only" as const)
-				: ("writer" as const);
-
 	return {
 		...rest,
 		canWrite: writeBlockedReason === null,
 		writeBlockedReason,
-		writePolicyState,
 	};
 }
 

@@ -298,6 +298,7 @@ describe("RouteApiKeys", () => {
 		// The untouched default setup only lacks a name. It shows no problems until Create is pressed.
 		const form = getSetupEditor().closest("form")!;
 		expect(form.getAttribute("data-api-key-setup-state")).toBe("default");
+		expect(screen.getByRole("checkbox", { name: /^Manage Read-only/ })).toHaveProperty("checked", false);
 		expect(screen.queryByRole("status", { name: "Problems in the setup" })).toBeNull();
 		submitSetup();
 		expect(form.getAttribute("data-api-key-setup-state")).toBe("invalid");

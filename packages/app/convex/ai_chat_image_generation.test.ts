@@ -197,10 +197,10 @@ describe("image destination steps", () => {
 		});
 		if (folder._nay) throw new Error(folder._nay.message);
 		expect(
-			await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asUser.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.personal.membershipId,
 				nodeId: folder._yay.nodeId,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
 		await expect(f.prepare([["personal"]])).rejects.toThrow("read-only");

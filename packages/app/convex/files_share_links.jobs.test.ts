@@ -3,6 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_rename_node, test_move_nodes, test_create_saved_text_file, test_mocks } from "./setup.test.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
+import { with_scope_repair } from "./files_archive_runs.setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	mock_share_storage,
@@ -218,22 +219,15 @@ describe("archive_nodes", () => {
 		const f = await fixture();
 		// One check step reads at most 500 nodes, so this check needs more than one step.
 		const { nodeId, folderId } = await seed_big_folder(f, 600);
-		// A writer list inside makes the archive run its check in the background. Without one, the request archives
-		// right away and there is no check phase to watch.
-		expect(
-			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
-				membershipId: f.db.membershipId,
-				nodeId,
-				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
-			}),
-		).toEqual({ _yay: null });
 		await link_on(f, nodeId);
 		const outside = await link_on(f, f.nodeId);
 
-		const started = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: f.db.membershipId,
-			nodeIds: [folderId],
-		});
+		const started = await with_scope_repair(f, () =>
+			f.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: f.db.membershipId,
+				nodeIds: [folderId],
+			}),
+		);
 		const run = await f.t.run((ctx) => ctx.db.get("files_archive_runs", started._yay!.runId));
 		expect(run?.phase).toBe("check");
 		expect(await read_links(f.t, nodeId)).toHaveLength(1);
@@ -250,23 +244,16 @@ describe("archive_nodes", () => {
 		// `zz.md` sorts last.
 		const { nodeId, folderId } = await seed_big_folder(f, 600);
 		const firstId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/big/a.md" });
-		// A writer list inside makes the archive run its check in the background. Without one, the request archives
-		// right away and there is no check phase to watch.
-		expect(
-			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
-				membershipId: f.db.membershipId,
-				nodeId,
-				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: f.db.userId }] },
-			}),
-		).toEqual({ _yay: null });
 		const firstLink = await link_on(f, firstId);
 		const link = await link_on(f, nodeId);
 		const outside = await link_on(f, f.nodeId);
 
-		const started = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: f.db.membershipId,
-			nodeIds: [folderId],
-		});
+		const started = await with_scope_repair(f, () =>
+			f.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: f.db.membershipId,
+				nodeIds: [folderId],
+			}),
+		);
 		const runId = started._yay!.runId;
 		const read_run = () => f.t.run((ctx) => ctx.db.get("files_archive_runs", runId));
 		const read_archive = (id: Id<"files_nodes">) =>
@@ -332,10 +319,10 @@ describe("archive_nodes", () => {
 		await link_on(f, f.nodeId);
 		const kept = await link_on(f, otherId);
 		expect(
-			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asOwner.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: otherId,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
 

@@ -12,10 +12,9 @@ import {
 } from "./files_nodes_db.ts";
 import {
 	files_nodes_db_resolve_parent_restricted_scope,
-	files_nodes_db_authorize_write_policy_management,
+	files_nodes_db_authorize_read_only_management,
 	files_write_policy_db_has_write_context_permission as db_has_write_context_permission,
-	files_write_policy_db_get_visible_policy_writer as db_get_visible_policy_writer,
-	files_nodes_db_require_write_policy_management,
+	files_nodes_db_require_read_only_management,
 } from "./files_write_policy_db.ts";
 import { files_path_depth, files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { internalMutation, mutation } from "./functions.ts";
@@ -212,8 +211,7 @@ import {
 } from "./r2_assets.ts";
 import {
 	type files_nodes_WriteContext,
-	files_write_policy_db_is_within_scope,
-	files_write_policy_db_get_blocking_policy,
+	files_nodes_user_write_context,
 	files_nodes_db_require_writable,
 	files_nodes_db_require_user_writable,
 } from "../server/files-write-policy.ts";
@@ -677,10 +675,9 @@ export const get_user_file_write_access = internalQuery({
 
 		const writeContext: files_nodes_WriteContext = {
 			subject: { kind: "user", userId: args.userId, plugin: null },
-			writer: { kind: "user", userId: args.userId },
 			actorUserId: args.userId,
 			resourceScope: { kind: "workspace" },
-			policyReach: "ancestors",
+			force: false,
 		};
 		if (!(await db_has_write_context_permission(ctx, { ...args, node, writeContext, permission: "content.write" }))) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -698,7 +695,7 @@ export type files_nodes_get_user_file_write_access_Result =
 		: never;
 
 /**
- * Load every descendant below `parentId`. Include archived descendants.
+ * Load active descendants below `parentId`; older Trash is not removed again.
  * Use parent ids because active and archived trees can have the same path.
  * Return null when there are more than `MAX_SUBTREE_POLICY_NODE_COUNT`, so one mutation never reads a
  * huge folder and fails on the Convex read limits.
@@ -722,12 +719,13 @@ async function db_collect_descendants(
 
 		const children = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 				q
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
 					.eq("moveCohortId", undefined)
-					.eq("parentId", parentId),
+					.eq("parentId", parentId)
+					.eq("archiveOperationId", null),
 			)
 			.take(MAX_SUBTREE_POLICY_NODE_COUNT + 1 - descendants.length);
 
@@ -797,7 +795,7 @@ export async function files_nodes_db_require_swept_nodes_writable(
  * Refuse removing a folder when any removed descendant is read-only.
  * Use only for delete, archive, and replace paths. Rename and move never call this:
  * protected descendants travel along and keep their rules.
- * Include archived descendants because hiding them changes them too.
+ * Items already in Trash are not removed again and do not block the change.
  * Refuse with `subtree_too_large` when the folder holds more than `MAX_SUBTREE_POLICY_NODE_COUNT` items.
  */
 export async function files_nodes_db_require_subtree_writable(
@@ -832,330 +830,99 @@ export async function files_nodes_db_require_subtree_writable(
 	});
 }
 
-async function db_set_write_policy(
+export async function files_nodes_db_set_read_only(
 	ctx: MutationCtx,
-	args: { node: Doc<"files_nodes">; writePolicy: Doc<"files_nodes">["writePolicy"] },
+	args: { node: Doc<"files_nodes">; writeContext: files_nodes_WriteContext; readOnly: boolean },
 ) {
-	if (JSON.stringify(args.writePolicy) === JSON.stringify(args.node.writePolicy)) {
-		return;
-	}
+	const allowed = await files_nodes_db_require_read_only_management(ctx, {
+		organizationId: args.node.organizationId,
+		workspaceId: args.node.workspaceId,
+		writeContext: args.writeContext,
+		target: { kind: "node", node: args.node },
+	});
+	if (allowed._nay) return allowed;
+	if (args.readOnly === args.node.readOnly) return Result({ _yay: null });
 
-	// Local change only. Children keep their own rules.
+	// Security changes must survive a Move's older placement snapshot.
 	if (
 		args.node.moveCohortId ||
 		(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: args.node._id } }))
 	)
 		files_move_reservations_db_enter_security(ctx, { nodeId: args.node._id });
 	await ctx.db.patch("files_nodes", args.node._id, {
-		writePolicy: args.writePolicy,
+		readOnly: args.readOnly,
+		readOnlyDecisionId: args.readOnly ? crypto.randomUUID() : null,
 	});
 	await files_media_validation_db_advance_version(ctx, args.node);
-}
-
-export async function files_nodes_db_set_write_policy(
-	ctx: MutationCtx,
-	args: {
-		node: Doc<"files_nodes">;
-		writeContext: files_nodes_WriteContext;
-		writePolicy: Doc<"files_nodes">["writePolicy"];
-	},
-) {
-	const allowed = await files_nodes_db_require_write_policy_management(ctx, {
-		organizationId: args.node.organizationId,
-		workspaceId: args.node.workspaceId,
-		writeContext: args.writeContext,
-		target: { kind: "node", node: args.node },
-		writePolicy: args.writePolicy,
-	});
-	if (allowed._nay) {
-		return allowed;
-	}
-
-	if (JSON.stringify(args.node.writePolicy) !== JSON.stringify(args.writePolicy)) {
-		await db_set_write_policy(ctx, args);
-	}
-
 	return Result({ _yay: null });
 }
 
-export async function files_nodes_db_get_write_policy_management_state(
+export async function files_nodes_db_get_read_only_state(
 	ctx: QueryCtx | MutationCtx,
 	args: { node: Doc<"files_nodes">; writeContext: files_nodes_WriteContext },
 ) {
-	const { node, writeContext } = args;
-	const permissionArgs = { organizationId: node.organizationId, workspaceId: node.workspaceId, node, writeContext };
-	const [management, canWriteContent, blockingPolicy] = await Promise.all([
-		files_nodes_db_require_write_policy_management(ctx, {
-			...permissionArgs,
-			target: { kind: "node", node },
-			writePolicy: null,
-		}),
-		db_has_write_context_permission(ctx, { ...permissionArgs, permission: "content.write" }),
-		files_write_policy_db_get_blocking_policy(ctx, { writeContext, target: { kind: "node", node } }),
-	]);
-	const inScope = await files_write_policy_db_is_within_scope(ctx, {
-		...permissionArgs,
-		target: { kind: "node", node },
-	});
-
-	// Return only the writers the caller may see, plus how many were hidden or revoked.
-	async function visible_policy(policy: Doc<"files_nodes">["writePolicy"]) {
-		if (policy?.mode !== "writer") {
-			return policy;
-		}
-
-		const writers = await Promise.all(
-			policy.writers.map((writer) => db_get_visible_policy_writer(ctx, { ...permissionArgs, writer })),
-		);
-		const visibleWriters = writers.filter((writer) => writer !== null);
-		return {
-			mode: "writer" as const,
-			writers: visibleWriters,
-			hiddenWriterCount: writers.length - visibleWriters.length,
-		};
-	}
-
-	const writeBlockedReason =
-		!canWriteContent || !inScope ? ("permission" as const) : blockingPolicy ? ("read_only" as const) : null;
-
-	return {
-		nodeId: node._id,
-		canManage: !management._nay,
-		canWrite: writeBlockedReason === null,
-		writeBlockedReason,
-		localPolicy: await visible_policy(node.writePolicy),
-		localDefault: node.kind === "folder" ? await visible_policy(node.newChildWritePolicy) : null,
-	};
-}
-
-const files_nodes_visible_policy_validator = v.union(
-	v.null(),
-	v.object({ mode: v.literal("read_only") }),
-	v.object({
-		mode: v.literal("writer"),
-		writers: v.array(
-			v.union(
-				v.object({ kind: v.literal("user"), userId: v.id("users"), name: v.string() }),
-				v.object({
-					kind: v.literal("service_account"),
-					serviceAccountId: v.id("access_control_service_accounts"),
-					name: v.string(),
-				}),
-			),
-		),
-		/**
-		 * Writers the caller cannot see: people who left the workspace and revoked or foreign accounts.
-		 * Their ids stay hidden. Saving the rule again drops them.
-		 */
-		hiddenWriterCount: v.number(),
-	}),
-);
-
-export const files_nodes_write_policy_management_state_validator = v.object({
-	nodeId: v.id("files_nodes"),
-	canManage: v.boolean(),
-	canWrite: v.boolean(),
-	writeBlockedReason: v.union(v.null(), v.literal("permission"), v.literal("read_only")),
-	localPolicy: files_nodes_visible_policy_validator,
-	localDefault: v.union(v.null(), files_nodes_visible_policy_validator),
-});
-
-export const get_node_write_policy_management_state = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
-	returns: v.union(v.null(), files_nodes_write_policy_management_state_validator),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth,
-			membership,
-			nodeId: args.nodeId,
-			permission: "content.read",
-		});
-		if (authorized._nay) {
-			return null;
-		}
-
-		return await files_nodes_db_get_write_policy_management_state(ctx, {
-			node: authorized._yay.fileNode,
-			writeContext: {
-				subject: { kind: "user", userId: userAuth.id, plugin: null },
-				writer: { kind: "user", userId: userAuth.id },
-				actorUserId: userAuth.id,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
-		});
-	},
-});
-
-/**
- * Return which kind of default a folder gives its new children, without account names.
- * The sidebar reads it before a create. `get_node_write_policy_management_state` does more work than
- * a create needs: it checks management, write access and the blocking rule, and looks up account names.
- */
-export const get_folder_new_child_write_policy_state = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
-	returns: v.union(v.null(), v.literal("none"), v.literal("read_only"), v.literal("writer")),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const authorized = await access_control_db_authorize_node(ctx, {
-			userAuth,
-			membership,
-			nodeId: args.nodeId,
-			permission: "content.read",
-		});
-		if (authorized._nay || authorized._yay.fileNode.kind !== "folder") {
-			return null;
-		}
-
-		const newChildWritePolicy = authorized._yay.fileNode.newChildWritePolicy;
-		return newChildWritePolicy === null ? "none" : newChildWritePolicy.mode;
-	},
-});
-
-export const set_node_write_policy = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-		writePolicy: doc(app_convex_schema, "files_nodes").fields.writePolicy,
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const authorized = await files_nodes_db_authorize_write_policy_management(ctx, {
-			userAuth,
-			membershipId: args.membershipId,
-			nodeId: args.nodeId,
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		return await files_nodes_db_set_write_policy(ctx, {
-			node: authorized._yay.node,
-			writePolicy: args.writePolicy,
-			writeContext: {
-				subject: { kind: "user", userId: userAuth.id, plugin: null },
-				writer: { kind: "user", userId: userAuth.id },
-				actorUserId: userAuth.id,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
-		});
-	},
-});
-
-export async function files_nodes_db_set_new_child_write_policy(
-	ctx: MutationCtx,
-	args: {
-		node: Doc<"files_nodes">;
-		writeContext: files_nodes_WriteContext;
-		newChildWritePolicy: Doc<"files_nodes">["writePolicy"];
-	},
-) {
-	if (args.node.kind !== "folder") {
-		return Result({ _nay: { message: "Only folders have a new-item default." } });
-	}
-
-	const allowed = await files_nodes_db_require_write_policy_management(ctx, {
+	const allowed = await files_nodes_db_require_read_only_management(ctx, {
 		organizationId: args.node.organizationId,
 		workspaceId: args.node.workspaceId,
 		writeContext: args.writeContext,
 		target: { kind: "node", node: args.node },
-		writePolicy: args.newChildWritePolicy,
 	});
-	if (allowed._nay) {
-		return allowed;
-	}
-
-	if (JSON.stringify(args.node.newChildWritePolicy) === JSON.stringify(args.newChildWritePolicy)) {
-		return Result({ _yay: null });
-	}
-
-	// The default changes, but existing children keep their rules.
-	if (
-		args.node.moveCohortId ||
-		(await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: args.node._id } }))
-	)
-		files_move_reservations_db_enter_security(ctx, { nodeId: args.node._id });
-	await ctx.db.patch("files_nodes", args.node._id, {
-		newChildWritePolicy: args.newChildWritePolicy,
-	});
-	await files_media_validation_db_advance_version(ctx, args.node);
-
-	return Result({ _yay: null });
+	return { nodeId: args.node._id, readOnly: args.node.readOnly, canEdit: !allowed._nay };
 }
 
-export const set_node_new_child_write_policy = mutation({
+export const files_nodes_read_only_state_validator = v.object({
+	nodeId: v.id("files_nodes"),
+	readOnly: v.boolean(),
+	canEdit: v.boolean(),
+});
+
+export const read_only_get = query({
+	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
+	returns: v.union(v.null(), files_nodes_read_only_state_validator),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) return null;
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.read",
+		});
+		if (authorized._nay) return null;
+		return await files_nodes_db_get_read_only_state(ctx, {
+			node: authorized._yay.fileNode,
+			writeContext: files_nodes_user_write_context(userAuth.id),
+		});
+	},
+});
+
+export const read_only_set = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
-		newChildWritePolicy: doc(app_convex_schema, "files_nodes").fields.writePolicy,
+		readOnly: v.boolean(),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const authorized = await files_nodes_db_authorize_write_policy_management(ctx, {
+		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
+		const authorized = await files_nodes_db_authorize_read_only_management(ctx, {
 			userAuth,
 			membershipId: args.membershipId,
 			nodeId: args.nodeId,
 		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
-		return await files_nodes_db_set_new_child_write_policy(ctx, {
+		if (authorized._nay) return authorized;
+		return await files_nodes_db_set_read_only(ctx, {
 			node: authorized._yay.node,
-			newChildWritePolicy: args.newChildWritePolicy,
-			writeContext: {
-				subject: { kind: "user", userId: userAuth.id, plugin: null },
-				writer: { kind: "user", userId: userAuth.id },
-				actorUserId: userAuth.id,
-				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
-			},
+			writeContext: files_nodes_user_write_context(userAuth.id),
+			readOnly: args.readOnly,
 		});
 	},
 });
@@ -3692,12 +3459,14 @@ export async function files_nodes_db_archive_named_nodes(
 		membership: Doc<"organizations_workspaces_users">;
 		nodeIds: Array<Id<"files_nodes">>;
 		credentialId: Id<"api_credentials"> | null;
+		force?: boolean;
 	},
 ) {
 	const { userAuth, membership, nodeIds } = args;
 	const writeContext = await public_api_credentials_db_get_write_context(ctx, {
 		credentialId: args.credentialId,
 		userId: userAuth.id,
+		force: args.force,
 	});
 
 	// Like `rm` with several files, a named item that is missing is "Not found" for that item alone,
@@ -3785,6 +3554,7 @@ export async function files_nodes_db_archive_named_nodes(
 
 	const started = await files_archive_runs_db_start(ctx, {
 		kind: "archive",
+		force: args.force ?? false,
 		userAuth,
 		membership,
 		credentialId: args.credentialId,
@@ -3803,7 +3573,7 @@ export async function files_nodes_db_archive_named_nodes(
 	});
 	if (started._nay || !started._yay) return started;
 
-	// A named item inside a refused or waiting folder stays active with that folder, so report it too.
+	// Ordinary archive keeps a refused subtree. Forced archive can keep the parent after deleting a child.
 	const job = started._yay;
 	const getNamedIdsWithin = (nodeIds: Array<Id<"files_nodes">>) => {
 		const folders = rootFileNodes.filter((node) => node.kind === "folder" && nodeIds.includes(node._id));
@@ -3813,7 +3583,12 @@ export async function files_nodes_db_archive_named_nodes(
 			)
 			.map((node) => node._id);
 	};
-	const notArchivedNodeIds = [...new Set([...refusedNodes.keys(), ...getNamedIdsWithin(job.notArchivedNodeIds)])];
+	let notArchivedNodeIds = getNamedIdsWithin(job.notArchivedNodeIds);
+	if (args.force) {
+		const currentNodes = await Promise.all(notArchivedNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+		notArchivedNodeIds = currentNodes.flatMap((node) => (node?.archiveOperationId === null ? [node._id] : []));
+	}
+	notArchivedNodeIds = [...new Set([...refusedNodes.keys(), ...notArchivedNodeIds])];
 	return Result({ _yay: { ...job, notArchivedNodeIds, waitingNodeIds: getNamedIdsWithin(job.waitingNodeIds) } });
 }
 
@@ -4017,6 +3792,7 @@ export async function files_nodes_db_restore_named_nodes(
 		membership: Doc<"organizations_workspaces_users">;
 		nodes: Doc<"files_nodes">[];
 		credentialId: Id<"api_credentials"> | null;
+		force?: boolean;
 		applyToRemaining: Doc<"files_archive_runs">["applyToRemaining"];
 		stopAtRefusal: boolean;
 	},
@@ -4059,6 +3835,7 @@ export async function files_nodes_db_restore_named_nodes(
 	)) {
 		const started = await files_archive_runs_db_start(ctx, {
 			kind: "restore",
+			force: args.force ?? false,
 			userAuth: args.userAuth,
 			membership,
 			credentialId: args.credentialId,

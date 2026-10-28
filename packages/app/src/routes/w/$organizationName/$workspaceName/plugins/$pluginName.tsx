@@ -686,12 +686,16 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 								}
 							>
 								<span
-									className={"RoutePluginsPluginSecretItem-name" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+									className={
+										"RoutePluginsPluginSecretItem-name" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+									}
 								>
 									{secret.name}
 								</span>
 								<span
-									className={"RoutePluginsPluginSecretItem-meta" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+									className={
+										"RoutePluginsPluginSecretItem-meta" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+									}
 								>
 									Will be added when you save
 								</span>
@@ -772,10 +776,14 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 			)}
 
 			<div
-				className={"RoutePluginsPluginSecretsModalPanel-footer" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+				className={
+					"RoutePluginsPluginSecretsModalPanel-footer" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+				}
 			>
 				<span
-					className={"RoutePluginsPluginSecretsModalPanel-status" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
+					className={
+						"RoutePluginsPluginSecretsModalPanel-status" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+					}
 					role="status"
 				>
 					{changeCount > 0 ? `${changeCount} unsaved change${changeCount === 1 ? "" : "s"}` : null}
@@ -783,12 +791,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 				<MyButton variant="ghost" disabled={changeCount === 0 && !hasDraft} onClick={handleDiscard}>
 					Discard
 				</MyButton>
-				<MyButton
-					ref={saveButtonRef}
-					aria-busy={saving}
-					disabled={changeCount === 0 && !hasDraft}
-					onClick={handleSave}
-				>
+				<MyButton ref={saveButtonRef} aria-busy={saving} disabled={changeCount === 0 && !hasDraft} onClick={handleSave}>
 					<Save aria-hidden />
 					{saving ? "Saving..." : "Save"}
 				</MyButton>
@@ -2039,11 +2042,12 @@ function format_capability_label(value: string, payerName = "the workspace owner
 	if (value === "plugin.schedule.run") {
 		return "Run its backend on a schedule as the selected workspace user. It can use only that user's current access and the permissions granted to this plugin. It can run while that user is signed out. Choose another user if they leave the workspace.";
 	}
-	// The plain rule writes "Workspace Files Create Read Only", which reads as create-and-read
-	// access. That is the opposite of what this capability does, because it lets a plugin lock the
-	// file it creates so nobody in the workspace can edit it.
+	// Keep the old label for immutable version history. It grants no new force access.
 	if (value === "workspace.files.create-read-only") {
 		return "Create read-only workspace files";
+	}
+	if (value === "workspace.files.manage-read-only") {
+		return "Change Read-only settings and, with write access, change Read-only items without turning this setting off.";
 	}
 
 	// The plain rule writes "Plugin Data User Write", which reads as "the user's plugin data" and so
@@ -2090,7 +2094,7 @@ function format_capability_label(value: string, payerName = "the workspace owner
 
 	// Explain both the plugin's access controls and the member's manage permission.
 	if (value === "workspace.files.own-access") {
-		return "Set locks and readers for its output. Members with manage permission can change them.";
+		return "Set readers for its output. Members with manage permission can change sharing.";
 	}
 
 	// The plain rule writes "Agent Mcp Connect", which does not say who calls what. The chat agent
@@ -4133,6 +4137,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
 	describe("format_capability_label", () => {
+		test("explains Read-only settings and forced writes in the new consent", () => {
+			expect(format_capability_label("workspace.files.manage-read-only")).toBe(
+				"Change Read-only settings and, with write access, change Read-only items without turning this setting off.",
+			);
+		});
 		test("names the read-only capability instead of spelling out its id", () => {
 			// An admin reads this string to decide whether to grant the access, and the plain rule
 			// turns the id into "Workspace Files Create Read Only", which reads as create-and-read
@@ -4186,9 +4195,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Create, update, and archive files and folders marked for this plugin. Members can edit their labels.",
 			);
 			const ownAccessLabel = format_capability_label("workspace.files.own-access");
-			expect(ownAccessLabel).toBe(
-				"Set locks and readers for its output. Members with manage permission can change them.",
-			);
+			expect(ownAccessLabel).toBe("Set readers for its output. Members with manage permission can change sharing.");
 			expect(ownWriteLabel).not.toBe(format_capability_label("workspace.files.write"));
 			expect(ownAccessLabel).not.toBe(ownWriteLabel);
 		});

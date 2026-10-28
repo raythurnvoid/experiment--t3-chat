@@ -192,7 +192,7 @@ Tiptap fork applies each structural position plan once, beside its content write
 plans through appended transactions until that write happens. Save-status renders can refresh
 the same editor state, so testing only text input or provider batching does not cover this rule.
 
-The sidebar starts the normal snapshot action and R2 byte fetch after New file succeeds, before navigation, when it will open Rich text. This covers inline creation and the sidebar's name modal. Folder, Code, and Review creation do not preload. The file-view toolbar's name modal does not open the new file, so it does not preload either.
+The sidebar starts the normal snapshot action and R2 byte fetch after New file succeeds, before navigation, when it will open Rich text. This covers inline creation. Folder, Code, and Review creation do not preload. The file-view toolbar's name modal does not open the new file, so it does not preload either.
 
 The files route also preloads when a navigation opens another node, and once when the route mounts. It starts the snapshot action, the R2 byte fetch, and a warm-up of the update log. When a loaded tree row (`FilesTreeProvider.useGetLoadedNode`) shows the node, the route preloads only a collaborative Rich text file. When no row shows it, as on a page load or a link from elsewhere, the route preloads anyway; a folder then costs one action that answers null. The route skips private drafts, a `fileView`, and a non-rich `view`. It compares each navigation with the previous navigation's `nodeId`, not `fromLocation`: the router's `fromLocation` is the last finished navigation, and the view writes its `view` param before the click's navigation finishes. A folder's README gets no preload, because its id is unknown at click time. The app does not use `StrictMode`, so the mount preload runs once in development too.
 
@@ -200,13 +200,36 @@ The route also starts this preload on a left mouse press, before the click (the 
 
 The preload holds one pending read for an exact membership and node. The next provider takes it once and still creates its own document. Sidebar cleanup cancels an unclaimed read after leaving the expected route, changing membership, closing the sidebar, or failed navigation. The route cancels its unclaimed read when it unmounts. After the provider takes it, the provider owns cleanup. A later provider or sync uses a fresh action.
 
-Saved collaborative Rich text with a matching pending preload waits for the existing write-permission query to answer before mounting its provider. The read-only preload accessor checks membership and node; render never takes the slot. Use the current rich-text skeleton while that answer is unknown. A known false answer still opens a read-only provider. Without this wait, startup can create a temporary read-only provider, cancel its claimed preload, and start a second snapshot read when write access loads. Later real access changes still replace the provider and drop queued edits after write access is lost. Opens without a matching preload, other views, private drafts, and stored text keep their current loading paths.
+Saved collaborative Rich text with a matching pending preload waits for the existing write-permission query to answer before mounting its provider. The read-only preload accessor checks membership and node; render never takes the slot. Use the current rich-text skeleton while that answer is unknown. A known false answer still opens a read-only provider. Without this wait, startup can create a temporary read-only provider, cancel its claimed preload, and start a second snapshot read when write access loads. Later real access changes keep the unsaved text before replacing the provider and dropping queued edits. Opens without a matching preload, other views, private drafts, and stored text keep their current loading paths.
 
 An early snapshot can become stale when materialization deletes covered update packets. Before applying a preload, the provider reads the existing separate `get_file_last_yjs_sequence` query and checks the latest update log. It requires a full sequence from the snapshot through that head. A gap or an old preloaded document id starts a fresh snapshot read. A null preloaded answer starts one too: the route can preload while the user has no access, and the editor mounts only after access comes back. Only a null answer from a fresh read means the read was refused. Ordinary snapshot reads keep their existing path. Measure this extra sequence wait when checking the preload's gain; do not assume that starting earlier makes the editor ready earlier.
 
 For a one-time client read, start at `files_fetch_file_yjs_state_and_text` in `packages/app/src/lib/files.ts`. It checks the document ids across the three reads, fetches the R2 snapshot, applies later updates, and extracts text using the stored shape.
 
 When opening file B shows file A's text, compare the route's `nodeId`, the hook's `providerNodeId`, and the rendered editor content. Inspect `useFilesYjs` and the caller's provider checks. Test repeated A/B switches after the fix.
+
+# Unsaved Text Recovery
+
+Keep unsaved text in memory before a late Read-only or permission refusal drops a queue, resets
+a document, or closes an editor. A save response and an access subscription both reach this path.
+Do not replay dropped updates when access returns. Capture plain text or Markdown from the live
+document before disposal, including text typed after a Save click.
+
+`src/lib/files-unsaved-text.ts` owns the tab's copies. Their identity includes user, membership,
+target, document, and exact text. Duplicate refusal/cleanup reports share one copy; distinct drafts
+stay separate. Auth changes clear copies and reject late callbacks from the old user.
+
+Review captures each changed pane before preparation or history changes replace its model or inline
+recovery copy. Repeated resets keep every distinct draft, including accepted and proposed text.
+These copies say that the file changed while editing. Closing Review does not remove them.
+
+The Files header and workspace access-denied or login screen have an Unsaved text entry for the current
+user's copies in this tab. It needs no current workspace membership, so it stays usable after the
+file closes or workspace access ends. Each name read uses the copy's own membership and current
+access; an unreadable file uses a generic name. Text can be selected, copied, or downloaded.
+Discard asks first. Reloading or closing the tab loses these copies. The store keeps its own unload
+warning after provider queues have been cleared. It does not use storage, uploads, new workspace
+files, or automatic replay.
 
 # Presence And Cursors
 

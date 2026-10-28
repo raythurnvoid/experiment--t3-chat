@@ -60,14 +60,13 @@ export type files_VisibleEntry =
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	// The public node queries leave out both write policies. They also leave out `sortName`,
+	// The public node queries leave out the internal Read-only decision. They also leave out `sortName`,
 	// `isRestrictedScopeRoot` and `extendedScopeNodeId`: only the server reads them.
 	| "organizationId"
 	| "workspaceId"
 	| "createdBy"
 	| "updatedBy"
-	| "writePolicy"
-	| "newChildWritePolicy"
+	| "readOnlyDecisionId"
 	| "sortName"
 	| "isRestrictedScopeRoot"
 	| "extendedScopeNodeId"
@@ -78,9 +77,8 @@ export type files_VisibleTreeNode = Omit<
 	updatedBy: app_convex_Id<"users">;
 	canWrite: boolean;
 	writeBlockedReason: "permission" | "read_only" | null;
-	// Local rule only. A parent lock never marks a child. A selected writer may still edit
-	// while the rule shows.
-	writePolicyState: "none" | "read_only" | "writer";
+	// Local flag only. A parent flag never marks a child.
+	readOnly: boolean;
 };
 
 export const files_SYNTHETIC_ROOT_FOLDER = {
@@ -117,7 +115,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	// Root actions use the live workspace permission query.
 	canWrite: false,
 	writeBlockedReason: null,
-	writePolicyState: "none",
+	readOnly: false,
 } as const satisfies Merge<
 	files_VisibleTreeNode,
 	{
@@ -198,15 +196,15 @@ export function files_collect_protected_descendant_ids(
 export function files_get_read_only_row_labels(args: {
 	canWrite: boolean;
 	writeBlockedReason: files_VisibleTreeNode["writeBlockedReason"];
-	writePolicyState: files_VisibleTreeNode["writePolicyState"];
+	readOnly: boolean;
 }) {
-	if (args.writePolicyState === "writer") {
-		return { description: "Protected: selected writer", tooltip: "Only the selected writer can edit" };
+	if (args.readOnly) {
+		return { description: "Read-only", tooltip: "This item is Read-only." };
 	}
 	if (!args.canWrite) {
 		return args.writeBlockedReason === "read_only"
 			? { description: "Read-only", tooltip: "This item is read-only." }
-			: { description: "read-only", tooltip: "You don't have permission to edit this item" };
+			: { description: "View only", tooltip: "You need Can edit permission to change this item." };
 	}
 
 	return null;

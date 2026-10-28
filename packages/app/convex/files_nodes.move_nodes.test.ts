@@ -104,7 +104,6 @@ describe("reviewed Move graph", () => {
 			await ctx.db.patch("files_nodes", target._id, {
 				restrictedScopeNodeId: target._id,
 				isRestrictedScopeRoot: true,
-				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: db.userId }] },
 			});
 			await ctx.db.patch("files_nodes", archivedChild._id, { archiveOperationId: "old-archive" });
 		});
@@ -248,7 +247,6 @@ describe("reviewed Move graph", () => {
 			ctx.db.patch("files_nodes", second._id, {
 				restrictedScopeNodeId: second._id,
 				isRestrictedScopeRoot: true,
-				writePolicy: { mode: "writer", writers: [{ kind: "user", userId: db.userId }] },
 			}),
 		);
 		await propose_move_for_test(t, {
@@ -539,7 +537,7 @@ describe("reviewed Move graph", () => {
 					await ctx.db.patch("files_nodes", child._id, {
 						archiveOperationId: "earlier-archive",
 						sortName: files_sort_text_key(child.name),
-						...(childState === "read_only" ? { writePolicy: { mode: "read_only" as const } } : {}),
+						...(childState === "read_only" ? { readOnly: true, readOnlyDecisionId: crypto.randomUUID() } : {}),
 					});
 					await ctx.db.patch("files_nodes", child._id, {
 						ancestor1: db.files.file_root_1._id,
@@ -669,76 +667,62 @@ describe("reviewed Move graph", () => {
 	});
 });
 
-describe("existing service-account writer policy", () => {
-	test.each([
-		{ policyReach: "none", lockedParent: "current" },
-		{ policyReach: "direct", lockedParent: "current" },
-		{ policyReach: "ancestors", lockedParent: "current" },
-		{ policyReach: "none", lockedParent: "final" },
-		{ policyReach: "direct", lockedParent: "final" },
-		{ policyReach: "ancestors", lockedParent: "final" },
-	] as const)(
-		"checks local rules with $policyReach reach on the $lockedParent parent",
-		async ({ policyReach, lockedParent }) => {
-			const t = test_convex();
-			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
-			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-			const created = await asUser.mutation(api.access_control.create_service_account, {
-				membershipId: db.membershipId,
-				name: "Move writer",
-			});
-			if (created._nay) throw new Error(created._nay.message);
-			const serviceAccountId = created._yay.serviceAccountId;
-			const grant = await asUser.mutation(api.access_control.set_service_account_grant, {
-				membershipId: db.membershipId,
-				serviceAccountId,
-				resource: { kind: "workspace" },
-				level: "write",
-			});
-			if (grant._nay) throw new Error(grant._nay.message);
-			const policyNode = lockedParent === "current" ? db.files.file_root_1 : db.files.file_root_2;
-			await t.run(async (ctx) => {
-				await ctx.db.patch("files_nodes", policyNode._id, {
-					writePolicy: { mode: "writer", writers: [{ kind: "service_account", serviceAccountId }] },
-				});
-				const before = await ctx.db.query("files_nodes").collect();
-				const writeContext: files_nodes_WriteContext = {
-					subject: { kind: "service_account", serviceAccountId },
-					writer: { kind: "service_account", serviceAccountId },
-					actorUserId: db.userId,
-					resourceScope: { kind: "workspace" },
-					policyReach,
-				};
-				// Existing-node writes check each named local rule. Create reach is separate.
-				for (const nodeId of [db.files.file_root_1_child_2._id, db.files.file_root_1._id, db.files.file_root_2._id]) {
-					const node = (await ctx.db.get("files_nodes", nodeId))!;
-					expect(
-						await files_nodes_db_require_writable(ctx, {
-							organizationId: db.organizationId,
-							workspaceId: db.workspaceId,
-							writeContext,
-							target: { kind: "node", node },
-						}),
-					).toEqual({ _yay: null });
-				}
-				expect(await ctx.db.query("files_nodes").collect()).toEqual(before);
-				const locked = {
-					...(await ctx.db.get("files_nodes", policyNode._id))!,
-					writePolicy: { mode: "read_only" as const },
-				};
+describe("service-account Read-only checks", () => {
+	test.each(["current", "final"] as const)("checks the %s parent's Read-only flag", async (lockedParent) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Move writer",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const serviceAccountId = created._yay.serviceAccountId;
+		const grant = await asUser.mutation(api.access_control.set_service_account_grant, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			resource: { kind: "workspace" },
+			level: "write",
+		});
+		if (grant._nay) throw new Error(grant._nay.message);
+		const policyNode = lockedParent === "current" ? db.files.file_root_1 : db.files.file_root_2;
+		await t.run(async (ctx) => {
+			const before = await ctx.db.query("files_nodes").collect();
+			const writeContext: files_nodes_WriteContext = {
+				subject: { kind: "service_account", serviceAccountId },
+				actorUserId: db.userId,
+				resourceScope: { kind: "workspace" },
+				force: false,
+			};
+			for (const nodeId of [db.files.file_root_1_child_2._id, db.files.file_root_1._id, db.files.file_root_2._id]) {
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
 				expect(
-					(
-						await files_nodes_db_require_writable(ctx, {
-							organizationId: db.organizationId,
-							workspaceId: db.workspaceId,
-							writeContext,
-							target: { kind: "node", node: locked },
-						})
-					)._nay?.name,
-				).toBe("read_only");
-			});
-		},
-	);
+					await files_nodes_db_require_writable(ctx, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						writeContext,
+						target: { kind: "node", node },
+					}),
+				).toEqual({ _yay: null });
+			}
+			expect(await ctx.db.query("files_nodes").collect()).toEqual(before);
+			const locked = {
+				...(await ctx.db.get("files_nodes", policyNode._id))!,
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
+			};
+			expect(
+				(
+					await files_nodes_db_require_writable(ctx, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						writeContext,
+						target: { kind: "node", node: locked },
+					})
+				)._nay?.name,
+			).toBe("read_only");
+		});
+	});
 });
 
 describe("paged folder moves and scope jobs", () => {
@@ -1347,10 +1331,9 @@ describe("reviewed Move names and paths", () => {
 				message: `…/leaf would have a path of ${longPath.length.toLocaleString("en-US")} characters. Paths can have at most ${files_PATH_MAX_LENGTH.toLocaleString("en-US")} characters. Shorten a folder name or move it higher.`,
 			},
 		});
-		expect(
-			await t.run((ctx) => ctx.db.query("files_nodes").collect()),
-			"the failed Save publishes no folder",
-		).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect()), "the failed Save publishes no folder").toEqual(
+			[],
+		);
 		expect(await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").collect())).toEqual([]);
 		expect(
 			(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).map((node) => ({
@@ -1716,7 +1699,8 @@ test("home file can be renamed and moved like any file", async () => {
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -1732,7 +1716,6 @@ test("home file can be renamed and moved like any file", async () => {
 			pathDepth: 1,
 			lowercaseExtension: "md",
 			archiveOperationId: null,
-			newChildWritePolicy: null,
 		}),
 	);
 
@@ -1790,7 +1773,8 @@ test("home file can be archived like any file", async () => {
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -1806,7 +1790,6 @@ test("home file can be archived like any file", async () => {
 			pathDepth: 1,
 			lowercaseExtension: "md",
 			archiveOperationId: null,
-			newChildWritePolicy: null,
 		}),
 	);
 

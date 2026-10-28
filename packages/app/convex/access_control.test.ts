@@ -3,6 +3,7 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
 	test_save_file_pending_update,
+	test_run_with_flush,
 	test_convex,
 	test_rename_node,
 	test_move_nodes,
@@ -495,7 +496,7 @@ async function access_control_test_seed_comment_file(
 	fixture: Awaited<ReturnType<typeof access_control_test_seed_enforcement_fixture>>,
 	parentId: Id<"files_nodes"> | "root" = "root",
 ) {
-	return t.run(async (ctx) => {
+	return test_run_with_flush(t, async (ctx) => {
 		const parent = parentId === "root" ? null : await ctx.db.get("files_nodes", parentId);
 		const path = `${parent?.path ?? ""}/comments.md`;
 		return ctx.db.insert("files_nodes", {
@@ -539,7 +540,7 @@ function access_control_test_send_comment(
 describe("access_control_db_set_service_account_grant", () => {
 	test("changes only the named account grants and preserves human grants", async () => {
 		const t = test_convex();
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "service-grant-owner" });
 			const membership = await test_mocks_fill_db_with.membership(ctx, { userId });
 			const { organizationId, workspaceId } = membership;
@@ -605,7 +606,7 @@ describe("access_control_db_set_service_account_grant", () => {
 
 	test("refuses foreign accounts, foreign resources, and revoked additions", async () => {
 		const t = test_convex();
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "service-grant-bounds" });
 			const membership = await test_mocks_fill_db_with.membership(ctx, { userId });
 			const { organizationId, workspaceId } = membership;
@@ -1255,7 +1256,7 @@ describe("plugin sandbox", () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, { name: "Sandbox", suffix: "sandbox" });
 		const installationId = await access_control_test_seed_plugin_installation({ t, fixture });
-		const nodes = await t.run(async (ctx) => {
+		const nodes = await test_run_with_flush(t, async (ctx) => {
 			const insert = async (
 				parent: Doc<"files_nodes"> | null,
 				name: string,
@@ -1384,7 +1385,7 @@ describe("plugin sandbox", () => {
 	test("a root on an archived node gives nothing, also to a new item at its path", async () => {
 		const { t, nodes, plugin, can, fixture } = await seed();
 		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "write" }]);
-		const fresh = await t.run(async (ctx) => {
+		const fresh = await test_run_with_flush(t, async (ctx) => {
 			await ctx.db.patch("files_nodes", nodes.o._id, { archiveOperationId: "archive-o" });
 			const id = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
@@ -1441,7 +1442,7 @@ describe("plugin sandbox", () => {
 		const { t, nodes, plugin, scope, fixture } = await seed();
 		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.o._id }, level: "write" }]);
 		const create = (path: string) =>
-			t.run((ctx) =>
+			test_run_with_flush(t, (ctx) =>
 				files_nodes_db_create_node_recursively_at_path(ctx, {
 					...scope,
 					userId: fixture.ownerId,
@@ -1451,10 +1452,10 @@ describe("plugin sandbox", () => {
 					now: Date.now(),
 					writeContext: {
 						subject,
-						writer: { kind: "user", userId: fixture.ownerId },
+
 						actorUserId: fixture.ownerId,
 						resourceScope: { kind: "workspace" },
-						policyReach: "ancestors",
+						force: false,
 					},
 				}),
 			);
@@ -1470,7 +1471,7 @@ describe("plugin sandbox", () => {
 		const { t, nodes, plugin, scope, fixture } = await seed();
 		// The root is `/r/in`. `/r` above it is outside the root, but the owner can write there.
 		const subject = plugin(fixture.ownerId, [{ target: { kind: "folder", nodeId: nodes.inner._id }, level: "write" }]);
-		const created = await t.run((ctx) =>
+		const created = await test_run_with_flush(t, (ctx) =>
 			files_nodes_db_create_node_recursively_at_path(ctx, {
 				...scope,
 				userId: fixture.ownerId,
@@ -1480,10 +1481,10 @@ describe("plugin sandbox", () => {
 				now: Date.now(),
 				writeContext: {
 					subject,
-					writer: { kind: "user", userId: fixture.ownerId },
+
 					actorUserId: fixture.ownerId,
 					resourceScope: { kind: "workspace" },
-					policyReach: "ancestors",
+					force: false,
 				},
 			}),
 		);
@@ -1546,7 +1547,7 @@ describe("plugin sandbox", () => {
 
 	test("an account write passes a folder above it that only the account can write", async () => {
 		const { t, nodes, scope, fixture, installationId } = await seed();
-		const serviceAccountId = await t.run(async (ctx) => {
+		const serviceAccountId = await test_run_with_flush(t, async (ctx) => {
 			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
 			const granted = await access_control_db_set_service_account_grant(ctx, {
 				...scope,
@@ -1573,7 +1574,7 @@ describe("plugin sandbox", () => {
 			return installation.serviceAccountId;
 		});
 		// The actor is a member who cannot open `/r`. The account can write there.
-		const created = await t.run((ctx) =>
+		const created = await test_run_with_flush(t, (ctx) =>
 			files_nodes_db_create_node_recursively_at_path(ctx, {
 				...scope,
 				userId: fixture.memberId,
@@ -1583,10 +1584,10 @@ describe("plugin sandbox", () => {
 				now: Date.now(),
 				writeContext: {
 					subject: { kind: "service_account", serviceAccountId },
-					writer: { kind: "service_account", serviceAccountId },
+
 					actorUserId: fixture.memberId,
 					resourceScope: { kind: "workspace" },
-					policyReach: "ancestors",
+					force: false,
 				},
 			}),
 		);
@@ -2710,10 +2711,10 @@ describe("enforcement", () => {
 		if (!pending) throw new Error("Expected the member's proposal");
 
 		// The editor keeps write access. Only the folder protection refuses the Save.
-		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+		const locked = await fixture.asOwner.mutation(api.files_nodes.read_only_set, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: target.id,
-			writePolicy: { mode: "read_only" },
+			readOnly: true,
 		});
 		expect(locked._nay).toBeUndefined();
 
@@ -6324,7 +6325,7 @@ describe("file sharing", () => {
 		}
 
 		const workspaceId = args.workspaceId ?? fixture.defaultWorkspaceId;
-		return await t.run(async (ctx) => {
+		return await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: fixture.organizationId,
@@ -6366,9 +6367,9 @@ describe("file sharing", () => {
 				restrictedScopeNodeId: args.restrictedScopeNodeId ?? null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const textChunkIds = await Promise.all(
 				chunks._yay.map((chunk) =>
@@ -8553,7 +8554,7 @@ describe("file sharing", () => {
 
 		// A markdown file inside the restricted folder. Built by hand because the real creation path
 		// uploads to R2, which this suite does not run.
-		const nodeId = await t.run(async (ctx) => {
+		const nodeId = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: fixture.organizationId,
@@ -8605,9 +8606,9 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 				organizationId: fixture.organizationId,
@@ -8827,7 +8828,7 @@ describe("file sharing", () => {
 				serviceAccountName: null,
 				servicePluginName: null,
 				// Their admin role gives manage again only if the workspace access comes back.
-				coverage: { base: "manage", folder: null, role: null },
+				coverage: { base: "manage", folder: null, role: null, workspace: null },
 			},
 		]);
 
@@ -9214,7 +9215,7 @@ describe("file sharing", () => {
 
 		// Written straight into the database: `create_text_node` uploads to R2, which these tests do
 		// not have. The matching queries need a current materialized Yjs snapshot and both chunk kinds.
-		const nodeId = await t.run(async (ctx) => {
+		const nodeId = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: fixture.organizationId,
@@ -9265,9 +9266,9 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 				organizationId: fixture.organizationId,
@@ -9898,7 +9899,7 @@ describe("file sharing", () => {
 		}) {
 			const { t, fixture } = args;
 
-			const { outerId, folderId, childId } = await t.run(async (ctx) => {
+			const { outerId, folderId, childId } = await test_run_with_flush(t, async (ctx) => {
 				const base = {
 					...test_mocks.files.base(),
 					organizationId: fixture.organizationId,
@@ -10137,7 +10138,7 @@ describe("file sharing", () => {
 			// Unrestrict `/top/outer/closed`, then `/top/outer` before its job reaches `closed`. Each
 			// unrestrict stores the scope from above, so the child points at `closed`, `closed` at `outer`,
 			// and `outer` at `top`, the only folder still restricted.
-			const { topId, childId } = await t.run(async (ctx) => {
+			const { topId, childId } = await test_run_with_flush(t, async (ctx) => {
 				const base = {
 					...test_mocks.files.base(),
 					organizationId: fixture.organizationId,
@@ -10216,7 +10217,7 @@ describe("file sharing", () => {
 				suffix: "move-job",
 			});
 			const { folderId: closedId } = await seed_restricted_folder({ t, fixture, name: "closed" });
-			const { openId, childId } = await t.run(async (ctx) => {
+			const { openId, childId } = await test_run_with_flush(t, async (ctx) => {
 				const base = {
 					...test_mocks.files.base(),
 					organizationId: fixture.organizationId,
@@ -10972,7 +10973,7 @@ describe("file sharing", () => {
 		expect(childNode?.restrictedScopeNodeId).toBe(folderId);
 	});
 
-	test("a grant does let somebody restore the restricted folder itself", async () => {
+	test("a node grant does not replace the destination write permission for Restore", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "guest-restore-org",
@@ -11022,18 +11023,16 @@ describe("file sharing", () => {
 			expect(archived._nay).toBeUndefined();
 		}
 
-		// The folder carries its own restriction, so landing at the root keeps it closed and opens nothing.
-		// Refusing here would strand it: this guest cannot restore the parent either. Passing also proves
-		// their grant clears the checks on the nodes being restored, so the refusal in the test above is
-		// about the destination and nothing else.
+		// Restoring also changes the destination's direct child list.
 		const unarchived = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: fixture.memberMembershipId,
 			nodeIds: [String(closed._yay!.nodeId)],
 		});
-		expect(unarchived._nay).toBeUndefined();
+		expect(unarchived._nay?.message).toBe("Permission denied");
 
 		const closedNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", closed._yay!.nodeId));
-		expect(closedNode?.parentId).toBe(files_ROOT_ID);
+		expect(closedNode?.parentId).toBe(outer._yay!.nodeId);
+		expect(closedNode?.archiveOperationId).not.toBeNull();
 		expect(closedNode?.restrictedScopeNodeId).toBe(closed._yay!.nodeId);
 	});
 
@@ -11118,8 +11117,6 @@ describe("file sharing", () => {
 		});
 		expect(granted._nay).toBeUndefined();
 
-		await demote_to_guest_role(fixture);
-
 		// The restricted folder goes first, so a restore of it lands at the root and `/outer` stays archived.
 		for (const nodeId of [closed._yay!.nodeId, outer._yay!.nodeId]) {
 			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
@@ -11145,9 +11142,7 @@ describe("file sharing", () => {
 		expect(blockerRestricted._nay).toBeUndefined();
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		// `/closed` carries its own restriction, so it skips the destination check and reaches the clash.
-		// The restore waits for the guest's choice. The guest has to learn the name is taken, but not
-		// what is sitting there.
+		// The member can write the destination but cannot open the item taking its name.
 		const unarchived = await fixture.asMember.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: fixture.memberMembershipId,
 			nodeIds: [String(closed._yay!.nodeId)],
@@ -11385,7 +11380,7 @@ describe("file sharing", () => {
 
 		// A file inside `/closed` that gets its own share list. The member ends up able to write this
 		// file and unable to write the folder holding it, which is the shape the bug needs.
-		const noteId = await t.run(async (ctx) => {
+		const noteId = await test_run_with_flush(t, async (ctx) => {
 			return await ctx.db.insert("files_nodes", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,
@@ -11418,8 +11413,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicy: null,
-				newChildWritePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 			});
 		});
 
@@ -11460,7 +11455,7 @@ describe("file sharing", () => {
 		});
 
 		// A file, not a folder, holding a name the upload has to walk through.
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			await ctx.db.insert("files_nodes", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,
@@ -11493,8 +11488,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicy: null,
-				newChildWritePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 			});
 		});
 
@@ -11575,7 +11570,7 @@ describe("file sharing", () => {
 
 		// Same shape as the single-file test above: the member may write the file, not the folder
 		// holding it.
-		const noteId = await t.run(async (ctx) => {
+		const noteId = await test_run_with_flush(t, async (ctx) => {
 			return await ctx.db.insert("files_nodes", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,
@@ -11608,8 +11603,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				writePolicy: null,
-				newChildWritePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 			});
 		});
 
@@ -11812,7 +11807,7 @@ describe("file write policy management", () => {
 	async function read_write_policy(t: TestConvex, nodeId: Id<"files_nodes">) {
 		return await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
-			return node?.writePolicy;
+			return node?.readOnly;
 		});
 	}
 
@@ -11848,8 +11843,8 @@ describe("file write policy management", () => {
 		const sent = await access_control_test_send_comment(fixture, "owner", target, "Before lock");
 		expect(sent._nay).toBeUndefined();
 		const rootMessageId = sent._yay!.rootMessageId;
-		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const locked = await fixture.asOwner.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.ownerMembershipId,
 			nodeId: fileNodeId,
 		});
@@ -11891,7 +11886,7 @@ describe("file write policy management", () => {
 		).toEqual(before);
 	});
 
-	test("locking takes content.permissions.manage: manager and owner pass, writer and viewer do not", async () => {
+	test("Read-only changes need write access: members pass and viewers do not", async () => {
 		const t = test_convex();
 		const fixture = await access_control_test_seed_enforcement_fixture(t, {
 			name: "lock-authority-org",
@@ -11906,59 +11901,59 @@ describe("file write policy management", () => {
 		expect(folder._nay).toBeUndefined();
 		const folderId = folder._yay!.nodeId;
 
-		// A writer (the default member role) may change content but not lock it.
-		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		// A member may set the flag on an item they can write.
+		const memberLock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
-		expect(memberLock._nay?.message).toBe("Permission denied");
-		expect(await read_write_policy(t, folderId)).toBeNull();
+		expect(memberLock._nay).toBeUndefined();
+		expect(await read_write_policy(t, folderId)).toBe(true);
 
 		// A viewer may not either.
 		await access_control_test_demote_to_viewer(fixture);
-		const viewerLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const viewerLock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
 		expect(viewerLock._nay?.message).toBe("Permission denied");
 
 		// Use the same path to prove the owner can lock the file.
-		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.ownerMembershipId,
 			nodeId: folderId,
 		});
 		expect(ownerLock._nay).toBeUndefined();
-		expect(await read_write_policy(t, folderId)).toEqual({ mode: "read_only" });
+		expect(await read_write_policy(t, folderId)).toBe(true);
 
 		// Unlock is gated the same way.
-		const viewerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: null,
+		const viewerUnlock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: false,
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
 		expect(viewerUnlock._nay?.message).toBe("Permission denied");
-		expect(await read_write_policy(t, folderId)).toEqual({ mode: "read_only" });
+		expect(await read_write_policy(t, folderId)).toBe(true);
 
 		// A custom role carrying content.permissions.manage may lock and unlock.
 		await promote_member_to_manager(fixture);
-		const managerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: null,
+		const managerUnlock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: false,
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
 		expect(managerUnlock._nay).toBeUndefined();
-		expect(await read_write_policy(t, folderId)).toBeNull();
+		expect(await read_write_policy(t, folderId)).toBe(false);
 
-		const managerLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const managerLock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
 		expect(managerLock._nay).toBeUndefined();
-		expect(await read_write_policy(t, folderId)).toEqual({ mode: "read_only" });
+		expect(await read_write_policy(t, folderId)).toBe(true);
 	});
 
 	test("a hidden restricted child does not block the folder lock", async () => {
@@ -11988,23 +11983,23 @@ describe("file write policy management", () => {
 		expect(restricted._nay).toBeUndefined();
 
 		// The member manages the open folder, so they may lock it. The hidden child keeps its own rule.
-		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const memberLock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.memberMembershipId,
 			nodeId: open._yay!.nodeId,
 		});
 		expect(memberLock._nay).toBeUndefined();
-		expect(await read_write_policy(t, open._yay!.nodeId)).toEqual({ mode: "read_only" });
-		expect(await read_write_policy(t, secret._yay!.nodeId)).toBeNull();
+		expect(await read_write_policy(t, open._yay!.nodeId)).toBe(true);
+		expect(await read_write_policy(t, secret._yay!.nodeId)).toBe(false);
 
 		// The folder's grant does not reach the restricted child.
-		const memberSecretLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const memberSecretLock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.memberMembershipId,
 			nodeId: secret._yay!.nodeId,
 		});
 		expect(memberSecretLock._nay).toBeDefined();
-		expect(await read_write_policy(t, secret._yay!.nodeId)).toBeNull();
+		expect(await read_write_policy(t, secret._yay!.nodeId)).toBe(false);
 	});
 
 	test("a locked folder blocks rename and move-out of a restricted child the locker cannot see", async () => {
@@ -12039,8 +12034,8 @@ describe("file write policy management", () => {
 		});
 		expect(target._nay).toBeUndefined();
 
-		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const memberLock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.memberMembershipId,
 			nodeId: open._yay!.nodeId,
 		});
@@ -12071,8 +12066,8 @@ describe("file write policy management", () => {
 		);
 
 		// Use the same moves to prove the lock was the only reason for the refusals.
-		const memberUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: null,
+		const memberUnlock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: false,
 			membershipId: fixture.memberMembershipId,
 			nodeId: open._yay!.nodeId,
 		});
@@ -12139,69 +12134,63 @@ describe("file write policy management", () => {
 		});
 		expect(granted._nay).toBeUndefined();
 
-		const outerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const outerLock = await fixture.asOwner.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.ownerMembershipId,
 			nodeId: closed._yay!.nodeId,
 		});
 		expect(outerLock._nay).toBeUndefined();
 
 		// The member may add a direct lock to the node they manage, under the hidden outer lock.
-		const innerLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const innerLock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(innerLock._nay).toBeUndefined();
 
 		// The member sees the direct lock and the parent-lock flag, but never the hidden outer node.
-		const memberState = await fixture.asMember.query(api.files_nodes.get_node_write_policy_management_state, {
+		const memberState = await fixture.asMember.query(api.files_nodes.read_only_get, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(memberState).toEqual({
 			nodeId: inner._yay!.nodeId,
-			canManage: true,
-			canWrite: false,
-			writeBlockedReason: "read_only",
-			localPolicy: { mode: "read_only" },
-			localDefault: null,
+			canEdit: true,
+
+			readOnly: true,
 		});
 
-		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_write_policy_management_state, {
+		const ownerState = await fixture.asOwner.query(api.files_nodes.read_only_get, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(ownerState).toEqual({
 			nodeId: inner._yay!.nodeId,
-			canManage: true,
-			canWrite: false,
-			writeBlockedReason: "read_only",
-			localPolicy: { mode: "read_only" },
-			localDefault: null,
+			canEdit: true,
+
+			readOnly: true,
 		});
 
 		// Clearing the local rule unlocks this node. A parent lock does not stay on the child.
-		const innerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: null,
+		const innerUnlock = await fixture.asMember.mutation(api.files_nodes.read_only_set, {
+			readOnly: false,
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(innerUnlock._nay).toBeUndefined();
 
-		const memberStateAfter = await fixture.asMember.query(api.files_nodes.get_node_write_policy_management_state, {
+		const memberStateAfter = await fixture.asMember.query(api.files_nodes.read_only_get, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(memberStateAfter).toEqual({
 			nodeId: inner._yay!.nodeId,
-			canManage: true,
-			canWrite: true,
-			writeBlockedReason: null,
-			localPolicy: null,
-			localDefault: null,
+			canEdit: true,
+
+			readOnly: false,
 		});
-		expect(await read_write_policy(t, inner._yay!.nodeId)).toBeNull();
+		expect(await read_write_policy(t, inner._yay!.nodeId)).toBe(false);
 	});
 
 	test("a parent lock leaves a child writable and names no source", async () => {
@@ -12224,33 +12213,31 @@ describe("file write policy management", () => {
 		});
 		expect(child._nay).toBeUndefined();
 
-		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
-			writePolicy: { mode: "read_only" },
+		const locked = await fixture.asOwner.mutation(api.files_nodes.read_only_set, {
+			readOnly: true,
 			membershipId: fixture.ownerMembershipId,
 			nodeId: pub._yay!.nodeId,
 		});
 		expect(locked._nay).toBeUndefined();
 
 		// The child has no local lock, so it stays writable. A parent lock does not apply here.
-		// The member still holds no manage permission, so `canManage` stays false.
-		const memberState = await fixture.asMember.query(api.files_nodes.get_node_write_policy_management_state, {
+		// The member can edit this flag through their write access.
+		const memberState = await fixture.asMember.query(api.files_nodes.read_only_get, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: child._yay!.nodeId,
 		});
 		expect(memberState).toEqual({
 			nodeId: child._yay!.nodeId,
-			canManage: false,
-			canWrite: true,
-			writeBlockedReason: null,
-			localPolicy: null,
-			localDefault: null,
+			canEdit: true,
+
+			readOnly: false,
 		});
 
-		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_write_policy_management_state, {
+		const ownerState = await fixture.asOwner.query(api.files_nodes.read_only_get, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: child._yay!.nodeId,
 		});
-		expect(ownerState?.canManage).toBe(true);
+		expect(ownerState?.canEdit).toBe(true);
 	});
 });
 

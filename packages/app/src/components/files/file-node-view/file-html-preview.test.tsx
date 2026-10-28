@@ -111,11 +111,10 @@ const NODE = {
 	restrictedScopeNodeId: null,
 	isRestrictedScopeRoot: false,
 	extendedScopeNodeId: null,
-	writePolicy: null,
-	newChildWritePolicy: null,
+	readOnlyDecisionId: "decision",
 	canWrite: true,
 	writeBlockedReason: null,
-	writePolicyState: "none",
+	readOnly: false,
 } as app_convex_Doc<"files_nodes">;
 
 const PENDING = {

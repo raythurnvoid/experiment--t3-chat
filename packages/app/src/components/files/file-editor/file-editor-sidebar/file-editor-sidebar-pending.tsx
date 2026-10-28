@@ -109,7 +109,7 @@ type FileEditorSidebarPendingRow = {
 	 */
 	privateEntry: Extract<files_VisibleEntry, { kind: "private" }> | null;
 	/** The saved node behind this row. Null for private drafts. */
-	savedNode: app_convex_Doc<"files_nodes"> | null;
+	savedNode: Extract<FileEditorSidebarPendingView["entry"], { kind: "saved" }>["node"] | null;
 	/** Unset for a move into a folder the user can no longer read: the path would not be the destination. */
 	moveDestinationPath: string | undefined;
 	/**

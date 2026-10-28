@@ -141,6 +141,7 @@ export async function create_transfer_copy_item(
 			sourceScope: scope,
 			destinationScope: scope,
 			requestId: "test-copy",
+			force: false,
 			requestHash: "test-copy",
 			kind: "copy",
 			sourceView: "saved",

@@ -140,10 +140,10 @@ async function data_deletion_test_seed_page(
 		restrictedScopeNodeId: null,
 		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
-		writePolicy: null,
+		readOnly: false,
+		readOnlyDecisionId: null,
 
 		archiveOperationId: null,
-		newChildWritePolicy: null,
 	});
 
 	const markdown = `# ${args.tag}`;
@@ -478,7 +478,7 @@ async function data_deletion_test_start_write_policy_run(
 		.mutation(api.files_write_policy_runs.start, {
 			membershipId,
 			nodeId: folder._yay.nodeId,
-			writePolicy: { mode: "read_only" },
+			targetReadOnly: true,
 		});
 	if (started._nay) throw new Error(started._nay.message);
 	const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
@@ -704,10 +704,10 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
-			writePolicy: null,
+			readOnly: false,
+			readOnlyDecisionId: null,
 
 			archiveOperationId: null,
-			newChildWritePolicy: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
 		const yjsR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/yjs`;
@@ -4303,6 +4303,7 @@ describe("process_workspace_deletion_request", () => {
 				membershipLifetime: captured._yay.membershipLifetime,
 			};
 			const runId = await ctx.db.insert("files_transfer_runs", {
+				force: false,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
@@ -4753,10 +4754,10 @@ describe("process_workspace_deletion_request", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const pendingUpdateId = await files_db_insert_pending_update(ctx, {
 				organizationId: user.defaultOrganizationId,
@@ -4921,10 +4922,10 @@ describe("process_workspace_deletion_request", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
@@ -5061,6 +5062,7 @@ describe("process_workspace_deletion_request", () => {
 				uploadUrlExpiresAt: Date.now() + 15 * 60 * 1000,
 			});
 			const targetId = await ctx.db.insert("plugin_service_storage_targets", {
+				force: false,
 				...scope,
 				installationId,
 				idempotencyKey: "purge-order",
@@ -5253,10 +5255,10 @@ describe("process_workspace_deletion_request", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
@@ -5519,6 +5521,7 @@ describe("process_workspace_deletion_request", () => {
 				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, siblingMembership),
 			};
 			const siblingRunId = await ctx.db.insert("files_transfer_runs", {
+				force: false,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: siblingWorkspace._yay.workspaceId,
 				userId: user.userId,
@@ -5588,6 +5591,8 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 			});
 			await ctx.db.insert("public_api_file_write_stages", {
+				force: false,
+				requestReadOnly: false,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				userId: user.userId,
@@ -5832,10 +5837,10 @@ describe("process_workspace_deletion_request", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const jobDocId = await ctx.db.insert("files_content_materialization_jobs", {
 				organizationId: user.defaultOrganizationId,
@@ -5931,10 +5936,10 @@ describe("process_workspace_deletion_request", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
@@ -6116,13 +6121,14 @@ describe("process_workspace_deletion_request", () => {
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, {
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
 			});
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: user.defaultOrganizationId,
@@ -6145,7 +6151,8 @@ describe("process_workspace_deletion_request", () => {
 				kind: "file",
 				lowercaseExtension: "md",
 				parentId: folderId,
-				writePolicy: null,
+				readOnly: false,
+				readOnlyDecisionId: null,
 				createdBy: user.userId,
 				updatedBy: user.userId,
 				updatedAt: now,
@@ -6168,7 +6175,6 @@ describe("process_workspace_deletion_request", () => {
 				isRestrictedScopeRoot: false,
 
 				archiveOperationId: null,
-				newChildWritePolicy: null,
 			});
 
 			const requestId = await data_deletion_db_request(ctx, {
@@ -6445,14 +6451,16 @@ describe("process_workspace_deletion_request", () => {
 			remove: [],
 		});
 		const count_docs = () =>
-			t.run(async (ctx) =>
-				(
+			t.run(
+				async (ctx) =>
 					await Promise.all(
 						(
 							["files_metadata_catalog", "files_metadata_catalog_deltas", "files_metadata_catalog_compactors"] as const
-						).map(async (table) => (await ctx.db.query(table).collect()).filter((doc) => doc.workspaceId === scope.workspaceId).length),
-					)
-				),
+						).map(
+							async (table) =>
+								(await ctx.db.query(table).collect()).filter((doc) => doc.workspaceId === scope.workspaceId).length,
+						),
+					),
 			);
 		const [rows, deltas, markers] = await count_docs();
 		expect(rows).toBeGreaterThan(0);
@@ -8083,7 +8091,8 @@ describe("hard_delete_user_data", () => {
 				tag: "reset-locked-page",
 			});
 			await ctx.db.patch("files_nodes", page.nodeId, {
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
 			});
 			const node = await ctx.db.get("files_nodes", page.nodeId);
 			return { nodeId: page.nodeId, assetId: node?.assetId ?? null };
@@ -8645,10 +8654,10 @@ describe("finalize_user_deletion_data", () => {
 					restrictedScopeNodeId: null,
 					extendedScopeNodeId: null,
 					isRestrictedScopeRoot: false,
-					writePolicy: null,
+					readOnly: false,
+					readOnlyDecisionId: null,
 
 					archiveOperationId: null,
-					newChildWritePolicy: null,
 				});
 				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 					organizationId: user.defaultOrganizationId,

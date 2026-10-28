@@ -687,10 +687,10 @@ describe("create_upload_nodes", () => {
 		await link_on(f, otherId);
 		const kept = await link_on(f, lockedId);
 		expect(
-			await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			await f.asOwner.mutation(api.files_nodes.read_only_set, {
 				membershipId: f.db.membershipId,
 				nodeId: lockedId,
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
 		await reset_rate_limits(f.t, [f.db.userId]);

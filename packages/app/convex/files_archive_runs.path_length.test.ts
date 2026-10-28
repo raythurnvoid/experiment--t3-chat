@@ -254,18 +254,18 @@ describe("unarchive_nodes path limit", () => {
 		expect((await read_node(f, first)).archiveOperationId).toBe(run.skipOperationId);
 	});
 
-	test("a job that fails after an item stayed archived for its path still says so", async () => {
+	test("a read-only item still restores after another item stayed archived for its path", async () => {
 		const f = await fixture();
 		const { short, job } = await seed_late_long_path(f);
-		// `e` comes after the deepest folder. It becomes read-only after the check, so it stops the job.
 		await lock_archived(f, short);
 
 		expect(await resolve(f, job.runId, "skip")).toEqual({ _yay: null });
 		const ended = await run_to_end(f, job);
-		expect(ended.activity.status).toBe("failed");
+		expect(ended.activity.status).toBe("partial");
 		expect(ended.activity.errorMessage).toMatch(
-			/^Stopped partway: .+ 1 item stayed archived because its path would be too long: …\/d+ \(1,028 characters\)\. Shorten a folder name, then restore it again\.$/,
+			/^1 item stayed archived because its path would be too long: …\/d+ \(1,028 characters\)\. Shorten a folder name, then restore it again\.$/,
 		);
+		expect(await read_node(f, short)).toMatchObject({ archiveOperationId: null, readOnly: true });
 	});
 
 	test("a child archived on its own that followed its folder past 1,024 characters cannot come back longer", async () => {

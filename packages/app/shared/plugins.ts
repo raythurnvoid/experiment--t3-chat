@@ -1061,7 +1061,7 @@ const page_agent_tool_schema = z
 		 */
 		inputSchema: z
 			.record(z.string(), z.unknown())
-			.refine((schema) => schema.type === "object", "Page agent tool input schemas must have type \"object\""),
+			.refine((schema) => schema.type === "object", 'Page agent tool input schemas must have type "object"'),
 	})
 	.strict();
 
@@ -1726,17 +1726,18 @@ export function plugins_validate_manifest(input: unknown) {
 			_nay: { message: "The plugin.data.user-write capability requires the plugin.data.read capability" },
 		});
 	}
-	// This capability only picks the lock mode of the sealed upload door, so on its own it opens no
-	// door at all. Without the write capability the workspace would consent to a lock the installation
-	// can never reach.
+	// Old immutable versions may name this capability, but new versions must request new consent.
+	if (capabilities.has("workspace.files.create-read-only" satisfies plugins_Capability)) {
+		return Result({
+			_nay: { message: "Use workspace.files.manage-read-only instead of workspace.files.create-read-only" },
+		});
+	}
 	if (
-		capabilities.has("workspace.files.create-read-only" satisfies plugins_Capability) &&
+		capabilities.has("workspace.files.manage-read-only" satisfies plugins_Capability) &&
 		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
 	) {
 		return Result({
-			_nay: {
-				message: "The workspace.files.create-read-only capability requires the workspace.files.write capability",
-			},
+			_nay: { message: "The workspace.files.manage-read-only capability requires workspace.files.write" },
 		});
 	}
 	// A service needs member identity, plugin data, or Files consent to do useful work.

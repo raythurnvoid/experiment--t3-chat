@@ -1,5 +1,6 @@
 import { useAuth } from "@clerk/clerk-react";
 import { createContext, use, useEffect, useRef, type ReactNode } from "react";
+import { files_unsaved_text_set_user } from "@/lib/files-unsaved-text.ts";
 import { toast } from "sonner";
 import { Result } from "common/errors-as-values-utils.ts";
 import { type app_convex_Id } from "../lib/app-convex-client.ts";
@@ -598,6 +599,10 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		},
 		[clerkAuth.isLoaded, clerkAuth.isSignedIn],
 	);
+
+	useEffect(() => {
+		if (authStatus.isLoaded) files_unsaved_text_set_user(authStatus.userId);
+	}, [authStatus.isLoaded, authStatus.userId]);
 
 	// Set token manager for Convex auth
 	useEffect(() => {

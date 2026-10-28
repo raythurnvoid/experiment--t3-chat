@@ -1,7 +1,30 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { files_unsaved_text_set_user, files_unsaved_text_get_snapshot } from "@/lib/files-unsaved-text.ts";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 import { createRef, type Ref } from "react";
+
+test.each(["read_only", "permission"] as const)("keeps a live draft before access becomes %s", async (reason) => {
+	resolveQueryWithNonCollaborativeContent("{}\n");
+	const view = renderPlainTextEditor({ nonCollaborative: true });
+	await act(async () => {});
+	act(() => {
+		monacoHarness.createdModels[0]?.model.setValue("unsaved words");
+	});
+	view.rerender(
+		<FileEditorPlainText
+			target={{ kind: "saved", id: NODE_ID }}
+			editable={false}
+			editBlockReason={reason}
+			nonCollaborative={true}
+			monacoLanguageId="json"
+			presenceStore={presenceStore}
+			commentsPortalHost={null}
+			toolbarPortalHost={view.toolbarPortalHost}
+		/>,
+	);
+	expect(files_unsaved_text_get_snapshot()).toEqual([expect.objectContaining({ text: "unsaved words", reason })]);
+});
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { FileEditor_Ref } from "../file-editor.tsx";
@@ -232,8 +255,10 @@ function renderPlainTextEditor(args?: {
 let hoistingContainer: HTMLDivElement;
 
 beforeEach(() => {
+	files_unsaved_text_set_user("user_1");
 	tenantContextMock.mockReturnValue({
 		membershipId: MEMBERSHIP_ID,
+		userId: "user_1",
 		organizationId: "organization_1",
 		organizationName: "team",
 		workspaceId: "workspace_1",
@@ -259,6 +284,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	files_unsaved_text_set_user(null);
 	hoistingContainer.remove();
 });
 
@@ -300,7 +326,9 @@ describe("FileEditorPlainText", () => {
 		fetchPrivateFilePendingTextMock.mockResolvedValue({
 			_yay: { text, rootKind: "plain_text", pendingUpdate },
 		});
-		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
+		savePrivateFilePendingTextMock.mockResolvedValue({
+			_yay: { kind: "queued", runId: "run", activityId: "activity" },
+		});
 		const onTargetChange = vi.fn();
 		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
 		renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange, ref });
@@ -347,7 +375,9 @@ describe("FileEditorPlainText", () => {
 		fetchPrivateFilePendingTextMock.mockResolvedValue({
 			_yay: { text: "draft\n", rootKind: "plain_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
 		});
-		savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
+		savePrivateFilePendingTextMock.mockResolvedValue({
+			_yay: { kind: "queued", runId: "run", activityId: "activity" },
+		});
 		const onTargetChange = vi.fn();
 		renderPlainTextEditor({ target: PRIVATE_TARGET, onTargetChange });
 		await act(async () => {});
@@ -760,7 +790,9 @@ describe("FileEditorPlainText", () => {
 				model?.setValue('{"answer": 42}\n');
 				for (const listener of monacoHarness.changeListeners) listener();
 			});
-			await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
 			fireEvent.click(saveButton);
 			await act(async () => {});
 			const firstRequest = convexActionMock.mock.calls[0]?.[1];
@@ -772,13 +804,17 @@ describe("FileEditorPlainText", () => {
 					model?.setValue('{"answer": 43}\n');
 					for (const listener of monacoHarness.changeListeners) listener();
 				});
-				await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(250);
+				});
 			}
 			fireEvent.click(saveButton);
 			await act(async () => {});
 			const retry = convexActionMock.mock.calls[1]?.[1];
 			expect(retry?.text).toBe(changed ? '{"answer": 43}\n' : firstRequest.text);
-			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(!changed);
+			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(
+				!changed,
+			);
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
 		} finally {
 			vi.useRealTimers();
@@ -884,7 +920,7 @@ describe("FileEditorPlainText", () => {
 		}
 	});
 
-	test("warns with the lost text when the editor closes on unsaved changes", async () => {
+	test("keeps the full draft when the editor closes on unsaved changes", async () => {
 		resolveQueryWithNonCollaborativeContent("{}\n");
 		const { unmount } = renderPlainTextEditor({ nonCollaborative: true });
 		await act(async () => {});
@@ -896,26 +932,11 @@ describe("FileEditorPlainText", () => {
 		});
 		unmount();
 
-		expect(toast.warning).toHaveBeenCalledWith("Your unsaved changes to this file were discarded.", {
-			duration: 30_000,
-			action: { label: "Copy text", onClick: expect.any(Function) },
-		});
-
-		// The action has to hand back exactly what was in the editor, or the offer is useless.
-		const clipboardWrite = vi.fn();
-		vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
-		const warningAction = vi.mocked(toast.warning).mock.calls[0]?.[1]?.action;
-		if (typeof warningAction !== "object" || warningAction === null || !("onClick" in warningAction)) {
-			throw new Error("Expected the warning to carry a Copy text action");
-		}
-		// The handler ignores its event, so an empty stand-in is enough to run the action.
-		warningAction.onClick({} as Parameters<typeof warningAction.onClick>[0]);
-		expect(clipboardWrite).toHaveBeenCalledWith('{"answer": 42}\n');
-		vi.unstubAllGlobals();
+		expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual(['{"answer": 42}\n']);
 	});
 
-	test("no warning when a collaborative file closes with local edits", async () => {
-		// A collaborative file keeps every keystroke in its shared document, so nothing is lost.
+	test("keeps an unsent collaborative draft when the editor closes", async () => {
+		// A pending write can still fail after this view closes.
 		resolveFetchWithPlainTextDoc("{}\n");
 		const { unmount } = renderPlainTextEditor();
 		await act(async () => {});
@@ -927,7 +948,7 @@ describe("FileEditorPlainText", () => {
 		});
 		unmount();
 
-		expect(toast.warning).not.toHaveBeenCalled();
+		expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual(['{"answer": 42}\n']);
 	});
 
 	test("no warning when the editor closes right after a successful Save", async () => {

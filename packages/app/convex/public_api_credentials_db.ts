@@ -70,7 +70,7 @@ export async function public_api_credentials_db_is_live(
  */
 export async function public_api_credentials_db_get_write_context(
 	ctx: QueryCtx,
-	args: { credentialId: Id<"api_credentials"> | null; userId: Id<"users"> },
+	args: { credentialId: Id<"api_credentials"> | null; userId: Id<"users">; force?: boolean },
 ): Promise<files_nodes_WriteContext> {
 	if (args.credentialId === null) {
 		return files_nodes_user_write_context(args.userId);
@@ -80,13 +80,13 @@ export async function public_api_credentials_db_get_write_context(
 	if (!credential || credential.userId !== args.userId) {
 		throw should_never_happen("A job's API key is gone", args);
 	}
+	const force = args.force === true && credential.scopes.includes("files:read-only");
 	return credential.serviceAccountId === null
-		? files_nodes_user_write_context(credential.userId)
+		? { ...files_nodes_user_write_context(credential.userId), force }
 		: {
 				subject: { kind: "service_account", serviceAccountId: credential.serviceAccountId },
-				writer: { kind: "service_account", serviceAccountId: credential.serviceAccountId },
 				actorUserId: credential.userId,
 				resourceScope: { kind: "workspace" },
-				policyReach: "ancestors",
+				force,
 			};
 }

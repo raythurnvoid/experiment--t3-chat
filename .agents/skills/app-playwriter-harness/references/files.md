@@ -287,9 +287,10 @@ To test an agent delete without a chat turn, make the proposal with
 `{ organizationId, workspaceId, userId, target: { kind: "saved", id } }` (all from the membership doc).
 Run it from Git Bash: PowerShell 5.1 strips the JSON quotes. The Pending changes tab then shows
 `Accept delete of /<path>` and `Discard delete of /<path>`. To check a lock refusal, set a child's
-rule with `files_nodes.set_node_write_policy({ membershipId, nodeId, writePolicy: { mode: "read_only" } })`
+flag with `files_nodes.read_only_set({ membershipId, nodeId, readOnly: true })`
 first. Accept then ends with "0 saved, 1 need review" and "This item is read-only.", and the folder
-stays active. Clean up with Discard delete and `writePolicy: null`. Verified 2026-10-19.
+stays active. Clean up with Discard delete and `readOnly: false`. The new setter is a source contract
+pending native QA; the earlier delete flow was verified 2026-10-19.
 
 ## Common Gotchas
 
@@ -717,16 +718,14 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   `getByRole("treeitem", { name: /^people/ })`, click the button, then poll the URL until `nodeId` is
   a new id. Compare against the `nodeId` the tab had BEFORE the click, not only the folder id: a tab
   left on the last created file matches at once and you read that old file again. The folder has no
-  protected default, so the click creates `new-file.md` / `new-folder` at once and opens it (about
+  Read-only flag, so the click creates `new-file.md` / `new-folder` at once and opens it (about
   3-5 s on dev). Archive it with `files_nodes.archive_nodes` through a fresh `ConvexHttpClient` (see
   "`app_convex.query(...)` in page context" in `known-hazards.md`). A cold localhost load of `/people`
   can take more than 30 s before `data-app-ready`; wait up to 60 s.
-- To check Properties on the same big folder (verified 2026-09-24): open `/people`, click the
-  breadcrumb `Properties of` button, and poll `.FilesPropertiesModalWritePolicy` text. The status line
-  changes from `Loading protection…` to `You can edit this folder.` in about 1 s. The management
-  check reads only the folder, so the number of children does not matter. The status can take up to
-  about 2 s on a cold load while the tree is still loading 9,700 rows. The policy radios repeat for
-  the New items default, so take `.first()`.
+- Properties source contract, pending native QA: open the folder, click its `Properties of` button,
+  and scope to `.FilesPropertiesModalReadOnly`. There is one `Read-only` checkbox, no writer picker
+  and no new-item default. Read `files_nodes.read_only_get({ membershipId, nodeId })` for
+  `readOnly` and `canEdit`; this reads only the folder. Use the footer `Save` for a flag change.
 - For a small stored-file check, choose `Upload file` in an isolated folder and give its file chooser
   a known `application/octet-stream` buffer named with a `.bin` extension. Copy it through the menu.
   Sign both downloads, compare every byte, and check the copied file has a different asset id.
@@ -987,88 +986,74 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 - The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant on the folder. Get that member without any sign-in by following `references/second-user-fixtures.md`: an anonymous user in a scratch browser, invited by `userIdToAdd` into a throwaway non-default org. Verified end to end — a `member` with only `write` archives the folder fine, is refused on restoring the child alone with `You need Can manage on the shared folder to move this out of it.`, and still restores the scope-carrying folder itself.
 - A `write`-only member **can** archive the restricted folder. The hole this guards is the pair: archive the folder, then restore one file out of it. With the leaving check removed, that same click succeeds and clears the child's `restrictedScopeNodeId` to `null` at root — the file becomes readable by the whole workspace. Count that pointer, not the toast, when proving the guard.
 
-### File And Folder Write Policies
+### File And Folder Read-only
 
-Use a throwaway non-default organization and follow `second-user-fixtures.md` for a normal member who
-does not hold `content.permissions.manage`. Keep owner and member sessions open together so live races
-do not depend on signing in or out.
+Source contract as of 2026-10-28. Native QA of the new checkbox, recovery entry, and bulk buttons is
+still required. Use existing QA data and the signed-in session. A second member fixture needs
+separate authorization; do not sign in or out just to follow an old recipe.
 
-- Fixture: one directly locked file, one locked folder with rich/plain/nested descendants, one free
-  folder, and one unlocked outer folder with a locked child plus writable sibling. Create one pending
-  content proposal before locking.
-- In Properties, use `.FilesPropertiesModalWritePolicy`: radios are `Editable`, `Read-only`, and
-  `Selected writer`. Click `Read-only`, then `Save policy`. There is no `Inherit` radio and no
-  `Open parent policy`. Unlock later with `Editable` + `Save policy`. A member without management
-  rights gets disabled policy controls.
-  Read each fixture node with `files_tree.get_file_node_for_membership({ membershipId, fileNodeId })`
-  as each identity (tree rows carry the same fields) and assert `canWrite`, `writeBlockedReason`, and
-  `writePolicyState`. Policy presence alone does not mean that the current writer is blocked.
-- Assert the exact accessible row descriptions for a lock on that node, and for an unlocked folder
-  that contains read-only items. A parent lock does not mark the child `read-only from /path`.
-  Locked rows must still open, expand, search, and expose safe Copy and Share actions.
-- Try F2/menu rename, source drag, folder drops, archive/restore, mixed-selection archive, New file,
-  New folder, `Create a README.md`, Upload, and Import folder. Check the tree and pending rows after each
-  refusal; a toast alone does not prove zero writes. Archive and mixed-selection archive go through
-  the confirm dialog: a refused archive shows its `alert` inside the dialog and leaves it open. Copy a locked source with the row menu exact
-  `Copy` (not `Copy path`), then folder-row `Paste`. The transfer dialog reports `1 copied` and the
-  destination path. The new copy keeps the source lock (`data-file-write-policy="read_only"`,
-  `"<name>, Read-only"`, editor `contenteditable=false`). Verified 2026-09-18.
-- Start rename, create/upload UI, drag, and a dirty editor in the member session. Lock from the owner
-  session. Assert each UI cancels or disables live, keeps useful draft text copyable, announces why,
-  and returns or moves focus as documented in the plan.
-- For a signed-upload race, mint the target first, lock the file itself, then finish the PUT. The
-  existing node must publish normally, become downloadable, and keep its local lock. Read back the live
-  `r2Key`, cleared `unfinalizedExpiresAt`, normal processing completion, and the expected upload plugin
-  run. Reuse the signed staging URL and prove the immutable live bytes do not change.
-- Run `auditAccessibility({ selector: "body", minTargetSize: 24 })`, then separately audit the lock
-  modal and Pending panel. Also check keyboard focus, Escape/focus return, 200% zoom, 360 px width,
-  contrast, target sizes, and reduced motion.
+- Fixtures: one Read-only file, one Read-only folder with editable descendants, an editable folder
+  with a Read-only child and an editable sibling, and a pending proposal created before the flag.
+- Open Properties and scope to `.FilesPropertiesModalReadOnly`. Use the visible label of the single
+  `Read-only` checkbox and the footer `Save`. Can edit controls both turning it on and clearing it.
+  There is no writer picker or folder default.
+- Read `files_nodes.read_only_get({ membershipId, nodeId })` for `readOnly` and `canEdit`.
+  Read the public node query for `readOnly`, `canWrite`, and `writeBlockedReason`.
+  Internal decision ids are never a public readback field.
+- A folder flag protects that folder and its direct item list. Existing descendants keep their
+  own flags. Test create, rename, move, archive, restore, upload, and paste at each affected parent.
+  Read back nodes after refusals; a toast alone does not prove no write.
+- Copy a Read-only source with exact `Copy`, then `Paste` in an editable destination.
+  Read back `readOnly: true` on the copy. The UI uses `data-file-read-only="true"`.
+  The copy must have its own internal decision, checked by backend tests rather than public UI.
+- With metadata dirty, enable Read-only and Save: metadata must save first. If metadata fails,
+  the flag stays unchanged. If a late flag leaves a metadata draft, explicitly clear Read-only
+  and Save: clear first, then save the draft. A later failure keeps the draft and reports partial
+  success. No rollback or force is automatic.
+- Folder buttons are `Make contents Read-only` and `Clear Read-only from contents`.
+  Their confirm dialogs use `Start` and `Cancel`. The dialog explains a live pass, no Undo,
+  and that clearing also removes flags set by hand. The folder's own checkbox is separate.
+  Read the Activity and the reached children. Stop keeps changes already made.
+- Type unsaved text in rich text, plain text, and diff editors. Change Read-only or edit access
+  from an authorized second session before Save. Check the cause text and the Files header
+  `Unsaved text (N)` entry. Close the file, then open that entry and verify exact text, Copy,
+  Download, and confirmed Discard. The entry remains if the file becomes unreadable; its name
+  then comes from current access or says `Unavailable file`.
+- Remove workspace access in the second session. The denied-workspace screen must still offer
+  `Unsaved text (N)` with the exact local text and a generic file name. Also check another Files
+  workspace: the same user can still recover the text. Name reads use each copy's own membership.
+- Distinct drafts must stay separate. Repeated reports of the same draft must not duplicate it.
+  In Review, type draft A, trigger preparation, then type draft B in both panes and trigger it
+  again. Close Review. Unsaved text must keep draft A and both changed panes from draft B.
+  Each copy says the file changed while editing. Nothing is replayed to the server.
+  Recovery is memory-only in this tab for the current user. It never auto-saves or replays.
+  Check the tab unload warning, and clear copies before ending QA. Auth changes clear copies.
+- For an accepted-upload race, mint the target before setting Read-only, then finish the first
+  accepted PUT. Read back the stored bytes and unchanged flag. A later replacement is a new
+  write and must pass the current rule. Do not infer replacement authority from a pending target.
+- Check Space on the checkbox, Tab order, Escape/focus return, visible errors, 200% zoom, and
+  the accessibility harness. Use native inputs and normal clicks. Record screenshots only after
+  hiding any key reveal.
 
-### Service Account Key And Protected Log
+### Service Account Key And Read-only
 
-Verified through native UI and HTTP on 2026-09-08. This checks a script account without creating
-plugin installations, runs, service grants, or upload targets. Use only a unique QA folder, two new
-accounts, and their own keys. Keep the existing signed-in identity.
+Source contract as of 2026-10-28; native UI and HTTP QA remains pending. Reuse an approved QA
+account and folder. New accounts and keys are data writes and need task authorization.
 
-1. Create and rename the QA folder through Files. Restrict it through Share → `Who can open this` → `Only people added`.
-   On `/w/<org>/<workspace>/service-accounts`, use `Create account`, textbox `Name`, and `Save account`.
-   Confirm new accounts have no grants. Scope repeated row actions with `data-service-account-id`.
-2. On account A, choose `Manage grants`. In `Access for <name>`, select Resource `File or folder`,
-   enter `File or folder path`, and choose Access level `Can manage`. Confirm `This restricted scope`
-   before `Save grant`. On a normal folder the label is `This item and what is inside it`: the grant
-   reaches the open items inside, at view or edit only.
-3. Use A's `Create API key` link. It preselects Identity. Bound accounts allow only `files:list`,
-   `files:read`, `files:download`, `files:write`, and `files:permissions`. Put the setup JSON in with the
-   recipe in `app-map.md` ("API Keys Route"). After creation or rotation, keep the revealed key only in
-   memory. Read `.RouteApiKeysRevealModal [aria-label="New API key"]`, then close with `I saved the key`
-   before any snapshot or screenshot. For `Test key`, read only `.RouteApiKeysVerificationStatus`,
-   never the reveal dialog's full text.
-4. In folder Properties, save Selected writer → Writer type `Service account` → A. With A's key,
-   POST `/api/v1/files/write` twice to create and update a short `<QA path>/run.md` log. Pair this with
-   `/files/read`, `/files/list`, and `/files/download-urls` under `/api/v1`. Download into memory;
-   save only expected bytes, length, MIME, and hash. `/api/v1/auth/verify` shows account and sponsor IDs.
-5. Change A's grant to `Can view`: read succeeds, write returns 403. Remove its grant: read returns
-   404 and write 403. Restore `Can manage` and prove the same write succeeds. Give B the same QA grant
-   and a key with only `files:write`. B's write to A's protected log returns 409. B's policy setter
-   returns 403 without `files:permissions`; A's same setter succeeds. Check unchanged bytes after each
-   refusal. Selecting Read-only also refuses A's write with 409.
-6. Select the current human through Properties and save one native editor change. Read it after
-   reload, then restore A's policy. Native `Rotate <key name>` → `Rotate key` keeps account, sponsor,
-   and scopes. The old key must return 401; the new key must update and read the same log successfully.
-   Account `Revoke` → `Revoke account` then makes the new key return 401 while the policy stays set.
-7. Read state through fresh public queries: `access_control.get_service_account`,
-   `list_service_account_grants`, `public_api.api_credentials_list` (a Result with `_yay` array), and
-   `files_nodes.get_node_write_policy_management_state`. Keep all created IDs in a safe manifest.
-   A no-plugin claim needs a separate complete, paged database check for references to those IDs.
-8. Clear only the QA policy with Editable → `Save policy`; remove A/B's grants, revoke their keys and
-   accounts, then archive the QA folder. Revoked accounts still offer `Manage grants` and `Remove`.
-   Confirm every created key is revoked, both grant pages are empty and complete, and both nodes have
-   no policy and share an archive operation. Clear secrets from memory and close only the owned tab.
-
-Wait for saved UI state before fresh readback. A click can return before its mutation; after a timeout
-or HMR, read state before retrying. For the grant dialog's quick accessibility screen, the 1px
-`Dismiss popup` button is a visually hidden library control. Check the visible controls separately.
-Keep desktop/narrow screenshots away from key reveals and do not claim a full focus-trap audit.
+1. Grant account A Can edit at the QA destination. Create a key with only needed file scopes.
+   `files:read-only` is `Manage Read-only`, and starts unchecked. It is separate from
+   `files:permissions` (`Manage file sharing`).
+2. Keep the key in memory only. Close the reveal before snapshots. Set a QA file's flag with
+   Properties or `POST /api/v1/files/read-only/set` using `{ nodeId, readOnly: true }`.
+   The HTTP setter needs `files:read-only` and Can edit.
+3. A normal write to that file must refuse. A write with explicit `force: true` and the new
+   scope can succeed while preserving the flag. A second key without the new scope must fail
+   even if it can edit normally. Can view must fail even with the new scope and force.
+4. Read `/api/v1/files/read-only/get` and the stored bytes after each step. Restore the QA flag
+   explicitly. A key rotation keeps scopes; the old key must refuse. A revoked account must
+   refuse, while the file's flag stays unchanged.
+5. Clear only authorized QA state and revoke newly created keys/accounts. Keep QA tabs open.
+   Never print secrets, key reveal text, or private file bodies into logs.
 
 ### Non-Collaborative File Fixture
 
@@ -1207,19 +1192,19 @@ and review UI (not page-context doors).
   `.FileEditorSidebarPendingTabBadge` shows a count.
 - Lock the **file itself** (not a parent). Breadcrumb `getByRole("button", { name: /^Properties of / })`
   — click the box middle with `page.mouse.click` if locator click hangs. Scope to
-  `[data-files-properties-modal][data-open="true"]`. Radios are `Editable`, `Read-only`,
-  `Selected writer`. Click `Read-only`, then `Save policy`. The row becomes `"<name>, Read-only"`.
+  `[data-files-properties-modal][data-open="true"]`. In the current source, check the single
+  `Read-only` checkbox, then footer `Save`. This changed control needs native QA.
 - Open `#app_file_editor_sidebar_tabs_pending`. The row button is
   `Accept changes to /<path>` (leading slash). While locked it stays **disabled**, the editor
   `contenteditable` is `false`, and `Save` stays disabled. The proposal row remains. Do not use
   `{ force: true }`.
-- Unlock with `Editable` + `Save policy`. The same Accept button enables. Click it. The review
+- Clear `Read-only` and click `Save`. The same Accept button enables. Click it. The review
   dialog says `Changes saved.` / `1 saved`. The badge and Accept row go away. Close the dialog
   with `[role=dialog][data-open=true] button[data-dialog-dismiss]` (the dialog has two `Close`
   buttons).
 - A parent lock does not block this file. Locks are local.
 
-Page-context helpers (`files_upsert_file_pending_update`, `set_node_write_policy`, review-run
+Page-context helpers (`files_upsert_file_pending_update`, `read_only_set`, review-run
 `start`/`seal`) still exist for runners, but they are not the UI proof.
 
 ### Saved Snapshot Fields And History
@@ -1337,7 +1322,7 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 - The signed-url grant is per membership: `r2.create_signed_download_url` with the caller's own valid membership plus a file node from another workspace answers `_nay "Not found"`, and an invited member's browser renders the embed from the R2 origin with no extra step (verified 2026-08-09 with the `second-user-fixtures.md` flow).
 - `list_tree_children` pages one kind of child of one folder: `{ membershipId, parentId, kind, archived, restricted, paginationOpts: { numItems, cursor } }`, with `parentId` `"root"` or a folder id, `kind` `"folder"` or `"file"`, and `numItems` capped at 200. It returns `{ page, isDone, continueCursor }`. Follow each cursor until `isDone` before checking all children; a page can be empty. Only the owner gets rows with `restricted: true`; a member gets restricted children from `list_tree_children_shared`. To read many folders, use "Walk The Files Tree From Page Context" in `snippets.md`. A node has `kind`, not `type`; use `kind`, `lowercaseExtension`, or `contentType`.
 - **Tree rows are saved nodes only; drafts are not in them.** Read drafts from the Pending tab door `files_pending_list.list_files_pending_updates({ membershipId, listKey: "all", paginationOpts })`, whose rows carry `target: { kind, id }` (see `file-node-view.md`, "Reading the pending rows from the page"), or ask the agent for `ls`/`find`. `target.kind` tells you which read door to use: `"saved"` is a real `files_nodes` row, `"private"` is a `files_pending_nodes` row that only the proposal's owner can see. Passing a private id to `files_nodes_content.get_non_collaborative_file_content` fails the validator with `Found ID ... from table files_pending_nodes, which does not match ... v.id("files_nodes")`. Read a private one with `files_fetch_private_file_pending_text({ membershipId, target })` from `/src/lib/files.ts` instead. An agent `cp`/`touch`/`>` into a new path always produces a private item, so a listing right after an agent write mixes both kinds. Verified 2026-09-15.
-- `files_tree.get_file_node_for_membership` takes **`fileNodeId`**, not `nodeId` (nearly every other files door takes `nodeId`). It returns the raw node doc plus `canWrite`, so it is the quickest way to read `assetId`, `collaborationEnabled`, `textKind` and `writePolicyState` for a node. Verified 2026-09-15.
+- `files_tree.get_file_node_for_membership` takes **`fileNodeId`**, not `nodeId`. It returns public node fields plus `canWrite`, so read `assetId`, `collaborationEnabled`, `textKind`, and `readOnly` directly. The internal decision id is omitted. The new field shape is a source contract pending native QA.
 - To decode a pending branch by hand in page context, the two helpers live in different modules: `files_yjs_doc_create_from_array_buffer_update` is in `/shared/files-yjs.ts` and `files_yjs_doc_get_text` is in `/shared/files-tiptap.ts`. Pair either with `files_fetch_file_pending_update_yjs_state({ membershipId, target, stateId })` from `/src/lib/files.ts` to read the base, staged or unstaged text of a saved-target proposal. Verified 2026-09-15.
 - A copy is **not** byte-identical to its source for a `rich_text` file. The copy runs the text through a headless Tiptap editor to drop comment marks, and that markdown round-trip removes a single trailing newline (`"a\nb\n"` becomes `"a\nb"`; a trailing blank line, `"a\n\nb\n\n"`, survives) and writes a fresh asset. A file written straight through `replace_file_content` keeps whatever bytes you passed, so a fixture built that way and then copied shows a one-byte diff that is the serializer, not the transfer. Compare content after the same round-trip, or assert without the trailing newline. Verified 2026-09-15.
 - **`create_text_node` and `create_folder_node` take `path` relative to `parentId`.** `create_text_node({ parentId: <the /u39 folder>, path: "/u39/target.md" })` silently makes `/u39/u39/target.md`. The failure shows up much later and looks like something else: the agent's Bash then answers `ls: No such file or directory` for the path you think you created, and a `>` write there creates a _new private draft_ (`Added` row, `target.kind: "private"`) instead of a content proposal on your file. Pass the leaf name (`path: "target.md"`) when `parentId` is a folder; pass the full path only with `parentId: "root"`. Verified 2026-09-15.
@@ -1350,8 +1335,8 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 
 ### File Properties Modal
 
-One dialog holding the file's facts, its write policy, and the flat key-value map edited as YAML
-(write policy verified 2026-09-08). Spec: `.agents/skills/file-metadata/SKILL.md` and
+One dialog holding the file's facts, its Read-only flag, and the flat key-value map edited as YAML.
+The Read-only controls below are source contracts pending native QA. Spec: `.agents/skills/file-metadata/SKILL.md` and
 `.agents/skills/files-read-only/SKILL.md`. It replaced both the sidebar `Metadata` tab and the old
 `Read-only settings` modal, so a recipe that clicks either of those is out of date.
 
@@ -1362,8 +1347,8 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
 - The sidebar and the file view each own a Properties dialog. Both unmount while closed
   (`unmountOnHide`), so only the open one is in the DOM. `[data-files-properties-modal][data-open="true"]`
   still works as a scope.
-- The dialog holds four sections, reachable by their region names: `General` (a `<dl>` of facts),
-  `Protection` (the write policy), `Collaboration` (the collaborative-editing checkbox), and
+- The dialog holds four sections, reachable by their region names: `General` (read-only Monaco facts),
+  `Protection` (the Read-only flag), `Collaboration` (the collaborative-editing checkbox), and
   `Metadata` (the YAML editor). A folder gets General, Protection, and Metadata.
   `Collaboration` renders only for an editable text file, so an image also shows three sections
   and no empty strip.
@@ -1384,37 +1369,24 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   directions every time. Use the keyboard for the confirm button. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
-- Scope policy controls to `.FilesPropertiesModalWritePolicy`. The choices are `Everyone with access`,
-  `No one (read-only)`, and `Custom`. Click the visible label. Unlock with `Everyone with access` and the footer
-  `Save`. Custom opens `Add writers` or `Manage writers`. The footer Save writes changed protection
-  and metadata together. It stays open after success. Folders also have a rule for items inside.
-- Read `files_nodes.get_node_write_policy_management_state({ membershipId, nodeId })` through a fresh
-  `ConvexHttpClient`. Check `localPolicy`, `canWrite`, and `canManage`.
-  After a native click, wait for the saved UI state before readback; the click can finish before its
-  mutation. A selected human can edit when their access permits it. Revoking a selected account keeps
-  the file protected and shows `Protected file. The selected writer is unavailable.`
-- Apply to contents (folders only, verified 2026-10-01) copies the "Rule for items inside" rule,
-  not the folder's own rule. Pick that rule, then check `Also apply it to the items already inside`.
-  The input is hidden and `.click()` on the label can hang, so mouse-click the middle of
-  `.FilesPropertiesModalWritePolicy-apply`. Save then opens the dialog `Change the rule of all items
-  inside?`; click `Save and apply`. The Properties dialog then shows
-  `Updating the items inside in the background. Track it in Activity.` The job is an Activity titled
-  `Apply protection to folder contents` with source kind `files_write_policy_run`. Poll it with
-  `activities_feed.list_page` over both `active` and `history`. Pick the row by `startedAt` after your
-  click, not only "newest": `app_convex.query` can answer from its cache, and an older finished run
-  then ends the poll at once. About 1,250 items finish in 7–9 s on dev, in steps of 50.
-  The Activity row text is `Updated N items, M already set, K not allowed.` After Stop, a timeout, or
-  a failed access check it is `Stopped. N items were updated.` To test Stop, open `Notifications` and click
-  `Stop Apply protection to folder contents` within about 2 s of `Save and apply`.
-  To clean up a Read-only fixture, set "Rule for items inside" to `Everyone with access` and apply
-  it to the items inside first.
-  `archive_nodes` refuses a folder with a read-only item inside with `"<locked path>" is read-only.
-  Unlock it, then try again.`, and a read-only named item with `This item is read-only. Unlock it, then
-  try again.` To see it live, archive `/aaa-closing-qa-dest-mu6ynzn5` alone in `personal/home` from
-  the row menu. The dialog stays open and shows the message in a `role="alert"`. Nothing is archived,
-  and the console logs `[FilesArchiveModal.handleConfirm] Failed to archive nodes` (expected). A
-  stalled `Archive` menu-item click may still have opened the dialog, so read the visible dialogs
-  before you click again. Verified 2026-10-18.
+- Current Read-only source contract (native QA pending): scope to `.FilesPropertiesModalReadOnly`.
+  The single checkbox is `Read-only`; click its visible label and footer `Save`.
+  `files_nodes.read_only_get({ membershipId, nodeId })` returns `readOnly` and `canEdit`.
+  Both flag directions need Can edit. Saving metadata plus enabling the flag saves metadata first;
+  explicitly clearing a late flag clears it before saving a kept metadata draft. A later failure
+  keeps the remaining draft and reports that only part was saved.
+- Folder bulk source contract (native QA pending): choose `Make contents Read-only` or
+  `Clear Read-only from contents`, then `Start` in its confirm dialog. No folder default is saved.
+  The folder's own checkbox is separate. The text explains that this is a live pass, new or moved
+  items may be missed, Stop keeps work already done, and there is no Undo. Clearing also clears
+  flags set by hand. Poll the Activity by its new run id or start time, then read reached children.
+  Do not restore the fixture by changing only the parent flag; each child keeps its own flag.
+- Recovery source contract (native QA pending): after a late flag or permission refusal, verify
+  `Unsaved text (N)` in Files. It keeps exact text in this tab after route close or file access loss.
+  After workspace access ends, the denied-workspace screen keeps the same entry. Each name read
+  uses the copy's original membership; unavailable files have generic names.
+  Copy and Download need no write access. Discard asks again. Reload/close loses it and warns;
+  signing out clears it. It never writes the text back automatically.
 - Archive and restore jobs (verified 2026-09-25). Call `archive_nodes` / `unarchive_nodes` through the
   page-context `app_convex` client, or use the Archive dialog and the sidebar row menu `Restore` (turn on
   `Show archived items` in the top More options menu first). With several rows selected, the row menu's
@@ -1427,12 +1399,15 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   with more it reads `N items were not archived. See Activity.`
   The Activity card shows a bar and `Archiving 12 of 46 items…` while it runs, then one line:
   `Archived 46 items.`, or `Archived 45 of 46 items.` when the archive refused named items. A
-  refusal alone still reads `Completed`. The button is `View progress` while it runs and `Open` after.
+  refusal alone in the old normal archive path still reads `Completed`. New force archive runs read
+  `Partly completed` and page refused items and retained folders through `files_archive_runs.list_outcomes`.
+  Hidden results say `Permission denied` without a path. No app force action is added. This new outcome
+  contract needs native QA. The button is `View progress` while it runs and `Open` after.
   The job dialog lists the archived full paths in the read-only `textbox` `Archived items` and the refused
   ones under the region `Not archived (N)`, one `textbox` per reason named `Not archived: <reason>`.
   Its heading holds the job's `[data-activity-status-icon]`. The `Open` button can sit below the visible part of the popover list:
-  call `scrollIntoView` on it before the mouse click, or the click lands outside and closes the popover. To test Stop, click `Stop Archive files` in `Notifications` within about 3 s of starting
-  a 1,000+ node archive. To test a name clash, archive a folder, create an empty folder with the same
+  call `scrollIntoView` on it before the mouse click, or the click lands outside and closes the popover.
+  Only force archive and restore jobs expose Stop; normal archive retains its accepted-work behavior. To test a name clash, archive a folder, create an empty folder with the same
   name, then Restore: the card says `Action needed` and `1 name conflict needs your choice.`, the bell
   count goes up by one, and `Resolve` opens a dialog with
   a group named by the path (`/seed`) holding `Keep both`, `Replace empty folder` (`Replace` for a
@@ -1447,7 +1422,8 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   Mid-job checks (verified 2026-09-25, runners in `archive-job-followups-2026-09-25`): start the job with one
   `app_convex.mutation` call, poll `files_archive_runs.get` every 200 ms until `activity.progress.completed > 0`,
   then act in the same `page.evaluate`. A second CLI call is too slow: an archive step stamps up to 30 items per
-  step. A lock set this way (`set_node_write_policy` `read_only` on the deepest active folder) ends the job
+  step. In the current source use `read_only_set` with `readOnly: true` on the deepest active folder.
+  This setter change is pending native QA. The old normal-job check ended the job
   `failed` with `Stopped partway: This item is read-only.`, and the locked folder and its parents stay active.
   A folder created with `create_folder_node` during the check phase or after the first apply step gets the
   job's operation. Its `path` argument is relative to `parentId`, not a full path. An agent delete
@@ -1455,9 +1431,9 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
   the review run's Save cohort worker. To check search during a job, poll `files_nodes.search_saved` with
   `clause: { kind: "content", text }` for a word from one text file inside the tree. That file must go from
   present to absent once (archive) or from absent to present once (restore), and never back.
-- For screenshots and hit-target checks, scroll the policy block into view first. Tabbing to footer
-  controls can leave radios above the scroll area. At 512×768 the dialog scrolls and keeps its footer
-  visible. The quick audit counts 18px radio inputs; inspect their clickable labels before treating
+- For screenshots and hit-target checks, scroll the Read-only block into view first. Tabbing to footer
+  controls can leave the checkbox above the scroll area. At 512×768 the dialog scrolls and keeps its footer
+  visible. The quick audit counts small checkbox inputs; inspect their clickable labels before treating
   these size warnings as accessibility failures. Escape returns focus to the Properties trigger.
   With unsaved changes, Escape inside the Metadata editor does nothing; Tab out first, then Escape
   closes the dialog (see the Monaco Escape entry in `known-hazards.md`).

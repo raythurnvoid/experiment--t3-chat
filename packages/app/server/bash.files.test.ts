@@ -207,7 +207,9 @@ describe("bash_run_command", () => {
 			async (allowDbFilesMkdir) => {
 				const runner = await create_bash_runner({ allowDbFilesMkdir });
 				const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
-				await runner.t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { writePolicy: { mode: "read_only" } }));
+				await runner.t.run((ctx) =>
+					ctx.db.patch("files_nodes", nodeId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+				);
 
 				const result = await runner.run({ command: `cd /tmp && resolve '${nodeId}'` });
 

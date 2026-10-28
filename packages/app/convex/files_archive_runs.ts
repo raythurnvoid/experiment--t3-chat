@@ -23,11 +23,12 @@
 // the indexes cannot decide for one named item, the whole archive runs the check, and the named items
 // stay in the tree until the check passes.
 //
-// Archive cannot be stopped. Restore can be stopped only while it waits for a clash choice.
+// Forced archive visits children first and keeps denied branches active. It can stop between steps.
+// Ordinary archive cannot stop after stamping a root. Restore stops while waiting for a clash choice.
 
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import type { WithoutSystemFields } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator, type WithoutSystemFields } from "convex/server";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
@@ -49,13 +50,13 @@ import { files_media_validation_db_advance_version } from "./files_media_validat
 import {
 	authorize_leaving_restricted_scope,
 	files_nodes_db_archive_node,
-	files_nodes_db_require_swept_nodes_writable,
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import {
 	files_nodes_db_require_user_writable,
 	files_nodes_db_require_writable,
+	files_write_policy_db_is_within_scope,
 	type files_nodes_WriteContext,
 } from "../server/files-write-policy.ts";
 import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
@@ -193,6 +194,7 @@ type StepArgs = {
 	 * that every copy shares. A plain boolean set on a copy would never reach `db_step`.
 	 */
 	writeState: { isWritten: boolean };
+	restoredParents: Map<Id<"files_nodes">, NonNullable<Doc<"files_subtree_op_nodes">["restoredParent"]>>;
 };
 
 type StepOutcome =
@@ -212,7 +214,7 @@ const MEMBERSHIP_LOST = {
 
 const API_KEY_LOST = {
 	kind: "failed",
-	nay: { message: "The API key that started this job was revoked or lost files:write." },
+	nay: { message: "The API key that started this job was revoked or lost a required file scope." },
 } as const satisfies StepOutcome;
 
 async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files_archive_runs">) {
@@ -325,6 +327,19 @@ async function db_check_writable_nodes(
 			args.checkedScopes.set(scopeKey, allowed);
 		}
 		if (!allowed) return { kind: "failed", nay: { message: "Permission denied" } } as const;
+		// Restore preserves the archived item's flag. Its live parent list is checked separately.
+		if (args.run.kind === "restore" && node.archiveOperationId === args.run.archiveOperationId) {
+			if (
+				!(await files_write_policy_db_is_within_scope(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					writeContext: args.writeContext,
+					target: { kind: "node", node },
+				}))
+			)
+				return { kind: "failed", nay: { message: "Permission denied" } } as const;
+			continue;
+		}
 
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: membership.organizationId,
@@ -338,6 +353,60 @@ async function db_check_writable_nodes(
 }
 
 /**
+ * Removing a child changes its current parent's list, even when the child has its own access.
+ */
+async function db_check_archive_parent(
+	ctx: MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		writeContext: files_nodes_WriteContext;
+		node: Doc<"files_nodes">;
+		checkedScopes: StepArgs["checkedScopes"];
+	},
+) {
+	const { organizationId, workspaceId } = args.membership;
+	const parent = args.node.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.node.parentId);
+	if (
+		args.node.parentId !== files_ROOT_ID &&
+		(!parent ||
+			parent.organizationId !== organizationId ||
+			parent.workspaceId !== workspaceId ||
+			parent.kind !== "folder" ||
+			parent.archiveOperationId !== null)
+	)
+		return Result({ _nay: { message: "Permission denied" } });
+	const scopeKey = `${parent?.restrictedScopeNodeId ?? ""}:${parent?.extendedScopeNodeId ?? ""}`;
+	let allowed = args.checkedScopes.get(scopeKey);
+	if (allowed === undefined) {
+		allowed = await files_write_policy_db_has_write_context_permission(ctx, {
+			organizationId,
+			workspaceId,
+			membership: args.membership,
+			writeContext: args.writeContext,
+			node: parent,
+			permission: "content.write",
+		});
+		args.checkedScopes.set(scopeKey, allowed);
+	}
+	if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+	if (!parent) return Result({ _yay: null });
+	const writable = await files_nodes_db_require_writable(ctx, {
+		organizationId,
+		workspaceId,
+		writeContext: args.writeContext,
+		target: { kind: "node", node: parent },
+	});
+	if (writable._nay?.name === "read_only")
+		return Result({
+			_nay: {
+				name: "read_only",
+				message: `The folder "${parent.path}" is read-only. Unlock it before archiving items inside it.`,
+			},
+		});
+	return writable;
+}
+
+/**
  * A restore changes the folder an item leaves and the folder it lands in, like a move. So both
  * folders must not be read-only. Name the folder only for somebody who may read it.
  */
@@ -345,6 +414,7 @@ async function db_check_restore_folder(
 	args: StepArgs & {
 		ctx: MutationCtx;
 		folder: Doc<"files_nodes">;
+		restoredParent?: Doc<"files_subtree_op_nodes">["restoredParent"];
 	},
 ) {
 	const { ctx, folder } = args;
@@ -352,8 +422,37 @@ async function db_check_restore_folder(
 	const membership = args.membership;
 	if (!membership) return MEMBERSHIP_LOST;
 
-	const writable = await files_nodes_db_require_user_writable(ctx, { node: folder, userId: args.userAuth.id });
+	if (
+		!(await files_write_policy_db_has_write_context_permission(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			writeContext: args.writeContext,
+			membership,
+			node: folder,
+			permission: "content.write",
+		}))
+	)
+		return { kind: "failed", nay: { message: "Permission denied" } } as const;
+	const writable = await files_nodes_db_require_writable(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		writeContext: args.writeContext,
+		target: { kind: "node", node: folder },
+	});
 	if (!writable._nay) return null;
+	// Trash has no live child list to protect. Scope and access checks still apply.
+	if (writable._nay.name === "read_only" && folder.archiveOperationId !== null) return null;
+	const receipt = args.restoredParent;
+	if (
+		writable._nay.name === "read_only" &&
+		receipt &&
+		folder.archiveOperationId === null &&
+		receipt.nodeId === folder._id &&
+		receipt.decisionId === folder.readOnlyDecisionId &&
+		receipt.parentId === folder.parentId &&
+		receipt.path === folder.path
+	)
+		return null;
 
 	const readable = await access_control_db_authorize_membership(ctx, {
 		userAuth: args.userAuth,
@@ -455,8 +554,8 @@ export function files_archive_runs_get_all_refused_nay(refusedItems: RunFields["
 }
 
 /**
- * Check everything the archive will change before it writes anything: each active node, and each
- * archived node inside, which must not be hidden while it is read-only. The walk follows `parentId`
+ * Check each active node before writing anything. Trash items keep their existing archive.
+ * The walk follows `parentId`
  * from each named item. Nothing is written, so a folder needs no second pass.
  *
  * A refusal leaves out only the named item it is in, with everything inside that item, like `rm` with
@@ -508,6 +607,11 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				continue;
 			}
 
+			const parentCheck = await db_check_archive_parent(ctx, { ...args, membership: args.membership, node });
+			if (parentCheck._nay) {
+				refuse_named_item(args, { name: parentCheck._nay.name ?? null, message: parentCheck._nay.message });
+				continue;
+			}
 			const refusal = await db_check_writable_nodes({ ctx, ...args, nodes: [node] });
 			if (refusal) {
 				if (refusal === MEMBERSHIP_LOST) return refusal;
@@ -527,11 +631,27 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			continue;
 		}
 
-		const page = await files_subtree_ops_db_next_children(ctx, { row, folder: node, budget: args.budget });
-		if (!page) return { kind: "continue" };
+		const children = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) => {
+				const range = q
+					.eq("organizationId", run.organizationId)
+					.eq("workspaceId", run.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("parentId", node._id)
+					.eq("archiveOperationId", null);
+				return row.cursor ? range.gt("name", row.cursor.name) : range;
+			})
+			.take(PAGE_SIZE);
+		const last = children.at(-1);
+		const page = {
+			children,
+			cursor: last ? { mode: "after" as const, name: last.name, creationTime: last._creationTime } : row.cursor,
+			isDone: children.length < PAGE_SIZE,
+		};
 		args.budget.checkNodes -= page.children.length;
 
-		const activeNodes = page.children.filter((child) => child.archiveOperationId === null);
+		const activeNodes = page.children;
 		const refusal = await db_check_writable_nodes({ ctx, ...args, nodes: activeNodes });
 		if (refusal) {
 			if (refusal === MEMBERSHIP_LOST) return refusal;
@@ -539,38 +659,6 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				args,
 				get_named_item_refusal(refusal.nay, { lockedPath: "node" in refusal ? (refusal.node?.path ?? null) : null }),
 			);
-			continue;
-		}
-
-		// Archive does not change archived nodes inside. But it must not hide a read-only one under a
-		// newly archived folder. Use a general error when the person cannot see it.
-		const archivedNodes = page.children.filter((child) => child.archiveOperationId !== null);
-		const sweptArgs = {
-			organizationId: args.run.organizationId,
-			workspaceId: args.run.workspaceId,
-			writeContext: args.writeContext,
-		};
-		const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
-			...sweptArgs,
-			nodes: archivedNodes,
-		});
-		if (archivedProtected._nay) {
-			// The check says read-only only for a node the person may read, but not which node. Check the
-			// nodes one at a time to name it. This runs only after a refusal, for one page.
-			let lockedPath = null;
-			if (archivedProtected._nay.name === "read_only") {
-				for (const archivedNode of archivedNodes) {
-					const writable = await files_nodes_db_require_swept_nodes_writable(ctx, {
-						...sweptArgs,
-						nodes: [archivedNode],
-					});
-					if (writable._nay?.name === "read_only") {
-						lockedPath = archivedNode.path;
-						break;
-					}
-				}
-			}
-			refuse_named_item(args, get_named_item_refusal(archivedProtected._nay, { lockedPath }));
 			continue;
 		}
 
@@ -627,6 +715,138 @@ async function db_archive_node(
 	// A fast archive ran no check, so it learns the items while it stamps them.
 	if (args.progress.total === null) args.progress.discovered += 1;
 	args.budget.nodes -= 1;
+}
+
+async function db_finish_forced_item(
+	ctx: MutationCtx,
+	args: StepArgs & {
+		row: Doc<"files_subtree_op_nodes">;
+		reason?: "permission" | "changed" | "not_empty";
+	},
+) {
+	if (args.reason) {
+		await ctx.db.insert("files_archive_run_items", {
+			runId: args.runId,
+			order: args.progress.discovered,
+			kind: "force_archive",
+			nodeId: args.row.nodeId,
+			reason: args.reason,
+		});
+		args.progress.blocked += 1;
+		args.progress.discovered += 1;
+		args.budget.nodes -= 1;
+		if (args.row.forceArchive?.rootNodeId === args.row.nodeId) {
+			args.run.refusedItems.push({
+				nodeId: args.row.nodeId,
+				refusal: { name: null, message: "Some items could not be archived. See the job results." },
+			});
+		}
+	}
+	if (args.row.forceArchive?.rootNodeId === args.row.nodeId) args.run.applyRootIndex += 1;
+	await ctx.db.delete("files_subtree_op_nodes", args.row._id);
+}
+
+/**
+ * Keep denied branches in place. Only an empty active folder may leave the tree.
+ */
+async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	if (!args.membership) return MEMBERSHIP_LOST;
+	// A running Restore also repairs descendant paths. Queued work must never hold this job up.
+	for (const kind of ["move", "scope", "restore"] as const) {
+		const repair = await ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_organization_workspace_kind_status", (q) =>
+				q
+					.eq("organizationId", args.run.organizationId)
+					.eq("workspaceId", args.run.workspaceId)
+					.eq("kind", kind)
+					.eq("status", "running"),
+			)
+			.first();
+		if (repair) return { kind: "continue" };
+	}
+	while (args.budget.nodes > 0 && args.budget.checkNodes > 0 && !(await files_subtree_ops_db_is_near_limits(ctx))) {
+		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
+		if (!row) return { kind: "done" };
+		const frame = row.forceArchive;
+		if (!frame) throw should_never_happen("Forced archive has no saved parent", { rowId: row._id });
+		args.budget.checkNodes -= 1;
+		const node = await ctx.db.get("files_nodes", row.nodeId);
+		if (!node || node.archiveOperationId !== null) {
+			args.progress.skipped += 1;
+			args.progress.discovered += 1;
+			await db_finish_forced_item(ctx, { ...args, row });
+			continue;
+		}
+		const root = node._id === frame.rootNodeId ? node : await ctx.db.get("files_nodes", frame.rootNodeId);
+		if (
+			!root ||
+			root.archiveOperationId !== null ||
+			root.treePath !== frame.rootTreePath ||
+			node.organizationId !== args.run.organizationId ||
+			node.workspaceId !== args.run.workspaceId ||
+			node.parentId !== frame.parentId ||
+			(node._id !== root._id && (root.kind !== "folder" || !node.treePath.startsWith(root.treePath)))
+		) {
+			await db_finish_forced_item(ctx, { ...args, row, reason: "changed" });
+			continue;
+		}
+		const parentCheck = await db_check_archive_parent(ctx, { ...args, membership: args.membership, node });
+		const refusal = parentCheck._nay || (await db_check_writable_nodes({ ctx, ...args, nodes: [node] }));
+		if (refusal) {
+			await db_finish_forced_item(ctx, { ...args, row, reason: "permission" });
+			continue;
+		}
+		if (node.kind === "folder") {
+			const children = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) => {
+					const range = q
+						.eq("organizationId", args.run.organizationId)
+						.eq("workspaceId", args.run.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("parentId", node._id)
+						.eq("archiveOperationId", null);
+					return frame.afterName === null ? range : range.gt("name", frame.afterName);
+				})
+				.take(PAGE_SIZE);
+			args.budget.checkNodes -= children.length;
+			if (children.length > 0) {
+				// Active sibling names are unique. Move holds the workspace until its physical cleanup ends.
+				await ctx.db.patch("files_subtree_op_nodes", row._id, {
+					forceArchive: { ...frame, afterName: children.at(-1)!.name },
+				});
+				await files_subtree_ops_db_enqueue_nodes(ctx, {
+					opId: args.opId,
+					nodes: children.map((child) => ({
+						nodeId: child._id,
+						nodeDone: false,
+						forceArchive: { ...frame, parentId: node._id, afterName: null },
+					})),
+				});
+				continue;
+			}
+			// A denied child or a new name behind the cursor keeps the folder active. Never rescan it.
+			const remaining = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+					q
+						.eq("organizationId", args.run.organizationId)
+						.eq("workspaceId", args.run.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("parentId", node._id)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			if (remaining) {
+				await db_finish_forced_item(ctx, { ...args, row, reason: "not_empty" });
+				continue;
+			}
+		}
+		await db_archive_node({ ctx, ...args, node });
+		await db_finish_forced_item(ctx, { ...args, row });
+	}
+	return { kind: "continue" };
 }
 
 /**
@@ -740,7 +960,7 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 /**
  * Replace archives the item in the way, like a pasted move. It needs the same kind, a folder with no
- * active child, and write access to the item in the way and to every archived item inside it.
+ * active child, and write access to the item in the way. Trash children keep their own archive.
  */
 async function db_can_replace(
 	ctx: QueryCtx | MutationCtx,
@@ -775,42 +995,8 @@ async function db_can_replace(
 	if (authorized._nay) return false;
 	const writable = await files_nodes_db_require_user_writable(ctx, { node: args.occupant, userId: args.userAuth.id });
 	if (writable._nay) return false;
-	if (args.occupant.kind === "file") return true;
-
-	// Like a pasted move, no read-only item may end up hidden inside the archived folder. The `get` query
-	// runs this too, so read at most `files_archive_runs_CHECK_STEP_MAX_NODES` items inside. A bigger folder
-	// cannot be replaced. Keep both and Skip still work.
-	const inside: Doc<"files_nodes">[] = [];
-	const folderIds = [args.occupant._id];
-	while (folderIds.length > 0) {
-		const folderId = folderIds.pop()!;
-		const children = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-				q
-					.eq("organizationId", args.occupant.organizationId)
-					.eq("workspaceId", args.occupant.workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("parentId", folderId),
-			)
-			.take(files_archive_runs_CHECK_STEP_MAX_NODES + 1 - inside.length);
-		inside.push(...children);
-		if (inside.length > files_archive_runs_CHECK_STEP_MAX_NODES) return false;
-		folderIds.push(...children.filter((child) => child.kind === "folder").map((child) => child._id));
-	}
-	const swept = await files_nodes_db_require_swept_nodes_writable(ctx, {
-		organizationId: args.occupant.organizationId,
-		workspaceId: args.occupant.workspaceId,
-		writeContext: {
-			subject: { kind: "user", userId: args.userAuth.id, plugin: null },
-			writer: { kind: "user", userId: args.userAuth.id },
-			actorUserId: args.userAuth.id,
-			resourceScope: { kind: "workspace" },
-			policyReach: "ancestors",
-		},
-		nodes: inside,
-	});
-	return !swept._nay;
+	// Archived children keep their own stamps and never block replacing an active empty folder.
+	return true;
 }
 
 /**
@@ -1390,6 +1576,7 @@ async function db_land_node(
 			await ctx.db.insert("files_archive_run_items", {
 				runId: args.runId,
 				order: progress.completed + progress.skipped,
+				kind: "restore",
 				// The item keeps its old path in the Trash. `path` is where it would have landed.
 				path: node.path,
 				newPath: null,
@@ -1407,6 +1594,14 @@ async function db_land_node(
 		updatedBy: args.userAuth.id,
 		now: args.now,
 	});
+	if (node.kind === "folder") {
+		args.restoredParents.set(node._id, {
+			nodeId: node._id,
+			decisionId: node.readOnlyDecisionId,
+			parentId: landingParentId,
+			path,
+		});
+	}
 	// Replace archives the occupant only after the restore, like a move. It gets its own operation id,
 	// so it can come back alone. The pause check above already ran `db_can_replace` in this mutation.
 	if (replacedNode) {
@@ -1424,6 +1619,7 @@ async function db_land_node(
 		await ctx.db.insert("files_archive_run_items", {
 			runId: args.runId,
 			order: progress.completed + progress.skipped,
+			kind: "restore",
 			path: node.path,
 			newPath: path,
 		});
@@ -1518,7 +1714,10 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				await ctx.db.delete("files_subtree_op_nodes", row._id);
 				continue;
 			}
-			await ctx.db.patch("files_subtree_op_nodes", row._id, { nodeDone: true });
+			await ctx.db.patch("files_subtree_op_nodes", row._id, {
+				nodeDone: true,
+				restoredParent: args.restoredParents.get(node._id),
+			});
 		}
 
 		// Read the folder again. The top item above may have just landed it.
@@ -1539,12 +1738,18 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			let isWalked = child.kind === "folder";
 			// A top item that lands at the workspace root has its own row.
 			if (child.archiveOperationId === run.archiveOperationId && !run.rootNodeIds.includes(child._id)) {
-				// Check the child again, like a top item. A lock or lost access set during the job stops it, even
-				// on a folder this job already restored. A folder's lock does not block its children, so a child
-				// that comes back into an active folder checks that folder too.
+				// The run may finish a folder it just restored with the same read-only decision. A later
+				// decision or changed location ends that receipt. Access is checked every time.
 				const refusal =
 					(await db_check_writable_nodes({ ctx, ...args, nodes: [child] })) ??
-					(folder.archiveOperationId === null ? await db_check_restore_folder({ ctx, ...args, folder }) : null);
+					(folder.archiveOperationId === null
+						? await db_check_restore_folder({
+								ctx,
+								...args,
+								folder,
+								restoredParent: args.restoredParents.get(folder._id) ?? row.restoredParent,
+							})
+						: null);
 				if (refusal) return refusal;
 				if (folder.archiveOperationId === null) {
 					// Somebody may have made an item with this name after the folder came back. The job then
@@ -1559,6 +1764,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 							pending: next.children.slice(index).map((pendingChild) => pendingChild._id),
 							folderIds,
 							isRowFirst: true,
+							restoredParents: args.restoredParents,
 						});
 						return outcome;
 					}
@@ -1595,6 +1801,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			pending,
 			folderIds,
 			isRowFirst: false,
+			restoredParents: args.restoredParents,
 		});
 	}
 }
@@ -1615,6 +1822,12 @@ async function db_begin_archive_apply(ctx: MutationCtx, args: StepArgs) {
  * ends inside the request.
  */
 async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	if (args.run.kind === "archive" && args.run.force) {
+		const outcome = await db_apply_forced_archive(ctx, args);
+		if (args.writeState.isWritten) await files_media_validation_db_advance_version(ctx, args.run);
+		if (outcome.kind === "done") args.progress.total = args.progress.discovered;
+		return outcome;
+	}
 	if (args.run.phase === "discover") {
 		const discovered = await db_discover_restore(ctx, args);
 		if (discovered.kind !== "done") return discovered;
@@ -1773,9 +1986,16 @@ export async function files_archive_runs_db_check_fast(
 ) {
 	const { organizationId, workspaceId } = args.membership;
 	const refusals = new Map<Id<"files_nodes">, RunFields["refusedItems"][number]["refusal"]>();
+	if (args.writeContext.force) return { refusals, isFast: false };
 
-	// The item's own lock needs no read. The check would refuse it with the same reason.
+	// Check the item and the direct parent whose child list changes.
+	const checkedScopes = new Map<string, boolean>();
 	for (const node of args.nodes) {
+		const parentCheck = await db_check_archive_parent(ctx, { ...args, node, checkedScopes });
+		if (parentCheck._nay) {
+			refusals.set(node._id, { name: parentCheck._nay.name ?? null, message: parentCheck._nay.message });
+			continue;
+		}
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId,
 			workspaceId,
@@ -1854,21 +2074,20 @@ export async function files_archive_runs_db_check_fast(
 
 		const readOnly = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_org_ws_writePolicyMode_treePath", (q) =>
+			.withIndex("by_org_ws_archive_readOnly_treePath", (q) =>
 				q
 					.eq("organizationId", organizationId)
 					.eq("workspaceId", workspaceId)
 					.eq("moveCohortId", undefined)
-					.eq("writePolicy.mode", "read_only")
+					.eq("archiveOperationId", null)
+					.eq("readOnly", true)
 					.gt("treePath", node.treePath)
 					.lt("treePath", treePathEnd),
 			)
 			.first();
 		if (readOnly) {
-			// The person may read an active node in the item's own area, so the refusal may name it. An
-			// active node in another area may be hidden from them. An archived one may sit in an old archived
-			// folder with the same path. Only the check can tell those apart.
-			if (readOnly.archiveOperationId === null && (isOwner || readOnly.restrictedScopeNodeId === area)) {
+			// Name the item only in an area the person can read.
+			if (isOwner || readOnly.restrictedScopeNodeId === area) {
 				refusals.set(
 					node._id,
 					get_named_item_refusal({ name: "read_only", message: "" }, { lockedPath: readOnly.path }),
@@ -1878,21 +2097,6 @@ export async function files_archive_runs_db_check_fast(
 			}
 			continue;
 		}
-
-		// A writer list may list the person or not. Only the check reads it.
-		const writerLocked = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_org_ws_writePolicyMode_treePath", (q) =>
-				q
-					.eq("organizationId", organizationId)
-					.eq("workspaceId", workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("writePolicy.mode", "writer")
-					.gt("treePath", node.treePath)
-					.lt("treePath", treePathEnd),
-			)
-			.first();
-		if (writerLocked) isFast = false;
 	}
 
 	return { refusals, isFast };
@@ -1919,6 +2123,7 @@ export async function files_archive_runs_db_start(
 		 * The API key that started the job, or null for the app.
 		 */
 		credentialId: Id<"api_credentials"> | null;
+		force?: boolean;
 		archiveOperationId: string;
 		/**
 		 * Archive: the named active items. Restore: empty; the check fills the items that land at the root.
@@ -1953,6 +2158,18 @@ export async function files_archive_runs_db_start(
 		applyToRemaining: RunFields["applyToRemaining"];
 	},
 ) {
+	const force = args.force ?? false;
+	if (
+		force &&
+		(args.credentialId === null ||
+			!(await public_api_credentials_db_is_live(ctx, {
+				credentialId: args.credentialId,
+				userId: args.userAuth.id,
+				workspaceId: args.membership.workspaceId,
+				scopes: ["files:write", "files:read-only"],
+			})))
+	)
+		return Result({ _nay: { message: "Permission denied" } });
 	if (args.kind === "restore") {
 		const busy = await ctx.db
 			.query("files_archive_runs")
@@ -2001,10 +2218,11 @@ export async function files_archive_runs_db_start(
 		workspaceId: args.membership.workspaceId,
 		userId: args.userAuth.id,
 		credentialId: args.credentialId ?? undefined,
+		force,
 		kind: args.kind,
 		archiveOperationId: args.archiveOperationId,
 		rootNodeIds: args.kind === "archive" ? args.rootNodeIds : [],
-		phase: args.kind === "restore" ? "discover" : args.isFast ? "apply" : "check",
+		phase: args.kind === "restore" ? "discover" : force || args.isFast ? "apply" : "check",
 		checkCursor: { rootIndex: 0, treePath: "" },
 		discoverTreePaths: [],
 		applyRootIndex: 0,
@@ -2046,7 +2264,23 @@ export async function files_archive_runs_db_start(
 		now,
 	});
 	// The check walks from a queue row for each named item. A fast archive runs no check.
-	if (args.kind === "archive" && !args.isFast) {
+	if (args.kind === "archive" && force) {
+		const nodes = [];
+		for (const nodeId of args.rootNodeIds) {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			nodes.push({
+				nodeId,
+				nodeDone: false,
+				forceArchive: {
+					rootNodeId: nodeId,
+					rootTreePath: node?.treePath ?? "",
+					parentId: node?.parentId ?? files_ROOT_ID,
+					afterName: null,
+				},
+			});
+		}
+		await files_subtree_ops_db_enqueue_nodes(ctx, { opId, nodes });
+	} else if (args.kind === "archive" && !args.isFast) {
 		await files_subtree_ops_db_enqueue_nodes(ctx, {
 			opId,
 			nodes: args.rootNodeIds.map((nodeId) => ({ nodeId, nodeDone: false })),
@@ -2062,6 +2296,7 @@ export async function files_archive_runs_db_start(
 		writeContext: await public_api_credentials_db_get_write_context(ctx, {
 			credentialId: args.credentialId,
 			userId: args.userAuth.id,
+			force,
 		}),
 		membership: args.membership,
 		now,
@@ -2069,14 +2304,15 @@ export async function files_archive_runs_db_start(
 		isRequest: true,
 		checkedScopes: new Map(),
 		writeState: { isWritten: false },
+		restoredParents: new Map(),
 	};
 	// A Move in the workspace makes the first step wait too. The Move wakes the job when it ends. A fast
 	// archive already proved that no Move runs.
 	const paused =
 		!blocker &&
-		!args.isFast &&
+		(!args.isFast || force) &&
 		(await files_subtree_ops_db_pause_for_move(ctx, (await ctx.db.get("files_subtree_ops", opId))!));
-	if (args.isFast) await db_begin_archive_apply(ctx, stepArgs);
+	if (args.isFast && !force) await db_begin_archive_apply(ctx, stepArgs);
 	const outcome = blocker || paused ? null : await db_step(ctx, stepArgs);
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
 	// refused a named item keeps its job, so its Activity can list what was not archived. So does a
@@ -2100,7 +2336,7 @@ export async function files_archive_runs_db_start(
 		userId: args.userAuth.id,
 		membershipId: args.membership._id,
 		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, args.membership),
-		source: { kind: "files_archive_run", id: runId, archiveKind: args.kind },
+		source: { kind: "files_archive_run", id: runId, archiveKind: args.kind, force },
 		// Keep names and paths out of the title. The requester may lose access to the items later.
 		title: args.kind === "archive" ? "Archive files" : "Restore files",
 		targets: [],
@@ -2174,7 +2410,7 @@ export async function files_archive_runs_db_advance(
 			credentialId: storedRun.credentialId,
 			userId: storedRun.userId,
 			workspaceId: storedRun.workspaceId,
-			scopes: ["files:write"],
+			scopes: storedRun.force ? ["files:write", "files:read-only"] : ["files:write"],
 		}));
 	const stepOutcome = await db_step(ctx, {
 		opId: args.op._id,
@@ -2187,6 +2423,7 @@ export async function files_archive_runs_db_advance(
 		writeContext: await public_api_credentials_db_get_write_context(ctx, {
 			credentialId: isApiKeyLost ? null : (storedRun.credentialId ?? null),
 			userId: storedRun.userId,
+			force: !isApiKeyLost && storedRun.force,
 		}),
 		membership: isApiKeyLost ? null : membership,
 		now: args.now,
@@ -2198,6 +2435,7 @@ export async function files_archive_runs_db_advance(
 		isRequest: false,
 		checkedScopes: new Map(),
 		writeState: { isWritten: false },
+		restoredParents: new Map(),
 	});
 	const outcome = isApiKeyLost && stepOutcome === MEMBERSHIP_LOST ? API_KEY_LOST : stepOutcome;
 
@@ -2261,12 +2499,17 @@ export async function files_archive_runs_db_request_stop(
 			const opId = (await db_require_op(ctx, run._id))._id;
 			// Before the apply phase the job changed nothing, so a step that keeps failing ends it. An apply
 			// must go on: items it did not reach would stay active, with their links, inside the archived folder.
-			if ((await files_subtree_ops_db_count_recover(ctx, { opId, activity })) && run.phase !== "apply") {
+			if (
+				(await files_subtree_ops_db_count_recover(ctx, { opId, activity })) &&
+				(run.phase !== "apply" || (run.kind === "archive" && run.force))
+			) {
 				await db_finish_run({
 					ctx,
 					runId: run._id,
 					status: "failed",
-					errorMessage: "A step of this job kept failing, so it stopped. Nothing was changed.",
+					errorMessage: run.force
+						? "A step of this job kept failing, so it stopped. Completed changes were kept."
+						: "A step of this job kept failing, so it stopped. Nothing was changed.",
 					errorCode: "failed",
 					now: args.now,
 				});
@@ -2331,6 +2574,7 @@ export const get = query({
 	returns: v.union(
 		v.object({
 			kind: app_convex_schema.tables.files_archive_runs.validator.fields.kind,
+			force: v.boolean(),
 			revision: v.number(),
 			activity: doc(app_convex_schema, "activities"),
 			controls: v.object({ canStop: v.boolean(), canRetry: v.boolean(), canDismiss: v.boolean() }),
@@ -2382,7 +2626,13 @@ export const get = query({
 			path: pathByNodeId.get(refusedItem.nodeId) ?? null,
 			message: refusedItem.refusal.message,
 		}));
-		const archived = archivedNodeIds.map((nodeId) => ({ nodeId, path: pathByNodeId.get(nodeId) ?? null }));
+		const archived = archivedNodeIds
+			.filter(
+				(nodeId) =>
+					!run.force ||
+					namedNodes.some((node) => node._id === nodeId && node.archiveOperationId === run.archiveOperationId),
+			)
+			.map((nodeId) => ({ nodeId, path: pathByNodeId.get(nodeId) ?? null }));
 
 		let conflict = null;
 		// A job stopped while it waited keeps its last clash. Show it only while the job waits.
@@ -2423,6 +2673,7 @@ export const get = query({
 
 		return {
 			kind: run.kind,
+			force: run.force,
 			revision: run.revision,
 			activity,
 			controls: activities_get_controls(activity, userAuth.id),
@@ -2430,6 +2681,67 @@ export const get = query({
 			archived,
 			notArchived,
 		};
+	},
+});
+
+/**
+ * Outcomes keep their place in the page even when the item is no longer readable.
+ */
+export const list_outcomes = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		runId: v.id("files_archive_runs"),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(
+		v.object({
+			order: v.number(),
+			kind: v.union(v.literal("refused"), v.literal("retained_folder")),
+			path: v.union(v.string(), v.null()),
+			message: v.string(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const owned = await db_get_owned_run(ctx, args);
+		if (owned._nay || owned._yay.run.kind !== "archive" || !owned._yay.run.force) {
+			return { page: [], isDone: true, continueCursor: "" };
+		}
+		const { userAuth, membership, run } = owned._yay;
+		const result = await ctx.db
+			.query("files_archive_run_items")
+			.withIndex("by_run_order", (q) => q.eq("runId", run._id))
+			.paginate(args.paginationOpts);
+		const page = await Promise.all(
+			result.page.map(async (item) => {
+				if (item.kind !== "force_archive")
+					throw should_never_happen("Forced archive has a restore outcome", { itemId: item._id });
+				const node = await ctx.db.get("files_nodes", item.nodeId);
+				const readable =
+					node &&
+					node.organizationId === run.organizationId &&
+					node.workspaceId === run.workspaceId &&
+					!(
+						await access_control_db_authorize_membership(ctx, {
+							userAuth,
+							membership,
+							permission: "content.read",
+							fileNode: node,
+						})
+					)._nay;
+				return {
+					order: item.order,
+					kind: readable && item.reason === "not_empty" ? ("retained_folder" as const) : ("refused" as const),
+					path: readable ? node.path : null,
+					message:
+						!readable || item.reason === "permission"
+							? "Permission denied"
+							: item.reason === "changed"
+								? "This item moved or changed. Try again from its current folder."
+								: "This folder still contains items. Review the skipped items, then try again.",
+				};
+			}),
+		);
+		return { ...result, page };
 	},
 });
 

@@ -189,9 +189,10 @@ export async function files_pending_nodes_db_can_save_to_copied_parent(
 		receipt.savedNodeId !== savedParent._id ||
 		receipt.creationGeneration + (parent.state === "published" ? 1 : 0) !== parent.creationGeneration ||
 		receipt.structuralRevision !== parent.structuralRevision ||
-		receipt.copiedWritePolicy == null ||
+		!receipt.copiedReadOnlyDecisionId ||
 		receipt.copiedPath !== savedParent.path ||
-		JSON.stringify(receipt.copiedWritePolicy) !== JSON.stringify(savedParent.writePolicy)
+		!savedParent.readOnly ||
+		receipt.copiedReadOnlyDecisionId !== savedParent.readOnlyDecisionId
 	)
 		return false;
 	let originalParentId: Id<"files_nodes"> | "root";

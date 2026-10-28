@@ -1371,7 +1371,7 @@ describe("plugins_validate_manifest", () => {
 		expect(readUserWrite._yay.capabilities).toEqual(["plugin.data.read", "plugin.data.user-write"]);
 	});
 
-	test("rejects workspace.files.create-read-only without workspace.files.write", () => {
+	test("rejects the old Read-only capability in new manifests", () => {
 		expect(
 			plugins_validate_manifest({
 				...manifest_json(),
@@ -1379,8 +1379,16 @@ describe("plugins_validate_manifest", () => {
 			}),
 		).toEqual({
 			_nay: {
-				message: "The workspace.files.create-read-only capability requires the workspace.files.write capability",
+				message: "Use workspace.files.manage-read-only instead of workspace.files.create-read-only",
 			},
+		});
+	});
+
+	test("requires workspace.files.write for workspace.files.manage-read-only", () => {
+		expect(
+			plugins_validate_manifest({ ...manifest_json(), capabilities: ["workspace.files.manage-read-only"] }),
+		).toEqual({
+			_nay: { message: "The workspace.files.manage-read-only capability requires workspace.files.write" },
 		});
 	});
 
@@ -2046,7 +2054,7 @@ describe("plugins_Capability", () => {
 		expect([...schemaCapabilities].sort()).toEqual([...capabilities].sort());
 	});
 
-	test("the plugin SDK's BonoboCapability union matches the shared capability list exactly", () => {
+	test("the plugin SDK's BonoboCapability union matches current publishable capabilities", () => {
 		// No app module imports the SDK, so nothing else notices when the two lists drift. 0.9.1
 		// shipped without `plugin.data.user-write` after the host already had it, and only a human
 		// review round caught that. Read the published types as text and compare both directions.
@@ -2057,7 +2065,9 @@ describe("plugins_Capability", () => {
 		expect(union).not.toBeNull();
 
 		const sdkCapabilities = [...(union?.[1] ?? "").matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
-		expect([...sdkCapabilities].sort()).toEqual([...capabilities].sort());
+		expect([...sdkCapabilities].sort()).toEqual(
+			capabilities.filter((capability) => capability !== "workspace.files.create-read-only").sort(),
+		);
 	});
 
 	test("the plugin SDK doc block states every capability that another capability requires", () => {
@@ -2068,7 +2078,7 @@ describe("plugins_Capability", () => {
 		const requiredByCapability = {
 			"plugin.data.write": ["plugin.data.read"],
 			"plugin.data.user-write": ["plugin.data.read"],
-			"workspace.files.create-read-only": ["workspace.files.write"],
+			"workspace.files.manage-read-only": ["workspace.files.write"],
 			"plugin.service.connect": ["plugin.data.read", "workspace.members.read", "workspace.files.write"],
 			"workspace.files.own-write": ["workspace.files.write"],
 			"workspace.files.own-access": ["workspace.files.own-write"],
@@ -2094,7 +2104,7 @@ describe("plugins_Capability", () => {
 		expect(statesItsRule).toEqual({
 			"plugin.data.write": true,
 			"plugin.data.user-write": true,
-			"workspace.files.create-read-only": true,
+			"workspace.files.manage-read-only": true,
 			"plugin.service.connect": true,
 			"workspace.files.own-write": true,
 			"workspace.files.own-access": true,

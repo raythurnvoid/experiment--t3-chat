@@ -13,7 +13,7 @@ Use this scale for new and restyled UI. It is the size in CSS `px`.
 
 | Role | Size | Weight | Examples |
 | --- | --- | --- | --- |
-| Section heading | 18px | 600 | "Who can edit", "Metadata", group headings in a dialog |
+| Section heading | 18px | 600 | "Read-only", "Metadata", group headings in a dialog |
 | Main text | 16px (the browser default) | 500 for labels, 400 for sentences | option and checkbox labels, names in a list, body text of a confirm dialog |
 | Section description | 16px | 400 | the sentence under a section heading, like the subtitle in a dialog header |
 | Secondary text | 15px | 400 | descriptions under an option label, helper text, notes, status lines, errors |

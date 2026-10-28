@@ -802,7 +802,7 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - No public HTTP API route. `packages/app/convex/public_api.ts` does not expose metadata. Adding it
   is a follow-up, not an oversight.
 - No quota or billing accounting. `set_entries` shares the `files_tree_write` bucket and queues its
-  index docs after saving the map. `set_node_write_policy` has no quota leg either, so this is consistent —
+  index docs after saving the map. `read_only_set` has no quota leg either, so this is consistent —
   revisit it as a product decision, not as a hole.
 - No dedicated chat renderer for the tool call. It falls back to the generic unknown-tool disclosure,
   which shows name, parameters, and result.

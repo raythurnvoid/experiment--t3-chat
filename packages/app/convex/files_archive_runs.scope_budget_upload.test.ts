@@ -8,7 +8,6 @@ import {
 	mock_scope_budget_storage,
 	deep_path,
 	max_files,
-	finish_all_jobs,
 	expect_side_docs_follow,
 } from "./files_archive_runs.scope_budget.setup.test.ts";
 
@@ -45,9 +44,14 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 			overwrite: "replace",
 		});
 		expect(created._nay).toBeUndefined();
-		await finish_all_jobs(f);
+		// Each large file needs many bounded index steps. Pump one timer batch at a time.
+		await f.t.finishAllScheduledFunctions(vi.runOnlyPendingTimers, 1000);
+		const failed = await f.t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.state.kind === "failed"),
+		);
+		expect(failed.map((job) => [job.name, job.state])).toEqual([]);
 
 		for (const nodeId of nodeIds) expect((await read_node(f, nodeId)).archiveOperationId).not.toBeNull();
 		await expect_side_docs_follow(f, nodeIds);
-	}, 300_000);
+	}, 600_000);
 });

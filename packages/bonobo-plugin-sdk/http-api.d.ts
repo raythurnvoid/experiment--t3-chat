@@ -663,6 +663,7 @@ export type BonoboHttpApi = {
 			body: {
 				path: string;
 				content: string;
+				force?: boolean | undefined;
 				expectedParentNodeId?: string | undefined;
 				overwrite?: "replace" | "fail" | undefined;
 				skipIfUnchanged?: boolean | undefined;
@@ -716,7 +717,7 @@ export type BonoboHttpApi = {
 							operationId: string;
 							sequence: number;
 							contentRevision: string | null;
-							operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
+							operation: "write" | "fence" | "archive" | "read_only" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							readerRevision: number | null;
 						};
@@ -873,6 +874,7 @@ export type BonoboHttpApi = {
 			};
 			body: {
 				paths: string[];
+				force?: boolean | undefined;
 			};
 			response: {
 				200: {
@@ -1061,6 +1063,7 @@ export type BonoboHttpApi = {
 			};
 			body: {
 				path: string;
+				force?: boolean | undefined;
 				access?: {
 					readOnly?: boolean | undefined;
 					readScopeId?: string | null | undefined;
@@ -1179,6 +1182,9 @@ export type BonoboHttpApi = {
 			};
 			body: {
 				path: string;
+				force?: boolean | undefined;
+				requestId?: string | undefined;
+				previousRequestId?: string | undefined;
 				writer?: {
 					writerId: string;
 					operationId: string;
@@ -1194,6 +1200,14 @@ export type BonoboHttpApi = {
 						"Cache-Control": "no-store";
 					};
 					body: {
+						requestId: string;
+						archivedNodes: number;
+						complete: boolean;
+						refused: {
+							path: string | null;
+							message: string;
+						}[];
+					} | {
 						archivedNodes: 1;
 						receipt: {
 							_id: import("convex/values").GenericId<"plugins_external_file_receipts">;
@@ -1209,13 +1223,10 @@ export type BonoboHttpApi = {
 							operationId: string;
 							sequence: number;
 							contentRevision: string | null;
-							operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
+							operation: "write" | "fence" | "archive" | "read_only" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							readerRevision: number | null;
 						};
-					} | {
-						archivedNodes: number;
-						receipt?: undefined;
 					};
 				};
 				400: {
@@ -1320,7 +1331,7 @@ export type BonoboHttpApi = {
 							operationId: string;
 							sequence: number;
 							contentRevision: string | null;
-							operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
+							operation: "write" | "fence" | "archive" | "read_only" | "readers" | "rollback_readers" | "cancel_readers";
 							fingerprint: string;
 							readerRevision: number | null;
 						};
@@ -1441,7 +1452,7 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Permission denied" | "This item is read-only." | "Choose one reader operation" | "Use a separate rollback operation" | "This operation was already used" | "The output folder changed" | "A newer file access change exists";
+						message: "Permission denied" | "Choose one reader operation" | "Use a separate rollback operation" | "This operation was already used" | "The output folder changed" | "A newer file access change exists";
 					};
 				};
 				409: {
@@ -1449,7 +1460,7 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Permission denied" | "This item is read-only." | "Choose one reader operation" | "Use a separate rollback operation" | "This operation was already used" | "The output folder changed" | "A newer file access change exists";
+						message: "Permission denied" | "Choose one reader operation" | "Use a separate rollback operation" | "This operation was already used" | "The output folder changed" | "A newer file access change exists";
 					};
 				};
 				401: {
@@ -1587,7 +1598,7 @@ export type BonoboHttpApi = {
 						operationId: string;
 						sequence: number;
 						contentRevision: string | null;
-						operation: "write" | "fence" | "archive" | "readers" | "rollback_readers" | "cancel_readers";
+						operation: "write" | "fence" | "archive" | "read_only" | "readers" | "rollback_readers" | "cancel_readers";
 						fingerprint: string;
 						readerRevision: number | null;
 					};

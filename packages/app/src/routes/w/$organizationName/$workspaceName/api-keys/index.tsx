@@ -101,7 +101,8 @@ const API_KEY_SCOPE_LABELS = {
 	"ai_chat:read": "Read my AI conversations",
 	"files:download": "Download files",
 	"files:write": "Write files",
-	"files:permissions": "Manage file policies",
+	"files:read-only": "Manage Read-only",
+	"files:permissions": "Manage file sharing",
 	"files:publish": "Make files public",
 	"plugin_data:read": "Read plugin data",
 	"plugin_data:write": "Write plugin data",
@@ -117,7 +118,12 @@ const API_KEY_SCOPE_ROWS = [
 	},
 	{ scope: "files:download", description: "Get temporary download links for files." },
 	{ scope: "files:write", description: "Create and update editable text files by path, and upload other files." },
-	{ scope: "files:permissions", description: "Change write policies on files and folders you can manage." },
+	{
+		scope: "files:read-only",
+		description:
+			"Change Read-only settings. With write access and force, change Read-only items without turning this setting off.",
+	},
+	{ scope: "files:permissions", description: "Change sharing on files and folders you can manage." },
 	{
 		scope: "files:publish",
 		description: "Choose whether public pages show images and videos you can edit.",
@@ -157,6 +163,7 @@ const API_KEY_SETUP_FIELD_DOCS = {
 // Every scope that lets a key change stored data. They share one warning under the scope summary.
 const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = [
 	"files:write",
+	"files:read-only",
 	"files:permissions",
 	"files:publish",
 	"plugin_data:write",

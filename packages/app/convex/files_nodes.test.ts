@@ -359,9 +359,9 @@ describe("list_tree_children", () => {
 		expect(activeFolders.page.map((row) => row._id)).toEqual([f.nodes.openSubId]);
 		expect(archivedFiles.page.map((row) => row._id)).toEqual([f.nodes.archivedFileId]);
 		expect(archivedFolders.page.map((row) => row._id)).toEqual([f.nodes.archivedFolderId]);
-		// A row carries the computed write fields, not the raw `writePolicy` field.
-		expect(activeFiles.page[0]).toMatchObject({ canWrite: true, writeBlockedReason: null, writePolicyState: "none" });
-		expect("writePolicy" in activeFiles.page[0]).toBe(false);
+		// Decision ids stay on the server.
+		expect(activeFiles.page[0]).toMatchObject({ canWrite: true, writeBlockedReason: null, readOnly: false });
+		expect("readOnlyDecisionId" in activeFiles.page[0]).toBe(false);
 	});
 
 	test("archived mode does not read the archived children of the other kind", async () => {
@@ -1506,7 +1506,8 @@ describe("get_path_by_id", () => {
 				contentType: "application/pdf",
 			});
 			await ctx.db.patch("files_nodes", binaryId, {
-				writePolicy: { mode: "read_only" },
+				readOnly: true,
+				readOnlyDecisionId: crypto.randomUUID(),
 			});
 			return [textId, binaryId];
 		});

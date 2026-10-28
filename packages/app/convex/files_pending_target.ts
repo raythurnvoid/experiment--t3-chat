@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel.js";
 import type { RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import { omit } from "convex-helpers";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
 import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -104,7 +105,7 @@ export async function files_pending_target_db_get_private(
 const pending_target_entry_validator = v.union(
 	v.object({
 		kind: v.literal("saved"),
-		node: doc(app_convex_schema, "files_nodes"),
+		node: doc(app_convex_schema, "files_nodes").omit("readOnlyDecisionId"),
 		pendingUpdate: v.union(doc(app_convex_schema, "files_pending_updates"), v.null()),
 		path: v.string(),
 	}),
@@ -411,6 +412,7 @@ async function db_get_public_pending_target_view(
 				? { ...entry, pendingUpdate: await files_pending_target_db_redact_copy_source(ctx, entry.pendingUpdate) }
 				: {
 						...entry,
+						node: omit(entry.node, ["readOnlyDecisionId"]),
 						pendingUpdate: pendingUpdate ? await files_pending_target_db_redact_copy_source(ctx, pendingUpdate) : null,
 					},
 		...(copyDestination ? { copyDestination } : {}),

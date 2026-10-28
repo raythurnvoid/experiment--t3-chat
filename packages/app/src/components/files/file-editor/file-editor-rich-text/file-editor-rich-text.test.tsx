@@ -1,6 +1,30 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { files_unsaved_text_set_user, files_unsaved_text_get_snapshot } from "@/lib/files-unsaved-text.ts";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
+
+test.each(["read_only", "permission"] as const)("keeps a live draft before access becomes %s", async (reason) => {
+	vi.useFakeTimers();
+	try {
+		resolveQueryWithNonCollaborativeContent("alpha\n");
+		const view = renderNonCollabRichEditor();
+		await flushEditorMount();
+		await typeIntoEditor(" beta");
+		view.rerender(
+			<FileEditorRichTextNonCollab
+				target={{ kind: "saved", id: NODE_ID }}
+				editable={false}
+				editBlockReason={reason}
+				presenceStore={presenceStore}
+				commentsPortalHost={null}
+				toolbarPortalHost={view.toolbarPortalHost}
+			/>,
+		);
+		expect(files_unsaved_text_get_snapshot()).toEqual([expect.objectContaining({ text: "alpha beta\n", reason })]);
+	} finally {
+		vi.useRealTimers();
+	}
+});
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
@@ -218,8 +242,10 @@ async function typeIntoEditor(content: string) {
 }
 
 beforeEach(() => {
+	files_unsaved_text_set_user("user_1");
 	tenantContextMock.mockReturnValue({
 		membershipId: MEMBERSHIP_ID,
+		userId: "user_1",
 		organizationId: "organization_1",
 		organizationName: "team",
 		workspaceId: "workspace_1",
@@ -239,6 +265,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	files_unsaved_text_set_user(null);
 	document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId)?.remove();
 });
 
@@ -277,7 +304,9 @@ describe("FileEditorRichTextNonCollab", () => {
 			fetchPrivateFilePendingTextMock.mockResolvedValue({
 				_yay: { text, rootKind: "rich_text", pendingUpdate },
 			});
-			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
+			savePrivateFilePendingTextMock.mockResolvedValue({
+				_yay: { kind: "queued", runId: "run", activityId: "activity" },
+			});
 			const onTargetChange = vi.fn();
 			renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
 			await flushEditorMount();
@@ -318,7 +347,9 @@ describe("FileEditorRichTextNonCollab", () => {
 			fetchPrivateFilePendingTextMock.mockResolvedValue({
 				_yay: { text: "alpha\n", rootKind: "rich_text", pendingUpdate: { _id: "pending_update_1", revision: 7 } },
 			});
-			savePrivateFilePendingTextMock.mockResolvedValue({ _yay: { kind: "queued", runId: "run", activityId: "activity" } });
+			savePrivateFilePendingTextMock.mockResolvedValue({
+				_yay: { kind: "queued", runId: "run", activityId: "activity" },
+			});
 			const onTargetChange = vi.fn();
 			renderNonCollabRichEditor({ target: PRIVATE_TARGET, onTargetChange });
 			await flushEditorMount();
@@ -721,7 +752,9 @@ describe("FileEditorRichTextNonCollab", () => {
 			await act(async () => {});
 			const retry = convexActionMock.mock.calls[1]?.[1];
 			expect(retry?.text).toBe(changed ? "alpha beta gamma\n" : firstRequest.text);
-			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(!changed);
+			expect(retry?.requestId === firstRequest.requestId, "only the same submitted text reuses its request").toBe(
+				!changed,
+			);
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
 		} finally {
 			vi.useRealTimers();
@@ -769,7 +802,7 @@ describe("FileEditorRichTextNonCollab", () => {
 		expect(screen.queryByText("Saving from the rich editor will reformat this file's Markdown.")).toBeNull();
 	});
 
-	test("warns with the lost text when the editor closes on unsaved changes", async () => {
+	test("keeps the full draft when the editor closes on unsaved changes", async () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
@@ -779,22 +812,7 @@ describe("FileEditorRichTextNonCollab", () => {
 			await typeIntoEditor(" beta");
 			unmount();
 
-			expect(toast.warning).toHaveBeenCalledWith("Your unsaved changes to this file were discarded.", {
-				duration: 30_000,
-				action: { label: "Copy text", onClick: expect.any(Function) },
-			});
-
-			// The action has to hand back exactly what was in the editor, or the offer is useless.
-			const clipboardWrite = vi.fn();
-			vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
-			const warningAction = vi.mocked(toast.warning).mock.calls[0]?.[1]?.action;
-			if (typeof warningAction !== "object" || warningAction === null || !("onClick" in warningAction)) {
-				throw new Error("Expected the warning to carry a Copy text action");
-			}
-			// The handler ignores its event, so an empty stand-in is enough to run the action.
-			warningAction.onClick({} as Parameters<typeof warningAction.onClick>[0]);
-			expect(clipboardWrite).toHaveBeenCalledWith("alpha beta\n");
-			vi.unstubAllGlobals();
+			expect(files_unsaved_text_get_snapshot().map((capture) => capture.text)).toEqual(["alpha beta\n"]);
 		} finally {
 			vi.useRealTimers();
 		}

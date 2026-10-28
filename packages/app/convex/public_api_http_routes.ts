@@ -7,8 +7,8 @@ import type {
 	public_api_http_read_file_Body,
 	public_api_http_read_many_Body,
 	public_api_http_read_bytes_Body,
-	public_api_http_get_file_write_policy_Body,
-	public_api_http_set_file_write_policy_Body,
+	public_api_http_get_file_read_only_Body,
+	public_api_http_set_file_read_only_Body,
 	public_api_http_set_file_public_Body,
 	public_api_http_write_file_Body,
 	public_api_http_write_many_Body,
@@ -116,21 +116,21 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 				}))(),
 			},
 		}))(),
-		...((/* iife */ path = "/api/v1/files/write-policy/get" as const satisfies api_schemas_Main_Path) => ({
+		...((/* iife */ path = "/api/v1/files/read-only/get" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
 						type SearchParams = never;
 						type PathParams = never;
 						type Headers = Record<string, string>;
-						type Body = public_api_http_get_file_write_policy_Body;
+						type Body = public_api_http_get_file_read_only_Body;
 
 						router.route({
 							path,
 							method,
 							handler: httpAction(async (ctx, request) => {
-								const { public_api_http_get_file_write_policy } = await import("./public_api.ts");
-								const result = await public_api_http_get_file_write_policy({ ctx, request, path });
+								const { public_api_http_get_file_read_only } = await import("./public_api.ts");
+								const result = await public_api_http_get_file_read_only({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -141,28 +141,28 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							headers: Headers;
 							body: Body;
 							response: api_schemas_BuildResponseSpecFromHandler<
-								typeof import("./public_api.ts").public_api_http_get_file_write_policy
+								typeof import("./public_api.ts").public_api_http_get_file_read_only
 							>;
 						};
 					})(),
 				}))(),
 			},
 		}))(),
-		...((/* iife */ path = "/api/v1/files/write-policy/set" as const satisfies api_schemas_Main_Path) => ({
+		...((/* iife */ path = "/api/v1/files/read-only/set" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
 						type SearchParams = never;
 						type PathParams = never;
 						type Headers = Record<string, string>;
-						type Body = public_api_http_set_file_write_policy_Body;
+						type Body = public_api_http_set_file_read_only_Body;
 
 						router.route({
 							path,
 							method,
 							handler: httpAction(async (ctx, request) => {
-								const { public_api_http_set_file_write_policy } = await import("./public_api.ts");
-								const result = await public_api_http_set_file_write_policy({ ctx, request, path });
+								const { public_api_http_set_file_read_only } = await import("./public_api.ts");
+								const result = await public_api_http_set_file_read_only({ ctx, request, path });
 								return Response.json(result.body, result);
 							}),
 						});
@@ -173,7 +173,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							headers: Headers;
 							body: Body;
 							response: api_schemas_BuildResponseSpecFromHandler<
-								typeof import("./public_api.ts").public_api_http_set_file_write_policy
+								typeof import("./public_api.ts").public_api_http_set_file_read_only
 							>;
 						};
 					})(),

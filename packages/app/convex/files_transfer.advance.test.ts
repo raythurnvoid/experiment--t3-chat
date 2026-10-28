@@ -349,10 +349,10 @@ describe("advance", () => {
 		expect(copiedParent).not.toBeNull();
 		expect(
 			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId: copiedParent!._id,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -381,10 +381,10 @@ describe("advance", () => {
 		}
 		expect(
 			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId: folders.get("/source")!,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -396,13 +396,13 @@ describe("advance", () => {
 			status: "succeeded",
 			progress: { total: 4, completed: 4, failed: 0 },
 		});
-		expect(await get_node(fixture, "/target/source")).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await get_node(fixture, "/target/source")).toMatchObject({ readOnly: true });
 		for (const path of ["/target/source/nested", "/target/source/a.txt", "/target/source/b.txt"]) {
 			expect(await get_node(fixture, path)).not.toBeNull();
 		}
 	});
 
-	test("still copies children after the produced parent's new-item default changes", async () => {
+	test("setting a copied parent's Read-only flag again keeps its child receipt valid", async () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const { t, db, asUser, folders } = fixture;
 		await test_create_saved_text_file(t, {
@@ -410,6 +410,13 @@ describe("advance", () => {
 			path: "/source/child.txt",
 			textContent: "Child\n",
 		});
+		expect(
+			await asUser.mutation(api.files_nodes.read_only_set, {
+				membershipId: db.membershipId,
+				nodeId: folders.get("/source")!,
+				readOnly: true,
+			}),
+		).toEqual({ _yay: null });
 		const runId = await start_copy(fixture, [folders.get("/source")!]);
 		await finish_discovery(fixture, runId);
 		await t.mutation(internal.files_transfer.advance, { runId });
@@ -417,15 +424,15 @@ describe("advance", () => {
 		const copiedParent = await get_node(fixture, "/target/source");
 		expect(
 			(
-				await asUser.mutation(api.files_nodes.set_node_new_child_write_policy, {
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId: copiedParent!._id,
-					newChildWritePolicy: { mode: "read_only" },
+					readOnly: true,
 				})
 			)._nay,
 		).toBeUndefined();
 
-		// The default change moves the folder's revision but leaves it writable.
+		// The repeated setting keeps the copied parent's original decision.
 		const finished = await finish_copy_with_workers(fixture, runId);
 		expect(finished.activity).toMatchObject({
 			status: "succeeded",
@@ -447,13 +454,13 @@ describe("advance", () => {
 		await t.mutation(internal.files_transfer.advance, { runId });
 
 		const copiedParent = await get_node(fixture, "/target/source");
-		for (const writePolicy of [{ mode: "read_only" as const }, null]) {
+		for (const readOnly of [true, false]) {
 			expect(
 				(
-					await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					await asUser.mutation(api.files_nodes.read_only_set, {
 						membershipId: db.membershipId,
 						nodeId: copiedParent!._id,
-						writePolicy,
+						readOnly,
 					})
 				)._nay,
 			).toBeUndefined();
@@ -468,10 +475,9 @@ describe("advance", () => {
 		expect(await get_node(fixture, "/target/source/child.txt")).not.toBeNull();
 	});
 
-	test("fails children when the produced parent is locked with a different policy", async () => {
+	test("fails children when the copied parent is cleared and made Read-only again", async () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const { t, db, asUser, folders } = fixture;
-		const member = await add_member(fixture);
 		await test_create_saved_text_file(t, {
 			membershipId: db.membershipId,
 			path: "/source/child.txt",
@@ -479,10 +485,10 @@ describe("advance", () => {
 		});
 		expect(
 			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId: folders.get("/source")!,
-					writePolicy: { mode: "read_only" },
+					readOnly: true,
 				})
 			)._nay,
 		).toBeUndefined();
@@ -491,17 +497,17 @@ describe("advance", () => {
 		await t.mutation(internal.files_transfer.advance, { runId });
 
 		const copiedParent = await get_node(fixture, "/target/source");
-		expect(
-			(
-				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		for (const readOnly of [false, true]) {
+			expect(
+				await asUser.mutation(api.files_nodes.read_only_set, {
 					membershipId: db.membershipId,
 					nodeId: copiedParent!._id,
-					writePolicy: { mode: "writer", writers: [{ kind: "user", userId: member.userId }] },
-				})
-			)._nay,
-		).toBeUndefined();
+					readOnly,
+				}),
+			).toEqual({ _yay: null });
+		}
 
-		// The copy kept the run's lock, but someone replaced it with a different one.
+		// The flag has the same value, but its decision no longer matches the receipt.
 		const finished = await finish_copy_with_workers(fixture, runId);
 		expect(finished.activity).toMatchObject({
 			status: "partial",
@@ -1661,7 +1667,7 @@ describe("resolve_conflicts", () => {
 		expect(proposal?.copiedFrom).toEqual({
 			target: { kind: "saved", id: sourceIds[0] },
 			path: `/${reversed ? "b" : "a"}/report.txt`,
-			sourceWritePolicy: null,
+			sourceReadOnly: false,
 		});
 		expect(await get_node(fixture, "/target/report.txt")).toBeNull();
 	});

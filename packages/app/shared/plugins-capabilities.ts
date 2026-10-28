@@ -9,20 +9,16 @@ export const plugins_CAPABILITIES = [
 	"outbound.fetch",
 	"workspace.files.read",
 	"workspace.files.write",
-	// Consent line: the files this installation creates through the sealed upload door may be locked
-	// read-only, and it may release that one lock again to archive its own file. That release is the
-	// only way this installation can remove a lock, and it matches a lock this exact service target
-	// created, so this grants no write over content a member owns and no lock access anywhere else.
-	//
-	// It narrows `workspace.files.write` instead of replacing it, because a read-only file is still
-	// a file this installation writes.
+	// Kept only for immutable version history. New manifests reject it; it grants no Read-only access.
 	"workspace.files.create-read-only",
+	// Consent: set and clear Read-only, and explicitly force writes within current file access.
+	"workspace.files.manage-read-only",
 	// Consent line: the plugin may create, update, and archive files and folders marked for it.
 	// The exact plugin-name metadata value selects each existing node. Members may edit the label;
 	// actor permissions and current locks still apply.
 	"workspace.files.own-write",
-	// Consent line: the plugin may set locks and readers on matching files and folders. Members
-	// with manage permission may change them. A real manual sharing change stops reader syncing.
+	// Consent line: the plugin may set readers on matching files and folders. Members with
+	// Can manage may change sharing. A real manual sharing change stops reader syncing.
 	"workspace.files.own-access",
 	// Consent line: backend runs may add read-only external data through this installation's mounts.
 	// Members with workspace read access may read it through the chat agent. The owner pays for stored files.

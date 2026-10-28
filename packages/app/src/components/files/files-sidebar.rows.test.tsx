@@ -746,7 +746,7 @@ describe("FilesSidebar", () => {
 				pathDepth: 2,
 				canWrite: false,
 				writeBlockedReason: "read_only",
-				writePolicyState: "read_only",
+				readOnly: true,
 			},
 		];
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
@@ -792,7 +792,7 @@ describe("FilesSidebar", () => {
 				treePath: "/locked.md/",
 				canWrite: false,
 				writeBlockedReason: "read_only",
-				writePolicyState: "read_only",
+				readOnly: true,
 			},
 		];
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
@@ -822,7 +822,7 @@ describe("FilesSidebar", () => {
 				treePath: "/locked.md/",
 				canWrite: false,
 				writeBlockedReason: "read_only",
-				writePolicyState: "read_only",
+				readOnly: true,
 			},
 		];
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
@@ -897,7 +897,7 @@ describe("FilesSidebar", () => {
 
 		const bravo = await view.findByRole("treeitem", { name: "bravo, public link" });
 		const charlie = view.getByRole("treeitem", { name: "charlie restricted, public link" });
-		view.getByRole("treeitem", { name: "delta, read-only, public link" });
+		view.getByRole("treeitem", { name: "delta, View only, public link" });
 		const alpha = view.getByRole("treeitem", { name: "alpha" });
 		expect(bravo.getAttribute("data-file-public-link")).toBe("on");
 		expect(alpha.hasAttribute("data-file-public-link")).toBe(false);

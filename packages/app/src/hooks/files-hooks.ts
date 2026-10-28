@@ -5,6 +5,9 @@ import {
 	type files_yjs_PushRefusalReason,
 } from "@/lib/files-yjs-provider.ts";
 import { app_qa_register_files_yjs_provider } from "@/lib/app-qa.ts";
+import { files_unsaved_text_capture } from "@/lib/files-unsaved-text.ts";
+import { files_yjs_doc_get_text } from "../../shared/files-tiptap.ts";
+import type { files_YjsRootKind } from "../../shared/files.ts";
 import type { files_PresenceStore } from "@/lib/files.ts";
 import type { app_convex_Id } from "../lib/app-convex-client.ts";
 
@@ -15,10 +18,12 @@ export type useFilesYjs_Props = {
 	presenceStore: files_PresenceStore;
 	editable: boolean;
 	editBlockReason: files_yjs_EditBlockReason | null;
+	userId: string;
+	rootKind: files_YjsRootKind;
 };
 
 export function useFilesYjs(props: useFilesYjs_Props) {
-	const { nodeId, yjsLastSequenceId, membershipId, presenceStore, editable, editBlockReason } = props;
+	const { nodeId, yjsLastSequenceId, membershipId, presenceStore, editable, editBlockReason, userId, rootKind } = props;
 
 	const [yjsProvider, setYjsProvider] = useState<files_yjs_Provider | undefined>(undefined);
 	const [providerNodeId, setProviderNodeId] = useState<app_convex_Id<"files_nodes"> | undefined>(undefined);
@@ -56,6 +61,21 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 			membershipId: membershipId,
 			presenceStore: presenceStore,
 			editable,
+			onBeforeDrop: (doc, reason) => {
+				const text = files_yjs_doc_get_text({ yjsDoc: doc, rootKind });
+				if (text._nay) {
+					throw new Error("Could not keep the unsaved text before closing its document");
+				}
+				files_unsaved_text_capture({
+					userId,
+					membershipId,
+					target: { kind: "saved", id: nodeId },
+					documentId: `${yjsLastSequenceId}:${doc.guid}`,
+					rootKind,
+					text: text._yay,
+					reason: reason === "read_only" ? "read_only" : reason === "permission" ? "permission" : "closed",
+				});
+			},
 		});
 
 		setYjsProvider(yjsProvider);
@@ -108,7 +128,7 @@ export function useFilesYjs(props: useFilesYjs_Props) {
 			unregisterQaProvider();
 			yjsProvider.destroy();
 		};
-	}, [editable, membershipId, nodeId, presenceStore, yjsLastSequenceId]);
+	}, [editable, membershipId, nodeId, presenceStore, yjsLastSequenceId, userId, rootKind]);
 
 	return yjsProvider && providerNodeId
 		? {

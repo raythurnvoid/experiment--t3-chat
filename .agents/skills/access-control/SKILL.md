@@ -23,11 +23,11 @@ Membership says where you are. Access control says what you may do there.
   3. **Direct grant** — an `access_control_permission_grants` doc for file sharing, private plugin
      scopes, or an exact plugin setup/management list.
 - Grants are allow-only. There are no deny grants.
-- A file's write policy is separate from ACL. Check the request's subject first.
-  Then apply that node's own `writePolicy`. Owners do not bypass a
-  read-only or named-writer policy. See `../files-read-only/SKILL.md` for the policy rules.
-- Changing a folder's write policy needs `content.permissions.manage` on that folder only. A locked
-  restricted child keeps its own rule, but the folder's rule still blocks its rename and move-out.
+- Read-only is separate from ACL. Check the request's subject first, then the node's local flag.
+  Owners do not bypass it. Explicit machine force needs the current Manage Read-only grant and
+  still checks ACL and resource scope. See `../files-read-only/SKILL.md`.
+- Setting or clearing Read-only needs `content.write` on the target only. Sharing still needs
+  `content.permissions.manage`. A folder's flag guards its direct child list, not deeper content.
 - Human/role sharing changes detach the node's `plugins_file_access_bindings` only when they
   change sharing. Service-account grant edits preserve that reader binding. Unrestricting keeps
   every grant, lowered to view or edit (see "Add people").

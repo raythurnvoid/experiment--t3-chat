@@ -2,13 +2,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { mutationMock, openArchiveRunMock, toastInfoMock, toastWarningMock, useQueryMock } = vi.hoisted(() => ({
-	mutationMock: vi.fn(),
-	useQueryMock: vi.fn(),
-	openArchiveRunMock: vi.fn(),
-	toastInfoMock: vi.fn(),
-	toastWarningMock: vi.fn(),
-}));
+const { pageMock, mutationMock, openArchiveRunMock, toastInfoMock, toastWarningMock, useQueryMock } = vi.hoisted(
+	() => ({
+		pageMock: vi.fn(),
+		mutationMock: vi.fn(),
+		useQueryMock: vi.fn(),
+		openArchiveRunMock: vi.fn(),
+		toastInfoMock: vi.fn(),
+		toastWarningMock: vi.fn(),
+	}),
+);
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
@@ -23,6 +26,7 @@ vi.mock("@/lib/app-activities-context.tsx", () => ({
 }));
 
 vi.mock("convex/react", () => ({
+	usePaginatedQuery: (...args: unknown[]) => pageMock(...args),
 	useConvex: () => ({ mutation: (...args: unknown[]) => mutationMock(...args) }),
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
 }));
@@ -33,7 +37,11 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: { mutation: (...args: unknown[]) => mutationMock(...args) },
 	app_convex_api: {
 		files_nodes: { archive_nodes: "archive_nodes" },
-		files_archive_runs: { get: "files_archive_runs.get", resolve_conflicts: "resolve_conflicts" },
+		files_archive_runs: {
+			get: "files_archive_runs.get",
+			list_outcomes: "list_outcomes",
+			resolve_conflicts: "resolve_conflicts",
+		},
 	},
 }));
 
@@ -60,6 +68,7 @@ function renderModal(nodes: FilesArchiveModal_Node[]) {
 }
 
 beforeEach(() => {
+	pageMock.mockReset().mockReturnValue({ results: [], status: "Exhausted", loadMore: vi.fn() });
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
 	openArchiveRunMock.mockReset();
 	toastInfoMock.mockReset();
@@ -263,6 +272,53 @@ describe("FilesArchiveRunModal", () => {
 				choice: "replace",
 				applyToRemaining: { file: null, folder: null },
 			}),
+		);
+	});
+
+	test("keeps forced partial outcomes visible and pages through a short page", async () => {
+		useQueryMock.mockReturnValue({
+			kind: "archive",
+			force: true,
+			revision: 0,
+			activity: {
+				_id: "activity_1",
+				status: "partial",
+				title: "Archive files",
+				errorMessage: null,
+				finishedAt: 1,
+				progress: { completed: 4, skipped: 0, failed: 0, blocked: 2, canceled: 0, total: 6 },
+			},
+			controls: { canStop: false, canRetry: false, canDismiss: true },
+			conflict: null,
+			archived: [],
+			notArchived: [],
+		});
+		const loadMore = vi.fn();
+		pageMock.mockReturnValue({
+			results: [
+				{
+					order: 1,
+					kind: "retained_folder",
+					path: "/Reports",
+					message: "Folder remains because an item inside was not moved to Trash.",
+				},
+				{ order: 2, kind: "refused", path: null, message: "Permission denied" },
+			],
+			status: "CanLoadMore",
+			loadMore,
+		});
+		renderRunModal();
+		const dialog = await screen.findByRole("dialog", { name: "Archive files" });
+		expect(within(dialog).getByText("Partly completed.")).toBeTruthy();
+		expect(within(dialog).getByText("4 items moved to Trash. Some items remain.")).toBeTruthy();
+		expect(within(dialog).getByText("/Reports")).toBeTruthy();
+		expect(within(dialog).getByText("Permission denied")).toBeTruthy();
+		fireEvent.click(within(dialog).getByRole("button", { name: "Load more" }));
+		expect(loadMore).toHaveBeenCalledWith(50);
+		expect(pageMock).toHaveBeenCalledWith(
+			"list_outcomes",
+			{ membershipId: "membership_1", runId: "run_1" },
+			{ initialNumItems: 50 },
 		);
 	});
 

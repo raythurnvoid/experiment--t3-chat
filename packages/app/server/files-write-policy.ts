@@ -9,15 +9,16 @@ import { Result } from "common/errors-as-values-utils.ts";
 export type files_nodes_WriteContext = {
 	/** Who the write's access checks act as. */
 	subject: access_control_Subject;
-	/** Only matches named writers of a write policy. Access checks use `subject`. */
-	writer: Extract<NonNullable<Doc<"files_nodes">["writePolicy"]>, { mode: "writer" }>["writers"][number];
 	actorUserId: Id<"users">;
 	resourceScope:
 		| { kind: "workspace" }
 		| { kind: "subtree"; nodeId: Id<"files_nodes"> }
 		| { kind: "node"; nodeId: Id<"files_nodes"> }
 		| { kind: "create"; parentNodeId: Id<"files_nodes"> | "root"; path: string };
-	policyReach: "none" | "direct" | "ancestors";
+	/**
+	 * Set only after the machine door checks its current Read-only grant.
+	 */
+	force: boolean;
 };
 
 export type files_write_policy_WriteTarget =
@@ -64,59 +65,6 @@ export async function files_write_policy_db_is_within_scope(
 }
 
 /**
- * Check whether a writer rule lists this writer. A read-only rule lists nobody.
- */
-export function files_nodes_writer_matches_policy(args: {
-	policy: NonNullable<Doc<"files_nodes">["writePolicy"]>;
-	writer: files_nodes_WriteContext["writer"];
-}) {
-	const writer = args.writer;
-	return args.policy.mode === "writer"
-		? args.policy.writers.some((policyWriter) =>
-				policyWriter.kind === "user"
-					? writer.kind === "user" && policyWriter.userId === writer.userId
-					: writer.kind === "service_account" && policyWriter.serviceAccountId === writer.serviceAccountId,
-			)
-		: false;
-}
-
-export async function files_write_policy_db_get_blocking_policy(
-	ctx: QueryCtx | MutationCtx,
-	args: { target: files_write_policy_WriteTarget; writeContext: files_nodes_WriteContext },
-) {
-	// Each node's protection is local. A parent rule never blocks a child on its own; only a real
-	// entry change checks the destination folder, and only the named node checks itself.
-	if (args.target.kind === "node") {
-		const policy = args.target.node.writePolicy;
-		if (policy === null) {
-			return null;
-		}
-		if (policy.mode === "read_only") {
-			return args.target.node;
-		}
-		return files_nodes_writer_matches_policy({ policy, writer: args.writeContext.writer }) ? null : args.target.node;
-	}
-
-	// A create checks the destination folder's own rule. A matching writer rule still refuses a
-	// direct-only service: the parent rule is not the new child's own rule.
-	const parent = args.target.parentNode;
-	if (!parent) {
-		return null;
-	}
-	const policy = parent.writePolicy;
-	if (policy === null) {
-		return null;
-	}
-	if (policy.mode === "read_only") {
-		return parent;
-	}
-	return files_nodes_writer_matches_policy({ policy, writer: args.writeContext.writer }) &&
-		args.writeContext.policyReach === "ancestors"
-		? null
-		: parent;
-}
-
-/**
  * Apply the current policy after actor, account, and credential permission checks.
  */
 export async function files_nodes_db_require_writable(
@@ -132,7 +80,8 @@ export async function files_nodes_db_require_writable(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	if (await files_write_policy_db_get_blocking_policy(ctx, args)) {
+	const node = args.target.kind === "node" ? args.target.node : args.target.parentNode;
+	if (node?.readOnly && !args.writeContext.force) {
 		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	}
 
@@ -140,33 +89,15 @@ export async function files_nodes_db_require_writable(
 }
 
 /**
- * Get the starting protection for a brand-new child of `parentId`.
- * The default is copied once. Later changes to the folder do not touch existing children.
+ * Complete original copied children only while their saved parent's decision ID still matches.
+ * Clearing and setting Read-only again breaks the receipt.
  */
-export async function files_nodes_db_resolve_parent_new_child_policy(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		parentId: Doc<"files_nodes">["parentId"];
-	},
-) {
-	if (args.parentId === files_ROOT_ID) {
-		return null;
-	}
-
-	const parent = await ctx.db.get("files_nodes", args.parentId);
-	return parent?.newChildWritePolicy ?? null;
-}
-
-/**
- * Allow a copy run into the parent it produced while the parent's current policy still equals
- * the value the run wrote there. A null or changed stored value keeps the live refusal.
- */
-export async function files_nodes_db_require_writable_or_matching_policy(
+export async function files_nodes_db_require_writable_or_matching_decision(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		node: Doc<"files_nodes">;
 		writeContext: files_nodes_WriteContext;
-		runWrittenWritePolicy?: Doc<"files_nodes">["writePolicy"];
+		runWrittenReadOnlyDecisionId?: string;
 	},
 ) {
 	const writable = await files_nodes_db_require_writable(ctx, {
@@ -181,8 +112,8 @@ export async function files_nodes_db_require_writable_or_matching_policy(
 
 	if (
 		writable._nay.name !== "read_only" ||
-		args.runWrittenWritePolicy == null ||
-		JSON.stringify(args.node.writePolicy) !== JSON.stringify(args.runWrittenWritePolicy)
+		!args.runWrittenReadOnlyDecisionId ||
+		args.node.readOnlyDecisionId !== args.runWrittenReadOnlyDecisionId
 	) {
 		return writable;
 	}
@@ -196,10 +127,9 @@ export async function files_nodes_db_require_writable_or_matching_policy(
 export function files_nodes_user_write_context(userId: Id<"users">): files_nodes_WriteContext {
 	return {
 		subject: { kind: "user", userId, plugin: null },
-		writer: { kind: "user", userId },
 		actorUserId: userId,
 		resourceScope: { kind: "workspace" },
-		policyReach: "ancestors",
+		force: false,
 	};
 }
 

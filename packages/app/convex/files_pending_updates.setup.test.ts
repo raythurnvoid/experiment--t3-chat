@@ -17,6 +17,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
+import { files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
 import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
@@ -202,8 +203,8 @@ export async function seed_file_with_markdown(args: {
 		restrictedScopeNodeId: null,
 		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
-		writePolicy: null,
-		newChildWritePolicy: null,
+		readOnly: false,
+		readOnlyDecisionId: null,
 	});
 
 	const snapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -283,10 +284,10 @@ export async function seed_folder_node(args: {
 		restrictedScopeNodeId: null,
 		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
-		writePolicy: null,
+		readOnly: false,
 
 		archiveOperationId: null,
-		newChildWritePolicy: null,
+		readOnlyDecisionId: null,
 	});
 }
 
@@ -420,10 +421,10 @@ export async function seed_non_collaborative_file(args: { ctx: MutationCtx; path
 		restrictedScopeNodeId: null,
 		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
-		writePolicy: null,
+		readOnly: false,
 
 		archiveOperationId: null,
-		newChildWritePolicy: null,
+		readOnlyDecisionId: null,
 	});
 	await files_nodes_db_insert_file_content_docs(ctx, {
 		organizationId,
@@ -485,15 +486,11 @@ export async function read_committed_text(args: {
 	workspaceId: Id<"organizations_workspaces">;
 	nodeId: Id<"files_nodes">;
 }) {
+	const head = await files_saved_content_db_get_head(args.ctx.db, args.nodeId);
+	if (!head) throw new Error("Expected a saved file content head");
 	const chunks = await args.ctx.db
 		.query("files_text_chunks")
-		.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", args.nodeId),
-		)
+		.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id))
 		.collect();
 	return chunks.map((chunk) => chunk.textChunk).join("");
 }
@@ -1009,8 +1006,8 @@ export async function set_pending_test_read_only(args: {
 }) {
 	const { asUser, membershipId, nodeId } = args;
 
-	const result = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-		writePolicy: { mode: "read_only" },
+	const result = await asUser.mutation(api.files_nodes.read_only_set, {
+		readOnly: true,
 		membershipId,
 		nodeId,
 	});
@@ -1026,8 +1023,8 @@ export async function set_pending_test_writable(args: {
 }) {
 	const { asUser, membershipId, nodeId } = args;
 
-	const result = await asUser.mutation(api.files_nodes.set_node_write_policy, {
-		writePolicy: null,
+	const result = await asUser.mutation(api.files_nodes.read_only_set, {
+		readOnly: false,
 		membershipId,
 		nodeId,
 	});

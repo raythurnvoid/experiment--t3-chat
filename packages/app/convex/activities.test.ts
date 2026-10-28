@@ -164,7 +164,7 @@ describe("list_page", () => {
 		const started = await asOwner.mutation(api.files_write_policy_runs.start, {
 			membershipId: owner.membershipId,
 			nodeId: folder._yay.nodeId,
-			writePolicy: { mode: "read_only" },
+			targetReadOnly: true,
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const activity = await t.run((ctx) => ctx.db.get("activities", started._yay.activityId));
