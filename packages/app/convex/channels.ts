@@ -156,6 +156,7 @@ export async function channels_db_add_member(
 		workspaceId: channel.workspaceId,
 		userId: membership.userId,
 		workspaceMembershipId: membership._id,
+		channelKind: channel.kind,
 		level: args.level,
 		addedBy: args.addedBy,
 		notify: "all" as const,

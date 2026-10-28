@@ -1451,6 +1451,7 @@ export const test_mocks_fill_db_with = {
 				workspaceId,
 				userId,
 				workspaceMembershipId: membership._id,
+				channelKind: "file",
 				level: "member",
 				addedBy: null,
 				notify: "mentions",
