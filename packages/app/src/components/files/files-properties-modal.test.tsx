@@ -106,8 +106,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		users: {
 			get_anagraphic: "get_anagraphic",
 		},
-		organizations: { list_organization_workspace_users: "list_workspace_users" },
-		access_control: { list_service_accounts: "list_service_accounts", get_service_account: "get_service_account" },
+		organizations_member_names: { search_workspace_members: "search_workspace_members" },
+		access_control: { search_service_accounts: "search_service_accounts", get_service_account: "get_service_account" },
 	},
 }));
 
@@ -235,9 +235,6 @@ function mockQueries(args: {
 		}
 		if (query === "get_anagraphic") {
 			return { displayName: "Ada" };
-		}
-		if (query === "list_workspace_users") {
-			return ["user_1"];
 		}
 		if (query === "get_entries") {
 			return args.entries;

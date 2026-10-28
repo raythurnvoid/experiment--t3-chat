@@ -4,7 +4,6 @@ import { useQuery } from "convex/react";
 import { ChannelsConversationPane } from "@/components/channels/channels-conversation.tsx";
 import { ChannelsMessageContent } from "@/components/channels/channels-message.tsx";
 import type { ChannelsMessage } from "@/components/channels/channels-message-window.ts";
-import type { ChannelsMentionItem } from "@/components/channels/channels-composer-mention.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -57,13 +56,12 @@ export type FileEditorCommentsThread_Props = {
 	thread: ChannelsMessage;
 	open: boolean;
 	hidden: boolean;
-	mentionItems: readonly ChannelsMentionItem[];
 	onToggle?: ComponentProps<"details">["onToggle"];
 	onActivate?: () => void;
 };
 
 export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) {
-	const { ref, thread, open, hidden, mentionItems, onToggle, onActivate } = props;
+	const { ref, thread, open, hidden, onToggle, onActivate } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const [jumpMessageId, setJumpMessageId] = useState<string | undefined>(undefined);
 	const channel = useQuery(
@@ -101,7 +99,7 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 							name="File comments"
 							root={thread}
 							readSequence={0}
-							mentionItems={mentionItems}
+							mentionItems={[]}
 							jumpMessageId={jumpMessageId}
 							resolvable={true}
 							onThread={onActivate ?? (() => {})}

@@ -6,14 +6,16 @@ import type { JSX, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { access_control_SYSTEM_ROLE_MATRIX } from "../../../../../../shared/access-control.ts";
 
-const { tenantContextMock, authMock, useQueryMock, useQueriesMock, mutationMock, toastMock } = vi.hoisted(() => ({
-	tenantContextMock: vi.fn(),
-	authMock: vi.fn(),
-	useQueryMock: vi.fn(),
-	useQueriesMock: vi.fn(),
-	mutationMock: vi.fn(),
-	toastMock: { error: vi.fn(), success: vi.fn() },
-}));
+const { tenantContextMock, authMock, useQueryMock, useQueriesMock, usePaginatedQueryMock, mutationMock, toastMock } =
+	vi.hoisted(() => ({
+		tenantContextMock: vi.fn(),
+		authMock: vi.fn(),
+		useQueryMock: vi.fn(),
+		useQueriesMock: vi.fn(),
+		usePaginatedQueryMock: vi.fn(),
+		mutationMock: vi.fn(),
+		toastMock: { error: vi.fn(), success: vi.fn() },
+	}));
 
 vi.mock("@tanstack/react-router", () => ({
 	createFileRoute: (_path: string) => (options: unknown) => ({ options }),
@@ -22,6 +24,7 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
 	useQueries: (...args: unknown[]) => useQueriesMock(...args),
+	usePaginatedQuery: (...args: unknown[]) => usePaginatedQueryMock(...args),
 }));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -43,10 +46,10 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
 		organizations: {
 			list: "organizations.list",
-			list_organization_workspace_users: "organizations.list_organization_workspace_users",
 			invite_user_to_organization_workspace: "organizations.invite_user_to_organization_workspace",
 			remove_user_from_organization: "organizations.remove_user_from_organization",
 		},
+		organizations_member_names: { search_workspace_members: "organizations_member_names.search_workspace_members" },
 		users: { get_workspace_member_anagraphic: "users.get_workspace_member_anagraphic" },
 		access_control: {
 			list_roles: "access_control.list_roles",
@@ -226,8 +229,6 @@ function setQueries(args?: {
 						[OTHER_WORKSPACE_ID]: args?.otherWorkspacePermissions ?? args?.callerPermissions ?? ADMIN_PERMISSIONS,
 					},
 				};
-			case "organizations.list_organization_workspace_users":
-				return [OWNER_USER_ID, SELF_USER_ID, TARGET_USER_ID];
 			case "access_control.list_roles":
 				return args?.customRoles ?? [];
 			case "access_control.get_current_user_role":
@@ -237,6 +238,16 @@ function setQueries(args?: {
 			default:
 				return undefined;
 		}
+	});
+
+	usePaginatedQueryMock.mockReturnValue({
+		results: [OWNER_USER_ID, SELF_USER_ID, TARGET_USER_ID].map((userId) => ({
+			userId,
+			displayName: userId,
+			avatarUrl: null,
+		})),
+		status: "Exhausted",
+		loadMore: vi.fn(),
 	});
 
 	useQueriesMock.mockImplementation((props: Record<string, { query: string }>) =>
@@ -443,5 +454,38 @@ describe("RouteUsers member emails", () => {
 
 		expect(document.querySelector(`[data-user-id="${TARGET_USER_ID}"] .RouteUsersUserListItem-email`)).toBeNull();
 		expect(document.querySelector(`[data-user-id="${OWNER_USER_ID}"] .RouteUsersUserListItem-email`)).not.toBeNull();
+	});
+});
+
+describe("RouteUsers member list", () => {
+	beforeEach(() => {
+		authMock.mockReturnValue({ userId: SELF_USER_ID });
+		setQueries();
+	});
+
+	afterEach(() => {
+		cleanup();
+		vi.clearAllMocks();
+	});
+
+	test("a row waits for its role, so the owner never sees Transfer ownership on their own row", () => {
+		const baseQuery = useQueryMock.getMockImplementation()!;
+		useQueryMock.mockImplementation((fn: string, args: unknown) =>
+			fn === "access_control.get_current_user_role" ? { kind: "owner" } : baseQuery(fn, args),
+		);
+		// The caller's own role has not arrived yet. The other rows have theirs.
+		useQueriesMock.mockImplementation((props: Record<string, { query: string }>) =>
+			Object.fromEntries(
+				Object.entries(props).map(([userId, entry]) =>
+					entry.query === "users.get_workspace_member_anagraphic"
+						? [userId, { displayName: userId, email: "", avatarUrl: null }]
+						: [userId, userId === SELF_USER_ID ? undefined : { kind: "system", role: "member" }],
+				),
+			),
+		);
+		render(<PageComponent />);
+
+		expect(document.querySelector(`[data-user-id="${TARGET_USER_ID}"]`)).not.toBeNull();
+		expect(document.querySelector(`[data-user-id="${SELF_USER_ID}"]`)).toBeNull();
 	});
 });

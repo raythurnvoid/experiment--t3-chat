@@ -18,7 +18,6 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { ChannelsSidebar } from "./channels-sidebar.tsx";
 import { ChannelsDialogs, type ChannelsDialogKind } from "./channels-dialogs.tsx";
 import { ChannelsConversation } from "./channels-conversation.tsx";
-import { useChannelsPeople } from "./channels-people.ts";
 import { ChannelsActivity, ChannelsThreads } from "./channels-feed.tsx";
 import { ChannelsLayoutContext } from "./channels-layout-context.ts";
 import { ChannelsPaneHeader } from "./channels-pane-header.tsx";
@@ -59,7 +58,6 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	const { channelId, search, view = "messages", onNavigate, children } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const connection = useConvexConnectionState();
-	const { people } = useChannelsPeople();
 	const { channelList, states } = AppChannelsProvider.useContext();
 	const [lastOpen, setLastOpen] = useAppLocalStorageStateValue(`app_state::channels_last_open::scope::${membershipId}`);
 	const selectedId = channelId && app_convex_is_id_like(channelId) ? (channelId as app_convex_Id<"channels">) : null;
@@ -113,7 +111,6 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 			channelId={channelId}
 			channelList={channelList}
 			states={states}
-			people={people}
 			onClose={() => (drawer ? setDrawer(false) : setSidebarOpen(false))}
 			onDialog={setDialog}
 			onNavigate={() => setDrawer(false)}
@@ -154,7 +151,6 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 				key={channel.channel._id}
 				channel={channel}
 				state={state}
-				people={people}
 				search={search}
 				narrow={width < 940}
 				width={contentWidth}
@@ -263,7 +259,6 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 					key={`${dialog}:${selectedId}`}
 					kind={dialog}
 					channel={channel ?? null}
-					people={people}
 					onClose={() => setDialog(null)}
 					onChannel={open}
 				/>

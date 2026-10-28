@@ -1,95 +1,83 @@
-import { useQueries, useQuery } from "convex/react";
+import { useQueries } from "convex/react";
 import { useMemo } from "react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id } from "@/lib/app-convex-client.ts";
 
-export type ChannelsPerson = { id: app_convex_Id<"users">; name: string; avatarUrl: string | undefined };
+type ChannelsProfile = { name: string; avatarUrl: string | null; left: boolean };
 
-export function useChannelsPeople() {
+/**
+ * The current name and avatar of each person, in the same order as `userIds`. Read one query per
+ * person, so the cost grows with the ids asked about, never with the workspace.
+ *
+ * `left` means the person is not an active member of this workspace any more. Their name then comes
+ * from `get_anagraphic`, which answers for anyone. An entry is `undefined` while it loads, so callers
+ * do not show "(left)" too early, and `null` when the id cannot be read at all.
+ */
+export function useChannelsProfiles(userIds: readonly app_convex_Id<"users">[]) {
 	const { organizationId, workspaceId } = AppTenantProvider.useContext();
-	const userIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, {
-		organizationId,
-		workspaceId,
-	});
-	// The roster's query descriptors stay stable while profiles load.
-	const queries = useMemo(
+
+	// Keep the manual `useMemo` on the ids joined as text. `useQueries` subscribes again whenever its
+	// queries object changes, and callers often pass a new array on every render.
+	const userIdsText = userIds.join(",");
+	const memberQueries = useMemo(
 		() =>
 			Object.fromEntries(
-				(userIds ?? []).map((userId) => [
+				(userIdsText ? userIdsText.split(",") : []).map((userId) => [
 					userId,
 					{
 						query: app_convex_api.users.get_workspace_member_anagraphic,
-						args: { organizationId, workspaceId, userId },
+						args: { organizationId, workspaceId, userId: userId as app_convex_Id<"users"> },
 					},
 				]),
 			),
-		[userIds, organizationId, workspaceId],
+		[userIdsText, organizationId, workspaceId],
 	);
-	const results = useQueries(queries) as Record<
+	const members = useQueries(memberQueries) as Record<
 		string,
 		app_convex_FunctionReturnType<typeof app_convex_api.users.get_workspace_member_anagraphic> | Error | undefined
 	>;
-	const people: ChannelsPerson[] = (userIds ?? []).map((id) => {
-		const profile = results[id];
-		return {
-			id,
-			name: profile && !(profile instanceof Error) ? profile.displayName : "User",
-			avatarUrl: profile && !(profile instanceof Error) ? profile.avatarUrl : undefined,
-		};
-	});
-	return { people, loading: userIds === undefined || people.some((person) => results[person.id] === undefined) };
-}
 
-export function useChannelsDirectName(userIds: readonly app_convex_Id<"users">[], people: readonly ChannelsPerson[]) {
-	const queries = useMemo(
+	// Only people who are not active members need the second query.
+	const leftIdsText = userIds.filter((userId) => members[userId] === null).join(",");
+	const pastQueries = useMemo(
 		() =>
 			Object.fromEntries(
-				userIds.map((userId) => [
+				(leftIdsText ? leftIdsText.split(",") : []).map((userId) => [
 					userId,
-					{
-						query: app_convex_api.users.get_anagraphic,
-						args: { userId },
-					},
+					{ query: app_convex_api.users.get_anagraphic, args: { userId: userId as app_convex_Id<"users"> } },
 				]),
 			),
-		[userIds],
+		[leftIdsText],
 	);
-	const profiles = useQueries(queries) as Record<
+	const past = useQueries(pastQueries) as Record<
 		string,
 		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | Error | undefined
 	>;
-	return userIds
-		.map((id) => {
-			const person = people.find((person) => person.id === id);
-			const profile = profiles[id];
-			return person?.name ?? `${profile && !(profile instanceof Error) ? profile.displayName : "User"} (left)`;
-		})
-		.join(", ");
+
+	return userIds.map((userId): ChannelsProfile | null | undefined => {
+		const member = members[userId];
+		if (member === undefined) return undefined;
+		if (member instanceof Error) return null;
+		if (member) return { name: member.displayName, avatarUrl: member.avatarUrl ?? null, left: false };
+
+		const profile = past[userId];
+		if (profile === undefined) return undefined;
+		return {
+			name: profile && !(profile instanceof Error) ? profile.displayName : "User",
+			avatarUrl: profile && !(profile instanceof Error) ? (profile.avatarUrl ?? null) : null,
+			left: true,
+		};
+	});
 }
 
-export function useChannelsMentionPeople(
-	target: { channelId: app_convex_Id<"channels"> } | { fileNodeId: app_convex_Id<"files_nodes"> },
-	people: readonly ChannelsPerson[],
-) {
-	const { membershipId } = AppTenantProvider.useContext();
-	const queries = useMemo(() => {
-		const pages = [];
-		for (let start = 0; start < people.length; start += 50) {
-			pages.push([
-				String(start),
-				{
-					query: app_convex_api.channels_messages.get_mentionable_users,
-					args: { membershipId, target, userIds: people.slice(start, start + 50).map((person) => person.id) },
-				},
-			]);
-		}
-		return Object.fromEntries(pages);
-	}, [membershipId, target, people]);
-	const results = useQueries(queries) as Record<string, app_convex_Id<"users">[] | Error | undefined>;
-	const allowed = new Set(
-		Object.values(results).flatMap((result) => (result && !(result instanceof Error) ? result : [])),
-	);
-	return people
-		.filter((person) => allowed.has(person.id))
-		.map((person) => ({ kind: "user" as const, id: person.id, label: person.name }));
+/**
+ * The name of a direct conversation: the other people, with "(left)" after each person who is not an
+ * active member of this workspace any more.
+ */
+export function useChannelsDirectName(userIds: readonly app_convex_Id<"users">[]) {
+	return useChannelsProfiles(userIds)
+		.map((profile) =>
+			profile === undefined ? "…" : profile === null ? "User" : profile.left ? `${profile.name} (left)` : profile.name,
+		)
+		.join(", ");
 }

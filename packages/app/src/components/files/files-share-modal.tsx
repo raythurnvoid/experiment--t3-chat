@@ -1,35 +1,15 @@
 import "./files-share-modal.css";
 
-import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
-import { Lock, Plug, Plus, Search, ShieldCheck, Trash2, Users } from "lucide-react";
-import { memo, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useQueries, useQuery } from "convex/react";
+import { Lock, Plug, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
+import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
-import {
-	MyCombobox,
-	MyComboboxGroup,
-	MyComboboxInputControl,
-	MyComboboxItem,
-	MyComboboxList,
-	MyComboboxPopover,
-	MyComboboxPopoverContent,
-	MyComboboxPopoverScrollableArea,
-	type MyCombobox_Props,
-	type MyComboboxInputControl_Props,
-} from "@/components/my-combobox.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
-import {
-	MyInput,
-	MyInputArea,
-	MyInputBackground,
-	MyInputBox,
-	MyInputIcon,
-	type MyInputArea_Props,
-} from "@/components/my-input.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -50,6 +30,7 @@ import {
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
+import { PrincipalPicker, type PrincipalPicker_Principal } from "@/components/principal-picker.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -71,396 +52,6 @@ import {
 	type access_control_RoleRef,
 } from "../../../shared/access-control.ts";
 
-// #region principal value
-/**
- * Who one share row is about.
- */
-type FilesSharePrincipal =
-	| { kind: "user"; userId: app_convex_Id<"users"> }
-	| { kind: "role"; role: access_control_RoleRef }
-	| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> };
-
-/**
- * One select value that stands for one principal.
- *
- * The kind prefix is what keeps the two apart: a custom role id and a user id are both plain Convex
- * ids, so without it they could collide. The server groups its grants by the same string.
- */
-function files_share_principal_value(principal: FilesSharePrincipal) {
-	return principal.kind === "user"
-		? `user:${principal.userId}`
-		: principal.kind === "role"
-			? `role:${principal.role}`
-			: `service_account:${principal.serviceAccountId}`;
-}
-
-function files_share_principal_from_value(value: string): FilesSharePrincipal | null {
-	if (value.startsWith("user:")) {
-		return { kind: "user", userId: value.slice("user:".length) as app_convex_Id<"users"> };
-	}
-	if (value.startsWith("role:")) {
-		return { kind: "role", role: value.slice("role:".length) as access_control_RoleRef };
-	}
-	if (value.startsWith("service_account:")) {
-		return {
-			kind: "service_account",
-			serviceAccountId: value.slice("service_account:".length) as app_convex_Id<"access_control_service_accounts">,
-		};
-	}
-
-	// The empty value of the "choose someone" placeholder lands here.
-	return null;
-}
-// #endregion principal value
-
-// #region principal picker
-type FilesShareModalPrincipalPicker_ClassNames =
-	| "FilesShareModalPrincipalPicker"
-	| "FilesShareModalPrincipalPicker-popover"
-	| "FilesShareModalPrincipalPicker-popover-scrollable-area"
-	| "FilesShareModalPrincipalPicker-option"
-	| "FilesShareModalPrincipalPicker-option-icon"
-	| "FilesShareModalPrincipalPicker-option-name"
-	| "FilesShareModalPrincipalPicker-option-note"
-	| "FilesShareModalPrincipalPicker-status";
-
-/**
- * People and apps per page. "Show more" reads the next page.
- */
-const PRINCIPAL_PICKER_PAGE_SIZE = 20;
-
-/**
- * The keys that narrow the menu to one kind. The menu lists them, so nobody has to know them.
- */
-const PRINCIPAL_PICKER_FILTER_KEYS = [
-	{ key: "people:", scope: "people", hint: "Only people" },
-	{ key: "role:", scope: "roles", hint: "Only workspace roles" },
-	{ key: "app:", scope: "apps", hint: "Only apps" },
-] as const;
-
-/**
- * Split the text into an optional scope and the words to match. `people:ada` searches only people,
- * `role:edit` only roles, and `app:back` only apps. Without a prefix, the search covers all three.
- */
-function parse_principal_search_text(text: string) {
-	const match = /^\s*(people|person|roles?|apps?)\s*:\s*/iu.exec(text);
-	if (!match) {
-		return { scope: "all" as const, term: text.trim() };
-	}
-
-	const word = match[1].toLowerCase();
-	return {
-		scope: word.startsWith("app") ? ("apps" as const) : word.startsWith("role") ? ("roles" as const) : ("people" as const),
-		term: text.slice(match[0].length).trim(),
-	};
-}
-
-type FilesShareModalPrincipalPicker_Props = {
-	ref: RefObject<HTMLInputElement | null>;
-	text: string;
-	/** The principal value of the picked row, or "" before a pick. */
-	selectedValue: string;
-	/** The principal values already on the list. Their rows show "Added" and cannot be picked. */
-	takenValues: ReadonlySet<string>;
-	ownerUserId: app_convex_Id<"users">;
-	/** Every role the caller may share with, by name. Empty when they cannot share with roles. */
-	roles: Array<{ role: access_control_RoleRef; name: string }>;
-	canShareWithServiceAccounts: boolean;
-	disabled: boolean;
-	onTextChange: (text: string) => void;
-	onPick: (value: string, name: string) => void;
-};
-
-/**
- * The field that picks who to add. It works like the writers field in the Properties dialog: avatars
- * for people, icons for roles and apps, and `people:`, `role:`, `app:` to narrow the menu.
- *
- * People and apps come from the server one page at a time, so a workspace of any size loads the same.
- * Roles are filtered here, because the list is small: the system roles plus at most 20 custom roles.
- */
-const FilesShareModalPrincipalPicker = memo(function FilesShareModalPrincipalPicker(
-	props: FilesShareModalPrincipalPicker_Props,
-) {
-	const {
-		ref,
-		text,
-		selectedValue,
-		takenValues,
-		ownerUserId,
-		roles,
-		canShareWithServiceAccounts,
-		disabled,
-		onTextChange,
-		onPick,
-	} = props;
-
-	const { membershipId } = AppTenantProvider.useContext();
-	const popoverId = useId();
-	const [isMenuOpen, setIsMenuOpen] = useState(false);
-
-	const search = parse_principal_search_text(text);
-	const searchesPeople = search.scope === "all" || search.scope === "people";
-	const searchesApps = canShareWithServiceAccounts && (search.scope === "all" || search.scope === "apps");
-	const people = usePaginatedQuery(
-		app_convex_api.organizations_member_names.search_workspace_members,
-		searchesPeople ? { membershipId, text: search.term } : "skip",
-		{ initialNumItems: PRINCIPAL_PICKER_PAGE_SIZE },
-	);
-	const apps = usePaginatedQuery(
-		app_convex_api.access_control.search_service_accounts,
-		searchesApps ? { membershipId, text: search.term } : "skip",
-		{ initialNumItems: PRINCIPAL_PICKER_PAGE_SIZE },
-	);
-
-	const roleRows =
-		search.scope === "all" || search.scope === "roles"
-			? roles.filter((role) => role.name.toLowerCase().includes(search.term.toLowerCase()))
-			: [];
-	// Offer the keys until one is chosen, and while the text could still become one.
-	const keyRows =
-		search.scope === "all"
-			? PRINCIPAL_PICKER_FILTER_KEYS.filter(
-					(row) =>
-						row.key.startsWith(search.term.toLowerCase()) &&
-						(row.scope !== "roles" || roles.length > 0) &&
-						(row.scope !== "apps" || canShareWithServiceAccounts),
-				)
-			: [];
-	// A skipped search also says "LoadingFirstPage", and it never stops. So count only the searches
-	// that run.
-	const isLoading =
-		(searchesPeople && people.status === "LoadingFirstPage") || (searchesApps && apps.status === "LoadingFirstPage");
-	const hasRows = keyRows.length + people.results.length + roleRows.length + apps.results.length > 0;
-
-	const handleTextChange = useFn<NonNullable<MyCombobox_Props["setValue"]>>((nextText) => {
-		onTextChange(nextText);
-		setIsMenuOpen(true);
-	});
-
-	const handlePickKey = (key: string) => {
-		onTextChange(key);
-		setIsMenuOpen(true);
-		ref.current?.focus();
-	};
-
-	// The combobox input does not use the `MyInput` label id, so forward clicks on the area by hand.
-	const handleFocusForward = useFn<NonNullable<MyInputArea_Props["onFocusForward"]>>((event) => {
-		event.preventDefault();
-		event.detail.originalEvent.preventDefault();
-		ref.current?.focus();
-	});
-
-	const handleInputKeyDown = useFn<NonNullable<MyComboboxInputControl_Props["onKeyDown"]>>((event) => {
-		// Ctrl+Space and the arrow keys open the menu, the same way the file search box does.
-		if (
-			(event.key === " " && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) ||
-			event.key === "ArrowDown"
-		) {
-			event.preventDefault();
-			setIsMenuOpen(true);
-		}
-	});
-
-	const renderOption = (args: { value: string; name: string; icon: ReactNode; note: string | null }) => {
-		const { value, name, icon, note } = args;
-
-		return (
-			<MyComboboxItem
-				key={value}
-				value={value}
-				disabled={note !== null}
-				setValueOnClick={false}
-				className={"FilesShareModalPrincipalPicker-option" satisfies FilesShareModalPrincipalPicker_ClassNames}
-				data-share-principal={value}
-				onClick={() => onPick(value, name)}
-			>
-				{icon}
-				<span className={"FilesShareModalPrincipalPicker-option-name" satisfies FilesShareModalPrincipalPicker_ClassNames}>
-					{name}
-				</span>
-				{note ? (
-					<span
-						className={"FilesShareModalPrincipalPicker-option-note" satisfies FilesShareModalPrincipalPicker_ClassNames}
-					>
-						{note}
-					</span>
-				) : null}
-			</MyComboboxItem>
-		);
-	};
-
-	const renderShowMore = (args: { label: string; page: { status: string; loadMore: (count: number) => void } }) => {
-		const { label, page } = args;
-
-		return page.status === "CanLoadMore" || page.status === "LoadingMore" ? (
-			<MyComboboxItem
-				value={label}
-				disabled={page.status === "LoadingMore"}
-				hideOnClick={false}
-				setValueOnClick={false}
-				className={"FilesShareModalPrincipalPicker-option" satisfies FilesShareModalPrincipalPicker_ClassNames}
-				onClick={() => page.loadMore(PRINCIPAL_PICKER_PAGE_SIZE)}
-			>
-				<span className={"FilesShareModalPrincipalPicker-option-name" satisfies FilesShareModalPrincipalPicker_ClassNames}>
-					{page.status === "LoadingMore" ? "Loading…" : label}
-				</span>
-			</MyComboboxItem>
-		) : null;
-	};
-
-	const optionIcon = (Icon: typeof ShieldCheck) => (
-		<span
-			className={"FilesShareModalPrincipalPicker-option-icon" satisfies FilesShareModalPrincipalPicker_ClassNames}
-			aria-hidden
-		>
-			<Icon />
-		</span>
-	);
-
-	return (
-		<MyCombobox value={text} setValue={handleTextChange} open={isMenuOpen} setOpen={setIsMenuOpen}>
-			<MyInput className={"FilesShareModalPrincipalPicker" satisfies FilesShareModalPrincipalPicker_ClassNames}>
-				<MyInputBackground />
-				<MyInputArea focusForwarding onFocusForward={handleFocusForward}>
-					<MyInputIcon>
-						<Search />
-					</MyInputIcon>
-					{/* The dialog puts focus here when it opens and after each add, so focus alone must not
-					    open the menu. Names are free text, so a phone keyboard must not capitalize or
-					    correct them. */}
-					<MyComboboxInputControl
-						ref={ref}
-						aria-label="Person, role, or app to add"
-						placeholder="Add a person, role, or app…"
-						data-share-add-principal={selectedValue}
-						disabled={disabled}
-						showOnChange={false}
-						showOnClick={false}
-						showOnKeyPress={false}
-						autoSelect
-						autoCapitalize="none"
-						autoCorrect="off"
-						spellCheck={false}
-						aria-keyshortcuts="Control+Space"
-						onClick={() => setIsMenuOpen(true)}
-						onKeyDown={handleInputKeyDown}
-					/>
-				</MyInputArea>
-				<MyInputBox />
-			</MyInput>
-
-			<MyComboboxPopover
-				id={popoverId}
-				aria-label="People, roles, and apps"
-				sameWidth
-				unmountOnHide
-				className={"FilesShareModalPrincipalPicker-popover" satisfies FilesShareModalPrincipalPicker_ClassNames}
-			>
-				<MyComboboxPopoverScrollableArea
-					className={
-						"FilesShareModalPrincipalPicker-popover-scrollable-area" satisfies FilesShareModalPrincipalPicker_ClassNames
-					}
-				>
-					<MyComboboxList aria-label="People, roles, and apps">
-						<MyComboboxPopoverContent>
-							{keyRows.length > 0 ? (
-								<MyComboboxGroup heading="Filter by">
-									{keyRows.map((row) => (
-										<MyComboboxItem
-											key={row.key}
-											value={row.key}
-											hideOnClick={false}
-											setValueOnClick={false}
-											className={"FilesShareModalPrincipalPicker-option" satisfies FilesShareModalPrincipalPicker_ClassNames}
-											onClick={() => handlePickKey(row.key)}
-										>
-											<span
-												className={
-													"FilesShareModalPrincipalPicker-option-name" satisfies FilesShareModalPrincipalPicker_ClassNames
-												}
-											>
-												{row.key}
-											</span>
-											<span
-												className={
-													"FilesShareModalPrincipalPicker-option-note" satisfies FilesShareModalPrincipalPicker_ClassNames
-												}
-											>
-												{row.hint}
-											</span>
-										</MyComboboxItem>
-									))}
-								</MyComboboxGroup>
-							) : null}
-							{people.results.length > 0 ? (
-								<MyComboboxGroup heading="People" separator={keyRows.length > 0}>
-									{/* The owner and the people on the list stay in the menu, marked, so a search
-									    for them says why they cannot be added instead of finding nothing. */}
-									{people.results.map((member) => {
-										const value = files_share_principal_value({ kind: "user", userId: member.userId });
-										const name = member.displayName || "Unknown";
-										return renderOption({
-											value,
-											name,
-											icon: (
-												<MyAvatar size="28px">
-													<MyAvatarImage src={member.avatarUrl ?? undefined} alt="" fallbackDelay={false} />
-													<MyAvatarFallback>{compute_fallback_user_name(name)}</MyAvatarFallback>
-												</MyAvatar>
-											),
-											note: member.userId === ownerUserId ? "Owner" : takenValues.has(value) ? "Added" : null,
-										});
-									})}
-									{renderShowMore({ label: "Show more people", page: people })}
-								</MyComboboxGroup>
-							) : null}
-							{roleRows.length > 0 ? (
-								<MyComboboxGroup heading="Workspace roles" separator={keyRows.length + people.results.length > 0}>
-									{roleRows.map((row) => {
-										const value = files_share_principal_value({ kind: "role", role: row.role });
-										return renderOption({
-											value,
-											name: row.name,
-											icon: optionIcon(ShieldCheck),
-											note: takenValues.has(value) ? "Added" : null,
-										});
-									})}
-								</MyComboboxGroup>
-							) : null}
-							{apps.results.length > 0 ? (
-								<MyComboboxGroup
-									heading="Apps"
-									separator={keyRows.length + people.results.length + roleRows.length > 0}
-								>
-									{apps.results.map((account) => {
-										const value = files_share_principal_value({
-											kind: "service_account",
-											serviceAccountId: account._id,
-										});
-										return renderOption({
-											value,
-											name: account.name,
-											icon: optionIcon(Plug),
-											note: takenValues.has(value) ? "Added" : null,
-										});
-									})}
-									{renderShowMore({ label: "Show more apps", page: apps })}
-								</MyComboboxGroup>
-							) : null}
-							{!hasRows ? (
-								<p className={"FilesShareModalPrincipalPicker-status" satisfies FilesShareModalPrincipalPicker_ClassNames}>
-									{isLoading ? "Searching…" : "No matches."}
-								</p>
-							) : null}
-						</MyComboboxPopoverContent>
-					</MyComboboxList>
-				</MyComboboxPopoverScrollableArea>
-			</MyComboboxPopover>
-		</MyCombobox>
-	);
-});
-// #endregion principal picker
-
 // #region entry row
 type FilesShareModalEntry_ClassNames =
 	| "FilesShareModalEntry"
@@ -473,7 +64,7 @@ type FilesShareModalEntry_ClassNames =
 	| "FilesShareModalEntry-level-trigger";
 
 type FilesShareModalEntry_Props = {
-	principal: FilesSharePrincipal;
+	principal: PrincipalPicker_Principal;
 	name: string;
 	/** The person's picture. Undefined for a role or an app, and for a person without one. */
 	avatarUrl: string | undefined;
@@ -496,8 +87,8 @@ type FilesShareModalEntry_Props = {
 	/** The levels the select offers. Added people never get "Can manage", so their rows leave it out. */
 	levels?: readonly access_control_FileShareLevel[];
 	grantableLevels?: readonly access_control_FileShareLevel[];
-	onLevelChange: (principal: FilesSharePrincipal, level: access_control_FileShareLevel) => void;
-	onRemove: (principal: FilesSharePrincipal) => void;
+	onLevelChange: (principal: PrincipalPicker_Principal, level: access_control_FileShareLevel) => void;
+	onRemove: (principal: PrincipalPicker_Principal) => void;
 };
 
 const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShareModalEntry_Props) {
@@ -524,7 +115,7 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 	return (
 		<li
 			className={"FilesShareModalEntry" satisfies FilesShareModalEntry_ClassNames}
-			data-share-principal={files_share_principal_value(principal)}
+			data-share-principal={PrincipalPicker.value(principal)}
 			data-share-level={level ?? undefined}
 		>
 			{principal.kind === "user" ? (
@@ -1112,12 +703,12 @@ type FilesShareModalChange =
 	| { kind: "workspace_view"; enabled: boolean }
 	| {
 			kind: "set";
-			principal: FilesSharePrincipal;
+			principal: PrincipalPicker_Principal;
 			level: access_control_FileShareLevel;
 			/** The add picker started it, so a yes clears the picker. */
 			fromPicker: boolean;
 	  }
-	| { kind: "remove"; principal: FilesSharePrincipal };
+	| { kind: "remove"; principal: PrincipalPicker_Principal };
 
 type FilesShareModal_CustomAttributes = {
 	"data-share-confirm": FilesShareModalChange["kind"];
@@ -1390,7 +981,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			});
 		} else if (change.kind === "set") {
 			runShareWrite({
-				key: change.fromPicker ? "add" : files_share_principal_value(change.principal),
+				key: change.fromPicker ? "add" : PrincipalPicker.value(change.principal),
 				request: app_convex.mutation(app_convex_api.files_sharing.set_node_share_grant, {
 					membershipId,
 					nodeId: viewNodeId,
@@ -1402,7 +993,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			});
 		} else {
 			runShareWrite({
-				key: files_share_principal_value(change.principal),
+				key: PrincipalPicker.value(change.principal),
 				request: app_convex.mutation(app_convex_api.files_sharing.remove_node_share_grant, {
 					membershipId,
 					nodeId: viewNodeId,
@@ -1499,7 +1090,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		list
 			.map((entry) => ({
 				...entry,
-				principal: entry.principal as FilesSharePrincipal,
+				principal: entry.principal as PrincipalPicker_Principal,
 				isCaller: entry.principal.kind === "user" && entry.principal.userId === shareState?.callerUserId,
 				name:
 					entry.principal.kind === "user"
@@ -1554,7 +1145,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	 */
 	const coverageSources = (
 		coverage: NonNullable<NonNullable<typeof shareState>["callerCoverage"]>,
-		principal: FilesSharePrincipal,
+		principal: PrincipalPicker_Principal,
 		general: FilesShareModalGeneral_Value,
 	) =>
 		[
@@ -1604,14 +1195,14 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 							: "people"
 						: generalValue;
 		// Added people cannot manage, so an unrestrict turns every manage on the list into edit.
-		const listLevel = (principal: FilesSharePrincipal, level: access_control_FileShareLevel | null) => {
+		const listLevel = (principal: PrincipalPicker_Principal, level: access_control_FileShareLevel | null) => {
 			const changed =
 				(change?.kind === "set" || change?.kind === "remove") &&
-				files_share_principal_value(change.principal) === files_share_principal_value(principal);
+				PrincipalPicker.value(change.principal) === PrincipalPicker.value(principal);
 			const next = changed ? (change.kind === "set" ? change.level : null) : level;
 			return change?.kind === "unrestrict" && next === "manage" ? "write" : next;
 		};
-		const callerPrincipal: FilesSharePrincipal = { kind: "user", userId: state.callerUserId };
+		const callerPrincipal: PrincipalPicker_Principal = { kind: "user", userId: state.callerUserId };
 		const sources: Array<{ level: access_control_FileShareLevel | null; through: string | null }> = [
 			{
 				level: listLevel(callerPrincipal, entries.find((entry) => entry.isCaller)?.level ?? null),
@@ -1734,7 +1325,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	};
 
 	const handleAdd = () => {
-		const principal = files_share_principal_from_value(addPrincipalValue);
+		const principal = PrincipalPicker.fromValue(addPrincipalValue);
 		if (principal) {
 			requestChange({ kind: "set", principal, level: addLevelValue, fromPicker: true });
 		}
@@ -1754,7 +1345,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 	const confirmText = confirmChange ? confirmTextFor(confirmChange) : null;
 
-	const takenPrincipalValues = new Set(entries.map((entry) => files_share_principal_value(entry.principal)));
+	const takenPrincipalValues = new Set(entries.map((entry) => PrincipalPicker.value(entry.principal)));
 	// Offer roles only to a caller who can manage roles. Existing role rows can still be lowered or
 	// removed, because those changes grant no new access.
 	const pickerRoles = (
@@ -1768,7 +1359,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		.map((role) => ({ role, name: roleName(role) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
 
-	const selectedPrincipal = files_share_principal_from_value(addPrincipalValue);
+	const selectedPrincipal = PrincipalPicker.fromValue(addPrincipalValue);
 	const addDisabled =
 		addPrincipalValue === "" ||
 		busy ||
@@ -1902,14 +1493,16 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>
 										{/* Stays enabled while its own add runs, same reason as a row's level trigger:
 										    the add puts focus back here, and a disabled field cannot take it. */}
-										<FilesShareModalPrincipalPicker
+										<PrincipalPicker
 											ref={addPrincipalInputRef}
+											label="Person, role, or app to add"
+											placeholder="Add a person, role, or app…"
 											text={addPrincipalText}
 											selectedValue={addPrincipalValue}
 											takenValues={takenPrincipalValues}
 											ownerUserId={shareState.organizationOwnerUserId}
 											roles={pickerRoles}
-											canShareWithServiceAccounts={shareState.canShareWithServiceAccounts}
+											canPickApps={shareState.canShareWithServiceAccounts}
 											disabled={busy && pendingKey !== "add"}
 											onTextChange={handleAddTextChange}
 											onPick={handleAddPick}
@@ -2010,7 +1603,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 									{entries.map((entry) => (
 										<FilesShareModalEntry
-											key={files_share_principal_value(entry.principal)}
+											key={PrincipalPicker.value(entry.principal)}
 											principal={entry.principal}
 											name={entry.isCaller ? "You" : entry.name}
 											avatarUrl={
@@ -2029,7 +1622,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											grantableLevels={
 												entry.principal.kind === "service_account" ? shareState.serviceGrantableLevels : undefined
 											}
-											pending={pendingKey === files_share_principal_value(entry.principal)}
+											pending={pendingKey === PrincipalPicker.value(entry.principal)}
 											busy={busy}
 											canRaiseRoleLevel={shareState.canShareWithRoles}
 											onLevelChange={(principal, level) =>

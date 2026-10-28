@@ -13,6 +13,12 @@ const mocks = vi.hoisted(() => ({
 	attachable: true,
 	// What the file chip read answers: the file, `undefined` while it loads, or an archived copy.
 	chipFile: "file" as "file" | "loading" | "archived",
+	// The workspace members that the people search finds, and the ones that cannot be mentioned.
+	people: [
+		{ userId: "person-1", displayName: "Ana", avatarUrl: null },
+		{ userId: "person-2", displayName: "Nora", avatarUrl: null },
+	],
+	lockedUserIds: [] as string[],
 	file: {
 		_id: "file-1",
 		name: "notes.md",
@@ -33,23 +39,39 @@ vi.mock(import("convex/react"), async (importOriginal) => ({
 				: mocks.chipFile === "archived"
 					? { ...mocks.file, archiveOperationId: "archive" }
 					: mocks.file,
-	// A name search finds the file when the text starts one of its words.
+	// A name search finds the file when the text starts one of its words. The people search finds
+	// the members whose name starts with the text.
 	usePaginatedQuery: (_query: unknown, args: unknown) => ({
 		results:
-			typeof args === "object" &&
-			args !== null &&
-			"clause" in args &&
-			mocks.file.name.startsWith((args.clause as { text: string }).text)
-				? [{ kind: "file", nodeId: mocks.file._id, path: mocks.file.path, contentType: mocks.file.contentType }]
-				: [],
+			typeof args !== "object" || args === null
+				? []
+				: "clause" in args
+					? mocks.file.name.startsWith((args.clause as { text: string }).text)
+						? [{ kind: "file", nodeId: mocks.file._id, path: mocks.file.path, contentType: mocks.file.contentType }]
+						: []
+					: "text" in args
+						? mocks.people.filter((person) =>
+								person.displayName.toLowerCase().startsWith(String(args.text).toLowerCase()),
+							)
+						: [],
 		status: "Exhausted",
 		isLoading: false,
 		loadMore: () => {},
 	}),
-	// The attach picker asks which shown files can be attached.
+	// The attach picker asks which shown files can be attached. The people list asks which people can
+	// be mentioned. A person chip reads the member's profile.
 	useQueries: (queries: Record<string, { args: Record<string, unknown> }>) =>
 		Object.fromEntries(
-			Object.entries(queries).map(([key, { args }]) => [key, mocks.attachable ? args.fileNodeIds : []]),
+			Object.entries(queries).map(([key, { args }]) => [
+				key,
+				"fileNodeIds" in args
+					? mocks.attachable
+						? args.fileNodeIds
+						: []
+					: "userIds" in args
+						? (args.userIds as string[]).filter((userId) => !mocks.lockedUserIds.includes(userId))
+						: (mocks.people.find((person) => person.userId === args.userId) ?? null),
+			]),
 		),
 }));
 // The cached hooks use the `convex/react` mock above.
@@ -85,6 +107,7 @@ afterEach(() => {
 	mocks.readable = true;
 	mocks.attachable = true;
 	mocks.chipFile = "file";
+	mocks.lockedUserIds = [];
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
@@ -410,7 +433,7 @@ describe("ChannelsComposer", () => {
 	test("mention Enter chooses a person before sending and stores a neutral position", async () => {
 		const ref = createRef<ChannelsComposerControl_Ref>();
 		const onEnter = vi.fn();
-		render(
+		const view = render(
 			<ChannelsComposer
 				controlRef={ref}
 				autoFocus="end"
@@ -418,7 +441,7 @@ describe("ChannelsComposer", () => {
 				submitDisabled={false}
 				ariaLabel="Message text"
 				onEnter={onEnter}
-				mentionItems={[{ kind: "user", id: "person-1", label: "Ana" }]}
+				mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
 			/>,
 		);
 		const composer = await screen.findByLabelText("Message text");
@@ -433,6 +456,43 @@ describe("ChannelsComposer", () => {
 		expect(ref.current?.getMarkdownContent()).not.toContain("Ana");
 		await userEvent.keyboard("{Enter}");
 		expect(onEnter).toHaveBeenCalledOnce();
+
+		// Markdown keeps only the id, so the restored chip reads the name by id.
+		const draft = ref.current!.getDraftContent();
+		view.unmount();
+		render(
+			<ChannelsComposer
+				controlRef={ref}
+				initialValue={draft}
+				submitTooltip="Send"
+				submitDisabled
+				ariaLabel="Restored person"
+				mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
+			/>,
+		);
+		await screen.findByText("@Ana");
+	});
+
+	test("a person who cannot see the conversation shows locked and cannot be picked", async () => {
+		mocks.lockedUserIds = ["person-1"];
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		render(
+			<ChannelsComposer
+				controlRef={ref}
+				autoFocus="end"
+				submitTooltip="Send"
+				submitDisabled={false}
+				ariaLabel="Locked mention"
+				mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
+			/>,
+		);
+		await userEvent.click(await screen.findByLabelText("Locked mention"));
+		await userEvent.keyboard("@An");
+		const option = await screen.findByRole("option", { name: /^Ana/ });
+		await userEvent.keyboard("{Enter}");
+		expect(ref.current?.getMentionUserIds(), "a locked person must not become a mention").toEqual([]);
+		expect(option.textContent).toBe("Ana (can't see this)");
+		expect(screen.getByRole("listbox", { name: "People and files" })).toBeTruthy();
 	});
 
 	test("Escape closes a mention popup before its parent popover", async () => {
@@ -448,7 +508,7 @@ describe("ChannelsComposer", () => {
 						submitTooltip="Send"
 						submitDisabled
 						ariaLabel="Mention text"
-						mentionItems={[{ kind: "user", id: "person-1", label: "Ana" }]}
+						mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
 					/>
 				</MyPopoverContent>
 			</MyPopover>,
@@ -507,7 +567,7 @@ describe("ChannelsComposer", () => {
 			<ChannelsComposer
 				controlRef={ref}
 				ariaLabel="File mention"
-				mentionItems={[]}
+				mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
 				submitTooltip="Send"
 				submitDisabled
 			/>,
@@ -526,7 +586,7 @@ describe("ChannelsComposer", () => {
 				controlRef={ref}
 				initialValue={draft}
 				ariaLabel="Restored file"
-				mentionItems={[]}
+				mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
 				submitTooltip="Send"
 				submitDisabled
 			/>,
@@ -542,7 +602,7 @@ describe("ChannelsComposer", () => {
 			<ChannelsComposer
 				controlRef={ref}
 				ariaLabel="Shared mentions"
-				mentionItems={[{ kind: "user", id: "person-1", label: "Ana" }]}
+				mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
 				submitTooltip="Send"
 				submitDisabled={false}
 				onEnter={onEnter}
@@ -566,7 +626,7 @@ describe("ChannelsComposer", () => {
 			<ChannelsComposer
 				controlRef={null}
 				ariaLabel="Ordered mentions"
-				mentionItems={[{ kind: "user", id: "person-1", label: "Nora" }]}
+				mentionTarget={{ channelId: "channel-1" as app_convex_Id<"channels"> }}
 				submitTooltip="Send"
 				submitDisabled
 			/>,

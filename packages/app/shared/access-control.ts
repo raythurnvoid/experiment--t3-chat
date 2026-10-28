@@ -355,31 +355,3 @@ export function access_control_display_role_label(role: access_control_DisplayRo
 			return role.name;
 	}
 }
-
-/**
- * Sort rank of each system role. Written as a full map on purpose: a role added to
- * `access_control_SYSTEM_ROLE_MATRIX` without a rank here is a type error, instead of quietly
- * sorting last.
- */
-const SYSTEM_ROLE_ORDER: Record<access_control_SystemRole, number> = {
-	admin: 1,
-	member: 2,
-	viewer: 4,
-};
-
-/**
- * Sort order for member lists: the strongest system role first, then custom roles, then read-only.
- **/
-export function access_control_display_role_order(role: access_control_DisplayRole | null) {
-	if (!role) {
-		return 5;
-	}
-	switch (role.kind) {
-		case "owner":
-			return 0;
-		case "system":
-			return SYSTEM_ROLE_ORDER[role.role];
-		case "custom":
-			return 3;
-	}
-}

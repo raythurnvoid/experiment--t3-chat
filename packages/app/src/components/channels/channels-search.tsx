@@ -27,16 +27,28 @@ import {
 	MySelectItemIndicator,
 	MySelectOpenIndicator,
 } from "@/components/my-select.tsx";
+import {
+	MySearchSelect,
+	MySearchSelectItem,
+	MySearchSelectLabel,
+	MySearchSelectList,
+	MySearchSelectPopover,
+	MySearchSelectPopoverContent,
+	MySearchSelectPopoverScrollableArea,
+	MySearchSelectSearch,
+	MySearchSelectTrigger,
+} from "@/components/my-search-select.tsx";
+import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { cn } from "@/lib/utils.ts";
+import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { channels_search_query_schema } from "../../../shared/channels.ts";
 import { ChannelsFeedMessage } from "./channels-feed.tsx";
-import { useChannelsDirectName, useChannelsPeople, type ChannelsPerson } from "./channels-people.ts";
+import { useChannelsDirectName, useChannelsProfiles } from "./channels-people.ts";
 
 export type ChannelsSearchFilters = {
 	q?: string;
@@ -52,7 +64,13 @@ type ChannelsSearchView_ClassNames =
 	| "ChannelsSearchView-filters"
 	| "ChannelsSearchView-field"
 	| "ChannelsSearchView-value"
+	| "ChannelsSearchView-person-status"
 	| "ChannelsSearchView-results";
+
+/**
+ * People per page in the Person filter. "Show more people" reads the next page.
+ */
+const PEOPLE_PAGE_SIZE = 20;
 
 const SearchFilter = memo(function SearchFilter(props: {
 	label: string;
@@ -92,17 +110,103 @@ const SearchFilter = memo(function SearchFilter(props: {
 	);
 });
 
-const SearchChannelName = memo(function SearchChannelName(props: {
-	channelId: app_convex_Id<"channels">;
-	people: readonly ChannelsPerson[];
+/**
+ * The people of the Person filter. It mounts only while the list is open, so the server search runs
+ * only then, one page at a time.
+ */
+const SearchPersonOptions = memo(function SearchPersonOptions() {
+	const { membershipId } = AppTenantProvider.useContext();
+	const [text, setText] = useState("");
+	const people = usePaginatedQuery(
+		app_convex_api.organizations_member_names.search_workspace_members,
+		{ membershipId, text },
+		{ initialNumItems: PEOPLE_PAGE_SIZE },
+	);
+	return (
+		<>
+			<MySearchSelectSearch
+				aria-label="Find person"
+				placeholder="Person name…"
+				value={text}
+				onChange={(event) => setText(event.target.value)}
+			/>
+			<MySearchSelectList>
+				<MySearchSelectItem value="">Anyone</MySearchSelectItem>
+				{people.results.map((person) => {
+					const name = person.displayName || "Unknown";
+					return (
+						<MySearchSelectItem key={person.userId} value={person.userId}>
+							<MyAvatar size="28px">
+								<MyAvatarImage src={person.avatarUrl ?? undefined} alt="" fallbackDelay={false} />
+								<MyAvatarFallback>{compute_fallback_user_name(name)}</MyAvatarFallback>
+							</MyAvatar>
+							<span>{name}</span>
+						</MySearchSelectItem>
+					);
+				})}
+				{(people.status === "CanLoadMore" || people.status === "LoadingMore") && (
+					<MySearchSelectItem
+						value="show-more-people"
+						disabled={people.status === "LoadingMore"}
+						hideOnClick={false}
+						setValueOnClick={false}
+						onClick={() => people.loadMore(PEOPLE_PAGE_SIZE)}
+					>
+						{people.status === "LoadingMore" ? "Loading…" : "Show more people"}
+					</MySearchSelectItem>
+				)}
+			</MySearchSelectList>
+			{people.status === "LoadingFirstPage" ? (
+				<p className={"ChannelsSearchView-person-status" satisfies ChannelsSearchView_ClassNames}>Searching…</p>
+			) : people.results.length === 0 ? (
+				<p className={"ChannelsSearchView-person-status" satisfies ChannelsSearchView_ClassNames}>No matches</p>
+			) : null}
+		</>
+	);
+});
+
+const SearchPersonName = memo(function SearchPersonName(props: { userId: string }) {
+	const { userId } = props;
+	const profile = useChannelsProfiles([userId as app_convex_Id<"users">])[0];
+	return profile === undefined ? "…" : (profile?.name ?? "Unavailable");
+});
+
+const SearchPersonFilter = memo(function SearchPersonFilter(props: {
+	value: string;
+	onChange: (value: string) => void;
 }) {
-	const { channelId, people } = props;
+	const { value, onChange } = props;
+	return (
+		<div className={"ChannelsSearchView-field" satisfies ChannelsSearchView_ClassNames}>
+			<MySearchSelect value={value} setValue={(value) => onChange(value as string)}>
+				<MySearchSelectLabel>Person</MySearchSelectLabel>
+				<MySearchSelectTrigger>
+					<MyButton type="button" variant="outline">
+						<span className={"ChannelsSearchView-value" satisfies ChannelsSearchView_ClassNames}>
+							{value ? <SearchPersonName userId={value} /> : "Anyone"}
+						</span>
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySearchSelectTrigger>
+				<MySearchSelectPopover unmountOnHide sameWidth>
+					<MySearchSelectPopoverScrollableArea>
+						<MySearchSelectPopoverContent>
+							<SearchPersonOptions />
+						</MySearchSelectPopoverContent>
+					</MySearchSelectPopoverScrollableArea>
+				</MySearchSelectPopover>
+			</MySearchSelect>
+		</div>
+	);
+});
+
+const SearchChannelName = memo(function SearchChannelName(props: { channelId: app_convex_Id<"channels"> }) {
+	const { channelId } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const channel = useQuery(app_convex_api.channels.get_channel, { membershipId, channelId });
 	const directName = useChannelsDirectName(
 		channel?.channel.kind === "direct" ? channel.channel.participantUserIds.filter((id) => id !== userId) : [],
-		people,
 	);
 	if (channel === undefined) return "Loading channel…";
 	if (channel === null) return "Unavailable";
@@ -119,7 +223,6 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 }) {
 	const { filters, onSearch } = props;
 	const { channelList } = AppChannelsProvider.useContext();
-	const { people } = useChannelsPeople();
 	const [draft, setDraft] = useState({
 		q: filters.q ?? "",
 		channel: filters.channel ?? "",
@@ -200,20 +303,12 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 									{ value: "", label: "All readable channels" },
 									...channelList.results.map((channel) => ({
 										value: channel._id,
-										label: <SearchChannelName channelId={channel._id} people={people} />,
+										label: <SearchChannelName channelId={channel._id} />,
 									})),
 								]}
 								onChange={(channel) => setDraft({ ...draft, channel })}
 							/>
-							<SearchFilter
-								label="Person"
-								value={draft.from}
-								options={[
-									{ value: "", label: "Anyone" },
-									...people.map((person) => ({ value: person.id, label: person.name })),
-								]}
-								onChange={(from) => setDraft({ ...draft, from })}
-							/>
+							<SearchPersonFilter value={draft.from} onChange={(from) => setDraft({ ...draft, from })} />
 							<SearchFilter
 								label="Attachments"
 								value={draft.attachments}
@@ -267,9 +362,11 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 								}}
 							>
 								{key === "channel" ? (
-									<SearchChannelName channelId={filters.channel as app_convex_Id<"channels">} people={people} />
+									<SearchChannelName channelId={filters.channel as app_convex_Id<"channels">} />
 								) : key === "from" ? (
-									`From ${people.find((person) => person.id === filters.from)?.name ?? "Unavailable"}`
+									<>
+										From <SearchPersonName userId={filters.from ?? ""} />
+									</>
 								) : key === "attachments" ? (
 									filters.attachments === "true" ? (
 										"With attachments"
@@ -285,7 +382,7 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 				</div>
 			</form>
 			<CatchBoundary getResetKey={resetKey} onCatch={catchError} errorComponent={SearchError}>
-				<SearchResults key={JSON.stringify(filters)} filters={filters} people={people} />
+				<SearchResults key={JSON.stringify(filters)} filters={filters} />
 			</CatchBoundary>
 		</section>
 	);
@@ -300,11 +397,8 @@ const SearchError = memo(function SearchError(props: ErrorComponentProps) {
 	);
 });
 
-const SearchResults = memo(function SearchResults(props: {
-	filters: ChannelsSearchFilters;
-	people: readonly ChannelsPerson[];
-}) {
-	const { filters, people } = props;
+const SearchResults = memo(function SearchResults(props: { filters: ChannelsSearchFilters }) {
+	const { filters } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const parsed = channels_search_query_schema.safeParse(filters.q ?? "");
 	const validDates =
@@ -335,7 +429,7 @@ const SearchResults = memo(function SearchResults(props: {
 			aria-label="Search results"
 		>
 			{results.results.map((row) => (
-				<ChannelsFeedMessage key={row.message._id} row={row} people={people} />
+				<ChannelsFeedMessage key={row.message._id} row={row} />
 			))}
 			{results.status === "LoadingFirstPage" ? (
 				<p>Searching…</p>

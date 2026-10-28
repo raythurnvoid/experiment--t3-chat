@@ -83,6 +83,7 @@ params. Missing and hidden ids show the same notice. Browse lists public channel
 
 Activity lists current mention and inline-reply inbox items. Threads lists followed roots by
 latest activity. Search keeps text, channel, person, attachment and UTC date filters in the URL.
+The Person filter is a search select over the member search below, with Anyone first.
 All three use checked message previews and Open context. Posts and replies open their thread.
 Opening a feed never marks its items read; visible channel and thread content advances the
 existing read positions. Keep Load more after an empty readable page when a cursor remains.
@@ -98,6 +99,15 @@ UI modules live in `src/components/channels`. The sidebar has starred channels, 
 channels, direct conversations, and followed files. Settings and member actions follow the backend
 permissions. Private and direct headers disclose the owner read rule. Lists have named landmarks
 and message ids. Pane headers and neutral surfaces follow Files. There is no extra Messages bar.
+
+People in the UI follow one rule: never load the workspace member list in the browser.
+`channels-people.ts` reads a known id with `users.get_workspace_member_anagraphic`, then with
+`users.get_anagraphic` for someone who is no longer an active member. Direct names add "(left)"
+for that person and show "…" while loading, never an early "(left)". Every place where a user
+picks people ("@", Message someone, add to a private channel, the Person filter) pages through
+`organizations_member_names.search_workspace_members` 20 at a time, with Show more people.
+Add people keeps the loaded channel members in the list, locked with "Member". Adding a current
+member again changes nothing on the server, and the same direct group reopens its conversation.
 
 Measure the Messages region after the global navigation. At 1200px and above, show the sidebar,
 channel and open thread. At 940–1199px, an open thread moves the sidebar into a drawer. At
@@ -116,7 +126,9 @@ Activity and search use flat rows with four-line previews and no preview scrollb
 open from Filters; applied filters can be removed. Never invent a search total or match range.
 
 `ChannelsComposer` is shared with Files comments. People chips store neutral Markdown positions
-with ids in `mentionUserIds`. Render names from current profiles. The sender's local draft keeps raw
+with ids in `mentionUserIds`. Render names from current profiles; a chip reads its name by id.
+The composer's `mentionTarget` (a channel or a file) turns on `@` and `#`. `mentionItems` holds
+only the `#` channels. The sender's local draft keeps raw
 chip ids so it can restore them. Enter chooses a suggestion before sending; Shift+Enter adds a line.
 Escape closes a suggestion first, then cancels reply/edit. Empty Up edits the latest own message.
 
@@ -129,10 +141,14 @@ Enter still sends from lists and code blocks; Shift+Enter adds a line. Link addr
 https or mailto. The link form sits outside the message form and stops its submit event, so Apply
 link and Enter in its field cannot send the message. Files comments share these tools.
 
-The `@` popup lists matching people first (at most 50), then saved files or folders from the
+The `@` popup lists matching people first, then saved files or folders from the
 shared `FilesNodePicker`, excluding archived nodes and private drafts. It browses one folder at a
 time or searches names in pages of 50; an open folder offers "Mention this folder". People show
-only at the root while the text has no `/`. The `#` popup lists channels. Messages and Files Comments use
+only at the root while the text has no `/`. The popup asks `get_mentionable_users` about the
+loaded people only, one page of ids per query. A person who cannot be mentioned stays in the list as
+"Name (can't see this)" with a lock, and a pick does nothing, like Slack shows people outside a
+channel. A row can be picked until its answer arrives; send checks every id again. The `#` popup
+lists channels. Messages and Files Comments use
 this same popup and composer.
 
 Current scale gap: Browse channels filters only its loaded pages by name. This does not meet the

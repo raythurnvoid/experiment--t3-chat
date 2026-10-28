@@ -1,8 +1,8 @@
 import "./files-write-policy-writers-modal.css";
 
-import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { usePaginatedQuery, useQueries } from "convex/react";
 import { Plug, Search } from "lucide-react";
-import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useId, useMemo, useRef, useState } from "react";
 
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
@@ -37,7 +37,7 @@ import {
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { compute_fallback_user_name, cn } from "@/lib/utils.ts";
 
@@ -63,6 +63,11 @@ type Candidate = {
 };
 
 /**
+ * People and plugins per page. "Show more" reads the next page.
+ */
+const PAGE_SIZE = 20;
+
+/**
  * The keys that narrow the menu to one kind. The menu lists them, so nobody has to know them.
  */
 const FILTER_KEYS = [
@@ -84,6 +89,12 @@ function parse_search_text(text: string) {
 		scope: match[1].toLowerCase().startsWith("plug") ? ("plugins" as const) : ("people" as const),
 		term: text.slice(match[0].length).trim().toLowerCase(),
 	};
+}
+
+function read_avatar_url(
+	value: app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error,
+) {
+	return value == null || value instanceof Error ? undefined : value.avatarUrl;
 }
 
 // #region content
@@ -109,65 +120,77 @@ type FilesWritePolicyWritersModalContent_Props = {
 };
 
 /**
- * The field and the two lists. It mounts only while the dialog is open, so the people and plugin
- * lists are read only when somebody wants to change the writers.
+ * The field and the two lists. It mounts only while the dialog is open, so people and plugins are
+ * searched only when somebody wants to change the writers.
  *
- * The field works like the file search box: the menu lists everything you can pick, and typing
- * narrows it. Picking a row adds it at once and keeps the menu open, so adding several is quick.
+ * The field works like the file search box: the menu lists people and plugins, and typing narrows it.
+ * Writers already on the list stay in the menu as locked "Added" rows.
+ * Picking a row adds it at once and keeps the menu open, so adding several is quick.
+ *
+ * People and plugins come from the server one page at a time, so a workspace of any size loads the
+ * same.
  */
 const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWritersModalContent(
 	props: FilesWritePolicyWritersModalContent_Props,
 ) {
 	const { writers, hiddenWriterCount, onWritersChange } = props;
 
-	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
 	const popoverId = useId();
 	const inputRef = useRef<HTMLInputElement>(null);
 	const [text, setText] = useState("");
 	const [isMenuOpen, setIsMenuOpen] = useState(false);
 
-	const userIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, {
-		organizationId,
-		workspaceId,
-	});
-	const users = useQueries(
-		useMemo(
-			() =>
-				Object.fromEntries(
-					(userIds ?? []).map((userId) => [userId, { query: app_convex_api.users.get_anagraphic, args: { userId } }]),
-				),
-			[userIds],
-		),
-	);
-	const accounts = usePaginatedQuery(
-		app_convex_api.access_control.list_service_accounts,
-		{ membershipId, includeRevoked: false },
-		{ initialNumItems: 50 },
-	);
-
-	const people: Candidate[] = (userIds ?? []).flatMap((userId) => {
-		const user = users[userId];
-		return user && !(user instanceof Error)
-			? [{ writer: { kind: "user" as const, userId, name: user.displayName }, avatarUrl: user.avatarUrl }]
-			: [];
-	});
-	const plugins: Candidate[] = accounts.results.map((account) => ({
-		writer: { kind: "service_account" as const, serviceAccountId: account._id, name: account.name },
-		avatarUrl: undefined,
-	}));
-
-	const addedKeys = new Set(writers.map(files_write_policy_writer_key));
 	const search = parse_search_text(text);
-	const isPickable = (candidate: Candidate) =>
-		!addedKeys.has(files_write_policy_writer_key(candidate.writer)) &&
-		candidate.writer.name.toLowerCase().includes(search.term);
-	const peopleRows = search.scope === "plugins" ? [] : people.filter(isPickable);
-	const pluginRows = search.scope === "people" ? [] : plugins.filter(isPickable);
-	// Offer the keys until one is chosen, and while the text could still become one.
-	const keyRows = search.scope === "all" ? FILTER_KEYS.filter((row) => row.key.startsWith(search.term)) : [];
+	const searchesPeople = search.scope !== "plugins";
+	const searchesPlugins = search.scope !== "people";
+	const people = usePaginatedQuery(
+		app_convex_api.organizations_member_names.search_workspace_members,
+		searchesPeople ? { membershipId, text: search.term } : "skip",
+		{ initialNumItems: PAGE_SIZE },
+	);
+	const plugins = usePaginatedQuery(
+		app_convex_api.access_control.search_service_accounts,
+		searchesPlugins ? { membershipId, text: search.term } : "skip",
+		{ initialNumItems: PAGE_SIZE },
+	);
 
 	const addedPeople = writers.filter((writer) => writer.kind === "user");
 	const addedPlugins = writers.filter((writer) => writer.kind === "service_account");
+
+	// The avatars of the people on the list. The list is the rule's own writers, not the workspace.
+	const addedPeopleProfiles = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					addedPeople.map((writer) => [
+						writer.userId,
+						{
+							query: app_convex_api.users.get_anagraphic,
+							args: { userId: writer.userId },
+						},
+					]),
+				),
+			[addedPeople],
+		),
+	);
+
+	const peopleRows: Candidate[] = people.results.map((member) => ({
+		writer: { kind: "user", userId: member.userId, name: member.displayName || "Unknown" },
+		avatarUrl: member.avatarUrl ?? undefined,
+	}));
+	const pluginRows: Candidate[] = plugins.results.map((account) => ({
+		writer: { kind: "service_account", serviceAccountId: account._id, name: account.name },
+		avatarUrl: undefined,
+	}));
+	const addedKeys = new Set(writers.map(files_write_policy_writer_key));
+	// Offer the keys until one is chosen, and while the text could still become one.
+	const keyRows = search.scope === "all" ? FILTER_KEYS.filter((row) => row.key.startsWith(search.term)) : [];
+	// A skipped search also says "LoadingFirstPage", and it never stops. So count only the searches
+	// that run.
+	const isLoading =
+		(searchesPeople && people.status === "LoadingFirstPage") ||
+		(searchesPlugins && plugins.status === "LoadingFirstPage");
 
 	const handleAdd = (candidate: Candidate) => {
 		onWritersChange([...writers, candidate.writer]);
@@ -208,35 +231,68 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 		}
 	});
 
-	// A workspace can have more than one page of plugins. Read the rest, because the menu has no
-	// "load more" button.
-	useEffect(() => {
-		if (accounts.status === "CanLoadMore") {
-			accounts.loadMore(50);
-		}
-	}, [accounts.status]);
+	// The people and plugins on the list stay in the menu, marked, so a search for them says why they
+	// cannot be added instead of finding nothing.
+	const renderCandidate = (candidate: Candidate) => {
+		const isAdded = addedKeys.has(files_write_policy_writer_key(candidate.writer));
 
-	const renderCandidate = (candidate: Candidate) => (
-		<MyComboboxItem
-			key={files_write_policy_writer_key(candidate.writer)}
-			value={files_write_policy_writer_key(candidate.writer)}
-			hideOnClick={false}
-			setValueOnClick={false}
-			className={cn(
-				"FilesWritePolicyWritersModalContent-suggestion" satisfies FilesWritePolicyWritersModalContent_ClassNames,
-			)}
-			onClick={() => handleAdd(candidate)}
-		>
-			<WriterIcon writer={candidate.writer} avatarUrl={candidate.avatarUrl} />
-			<span
+		return (
+			<MyComboboxItem
+				key={files_write_policy_writer_key(candidate.writer)}
+				value={files_write_policy_writer_key(candidate.writer)}
+				disabled={isAdded}
+				hideOnClick={false}
+				setValueOnClick={false}
 				className={cn(
-					"FilesWritePolicyWritersModalContent-row-name" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+					"FilesWritePolicyWritersModalContent-suggestion" satisfies FilesWritePolicyWritersModalContent_ClassNames,
 				)}
+				onClick={() => handleAdd(candidate)}
 			>
-				{candidate.writer.name}
-			</span>
-		</MyComboboxItem>
-	);
+				<WriterIcon writer={candidate.writer} avatarUrl={candidate.avatarUrl} />
+				<span
+					className={cn(
+						"FilesWritePolicyWritersModalContent-row-name" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+					)}
+				>
+					{candidate.writer.name}
+				</span>
+				{isAdded ? (
+					<span
+						className={cn(
+							"FilesWritePolicyWritersModalContent-suggestion-hint" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+						)}
+					>
+						Added
+					</span>
+				) : null}
+			</MyComboboxItem>
+		);
+	};
+
+	const renderShowMore = (args: { label: string; page: { status: string; loadMore: (count: number) => void } }) => {
+		const { label, page } = args;
+
+		return page.status === "CanLoadMore" || page.status === "LoadingMore" ? (
+			<MyComboboxItem
+				value={label}
+				disabled={page.status === "LoadingMore"}
+				hideOnClick={false}
+				setValueOnClick={false}
+				className={cn(
+					"FilesWritePolicyWritersModalContent-suggestion" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+				)}
+				onClick={() => page.loadMore(PAGE_SIZE)}
+			>
+				<span
+					className={cn(
+						"FilesWritePolicyWritersModalContent-row-name" satisfies FilesWritePolicyWritersModalContent_ClassNames,
+					)}
+				>
+					{page.status === "LoadingMore" ? "Loading…" : label}
+				</span>
+			</MyComboboxItem>
+		) : null;
+	};
 
 	const renderGroup = (args: { heading: string; emptyText: string; groupWriters: FilesWritePolicyWriter[] }) => {
 		const { heading, emptyText, groupWriters } = args;
@@ -270,12 +326,7 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 							>
 								<WriterIcon
 									writer={writer}
-									avatarUrl={
-										people.find(
-											(candidate) =>
-												files_write_policy_writer_key(candidate.writer) === files_write_policy_writer_key(writer),
-										)?.avatarUrl
-									}
+									avatarUrl={writer.kind === "user" ? read_avatar_url(addedPeopleProfiles[writer.userId]) : undefined}
 								/>
 								<span
 									className={cn(
@@ -388,11 +439,13 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 								{peopleRows.length > 0 ? (
 									<MyComboboxGroup heading="People" separator={keyRows.length > 0}>
 										{peopleRows.map(renderCandidate)}
+										{renderShowMore({ label: "Show more people", page: people })}
 									</MyComboboxGroup>
 								) : null}
 								{pluginRows.length > 0 ? (
 									<MyComboboxGroup heading="Plugins" separator={keyRows.length > 0 || peopleRows.length > 0}>
 										{pluginRows.map(renderCandidate)}
+										{renderShowMore({ label: "Show more plugins", page: plugins })}
 									</MyComboboxGroup>
 								) : null}
 								{keyRows.length === 0 && peopleRows.length === 0 && pluginRows.length === 0 ? (
@@ -401,7 +454,7 @@ const FilesWritePolicyWritersModalContent = memo(function FilesWritePolicyWriter
 											"FilesWritePolicyWritersModalContent-empty" satisfies FilesWritePolicyWritersModalContent_ClassNames,
 										)}
 									>
-										{text.length > 0 ? "No matches." : "Everyone is already added."}
+										{isLoading ? "Searching…" : "No matches."}
 									</p>
 								) : null}
 							</MyComboboxPopoverContent>

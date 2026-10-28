@@ -31,6 +31,10 @@ The Plugins catalog has a `Plugin setup access` region for the organization owne
 the default personal/home workspace, which has no Edit workspace action. Use the visible
 `Who can install plugins` control. Its choices are `Owner only`, `Selected people and roles`, and
 `Everybody in this workspace`. `Save plugin access` stays disabled until the draft changes.
+With `Selected people and roles`, the add field is the shared picker `Person or role to add`
+(`role="combobox"`, the same `PrincipalPicker` as the Share dialog, without apps): click it or type to
+open the menu, pick a person or role, then press `Add to access list`. People come from the server
+search, 20 per page. The owner shows as a disabled `Owner` row and listed principals as `Added`.
 
 An installed plugin's detail page has a separate `Plugin management access` region for its
 managers. Its control is `Who can manage this plugin`. The owner always keeps access. Workspace

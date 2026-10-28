@@ -1220,7 +1220,8 @@ inside it. Everybody who had access before keeps it: added people only add acces
   roles plus at most 20 custom roles. `people:`, `role:` and `app:` narrow the search to one kind.
   The owner and anybody already on the list stay in the menu as disabled rows marked "Owner" or
   "Added", so a search for them explains why they cannot be added. The dialog reads profiles only
-  for the people it names: the owner, the list rows, and the link's creator.
+  for the people it names: the owner, the list rows, and the link's creator. The field is the shared
+  `PrincipalPicker` (`src/components/principal-picker.tsx`). Plugin access uses the same picker, without apps.
 - The dialog has two parts, like Google Drive and Notion. "People with access" is the list: the
   folders above with added people, the owner as a fixed row (always, so the list is never empty),
   then the people, roles, and apps added here. Roles read "Everyone with this workspace

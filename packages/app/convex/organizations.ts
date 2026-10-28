@@ -726,48 +726,6 @@ export const get_membership = query({
 	},
 });
 
-export const list_organization_workspace_users = query({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-	},
-	returns: v.union(v.array(v.id("users")), v.null()),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
-		const [currentWorkspaceMembership, workspaceMemberships] = await Promise.all([
-			// Check if the current user is part of the requested workspace.
-			ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_user_organization_workspace", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", userAuth.id)
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId),
-				)
-				.first(),
-			// Get all users in the requested workspace.
-			ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_organization_workspace_user", (q) =>
-					q.eq("active", true).eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
-				)
-				.collect(),
-		]);
-
-		// Return nothing if the user requesting the list is not part of the workspace.
-		if (!currentWorkspaceMembership) {
-			return null;
-		}
-
-		return workspaceMemberships.map((membership) => membership.userId);
-	},
-});
-
 export const create_organization = mutation({
 	args: {
 		name: v.string(),

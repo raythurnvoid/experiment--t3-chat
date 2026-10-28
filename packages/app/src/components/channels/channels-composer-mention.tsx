@@ -1,23 +1,49 @@
 import "./channels-composer-mention.css";
-import { createContext, memo, use, useEffect, useId, useImperativeHandle, useRef, useState, type Ref } from "react";
+import {
+	createContext,
+	memo,
+	use,
+	useEffect,
+	useId,
+	useImperativeHandle,
+	useMemo,
+	useRef,
+	useState,
+	type Ref,
+} from "react";
 import { computePosition, flip, offset, shift } from "@floating-ui/dom";
 import { createInlineMarkdownSpec, mergeAttributes, type Editor, type JSONContent, type Range } from "@tiptap/core";
 import { PluginKey } from "@tiptap/pm/state";
 import { NodeViewWrapper, posToDOMRect, ReactNodeViewRenderer, ReactRenderer, type NodeViewProps } from "@tiptap/react";
-import { useQuery } from "convex/react";
+import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import Mention from "@tiptap/extension-mention";
 import { exitSuggestion, type SuggestionKeyDownProps } from "@tiptap/suggestion";
-import { Hash, User } from "lucide-react";
+import { Hash, Lock, User, Users } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_FunctionArgs, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesNodePicker, type FilesNodePicker_Ref } from "@/components/files/files-node-picker.tsx";
 import type { MyFloatingSurface_ClassNames } from "@/components/my-floating-surface.tsx";
 import type { MyMenuItem_ClassNames } from "@/components/my-menu.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
+import { useChannelsProfiles } from "./channels-people.ts";
 
-export type ChannelsMentionItem = { kind: "user" | "channel"; id: string; label: string; href?: string };
-export const ChannelsMentionContext = createContext<readonly ChannelsMentionItem[]>([]);
+/**
+ * A channel the "#" list offers.
+ */
+export type ChannelsMentionItem = { kind: "channel"; id: string; label: string; href: string };
+
+/**
+ * Where the message goes. The "@" list asks the server which people can be mentioned there.
+ */
+export type ChannelsMentionTarget =
+	| { channelId: app_convex_Id<"channels"> }
+	| { fileNodeId: app_convex_Id<"files_nodes"> };
+
+export const ChannelsMentionContext = createContext<{
+	target: ChannelsMentionTarget | null;
+	items: readonly ChannelsMentionItem[];
+}>({ target: null, items: [] });
 type ChannelsComposerMention_ClassNames = "ChannelsComposerMention";
 type ChannelsComposerMentionList_ClassNames =
 	| "ChannelsComposerMentionList"
@@ -37,10 +63,18 @@ function ChannelsFileMention(props: { fileNodeId: string }) {
 	return <>{file && file.archiveOperationId === null ? `@${file.name}` : "File unavailable"}</>;
 }
 
+// Markdown keeps only the person's id, so a restored draft or an edit reads the name by id.
+// eslint-disable-next-line react-refresh/only-export-components
+function ChannelsPersonMention(props: { userId: app_convex_Id<"users">; label: string | null }) {
+	const profile = useChannelsProfiles([props.userId])[0];
+	return <>{`@${profile?.name ?? props.label ?? "…"}`}</>;
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 function ChannelsMentionNodeView(props: NodeViewProps) {
-	const items = use(ChannelsMentionContext);
+	const { items } = use(ChannelsMentionContext);
 	const id = typeof props.node.attrs.id === "string" ? props.node.attrs.id : "";
+	const label = typeof props.node.attrs.label === "string" ? props.node.attrs.label : null;
 	const item = items.find((item) => `${item.kind}:${item.id}` === id);
 	return (
 		<NodeViewWrapper
@@ -50,8 +84,10 @@ function ChannelsMentionNodeView(props: NodeViewProps) {
 		>
 			{id.startsWith("file:") ? (
 				<ChannelsFileMention fileNodeId={id.slice(5)} />
+			) : id.startsWith("user:") ? (
+				<ChannelsPersonMention userId={id.slice(5) as app_convex_Id<"users">} label={label} />
 			) : (
-				`${item?.kind === "channel" ? "#" : "@"}${item?.label ?? props.node.attrs.label ?? "Person"}`
+				`#${item?.label ?? label ?? "channel"}`
 			)}
 		</NodeViewWrapper>
 	);
@@ -89,7 +125,7 @@ export function channels_composer_mention_create_extension(options: {
 					mergeAttributes(nodeOptions.HTMLAttributes, {
 						class: "ChannelsComposerMention" satisfies ChannelsComposerMention_ClassNames,
 					}),
-					`${item?.kind === "channel" ? "#" : "@"}${item?.label ?? node.attrs.label ?? "Person"}`,
+					`${String(node.attrs.id).startsWith("channel:") ? "#" : "@"}${item?.label ?? node.attrs.label ?? "Person"}`,
 				];
 			},
 			suggestions: (
@@ -189,8 +225,14 @@ type ChannelsComposerMentionList_Props = {
 	command: (attrs: { id: string; label: string; href?: string }) => void;
 };
 
+const PEOPLE_PAGE_SIZE = 20;
+
 /**
  * The "@" list: people first, then the workspace files of the shared file picker.
+ *
+ * People come from the server search one page at a time, so a workspace of any size costs the same.
+ * A person who cannot see this conversation or file stays in the list, locked, so a search for them
+ * says why they cannot be mentioned instead of finding nothing.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 const PeopleMentionList = memo(function PeopleMentionList(
@@ -202,17 +244,82 @@ const PeopleMentionList = memo(function PeopleMentionList(
 	},
 ) {
 	const { ref, editor, query, range, command } = props;
-	const allItems = use(ChannelsMentionContext);
-	const value = query.trim().toLowerCase();
-	const people = allItems
-		.filter((item) => item.kind === "user" && item.label.toLowerCase().includes(value))
-		.slice(0, 50)
-		.map((item) => ({
-			key: item.id,
-			label: item.label,
-			icon: <User />,
-			onPick: () => command({ id: `user:${item.id}`, label: item.label, href: item.href }),
-		}));
+	const { membershipId } = AppTenantProvider.useContext();
+	const { target } = use(ChannelsMentionContext);
+
+	// Text with a "/" is a folder path. The picker shows no people then.
+	const people = usePaginatedQuery(
+		app_convex_api.organizations_member_names.search_workspace_members,
+		query.includes("/") ? "skip" : { membershipId, text: query.trim() },
+		{ initialNumItems: PEOPLE_PAGE_SIZE },
+	);
+
+	// Ask which loaded people can be mentioned here, one page at a time. This reads only the pages the
+	// user loaded, never the whole workspace. Keep the manual `useMemo` on plain values: `useQueries`
+	// subscribes again whenever its queries object changes.
+	//
+	// Each check covers exactly one page. "Show more people" then adds a new check and keeps the old
+	// ones as they are, so the locked rows already shown do not unlock while the new answer loads.
+	const channelId = target && "channelId" in target ? target.channelId : null;
+	const fileNodeId = target && "fileNodeId" in target ? target.fileNodeId : null;
+	const userIdsText = people.results.map((person) => person.userId).join(",");
+	const mentionableQueries = useMemo(() => {
+		const userIds = (userIdsText ? userIdsText.split(",") : []) as Array<app_convex_Id<"users">>;
+		const queryTarget = channelId ? { channelId } : fileNodeId ? { fileNodeId } : null;
+		const queries: Record<
+			string,
+			{
+				query: typeof app_convex_api.channels_messages.get_mentionable_users;
+				args: app_convex_FunctionArgs<typeof app_convex_api.channels_messages.get_mentionable_users>;
+			}
+		> = {};
+		for (let start = 0; queryTarget && start < userIds.length; start += PEOPLE_PAGE_SIZE) {
+			queries[start] = {
+				query: app_convex_api.channels_messages.get_mentionable_users,
+				args: { membershipId, target: queryTarget, userIds: userIds.slice(start, start + PEOPLE_PAGE_SIZE) },
+			};
+		}
+		return queries;
+	}, [membershipId, channelId, fileNodeId, userIdsText]);
+	const mentionableAnswers = useQueries(mentionableQueries);
+	// A person whose answer has not arrived can still be picked. Send checks every mention again.
+	const lockedUserIds = new Set(
+		Object.entries(mentionableQueries).flatMap(([key, { args }]) => {
+			const answer: unknown = mentionableAnswers[key];
+			return Array.isArray(answer) ? args.userIds.filter((userId) => !answer.includes(userId)) : [];
+		}),
+	);
+
+	const rows = [
+		...people.results.map((person) => {
+			const name = person.displayName || "Unknown";
+			// The shared picker has no disabled state for these rows, so the label carries the note and
+			// a pick does nothing.
+			return lockedUserIds.has(person.userId)
+				? { key: person.userId, label: `${name} (can't see this)`, icon: <Lock />, onPick: () => {} }
+				: {
+						key: person.userId,
+						label: name,
+						icon: <User />,
+						onPick: () => command({ id: `user:${person.userId}`, label: name }),
+					};
+		}),
+		// The search starts over on every typed letter, so the list has no people until the server
+		// answers. Show a row that does nothing, so Enter does not pick a file or the wrong person.
+		...((people.status === "LoadingFirstPage" && !query.includes("/")) || people.status === "LoadingMore"
+			? [{ key: "people-loading", label: "Searching people…", icon: <Users />, onPick: () => {} }]
+			: []),
+		...(people.status === "CanLoadMore"
+			? [
+					{
+						key: "more-people",
+						label: "Show more people",
+						icon: <Users />,
+						onPick: () => people.loadMore(PEOPLE_PAGE_SIZE),
+					},
+				]
+			: []),
+	];
 	const pickerRef = useRef<FilesNodePicker_Ref>(null);
 
 	useImperativeHandle(ref, () => ({
@@ -236,7 +343,7 @@ const PeopleMentionList = memo(function PeopleMentionList(
 				ownerElement={editor.view.dom}
 				query={query}
 				select="any"
-				leadingRows={people}
+				leadingRows={rows}
 				folderRow={{
 					label: "Mention this folder",
 					onPick: (folder) => command({ id: `file:${folder.nodeId}`, label: folder.name }),
@@ -252,11 +359,9 @@ const PeopleMentionList = memo(function PeopleMentionList(
 // eslint-disable-next-line react-refresh/only-export-components
 const ChannelMentionList = memo(function ChannelMentionList(props: ChannelsComposerMentionList_Props) {
 	const { ref, editor, query, command } = props;
-	const allItems = use(ChannelsMentionContext);
+	const { items: allItems } = use(ChannelsMentionContext);
 	const value = query.trim().toLowerCase();
-	const items = allItems
-		.filter((item) => item.kind === "channel" && item.label.toLowerCase().includes(value))
-		.slice(0, 50);
+	const items = allItems.filter((item) => item.label.toLowerCase().includes(value)).slice(0, 50);
 	const id = useId();
 	const [highlight, setHighlight] = useState({ query, index: 0 });
 	const index = Math.min(highlight.query === query ? highlight.index : 0, Math.max(0, items.length - 1));

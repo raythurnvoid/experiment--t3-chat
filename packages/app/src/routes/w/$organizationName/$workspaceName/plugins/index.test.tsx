@@ -155,7 +155,6 @@ describe("RoutePlugins", () => {
 		expect(managementAccessMock.mock.calls[0]?.[0]).toEqual({
 			membershipId: "membership_1",
 			organizationId: "organization_1",
-			workspaceId: "workspace_1",
 		});
 	});
 

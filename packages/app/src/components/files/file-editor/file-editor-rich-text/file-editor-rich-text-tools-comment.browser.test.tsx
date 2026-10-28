@@ -18,10 +18,6 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => ({ membershipId: "member" }) },
 }));
-vi.mock("@/components/channels/channels-people.ts", () => ({
-	useChannelsPeople: () => ({ people: [] }),
-	useChannelsMentionPeople: () => [],
-}));
 vi.mock("@/lib/app-convex-client.ts", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@/lib/app-convex-client.ts")>()),
 	app_convex_api: {

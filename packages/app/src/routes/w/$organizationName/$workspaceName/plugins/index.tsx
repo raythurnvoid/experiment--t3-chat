@@ -109,7 +109,7 @@ type RoutePlugins_ClassNames =
 	| "RoutePluginsHeader-actions";
 
 function RoutePlugins() {
-	const { membershipId, organizationId, workspaceId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const breadcrumb = <PluginsHeaderBreadcrumb current="Plugins" />;
 
@@ -153,7 +153,6 @@ function RoutePlugins() {
 					key={membershipId}
 					membershipId={membershipId}
 					organizationId={organizationId}
-					workspaceId={workspaceId}
 				/>
 
 				<RoutePluginsGallery membershipId={membershipId} />

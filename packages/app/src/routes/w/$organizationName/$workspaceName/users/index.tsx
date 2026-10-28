@@ -1,8 +1,8 @@
 import "./index.css";
 
 import { createFileRoute } from "@tanstack/react-router";
-import { useQueries, useQuery } from "convex/react";
-import { Crown, LogOut, Trash2, UserPlus, Users as UsersIcon } from "lucide-react";
+import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
+import { Crown, LogOut, Search, Trash2, UserPlus, Users as UsersIcon } from "lucide-react";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -16,6 +16,7 @@ import {
 	MyInputBackground,
 	MyInputBox,
 	MyInputControl,
+	MyInputIcon,
 	MyInputLabel,
 } from "@/components/my-input.tsx";
 import {
@@ -51,7 +52,6 @@ import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
 import {
 	access_control_display_role_label,
-	access_control_display_role_order,
 	access_control_SYSTEM_ROLE_MATRIX,
 	access_control_SYSTEM_ROLES,
 	type access_control_DisplayRole,
@@ -190,8 +190,7 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 							setValue={(value) => onRoleChange(userId, value === "" ? null : (value as access_control_RoleRef))}
 						>
 							{/*
-							Closed while the change is in flight: the list re-sorts by role when the answer
-							arrives, so a second pick would land on a row that has already moved. 
+							Closed while the change is in flight, so a second pick cannot race the first one.
 							*/}
 							<MySelectTrigger disabled={roleChangePending}>
 								{/*
@@ -287,7 +286,8 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 
 // #region user list
 type RouteUsersList_Props = {
-	workspaceUserIds: app_convex_Id<"users">[];
+	/** The members on the loaded pages, in the order the server returned them. */
+	memberUserIds: app_convex_Id<"users">[];
 	userAnagraphicDict: Record<
 		app_convex_Id<"users">,
 		app_convex_FunctionReturnType<typeof app_convex_api.users.get_workspace_member_anagraphic> | undefined | Error
@@ -307,14 +307,16 @@ type RouteUsersList_Props = {
 	onTransfer: (userId: app_convex_Id<"users">, displayName: string) => void;
 };
 
-/** A failed role query is treated like "no role". Loading is handled before any row is rendered. */
+/**
+ * A failed role query is treated like "no role". A row that is still loading is not rendered.
+ */
 function read_display_role(value: access_control_DisplayRole | null | undefined | Error) {
 	return value == null || value instanceof Error ? null : value;
 }
 
 const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props) {
 	const {
-		workspaceUserIds,
+		memberUserIds,
 		userAnagraphicDict,
 		userRoleDict,
 		assignableRoles,
@@ -330,61 +332,19 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 		onTransfer,
 	} = props;
 
-	// We wait for the roles too, not only for the names. Rendering earlier would show everyone as
-	// "No role", then sort the list again under the user's mouse when the roles arrive, and show
-	// "Transfer ownership" for a moment on the owner's own row, because nothing says yet that they are
-	// the owner.
-	const userRowsLoading = workspaceUserIds.some((userId) => {
-		const anagraphic = userAnagraphicDict[userId];
-
-		return anagraphic === undefined || userRoleDict[userId] === undefined;
-	});
-	if (userRowsLoading) {
-		return (
-			<div className={"RouteUsers-loading" satisfies RouteUsers_ClassNames}>
-				<UsersIcon aria-hidden />
-				Loading users...
-			</div>
-		);
-	}
-
-	const userRowsUnavailable = workspaceUserIds.some((userId) => {
-		const anagraphic = userAnagraphicDict[userId];
-
-		return anagraphic === null || anagraphic instanceof Error;
-	});
-	if (userRowsUnavailable) {
-		return <div className={"RouteUsers-empty" satisfies RouteUsers_ClassNames}>Organization users unavailable.</div>;
-	}
-
-	const sortedWorkspaceUserIds = workspaceUserIds.toSorted((a, b) => {
-		// A role is an object, so we cannot compare roles directly. We sort with the shared sort key.
-		const roleOrderDifference =
-			access_control_display_role_order(read_display_role(userRoleDict[a])) -
-			access_control_display_role_order(read_display_role(userRoleDict[b]));
-		if (roleOrderDifference !== 0) {
-			return roleOrderDifference;
-		}
-
-		const aAnagraphic = userAnagraphicDict[a];
-		const bAnagraphic = userAnagraphicDict[b];
-		const aDisplayName =
-			aAnagraphic === undefined || aAnagraphic === null || aAnagraphic instanceof Error ? "" : aAnagraphic.displayName;
-		const bDisplayName =
-			bAnagraphic === undefined || bAnagraphic === null || bAnagraphic instanceof Error ? "" : bAnagraphic.displayName;
-
-		return aDisplayName.localeCompare(bDisplayName);
-	});
-
 	return (
 		<ul className={"RouteUsers-list" satisfies RouteUsers_ClassNames} aria-label="Organization members">
-			{sortedWorkspaceUserIds.map((userId) => {
+			{memberUserIds.map((userId) => {
+				// A row waits for both its name and its role. Rendering earlier would show "No role", and show
+				// "Transfer ownership" for a moment on the owner's own row, because nothing says yet that they
+				// are the owner. A member who left since the page loaded has no profile here, so the list skips their row.
 				const anagraphic = userAnagraphicDict[userId];
-				if (anagraphic === undefined || anagraphic === null || anagraphic instanceof Error) {
+				const roleValue = userRoleDict[userId];
+				if (anagraphic === undefined || anagraphic === null || anagraphic instanceof Error || roleValue === undefined) {
 					return null;
 				}
 
-				const role = read_display_role(userRoleDict[userId]);
+				const role = read_display_role(roleValue);
 
 				return (
 					<RouteUsersUserListItem
@@ -658,10 +618,21 @@ const RouteUsersHeader = memo(function RouteUsersHeader(props: RouteUsersHeader_
 // #endregion header
 
 // #region root
-type RouteUsers_ClassNames = "RouteUsers" | "RouteUsers-loading" | "RouteUsers-empty" | "RouteUsers-list";
+type RouteUsers_ClassNames =
+	| "RouteUsers"
+	| "RouteUsers-search"
+	| "RouteUsers-loading"
+	| "RouteUsers-empty"
+	| "RouteUsers-list"
+	| "RouteUsers-load-more";
+
+/**
+ * Members per page. "Load more members" reads the next page.
+ */
+const MEMBERS_PAGE_SIZE = 50;
 
 function RouteUsers() {
-	const { organizationId, workspaceId } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 
 	const auth = AppAuthProvider.useAuth();
 
@@ -672,10 +643,15 @@ function RouteUsers() {
 		? app_tenant_primary_workspace_for_organization({ organization, workspaces })
 		: null;
 	const currentWorkspace = workspaces.find((workspace) => workspace._id === workspaceId);
-	const workspaceUserIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, {
-		organizationId,
-		workspaceId,
-	});
+	const [searchText, setSearchText] = useState("");
+	// The server returns the members one page at a time, by name, or best match first while searching.
+	// So a workspace of any size loads the same.
+	const members = usePaginatedQuery(
+		app_convex_api.organizations_member_names.search_workspace_members,
+		{ membershipId, text: searchText },
+		{ initialNumItems: MEMBERS_PAGE_SIZE },
+	);
+	const memberUserIds = members.results.map((member) => member.userId);
 	const currentOrganizationRole = useQuery(
 		app_convex_api.access_control.get_current_user_role,
 		defaultWorkspace ? { organizationId, workspaceId: defaultWorkspace._id } : "skip",
@@ -701,7 +677,7 @@ function RouteUsers() {
 	const userAnagraphicQueryProps = useMemo(
 		() =>
 			Object.fromEntries(
-				(workspaceUserIds ?? []).map(
+				memberUserIds.map(
 					(userId) =>
 						[
 							userId,
@@ -712,7 +688,7 @@ function RouteUsers() {
 						] as const,
 				),
 			),
-		[workspaceUserIds, organizationId, workspaceId],
+		[memberUserIds, organizationId, workspaceId],
 	);
 
 	const userAnagraphicQueryResults = useQueries(userAnagraphicQueryProps) as Record<
@@ -724,7 +700,7 @@ function RouteUsers() {
 	const userRoleQueryProps = useMemo(
 		() =>
 			Object.fromEntries(
-				(workspaceUserIds ?? []).map(
+				memberUserIds.map(
 					(userId) =>
 						[
 							userId,
@@ -735,13 +711,18 @@ function RouteUsers() {
 						] as const,
 				),
 			),
-		[workspaceUserIds, organizationId, workspaceId],
+		[memberUserIds, organizationId, workspaceId],
 	);
 
 	const userRoleQueryResults = useQueries(userRoleQueryProps) as Record<
 		app_convex_Id<"users">,
 		access_control_DisplayRole | null | undefined | Error
 	>;
+
+	// A row stays hidden until its name and role arrive, so say that the list is still loading.
+	const rowsLoading = memberUserIds.some(
+		(userId) => userAnagraphicQueryResults[userId] === undefined || userRoleQueryResults[userId] === undefined,
+	);
 
 	const [inviteModalOpen, setInviteModalOpen] = useState(false);
 	const [inviteEmail, setInviteEmail] = useState("");
@@ -1012,14 +993,9 @@ function RouteUsers() {
 			<UsersIcon aria-hidden />
 			Loading users...
 		</main>
-	) : !organization || !defaultWorkspace || !currentWorkspace || workspaceUserIds === null ? (
+	) : !organization || !defaultWorkspace || !currentWorkspace ? (
 		<main className={"RouteUsers-empty" satisfies RouteUsers_ClassNames} role="alert">
 			Organization users unavailable.
-		</main>
-	) : workspaceUserIds === undefined ? (
-		<main className={"RouteUsers-loading" satisfies RouteUsers_ClassNames} role="status" aria-live="polite">
-			<UsersIcon aria-hidden />
-			Loading users...
 		</main>
 	) : (
 		<main className={cn("RouteUsers" satisfies RouteUsers_ClassNames, "app-scrollable" satisfies AppClassName)}>
@@ -1049,22 +1025,66 @@ function RouteUsers() {
 				}
 			/>
 
-			<RouteUsersList
-				workspaceUserIds={workspaceUserIds}
-				userAnagraphicDict={userAnagraphicQueryResults}
-				userRoleDict={userRoleQueryResults}
-				assignableRoles={assignableRoles}
-				authUserId={auth.userId}
-				canManageMembers={canManageMembers}
-				canChangeRoles={canChangeRoles}
-				roleChangePendingUserId={roleChangePendingUserId}
-				canLeaveOrganization={canLeaveOrganization}
-				organizationIsPersonal={organizationIsPersonal}
-				canTransferOwnership={canTransferOwnership}
-				onRemove={handleRemove}
-				onRoleChange={handleRoleChange}
-				onTransfer={handleTransferTarget}
-			/>
+			{/* The field stays mounted while a search loads, so typing never loses focus. */}
+			<MyInput className={"RouteUsers-search" satisfies RouteUsers_ClassNames} role="search">
+				<MyInputBackground />
+				<MyInputArea>
+					<MyInputIcon>
+						<Search />
+					</MyInputIcon>
+					<MyInputControl
+						type="search"
+						aria-label="Search members"
+						placeholder="Search members"
+						value={searchText}
+						onChange={(event) => setSearchText(event.currentTarget.value)}
+					/>
+				</MyInputArea>
+				<MyInputBox />
+			</MyInput>
+
+			{members.status !== "LoadingFirstPage" && members.results.length === 0 ? (
+				<div className={"RouteUsers-empty" satisfies RouteUsers_ClassNames}>
+					{searchText.trim() ? `No members match "${searchText.trim()}".` : "No members."}
+				</div>
+			) : null}
+
+			{members.results.length > 0 ? (
+				<RouteUsersList
+					memberUserIds={memberUserIds}
+					userAnagraphicDict={userAnagraphicQueryResults}
+					userRoleDict={userRoleQueryResults}
+					assignableRoles={assignableRoles}
+					authUserId={auth.userId}
+					canManageMembers={canManageMembers}
+					canChangeRoles={canChangeRoles}
+					roleChangePendingUserId={roleChangePendingUserId}
+					canLeaveOrganization={canLeaveOrganization}
+					organizationIsPersonal={organizationIsPersonal}
+					canTransferOwnership={canTransferOwnership}
+					onRemove={handleRemove}
+					onRoleChange={handleRoleChange}
+					onTransfer={handleTransferTarget}
+				/>
+			) : null}
+
+			{members.status === "LoadingFirstPage" || rowsLoading ? (
+				<div className={"RouteUsers-loading" satisfies RouteUsers_ClassNames} role="status" aria-live="polite">
+					<UsersIcon aria-hidden />
+					Loading users...
+				</div>
+			) : null}
+
+			{members.status === "CanLoadMore" || members.status === "LoadingMore" ? (
+				<MyButton
+					variant="outline"
+					className={"RouteUsers-load-more" satisfies RouteUsers_ClassNames}
+					disabled={members.status === "LoadingMore"}
+					onClick={() => members.loadMore(MEMBERS_PAGE_SIZE)}
+				>
+					{members.status === "LoadingMore" ? "Loading..." : "Load more members"}
+				</MyButton>
+			) : null}
 
 			<RouteUsersTransferModal
 				transferTargetDisplayName={transferTarget?.displayName ?? null}

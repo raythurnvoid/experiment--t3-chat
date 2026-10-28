@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { ChannelsPosts } from "@/components/channels/channels-posts.tsx";
 import { ChannelsConversationPane } from "@/components/channels/channels-conversation.tsx";
 import { ChannelsPaneHeader } from "@/components/channels/channels-pane-header.tsx";
-import { useChannelsMentionPeople, useChannelsPeople } from "@/components/channels/channels-people.ts";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -34,8 +33,6 @@ export function FileEditorCommentsSidebar(props: {
 	const channelId = useQuery(app_convex_api.channels.get_file_channel, { membershipId, fileNodeId });
 	const channel = useQuery(app_convex_api.channels.get_channel, channelId ? { membershipId, channelId } : "skip");
 	const state = useQuery(app_convex_api.channels.get_channel_state, channelId ? { membershipId, channelId } : "skip");
-	const { people } = useChannelsPeople();
-	const mentionItems = useChannelsMentionPeople({ fileNodeId }, people);
 	const [rootId, setRootId] = useState<app_convex_Id<"channels_messages"> | null>(null);
 	const [quoteRequest, setQuoteRequest] = useState<file_quotes_Quote | null>(null);
 	useGlobalCustomEvent("files::quote_selection", ({ detail }) => {
@@ -94,7 +91,7 @@ export function FileEditorCommentsSidebar(props: {
 								name={file?.name ?? "File comments"}
 								root={thread.root}
 								readSequence={0}
-								mentionItems={mentionItems}
+								mentionItems={[]}
 								quoteRequest={quoteRequest}
 								onQuoteInserted={() => setQuoteRequest(null)}
 								jumpMessageId={undefined}
@@ -124,7 +121,7 @@ export function FileEditorCommentsSidebar(props: {
 							fileNodeId={fileNodeId}
 							state={state}
 							canPost={canPost}
-							mentionItems={mentionItems}
+							mentionItems={[]}
 							quoteRequest={quoteRequest}
 							onQuoteInserted={() => setQuoteRequest(null)}
 							markThreadIds={threadIds}

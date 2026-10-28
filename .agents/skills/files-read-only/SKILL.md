@@ -559,8 +559,11 @@ Files Properties shows three option cards under "Who can edit": Everyone with ac
 (read-only) (`read_only`), and Custom (`writer`). Custom picks one or more people and plugins; the UI
 says "plugin" where the code says service account. Custom shows the chosen writers as chips and a
 "Manage writers" button. The button opens the writers dialog (`files-write-policy-writers-modal.tsx`):
-one search field, no type menu, and People and Plugins lists. The field menu opens on focus and Ctrl+Space,
-lists everyone who is not added yet, and `people:` or `plugin:` in the text narrows it. Choosing Custom
+one search field, no type menu, and People and Plugins lists. The field menu opens on focus and Ctrl+Space.
+People come from `organizations_member_names.search_workspace_members` and plugins from
+`access_control.search_service_accounts`, 20 per page with "Show more", so the dialog never loads the whole
+workspace. `people:` or `plugin:` in the text narrows the search to one kind. A writer who is already on the
+list stays in the menu as a disabled row marked "Added". Choosing Custom
 with nobody chosen opens the dialog. The dialog only changes the draft; the footer Save writes it. Folders also have a "Rule for items inside" block with
 the same cards. It is the folder's `newChildWritePolicy`. There is no inherited text and no Open parent policy. The shared management state
 returns `canManage`, safe `localPolicy`, `localDefault`, and write access. A writer policy there is

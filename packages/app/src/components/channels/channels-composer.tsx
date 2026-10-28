@@ -35,6 +35,7 @@ import {
 	channels_composer_mention_PLUGIN_KEY,
 	channels_composer_channel_PLUGIN_KEY,
 	type ChannelsMentionItem,
+	type ChannelsMentionTarget,
 } from "./channels-composer-mention.tsx";
 import {
 	ChannelsComposerAttachments,
@@ -75,6 +76,7 @@ type ChannelsComposerControl_Props = {
 	onEnter?: () => void;
 	onEscape?: () => void;
 	onEmptyUp?: () => void;
+	mentionTarget?: ChannelsMentionTarget;
 	mentionItems?: readonly ChannelsMentionItem[];
 	quoteRequest?: file_quotes_Quote | null;
 	onQuoteInserted?: () => void;
@@ -95,6 +97,7 @@ const ChannelsComposerControl = memo(function ChannelsComposerControl(props: Cha
 		onEnter,
 		onEscape,
 		onEmptyUp,
+		mentionTarget,
 		mentionItems,
 		quoteRequest,
 		onQuoteInserted,
@@ -104,10 +107,11 @@ const ChannelsComposerControl = memo(function ChannelsComposerControl(props: Cha
 	const onEnterRef = useLiveRef(onEnter);
 	const onEscapeRef = useLiveRef(onEscape);
 	const onEmptyUpRef = useLiveRef(onEmptyUp);
+	const mentionTargetRef = useLiveRef(mentionTarget);
 	const mentionItemsRef = useLiveRef(mentionItems);
 	const attachmentsRefRef = useLiveRef(attachmentsRef);
 	const getMentionItems = useFn(() => mentionItemsRef.current ?? []);
-	const mentionsEnabled = useFn(() => mentionItemsRef.current !== undefined);
+	const mentionsEnabled = useFn(() => mentionTargetRef.current !== undefined);
 
 	const [editorProps] = useState<Parameters<typeof useEditor>[0]>(() => {
 		const extensions = [
@@ -377,6 +381,13 @@ export type ChannelsComposer_Props = {
 	onEnter?: () => void;
 	onEscape?: () => void;
 	onEmptyUp?: () => void;
+	/**
+	 * Where the message goes. It turns on the "@" and "#" suggestions; without it they stay off.
+	 */
+	mentionTarget?: ChannelsMentionTarget;
+	/**
+	 * The channels the "#" list offers.
+	 */
 	mentionItems?: readonly ChannelsMentionItem[];
 	quoteRequest?: file_quotes_Quote | null;
 	onQuoteInserted?: () => void;
@@ -401,6 +412,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 		onEnter,
 		onEscape,
 		onEmptyUp,
+		mentionTarget,
 		mentionItems,
 		quoteRequest,
 		onQuoteInserted,
@@ -430,7 +442,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 	);
 
 	return (
-		<ChannelsMentionContext value={mentionItems ?? []}>
+		<ChannelsMentionContext value={{ target: mentionTarget ?? null, items: mentionItems ?? [] }}>
 			<MyInput
 				variant={variant}
 				className={cn("ChannelsComposer" satisfies ChannelsComposer_ClassNames, className)}
@@ -466,6 +478,7 @@ export const ChannelsComposer = memo(function ChannelsComposer(props: ChannelsCo
 						onEnter={enter}
 						onEscape={onEscape}
 						onEmptyUp={onEmptyUp}
+						mentionTarget={mentionTarget}
 						mentionItems={mentionItems}
 						quoteRequest={quoteRequest}
 						onQuoteInserted={onQuoteInserted}

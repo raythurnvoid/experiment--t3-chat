@@ -39,7 +39,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 		}),
 	},
 }));
-vi.mock("./channels-people.ts", () => ({ useChannelsDirectName: () => "Ana", useChannelsMentionPeople: () => [] }));
+vi.mock("./channels-people.ts", () => ({ useChannelsDirectName: () => "Ana", useChannelsProfiles: () => [] }));
 vi.mock("./channels-message-window.ts", () => ({
 	useChannelsMessageWindow: (props: { target: { rootMessageId?: string } }) => {
 		const [editingMessage, setEditingMessage] = useState<ChannelsMessage | null>(null);
@@ -147,7 +147,6 @@ function Conversation(props: { width: number; narrow: boolean }) {
 				{...fixture()}
 				width={props.width}
 				narrow={props.narrow}
-				people={[]}
 				search={search}
 				onNavigate={(_id, search) => setSearch(search ?? {})}
 				onDialog={() => {}}

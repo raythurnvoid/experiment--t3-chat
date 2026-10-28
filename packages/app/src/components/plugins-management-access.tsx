@@ -7,15 +7,13 @@ import { MyButton } from "@/components/my-button.tsx";
 import {
 	MySelect,
 	MySelectItem,
-	MySelectItemsGroup,
-	MySelectItemsGroupText,
 	MySelectLabel,
 	MySelectOpenIndicator,
 	MySelectPopover,
 	MySelectPopoverContent,
-	MySelectPopoverScrollableArea,
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
+import { PrincipalPicker } from "@/components/principal-picker.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -35,10 +33,6 @@ type ManagementAccess = Pick<
 	"mode" | "principals"
 >;
 
-function principal_key(principal: ManagementAccess["principals"][number]) {
-	return principal.kind === "user" ? `user:${principal.userId}` : `role:${principal.role}`;
-}
-
 type PluginsManagementAccess_ClassNames =
 	| "PluginsManagementAccess"
 	| "PluginsManagementAccess-controls"
@@ -52,11 +46,10 @@ type PluginsManagementAccess_ClassNames =
 export const PluginsManagementAccess = memo(function PluginsManagementAccess(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	organizationId: app_convex_Id<"organizations">;
-	workspaceId: app_convex_Id<"organizations_workspaces">;
 	installationId?: app_convex_Id<"plugins_workspace_installations">;
 	onSaved?: () => void;
 }) {
-	const { membershipId, organizationId, workspaceId, installationId, onSaved } = props;
+	const { membershipId, organizationId, installationId, onSaved } = props;
 	const workspaceAccess = useQuery(
 		app_convex_api.plugins_access.get_workspace_install_access,
 		installationId ? "skip" : { membershipId },
@@ -67,28 +60,25 @@ export const PluginsManagementAccess = memo(function PluginsManagementAccess(pro
 	);
 	const access = installationId ? installationAccess : workspaceAccess;
 	const canEdit = installationId ? access !== null : workspaceAccess?.canManageSettings === true;
-	const workspaceUsers = useQuery(
-		app_convex_api.organizations.list_organization_workspace_users,
-		canEdit ? { organizationId, workspaceId } : "skip",
-	);
 	const roles = useQuery(app_convex_api.access_control.list_roles, canEdit ? { organizationId } : "skip");
 	const [draft, setDraft] = useState<ManagementAccess | null>(null);
+	const [addText, setAddText] = useState("");
 	const [addValue, setAddValue] = useState("");
 	const [saving, setSaving] = useState(false);
 	const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
 	const feedbackRef = useRef<HTMLParagraphElement | null>(null);
 	const saveButtonRef = useRef<HTMLButtonElement | null>(null);
-	const principalTriggerRef = useRef<HTMLButtonElement | null>(null);
+	const pickerInputRef = useRef<HTMLInputElement | null>(null);
 	const [focusFeedback, setFocusFeedback] = useState(false);
 	const current = draft ?? (access?.mode ? { mode: access.mode, principals: access.principals } : null);
 	const namedUserIds = useMemo(() => {
-		const ids = new Set(workspaceUsers ?? []);
+		const ids = new Set<app_convex_Id<"users">>();
 		if (access) ids.add(access.organizationOwnerUserId);
 		for (const principal of current?.principals ?? []) {
 			if (principal.kind === "user") ids.add(principal.userId);
 		}
 		return [...ids];
-	}, [workspaceUsers, access, current?.principals]);
+	}, [access, current?.principals]);
 	const nameQueries = useMemo(
 		() =>
 			Object.fromEntries(
@@ -114,26 +104,29 @@ export const PluginsManagementAccess = memo(function PluginsManagementAccess(pro
 		access_control_is_system_role(role)
 			? access_control_SYSTEM_ROLE_MATRIX[role].label
 			: (roles?.find((candidate) => candidate._id === role)?.name ?? "Deleted role");
-	const candidates = [
-		...(workspaceUsers ?? [])
-			.filter((userId) => userId !== access?.organizationOwnerUserId)
-			.map((userId) => ({
-				key: `user:${userId}`,
-				principal: { kind: "user" as const, userId },
-				name: user_name(userId),
-			})),
-		...access_control_SYSTEM_ROLES.map((role) => ({
-			key: `role:${role}`,
-			principal: { kind: "role" as const, role },
-			name: access_control_SYSTEM_ROLE_MATRIX[role].label,
-		})),
-		...(roles ?? []).map((role) => ({
-			key: `role:${role._id}`,
-			principal: { kind: "role" as const, role: role._id },
-			name: role.name,
-		})),
-	].filter((candidate) => !current?.principals.some((principal) => principal_key(principal) === candidate.key));
-	const selected = candidates.find((candidate) => candidate.key === addValue);
+	// The picker searches people on the server. Roles are filtered in the picker, because the list is
+	// small: the system roles plus at most 20 custom roles.
+	const pickerRoles = [
+		...access_control_SYSTEM_ROLES.map((role) => ({ role, name: access_control_SYSTEM_ROLE_MATRIX[role].label })),
+		...(roles ?? []).map((role) => ({ role: role._id, name: role.name })),
+	].sort((a, b) => a.name.localeCompare(b.name));
+	const takenValues = new Set(current?.principals.map((principal) => PrincipalPicker.value(principal)));
+	// Plugin access takes people and roles only. The picker offers no apps here. A pick that another
+	// tab saved to the list in the meantime is no longer addable.
+	const pickedPrincipal = takenValues.has(addValue) ? null : PrincipalPicker.fromValue(addValue);
+	const selected = pickedPrincipal?.kind === "service_account" ? null : pickedPrincipal;
+
+	// Typing after a pick starts a new search, so the old pick no longer stands.
+	const handleAddTextChange = (text: string) => {
+		setAddText(text);
+		setAddValue("");
+	};
+
+	const handleAddPick = (value: string, name: string) => {
+		setAddText(name);
+		setAddValue(value);
+	};
+
 	const handleSave = useFn(() => {
 		if (!draft || saving || !canEdit) return;
 		setSaving(true);
@@ -171,7 +164,7 @@ export const PluginsManagementAccess = memo(function PluginsManagementAccess(pro
 
 	if (access === undefined) return <p role="status">Loading plugin access…</p>;
 	if (!access || !canEdit || !current) return null;
-	const loadingNames = namedUserIds.some((userId) => names[userId] === undefined);
+	const loadingOwnerName = names[access.organizationOwnerUserId] === undefined;
 
 	return (
 		<section
@@ -211,14 +204,16 @@ export const PluginsManagementAccess = memo(function PluginsManagementAccess(pro
 					</MySelectPopoverContent>
 				</MySelectPopover>
 			</MySelect>
-			<p>{loadingNames ? "Loading names…" : user_name(access.organizationOwnerUserId)} (owner) always has access.</p>
+			<p>
+				{loadingOwnerName ? "Loading names…" : user_name(access.organizationOwnerUserId)} (owner) always has access.
+			</p>
 			{current.mode === "selected" ? (
 				<>
 					<ul className={"PluginsManagementAccess-list" satisfies PluginsManagementAccess_ClassNames}>
 						{current.principals.map((principal) => (
 							<li
-								key={principal_key(principal)}
-								data-plugin-principal={principal_key(principal)}
+								key={PrincipalPicker.value(principal)}
+								data-plugin-principal={PrincipalPicker.value(principal)}
 								className={"PluginsManagementAccess-entry" satisfies PluginsManagementAccess_ClassNames}
 							>
 								<span>
@@ -230,11 +225,11 @@ export const PluginsManagementAccess = memo(function PluginsManagementAccess(pro
 									aria-label={`Remove ${principal.kind === "user" ? user_name(principal.userId) : role_name(principal.role)}`}
 									onClick={() => {
 										if (saving) return;
-										principalTriggerRef.current?.focus();
+										pickerInputRef.current?.focus();
 										setDraft({
 											...current,
 											principals: current.principals.filter(
-												(entry) => principal_key(entry) !== principal_key(principal),
+												(entry) => PrincipalPicker.value(entry) !== PrincipalPicker.value(principal),
 											),
 										});
 										setFeedback(null);
@@ -246,45 +241,28 @@ export const PluginsManagementAccess = memo(function PluginsManagementAccess(pro
 						))}
 					</ul>
 					<div className={"PluginsManagementAccess-controls" satisfies PluginsManagementAccess_ClassNames}>
-						<MySelect
-							value={addValue}
-							setValue={(value) => {
-								if (typeof value === "string" && !saving) setAddValue(value);
-							}}
-						>
-							<MySelectLabel>Person or role to add</MySelectLabel>
-							<MySelectTrigger disabled={saving || loadingNames || roles === undefined}>
-								<MyButton ref={principalTriggerRef} variant="outline">
-									{selected?.name ?? "Choose a person or role"}
-									<MySelectOpenIndicator />
-								</MyButton>
-							</MySelectTrigger>
-							<MySelectPopover>
-								<MySelectPopoverScrollableArea>
-									<MySelectPopoverContent>
-										{(["user", "role"] as const).map((kind) => (
-											<MySelectItemsGroup key={kind}>
-												<MySelectItemsGroupText>{kind === "user" ? "People" : "Roles"}</MySelectItemsGroupText>
-												{candidates
-													.filter((candidate) => candidate.principal.kind === kind)
-													.map((candidate) => (
-														<MySelectItem key={candidate.key} value={candidate.key}>
-															{candidate.name}
-														</MySelectItem>
-													))}
-											</MySelectItemsGroup>
-										))}
-									</MySelectPopoverContent>
-								</MySelectPopoverScrollableArea>
-							</MySelectPopover>
-						</MySelect>
+						<PrincipalPicker
+							ref={pickerInputRef}
+							label="Person or role to add"
+							placeholder="Add a person or role…"
+							text={addText}
+							selectedValue={addValue}
+							takenValues={takenValues}
+							ownerUserId={access.organizationOwnerUserId}
+							roles={pickerRoles}
+							canPickApps={false}
+							disabled={saving}
+							onTextChange={handleAddTextChange}
+							onPick={handleAddPick}
+						/>
 						<MyButton
 							variant="outline"
 							disabled={!selected || saving || current.principals.length >= 50}
 							onClick={() => {
 								if (!selected || saving || current.principals.length >= 50) return;
-								principalTriggerRef.current?.focus();
-								setDraft({ ...current, principals: [...current.principals, selected.principal] });
+								pickerInputRef.current?.focus();
+								setDraft({ ...current, principals: [...current.principals, selected] });
+								setAddText("");
 								setAddValue("");
 								setFeedback(null);
 							}}

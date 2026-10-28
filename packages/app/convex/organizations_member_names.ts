@@ -1,5 +1,6 @@
 // Member names (`organizations_workspaces_users.displayName`): the copy of each user's name that the
-// Share dialog searches, the search itself, and the drain that follows a user's name changes.
+// member pickers and the Users page search, the search itself, and the drain that follows a user's
+// name changes.
 
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
@@ -73,7 +74,10 @@ export const search_workspace_members = query({
 			: ctx.db
 					.query("organizations_workspaces_users")
 					.withIndex("by_active_organization_workspace_sortDisplayName", (q) =>
-						q.eq("active", true).eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
+						q
+							.eq("active", true)
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId),
 					);
 		const page = await members.paginate({
 			...args.paginationOpts,

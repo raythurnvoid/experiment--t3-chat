@@ -52,7 +52,7 @@ import type { ChannelsMentionItem } from "./channels-composer-mention.tsx";
 import { ChannelsMessage } from "./channels-message.tsx";
 import { ChannelsMessageList } from "./channels-message-list.tsx";
 import { useChannelsMessageWindow, type ChannelsMessage as Message } from "./channels-message-window.ts";
-import { useChannelsDirectName, useChannelsMentionPeople, type ChannelsPerson } from "./channels-people.ts";
+import { useChannelsDirectName, useChannelsProfiles } from "./channels-people.ts";
 import type { ChannelsDialogKind } from "./channels-dialogs.tsx";
 import type { ChannelsSearch } from "./channels.tsx";
 import { ChannelsPosts } from "./channels-posts.tsx";
@@ -75,14 +75,13 @@ type ChannelsConversation_CustomAttributes = {
 export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	channel: Channel;
 	state: ChannelState;
-	people: readonly ChannelsPerson[];
 	search: ChannelsSearch;
 	narrow: boolean;
 	width: number;
 	onNavigate: (id: app_convex_Id<"channels">, search?: ChannelsSearch) => void;
 	onDialog: (kind: ChannelsDialogKind) => void;
 }) {
-	const { channel, state, people, search, narrow, width, onNavigate, onDialog } = props;
+	const { channel, state, search, narrow, width, onNavigate, onDialog } = props;
 	const region = useRef<HTMLElement>(null);
 	const threadPanel = useRef<ImperativePanelHandle>(null);
 	const opener = useRef<HTMLElement | null>(null);
@@ -111,10 +110,9 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 		app_convex_api.channels_messages.get_thread_by_root,
 		rootId ? { membershipId, rootMessageId: rootId } : "skip",
 	);
-	const directName = useChannelsDirectName(
-		document.kind === "direct" ? document.participantUserIds.filter((id) => id !== userId) : [],
-		people,
-	);
+	const otherUserIds = document.kind === "direct" ? document.participantUserIds.filter((id) => id !== userId) : [];
+	const directName = useChannelsDirectName(otherUserIds);
+	const directAvatarUrl = useChannelsProfiles(otherUserIds.slice(0, 1))[0]?.avatarUrl;
 	const name =
 		document.kind === "direct"
 			? directName
@@ -124,24 +122,20 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	const resolvable =
 		document.kind === "file" ||
 		((document.kind === "public" || document.kind === "private") && document.resolvableThreads);
-	const peopleMentions = useChannelsMentionPeople({ channelId: document._id }, people);
-	const mentionItems: ChannelsMentionItem[] = [
-		...peopleMentions,
-		...Array.from(
-			new Map([...joined.results, ...publicChannels.results].map((item) => [item._id, item])).values(),
-		).flatMap((item) =>
-			item.kind === "public" || item.kind === "private"
-				? [
-						{
-							kind: "channel" as const,
-							id: item._id,
-							label: item.name,
-							href: `${url_path_messages({ organizationName, workspaceName })}/${item._id}`,
-						},
-					]
-				: [],
-		),
-	];
+	const mentionItems: ChannelsMentionItem[] = Array.from(
+		new Map([...joined.results, ...publicChannels.results].map((item) => [item._id, item])).values(),
+	).flatMap((item) =>
+		item.kind === "public" || item.kind === "private"
+			? [
+					{
+						kind: "channel" as const,
+						id: item._id,
+						label: item.name,
+						href: `${url_path_messages({ organizationName, workspaceName })}/${item._id}`,
+					},
+				]
+			: [],
+	);
 	const openThread = useFn((id: app_convex_Id<"channels_messages">) => {
 		opener.current =
 			globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;
@@ -192,16 +186,7 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 						<Hash size={16} />
 					) : (
 						<MyAvatar className={"ChannelsConversation-direct-avatar" satisfies ChannelsConversation_ClassNames}>
-							<MyAvatarImage
-								src={
-									people.find(
-										(person) =>
-											document.kind === "direct" &&
-											document.participantUserIds.filter((id) => id !== userId)[0] === person.id,
-									)?.avatarUrl
-								}
-								alt=""
-							/>
+							<MyAvatarImage src={directAvatarUrl ?? undefined} alt="" />
 							<MyAvatarFallback>{directName.slice(0, 2)}</MyAvatarFallback>
 						</MyAvatar>
 					)}
@@ -872,6 +857,7 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 								.find((row) => row.message.authorUserId === userId && row.message.deletedAt === null);
 							if (latest) edit(latest);
 						}}
+						mentionTarget={{ channelId }}
 						mentionItems={mentionItems}
 						quoteRequest={editing ? null : quoteRequest}
 						onQuoteInserted={onQuoteInserted}

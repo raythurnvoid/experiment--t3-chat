@@ -20,7 +20,6 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 vi.mock("@/components/app-auth.tsx", () => ({ AppAuthProvider: { useAuthenticated: () => ({ userId: "viewer" }) } }));
 vi.mock("./channels-people.ts", () => ({
-	useChannelsPeople: () => ({ people: [] }),
 	useChannelsDirectName: () => "Ana",
 }));
 vi.mock("./channels-message.tsx", () => ({
@@ -103,11 +102,12 @@ describe("ChannelsFeedMessage", () => {
 	test("opens post roots in their thread and removes the whole preview after access loss", () => {
 		const row = message();
 		mocks.channel = { channel: { kind: "file", layout: "posts" }, file: { path: "/notes.md" } };
-		const view = render(<ChannelsFeedMessage row={row} people={[]} unread />);
+		const view = render(<ChannelsFeedMessage row={row} unread />);
 		expect(screen.getByRole("link", { name: "Open context" }).getAttribute("href")).toContain("thread=root");
 		expect(screen.getByTitle("Unread")).toBeTruthy();
 		mocks.channel = null;
-		view.rerender(<ChannelsFeedMessage row={row} people={[]} unread />);
+		// The mock query does not notify, so render a copy of the row, as a live query update would.
+		view.rerender(<ChannelsFeedMessage row={{ ...row }} unread />);
 		expect(screen.queryByText("Checked preview"), "lost channel access must remove the cached preview").toBeNull();
 		expect(screen.queryByText("/notes.md")).toBeNull();
 	});

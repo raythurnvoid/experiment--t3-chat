@@ -19,8 +19,6 @@ import {
 	type ChannelsComposer_Props,
 } from "@/components/channels/channels-composer.tsx";
 import { files_COMMENT_MARK_TYPE } from "../../../../../shared/files-tiptap-comments.ts";
-import { useChannelsMentionPeople, useChannelsPeople } from "@/components/channels/channels-people.ts";
-import type { ChannelsMentionItem } from "@/components/channels/channels-composer-mention.tsx";
 
 // #region form
 type FileEditorRichTextToolsCommentForm_ClassNames = "FileEditorRichTextToolsCommentForm";
@@ -35,7 +33,6 @@ type FileEditorRichTextToolsCommentForm_Props = {
 	onChange: ChannelsComposer_Props["onChange"];
 	onEnter: ChannelsComposer_Props["onEnter"];
 	onSubmit: ComponentProps<"form">["onSubmit"];
-	mentionItems: readonly ChannelsMentionItem[];
 };
 
 const FileEditorRichTextToolsCommentForm = memo(function FileEditorRichTextToolsCommentForm(
@@ -51,7 +48,6 @@ const FileEditorRichTextToolsCommentForm = memo(function FileEditorRichTextTools
 		onChange,
 		onEnter,
 		onSubmit,
-		mentionItems,
 	} = props;
 
 	return (
@@ -71,7 +67,7 @@ const FileEditorRichTextToolsCommentForm = memo(function FileEditorRichTextTools
 				attachmentTarget={{ kind: "file", fileNodeId }}
 				onChange={onChange}
 				onEnter={onEnter}
-				mentionItems={mentionItems}
+				mentionTarget={{ fileNodeId }}
 			/>
 		</form>
 	);
@@ -138,8 +134,6 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 	const sendMessage = useMutation(app_convex_api.channels_messages.send_message);
 	const confirmAnchor = useMutation(app_convex_api.channels_messages.confirm_comment_anchor);
 	const discardComment = useMutation(app_convex_api.channels_messages.discard_unconfirmed_comment);
-	const { people } = useChannelsPeople();
-	const mentionItems = useChannelsMentionPeople({ fileNodeId }, people);
 
 	const [open, setOpen] = useState(false);
 	const [isEmpty, setIsEmpty] = useState(true);
@@ -349,7 +343,6 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 						isEmpty={isEmpty}
 						isSubmitting={isSubmitting}
 						isSelectionEmpty={isSelectionEmpty}
-						mentionItems={mentionItems}
 						onChange={handleChange}
 						onEnter={handleComposerEnter}
 						onSubmit={handleSubmit}

@@ -3631,7 +3631,6 @@ function RoutePluginsPlugin() {
 						key={`management:${installedItem.installation._id}`}
 						membershipId={membershipId}
 						organizationId={organizationId}
-						workspaceId={workspaceId}
 						installationId={installedItem.installation._id}
 						onSaved={() => heroTitleRef.current?.focus()}
 					/>

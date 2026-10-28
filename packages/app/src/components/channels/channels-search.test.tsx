@@ -19,7 +19,6 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 vi.mock("@/lib/app-channels-context.tsx", () => ({
 	AppChannelsProvider: { useContext: () => ({ channelList: { results: [] } }) },
 }));
-vi.mock("./channels-people.ts", () => ({ useChannelsPeople: () => ({ people: [] }) }));
 vi.mock("./channels-feed.tsx", () => ({ ChannelsFeedMessage: () => null }));
 
 beforeEach(() => {

@@ -25,6 +25,10 @@
 		color: var(--color-fg-08);
 	}
 
+	.RouteUsers-load-more {
+		align-self: center;
+	}
+
 	/* #endregion root */
 
 	/* #region user list */

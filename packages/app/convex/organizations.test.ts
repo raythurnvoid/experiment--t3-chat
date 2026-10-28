@@ -1797,18 +1797,6 @@ describe("invite_user_to_organization_workspace", () => {
 		expect(afterInvite.notifications[0]?.organizationId).toBe(created._yay!.organizationId);
 		expect(afterInvite.notifications[0]?.workspaceId).toBe(selectedWorkspace._yay!.workspaceId);
 
-		const homeWorkspaceUserIds = await owner.query(api.organizations.list_organization_workspace_users, {
-			organizationId: created._yay!.organizationId,
-			workspaceId: created._yay!.defaultWorkspaceId,
-		});
-		expect(homeWorkspaceUserIds?.toSorted()).toEqual([ownerId, invitedUserId].toSorted());
-
-		const selectedWorkspaceUserIds = await owner.query(api.organizations.list_organization_workspace_users, {
-			organizationId: created._yay!.organizationId,
-			workspaceId: selectedWorkspace._yay!.workspaceId,
-		});
-		expect(selectedWorkspaceUserIds?.toSorted()).toEqual([ownerId, invitedUserId].toSorted());
-
 		const removeResult = await owner.mutation(api.organizations.remove_user_from_organization, {
 			organizationId: created._yay!.organizationId,
 			userIdToRemove: invitedUserId,

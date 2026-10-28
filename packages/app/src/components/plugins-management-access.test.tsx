@@ -8,6 +8,19 @@ const { queryMock, mutationMock } = vi.hoisted(() => ({ queryMock: vi.fn(), muta
 
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => queryMock(...args),
+	// The picker searches people on the server. A skipped search stays on its first page, like the
+	// real hook.
+	usePaginatedQuery: (query: string, args: unknown) =>
+		args !== "skip" && query === "members"
+			? {
+					results: [
+						{ userId: "owner_1", displayName: "Owner Sam", avatarUrl: null },
+						{ userId: "user_1", displayName: "Ada", avatarUrl: null },
+					],
+					status: "Exhausted",
+					loadMore: vi.fn(),
+				}
+			: { results: [], status: args === "skip" ? "LoadingFirstPage" : "Exhausted", loadMore: vi.fn() },
 	useQueries: (queries: Record<string, unknown>) =>
 		Object.fromEntries(
 			Object.keys(queries).map((key) => [
@@ -31,8 +44,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			update_workspace_install_access: "save_workspace",
 			update_installation_access: "save_installation",
 		},
-		organizations: { list_organization_workspace_users: "users" },
-		access_control: { list_roles: "roles" },
+		organizations_member_names: { search_workspace_members: "members" },
+		access_control: { list_roles: "roles", search_service_accounts: "accounts" },
 		users: { get_anagraphic: "anagraphic" },
 	},
 }));
@@ -42,15 +55,15 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { PluginsManagementAccess } from "./plugins-management-access.tsx";
 
-function TestAccess(props: { installation?: boolean }) {
-	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
+function TestAccess(props: { installation?: boolean; onSaved?: () => void }) {
+	const { membershipId, organizationId } = AppTenantProvider.useContext();
 	const plugin = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId })?.at(0);
 	return (
 		<PluginsManagementAccess
 			membershipId={membershipId}
 			organizationId={organizationId}
-			workspaceId={workspaceId}
 			installationId={props.installation ? (plugin?.installationId ?? undefined) : undefined}
+			onSaved={props.onSaved}
 		/>
 	);
 }
@@ -64,7 +77,6 @@ function mockAccess(access: {
 		if (query === "workspace_access" || query === "installation_access")
 			return { canInstall: true, canManageSettings: true, organizationOwnerUserId: "owner_1", ...access };
 		if (query === "catalog") return [{ installationId: "installation_1" }];
-		if (query === "users") return ["owner_1", "user_1"];
 		if (query === "roles") return [{ _id: "role_1", name: "Import helpers" }];
 		return undefined;
 	});
@@ -83,7 +95,7 @@ describe("PluginsManagementAccess", () => {
 		fireEvent.click(screen.getByRole("combobox", { name: "Who can install plugins" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Selected people and roles" }));
 		fireEvent.click(screen.getByRole("combobox", { name: "Person or role to add" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Ada" }));
+		fireEvent.click(await screen.findByRole("option", { name: /Ada/ }));
 		fireEvent.click(screen.getByRole("button", { name: "Add to access list" }));
 		fireEvent.click(screen.getByRole("combobox", { name: "Person or role to add" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Import helpers" }));
@@ -161,10 +173,24 @@ describe("PluginsManagementAccess", () => {
 		});
 		render(<TestAccess />);
 		fireEvent.click(screen.getByRole("combobox", { name: "Person or role to add" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Ada" }));
+		fireEvent.click(await screen.findByRole("option", { name: /Ada/ }));
 		expect(screen.getByRole("button", { name: "Add to access list" })).toHaveProperty("disabled", true);
 		expect(document.querySelectorAll("[data-plugin-principal]")).toHaveLength(50);
 		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("does not add a picked person that another tab saved to the list meanwhile", async () => {
+		mockAccess({ mode: "selected", principals: [] });
+		const view = render(<TestAccess />);
+		fireEvent.click(screen.getByRole("combobox", { name: "Person or role to add" }));
+		fireEvent.click(await screen.findByRole("option", { name: /Ada/ }));
+		expect(screen.getByRole("button", { name: "Add to access list" })).toHaveProperty("disabled", false);
+
+		// The mocked query does not render again by itself. A new callback makes the memoized
+		// component render, like a real query update would.
+		mockAccess({ mode: "selected", principals: [{ kind: "user", userId: "user_1" }] });
+		view.rerender(<TestAccess onSaved={() => {}} />);
+		expect(screen.getByRole("button", { name: "Add to access list" })).toHaveProperty("disabled", true);
 	});
 
 	test("keeps setup settings hidden from a member who cannot manage them", () => {

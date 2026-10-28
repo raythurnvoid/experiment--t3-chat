@@ -2541,7 +2541,8 @@ export const list_service_accounts = query({
 });
 
 /**
- * One page of the live service accounts of the caller's workspace, for the Share dialog's picker.
+ * One page of the live service accounts of the caller's workspace, for the Share dialog and the
+ * Properties writers dialog.
  * Empty text lists them in creation order. Other text matches whole words and word starts of the
  * name, best match first.
  */

@@ -304,6 +304,7 @@ export const ChannelsPosts = memo(function ChannelsPosts(props: {
 						submitDisabled={busy || empty || !connection.isWebSocketConnected}
 						onChange={change}
 						onEnter={submit}
+						mentionTarget={fileNodeId ? { fileNodeId } : { channelId: channelId! }}
 						mentionItems={mentionItems}
 						quoteRequest={quoteRequest}
 						onQuoteInserted={onQuoteInserted}

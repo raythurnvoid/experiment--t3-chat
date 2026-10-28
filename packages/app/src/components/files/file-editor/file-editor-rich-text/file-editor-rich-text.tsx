@@ -898,7 +898,7 @@ const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichText
 
 	return createPortal(
 		<FileEditorCommentsSidebar key={fileNodeId} fileNodeId={fileNodeId} threadIds={threadIds} hideMarkedPosts>
-			<FileEditorRichTextAnchoredComments editor={editor} fileNodeId={fileNodeId} threads={threads} />
+			<FileEditorRichTextAnchoredComments editor={editor} threads={threads} />
 		</FileEditorCommentsSidebar>,
 		commentsPortalHost,
 	);

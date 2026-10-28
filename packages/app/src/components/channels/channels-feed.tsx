@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { ChannelsMessageContent } from "./channels-message.tsx";
 import type { ChannelsMessage } from "./channels-message-window.ts";
-import { useChannelsDirectName, useChannelsPeople, type ChannelsPerson } from "./channels-people.ts";
+import { useChannelsDirectName } from "./channels-people.ts";
 
 type ChannelsFeedMessage_ClassNames =
 	| "ChannelsFeedMessage"
@@ -23,20 +23,18 @@ type ChannelsFeedMessage_CustomAttributes = { "data-message-id": string; "data-u
 
 export const ChannelsFeedMessage = memo(function ChannelsFeedMessage(props: {
 	row: ChannelsMessage;
-	people: readonly ChannelsPerson[];
 	unread?: boolean;
 	label?: string;
 	threadRootId?: app_convex_Id<"channels_messages"> | null;
 	onOpen?: () => void;
 	children?: ReactNode;
 }) {
-	const { row, people, unread = false, label, threadRootId, onOpen, children } = props;
+	const { row, unread = false, label, threadRootId, onOpen, children } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const channel = useQuery(app_convex_api.channels.get_channel, { membershipId, channelId: row.message.channelId });
 	const directName = useChannelsDirectName(
 		channel?.channel.kind === "direct" ? channel.channel.participantUserIds.filter((id) => id !== userId) : [],
-		people,
 	);
 	if (channel === null) return null;
 	if (channel === undefined) return <p>Loading channel…</p>;
@@ -107,7 +105,6 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 	const { compact = false, onOpen } = props;
 	const { inbox, inboxUnreadCount, inboxHasMore } = AppChannelsProvider.useContext();
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
-	const { people } = useChannelsPeople();
 
 	// Hide the compact popover block when there is nothing to show or load.
 	if (compact && inbox.results.length === 0 && inbox.status === "Exhausted") {
@@ -142,7 +139,6 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 					<ChannelsFeedMessage
 						key={entry.item._id}
 						row={entry.message}
-						people={people}
 						label={entry.item.kind === "mention" ? "Mention" : "Reply"}
 						unread={entry.unread}
 						threadRootId={entry.item.threadRootId}
@@ -165,7 +161,6 @@ type ChannelsThreads_ClassNames = "ChannelsThreads" | "ChannelsThreads-list";
 
 export const ChannelsThreads = memo(function ChannelsThreads() {
 	const { threads, threadsUnreadCount, threadsHasMore } = AppChannelsProvider.useContext();
-	const { people } = useChannelsPeople();
 	return (
 		<section
 			className={cn("ChannelsThreads" satisfies ChannelsThreads_ClassNames, "app-scrollable" satisfies AppClassName)}
@@ -180,7 +175,6 @@ export const ChannelsThreads = memo(function ChannelsThreads() {
 					<ChannelsFeedMessage
 						key={entry.follower._id}
 						row={entry.root}
-						people={people}
 						unread={entry.unread}
 						threadRootId={entry.root.message._id}
 					>

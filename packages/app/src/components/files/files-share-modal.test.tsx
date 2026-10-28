@@ -656,7 +656,7 @@ describe("FilesShareModal", () => {
 
 		fireEvent.click(ada);
 		expect(
-			screen.getByRole("combobox", { name: "Person, role, or app to add" }).getAttribute("data-share-add-principal"),
+			screen.getByRole("combobox", { name: "Person, role, or app to add" }).getAttribute("data-principal-picker-value"),
 		).toBe("");
 	});
 

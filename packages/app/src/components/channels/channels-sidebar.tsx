@@ -40,7 +40,7 @@ import { url_path_messages } from "@/lib/urls.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
-import { useChannelsDirectName, type ChannelsPerson } from "./channels-people.ts";
+import { useChannelsDirectName } from "./channels-people.ts";
 
 type ChannelsSidebar_ClassNames =
 	| "ChannelsSidebar"
@@ -54,12 +54,11 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 	channelId: string | undefined;
 	channelList: UsePaginatedQueryReturnType<typeof app_convex_api.channels.list_my_channels>;
 	states: Record<string, ChannelState | Error | undefined>;
-	people: readonly ChannelsPerson[];
 	onClose: () => void;
 	onDialog: (dialog: "create" | "direct" | "quick") => void;
 	onNavigate: () => void;
 }) {
-	const { channelId, channelList, states, people, onClose, onDialog, onNavigate } = props;
+	const { channelId, channelList, states, onClose, onDialog, onNavigate } = props;
 	const [collapsed, setCollapsed] = useState<string[]>([]);
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { inboxUnreadCount, threadsUnreadCount, inboxHasMore, threadsHasMore } = AppChannelsProvider.useContext();
@@ -238,7 +237,6 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 											key={channel._id}
 											channel={channel}
 											state={state instanceof Error ? null : state}
-											people={people}
 											selected={channel._id === channelId}
 											onNavigate={onNavigate}
 											onChange={(operation) => void change(channel, operation)}
@@ -275,12 +273,11 @@ type ChannelsSidebarRow_CustomAttributes = {
 const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
 	channel: app_convex_Doc<"channels">;
 	state: ChannelState | undefined;
-	people: readonly ChannelsPerson[];
 	selected: boolean;
 	onNavigate: () => void;
 	onChange: (operation: "read" | "star" | "leave" | "all" | "mentions" | "none") => void;
 }) {
-	const { channel, state, people, selected, onNavigate, onChange } = props;
+	const { channel, state, selected, onNavigate, onChange } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const [menuOpen, setMenuOpen] = useState(false);
@@ -290,7 +287,6 @@ const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
 	);
 	const directName = useChannelsDirectName(
 		channel.kind === "direct" ? channel.participantUserIds.filter((id) => id !== userId) : [],
-		people,
 	);
 	const name =
 		channel.kind === "direct" ? directName : channel.kind === "file" ? (file?.file?.name ?? "File") : channel.name;

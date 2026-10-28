@@ -30,7 +30,7 @@ import {
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useChannelsDirectName, type ChannelsPerson } from "./channels-people.ts";
+import { useChannelsDirectName, useChannelsProfiles } from "./channels-people.ts";
 
 export type ChannelsDialogKind = "create" | "direct" | "members" | "settings" | "quick";
 type ChannelsDialogs_ClassNames =
@@ -41,14 +41,18 @@ type ChannelsDialogs_ClassNames =
 	| "ChannelsDialogs-person"
 	| "ChannelsDialogs-error";
 
+/**
+ * People per page in the add list. "Show more people" reads the next page.
+ */
+const PEOPLE_PAGE_SIZE = 20;
+
 export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 	kind: ChannelsDialogKind;
 	channel: app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel>;
-	people: readonly ChannelsPerson[];
 	onClose: () => void;
 	onChannel: (channelId: app_convex_Id<"channels">) => void;
 }) {
-	const { kind, channel, people, onClose, onChannel } = props;
+	const { kind, channel, onClose, onChannel } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const groupName = useId();
@@ -77,6 +81,14 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 		app_convex_api.channels.list_channel_members,
 		kind === "members" && channel ? { membershipId, channelId: channel.channel._id } : "skip",
 		{ initialNumItems: 50 },
+	);
+	const addsPeople =
+		kind === "direct" || (kind === "members" && !!channel?.canManage && channel.channel.kind === "private");
+	// The server searches the workspace one page at a time, so a workspace of any size loads the same.
+	const candidates = usePaginatedQuery(
+		app_convex_api.organizations_member_names.search_workspace_members,
+		addsPeople ? { membershipId, text: filter } : "skip",
+		{ initialNumItems: PEOPLE_PAGE_SIZE },
 	);
 	const joined = usePaginatedQuery(
 		app_convex_api.channels.list_my_channels,
@@ -205,12 +217,9 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 			setError("Could not change the archive state");
 		}
 	});
-	const candidates = people.filter(
-		(person) =>
-			person.id !== userId &&
-			person.name.toLowerCase().includes(filter.toLowerCase()) &&
-			!members.results.some((member) => member.userId === person.id),
-	);
+	// Only the member pages loaded in this dialog are known here. Adding a current member again changes
+	// nothing on the server, so a member on a page that is not loaded yet is harmless.
+	const memberUserIds = new Set(members.results.map((member) => member.userId));
 	const quickChannels = [
 		...new Map([...joined.results, ...publicChannels.results].map((item) => [item._id, item])).values(),
 	];
@@ -324,7 +333,6 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 									<ChannelsDialogsQuickRow
 										key={item._id}
 										channel={item}
-										people={people}
 										filter={filter}
 										onOpen={() => {
 											onChannel(item._id);
@@ -345,7 +353,7 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 								{members.results.map((member) => (
 									<div key={member._id} className={"ChannelsDialogs-person" satisfies ChannelsDialogs_ClassNames}>
 										<span>
-											{people.find((person) => person.id === member.userId)?.name ?? "User"} · {member.level}
+											<ChannelsDialogsPersonName userId={member.userId} /> · {member.level}
 										</span>
 										{channel?.canManage && channel.channel.kind === "private" && (
 											<>
@@ -371,29 +379,49 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 								)}
 							</div>
 						)}
-						{(kind === "direct" ||
-							(kind === "members" && channel?.canManage && channel.channel.kind === "private")) && (
+						{addsPeople && (
 							<div className={"ChannelsDialogs-list" satisfies ChannelsDialogs_ClassNames}>
 								<p>
 									{kind === "direct"
 										? "Choose up to 8 people. This group stays fixed."
 										: "Add people to this private channel."}
 								</p>
-								{candidates.map((person) => (
-									<MyCheckboxButton
-										key={person.id}
-										name={groupName}
-										variant="outline"
-										checked={selected.includes(person.id)}
-										disabled={!selected.includes(person.id) && selected.length >= (kind === "direct" ? 8 : 50)}
-										onCheckedChange={(checked) => {
-											setSelected((ids) => (checked ? [...ids, person.id] : ids.filter((id) => id !== person.id)));
-											setError("");
-										}}
-									>
-										{person.name}
-									</MyCheckboxButton>
-								))}
+								{candidates.results
+									.filter((person) => person.userId !== userId)
+									.map((person) => {
+										// A known member stays in the list, locked, so a search for them says why they
+										// cannot be added instead of finding nothing.
+										const isMember = memberUserIds.has(person.userId);
+										return (
+											<MyCheckboxButton
+												key={person.userId}
+												name={groupName}
+												variant="outline"
+												checked={selected.includes(person.userId)}
+												disabled={
+													isMember ||
+													(!selected.includes(person.userId) && selected.length >= (kind === "direct" ? 8 : 50))
+												}
+												onCheckedChange={(checked) => {
+													setSelected((ids) =>
+														checked ? [...ids, person.userId] : ids.filter((id) => id !== person.userId),
+													);
+													setError("");
+												}}
+											>
+												{person.displayName || "Unknown"}
+												{isMember && " · Member"}
+											</MyCheckboxButton>
+										);
+									})}
+								{candidates.status === "LoadingFirstPage" ? (
+									<p>Searching…</p>
+								) : candidates.results.every((person) => person.userId === userId) ? (
+									<p>No matches</p>
+								) : null}
+								{candidates.status === "CanLoadMore" && (
+									<MyButton onClick={() => candidates.loadMore(PEOPLE_PAGE_SIZE)}>Show more people</MyButton>
+								)}
 							</div>
 						)}
 						{error && (
@@ -430,13 +458,18 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 	);
 });
 
+const ChannelsDialogsPersonName = memo(function ChannelsDialogsPersonName(props: { userId: app_convex_Id<"users"> }) {
+	const { userId } = props;
+	const profile = useChannelsProfiles([userId])[0];
+	return profile === undefined ? "…" : (profile?.name ?? "User");
+});
+
 const ChannelsDialogsQuickRow = memo(function ChannelsDialogsQuickRow(props: {
 	channel: app_convex_Doc<"channels">;
-	people: readonly ChannelsPerson[];
 	filter: string;
 	onOpen: () => void;
 }) {
-	const { channel, people, filter, onOpen } = props;
+	const { channel, filter, onOpen } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const file = useQuery(
@@ -445,7 +478,6 @@ const ChannelsDialogsQuickRow = memo(function ChannelsDialogsQuickRow(props: {
 	);
 	const directName = useChannelsDirectName(
 		channel.kind === "direct" ? channel.participantUserIds.filter((id) => id !== userId) : [],
-		people,
 	);
 	const name = channel.kind === "direct" ? directName : channel.kind === "file" ? file?.file?.path : `#${channel.name}`;
 	if (!name || !name.toLowerCase().includes(filter.toLowerCase())) return null;
