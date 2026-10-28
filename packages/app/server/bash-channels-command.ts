@@ -222,7 +222,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 					: null;
 				return `${item.channelId}\t${path ? `file:${path}` : item.reference}\t${item.kind}\t${path ?? item.name}\t${item.lastMessageAt ? new Date(item.lastMessageAt).toISOString() : "no messages"}`;
 			}
-			if ("userId" in item) return `${item.userId}\t${item.name}`;
+			if ("userId" in item) return `${item.userId}\t${item.name}\t${item.status}`;
 			const message = item.message;
 			return [
 				...(command === "search" ? [`channel: ${message.channelId}`] : []),

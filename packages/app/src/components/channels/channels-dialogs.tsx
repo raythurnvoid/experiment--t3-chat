@@ -40,6 +40,9 @@ type ChannelsDialogs_ClassNames =
 	| "ChannelsDialogs-list"
 	| "ChannelsDialogs-person"
 	| "ChannelsDialogs-error";
+type ChannelsDialogs_CustomAttributes = {
+	"data-member-status": "active" | "left" | "locked";
+};
 
 /**
  * People per page in the add list. "Show more people" reads the next page.
@@ -218,8 +221,9 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 		}
 	});
 	// Only the member pages loaded in this dialog are known here. Adding a current member again changes
-	// nothing on the server, so a member on a page that is not loaded yet is harmless.
-	const memberUserIds = new Set(members.results.map((member) => member.userId));
+	// nothing on the server, so a member on a page that is not loaded yet is harmless. A person who left
+	// and came back can be added again, so a "left" row does not lock them.
+	const memberUserIds = new Set(members.results.flatMap((row) => (row.status === "left" ? [] : [row.member.userId])));
 	const quickChannels = [
 		...new Map([...joined.results, ...publicChannels.results].map((item) => [item._id, item])).values(),
 	];
@@ -350,20 +354,29 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 						)}
 						{kind === "members" && (
 							<div className={"ChannelsDialogs-list" satisfies ChannelsDialogs_ClassNames}>
-								{members.results.map((member) => (
-									<div key={member._id} className={"ChannelsDialogs-person" satisfies ChannelsDialogs_ClassNames}>
+								{/* The server keeps people who left or lost access in the list, so a manager can see and
+								    remove them. Only "left" people cannot change level. */}
+								{members.results.map(({ member, status }) => (
+									<div
+										key={member._id}
+										className={"ChannelsDialogs-person" satisfies ChannelsDialogs_ClassNames}
+										{...({ "data-member-status": status } satisfies ChannelsDialogs_CustomAttributes)}
+									>
 										<span>
-											<ChannelsDialogsPersonName userId={member.userId} /> · {member.level}
+											<ChannelsDialogsPersonName userId={member.userId} />
+											{status === "left" ? " (left)" : status === "locked" ? " (can't see this)" : ""} · {member.level}
 										</span>
 										{channel?.canManage && channel.channel.kind === "private" && (
 											<>
-												<MyButton
-													onClick={() =>
-														void changeMember(member.userId, member.level === "manager" ? "member" : "manager")
-													}
-												>
-													{member.level === "manager" ? "Make member" : "Make manager"}
-												</MyButton>
+												{status !== "left" && (
+													<MyButton
+														onClick={() =>
+															void changeMember(member.userId, member.level === "manager" ? "member" : "manager")
+														}
+													>
+														{member.level === "manager" ? "Make member" : "Make manager"}
+													</MyButton>
+												)}
 												<MyButton
 													variant="ghost_destructive"
 													onClick={() => void changeMember(member.userId, "remove")}

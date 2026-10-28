@@ -91,11 +91,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const document = channel.channel;
-	const members = usePaginatedQuery(
-		app_convex_api.channels.list_channel_members,
-		{ membershipId, channelId: document._id },
-		{ initialNumItems: 50 },
-	);
 	const joined = usePaginatedQuery(app_convex_api.channels.list_my_channels, { membershipId }, { initialNumItems: 50 });
 	const publicChannels = usePaginatedQuery(
 		app_convex_api.channels.browse_public_channels,
@@ -154,9 +149,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	);
 
 	useEffect(() => {
-		if (members.status === "CanLoadMore") members.loadMore(50);
-	}, [members.status, members.loadMore]);
-	useEffect(() => {
 		if (!region.current) return;
 		const observer = new ResizeObserver(([entry]) => setPaneWidth(entry!.contentRect.width));
 		observer.observe(region.current);
@@ -205,10 +197,10 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 					Open file
 				</a>
 			)}
-			<MyButton aria-label={`Members of ${name}: ${members.results.length}`} onClick={() => onDialog("members")}>
+			{/* Read the stored count. Loading every member page to count them would grow with the channel. */}
+			<MyButton aria-label={`Members of ${name}: ${state.activity.memberCount}`} onClick={() => onDialog("members")}>
 				<Users size={16} />
-				{members.results.length}
-				{members.status === "CanLoadMore" ? "+" : ""}
+				{state.activity.memberCount}
 			</MyButton>
 			<MyMenu>
 				<MyMenuTrigger>

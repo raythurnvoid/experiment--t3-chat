@@ -176,6 +176,24 @@ export async function channels_db_add_member(
 	return memberId;
 }
 
+export const channels_member_status_validator = v.union(v.literal("active"), v.literal("left"), v.literal("locked"));
+
+/**
+ * Member lists keep a row whose person left the workspace or can no longer read the channel.
+ * They mark it "left" or "locked" instead of dropping it. Dropping rows would make a page read
+ * rows only to skip them, and `memberCount` would not match the list.
+ */
+export async function channels_db_get_member_status(
+	ctx: QueryCtx,
+	args: { channel: Doc<"channels">; member: Doc<"channels_members"> },
+) {
+	const { channel, member } = args;
+	const membership = await ctx.db.get("organizations_workspaces_users", member.workspaceMembershipId);
+	if (!membership?.active || membership.userId !== member.userId) return "left" as const;
+	const access = await channels_db_get_access(ctx, { userAuth: { id: member.userId }, membership, channel });
+	return access._nay ? ("locked" as const) : ("active" as const);
+}
+
 export async function channels_db_mark_read(
 	ctx: MutationCtx,
 	args: { channel: Doc<"channels">; userId: Id<"users">; sequence: number; allowBackwards?: boolean },
@@ -901,7 +919,9 @@ export const list_channel_members = query({
 		channelId: v.id("channels"),
 		paginationOpts: paginationOptsValidator,
 	},
-	returns: paginationResultValidator(doc(app_convex_schema, "channels_members")),
+	returns: paginationResultValidator(
+		v.object({ member: doc(app_convex_schema, "channels_members"), status: channels_member_status_validator }),
+	),
 	handler: async (ctx, args) => {
 		const context = await get_context(ctx, args.membershipId);
 		if (context._nay) {
@@ -920,13 +940,9 @@ export const list_channel_members = query({
 				numItems: Math.min(channels_LIMITS.page, args.paginationOpts.numItems),
 				maximumRowsRead: channels_LIMITS.page,
 			});
-		const page: Doc<"channels_members">[] = [];
-		for (const member of members.page) {
-			const membership = await ctx.db.get("organizations_workspaces_users", member.workspaceMembershipId);
-			if (!membership?.active || membership.userId !== member.userId) continue;
-			const readable = await channels_db_get_access(ctx, { userAuth: { id: member.userId }, membership, channel });
-			if (!readable._nay) page.push(member);
-		}
+		const page = [];
+		for (const member of members.page)
+			page.push({ member, status: await channels_db_get_member_status(ctx, { channel, member }) });
 		return { ...members, page };
 	},
 });

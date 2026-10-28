@@ -7,6 +7,7 @@ import {
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_mocks_cancel_pending_home_file_seeds,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import {
 	organizations_db_create,
@@ -14,7 +15,11 @@ import {
 } from "./organizations.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { channels_db_ensure_file_channel, channels_db_purge_workspace_batch } from "./channels.ts";
+import {
+	channels_db_add_member,
+	channels_db_ensure_file_channel,
+	channels_db_purge_workspace_batch,
+} from "./channels.ts";
 import { file_quotes_serialize_draft } from "../shared/file-quotes.ts";
 import { channels_composer_markdown_for_edit } from "../shared/channels.ts";
 
@@ -188,7 +193,7 @@ describe("get_channel", () => {
 
 	test("file access follows the live file ACL and ignores its write policy", async () => {
 		const f = await fixture();
-		const { channelId, fileNodeId } = await f.t.run(async (ctx) => {
+		const { channelId, fileNodeId } = await test_run_with_flush(f.t, async (ctx) => {
 			const fileNodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -515,6 +520,48 @@ describe("remove_user_from_organization", () => {
 	});
 });
 
+describe("list_channel_members", () => {
+	test("keeps people who left as rows, so a full page of them still fills the page", async () => {
+		const f = await fixture();
+		const channelId = await create(f, "private");
+		// Put more people who left than one page holds. A list that drops them returns a short first page.
+		await f.t.run(async (ctx) => {
+			const channel = (await ctx.db.get("channels", channelId))!;
+			for (let i = 0; i < 50; i++) {
+				const userId = await ctx.db.insert("users", { clerkUserId: `channels-left-${i}` });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: f.organizationId,
+					workspaceId: f.workspaceId,
+					userId,
+					active: false,
+					pendingOrganizationRemoval: false,
+					updatedAt: Date.now(),
+					displayName: "",
+					sortDisplayName: "",
+				});
+				const membership = (await ctx.db.get("organizations_workspaces_users", membershipId))!;
+				await channels_db_add_member(ctx, { channel, membership, level: "member", addedBy: f.member.userId });
+			}
+		});
+		const list = (cursor: string | null) =>
+			f.as(f.member).query(api.channels.list_channel_members, {
+				membershipId: f.member.membershipId,
+				channelId,
+				paginationOpts: { numItems: 50, cursor },
+			});
+		const first = await list(null);
+		expect(first.page, "the first page must be full").toHaveLength(50);
+		const rows = [...first.page, ...(await list(first.continueCursor)).page];
+		expect(rows.filter((row) => row.status === "left")).toHaveLength(50);
+		expect(rows.filter((row) => row.status === "active").map((row) => row.member.userId)).toEqual([f.member.userId]);
+		const state = await f.as(f.member).query(api.channels.get_channel_state, {
+			membershipId: f.member.membershipId,
+			channelId,
+		});
+		expect(state?.activity.memberCount, "the header count must match the list").toBe(rows.length);
+	});
+});
+
 async function send(
 	f: Awaited<ReturnType<typeof fixture>>,
 	person: typeof f.member,
@@ -572,7 +619,7 @@ describe("get_mentionable_users", () => {
 	});
 	test("file candidates require current file read access before a channel exists", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -722,7 +769,7 @@ describe("send_message", () => {
 
 	test("an unconfirmed anchored comment is private until confirmation and can be discarded", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -813,7 +860,7 @@ describe("send_message", () => {
 describe("confirm_comment_anchor", () => {
 	test("removing a mention keeps the remaining person's body position", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -904,7 +951,7 @@ describe("edit_message", () => {
 describe("resolve_thread", () => {
 	test("general comments reuse one file channel and resolve ignores file write policy", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -989,7 +1036,7 @@ describe("resolve_thread", () => {
 describe("delete_unconfirmed_comments", () => {
 	test("the hourly cleanup removes old unconfirmed comments and keeps confirmed ones", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -1024,7 +1071,7 @@ describe("delete_unconfirmed_comments", () => {
 describe("get_attachable_files", () => {
 	test("only returns readable saved files with finished uploads in a bounded batch", async () => {
 		const f = await fixture();
-		const files = await f.t.run(async (ctx) => {
+		const files = await test_run_with_flush(f.t, async (ctx) => {
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: f.organizationId,
 				workspaceId: f.workspaceId,
@@ -1069,7 +1116,7 @@ describe("message shaping", () => {
 	test("lost file access removes every file id, name, and path from messages and reply previews", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "public");
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -1158,7 +1205,7 @@ describe("message shaping", () => {
 	test("file references reject unreadable, cross-workspace, archived, and missing files before message writes", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "public");
-		const ids = await f.t.run(async (ctx) => {
+		const ids = await test_run_with_flush(f.t, async (ctx) => {
 			const foreign = await test_mocks_fill_db_with.membership(ctx, { userId: f.owner.userId });
 			const ids: Id<"files_nodes">[] = [];
 			for (const name of ["hidden", "foreign", "archived", "missing", "folder"]) {
@@ -1231,7 +1278,7 @@ describe("message shaping", () => {
 	test("unreadable and archived attachments expose no raw id, filename, or path", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "public");
-		const [hiddenId, archivedId] = await f.t.run(async (ctx) => {
+		const [hiddenId, archivedId] = await test_run_with_flush(f.t, async (ctx) => {
 			const ids: Id<"files_nodes">[] = [];
 			for (const name of ["hidden-report.md", "archived-report.md"])
 				ids.push(
@@ -1279,7 +1326,7 @@ describe("message shaping", () => {
 describe("posts read state", () => {
 	test("visiting a channel keeps root mentions unread until the post opens", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -1522,7 +1569,11 @@ describe("agent_read", () => {
 		await f.t.run(async (ctx) => {
 			const { _id, _creationTime, ...rootDoc } = (await ctx.db.get("channels_messages", rootMessageId))!;
 			for (let index = 0; index < 60; index++)
-				await ctx.db.insert("channels_messages", { ...rootDoc, body: `Other ${index}`, clientMessageId: `other-${index}` });
+				await ctx.db.insert("channels_messages", {
+					...rootDoc,
+					body: `Other ${index}`,
+					clientMessageId: `other-${index}`,
+				});
 		});
 		await send(f, f.member, { kind: "thread", rootMessageId }, { body: "Reply body" });
 
@@ -1576,7 +1627,7 @@ describe("agent_read", () => {
 	test("file references use live file access and members use current pins", async () => {
 		const f = await fixture();
 		const context = await agent_context(f);
-		const { fileNodeId, channelId } = await f.t.run(async (ctx) => {
+		const { fileNodeId, channelId } = await test_run_with_flush(f.t, async (ctx) => {
 			const fileNodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -1752,7 +1803,7 @@ describe("search_messages", () => {
 	test("uses live file access and shapes references in public hits", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "public");
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -1801,7 +1852,7 @@ describe("search_messages", () => {
 
 	test("keeps an unconfirmed file comment private to its author", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,

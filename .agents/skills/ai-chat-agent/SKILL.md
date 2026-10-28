@@ -640,7 +640,8 @@ Human Messages use the read-only `channels` Bash command in Ask and Agent mode.
 The command lives in `server/bash-channels-command.ts`. See the [channels spec](../channels/SKILL.md).
 
 - `channels ls` lists readable channels. `--kind` accepts public, private, direct, or file.
-- `channels members <ref>` lists current members or followers with ids and names.
+- `channels members <ref>` lists every member row with id, name and status. A person who left the
+  workspace shows `left`; a person who can no longer read the channel shows `locked`.
 - `channels read <ref>` reads roots and replies in time order. Use `--thread <rootMessageId>` for one thread.
 - `channels search <words>` searches readable message bodies. Use optional `--in <ref>`,
   `--from <user id>`, and `--attachments true|false`. The query allows 1–16 words and 512 characters.

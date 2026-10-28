@@ -109,6 +109,13 @@ picks people ("@", Message someone, add to a private channel, the Person filter)
 Add people keeps the loaded channel members in the list, locked with "Member". Adding a current
 member again changes nothing on the server, and the same direct group reopens its conversation.
 
+The header shows the stored `channels_activity.memberCount`. It never pages the member list to
+count. `list_channel_members` and the agent `channels members` return every member row with a
+status: `active`, `left` (its pinned workspace membership is no longer active), or `locked` (the
+person cannot read the channel now). They never drop rows, so the list and the count agree. The
+members dialog shows "(left)" and "(can't see this)". A manager can remove both; a `left` row
+cannot change level, and Add people does not lock a person whose row is `left`.
+
 Measure the Messages region after the global navigation. At 1200px and above, show the sidebar,
 channel and open thread. At 940–1199px, an open thread moves the sidebar into a drawer. At
 820–939px, show the sidebar and thread. Below 820px, show one conversation with a channel drawer.

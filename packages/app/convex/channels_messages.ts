@@ -18,6 +18,8 @@ import {
 	channels_db_add_member,
 	channels_db_ensure_file_channel,
 	channels_db_mark_read,
+	channels_db_get_member_status,
+	channels_member_status_validator,
 } from "./channels.ts";
 import {
 	channels_LIMITS,
@@ -1091,7 +1093,9 @@ export const agent_members = internalQuery({
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: v_result({
-		_yay: paginationResultValidator(v.object({ userId: v.id("users"), name: v.string() })),
+		_yay: paginationResultValidator(
+			v.object({ userId: v.id("users"), name: v.string(), status: channels_member_status_validator }),
+		),
 	}),
 	handler: async (ctx, args) => {
 		const context = await get_agent_context(ctx, args);
@@ -1110,20 +1114,12 @@ export const agent_members = internalQuery({
 				maximumRowsRead: 50,
 			});
 		const page = [];
-		for (const member of rows.page) {
-			const membership = await ctx.db.get("organizations_workspaces_users", member.workspaceMembershipId);
-			if (!membership?.active || membership.userId !== member.userId) continue;
-			const read = await channels_db_get_access(ctx, {
-				channel: target._yay.channel,
-				membership,
-				userAuth: { id: member.userId },
+		for (const member of rows.page)
+			page.push({
+				userId: member.userId,
+				name: await get_name(ctx, member.userId),
+				status: await channels_db_get_member_status(ctx, { channel: target._yay.channel, member }),
 			});
-			if (!read._nay && read._yay.member?._id === member._id)
-				page.push({
-					userId: member.userId,
-					name: await get_name(ctx, member.userId),
-				});
-		}
 		return Result({ _yay: { ...rows, page } });
 	},
 });
