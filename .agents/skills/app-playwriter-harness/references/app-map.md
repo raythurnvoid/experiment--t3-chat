@@ -87,19 +87,43 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
 ## Messages Route
 
 - `/messages/activity`, `/messages/threads`, and `/messages/search` use the same channel shell.
-  Activity and Followed threads are named regions. Feed articles carry `data-message-id` and
-  `data-unread`; New is visible text. Open context includes the post/root id for a thread.
+  Activity and Followed threads are named regions. Readable feed articles carry `data-message-id` and
+  `data-unread`; the unread dot has title `Unread`. Open context includes the post/root id for a thread.
   The active sidebar link has `aria-current="page"`.
 - The shared workspace provider keeps the main Messages link's `data-unread` and tab title live
-  on Files too. Title counts channels with mentions. Activity, Threads and the bell show unread
-  loaded items, with `+` while older pages remain. Load more must work on an empty readable page.
+  on Files too. It watches one saved summary. Title counts channels with mentions; Activity and
+  Threads use global saved totals. Ready counts say `Counts may be delayed`. An access repair says
+  `Messages Updating…` and hides counts/dots until its permission check is current. The bell hides
+  its whole combined total during that repair, but jobs and invites remain usable.
 - Notifications has a Message activity section and View Activity. It uses the same inbox as the
-  Activity route. Open context closes the bell and opens the real channel/thread; normal visible
+  Activity route, subscribed only while the popover is open. Open context closes the bell and opens the real channel/thread; normal visible
   content advances read positions. Dismiss jobs and invites does not clear message items.
+- Starred, Channels, Direct messages and Files each request pages of 50 and have their own Show more.
+  Scope that button to its named section. Its accessible name is `Show more starred`, `Show more channels`,
+  `Show more direct messages`, or `Show more files`. Collapsed sections, a hidden sidebar and closed drawer
+  release their page subscriptions. Exactly one sidebar tree is mounted. Selected content is read
+  by ID and stays open even outside those pages, after archive, or after Close conversation.
+- Named channels sort A–Z. DMs use main/broadcast recency; file conversations use accepted comment
+  activity. Starred uses each person's star time. Ordinary replies do not reopen a closed DM.
+  A fresh explicit navigation, Back/Forward or new main/broadcast activity can reopen it. Close
+  keeps the current route and wins over an Open that already captured an older visibility revision.
+  Close cancels pending navigation in its own tab. Another tab with no loaded state can reopen after
+  reading the post-Close revision. See the Channels spec for this one-click link rule.
+- Locked sidebar and Activity/Threads rows show `No access`, with no old name, body, time, count or
+  profile query. Keyboard/click activation shows `Permission denied` locally and keeps the route.
+  Hidden message/root deletion retains delivered locked feed rows. Whole-channel deletion may
+  remove them. Restoring access reads current content and can remove a now-missing source.
+- Sidebar button `Find a channel` (with Ctrl+K text) opens dialog `Find a named channel` and searchbox
+  `Find channel`. It and `#` suggestions search the whole-name prefix on the server. Public and
+  joined private groups have separate pages. `Show archived channels` / `Show active channels`
+  applies to named channels. Public Browse has searchbox `Filter channels`.
+  The message-search Channel picker also browses DMs and Files; selecting a closed DM filter does
+  not reopen it. A denied chosen filter keeps its ID and shows `Unavailable`; it does not become
+  `All readable channels`.
 - Search words is a searchbox. Channel, Person and Attachments are named comboboxes. Since (UTC)
   and Until (UTC, exclusive) are date inputs. Pick options, then Search; all filters stay in the URL.
   The filters sit in the `Filters` popover, so open it first. The Person combobox shows `Anyone` or a
-  name, but its accessible name is `Person`. Its list has a `Find person` searchbox (server search).
+  name, but its accessible name is `Person`. Its list has a `Find person` combobox (server search).
   Search needs words: a filter alone, then `Done`, does not change the URL.
   Search results is a named region. Empty results can still have Load more results. Errors keep
   the form and offer Retry. Check private/direct/file access with a reader, including access loss.
@@ -107,16 +131,28 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
   full text still in the DOM. Click visible checkbox labels in attachment/member dialogs; their
   native input is hidden. Scope Channel members Close to its labelled header button or footer.
 - Route: `/w/:organizationName/:workspaceName/messages/:channelId`. `thread` uses a root message id;
-  `message` jumps to a message. Missing and hidden ids show the same `Channel not found` state.
+  `message` jumps to a message. Missing and denied ids show the same `Channel not found` state.
+  A personally closed DM remains readable; explicit navigation may reopen it.
 - The sidebar is `complementary "Channels"`. The thread is `complementary "Thread"`.
-  Below 900 px, the thread replaces the channel pane; use `Back to channel`.
+  Their resize controls are separators named `Resize channels sidebar` and `Resize conversation and thread`.
+  Below 820 px the sidebar uses a drawer. Below 940 px, the thread replaces the conversation;
+  use `Back to channel`. At 940–1199 px an open thread hides the desktop sidebar. At 1200 px and
+  above all three panes fit. Width means the Messages region, not the whole browser window.
 - Channel rows have `data-channel-id`, `data-channel-kind`, `data-unread`, and `data-mention-count`.
   The active link has `aria-current="page"`. Articles have `data-message-id` and reply root ids.
+- To open a sidebar row menu, first hover its link inside `complementary "Channels"`, then click
+  `Actions for <name>` in that same row. For example, locate `[data-channel-id="<id>"]`, hover its
+  link, and click its named button. The menu trigger has `opacity: 0` and `pointer-events: none`
+  until row hover or keyboard focus is inside the row. Do not use a forced click. After the menu
+  opens, choose `Star`, `Unstar`, or `Close conversation` by menuitem name.
 - Create with `Create channel`; start a direct chat with `Message someone`. Both use named dialogs.
-  Details owns topic, resolving threads, and archive. The member-count button opens `Channel members`.
+  Details owns topic, resolving threads, and archive. Named channel details include the hash in
+  the accessible name: `Details for #<channel-name>`. The member-count button opens `Channel members`.
 - Composers are contenteditable elements named `Message`, `Thread reply`, or `Edit message`.
   People and file suggestions are `listbox "People and files"`; channel links use `listbox "Channels"`.
   Enter selects an active suggestion before sending. Shift+Enter adds a line. Escape closes the popup first.
+- The reply-count button can include avatar initials before its text in locator name matching.
+  Scope it to the message article and match `replies` without a start-of-name anchor.
 - Message actions include `Reply`, `Reply in thread`, `Add reaction`, and `More message actions`.
   The emoji search is `searchbox "Find emoji"`; emoji options use `gridcell`, not button role.
 - A private/direct header names the owner read rule. Drafts survive reload by membership and stream.

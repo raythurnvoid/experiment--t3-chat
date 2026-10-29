@@ -2031,6 +2031,16 @@ async function db_delete_organization_batch(
 			)
 			.unique();
 		if (accessVersion) await ctx.db.delete("files_access_versions", accessVersion._id);
+		// Organization-wide Messages work has no workspace purge to remove it.
+		for (const table of ["channels_authority_jobs", "channels_authority_versions"] as const) {
+			const row = await ctx.db
+				.query(table)
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", null),
+				)
+				.unique();
+			if (row) await ctx.db.delete(table, row._id);
+		}
 		await access_control_changes_db_delete_scope_heads(ctx, [
 			{ kind: "organization", organizationId: args.organizationId },
 		]);

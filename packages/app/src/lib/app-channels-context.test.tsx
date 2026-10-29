@@ -16,6 +16,15 @@ vi.mock("@/lib/app-activities-context.tsx", () => ({
 vi.mock("@/components/files/files-clipboard.tsx", () => ({
 	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
 }));
+const router = vi.hoisted(() => ({
+	state: {
+		location: { pathname: "/files", href: "/files", state: {} },
+		resolvedLocation: { pathname: "/files", href: "/files", state: {} },
+	},
+	history: { subscribe: () => () => {} },
+	subscribe: () => () => {},
+}));
+vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
 
 const results = new Map<string, unknown>();
 const listeners = new Map<string, Set<() => void>>();
@@ -44,15 +53,11 @@ function Consumer() {
 	return (
 		<>
 			<output aria-label="Mention channels">{channels.unreadMentions}</output>
-			<output aria-label="Inbox count">
-				{channels.inboxUnreadCount}
-				{channels.inboxHasMore ? "+" : ""}
-			</output>
-			<output aria-label="Thread count">
-				{channels.threadsUnreadCount}
-				{channels.threadsHasMore ? "+" : ""}
-			</output>
-			<button onClick={() => channels.inbox.loadMore(50)}>More inbox</button>
+			<output aria-label="Inbox count">{channels.inboxUnreadCount}</output>
+			<output aria-label="Thread count">{channels.threadsUnreadCount}</output>
+			<output aria-label="Status">{channels.status}</output>
+			<output aria-label="Scope">{channels.accessScopeKey}</output>
+			<button onClick={channels.retrySummary}>Retry</button>
 		</>
 	);
 }
@@ -87,7 +92,11 @@ beforeEach(() => {
 				listeners.set(key, callbacks);
 				return () => callbacks.delete(callback);
 			},
-			localQueryResult: () => results.get(key) as never,
+			localQueryResult: () => {
+				const result = results.get(key);
+				if (result instanceof Error) throw result;
+				return result as never;
+			},
 			localQueryLogs: () => undefined,
 			journal: () => undefined,
 		};
@@ -100,54 +109,59 @@ afterEach(async () => {
 });
 
 describe("AppChannelsProvider", () => {
-	test("shares loaded counts and the title outside Messages, then resets at a tenant change", () => {
+	test("owns only one summary outside Messages and resets counts and access at a tenant change", () => {
 		const view = render(<Workspace membershipId="membership_1" />);
-		const args = { membershipId: "membership_1", paginationOpts: { cursor: null } };
-		receive(getFunctionName(app_convex_api.channels.list_my_channels), args, {
-			page: [{ _id: "channel_1" }, { _id: "channel_2" }],
-			isDone: true,
-			continueCursor: "",
-		});
-		for (const [channelId, mentionCount] of [
-			["channel_1", 3],
-			["channel_2", 1],
-		] as const)
-			receive(
-				getFunctionName(app_convex_api.channels.get_channel_state),
-				{ membershipId: "membership_1", channelId },
-				{ mentionCount },
-			);
-		receive(getFunctionName(app_convex_api.channels_messages.list_my_inbox), args, {
-			page: [{ unread: true }, { unread: false }],
-			isDone: false,
-			continueCursor: "next",
-		});
-		receive(getFunctionName(app_convex_api.channels_messages.list_my_threads), args, {
-			page: [{ unread: true }],
-			isDone: true,
-			continueCursor: "",
-		});
+		expect([...listeners].filter(([, callbacks]) => callbacks.size).map(([key]) => JSON.parse(key).name)).toEqual([
+			"channels_notifications:get_summary",
+		]);
+		receive(
+			getFunctionName(app_convex_api.channels_notifications.get_summary),
+			{ membershipId: "membership_1" },
+			{ state: "delayed", accessScopeKey: "scope1", mentionChannels: 2, unreadInbox: 750, unreadThreads: 100 },
+		);
 		expect(document.title, "title must count channels with mentions, not every mention").toBe("(2) Bonobo Senate");
-		expect(screen.getByLabelText("Inbox count").textContent).toBe("1+");
-		expect(screen.getByLabelText("Thread count").textContent).toBe("1");
+		expect(screen.getByLabelText("Inbox count").textContent).toBe("750");
+		expect(screen.getByLabelText("Thread count").textContent).toBe("100");
 		view.rerender(<Workspace membershipId="membership_2" />);
 		expect(document.title).toBe("Bonobo Senate");
-		expect(screen.getByLabelText("Inbox count").textContent).toBe("0");
-		expect(screen.getByLabelText("Mention channels").textContent).toBe("0");
+		expect(screen.getByLabelText("Inbox count").textContent).toBe("");
+		expect(screen.getByLabelText("Mention channels").textContent).toBe("");
+		expect(screen.getByLabelText("Scope").textContent).toBe("");
+		expect(
+			[...listeners].filter(([, callbacks]) => callbacks.size).map(([key]) => JSON.parse(key).membershipId),
+		).toEqual(["membership_2"]);
 	});
 
-	test("continues an empty inbox page with a cursor", () => {
+	test("clears numbers during repair and contains query errors without losing the workspace", async () => {
 		render(<Workspace membershipId="membership_1" />);
-		receive(
-			getFunctionName(app_convex_api.channels_messages.list_my_inbox),
-			{ membershipId: "membership_1", paginationOpts: { cursor: null } },
-			{ page: [], isDone: false, continueCursor: "next" },
-		);
-		expect(screen.getByLabelText("Inbox count").textContent).toBe("0+");
-		fireEvent.click(screen.getByRole("button", { name: "More inbox" }));
-		expect(
-			[...listeners.keys()].some((key) => key.includes('"cursor":"next"')),
-			"empty page must keep its continuation query",
-		).toBe(true);
+		const name = getFunctionName(app_convex_api.channels_notifications.get_summary);
+		const args = { membershipId: "membership_1" };
+		receive(name, args, {
+			state: "delayed",
+			accessScopeKey: "old",
+			mentionChannels: 2,
+			unreadInbox: 3,
+			unreadThreads: 4,
+		});
+		receive(name, args, { state: "updating", accessScopeKey: "new" });
+		expect(screen.getByLabelText("Inbox count").textContent).toBe("");
+		expect(document.title).toBe("Bonobo Senate — Messages updating");
+		expect(screen.getByLabelText("Scope").textContent).toBe("new");
+		receive(name, args, new Error("query failed"));
+		expect(screen.getByLabelText("Status").textContent).toBe("error");
+		expect(screen.getByLabelText("Scope").textContent).toBe("");
+		expect(document.title).toBe("Bonobo Senate");
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		await act(async () => new Promise((resolve) => setTimeout(resolve, 1)));
+		receive(name, args, null);
+		expect(screen.getByLabelText("Status").textContent).toBe("unavailable");
+		receive(name, args, {
+			state: "delayed",
+			accessScopeKey: "ready",
+			mentionChannels: 0,
+			unreadInbox: 0,
+			unreadThreads: 0,
+		});
+		expect(screen.getByLabelText("Inbox count").textContent).toBe("0");
 	});
 });

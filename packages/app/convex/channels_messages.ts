@@ -20,6 +20,8 @@ import {
 	channels_db_mark_read,
 	channels_db_get_member_status,
 	channels_member_status_validator,
+	channels_db_reconcile_member_by_channel,
+	channels_db_refresh_direct_members,
 } from "./channels.ts";
 import {
 	channels_LIMITS,
@@ -35,6 +37,14 @@ import { files_nodes_db_require_user_writable } from "../server/files-write-poli
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_tiptap_markdown_to_plain_text } from "../shared/files-tiptap.ts";
+import {
+	channels_notifications_db_ensure_summary,
+	channels_notifications_db_apply,
+	channels_notifications_db_delete_source,
+	channels_notifications_db_enqueue_sidebar,
+	channels_notifications_db_enqueue_thread,
+	channels_notifications_db_enqueue_inbox,
+} from "../server/channels-notifications.ts";
 
 // Make Convex reuse the loaded module between calls. No mutable module state is allowed here.
 export const experimental_reuseContext = true;
@@ -44,8 +54,13 @@ const shaped_file_reference_validator = v.union(
 	v.object({ kind: v.literal("unavailable") }),
 );
 
+const {
+	authorWorkspaceMembershipId: _authorMembership,
+	mentionWorkspaceMembershipIds: _mentionMemberships,
+	...message_view_fields
+} = doc(app_convex_schema, "channels_messages").fields;
 const shaped_message_validator = v.object({
-	message: doc(app_convex_schema, "channels_messages"),
+	message: v.object(message_view_fields),
 	authorName: v.string(),
 	mentionNames: v.array(v.string()),
 	fileMentions: v.array(shaped_file_reference_validator),
@@ -207,25 +222,34 @@ async function can_mention(
 		channel: Doc<"channels"> | null;
 		fileNodeId: Id<"files_nodes"> | null;
 		userId: Id<"users">;
+		workspaceMembershipId?: Id<"organizations_workspaces_users">;
 	},
 ) {
-	const membership = await ctx.db
-		.query("organizations_workspaces_users")
-		.withIndex("by_workspace_user_active", (q) =>
-			q.eq("workspaceId", args.membership.workspaceId).eq("userId", args.userId).eq("active", true),
-		)
-		.unique();
-	if (!membership || membership.organizationId !== args.membership.organizationId) return false;
+	const membership = args.workspaceMembershipId
+		? await ctx.db.get("organizations_workspaces_users", args.workspaceMembershipId)
+		: await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", args.membership.workspaceId).eq("userId", args.userId).eq("active", true),
+				)
+				.unique();
+	if (
+		!membership?.active ||
+		membership.userId !== args.userId ||
+		membership.workspaceId !== args.membership.workspaceId ||
+		membership.organizationId !== args.membership.organizationId
+	)
+		return null;
 	if (args.channel) {
 		const access = await channels_db_get_access(ctx, {
 			channel: args.channel,
 			membership,
 			userAuth: { id: args.userId },
 		});
-		return (
-			!access._nay &&
+		return !access._nay &&
 			((args.channel.kind !== "private" && args.channel.kind !== "direct") || access._yay.member !== null)
-		);
+			? membership
+			: null;
 	}
 	const read = await access_control_db_authorize_node(ctx, {
 		userAuth: { id: args.userId },
@@ -233,7 +257,7 @@ async function can_mention(
 		nodeId: args.fileNodeId!,
 		permission: "content.read",
 	});
-	return !read._nay;
+	return read._nay ? null : membership;
 }
 
 async function validate_mentions(
@@ -248,8 +272,10 @@ async function validate_mentions(
 	if (args.mentionUserIds.length > channels_LIMITS.mentions)
 		return Result({ _nay: { message: "Mention at most 50 people" } });
 	const ids = [...new Set(args.mentionUserIds)];
+	const membershipIds: Id<"organizations_workspaces_users">[] = [];
 	for (const userId of ids) {
-		if (!(await can_mention(ctx, { ...args, userId }))) {
+		const target = await can_mention(ctx, { ...args, userId });
+		if (!target) {
 			const membership = await ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_workspace_user_active", (q) =>
@@ -260,8 +286,9 @@ async function validate_mentions(
 				membership?.organizationId === args.membership.organizationId ? await get_name(ctx, userId) : "Person";
 			return Result({ _nay: { message: `${name} cannot see this channel` } });
 		}
+		membershipIds.push(target._id);
 	}
-	return Result({ _yay: ids });
+	return Result({ _yay: { userIds: ids, membershipIds } });
 }
 
 async function validate_file_references(
@@ -332,12 +359,11 @@ async function ensure_thread(
 		isResolved: false,
 		resolvedAt: null,
 		resolvedBy: null,
-		followerSyncPending: false,
 	});
 	const thread = (await ctx.db.get("channels_threads", threadId))!;
 	if ((!args.anchor || args.anchor.confirmedAt !== null) && root.mentionUserIds.length) {
 		const channel = (await ctx.db.get("channels", root.channelId))!;
-		for (const userId of root.mentionUserIds) {
+		for (const [index, userId] of root.mentionUserIds.entries()) {
 			if (
 				userId !== root.authorUserId &&
 				(await can_mention(ctx, {
@@ -345,9 +371,14 @@ async function ensure_thread(
 					channel,
 					fileNodeId: null,
 					userId,
+					workspaceMembershipId: root.mentionWorkspaceMembershipIds[index]!,
 				}))
 			) {
-				await follow(ctx, { thread, userId, readReplySequence: 0 });
+				await follow(ctx, {
+					thread,
+					workspaceMembershipId: root.mentionWorkspaceMembershipIds[index]!,
+					readReplySequence: 0,
+				});
 			}
 		}
 	}
@@ -358,21 +389,33 @@ async function follow(
 	ctx: MutationCtx,
 	args: {
 		thread: Doc<"channels_threads">;
-		userId: Id<"users">;
+		workspaceMembershipId: Id<"organizations_workspaces_users">;
 		readReplySequence: number;
 		pendingRootMention?: boolean;
 		markRead?: boolean;
 	},
 ) {
-	const { thread, userId } = args;
+	const { thread } = args;
+	const membership = await ctx.db.get("organizations_workspaces_users", args.workspaceMembershipId);
+	if (
+		!membership?.active ||
+		membership.organizationId !== thread.organizationId ||
+		membership.workspaceId !== thread.workspaceId
+	)
+		return;
+	const userId = membership.userId;
+	const user = await ctx.db.get("users", userId);
+	if (!user || user.deletedAt != null) return;
+	await channels_notifications_db_ensure_summary(ctx, membership);
 	const existing = await ctx.db
 		.query("channels_thread_followers")
-		.withIndex("by_thread_user", (q) => q.eq("threadId", thread._id).eq("userId", userId))
+		.withIndex("by_workspaceMembership_thread", (q) =>
+			q.eq("workspaceMembershipId", membership._id).eq("threadId", thread._id),
+		)
 		.unique();
 	if (existing) {
 		await ctx.db.patch("channels_thread_followers", existing._id, {
 			following: true,
-			threadLastActivityAt: thread.lastActivityAt,
 			...(args.markRead
 				? {
 						readReplySequence: Math.max(existing.readReplySequence, args.readReplySequence),
@@ -381,8 +424,14 @@ async function follow(
 				: {}),
 			...(args.pendingRootMention ? { pendingRootMention: true } : {}),
 		});
+		await reconcile_thread_read(ctx, existing, (await ctx.db.get("channels_thread_followers", existing._id))!);
 	} else {
 		await ctx.db.insert("channels_thread_followers", {
+			workspaceMembershipId: membership._id,
+			feedVisible: false,
+			countSummaryId: null,
+			countGeneration: 0,
+			countedUnread: false,
 			threadId: thread._id,
 			rootMessageId: thread.rootMessageId,
 			channelId: thread.channelId,
@@ -392,10 +441,17 @@ async function follow(
 			readReplySequence: args.readReplySequence,
 			following: true,
 			pendingRootMention: args.pendingRootMention ?? false,
-			threadLastActivityAt: thread.lastActivityAt,
+			threadLastActivityAt: Date.now(),
 			followedAt: Date.now(),
 		});
 	}
+	const current = (await ctx.db
+		.query("channels_thread_followers")
+		.withIndex("by_workspaceMembership_thread", (q) =>
+			q.eq("workspaceMembershipId", membership._id).eq("threadId", thread._id),
+		)
+		.unique())!;
+	await channels_messages_db_reconcile_follower(ctx, current);
 }
 
 async function notify(
@@ -404,36 +460,47 @@ async function notify(
 		message: Doc<"channels_messages">;
 		channel: Doc<"channels">;
 		thread: Doc<"channels_threads"> | null;
-		replyAuthorUserId: Id<"users"> | null;
+		replyAuthorWorkspaceMembershipId: Id<"organizations_workspaces_users"> | null;
 	},
 ) {
 	const { message, thread, channel } = args;
+	const replyAuthor = args.replyAuthorWorkspaceMembershipId
+		? await ctx.db.get("organizations_workspaces_users", args.replyAuthorWorkspaceMembershipId)
+		: null;
 	const recipients = [
-		...message.mentionUserIds.map((userId) => ({
+		...message.mentionUserIds.map((userId, index) => ({
 			userId,
+			workspaceMembershipId: message.mentionWorkspaceMembershipIds[index]!,
 			kind: "mention" as const,
 		})),
-		...(args.replyAuthorUserId ? [{ userId: args.replyAuthorUserId, kind: "reply" as const }] : []),
+		...(replyAuthor
+			? [{ userId: replyAuthor.userId, workspaceMembershipId: replyAuthor._id, kind: "reply" as const }]
+			: []),
 	];
-	for (const { userId, kind } of recipients) {
+	for (const { userId, workspaceMembershipId, kind } of recipients) {
 		if (userId === message.authorUserId) continue;
-		if (
-			!(await can_mention(ctx, {
-				membership: message,
-				channel,
-				fileNodeId: null,
-				userId,
-			}))
-		)
-			continue;
+		const membership = await can_mention(ctx, {
+			membership: message,
+			channel,
+			fileNodeId: null,
+			userId,
+			workspaceMembershipId,
+		});
+		if (!membership) continue;
+		await channels_notifications_db_ensure_summary(ctx, membership);
 		if (thread)
 			await follow(ctx, {
 				thread,
-				userId,
+				workspaceMembershipId,
 				readReplySequence: Math.max(0, (message.threadSequence ?? 0) - 1),
 				pendingRootMention: is_posts(channel) && message.threadRootId === null,
 			});
-		await ctx.db.insert("channels_inbox", {
+		const inboxId = await ctx.db.insert("channels_inbox", {
+			workspaceMembershipId,
+			retired: false,
+			countSummaryId: null,
+			countGeneration: 0,
+			countedUnread: false,
 			recipientUserId: userId,
 			organizationId: message.organizationId,
 			workspaceId: message.workspaceId,
@@ -445,7 +512,122 @@ async function notify(
 			threadSequence: message.threadSequence ?? (is_posts(channel) ? 0 : null),
 			createdAt: message._creationTime,
 		});
+		await channels_messages_db_reconcile_inbox(ctx, (await ctx.db.get("channels_inbox", inboxId))!);
 	}
+}
+
+async function reconcile_thread_read(
+	ctx: MutationCtx,
+	before: Doc<"channels_thread_followers">,
+	after: Doc<"channels_thread_followers">,
+) {
+	const scope = {
+		workspaceMembershipId: after.workspaceMembershipId,
+		channelId: after.channelId,
+		organizationId: after.organizationId,
+		workspaceId: after.workspaceId,
+		kind: "thread" as const,
+		rootMessageId: after.rootMessageId,
+	};
+	await channels_notifications_db_enqueue_inbox(ctx, {
+		...scope,
+		lowerExclusive: Math.min(before.readReplySequence, after.readReplySequence),
+		upperInclusive: Math.max(before.readReplySequence, after.readReplySequence),
+	});
+	if (before.pendingRootMention !== after.pendingRootMention)
+		await channels_notifications_db_enqueue_inbox(ctx, { ...scope, lowerExclusive: -1, upperInclusive: 0 });
+}
+
+export async function channels_messages_db_reconcile_follower(
+	ctx: MutationCtx,
+	follower: Doc<"channels_thread_followers">,
+) {
+	const membership = await ctx.db.get("organizations_workspaces_users", follower.workspaceMembershipId);
+	if (!membership?.active || membership.userId !== follower.userId) return;
+	const channel = await ctx.db.get("channels", follower.channelId);
+	if (!channel) {
+		await channels_notifications_db_delete_source(ctx, follower);
+		return;
+	}
+	const access = await channels_db_get_access(ctx, { membership, channel, userAuth: { id: follower.userId } });
+	if (access._nay) {
+		await channels_notifications_db_apply(ctx, follower, false);
+		return;
+	}
+	const thread = await ctx.db.get("channels_threads", follower.threadId);
+	const root = thread ? await ctx.db.get("channels_messages", thread.rootMessageId) : null;
+	if (!thread || !root || !(await channels_messages_db_is_visible(ctx, root, follower.userId))) {
+		await channels_notifications_db_delete_source(ctx, follower);
+		await channels_db_reconcile_member_by_channel(ctx, membership._id, channel._id);
+		return;
+	}
+	const fields = { feedVisible: follower.following, threadLastActivityAt: thread.lastActivityAt };
+	await ctx.db.patch("channels_thread_followers", follower._id, fields);
+	await channels_notifications_db_apply(
+		ctx,
+		{ ...follower, ...fields },
+		follower.following && (follower.pendingRootMention || thread.lastReplySequence > follower.readReplySequence),
+	);
+	await channels_db_reconcile_member_by_channel(ctx, membership._id, channel._id);
+}
+
+async function inbox_unread(ctx: QueryCtx, item: Doc<"channels_inbox">) {
+	const read = await ctx.db
+		.query("channels_read_states")
+		.withIndex("by_workspaceMembership_channel", (q) =>
+			q.eq("workspaceMembershipId", item.workspaceMembershipId).eq("channelId", item.channelId),
+		)
+		.unique();
+	const thread = item.threadRootId ? await get_thread(ctx, item.threadRootId) : null;
+	const follower = thread
+		? await ctx.db
+				.query("channels_thread_followers")
+				.withIndex("by_workspaceMembership_thread", (q) =>
+					q.eq("workspaceMembershipId", item.workspaceMembershipId).eq("threadId", thread._id),
+				)
+				.unique()
+		: null;
+	const mainUnread = item.mainSequence !== null && item.mainSequence > (read?.readSequence ?? 0);
+	const threadUnread =
+		item.threadSequence === 0
+			? (follower?.pendingRootMention ?? false)
+			: item.threadSequence !== null && item.threadSequence > (follower?.readReplySequence ?? 0);
+	return item.threadSequence === 0
+		? threadUnread
+		: item.threadSequence === null
+			? mainUnread
+			: item.mainSequence === null
+				? threadUnread
+				: mainUnread && threadUnread;
+}
+
+export async function channels_messages_db_reconcile_inbox(ctx: MutationCtx, item: Doc<"channels_inbox">) {
+	const membership = await ctx.db.get("organizations_workspaces_users", item.workspaceMembershipId);
+	if (!membership?.active || membership.userId !== item.recipientUserId) return;
+	const channel = await ctx.db.get("channels", item.channelId);
+	if (!channel) {
+		await channels_notifications_db_delete_source(ctx, item);
+		return;
+	}
+	const access = await channels_db_get_access(ctx, { membership, channel, userAuth: { id: item.recipientUserId } });
+	if (access._nay) {
+		await channels_notifications_db_apply(ctx, item, false);
+		return;
+	}
+	const message = item.retired ? null : await ctx.db.get("channels_messages", item.messageId);
+	if (
+		!message ||
+		message.deletedAt !== null ||
+		!(await channels_messages_db_is_visible(ctx, message, item.recipientUserId))
+	)
+		await channels_notifications_db_delete_source(ctx, item);
+	else await channels_notifications_db_apply(ctx, item, await inbox_unread(ctx, item));
+	await channels_db_reconcile_member_by_channel(ctx, membership._id, channel._id);
+}
+
+async function retire_inbox(ctx: MutationCtx, item: Doc<"channels_inbox">) {
+	await ctx.db.patch("channels_inbox", item._id, { retired: true });
+	await channels_messages_db_reconcile_inbox(ctx, { ...item, retired: true });
 }
 
 export const send_message = mutation({
@@ -573,8 +755,8 @@ export const send_message = mutation({
 			return Result({ _nay: { message: "Invalid message id" } });
 		const retry = await ctx.db
 			.query("channels_messages")
-			.withIndex("by_author_clientMessageId", (q) =>
-				q.eq("authorUserId", userAuth.id).eq("clientMessageId", args.clientMessageId),
+			.withIndex("by_authorMembership_clientMessageId", (q) =>
+				q.eq("authorWorkspaceMembershipId", membership._id).eq("clientMessageId", args.clientMessageId),
 			)
 			.unique();
 		if (retry) {
@@ -679,7 +861,9 @@ export const send_message = mutation({
 			.unique())!;
 		const read = await ctx.db
 			.query("channels_read_states")
-			.withIndex("by_channel_user", (q) => q.eq("channelId", currentChannel._id).eq("userId", userAuth.id))
+			.withIndex("by_workspaceMembership_channel", (q) =>
+				q.eq("workspaceMembershipId", membership._id).eq("channelId", currentChannel._id),
+			)
 			.unique();
 		const unconfirmed = args.target.kind === "file_comment" && args.target.anchorExcerpt !== null;
 		// An unsaved mark has no public sequence until confirmation.
@@ -692,13 +876,15 @@ export const send_message = mutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			authorUserId: userAuth.id,
+			authorWorkspaceMembershipId: membership._id,
 			channelSequence,
 			mainSequence,
 			threadRootId: root?._id ?? null,
 			threadSequence,
 			replyTo: args.replyTo,
 			body: args.body,
-			mentionUserIds: mentions._yay,
+			mentionUserIds: mentions._yay.userIds,
+			mentionWorkspaceMembershipIds: mentions._yay.membershipIds,
 			fileMentionIds: args.fileMentionIds,
 			fileQuotes: fileReferences._yay,
 			attachments: args.attachments,
@@ -717,6 +903,7 @@ export const send_message = mutation({
 			await ctx.db.patch("channels_activity", activity._id, {
 				lastChannelSequence: channelSequence,
 				lastMainSequence: mainSequence ?? activity.lastMainSequence,
+				lastMainMessageAt: mainSequence === null ? activity.lastMainMessageAt : message._creationTime,
 				lastMessageAt: message._creationTime,
 			});
 		if (!root && is_posts(currentChannel)) {
@@ -743,26 +930,20 @@ export const send_message = mutation({
 				isResolved: false,
 				resolvedAt: null,
 				resolvedBy: null,
-				followerSyncPending: true,
 			});
-			if (!thread.followerSyncPending)
-				await ctx.scheduler.runAfter(0, internal.channels_messages.sync_thread_followers, {
-					threadId: thread._id,
-					cursor: null,
-					activityAt: message._creationTime,
-				});
 			thread = (await ctx.db.get("channels_threads", thread._id))!;
+			await channels_notifications_db_enqueue_thread(ctx, thread);
 		}
 		if (thread && !unconfirmed) {
 			if (root)
 				await follow(ctx, {
 					thread,
-					userId: root.authorUserId,
+					workspaceMembershipId: root.authorWorkspaceMembershipId,
 					readReplySequence: 0,
 				});
 			await follow(ctx, {
 				thread,
-				userId: userAuth.id,
+				workspaceMembershipId: membership._id,
 				readReplySequence: thread.lastReplySequence,
 				markRead: true,
 			});
@@ -779,56 +960,22 @@ export const send_message = mutation({
 				message,
 				channel: currentChannel,
 				thread,
-				replyAuthorUserId: replyTarget?.authorUserId ?? null,
+				replyAuthorWorkspaceMembershipId: replyTarget?.authorWorkspaceMembershipId ?? null,
 			});
+			if (currentChannel.kind === "file") await channels_notifications_db_enqueue_sidebar(ctx, currentChannel);
+			if (currentChannel.kind === "direct" && mainSequence !== null)
+				await channels_db_refresh_direct_members(ctx, currentChannel);
 		}
 		if (!unconfirmed && (!is_posts(currentChannel) || (read?.readSequence ?? 0) === activity.lastChannelSequence)) {
 			await channels_db_mark_read(ctx, {
 				channel: currentChannel,
-				userId: userAuth.id,
+				membership,
 				sequence: is_posts(currentChannel) ? channelSequence : (mainSequence ?? activity.lastMainSequence),
 			});
 		}
 		return Result({
 			_yay: { messageId, rootMessageId: root?._id ?? messageId },
 		});
-	},
-});
-
-export const sync_thread_followers = internalMutation({
-	args: {
-		threadId: v.id("channels_threads"),
-		cursor: v.union(v.string(), v.null()),
-		activityAt: v.number(),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const thread = await ctx.db.get("channels_threads", args.threadId);
-		if (!thread) return null;
-		const followers = await ctx.db
-			.query("channels_thread_followers")
-			.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
-			.paginate({ cursor: args.cursor, numItems: 100 });
-		for (const follower of followers.page)
-			await ctx.db.patch("channels_thread_followers", follower._id, {
-				threadLastActivityAt: thread.lastActivityAt,
-			});
-		if (!followers.isDone)
-			await ctx.scheduler.runAfter(0, internal.channels_messages.sync_thread_followers, {
-				...args,
-				cursor: followers.continueCursor,
-			});
-		else if (thread.lastActivityAt !== args.activityAt)
-			await ctx.scheduler.runAfter(0, internal.channels_messages.sync_thread_followers, {
-				threadId: thread._id,
-				cursor: null,
-				activityAt: thread.lastActivityAt,
-			});
-		else
-			await ctx.db.patch("channels_threads", thread._id, {
-				followerSyncPending: false,
-			});
-		return null;
 	},
 });
 
@@ -903,9 +1050,14 @@ async function shape_message(
 		}
 	}
 	// Raw attachment ids and stale inline quotes must not bypass the shaped fields.
+	const {
+		authorWorkspaceMembershipId: _authorMembership,
+		mentionWorkspaceMembershipIds: _mentionMemberships,
+		...visibleMessage
+	} = message;
 	return {
 		message: {
-			...message,
+			...visibleMessage,
 			fileMentionIds: [],
 			fileQuotes: await file_quotes_db_shape(ctx, { membership: args.membership, quotes: message.fileQuotes }),
 			attachments: [],
@@ -1571,6 +1723,28 @@ export const list_latest_thread = query({
 	},
 });
 
+const follower_view_validator = v.object({
+	_id: v.id("channels_thread_followers"),
+	threadId: v.id("channels_threads"),
+	rootMessageId: v.id("channels_messages"),
+	channelId: v.id("channels"),
+	readReplySequence: v.number(),
+	following: v.boolean(),
+	pendingRootMention: v.boolean(),
+});
+
+function follower_view(follower: Doc<"channels_thread_followers">) {
+	return {
+		_id: follower._id,
+		threadId: follower.threadId,
+		rootMessageId: follower.rootMessageId,
+		channelId: follower.channelId,
+		readReplySequence: follower.readReplySequence,
+		following: follower.following,
+		pendingRootMention: follower.pendingRootMention,
+	};
+}
+
 export const get_thread_state = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -1579,7 +1753,7 @@ export const get_thread_state = query({
 	returns: v.union(
 		v.null(),
 		v.object({
-			follower: v.union(doc(app_convex_schema, "channels_thread_followers"), v.null()),
+			follower: v.union(follower_view_validator, v.null()),
 			unreadCount: v.number(),
 		}),
 	),
@@ -1598,11 +1772,13 @@ export const get_thread_state = query({
 		const follower = thread
 			? await ctx.db
 					.query("channels_thread_followers")
-					.withIndex("by_thread_user", (q) => q.eq("threadId", thread._id).eq("userId", context._yay.userAuth.id))
+					.withIndex("by_workspaceMembership_thread", (q) =>
+						q.eq("workspaceMembershipId", context._yay.membership._id).eq("threadId", thread._id),
+					)
 					.unique()
 			: null;
 		return {
-			follower,
+			follower: follower ? follower_view(follower) : null,
 			unreadCount:
 				(channel.kind === "private" || channel.kind === "direct") && !access.member
 					? 0
@@ -1737,11 +1913,24 @@ export const list_my_threads = query({
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(
-		v.object({
-			follower: doc(app_convex_schema, "channels_thread_followers"),
-			root: shaped_message_validator,
-			unread: v.boolean(),
-		}),
+		v.union(
+			v.object({
+				state: v.literal("readable"),
+				follower: follower_view_validator,
+				root: shaped_message_validator,
+				unread: v.boolean(),
+			}),
+			v.object({
+				state: v.literal("locked"),
+				followerId: v.id("channels_thread_followers"),
+				kind: v.literal("thread"),
+			}),
+			v.object({
+				state: v.literal("unavailable"),
+				followerId: v.id("channels_thread_followers"),
+				kind: v.literal("thread"),
+			}),
+		),
 	),
 	handler: async (ctx, args) => {
 		const context = await get_context(ctx, args.membershipId);
@@ -1749,15 +1938,11 @@ export const list_my_threads = query({
 			if (context._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
 			return { page: [], isDone: true, continueCursor: "" };
 		}
-		const { membership, userAuth } = context._yay;
+		const { membership } = context._yay;
 		const rows = await ctx.db
 			.query("channels_thread_followers")
-			.withIndex("by_organization_workspace_user_following_threadLastActivityAt", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id)
-					.eq("following", true),
+			.withIndex("by_m_following_visible_activity", (q) =>
+				q.eq("workspaceMembershipId", membership._id).eq("following", true).eq("feedVisible", true),
 			)
 			.order("desc")
 			.paginate({
@@ -1768,18 +1953,35 @@ export const list_my_threads = query({
 			});
 		const page = [];
 		for (const follower of rows.page) {
+			const channel = await ctx.db.get("channels", follower.channelId);
+			if (!channel) {
+				page.push({ state: "unavailable" as const, followerId: follower._id, kind: "thread" as const });
+				continue;
+			}
+			const access = await channels_db_get_access(ctx, { ...context._yay, channel });
+			if (access._nay) {
+				page.push({ state: "locked" as const, followerId: follower._id, kind: "thread" as const });
+				continue;
+			}
 			const target = await get_message_context(ctx, {
 				...context._yay,
 				messageId: follower.rootMessageId,
 			});
-			if (target._nay) continue;
+			if (target._nay) {
+				page.push({ state: "unavailable" as const, followerId: follower._id, kind: "thread" as const });
+				continue;
+			}
 			const root = await shape_message(ctx, {
 				...context._yay,
 				message: target._yay.message,
 			});
-			if (!root?.thread) continue;
+			if (!root?.thread) {
+				page.push({ state: "unavailable" as const, followerId: follower._id, kind: "thread" as const });
+				continue;
+			}
 			page.push({
-				follower,
+				state: "readable" as const,
+				follower: follower_view(follower),
 				root,
 				unread: follower.pendingRootMention || root.thread.lastReplySequence > follower.readReplySequence,
 			});
@@ -1794,11 +1996,33 @@ export const list_my_inbox = query({
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(
-		v.object({
-			item: doc(app_convex_schema, "channels_inbox"),
-			message: shaped_message_validator,
-			unread: v.boolean(),
-		}),
+		v.union(
+			v.object({
+				state: v.literal("readable"),
+				item: v.object({
+					_id: v.id("channels_inbox"),
+					channelId: v.id("channels"),
+					messageId: v.id("channels_messages"),
+					kind: v.union(v.literal("mention"), v.literal("reply")),
+					createdAt: v.number(),
+					mainSequence: v.union(v.number(), v.null()),
+					threadRootId: v.union(v.id("channels_messages"), v.null()),
+					threadSequence: v.union(v.number(), v.null()),
+				}),
+				message: shaped_message_validator,
+				unread: v.boolean(),
+			}),
+			v.object({
+				state: v.literal("locked"),
+				inboxId: v.id("channels_inbox"),
+				kind: v.union(v.literal("mention"), v.literal("reply")),
+			}),
+			v.object({
+				state: v.literal("unavailable"),
+				inboxId: v.id("channels_inbox"),
+				kind: v.union(v.literal("mention"), v.literal("reply")),
+			}),
+		),
 	),
 	handler: async (ctx, args) => {
 		const context = await get_context(ctx, args.membershipId);
@@ -1806,15 +2030,10 @@ export const list_my_inbox = query({
 			if (context._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
 			return { page: [], isDone: true, continueCursor: "" };
 		}
-		const { membership, userAuth } = context._yay;
+		const { membership } = context._yay;
 		const rows = await ctx.db
 			.query("channels_inbox")
-			.withIndex("by_recipient_organization_workspace_createdAt", (q) =>
-				q
-					.eq("recipientUserId", userAuth.id)
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId),
-			)
+			.withIndex("by_workspaceMembership_createdAt", (q) => q.eq("workspaceMembershipId", membership._id))
 			.order("desc")
 			.paginate({
 				...args.paginationOpts,
@@ -1824,41 +2043,47 @@ export const list_my_inbox = query({
 			});
 		const page = [];
 		for (const item of rows.page) {
+			const channel = await ctx.db.get("channels", item.channelId);
+			if (!channel) {
+				page.push({ state: "unavailable" as const, inboxId: item._id, kind: item.kind });
+				continue;
+			}
+			const access = await channels_db_get_access(ctx, { ...context._yay, channel });
+			if (access._nay) {
+				page.push({ state: "locked" as const, inboxId: item._id, kind: item.kind });
+				continue;
+			}
 			const target = await get_message_context(ctx, {
 				...context._yay,
 				messageId: item.messageId,
 			});
-			if (target._nay || target._yay.message.deletedAt !== null) continue;
+			if (item.retired || target._nay || target._yay.message.deletedAt !== null) {
+				page.push({ state: "unavailable" as const, inboxId: item._id, kind: item.kind });
+				continue;
+			}
 			const message = await shape_message(ctx, {
 				...context._yay,
 				message: target._yay.message,
 			});
-			if (!message) continue;
-			const read = await ctx.db
-				.query("channels_read_states")
-				.withIndex("by_channel_user", (q) => q.eq("channelId", item.channelId).eq("userId", userAuth.id))
-				.unique();
-			const follower = target._yay.thread
-				? await ctx.db
-						.query("channels_thread_followers")
-						.withIndex("by_thread_user", (q) => q.eq("threadId", target._yay.thread!._id).eq("userId", userAuth.id))
-						.unique()
-				: null;
-			const mainUnread = item.mainSequence !== null && item.mainSequence > (read?.readSequence ?? 0);
-			const threadUnread =
-				item.threadSequence === 0
-					? (follower?.pendingRootMention ?? false)
-					: item.threadSequence !== null && item.threadSequence > (follower?.readReplySequence ?? 0);
-			// A broadcast clears when either its channel or its thread is read.
-			const unread =
-				item.threadSequence === 0
-					? threadUnread
-					: item.threadSequence === null
-						? mainUnread
-						: item.mainSequence === null
-							? threadUnread
-							: mainUnread && threadUnread;
-			page.push({ item, message, unread });
+			if (!message) {
+				page.push({ state: "unavailable" as const, inboxId: item._id, kind: item.kind });
+				continue;
+			}
+			page.push({
+				state: "readable" as const,
+				item: {
+					_id: item._id,
+					channelId: item.channelId,
+					messageId: item.messageId,
+					kind: item.kind,
+					createdAt: item.createdAt,
+					mainSequence: item.mainSequence,
+					threadRootId: item.threadRootId,
+					threadSequence: item.threadSequence,
+				},
+				message,
+				unread: await inbox_unread(ctx, item),
+			});
 		}
 		return { ...rows, page };
 	},
@@ -1894,22 +2119,28 @@ export const confirm_comment_anchor = mutation({
 			.unique())!;
 		const read = await ctx.db
 			.query("channels_read_states")
-			.withIndex("by_channel_user", (q) => q.eq("channelId", channel._id).eq("userId", message.authorUserId))
+			.withIndex("by_workspaceMembership_channel", (q) =>
+				q.eq("workspaceMembershipId", context._yay.membership._id).eq("channelId", channel._id),
+			)
 			.unique();
 		const channelSequence = activity.lastChannelSequence + 1;
 		const mainSequence = activity.lastMainSequence + 1;
 		const confirmedAt = Date.now();
 		const mentions: Id<"users">[] = [];
-		for (const userId of message.mentionUserIds) {
+		const mentionMemberships: Id<"organizations_workspaces_users">[] = [];
+		for (const [index, userId] of message.mentionUserIds.entries()) {
 			if (
 				await can_mention(ctx, {
 					membership: context._yay.membership,
 					channel,
 					fileNodeId: channel.fileNodeId,
 					userId,
+					workspaceMembershipId: message.mentionWorkspaceMembershipIds[index]!,
 				})
-			)
+			) {
 				mentions.push(userId);
+				mentionMemberships.push(message.mentionWorkspaceMembershipIds[index]!);
+			}
 		}
 		// Dropping a mention must not point its body token at the next person.
 		const body = message.body.replace(/\[@ id="user:(\d+)"\]/g, (_token, index: string) => {
@@ -1920,6 +2151,7 @@ export const confirm_comment_anchor = mutation({
 		await ctx.db.patch("channels_activity", activity._id, {
 			lastChannelSequence: channelSequence,
 			lastMainSequence: mainSequence,
+			lastMainMessageAt: confirmedAt,
 			lastMessageAt: confirmedAt,
 		});
 		await ctx.db.patch("channels_threads", thread._id, {
@@ -1931,12 +2163,13 @@ export const confirm_comment_anchor = mutation({
 			channelSequence,
 			mainSequence,
 			mentionUserIds: mentions,
+			mentionWorkspaceMembershipIds: mentionMemberships,
 			body,
 		});
 		const confirmedThread = (await ctx.db.get("channels_threads", thread._id))!;
 		await follow(ctx, {
 			thread: confirmedThread,
-			userId: message.authorUserId,
+			workspaceMembershipId: message.authorWorkspaceMembershipId,
 			readReplySequence: 0,
 			markRead: true,
 		});
@@ -1947,42 +2180,30 @@ export const confirm_comment_anchor = mutation({
 			addedBy: null,
 		});
 		await notify(ctx, {
-			message: { ...message, channelSequence, mainSequence, mentionUserIds: mentions, body },
+			message: {
+				...message,
+				channelSequence,
+				mainSequence,
+				mentionUserIds: mentions,
+				mentionWorkspaceMembershipIds: mentionMemberships,
+				body,
+			},
 			channel,
 			thread: confirmedThread,
-			replyAuthorUserId: null,
+			replyAuthorWorkspaceMembershipId: null,
 		});
 		if ((read?.readSequence ?? 0) === activity.lastChannelSequence)
-			await channels_db_mark_read(ctx, { channel, userId: message.authorUserId, sequence: channelSequence });
+			await channels_db_mark_read(ctx, { channel, membership: context._yay.membership, sequence: channelSequence });
+		await channels_notifications_db_enqueue_sidebar(ctx, channel);
+		await channels_notifications_db_enqueue_thread(ctx, confirmedThread);
 		return Result({ _yay: null });
 	},
 });
 
 async function delete_thread_state(ctx: MutationCtx, thread: Doc<"channels_threads">) {
 	await ctx.db.delete("channels_threads", thread._id);
-	const followers = await ctx.db
-		.query("channels_thread_followers")
-		.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
-		.take(100);
-	await Promise.all(followers.map((item) => ctx.db.delete("channels_thread_followers", item._id)));
-	if (followers.length === 100)
-		await ctx.scheduler.runAfter(0, internal.channels_messages.delete_thread_followers, { threadId: thread._id });
+	await channels_notifications_db_enqueue_thread(ctx, thread);
 }
-
-export const delete_thread_followers = internalMutation({
-	args: { threadId: v.id("channels_threads") },
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const followers = await ctx.db
-			.query("channels_thread_followers")
-			.withIndex("by_thread", (q) => q.eq("threadId", args.threadId))
-			.take(100);
-		await Promise.all(followers.map((item) => ctx.db.delete("channels_thread_followers", item._id)));
-		if (followers.length === 100)
-			await ctx.scheduler.runAfter(0, internal.channels_messages.delete_thread_followers, args);
-		return null;
-	},
-});
 
 async function release_uploads(ctx: MutationCtx, message: Doc<"channels_messages">) {
 	for (const attachment of message.attachments) {
@@ -2080,32 +2301,37 @@ export const edit_message = mutation({
 		if (mentions._nay) return mentions;
 		const fileReferences = await validate_file_references(ctx, { ...args, membership });
 		if (fileReferences._nay) return fileReferences;
-		const removed = message.mentionUserIds.filter((id) => !mentions._yay.includes(id));
+		const removed = message.mentionWorkspaceMembershipIds.filter((id) => !mentions._yay.membershipIds.includes(id));
 		const items = await ctx.db
 			.query("channels_inbox")
 			.withIndex("by_message", (q) => q.eq("messageId", message._id))
 			.take(channels_LIMITS.mentions + 1);
 		await ctx.db.patch("channels_messages", message._id, {
 			body: args.body,
-			mentionUserIds: mentions._yay,
+			mentionUserIds: mentions._yay.userIds,
+			mentionWorkspaceMembershipIds: mentions._yay.membershipIds,
 			fileMentionIds: args.fileMentionIds,
 			fileQuotes: fileReferences._yay,
 			revision: message.revision + 1,
 			editedAt: Date.now(),
 		});
 		for (const item of items)
-			if (item.kind === "mention" && removed.includes(item.recipientUserId))
-				await ctx.db.delete("channels_inbox", item._id);
+			if (item.kind === "mention" && removed.includes(item.workspaceMembershipId)) await retire_inbox(ctx, item);
 		if (is_posts(channel) && message.threadRootId === null && context._yay.thread) {
-			for (const userId of removed) {
+			for (const membershipId of removed) {
 				const follower = await ctx.db
 					.query("channels_thread_followers")
-					.withIndex("by_thread_user", (q) => q.eq("threadId", context._yay.thread!._id).eq("userId", userId))
+					.withIndex("by_workspaceMembership_thread", (q) =>
+						q.eq("workspaceMembershipId", membershipId).eq("threadId", context._yay.thread!._id),
+					)
 					.unique();
-				if (follower)
+				if (follower) {
 					await ctx.db.patch("channels_thread_followers", follower._id, {
 						pendingRootMention: false,
 					});
+					await reconcile_thread_read(ctx, follower, { ...follower, pendingRootMention: false });
+					await channels_messages_db_reconcile_follower(ctx, { ...follower, pendingRootMention: false });
+				}
 			}
 		}
 		return Result({ _yay: null });
@@ -2137,6 +2363,7 @@ export const delete_message = mutation({
 		await ctx.db.patch("channels_messages", message._id, {
 			body: "",
 			mentionUserIds: [],
+			mentionWorkspaceMembershipIds: [],
 			fileMentionIds: [],
 			fileQuotes: [],
 			attachments: [],
@@ -2146,7 +2373,7 @@ export const delete_message = mutation({
 			revision: message.revision + 1,
 		});
 		await Promise.all(counts.map((count) => ctx.db.delete("channels_reaction_counts", count._id)));
-		await Promise.all(inbox.map((item) => ctx.db.delete("channels_inbox", item._id)));
+		for (const item of inbox) await retire_inbox(ctx, item);
 		await ctx.scheduler.runAfter(0, internal.channels_messages.delete_message_reactions, { messageId: message._id });
 		if (thread) {
 			if (message.threadRootId !== null)
@@ -2154,15 +2381,20 @@ export const delete_message = mutation({
 					replyCount: thread.replyCount - 1,
 				});
 			else {
-				for (const userId of message.mentionUserIds) {
+				for (const membershipId of message.mentionWorkspaceMembershipIds) {
 					const follower = await ctx.db
 						.query("channels_thread_followers")
-						.withIndex("by_thread_user", (q) => q.eq("threadId", thread._id).eq("userId", userId))
+						.withIndex("by_workspaceMembership_thread", (q) =>
+							q.eq("workspaceMembershipId", membershipId).eq("threadId", thread._id),
+						)
 						.unique();
-					if (follower?.pendingRootMention)
+					if (follower?.pendingRootMention) {
 						await ctx.db.patch("channels_thread_followers", follower._id, {
 							pendingRootMention: false,
 						});
+						await reconcile_thread_read(ctx, follower, { ...follower, pendingRootMention: false });
+						await channels_messages_db_reconcile_follower(ctx, { ...follower, pendingRootMention: false });
+					}
 				}
 				if (thread.replyCount === 0) await delete_thread_state(ctx, thread);
 			}
@@ -2170,6 +2402,7 @@ export const delete_message = mutation({
 				const root = await ctx.db.get("channels_messages", thread.rootMessageId);
 				if (root?.deletedAt !== null) await delete_thread_state(ctx, thread);
 			}
+			await channels_notifications_db_enqueue_thread(ctx, thread);
 		}
 		return Result({ _yay: null });
 	},
@@ -2331,7 +2564,7 @@ async function change_resolution(
 	});
 	await follow(ctx, {
 		thread,
-		userId: message.authorUserId,
+		workspaceMembershipId: message.authorWorkspaceMembershipId,
 		readReplySequence: 0,
 	});
 	return Result({ _yay: null });
@@ -2378,7 +2611,7 @@ export const set_thread_title = mutation({
 		await ctx.db.patch("channels_threads", thread._id, { title: args.title });
 		await follow(ctx, {
 			thread,
-			userId: message.authorUserId,
+			workspaceMembershipId: message.authorWorkspaceMembershipId,
 			readReplySequence: 0,
 		});
 		return Result({ _yay: null });
@@ -2427,7 +2660,7 @@ export const follow_thread = mutation({
 		if (context._nay) return context;
 		await follow(ctx, {
 			thread: context._yay.thread,
-			userId: context._yay.userAuth.id,
+			workspaceMembershipId: context._yay.membership._id,
 			readReplySequence: context._yay.thread.lastReplySequence,
 		});
 		return Result({ _yay: null });
@@ -2445,14 +2678,17 @@ export const unfollow_thread = mutation({
 		if (context._nay) return context;
 		const follower = await ctx.db
 			.query("channels_thread_followers")
-			.withIndex("by_thread_user", (q) =>
-				q.eq("threadId", context._yay.thread._id).eq("userId", context._yay.userAuth.id),
+			.withIndex("by_workspaceMembership_thread", (q) =>
+				q.eq("workspaceMembershipId", context._yay.membership._id).eq("threadId", context._yay.thread._id),
 			)
 			.unique();
-		if (follower)
+		if (follower) {
 			await ctx.db.patch("channels_thread_followers", follower._id, {
 				following: false,
+				feedVisible: false,
 			});
+			await channels_messages_db_reconcile_follower(ctx, { ...follower, following: false, feedVisible: false });
+		}
 		return Result({ _yay: null });
 	},
 });
@@ -2469,10 +2705,13 @@ export const mark_thread_read = mutation({
 		if (context._nay) return context;
 		if (!Number.isSafeInteger(args.replySequence) || args.replySequence < 0)
 			return Result({ _nay: { message: "Invalid read position" } });
-		const { thread, userAuth } = context._yay;
+		const { thread, userAuth, membership } = context._yay;
+		await channels_notifications_db_ensure_summary(ctx, membership);
 		const follower = await ctx.db
 			.query("channels_thread_followers")
-			.withIndex("by_thread_user", (q) => q.eq("threadId", thread._id).eq("userId", userAuth.id))
+			.withIndex("by_workspaceMembership_thread", (q) =>
+				q.eq("workspaceMembershipId", membership._id).eq("threadId", thread._id),
+			)
 			.unique();
 		const readReplySequence = Math.min(args.replySequence, thread.lastReplySequence);
 		if (follower)
@@ -2482,6 +2721,11 @@ export const mark_thread_read = mutation({
 			});
 		else
 			await ctx.db.insert("channels_thread_followers", {
+				workspaceMembershipId: membership._id,
+				feedVisible: false,
+				countSummaryId: null,
+				countGeneration: 0,
+				countedUnread: false,
 				threadId: thread._id,
 				rootMessageId: thread.rootMessageId,
 				channelId: thread.channelId,
@@ -2494,6 +2738,14 @@ export const mark_thread_read = mutation({
 				threadLastActivityAt: thread.lastActivityAt,
 				followedAt: Date.now(),
 			});
+		const current = (await ctx.db
+			.query("channels_thread_followers")
+			.withIndex("by_workspaceMembership_thread", (q) =>
+				q.eq("workspaceMembershipId", membership._id).eq("threadId", thread._id),
+			)
+			.unique())!;
+		await reconcile_thread_read(ctx, follower ?? { ...current, readReplySequence: 0 }, current);
+		await channels_messages_db_reconcile_follower(ctx, current);
 		return Result({ _yay: null });
 	},
 });

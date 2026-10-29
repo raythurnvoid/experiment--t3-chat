@@ -9,7 +9,7 @@ import {
 	type FormEvent,
 	type ReactNode,
 } from "react";
-import { useConvexConnectionState, usePaginatedQuery, useQuery } from "convex/react";
+import { useConvexConnectionState, useQuery } from "convex/react";
 import { FileText, Hash, Lock, Menu, MoreHorizontal, Users, X } from "lucide-react";
 import type { ImperativePanelHandle } from "react-resizable-panels";
 import { toast } from "sonner";
@@ -48,7 +48,6 @@ import { cn } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { channels_composer_markdown_for_edit } from "../../../shared/channels.ts";
 import { ChannelsComposer, type ChannelsComposerControl_Ref } from "./channels-composer.tsx";
-import type { ChannelsMentionItem } from "./channels-composer-mention.tsx";
 import { ChannelsMessage } from "./channels-message.tsx";
 import { ChannelsMessageList } from "./channels-message-list.tsx";
 import { useChannelsMessageWindow, type ChannelsMessage as Message } from "./channels-message-window.ts";
@@ -91,12 +90,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const document = channel.channel;
-	const joined = usePaginatedQuery(app_convex_api.channels.list_my_channels, { membershipId }, { initialNumItems: 50 });
-	const publicChannels = usePaginatedQuery(
-		app_convex_api.channels.browse_public_channels,
-		{ membershipId, archived: false },
-		{ initialNumItems: 50 },
-	);
 	const posts =
 		document.kind === "file" ||
 		((document.kind === "public" || document.kind === "private") && document.layout === "posts");
@@ -117,20 +110,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	const resolvable =
 		document.kind === "file" ||
 		((document.kind === "public" || document.kind === "private") && document.resolvableThreads);
-	const mentionItems: ChannelsMentionItem[] = Array.from(
-		new Map([...joined.results, ...publicChannels.results].map((item) => [item._id, item])).values(),
-	).flatMap((item) =>
-		item.kind === "public" || item.kind === "private"
-			? [
-					{
-						kind: "channel" as const,
-						id: item._id,
-						label: item.name,
-						href: `${url_path_messages({ organizationName, workspaceName })}/${item._id}`,
-					},
-				]
-			: [],
-	);
 	const openThread = useFn((id: app_convex_Id<"channels_messages">) => {
 		opener.current =
 			globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;
@@ -239,7 +218,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 						fileNodeId={document.kind === "file" ? document.fileNodeId : undefined}
 						state={state}
 						canPost={channel.canPost}
-						mentionItems={mentionItems}
 						onThread={openThread}
 					/>
 				</div>
@@ -250,7 +228,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 					name={name}
 					root={null}
 					readSequence={state.readSequence}
-					mentionItems={mentionItems}
 					jumpMessageId={!rootId ? search.message : undefined}
 					resolvable={resolvable}
 					onThread={openThread}
@@ -267,7 +244,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 				name={name}
 				root={thread.root}
 				readSequence={0}
-				mentionItems={mentionItems}
 				jumpMessageId={search.message}
 				resolvable={resolvable}
 				onClose={closeThread}
@@ -319,6 +295,7 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 				<MyPanelResizeHandle
 					isOpen={split}
 					closeBehavior="hidden"
+					aria-label="Resize conversation and thread"
 					onKeyUp={(event) => {
 						if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
 							setThreadWidth(Math.max(360, Math.min(maximumThread, (threadLayout.current * available) / 100)));
@@ -368,7 +345,6 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 	name: string;
 	root: Message | null;
 	readSequence: number;
-	mentionItems: readonly ChannelsMentionItem[];
 	quoteRequest?: file_quotes_Quote | null;
 	onQuoteInserted?: () => void;
 	jumpMessageId: string | undefined;
@@ -385,7 +361,6 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 		name,
 		root,
 		readSequence,
-		mentionItems,
 		quoteRequest,
 		onQuoteInserted,
 		jumpMessageId,
@@ -850,7 +825,6 @@ export const ChannelsConversationPane = memo(function ChannelsConversationPane(p
 							if (latest) edit(latest);
 						}}
 						mentionTarget={{ channelId }}
-						mentionItems={mentionItems}
 						quoteRequest={editing ? null : quoteRequest}
 						onQuoteInserted={onQuoteInserted}
 					>

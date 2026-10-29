@@ -9203,6 +9203,7 @@ const app_convex_schema = defineSchema({
 				createdBy: v.id("users"),
 				createdAt: v.number(),
 				archivedAt: v.union(v.number(), v.null()),
+				archived: v.boolean(),
 			}),
 			v.object({
 				kind: v.literal("direct"),
@@ -9228,11 +9229,11 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_kind_name", ["organizationId", "workspaceId", "kind", "name"])
 		.index("by_organization_workspace_directKey", ["organizationId", "workspaceId", "directKey"])
 		.index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"])
-		.index("by_organization_workspace_kind_archivedAt_name", [
+		.index("by_organization_workspace_kind_archived_name", [
 			"organizationId",
 			"workspaceId",
 			"kind",
-			"archivedAt",
+			"archived",
 			"name",
 		]),
 
@@ -9241,6 +9242,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		lastMainSequence: v.number(),
+		lastMainMessageAt: v.number(),
 		lastChannelSequence: v.number(),
 		lastMessageAt: v.number(),
 		memberCount: v.number(),
@@ -9261,6 +9263,16 @@ const app_convex_schema = defineSchema({
 		addedBy: v.union(v.id("users"), v.null()),
 		notify: v.union(v.literal("all"), v.literal("mentions"), v.literal("none")),
 		starred: v.boolean(),
+		section: v.union(v.literal("channels"), v.literal("direct"), v.literal("files")),
+		hidden: v.boolean(),
+		sidebarArchived: v.boolean(),
+		sidebarName: v.union(v.string(), v.null()),
+		sidebarActivityAt: v.number(),
+		starredAt: v.union(v.number(), v.null()),
+		visibilityRevision: v.number(),
+		countSummaryId: v.union(v.id("channels_summaries"), v.null()),
+		countGeneration: v.number(),
+		countedMention: v.boolean(),
 		hiddenAtMainSequence: v.union(v.number(), v.null()),
 		joinedAt: v.number(),
 	})
@@ -9268,10 +9280,36 @@ const app_convex_schema = defineSchema({
 		.index("by_channel_level", ["channelId", "level"])
 		.index("by_organization_workspace_user_channel", ["organizationId", "workspaceId", "userId", "channelId"])
 		.index("by_workspaceMembership_channelKind_channel", ["workspaceMembershipId", "channelKind", "channelId"])
+		.index("by_workspaceMembership_channel", ["workspaceMembershipId", "channelId"])
+		.index("by_m_star_hidden_archived_starredAt", [
+			"workspaceMembershipId",
+			"starred",
+			"hidden",
+			"sidebarArchived",
+			"starredAt",
+		])
+		.index("by_m_star_hidden_archived_section_name", [
+			"workspaceMembershipId",
+			"starred",
+			"hidden",
+			"sidebarArchived",
+			"section",
+			"sidebarName",
+		])
+		.index("by_m_star_hidden_archived_section_activity", [
+			"workspaceMembershipId",
+			"starred",
+			"hidden",
+			"sidebarArchived",
+			"section",
+			"sidebarActivityAt",
+		])
+		.index("by_m_kind_archived_name", ["workspaceMembershipId", "channelKind", "sidebarArchived", "sidebarName"])
 		.index("by_organization_user", ["organizationId", "userId"])
 		.index("by_user", ["userId"]),
 
 	channels_read_states: defineTable({
+		workspaceMembershipId: v.id("organizations_workspaces_users"),
 		channelId: v.id("channels"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -9280,7 +9318,8 @@ const app_convex_schema = defineSchema({
 		readSequence: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_channel_user", ["channelId", "userId"])
+		.index("by_workspaceMembership_channel", ["workspaceMembershipId", "channelId"])
+		.index("by_channel", ["channelId"])
 		.index("by_organization_user", ["organizationId", "userId"])
 		.index("by_user", ["userId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
@@ -9290,6 +9329,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		authorUserId: v.id("users"),
+		authorWorkspaceMembershipId: v.id("organizations_workspaces_users"),
 		channelSequence: v.number(),
 		mainSequence: v.union(v.number(), v.null()),
 		threadRootId: v.union(v.id("channels_messages"), v.null()),
@@ -9300,6 +9340,7 @@ const app_convex_schema = defineSchema({
 		),
 		body: v.string(),
 		mentionUserIds: v.array(v.id("users")),
+		mentionWorkspaceMembershipIds: v.array(v.id("organizations_workspaces_users")),
 		fileMentionIds: v.array(v.id("files_nodes")),
 		fileQuotes: v.array(file_quote_validator),
 		attachments: v.array(
@@ -9319,7 +9360,7 @@ const app_convex_schema = defineSchema({
 		// The agent reads one thread's replies in a time window. Convex adds `_creationTime` at the end.
 		.index("by_threadRoot", ["threadRootId"])
 		.index("by_channel", ["channelId"])
-		.index("by_author_clientMessageId", ["authorUserId", "clientMessageId"])
+		.index("by_authorMembership_clientMessageId", ["authorWorkspaceMembershipId", "clientMessageId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.searchIndex("search_body", {
 			searchField: "body",
@@ -9345,7 +9386,6 @@ const app_convex_schema = defineSchema({
 		isResolved: v.boolean(),
 		resolvedAt: v.union(v.number(), v.null()),
 		resolvedBy: v.union(v.id("users"), v.null()),
-		followerSyncPending: v.boolean(),
 	})
 		.index("by_rootMessage", ["rootMessageId"])
 		.index("by_anchor_confirmedAt", ["anchor.confirmedAt"])
@@ -9354,6 +9394,11 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	channels_thread_followers: defineTable({
+		workspaceMembershipId: v.id("organizations_workspaces_users"),
+		feedVisible: v.boolean(),
+		countSummaryId: v.union(v.id("channels_summaries"), v.null()),
+		countGeneration: v.number(),
+		countedUnread: v.boolean(),
 		threadId: v.id("channels_threads"),
 		rootMessageId: v.id("channels_messages"),
 		channelId: v.id("channels"),
@@ -9367,15 +9412,15 @@ const app_convex_schema = defineSchema({
 		threadLastActivityAt: v.number(),
 		followedAt: v.number(),
 	})
-		.index("by_thread_user", ["threadId", "userId"])
+		.index("by_workspaceMembership_thread", ["workspaceMembershipId", "threadId"])
 		.index("by_thread", ["threadId"])
+		.index("by_channel", ["channelId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
-		.index("by_user_channel_pendingRootMention", ["userId", "channelId", "pendingRootMention"])
-		.index("by_organization_workspace_user_following_threadLastActivityAt", [
-			"organizationId",
-			"workspaceId",
-			"userId",
+		.index("by_m_channel_pendingRootMention", ["workspaceMembershipId", "channelId", "pendingRootMention"])
+		.index("by_m_following_visible_activity", [
+			"workspaceMembershipId",
 			"following",
+			"feedVisible",
 			"threadLastActivityAt",
 		])
 		.index("by_organization_user", ["organizationId", "userId"])
@@ -9405,6 +9450,11 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	channels_inbox: defineTable({
+		workspaceMembershipId: v.id("organizations_workspaces_users"),
+		retired: v.boolean(),
+		countSummaryId: v.union(v.id("channels_summaries"), v.null()),
+		countGeneration: v.number(),
+		countedUnread: v.boolean(),
 		recipientUserId: v.id("users"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -9416,23 +9466,142 @@ const app_convex_schema = defineSchema({
 		threadSequence: v.union(v.number(), v.null()),
 		createdAt: v.number(),
 	})
-		.index("by_recipient_organization_workspace_createdAt", [
-			"recipientUserId",
-			"organizationId",
-			"workspaceId",
-			"createdAt",
-		])
-		.index("by_recipient_channel_kind_threadRoot_mainSequence", [
-			"recipientUserId",
+		.index("by_workspaceMembership_createdAt", ["workspaceMembershipId", "createdAt"])
+		.index("by_m_channel_kind_retired_root_main", [
+			"workspaceMembershipId",
 			"channelId",
 			"kind",
+			"retired",
 			"threadRootId",
 			"mainSequence",
 		])
+		.index("by_m_channel_mainSequence", ["workspaceMembershipId", "channelId", "mainSequence"])
+		.index("by_m_root_threadSequence", ["workspaceMembershipId", "threadRootId", "threadSequence"])
+		.index("by_channel", ["channelId"])
 		.index("by_message", ["messageId"])
 		.index("by_recipient", ["recipientUserId"])
 		.index("by_organization_recipient", ["organizationId", "recipientUserId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_summaries: defineTable({
+		workspaceMembershipId: v.id("organizations_workspaces_users"),
+		userId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		generation: v.number(),
+		authorityRevision: v.number(),
+		repairedAuthorityRevision: v.number(),
+		organizationAuthorityPin: v.union(
+			v.object({ id: v.id("channels_authority_versions"), revision: v.number() }),
+			v.null(),
+		),
+		workspaceAuthorityPin: v.union(
+			v.object({ id: v.id("channels_authority_versions"), revision: v.number() }),
+			v.null(),
+		),
+		ready: v.boolean(),
+		mentionChannels: v.number(),
+		unreadInbox: v.number(),
+		unreadThreads: v.number(),
+	})
+		.index("by_workspaceMembership", ["workspaceMembershipId"])
+		.index("by_organization_workspace_membership", ["organizationId", "workspaceId", "workspaceMembershipId"])
+		.index("by_organization_user", ["organizationId", "userId"])
+		.index("by_user", ["userId"]),
+
+	channels_authority_versions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.null()),
+		revision: v.number(),
+	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_move_authority_proofs: defineTable({
+		cohortId: v.id("files_move_cohorts"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		proofEpoch: v.number(),
+		fence: v.number(),
+		attemptFence: v.number(),
+		clockPins: files_move_clock_pins_validator,
+		lastOrder: v.union(v.number(), v.null()),
+		changed: v.boolean(),
+		complete: v.boolean(),
+	})
+		.index("by_cohort_epoch", ["cohortId", "proofEpoch"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_sidebar_jobs: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		requestedRevision: v.number(),
+		passRevision: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_channel", ["channelId"])
+		.index("by_dueAt", ["dueAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_thread_jobs: defineTable({
+		threadId: v.id("channels_threads"),
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		requestedRevision: v.number(),
+		passRevision: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_thread", ["threadId"])
+		.index("by_dueAt", ["dueAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_inbox_jobs: defineTable({
+		workspaceMembershipId: v.id("organizations_workspaces_users"),
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		kind: v.union(v.literal("main"), v.literal("thread")),
+		rootMessageId: v.union(v.id("channels_messages"), v.null()),
+		lowerExclusive: v.number(),
+		upperInclusive: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_workspaceMembership", ["workspaceMembershipId"])
+		.index("by_dueAt", ["dueAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_summary_jobs: defineTable({
+		workspaceMembershipId: v.id("organizations_workspaces_users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		summaryId: v.id("channels_summaries"),
+		generation: v.number(),
+		phase: v.union(v.literal("members"), v.literal("inbox"), v.literal("followers")),
+		cursor: v.union(v.string(), v.null()),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_workspaceMembership", ["workspaceMembershipId"])
+		.index("by_dueAt", ["dueAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	channels_authority_jobs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.null()),
+		requestedRevision: v.number(),
+		passRevision: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_dueAt", ["dueAt"]),
 
 	channels_uploads: defineTable({
 		channelId: v.id("channels"),

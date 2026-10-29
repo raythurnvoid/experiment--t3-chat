@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import type { FunctionArgs, FunctionReturnType } from "convex/server";
+import type { FunctionArgs, FunctionReturnType, PaginationOptions } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import {
@@ -342,6 +342,176 @@ describe("open_direct_channel", () => {
 			otherUserIds: [f.other.userId],
 		});
 		expect(next._yay?.channelId).not.toBe(old._yay?.channelId);
+	});
+});
+
+describe("open_direct_channel_by_id", () => {
+	test("visible and stale opens spend no write tokens, while real reopens stay limited", async () => {
+		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		try {
+			const f = await fixture();
+			const opened = await f.as(f.member).mutation(api.channels.open_direct_channel, {
+				membershipId: f.member.membershipId,
+				otherUserIds: [f.other.userId],
+			});
+			const args = { membershipId: f.other.membershipId, channelId: opened._yay!.channelId };
+			const state = () => f.as(f.other).query(api.channels.get_channel_state, args);
+			const visible = (await state())!.member!;
+			for (let index = 0; index < 12; index++) {
+				expect(
+					await f.as(f.other).mutation(api.channels.open_direct_channel_by_id, {
+						...args,
+						expectedVisibilityRevision: visible.visibilityRevision,
+					}),
+					"opening a visible DM must not hit the write limit",
+				).toEqual({ _yay: { opened: true } });
+			}
+			expect(await f.as(f.other).mutation(api.channels.hide_direct_channel, args)).toEqual({ _yay: null });
+			const hidden = (await state())!.member!;
+			for (let index = 0; index < 12; index++) {
+				expect(
+					await f.as(f.other).mutation(api.channels.open_direct_channel_by_id, {
+						...args,
+						expectedVisibilityRevision: visible.visibilityRevision,
+					}),
+					"a stale Open must stay a free no-op",
+				).toEqual({ _yay: { opened: false } });
+			}
+			// Close used one token. The seven remaining writes must still fit.
+			for (let index = 0; index < 7; index++)
+				expect(
+					await f.as(f.other).mutation(api.channels.set_channel_starred, { ...args, starred: index % 2 === 0 }),
+				).toEqual({ _yay: null });
+			expect(
+				await f.as(f.other).mutation(api.channels.open_direct_channel_by_id, {
+					...args,
+					expectedVisibilityRevision: hidden.visibilityRevision,
+				}),
+				"a real reopen must still refuse when the write budget is empty",
+			).toEqual({ _nay: { message: "Rate limit exceeded" } });
+			expect((await state())!.member).toMatchObject({ hidden: true, visibilityRevision: hidden.visibilityRevision });
+			expect(
+				await f.as(f.other).mutation(api.channels.open_direct_channel_by_id, {
+					...args,
+					expectedVisibilityRevision: visible.visibilityRevision,
+				}),
+				"a stale Open must also succeed with an empty write budget",
+			).toEqual({ _yay: { opened: false } });
+		} finally {
+			clock.mockRestore();
+		}
+	});
+});
+
+describe.each(["list_my_channels", "search_my_private_channels", "list_my_channel_kind"] as const)("%s", (door) => {
+	test("splits an expanded native page and keeps every item through continuation", async () => {
+		const f = await fixture();
+		const kind = door === "list_my_channel_kind" ? "file" : "private";
+		const memberIds: Id<"channels_members">[] = [];
+		for (let start = 0; start < 110; start += 25) {
+			await test_run_with_flush(f.t, async (ctx) => {
+				const membership = (await ctx.db.get("organizations_workspaces_users", f.other.membershipId))!;
+				for (let index = start; index < Math.min(110, start + 25); index++) {
+					const name = `page-${index.toString().padStart(3, "0")}`;
+					let channelId: Id<"channels">;
+					if (kind === "file") {
+						const fileNodeId = await ctx.db.insert("files_nodes", {
+							...test_mocks.files.base(),
+							organizationId: f.organizationId,
+							workspaceId: f.workspaceId,
+							kind: "file",
+							name: `${name}.md`,
+							path: `/${name}.md`,
+							treePath: `/${name}.md`,
+							textKind: "rich_text",
+							createdBy: f.other.userId,
+							updatedBy: f.other.userId,
+						});
+						channelId = (
+							await channels_db_ensure_file_channel(ctx, {
+								membership,
+								userId: f.other.userId,
+								fileNodeId,
+							})
+						)._id;
+					} else {
+						channelId = await ctx.db.insert("channels", {
+							organizationId: f.organizationId,
+							workspaceId: f.workspaceId,
+							kind,
+							name,
+							topic: "",
+							layout: "messages",
+							resolvableThreads: false,
+							createdBy: f.other.userId,
+							createdAt: Date.now(),
+							archivedAt: null,
+							archived: false,
+						});
+						await ctx.db.insert("channels_activity", {
+							channelId,
+							organizationId: f.organizationId,
+							workspaceId: f.workspaceId,
+							lastMainSequence: 0,
+							lastMainMessageAt: 0,
+							lastChannelSequence: 0,
+							lastMessageAt: 0,
+							memberCount: 0,
+						});
+					}
+					memberIds.push(
+						await channels_db_add_member(ctx, {
+							channel: (await ctx.db.get("channels", channelId))!,
+							membership,
+							level: "member",
+							addedBy: null,
+						}),
+					);
+				}
+			});
+		}
+		const scope = (
+			await f.as(f.other).query(api.channels_notifications.get_summary, {
+				membershipId: f.other.membershipId,
+			})
+		)!;
+		const read = (paginationOpts: PaginationOptions) =>
+			door === "list_my_channels"
+				? f.as(f.other).query(api.channels.list_my_channels, {
+					membershipId: f.other.membershipId,
+					section: "channels",
+					paginationOpts,
+				})
+				: door === "search_my_private_channels"
+					? f.as(f.other).query(api.channels.search_my_private_channels, {
+						membershipId: f.other.membershipId,
+						accessScopeKey: scope.accessScopeKey,
+						archived: false,
+						prefix: "page-",
+						paginationOpts,
+					})
+					: f.as(f.other).query(api.channels.list_my_channel_kind, {
+						membershipId: f.other.membershipId,
+						accessScopeKey: scope.accessScopeKey,
+						kind: "file",
+						paginationOpts,
+					});
+		const first = await read({ cursor: null, numItems: 50 });
+		const second = await read({ cursor: first.continueCursor, numItems: 50 });
+		// Reuse a native endpoint beyond one page, as a grown reactive range can do.
+		let page = await read({ cursor: null, numItems: 50, endCursor: second.continueCursor });
+		expect(page.page, "an expanded native page must stay within 50 source docs").toHaveLength(50);
+		expect(page).toMatchObject({ pageStatus: "SplitRequired", isDone: false });
+		expect(page.splitCursor).toBeTruthy();
+		const seen = page.page.map((entry) => entry.memberId);
+		for (let step = 0; step < 3 && !page.isDone; step++) {
+			page = await read({ cursor: page.continueCursor, numItems: 50 });
+			expect(page.page.length).toBeLessThanOrEqual(50);
+			expect(page.page.every((entry) => entry.state === "readable")).toBe(true);
+			seen.push(...page.page.map((entry) => entry.memberId));
+		}
+		expect(page.isDone).toBe(true);
+		expect(seen.toSorted()).toEqual(memberIds.toSorted());
 	});
 });
 
@@ -1366,7 +1536,7 @@ describe("posts read state", () => {
 					membershipId: f.other.membershipId,
 					paginationOpts: { numItems: 50, cursor: null },
 				})
-			).page[0]?.unread,
+			).page.map((row) => (row.state === "readable" ? row.unread : undefined))[0],
 			"post mention stays unread after a channel visit",
 		).toBe(true);
 		await f.as(f.other).mutation(api.channels_messages.mark_thread_read, {
@@ -1437,25 +1607,29 @@ describe("list_my_inbox", () => {
 				membershipId: f.other.membershipId,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
-		expect((await read()).page.map((row) => row.unread)).toEqual([true, true]);
+		expect((await read()).page.map((row) => (row.state === "readable" ? row.unread : undefined))).toEqual([true, true]);
 		await f
 			.as(f.other)
 			.mutation(api.channels.mark_read, { membershipId: f.other.membershipId, channelId, sequence: 2 });
 		expect(
-			(await read()).page.map((row) => row.unread),
+			(await read()).page.map((row) => (row.state === "readable" ? row.unread : undefined)),
 			"broadcast mention must clear when the main stream is read",
 		).toEqual([false, false]);
 		await send(f, f.member, { kind: "thread", rootMessageId }, { mentionUserIds: [f.other.userId] });
-		expect((await read()).page[0]?.unread).toBe(true);
+		expect((await read()).page.map((row) => (row.state === "readable" ? row.unread : undefined))[0]).toBe(true);
 		await f.as(f.other).mutation(api.channels_messages.mark_thread_read, {
 			membershipId: f.other.membershipId,
 			rootMessageId,
 			replySequence: 2,
 		});
-		expect((await read()).page.map((row) => row.unread)).toEqual([false, false, false]);
+		expect((await read()).page.map((row) => (row.state === "readable" ? row.unread : undefined))).toEqual([
+			false,
+			false,
+			false,
+		]);
 	});
 
-	test("losing private access hides the whole inbox result", async () => {
+	test("losing private access keeps a generic locked inbox result", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "private");
 		await f.as(f.member).mutation(api.channels.add_channel_members, {
@@ -1478,12 +1652,14 @@ describe("list_my_inbox", () => {
 				.unique();
 			await ctx.db.delete("channels_members", member!._id);
 		});
-		expect((await read()).page, "private inbox must disappear after access is lost").toEqual([]);
+		expect((await read()).page, "private inbox must keep only its receipt identity after access is lost").toEqual([
+			{ state: "locked", inboxId: expect.any(String), kind: "mention" },
+		]);
 	});
 });
 
 describe("list_my_threads", () => {
-	test("unfollow hides the thread and lost channel access hides a followed thread", async () => {
+	test("unfollow hides the thread and lost channel access keeps a locked followed thread", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "private");
 		await f.as(f.member).mutation(api.channels.add_channel_members, {
@@ -1500,7 +1676,7 @@ describe("list_my_threads", () => {
 				membershipId: f.other.membershipId,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
-		expect((await read()).page[0]?.unread).toBe(true);
+		expect((await read()).page.map((row) => (row.state === "readable" ? row.unread : undefined))[0]).toBe(true);
 		await f
 			.as(f.other)
 			.mutation(api.channels_messages.unfollow_thread, { membershipId: f.other.membershipId, rootMessageId });
@@ -1515,7 +1691,10 @@ describe("list_my_threads", () => {
 				.unique();
 			await ctx.db.delete("channels_members", member!._id);
 		});
-		expect((await read()).page, "private followed thread must disappear after access is lost").toEqual([]);
+		expect(
+			(await read()).page,
+			"private followed thread must keep only its follower identity after access is lost",
+		).toEqual([{ state: "locked", followerId: expect.any(String), kind: "thread" }]);
 	});
 });
 

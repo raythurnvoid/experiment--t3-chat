@@ -36,6 +36,7 @@ import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops_rebuild.
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
 import { files_share_rows_db_sync_grant } from "../server/files-share-rows.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
+import { channels_notifications_db_advance_authority } from "../server/channels-notifications.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -6506,6 +6507,80 @@ describe("process_organization_deletion_request", () => {
 
 		expect(result).toEqual({ done: true, deletedCount: 1 });
 		expect(after).toBeNull();
+	});
+
+	test("public organization deletion drains Messages authority and keeps another tenant's clocks", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "messages-authority-delete",
+				displayName: "Messages authority delete",
+			}),
+		);
+		const organization = await t.run(async (ctx) => {
+			const result = await organizations_db_create(ctx, {
+				userId: user.userId,
+				name: "counts-delete",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			await ctx.db.insert("access_control_roles", {
+				organizationId: result._yay.organizationId,
+				name: "Reader",
+				normalizedName: "reader",
+				description: "",
+				permissions: ["content.read"],
+				createdBy: user.userId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			for (const workspaceId of [null, user.defaultWorkspaceId])
+				await channels_notifications_db_advance_authority(ctx, {
+					organizationId: user.defaultOrganizationId,
+					workspaceId,
+				});
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+			return result._yay;
+		});
+		const read = (organizationId: Id<"organizations">) =>
+			t.run(async (ctx) => ({
+				versions: await ctx.db
+					.query("channels_authority_versions")
+					.withIndex("by_organization_workspace", (q) => q.eq("organizationId", organizationId))
+					.collect(),
+				jobs: await ctx.db
+					.query("channels_authority_jobs")
+					.withIndex("by_organization_workspace", (q) => q.eq("organizationId", organizationId))
+					.collect(),
+			}));
+		const preserved = await read(user.defaultOrganizationId);
+		const owner = t.withIdentity({ issuer: "https://clerk.test", external_id: user.userId });
+		expect(
+			await owner.mutation(api.organizations.delete_organization, { organizationId: organization.organizationId }),
+		).toEqual({ _yay: null });
+		const captured = await read(organization.organizationId);
+		expect(captured.versions.some((version) => version.workspaceId === null)).toBe(true);
+		expect(captured.jobs.some((job) => job.workspaceId === null)).toBe(true);
+		const request = (await t.run((ctx) =>
+			ctx.db
+				.query("data_deletion_requests")
+				.withIndex("by_organization_scope", (q) =>
+					q.eq("organizationId", organization.organizationId).eq("scope", "organization"),
+				)
+				.unique(),
+		))!;
+		await data_deletion_test_process_organization_request_until_done(t, { requestId: request._id, batchSize: 1 });
+		expect(await t.run((ctx) => ctx.db.get("organizations", organization.organizationId))).toBeNull();
+		expect(
+			await read(organization.organizationId),
+			"organization authority rows must be gone after public deletion",
+		).toEqual({ versions: [], jobs: [] });
+		for (const job of captured.jobs)
+			await t.mutation(internal.channels_notifications.drain_authority_job, { jobId: job._id });
+		expect(await read(organization.organizationId)).toEqual({ versions: [], jobs: [] });
+		expect(await read(user.defaultOrganizationId)).toEqual(preserved);
 	});
 
 	test("purges the whole organization and clears matching queued workspace requests", async () => {

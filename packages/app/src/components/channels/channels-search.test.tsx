@@ -17,7 +17,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => ({ membershipId: "member" }) },
 }));
 vi.mock("@/lib/app-channels-context.tsx", () => ({
-	AppChannelsProvider: { useContext: () => ({ channelList: { results: [] } }) },
+	AppChannelsProvider: { useContext: () => ({ accessScopeKey: "access", status: "delayed" }) },
 }));
 vi.mock("./channels-feed.tsx", () => ({ ChannelsFeedMessage: () => null }));
 

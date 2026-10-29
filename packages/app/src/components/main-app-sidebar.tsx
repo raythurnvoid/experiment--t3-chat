@@ -149,7 +149,10 @@ type MainAppSidebarItem_ClassNames =
 	| "MainAppSidebarItem-trigger"
 	| "MainAppSidebarItem-title"
 	| "MainAppSidebarItem-unread";
-type MainAppSidebarItem_CustomAttributes = { "data-unread": string | undefined };
+type MainAppSidebarItem_CustomAttributes = {
+	"data-unread": string | undefined;
+	"data-messages-status": string | undefined;
+};
 
 type MainAppSidebarItem_Props = {
 	to: string;
@@ -157,12 +160,13 @@ type MainAppSidebarItem_Props = {
 	icon: LucideIcon;
 	tooltip?: string;
 	unread?: boolean;
+	messagesStatus?: string;
 	/** Subpaths matching this do not make the item active — used when a descendant route has its own nav item. */
 	subpathExcludePattern?: RegExp;
 };
 
 const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSidebarItem_Props) {
-	const { to, label, icon: Icon, tooltip, unread, subpathExcludePattern } = props;
+	const { to, label, icon: Icon, tooltip, unread, messagesStatus, subpathExcludePattern } = props;
 
 	const pathname = useRouterState<RegisteredRouter, string>({
 		select: (state) => state.location.pathname,
@@ -186,8 +190,10 @@ const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSideba
 				data-selected={isActive ? "true" : undefined}
 				{...({
 					"data-unread": unread === undefined ? undefined : String(unread),
+					"data-messages-status": messagesStatus,
 				} satisfies MainAppSidebarItem_CustomAttributes)}
 				tooltip={tooltip}
+				aria-label={label}
 				tooltipPlacement={tooltip ? "right" : undefined}
 			>
 				<MySidebarListItemIcon>
@@ -446,7 +452,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const { ref, id, className } = props;
 
 	const { membershipId, organizationId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
-	const { unreadMentions } = AppChannelsProvider.useContext();
+	const { unreadMentions, status: messagesStatus } = AppChannelsProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const pluginPages = useQuery(app_convex_api.plugins_ui_installed.list_ui_pages, { membershipId });
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
@@ -541,10 +547,19 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 					/>
 					<MainAppSidebarItem
 						to={messagesPath}
-						label="Messages"
+						label={messagesStatus === "updating" ? "Messages Updating…" : "Messages"}
 						icon={MessagesSquare}
-						tooltip={mainAppSidebarCollapsed ? "Messages" : undefined}
-						unread={unreadMentions > 0}
+						tooltip={
+							messagesStatus === "delayed"
+								? "Messages · Counts may be delayed"
+								: mainAppSidebarCollapsed
+									? messagesStatus === "updating"
+										? "Messages Updating…"
+										: "Messages"
+									: undefined
+						}
+						unread={unreadMentions !== null && unreadMentions > 0}
+						messagesStatus={messagesStatus}
 					/>
 					<MainAppSidebarItem
 						to={filesPath}

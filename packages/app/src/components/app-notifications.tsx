@@ -522,7 +522,7 @@ type AppNotifications_ClassNames =
 export const AppNotifications = memo(function AppNotifications() {
 	const navigate = useNavigate();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const { inbox, inboxUnreadCount, inboxHasMore } = AppChannelsProvider.useContext();
+	const { inboxUnreadCount, status: messagesStatus, retrySummary } = AppChannelsProvider.useContext();
 
 	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
 	const activeActivities = usePaginatedQuery(
@@ -547,9 +547,11 @@ export const AppNotifications = memo(function AppNotifications() {
 	const notificationCount = notificationItems.length;
 	// A job that waits on a name clash also counts, until the person answers it or the job ends.
 	const badgeCount =
-		notificationCount +
-		activeActivities.results.filter((activity) => activity.status === "awaiting_input").length +
-		inboxUnreadCount;
+		inboxUnreadCount === null
+			? null
+			: notificationCount +
+				activeActivities.results.filter((activity) => activity.status === "awaiting_input").length +
+				inboxUnreadCount;
 	const dismissableActivityCount = activities.filter((activity) => activity.controls.canDismiss).length;
 
 	const onArchiveNotification = useFn((notificationId: app_convex_Id<"notifications">) => {
@@ -658,18 +660,30 @@ export const AppNotifications = memo(function AppNotifications() {
 			<MyPopoverTrigger>
 				<MyIconButton
 					variant="ghost-highlightable"
-					aria-label="Notifications"
+					aria-label={messagesStatus === "updating" ? "Notifications, Messages Updating" : "Notifications"}
+					tooltip={
+						messagesStatus === "updating"
+							? "Messages Updating…"
+							: messagesStatus === "delayed"
+								? "Counts may be delayed"
+								: messagesStatus === "error"
+									? "Could not load Messages counts"
+									: messagesStatus === "unavailable"
+										? "Messages unavailable"
+										: "Loading Messages counts…"
+					}
+					data-messages-status={messagesStatus}
 					className={"AppNotifications-trigger" satisfies AppNotifications_ClassNames}
 				>
 					<MyIconButtonIcon>
 						<Bell />
 					</MyIconButtonIcon>
-					{badgeCount > 0 || inboxHasMore ? (
+					{badgeCount !== null && badgeCount > 0 ? (
 						<span
 							className={"AppNotifications-badge" satisfies AppNotifications_ClassNames}
-							title="Jobs and invites plus unread loaded message items"
+							title="Jobs and invites plus unread Messages. Counts may be delayed."
 						>
-							{badgeCount > 99 ? "99+" : `${badgeCount}${inboxHasMore ? "+" : ""}`}
+							{badgeCount}
 						</span>
 					) : null}
 				</MyIconButton>
@@ -690,11 +704,7 @@ export const AppNotifications = memo(function AppNotifications() {
 						}
 						onClick={dismissAll}
 					>
-						{dismissing
-							? "Dismissing…"
-							: inbox.results.length > 0 || inboxHasMore
-								? "Dismiss jobs and invites"
-								: "Dismiss all"}
+						{dismissing ? "Dismissing…" : "Dismiss jobs and invites"}
 					</MyButton>
 				</header>
 
@@ -704,7 +714,19 @@ export const AppNotifications = memo(function AppNotifications() {
 						"app-scrollable" satisfies AppClassName,
 					)}
 				>
-					<ChannelsActivity compact onOpen={() => setOpen(false)} />
+					<p data-messages-status={messagesStatus}>
+						{messagesStatus === "delayed"
+							? "Messages counts may be delayed"
+							: messagesStatus === "updating"
+								? "Messages Updating…"
+								: messagesStatus === "error"
+									? "Could not load Messages counts"
+									: messagesStatus === "unavailable"
+										? "Messages unavailable"
+										: "Loading Messages counts…"}
+					</p>
+					{messagesStatus === "error" && <MyButton onClick={retrySummary}>Retry Messages counts</MyButton>}
+					{open && <ChannelsActivity compact onOpen={() => setOpen(false)} />}
 					<AppNotificationsList
 						notifications={notifications}
 						activities={activities}

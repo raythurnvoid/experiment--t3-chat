@@ -1,6 +1,6 @@
 import "./channels-sidebar.css";
-import { memo, useState } from "react";
-import { useQuery, type UsePaginatedQueryReturnType } from "convex/react";
+import { memo, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { usePaginatedQuery, useQuery } from "convex/react";
 import {
 	Bell,
 	ChevronDown,
@@ -15,13 +15,13 @@ import {
 	Search,
 	Star,
 } from "lucide-react";
-import { Link } from "@tanstack/react-router";
+import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
 	app_convex,
 	app_convex_api,
 	type app_convex_Doc,
-	type app_convex_FunctionReturnType,
+	type app_convex_FunctionArgs,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
@@ -33,6 +33,7 @@ import {
 	MySidebarList,
 	MySidebarListItem,
 	MySidebarListItemIcon,
+	MySidebarListItemPrimaryAction,
 	MySidebarListItemPrimaryActionLink,
 	MySidebarListItemTitle,
 } from "@/components/my-sidebar.tsx";
@@ -48,75 +49,36 @@ type ChannelsSidebar_ClassNames =
 	| "ChannelsSidebar-section"
 	| "ChannelsSidebar-section-header"
 	| "ChannelsSidebar-empty";
-type ChannelState = app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel_state>;
+type ChannelSection = app_convex_FunctionArgs<typeof app_convex_api.channels.list_my_channels>["section"];
 
 export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 	channelId: string | undefined;
-	channelList: UsePaginatedQueryReturnType<typeof app_convex_api.channels.list_my_channels>;
-	states: Record<string, ChannelState | Error | undefined>;
+	collapsed: string[];
+	setCollapsed: Dispatch<SetStateAction<string[]>>;
 	onClose: () => void;
 	onDialog: (dialog: "create" | "direct" | "quick") => void;
 	onNavigate: () => void;
 }) {
-	const { channelId, channelList, states, onClose, onDialog, onNavigate } = props;
-	const [collapsed, setCollapsed] = useState<string[]>([]);
+	const { channelId, collapsed, setCollapsed, onClose, onDialog, onNavigate } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const { inboxUnreadCount, threadsUnreadCount, inboxHasMore, threadsHasMore } = AppChannelsProvider.useContext();
-	const { results: channels, status, loadMore } = channelList;
-	const change = useFn(
-		async (channel: app_convex_Doc<"channels">, operation: "read" | "star" | "leave" | "all" | "mentions" | "none") => {
-			const state = states[channel._id];
-			if (!state || state instanceof Error) return;
-			const args = { membershipId, channelId: channel._id };
-			try {
-				const result =
-					operation === "read"
-						? await app_convex.mutation(app_convex_api.channels.mark_read, {
-								...args,
-								sequence: state.activity.lastChannelSequence,
-							})
-						: operation === "star"
-							? await app_convex.mutation(app_convex_api.channels.set_channel_starred, {
-									...args,
-									starred: !state.member?.starred,
-								})
-							: operation === "leave"
-								? await app_convex.mutation(
-										channel.kind === "direct"
-											? app_convex_api.channels.hide_direct_channel
-											: app_convex_api.channels.leave_channel,
-										args,
-									)
-								: await app_convex.mutation(app_convex_api.channels.set_channel_notify, { ...args, notify: operation });
-				if (result._nay) toast.error(result._nay.message);
-			} catch (error) {
-				console.error("[ChannelsSidebar] Cannot change channel", error);
-				toast.error("Could not change this channel");
-			}
-		},
-	);
-	const starred = channels.filter((channel) => {
-		const state = states[channel._id];
-		return state && !(state instanceof Error) && state.member?.starred;
-	});
-	const unstarred = channels.filter((channel) => !starred.includes(channel));
+	const { inboxUnreadCount, threadsUnreadCount, status, retrySummary } = AppChannelsProvider.useContext();
 	const groups = [
 		{
 			title: "Starred",
-			channels: starred,
+			section: "starred" as const,
 			action: null,
 		},
 		{
 			title: "Channels",
-			channels: unstarred.filter((channel) => channel.kind === "public" || channel.kind === "private"),
+			section: "channels" as const,
 			action: "create" as const,
 		},
 		{
 			title: "Direct messages",
-			channels: unstarred.filter((channel) => channel.kind === "direct"),
+			section: "direct" as const,
 			action: "direct" as const,
 		},
-		{ title: "Files", channels: unstarred.filter((channel) => channel.kind === "file"), action: null },
+		{ title: "Files", section: "files" as const, action: null },
 	];
 	return (
 		<aside aria-label="Channels" className={"ChannelsSidebar" satisfies ChannelsSidebar_ClassNames}>
@@ -151,13 +113,9 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 				>
 					<Bell size={16} />
 					<span>Activity</span>
-					{(inboxUnreadCount > 0 || inboxHasMore) && (
-						<span
-							className="ChannelsSidebarRow-count"
-							title={inboxHasMore ? "Unread in loaded items; more items available." : "Unread in loaded items"}
-						>
+					{inboxUnreadCount !== null && inboxUnreadCount > 0 && (
+						<span className="ChannelsSidebarRow-count" title="Counts may be delayed">
 							{inboxUnreadCount}
-							{inboxHasMore ? "+" : ""}
 						</span>
 					)}
 				</Link>
@@ -170,13 +128,9 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 				>
 					<MessageCircle size={16} />
 					<span>Threads</span>
-					{(threadsUnreadCount > 0 || threadsHasMore) && (
-						<span
-							className="ChannelsSidebarRow-count"
-							title={threadsHasMore ? "Unread in loaded items; more items available." : "Unread in loaded items"}
-						>
+					{threadsUnreadCount !== null && threadsUnreadCount > 0 && (
+						<span className="ChannelsSidebarRow-count" title="Counts may be delayed">
 							{threadsUnreadCount}
-							{threadsHasMore ? "+" : ""}
 						</span>
 					)}
 				</Link>
@@ -189,15 +143,18 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 					<Search size={16} />
 					<span>Search messages</span>
 				</Link>
-				{status === "LoadingFirstPage" ? (
-					<p>Loading channels…</p>
-				) : channels.length === 0 ? (
-					<div className={"ChannelsSidebar-empty" satisfies ChannelsSidebar_ClassNames}>
-						<p>No channels yet</p>
-						<MyButton onClick={() => onDialog("create")}>Create channel</MyButton>
-						<MyButton onClick={() => onDialog("direct")}>Message someone</MyButton>
-					</div>
-				) : null}
+				<p data-messages-status={status}>
+					{status === "delayed"
+						? "Counts may be delayed"
+						: status === "updating"
+							? "Messages Updating…"
+							: status === "error"
+								? "Could not load Messages counts"
+								: status === "loading"
+									? "Loading Messages…"
+									: "Messages unavailable"}
+				</p>
+				{status === "error" && <MyButton onClick={retrySummary}>Retry counts</MyButton>}
 				{groups.map((group) => (
 					<section
 						key={group.title}
@@ -229,25 +186,12 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 							)}
 						</div>
 						{!collapsed.includes(group.title) && (
-							<MySidebarList>
-								{group.channels.map((channel) => {
-									const state = states[channel._id];
-									return (
-										<ChannelsSidebarRow
-											key={channel._id}
-											channel={channel}
-											state={state instanceof Error ? null : state}
-											selected={channel._id === channelId}
-											onNavigate={onNavigate}
-											onChange={(operation) => void change(channel, operation)}
-										/>
-									);
-								})}
-							</MySidebarList>
+							<CatchBoundary getResetKey={() => `${membershipId}:${group.section}`} errorComponent={SectionError}>
+								<ChannelsSidebarPage section={group.section} channelId={channelId} onNavigate={onNavigate} />
+							</CatchBoundary>
 						)}
 					</section>
 				))}
-				{status === "CanLoadMore" && <MyButton onClick={() => loadMore(50)}>Load more channels</MyButton>}
 				<Link
 					to="/w/$organizationName/$workspaceName/messages/browse"
 					params={{ organizationName, workspaceName }}
@@ -262,6 +206,107 @@ export const ChannelsSidebar = memo(function ChannelsSidebar(props: {
 	);
 });
 
+const SectionError = memo(function SectionError(props: ErrorComponentProps) {
+	return (
+		<div role="alert">
+			<p>Could not load conversations.</p>
+			<MyButton onClick={props.reset}>Retry</MyButton>
+		</div>
+	);
+});
+
+const ChannelsSidebarPage = memo(function ChannelsSidebarPage(props: {
+	section: ChannelSection;
+	channelId: string | undefined;
+	onNavigate: () => void;
+}) {
+	const { section, channelId, onNavigate } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [refusedMemberId, setRefusedMemberId] = useState<string | null>(null);
+	const channels = usePaginatedQuery(
+		app_convex_api.channels.list_my_channels,
+		{ membershipId, section },
+		{ initialNumItems: 50 },
+	);
+	const list = useRef<HTMLDivElement>(null);
+	const focused = useRef<{ element: HTMLElement; memberId: string | null; index: number } | null>(null);
+	useLayoutEffect(() => {
+		const previous = focused.current;
+		if (!previous || previous.element.isConnected || document.activeElement !== document.body) return;
+		const rows = Array.from(list.current?.querySelectorAll<HTMLElement>("[data-member-id]") ?? []);
+		const row =
+			rows.find((element) => element.dataset.memberId === previous.memberId) ??
+			rows[previous.memberId ? Math.min(previous.index, rows.length - 1) : rows.length - 1];
+		const target =
+			row?.querySelector<HTMLElement>("a, button") ??
+			list.current?.closest("section")?.querySelector<HTMLElement>("button[aria-expanded]");
+		target?.focus();
+	}, [channels.results, channels.status]);
+	return (
+		<div
+			ref={list}
+			onFocusCapture={(event) => {
+				const row = event.target.closest<HTMLElement>("[data-member-id]");
+				focused.current = {
+					element: event.target,
+					memberId: row?.dataset.memberId ?? null,
+					index: row ? channels.results.findIndex((entry) => entry.memberId === row.dataset.memberId) : -1,
+				};
+			}}
+		>
+			<MySidebarList>
+				{channels.results.map((entry) =>
+					entry.state === "readable" ? (
+						<ChannelsSidebarRow
+							key={entry.memberId}
+							memberId={entry.memberId}
+							channel={entry.channel}
+							selected={entry.channel._id === channelId}
+							onNavigate={onNavigate}
+						/>
+					) : (
+						<MySidebarListItem
+							key={entry.memberId}
+							className={"ChannelsSidebarRow" satisfies ChannelsSidebarRow_ClassNames}
+							data-member-id={entry.memberId}
+							data-channel-access={entry.state}
+						>
+							<MySidebarListItemPrimaryAction onClick={() => setRefusedMemberId(entry.memberId)}>
+								<MySidebarListItemIcon>
+									<Lock />
+								</MySidebarListItemIcon>
+								<MySidebarListItemTitle>
+									{entry.state === "locked" ? "No access" : "Unavailable"}
+								</MySidebarListItemTitle>
+							</MySidebarListItemPrimaryAction>
+							{refusedMemberId === entry.memberId && (
+								<p role="status">{entry.state === "locked" ? "Permission denied" : "Unavailable"}</p>
+							)}
+						</MySidebarListItem>
+					),
+				)}
+			</MySidebarList>
+			{channels.status === "LoadingFirstPage" ? (
+				<p data-loading="true">Loading conversations…</p>
+			) : channels.results.length === 0 ? (
+				<p>No conversations</p>
+			) : null}
+			{(channels.status === "CanLoadMore" || channels.status === "LoadingMore") && (
+				<MyButton
+					aria-label={`Show more ${section === "direct" ? "direct messages" : section}`}
+					aria-disabled={channels.status === "LoadingMore"}
+					aria-busy={channels.status === "LoadingMore"}
+					onClick={() => {
+						if (channels.status === "CanLoadMore") channels.loadMore(50);
+					}}
+				>
+					{channels.status === "LoadingMore" ? "Loading…" : "Show more"}
+				</MyButton>
+			)}
+		</div>
+	);
+});
+
 type ChannelsSidebarRow_ClassNames = "ChannelsSidebarRow" | "ChannelsSidebarRow-count";
 type ChannelsSidebarRow_CustomAttributes = {
 	"data-channel-id": string;
@@ -271,16 +316,17 @@ type ChannelsSidebarRow_CustomAttributes = {
 };
 
 const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
+	memberId: string;
 	channel: app_convex_Doc<"channels">;
-	state: ChannelState | undefined;
 	selected: boolean;
 	onNavigate: () => void;
-	onChange: (operation: "read" | "star" | "leave" | "all" | "mentions" | "none") => void;
 }) {
-	const { channel, state, selected, onNavigate, onChange } = props;
+	const { memberId, channel, selected, onNavigate } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { cancelNavigation, followLink } = AppChannelsProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const [menuOpen, setMenuOpen] = useState(false);
+	const state = useQuery(app_convex_api.channels.get_channel_state, { membershipId, channelId: channel._id });
 	const file = useQuery(
 		app_convex_api.channels.get_channel,
 		channel.kind === "file" ? { membershipId, channelId: channel._id } : "skip",
@@ -294,8 +340,39 @@ const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
 		state?.member?.notify !== "none" &&
 		(state?.member?.notify === "mentions" ? (state?.mentionCount ?? 0) > 0 : state?.unread === true);
 	const path = `${url_path_messages({ organizationName, workspaceName })}/${channel._id}`;
+	const onChange = useFn(async (operation: "read" | "star" | "leave" | "all" | "mentions" | "none") => {
+		if (!state) return;
+		const args = { membershipId, channelId: channel._id };
+		if (operation === "leave" && channel.kind === "direct") cancelNavigation(channel._id);
+		try {
+			const result =
+				operation === "read"
+					? await app_convex.mutation(app_convex_api.channels.mark_read, {
+							...args,
+							sequence: state.activity.lastChannelSequence,
+						})
+					: operation === "star"
+						? await app_convex.mutation(app_convex_api.channels.set_channel_starred, {
+								...args,
+								starred: !state.member?.starred,
+							})
+						: operation === "leave"
+							? await app_convex.mutation(
+									channel.kind === "direct"
+										? app_convex_api.channels.hide_direct_channel
+										: app_convex_api.channels.leave_channel,
+									args,
+								)
+							: await app_convex.mutation(app_convex_api.channels.set_channel_notify, { ...args, notify: operation });
+			if (result._nay) toast.error(result._nay.message);
+		} catch (error) {
+			console.error("[ChannelsSidebar] Cannot change channel", error);
+			toast.error("Could not change this channel");
+		}
+	});
 	return (
 		<MySidebarListItem
+			data-member-id={memberId}
 			className={"ChannelsSidebarRow" satisfies ChannelsSidebarRow_ClassNames}
 			{...({
 				"data-channel-id": channel._id,
@@ -310,7 +387,10 @@ const ChannelsSidebarRow = memo(function ChannelsSidebarRow(props: {
 				aria-current={selected ? "page" : undefined}
 				tooltip={file?.file?.path ?? name}
 				aria-label={file?.file?.path ?? name}
-				onClick={onNavigate}
+				onClick={(event) => {
+					followLink(event);
+					onNavigate();
+				}}
 			>
 				<MySidebarListItemIcon>
 					{channel.kind === "private" ? (

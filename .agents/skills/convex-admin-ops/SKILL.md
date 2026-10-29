@@ -243,6 +243,38 @@ Run these functions with the direct-node JSON form from the Windows CLI Invocati
 
 # Dev Reset Preserving Clerk Users
 
+## Messages-only reset
+
+A Messages reset needs its own approved erase scope. Never use an account or tenant purge for it.
+Keep AI chats, ordinary Files, saved copies, document history, drafts, users, memberships, grants and billing.
+The [channels spec](../channels/SKILL.md) owns Messages state and access rules.
+
+Use an old-schema reset revision before deploying strict new Messages fields:
+
+1. Pin the source and live schema. Save a database snapshot and a preservation audit outside the repo.
+2. Fence Messages writes, including file comments, upload targets and scheduled Messages workers.
+   The final upload settlement mutation must check the fence before publishing or charging.
+3. Build the manifest after the fence. Page every file channel, including empty ones, and every exact
+   `channel_upload` asset. A linked ordinary file is outside this erase scope.
+4. Hand each upload to its exact-key R2 deletion job before removing its asset/link. Keep the latest
+   PUT deadline: URL expiry plus the normal margin, asset deadline, or existing job deadline.
+   Use `advance` when that deadline grows; `ensure` does not extend an existing job. Keep byte holds.
+5. Remove current comment marks only in manifest documents. Preserve text, other marks, media and
+   history. Use the current Yjs lineage or the normal non-collaborative content commit path, with
+   stale-head and Move checks. Wait for materialization before marking a file done.
+6. Drain Messages children before parents in bounded batches. Keep the fence through the empty-table
+   audit. Confirm R2 deletion after each late-PUT window; empty upload tables alone do not prove it.
+7. Compare preserved IDs, counts and hashes. Then deploy the strict schema and new producers. New
+   authority clocks or Move proofs are valid derived work; check that old source IDs do not return.
+8. Remove the temporary reset functions, tables and indexes after the audit. Save receipts outside
+   the repo. Clear only Messages draft/last-open browser keys in owned QA tabs.
+
+Deletion does not refund `stored_file_bytes` or erase prior charges. Never recalculate that counter
+from remaining files. Old comment IDs may remain in preserved history, drafts or offline editors;
+they cannot restore erased messages. Rewriting that history needs separate approval.
+
+## Full dev reset
+
 For a dev-environment reset where signed-in accounts should keep auth and Polar billing:
 
 1. Confirm the target deployment is not production.

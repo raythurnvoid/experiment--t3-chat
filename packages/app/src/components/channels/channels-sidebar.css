@@ -85,6 +85,12 @@
 		& .MyButton {
 			font-size: 15px;
 		}
+		& [data-loading="true"] {
+			min-height: 36px;
+			padding: 4px 8px;
+			border-radius: 8px;
+			background: var(--color-fg-02);
+		}
 	}
 	.ChannelsSidebarRow {
 		display: grid;
@@ -92,6 +98,11 @@
 		align-items: center;
 		&[data-unread="true"] {
 			font-weight: 600;
+		}
+		& > [role="status"] {
+			grid-column: 1 / -1;
+			padding: 4px 8px;
+			font-size: 15px;
 		}
 		> .MyMenuTrigger {
 			opacity: 0;

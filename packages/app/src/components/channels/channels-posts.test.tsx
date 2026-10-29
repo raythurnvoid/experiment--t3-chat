@@ -42,7 +42,6 @@ function fixture(): ComponentProps<typeof ChannelsPosts> {
 	return {
 		channelId: "channel" as app_convex_Id<"channels">,
 		canPost: false,
-		mentionItems: [],
 		onThread: vi.fn(),
 		state: {
 			activity: {
@@ -54,6 +53,7 @@ function fixture(): ComponentProps<typeof ChannelsPosts> {
 				lastChannelSequence: 4,
 				lastMainSequence: 0,
 				lastMessageAt: 1,
+				lastMainMessageAt: 1,
 				memberCount: 1,
 			},
 			member: null,

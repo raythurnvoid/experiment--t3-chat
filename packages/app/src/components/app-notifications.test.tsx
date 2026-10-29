@@ -13,9 +13,9 @@ const { mutationMock, useQueriesMock, useQueryMock, usePaginatedQueryMock, openR
 		usePaginatedQueryMock: vi.fn(),
 		openRunMock: vi.fn(),
 		channelContextMock: vi.fn(() => ({
-			inbox: { results: [] as unknown[] },
-			inboxUnreadCount: 0,
-			inboxHasMore: false,
+			inboxUnreadCount: 0 as number | null,
+			status: "delayed",
+			retrySummary: vi.fn(),
 		})),
 	}));
 
@@ -240,12 +240,12 @@ describe("AppNotifications", () => {
 		vi.useRealTimers();
 	});
 
-	test("counts loaded channel items and keeps their open action separate from dismiss", () => {
-		channelContextMock.mockReturnValueOnce({ inbox: { results: [{}] }, inboxUnreadCount: 2, inboxHasMore: true });
+	test("uses saved Messages totals and keeps their open action separate from dismiss", () => {
+		channelContextMock.mockReturnValueOnce({ inboxUnreadCount: 750, status: "delayed", retrySummary: vi.fn() });
 		render(<TestNotifications />);
-		expect(screen.getByText("2+")).toBeTruthy();
+		expect(screen.getByText("750")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Dismiss jobs and invites" })).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "Open message context" }));
+		expect(screen.queryByRole("button", { name: "Open message context" })).toBeNull();
 		expect(mutationMock, "opening channel context must not archive invitations or jobs").not.toHaveBeenCalled();
 	});
 
@@ -253,6 +253,18 @@ describe("AppNotifications", () => {
 		render(<TestNotifications />);
 
 		expect(screen.getByRole("dialog", { name: "Notifications" })).toBeTruthy();
+	});
+	test.each(["updating", "error"])("keeps jobs usable without a stale Messages badge during %s", async (status) => {
+		channelContextMock.mockReturnValueOnce({ inboxUnreadCount: null, status, retrySummary: vi.fn() });
+		const view = render(<TestNotifications />);
+		expect(view.container.querySelector(".AppNotifications-badge")).toBeNull();
+		expect(screen.getByText("Export report")).toBeTruthy();
+		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Dismiss jobs and invites" })));
+		expect(mutationMock).toHaveBeenCalledWith("notifications.archive_all_notifications", {});
+		expect(mutationMock).toHaveBeenCalledWith("activities.archive_all_activities", {
+			membershipId: "membership_1",
+			cursor: null,
+		});
 	});
 
 	test("lets a viewer dismiss a shared card using the returned control", () => {
@@ -285,13 +297,13 @@ describe("AppNotifications", () => {
 			.mockResolvedValueOnce({ _yay: { count: 50, isDone: false, continueCursor: "next_page" } })
 			.mockResolvedValueOnce({ _yay: { count: 1, isDone: true, continueCursor: "" } });
 		render(<TestNotifications />);
-		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Dismiss all" })));
+		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Dismiss jobs and invites" })));
 		expect(mutationMock.mock.calls).toEqual([
 			["notifications.archive_all_notifications", {}],
 			["activities.archive_all_activities", { membershipId: "membership_1", cursor: null }],
 			["activities.archive_all_activities", { membershipId: "membership_1", cursor: "next_page" }],
 		]);
-		expect(screen.getByRole("button", { name: "Dismiss all" }).matches(":disabled")).toBe(false);
+		expect(screen.getByRole("button", { name: "Dismiss jobs and invites" }).matches(":disabled")).toBe(false);
 	});
 
 	test("shows an overdue estimate without a database update", async () => {

@@ -19,19 +19,19 @@ import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import Mention from "@tiptap/extension-mention";
 import { exitSuggestion, type SuggestionKeyDownProps } from "@tiptap/suggestion";
 import { Hash, Lock, User, Users } from "lucide-react";
+import { CatchBoundary } from "@tanstack/react-router";
 import { cn } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_FunctionArgs, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
+import { url_path_messages } from "@/lib/urls.ts";
 import { FilesNodePicker, type FilesNodePicker_Ref } from "@/components/files/files-node-picker.tsx";
 import type { MyFloatingSurface_ClassNames } from "@/components/my-floating-surface.tsx";
 import type { MyMenuItem_ClassNames } from "@/components/my-menu.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useChannelsProfiles } from "./channels-people.ts";
-
-/**
- * A channel the "#" list offers.
- */
-export type ChannelsMentionItem = { kind: "channel"; id: string; label: string; href: string };
+import { ChannelsPickerError } from "./channels-picker.tsx";
+import { useChannelsNamedPages } from "./channels-picker-hooks.ts";
 
 /**
  * Where the message goes. The "@" list asks the server which people can be mentioned there.
@@ -42,8 +42,7 @@ export type ChannelsMentionTarget =
 
 export const ChannelsMentionContext = createContext<{
 	target: ChannelsMentionTarget | null;
-	items: readonly ChannelsMentionItem[];
-}>({ target: null, items: [] });
+}>({ target: null });
 type ChannelsComposerMention_ClassNames = "ChannelsComposerMention";
 type ChannelsComposerMentionList_ClassNames =
 	| "ChannelsComposerMentionList"
@@ -72,10 +71,8 @@ function ChannelsPersonMention(props: { userId: app_convex_Id<"users">; label: s
 
 // eslint-disable-next-line react-refresh/only-export-components
 function ChannelsMentionNodeView(props: NodeViewProps) {
-	const { items } = use(ChannelsMentionContext);
 	const id = typeof props.node.attrs.id === "string" ? props.node.attrs.id : "";
 	const label = typeof props.node.attrs.label === "string" ? props.node.attrs.label : null;
-	const item = items.find((item) => `${item.kind}:${item.id}` === id);
 	return (
 		<NodeViewWrapper
 			as="span"
@@ -87,16 +84,13 @@ function ChannelsMentionNodeView(props: NodeViewProps) {
 			) : id.startsWith("user:") ? (
 				<ChannelsPersonMention userId={id.slice(5) as app_convex_Id<"users">} label={label} />
 			) : (
-				`#${item?.label ?? label ?? "channel"}`
+				`#${label ?? "channel"}`
 			)}
 		</NodeViewWrapper>
 	);
 }
 
-export function channels_composer_mention_create_extension(options: {
-	isEnabled: () => boolean;
-	getItems: () => readonly ChannelsMentionItem[];
-}) {
+export function channels_composer_mention_create_extension(options: { isEnabled: () => boolean }) {
 	return Mention.extend(
 		createInlineMarkdownSpec({ nodeName: "channelsMention", name: "@", selfClosing: true, allowedAttributes: ["id"] }),
 	)
@@ -119,13 +113,12 @@ export function channels_composer_mention_create_extension(options: {
 		.configure({
 			renderText: ({ node }) => `@${node.attrs.label ?? "Person"}`,
 			renderHTML({ node, options: nodeOptions }) {
-				const item = options.getItems().find((item) => `${item.kind}:${item.id}` === node.attrs.id);
 				return [
 					"span",
 					mergeAttributes(nodeOptions.HTMLAttributes, {
 						class: "ChannelsComposerMention" satisfies ChannelsComposerMention_ClassNames,
 					}),
-					`${String(node.attrs.id).startsWith("channel:") ? "#" : "@"}${item?.label ?? node.attrs.label ?? "Person"}`,
+					`${String(node.attrs.id).startsWith("channel:") ? "#" : "@"}${node.attrs.label ?? "Person"}`,
 				];
 			},
 			suggestions: (
@@ -358,21 +351,98 @@ const PeopleMentionList = memo(function PeopleMentionList(
 
 // eslint-disable-next-line react-refresh/only-export-components
 const ChannelMentionList = memo(function ChannelMentionList(props: ChannelsComposerMentionList_Props) {
+	const { ref } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const { accessScopeKey } = AppChannelsProvider.useContext();
+	const list = useRef<ChannelsComposerMentionList_Ref>(null);
+	useImperativeHandle(ref, () => ({
+		onKeyDown: (event) =>
+			list.current?.onKeyDown(event) ??
+			(!event.event.isComposing && ["Enter", "ArrowDown", "ArrowUp"].includes(event.event.key)),
+	}));
+	return accessScopeKey === null ? (
+		<div className={"ChannelsComposerMentionList-status" satisfies ChannelsComposerMentionList_ClassNames}>
+			Channels unavailable
+		</div>
+	) : (
+		<CatchBoundary getResetKey={() => `${membershipId}:${accessScopeKey}`} errorComponent={ChannelsPickerError}>
+			<ChannelMentionPages
+				key={`${membershipId}:${accessScopeKey}`}
+				{...props}
+				ref={list}
+				accessScopeKey={accessScopeKey}
+			/>
+		</CatchBoundary>
+	);
+});
+
+// eslint-disable-next-line react-refresh/only-export-components
+const ChannelMentionPages = memo(function ChannelMentionPages(
+	props: ChannelsComposerMentionList_Props & { accessScopeKey: string },
+) {
 	const { ref, editor, query, command } = props;
-	const { items: allItems } = use(ChannelsMentionContext);
-	const value = query.trim().toLowerCase();
-	const items = allItems.filter((item) => item.label.toLowerCase().includes(value)).slice(0, 50);
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	const pages = useChannelsNamedPages({ accessScopeKey: props.accessScopeKey, prefix: query, archived: false });
+	const [refusal, setRefusal] = useState<string | null>(null);
+	const items = pages.noRowsYet
+		? []
+		: pages.groups.flatMap((group) => [
+				...group.rows.map((row) => ({
+					key: row.memberId,
+					group: group.name,
+					label:
+						row.state === "readable" && (row.channel.kind === "public" || row.channel.kind === "private")
+							? row.channel.name
+							: row.state === "locked"
+								? "No access"
+								: "Unavailable",
+					disabled: pages.loading,
+					locked: row.state !== "readable",
+					select: () => {
+						if (row.state === "readable" && (row.channel.kind === "public" || row.channel.kind === "private"))
+							command({
+								id: `channel:${row.channel._id}`,
+								label: row.channel.name,
+								href: `${url_path_messages({ organizationName, workspaceName })}/${row.channel._id}`,
+							});
+						else setRefusal(row.state === "locked" ? "Permission denied" : "Unavailable");
+					},
+				})),
+				...(group.status === "CanLoadMore" || group.status === "LoadingMore"
+					? [
+							{
+								key: `more:${group.name}`,
+								group: group.name,
+								label: group.status === "LoadingMore" ? "Loading…" : `Show more ${group.name.toLowerCase()}`,
+								disabled: pages.loading || group.status === "LoadingMore",
+								locked: false,
+								select: () => {
+									if (group.status === "CanLoadMore") group.loadMore(50);
+								},
+							},
+						]
+					: []),
+			]);
 	const id = useId();
-	const [highlight, setHighlight] = useState({ query, index: 0 });
-	const index = Math.min(highlight.query === query ? highlight.index : 0, Math.max(0, items.length - 1));
-	const select = (item: ChannelsMentionItem) =>
-		command({ id: `${item.kind}:${item.id}`, label: item.label, href: item.href });
+	const [highlight, setHighlight] = useState<{ query: string; key: string | null; index: number }>({
+		query,
+		key: null,
+		index: 0,
+	});
+	const sameItem = highlight.query === query ? items.findIndex((item) => item.key === highlight.key) : -1;
+	const index =
+		sameItem >= 0 ? sameItem : Math.min(highlight.query === query ? highlight.index : 0, Math.max(0, items.length - 1));
+	const select = (item: (typeof items)[number]) => {
+		if (!item.disabled) item.select();
+	};
 	useImperativeHandle(ref, () => ({
 		onKeyDown: ({ event }) => {
 			if (event.isComposing) return false;
 			if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-				if (items.length)
-					setHighlight({ query, index: (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length });
+				if (items.length) {
+					const next = (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+					setHighlight({ query, key: items[next]!.key, index: next });
+				}
 				return true;
 			}
 			if (event.key === "Enter") {
@@ -385,13 +455,13 @@ const ChannelMentionList = memo(function ChannelMentionList(props: ChannelsCompo
 	useEffect(() => {
 		const dom = editor.view.dom;
 		dom.setAttribute("aria-controls", id);
-		if (items.length) dom.setAttribute("aria-activedescendant", `${id}-${index}`);
+		if (items.length && !pages.loading) dom.setAttribute("aria-activedescendant", `${id}-${index}`);
 		else dom.removeAttribute("aria-activedescendant");
 		return () => {
 			dom.removeAttribute("aria-controls");
 			dom.removeAttribute("aria-activedescendant");
 		};
-	}, [editor, id, index, items.length]);
+	}, [editor, id, index, items.length, pages.loading]);
 	useEffect(() => {
 		document.getElementById(`${id}-${index}`)?.scrollIntoView({ block: "nearest" });
 	}, [id, index]);
@@ -400,34 +470,54 @@ const ChannelMentionList = memo(function ChannelMentionList(props: ChannelsCompo
 			id={id}
 			role="listbox"
 			aria-label="Channels"
+			data-results-state={pages.noRowsYet ? "loading" : pages.loading ? "updating" : "ready"}
 			className={cn(
 				"ChannelsComposerMentionList" satisfies ChannelsComposerMentionList_ClassNames,
 				"MyFloatingSurface" satisfies MyFloatingSurface_ClassNames,
 			)}
 			onMouseDown={(event) => event.preventDefault()}
 		>
-			{items.length ? (
-				items.map((item, itemIndex) => (
-					<div
-						key={`${item.kind}:${item.id}`}
-						id={`${id}-${itemIndex}`}
-						role="option"
-						aria-selected={index === itemIndex}
-						className={cn(
-							"ChannelsComposerMentionList-item" satisfies ChannelsComposerMentionList_ClassNames,
-							"MyMenuItem" satisfies MyMenuItem_ClassNames,
-						)}
-						onClick={() => select(item)}
-					>
-						<Hash size={16} />
-						<span>{item.label}</span>
-					</div>
-				))
-			) : (
-				<div className={"ChannelsComposerMentionList-status" satisfies ChannelsComposerMentionList_ClassNames}>
-					No results
+			{pages.groups.map((group) => (
+				<div key={group.name} role="group" aria-label={group.name}>
+					<strong>{group.name}</strong>
+					{pages.noRowsYet ? (
+						<div
+							className={"ChannelsComposerMentionList-status" satisfies ChannelsComposerMentionList_ClassNames}
+							data-loading="true"
+						>
+							Loading…
+						</div>
+					) : (
+						<>
+							{items.map((item, itemIndex) =>
+								item.group === group.name ? (
+									<div
+										key={item.key}
+										id={`${id}-${itemIndex}`}
+										role="option"
+										aria-selected={index === itemIndex}
+										aria-disabled={item.disabled || item.locked}
+										className={cn(
+											"ChannelsComposerMentionList-item" satisfies ChannelsComposerMentionList_ClassNames,
+											"MyMenuItem" satisfies MyMenuItem_ClassNames,
+										)}
+										onClick={() => select(item)}
+									>
+										<Hash size={16} />
+										<span>{item.label}</span>
+									</div>
+								) : null,
+							)}
+							{!items.some((item) => item.group === group.name) && (
+								<div className={"ChannelsComposerMentionList-status" satisfies ChannelsComposerMentionList_ClassNames}>
+									No results
+								</div>
+							)}
+						</>
+					)}
 				</div>
-			)}
+			))}
+			{refusal && <p role="status">{refusal}</p>}
 		</div>
 	);
 });

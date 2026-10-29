@@ -14,6 +14,7 @@ import {
 	test_drain_billing_usage_event_outbox,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 
 let uploadUrlSpy: MockInstance;
@@ -163,7 +164,7 @@ describe("create_upload_target", () => {
 
 	test("Free refusal leaves no upload, asset or file channel", async () => {
 		const f = await fixture("Free");
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -432,7 +433,7 @@ describe("send_message upload attachments", () => {
 		"unconfirmed anchor bytes stay author-only and release on %s",
 		async (cleanup) => {
 			const f = await fixture();
-			const fileNodeId = await f.t.run((ctx) =>
+			const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 				ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: f.organizationId,
@@ -536,7 +537,7 @@ describe("send_message upload attachments", () => {
 		const f = await fixture();
 		const channelId = await create(f);
 		const minted = await target(f, channelId);
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,
@@ -765,7 +766,7 @@ describe("get_upload_url", () => {
 
 	test("file channel ACL loss hides attached bytes and shaped message metadata", async () => {
 		const f = await fixture();
-		const fileNodeId = await f.t.run((ctx) =>
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.organizationId,

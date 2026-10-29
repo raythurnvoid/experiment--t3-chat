@@ -4,6 +4,7 @@ import { zodValidator } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { Channels, type ChannelsSearch } from "@/components/channels/channels.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import { channels_navigation_state, type ChannelsNavigationMode } from "@/lib/app-channels-context.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
 type RouteChannel_ClassNames = "RouteChannel";
@@ -12,11 +13,12 @@ function RouteChannel() {
 	const navigate = Route.useNavigate();
 	const { organizationName, workspaceName, channelId } = Route.useParams();
 	const search = Route.useSearch();
-	const open = useFn((channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}) => {
+	const open = useFn((channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}, mode: ChannelsNavigationMode = "open") => {
 		navigate({
 			to: "/w/$organizationName/$workspaceName/messages/$channelId",
 			params: { organizationName, workspaceName, channelId },
 			search,
+			state: channels_navigation_state(mode),
 		}).catch((error: unknown) => {
 			console.error("[RouteChannel.open] Failed to open channel", { error });
 		});

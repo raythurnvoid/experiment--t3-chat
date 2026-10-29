@@ -1,7 +1,8 @@
 import "./channels-feed.css";
-import { memo, type ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
-import { useQuery } from "convex/react";
+import { memo, useLayoutEffect, useRef, type ReactNode, type ComponentProps } from "react";
+import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
+import { usePaginatedQuery, useQuery } from "convex/react";
+import { toast } from "sonner";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
@@ -32,6 +33,7 @@ export const ChannelsFeedMessage = memo(function ChannelsFeedMessage(props: {
 	const { row, unread = false, label, threadRootId, onOpen, children } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
+	const { followLink } = AppChannelsProvider.useContext();
 	const channel = useQuery(app_convex_api.channels.get_channel, { membershipId, channelId: row.message.channelId });
 	const directName = useChannelsDirectName(
 		channel?.channel.kind === "direct" ? channel.channel.participantUserIds.filter((id) => id !== userId) : [],
@@ -71,7 +73,10 @@ export const ChannelsFeedMessage = memo(function ChannelsFeedMessage(props: {
 					to="/w/$organizationName/$workspaceName/messages/$channelId"
 					params={{ organizationName, workspaceName, channelId: row.message.channelId }}
 					search={{ message: row.message._id, thread: root }}
-					onClick={onOpen}
+					onClick={(event) => {
+						followLink(event);
+						onOpen?.();
+					}}
 				>
 					Open context
 				</Link>
@@ -101,10 +106,34 @@ export const ChannelsFeedMessage = memo(function ChannelsFeedMessage(props: {
 type ChannelsActivity_ClassNames = "ChannelsActivity" | "ChannelsActivity-list";
 type ChannelsActivity_CustomAttributes = { "data-compact": string };
 
-export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?: boolean; onOpen?: () => void }) {
+const ChannelsFeedError = memo(function ChannelsFeedError(props: ErrorComponentProps) {
+	return (
+		<div role="alert">
+			<p>Could not load Messages</p>
+			<MyButton onClick={props.reset}>Retry</MyButton>
+		</div>
+	);
+});
+
+export const ChannelsActivity = memo(function ChannelsActivity(props: ComponentProps<typeof ChannelsActivityPage>) {
+	const { membershipId } = AppTenantProvider.useContext();
+	return (
+		<CatchBoundary getResetKey={() => membershipId} errorComponent={ChannelsFeedError}>
+			<ChannelsActivityPage {...props} />
+		</CatchBoundary>
+	);
+});
+
+const ChannelsActivityPage = memo(function ChannelsActivityPage(props: { compact?: boolean; onOpen?: () => void }) {
 	const { compact = false, onOpen } = props;
-	const { inbox, inboxUnreadCount, inboxHasMore } = AppChannelsProvider.useContext();
-	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { inboxUnreadCount, status } = AppChannelsProvider.useContext();
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const inbox = usePaginatedQuery(
+		app_convex_api.channels_messages.list_my_inbox,
+		{ membershipId },
+		{ initialNumItems: 50 },
+	);
+	const focus = useFeedFocus();
 
 	// Hide the compact popover block when there is nothing to show or load.
 	if (compact && inbox.results.length === 0 && inbox.status === "Exhausted") {
@@ -113,6 +142,8 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 
 	return (
 		<section
+			{...focus}
+			tabIndex={-1}
 			className={cn(
 				"ChannelsActivity" satisfies ChannelsActivity_ClassNames,
 				!compact && ("app-scrollable" satisfies AppClassName),
@@ -121,9 +152,16 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 			{...({ "data-compact": String(compact) } satisfies ChannelsActivity_CustomAttributes)}
 		>
 			{compact && <h2>Messages</h2>}
-			<p title="This count covers loaded inbox items">
-				Unread in loaded items: {inboxUnreadCount}
-				{inboxHasMore ? "+" : ""}
+			<p data-messages-status={status}>
+				{inboxUnreadCount !== null
+					? `Unread: ${inboxUnreadCount} · Counts may be delayed`
+					: status === "updating"
+						? "Messages Updating…"
+						: status === "error"
+							? "Could not load Messages counts"
+							: status === "unavailable"
+								? "Messages unavailable"
+								: "Loading Messages counts…"}
 			</p>
 			{compact && (
 				<Link
@@ -136,14 +174,29 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 			)}
 			<div className={"ChannelsActivity-list" satisfies ChannelsActivity_ClassNames}>
 				{inbox.results.map((entry) => (
-					<ChannelsFeedMessage
-						key={entry.item._id}
-						row={entry.message}
-						label={entry.item.kind === "mention" ? "Mention" : "Reply"}
-						unread={entry.unread}
-						threadRootId={entry.item.threadRootId}
-						onOpen={onOpen}
-					/>
+					<div
+						key={entry.state === "readable" ? entry.item._id : entry.inboxId}
+						data-feed-row={entry.state === "readable" ? entry.item._id : entry.inboxId}
+					>
+						{entry.state === "readable" ? (
+							<ChannelsFeedMessage
+								key={entry.item._id}
+								row={entry.message}
+								label={entry.item.kind === "mention" ? "Mention" : "Reply"}
+								unread={entry.unread}
+								threadRootId={entry.item.threadRootId}
+								onOpen={onOpen}
+							/>
+						) : (
+							<article key={entry.inboxId} data-inbox-id={entry.inboxId} data-channel-access={entry.state}>
+								<MyButton
+									onClick={() => toast.error(entry.state === "locked" ? "Permission denied" : "Message unavailable")}
+								>
+									{entry.state === "locked" ? "No access" : "Unavailable"}
+								</MyButton>
+							</article>
+						)}
+					</div>
 				))}
 			</div>
 			{inbox.status === "LoadingFirstPage" ? (
@@ -151,8 +204,17 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 			) : inbox.results.length === 0 ? (
 				<p>No activity in this page</p>
 			) : null}
-			{inbox.status === "CanLoadMore" && <MyButton onClick={() => inbox.loadMore(50)}>Load more activity</MyButton>}
-			{inbox.status === "LoadingMore" && <p>Loading more activity…</p>}
+			{(inbox.status === "CanLoadMore" || inbox.status === "LoadingMore") && (
+				<MyButton
+					aria-disabled={inbox.status === "LoadingMore"}
+					aria-busy={inbox.status === "LoadingMore"}
+					onClick={() => {
+						if (inbox.status === "CanLoadMore") inbox.loadMore(50);
+					}}
+				>
+					{inbox.status === "LoadingMore" ? "Loading…" : "Show more activity"}
+				</MyButton>
+			)}
 		</section>
 	);
 });
@@ -160,35 +222,75 @@ export const ChannelsActivity = memo(function ChannelsActivity(props: { compact?
 type ChannelsThreads_ClassNames = "ChannelsThreads" | "ChannelsThreads-list";
 
 export const ChannelsThreads = memo(function ChannelsThreads() {
-	const { threads, threadsUnreadCount, threadsHasMore } = AppChannelsProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
+	return (
+		<CatchBoundary getResetKey={() => membershipId} errorComponent={ChannelsFeedError}>
+			<ChannelsThreadsPage />
+		</CatchBoundary>
+	);
+});
+
+const ChannelsThreadsPage = memo(function ChannelsThreadsPage() {
+	const { threadsUnreadCount, status } = AppChannelsProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
+	const threads = usePaginatedQuery(
+		app_convex_api.channels_messages.list_my_threads,
+		{ membershipId },
+		{ initialNumItems: 50 },
+	);
+	const focus = useFeedFocus();
 	return (
 		<section
+			{...focus}
+			tabIndex={-1}
 			className={cn("ChannelsThreads" satisfies ChannelsThreads_ClassNames, "app-scrollable" satisfies AppClassName)}
 			aria-label="Followed threads"
 		>
-			<p title="This count covers loaded followed threads">
-				Unread in loaded threads: {threadsUnreadCount}
-				{threadsHasMore ? "+" : ""}
+			<p data-messages-status={status}>
+				{threadsUnreadCount !== null
+					? `Unread threads: ${threadsUnreadCount} · Counts may be delayed`
+					: status === "updating"
+						? "Messages Updating…"
+						: status === "error"
+							? "Could not load Messages counts"
+							: status === "unavailable"
+								? "Messages unavailable"
+								: "Loading Messages counts…"}
 			</p>
 			<div className={"ChannelsThreads-list" satisfies ChannelsThreads_ClassNames}>
 				{threads.results.map((entry) => (
-					<ChannelsFeedMessage
-						key={entry.follower._id}
-						row={entry.root}
-						unread={entry.unread}
-						threadRootId={entry.root.message._id}
+					<div
+						key={entry.state === "readable" ? entry.follower._id : entry.followerId}
+						data-feed-row={entry.state === "readable" ? entry.follower._id : entry.followerId}
 					>
-						{entry.root.thread!.title && <h2>{entry.root.thread!.title}</h2>}
-						<p>
-							{entry.root.thread!.replyCount} replies
-							{entry.root.thread!.lastReplySequence > entry.follower.readReplySequence
-								? ` · ${entry.root.thread!.lastReplySequence - entry.follower.readReplySequence} new replies`
-								: ""}
-							{entry.follower.pendingRootMention ? " · New mention" : ""}
-							{entry.follower.following ? " · Following" : ""}
-							{entry.root.thread!.isResolved ? " · Resolved" : ""}
-						</p>
-					</ChannelsFeedMessage>
+						{entry.state === "readable" ? (
+							<ChannelsFeedMessage
+								key={entry.follower._id}
+								row={entry.root}
+								unread={entry.unread}
+								threadRootId={entry.root.message._id}
+							>
+								{entry.root.thread!.title && <h2>{entry.root.thread!.title}</h2>}
+								<p>
+									{entry.root.thread!.replyCount} replies
+									{entry.root.thread!.lastReplySequence > entry.follower.readReplySequence
+										? ` · ${entry.root.thread!.lastReplySequence - entry.follower.readReplySequence} new replies`
+										: ""}
+									{entry.follower.pendingRootMention ? " · New mention" : ""}
+									{entry.follower.following ? " · Following" : ""}
+									{entry.root.thread!.isResolved ? " · Resolved" : ""}
+								</p>
+							</ChannelsFeedMessage>
+						) : (
+							<article key={entry.followerId} data-follower-id={entry.followerId} data-channel-access={entry.state}>
+								<MyButton
+									onClick={() => toast.error(entry.state === "locked" ? "Permission denied" : "Thread unavailable")}
+								>
+									{entry.state === "locked" ? "No access" : "Unavailable"}
+								</MyButton>
+							</article>
+						)}
+					</div>
 				))}
 			</div>
 			{threads.status === "LoadingFirstPage" ? (
@@ -196,8 +298,42 @@ export const ChannelsThreads = memo(function ChannelsThreads() {
 			) : threads.results.length === 0 ? (
 				<p>No followed threads in this page</p>
 			) : null}
-			{threads.status === "CanLoadMore" && <MyButton onClick={() => threads.loadMore(50)}>Load more threads</MyButton>}
-			{threads.status === "LoadingMore" && <p>Loading more threads…</p>}
+			{(threads.status === "CanLoadMore" || threads.status === "LoadingMore") && (
+				<MyButton
+					aria-disabled={threads.status === "LoadingMore"}
+					aria-busy={threads.status === "LoadingMore"}
+					onClick={() => {
+						if (threads.status === "CanLoadMore") threads.loadMore(50);
+					}}
+				>
+					{threads.status === "LoadingMore" ? "Loading…" : "Show more threads"}
+				</MyButton>
+			)}
 		</section>
 	);
 });
+
+function useFeedFocus() {
+	const ref = useRef<HTMLElement>(null);
+	const focused = useRef<{ element: HTMLElement; id: string | undefined; index: number } | null>(null);
+	useLayoutEffect(() => {
+		const previous = focused.current;
+		if (!previous || previous.element.isConnected || document.activeElement !== document.body) return;
+		const rows = Array.from(ref.current?.querySelectorAll<HTMLElement>("[data-feed-row]") ?? []);
+		const row =
+			rows.find((element) => element.dataset.feedRow === previous.id) ??
+			rows[previous.id ? Math.min(previous.index, rows.length - 1) : rows.length - 1];
+		(row?.querySelector<HTMLElement>("a, button") ?? ref.current)?.focus();
+	});
+	return {
+		ref,
+		onFocusCapture: (event: React.FocusEvent<HTMLElement>) => {
+			const row = event.target.closest<HTMLElement>("[data-feed-row]");
+			focused.current = {
+				element: event.target,
+				id: row?.dataset.feedRow,
+				index: Array.from(ref.current?.querySelectorAll("[data-feed-row]") ?? []).indexOf(row!),
+			};
+		},
+	};
+}

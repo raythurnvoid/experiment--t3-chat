@@ -15,7 +15,6 @@ import { app_local_storage_get_value, app_local_storage_set_value } from "@/lib/
 import { format_relative_time } from "@/lib/date.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { ChannelsComposer, type ChannelsComposerControl_Ref } from "./channels-composer.tsx";
-import type { ChannelsMentionItem } from "./channels-composer-mention.tsx";
 import { ChannelsMessageContent } from "./channels-message.tsx";
 import type { ChannelsMessage } from "./channels-message-window.ts";
 import type { file_quotes_Quote } from "../../../shared/file-quotes.ts";
@@ -95,7 +94,6 @@ export const ChannelsPosts = memo(function ChannelsPosts(props: {
 	fileNodeId?: app_convex_Id<"files_nodes">;
 	state: app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel_state> | undefined;
 	canPost: boolean;
-	mentionItems: readonly ChannelsMentionItem[];
 	markThreadIds?: readonly string[];
 	hideMarkedPosts?: boolean;
 	quoteRequest?: file_quotes_Quote | null;
@@ -107,7 +105,6 @@ export const ChannelsPosts = memo(function ChannelsPosts(props: {
 		fileNodeId,
 		state,
 		canPost,
-		mentionItems,
 		markThreadIds,
 		hideMarkedPosts = false,
 		quoteRequest,
@@ -305,7 +302,6 @@ export const ChannelsPosts = memo(function ChannelsPosts(props: {
 						onChange={change}
 						onEnter={submit}
 						mentionTarget={fileNodeId ? { fileNodeId } : { channelId: channelId! }}
-						mentionItems={mentionItems}
 						quoteRequest={quoteRequest}
 						onQuoteInserted={onQuoteInserted}
 						autoFocus="end"

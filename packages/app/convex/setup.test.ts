@@ -1567,6 +1567,13 @@ export const test_mocks_fill_db_with = {
 	) => {
 		const { organizationId, workspaceId, userId, fileNodeId, body } = args;
 		const now = Date.now();
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) =>
+				q.eq("workspaceId", workspaceId).eq("userId", userId).eq("active", true),
+			)
+			.unique();
+		if (!membership) throw new Error("The file-comment fixture needs a workspace membership");
 		const channelId = await ctx.db.insert("channels", {
 			kind: "file",
 			organizationId,
@@ -1581,6 +1588,7 @@ export const test_mocks_fill_db_with = {
 			workspaceId,
 			lastMainSequence: 0,
 			lastChannelSequence: 1,
+			lastMainMessageAt: 0,
 			lastMessageAt: now,
 			memberCount: 1,
 		});
@@ -1589,6 +1597,7 @@ export const test_mocks_fill_db_with = {
 			organizationId,
 			workspaceId,
 			authorUserId: userId,
+			authorWorkspaceMembershipId: membership._id,
 			channelSequence: 1,
 			mainSequence: null,
 			threadRootId: null,
@@ -1596,6 +1605,7 @@ export const test_mocks_fill_db_with = {
 			replyTo: null,
 			body,
 			mentionUserIds: [],
+			mentionWorkspaceMembershipIds: [],
 			fileMentionIds: [],
 			fileQuotes: [],
 			attachments: [],
@@ -1620,15 +1630,7 @@ export const test_mocks_fill_db_with = {
 			isResolved: false,
 			resolvedAt: null,
 			resolvedBy: null,
-			followerSyncPending: false,
 		});
-		const membership = await ctx.db
-			.query("organizations_workspaces_users")
-			.withIndex("by_workspace_user_active", (q) =>
-				q.eq("workspaceId", workspaceId).eq("userId", userId).eq("active", true),
-			)
-			.unique();
-		if (!membership) throw new Error("The file-comment fixture needs a workspace membership");
 		await Promise.all([
 			ctx.db.insert("channels_members", {
 				channelId,
@@ -1641,10 +1643,21 @@ export const test_mocks_fill_db_with = {
 				addedBy: null,
 				notify: "mentions",
 				starred: false,
+				section: "files",
+				hidden: false,
+				sidebarArchived: false,
+				sidebarName: null,
+				sidebarActivityAt: now,
+				starredAt: null,
+				visibilityRevision: 0,
+				countSummaryId: null,
+				countGeneration: 0,
+				countedMention: false,
 				hiddenAtMainSequence: null,
 				joinedAt: now,
 			}),
 			ctx.db.insert("channels_read_states", {
+				workspaceMembershipId: membership._id,
 				channelId,
 				organizationId,
 				workspaceId,
@@ -1653,6 +1666,11 @@ export const test_mocks_fill_db_with = {
 				updatedAt: now,
 			}),
 			ctx.db.insert("channels_thread_followers", {
+				workspaceMembershipId: membership._id,
+				feedVisible: true,
+				countSummaryId: null,
+				countGeneration: 0,
+				countedUnread: false,
 				threadId,
 				rootMessageId,
 				channelId,
@@ -1681,6 +1699,11 @@ export const test_mocks_fill_db_with = {
 				count: 1,
 			}),
 			ctx.db.insert("channels_inbox", {
+				workspaceMembershipId: membership._id,
+				retired: false,
+				countSummaryId: null,
+				countGeneration: 0,
+				countedUnread: false,
 				recipientUserId: userId,
 				organizationId,
 				workspaceId,

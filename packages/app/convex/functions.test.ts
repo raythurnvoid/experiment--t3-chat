@@ -99,10 +99,11 @@ describe("functions.ts", () => {
 		expect(found).toEqual(allowed);
 	});
 
-	test("functions.ts reaches no convex module", () => {
+	test.each(["convex/functions.ts", "server/channels-notifications.ts"])("%s reaches no convex module", (entry) => {
 		// Every mutation module imports functions.ts, so an app module it loads would load most of `convex/`.
-		const reached = new Set([functionsPath]);
-		const queue = [functionsPath];
+		const entryPath = path.join(appRoot, entry);
+		const reached = new Set([entryPath]);
+		const queue = [entryPath];
 		const wrong = [];
 		for (const importer of queue) {
 			for (const { from } of read_imports(importer)) {
@@ -115,6 +116,25 @@ describe("functions.ts", () => {
 			}
 		}
 		expect(wrong).toEqual([]);
+	});
+
+	test("saved-place writers keep the selected-view authority contract", () => {
+		// Review new writers here: selected access edits need capture, content and cleanup do not.
+		const found = [];
+		for (const directory of ["convex", "server"]) {
+			for (const name of readdirSync(path.join(appRoot, directory), { recursive: true, encoding: "utf8" })) {
+				if (!name.endsWith(".ts") || name.endsWith(".test.ts") || name.endsWith(".test-fixtures.ts")) continue;
+				const file = path.join(appRoot, directory, name);
+				if (/\.(?:insert|patch|replace|delete)\(\s*["']files_saved_places["']/.test(readFileSync(file, "utf8")))
+					found.push(relative(file));
+			}
+		}
+		expect(found.sort()).toEqual([
+			"convex/files_move_cohorts.ts",
+			"convex/files_move_content.ts",
+			"convex/files_sharing_db.ts",
+			"server/files-content-heads.ts",
+		]);
 	});
 
 	test("the Move runner does not eagerly load the file engine", () => {

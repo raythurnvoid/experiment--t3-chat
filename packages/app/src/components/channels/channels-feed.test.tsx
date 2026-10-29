@@ -3,15 +3,22 @@ import type { ComponentProps, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ChannelsActivity, ChannelsFeedMessage, ChannelsThreads } from "./channels-feed.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { getFunctionName } from "convex/server";
 
 const mocks = vi.hoisted(() => ({
 	channel: null as unknown,
+	reads: vi.fn(),
 	inbox: { results: [] as unknown[], status: "Exhausted", loadMore: vi.fn() },
 	threads: { results: [] as unknown[], status: "Exhausted", loadMore: vi.fn() },
 }));
 vi.mock("convex/react", async (importOriginal) => ({
 	...(await importOriginal<typeof import("convex/react")>()),
-	useQuery: () => mocks.channel,
+	useQuery: () => {
+		mocks.reads();
+		return mocks.channel;
+	},
+	usePaginatedQuery: (query: Parameters<typeof getFunctionName>[0]) =>
+		getFunctionName(query).includes("list_my_inbox") ? mocks.inbox : mocks.threads,
 }));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
@@ -28,16 +35,15 @@ vi.mock("./channels-message.tsx", () => ({
 vi.mock("@/lib/app-channels-context.tsx", () => ({
 	AppChannelsProvider: {
 		useContext: () => ({
-			inbox: mocks.inbox,
-			threads: mocks.threads,
 			inboxUnreadCount: 1,
 			threadsUnreadCount: 1,
-			inboxHasMore: mocks.inbox.status === "CanLoadMore",
-			threadsHasMore: mocks.threads.status === "CanLoadMore",
+			status: "delayed",
+			followLink: () => {},
 		}),
 	},
 }));
-vi.mock("@tanstack/react-router", () => ({
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@tanstack/react-router")>()),
 	Link: (props: {
 		children: ReactNode;
 		params: { channelId?: string };
@@ -95,6 +101,7 @@ beforeEach(() => {
 	mocks.threads.status = "Exhausted";
 	mocks.inbox.loadMore.mockClear();
 	mocks.threads.loadMore.mockClear();
+	mocks.reads.mockClear();
 });
 afterEach(cleanup);
 
@@ -114,13 +121,41 @@ describe("ChannelsFeedMessage", () => {
 });
 
 describe("ChannelsActivity", () => {
+	test("keeps a locked receipt without previews or child queries and repairs its focus", () => {
+		mocks.inbox.results = [
+			{
+				state: "readable",
+				item: { _id: "receipt", kind: "mention", threadRootId: null },
+				message: message(),
+				unread: true,
+			},
+		];
+		const view = render(<ChannelsActivity />);
+		screen.getByRole("link", { name: "Open context" }).focus();
+		expect(mocks.reads).toHaveBeenCalledTimes(1);
+		mocks.inbox.results = [{ state: "locked", inboxId: "receipt", kind: "mention" }];
+		view.rerender(<ChannelsActivity compact />);
+		expect(screen.queryByText("Checked preview")).toBeNull();
+		expect(screen.queryByRole("link", { name: "Open context" })).toBeNull();
+		expect(mocks.reads).toHaveBeenCalledTimes(1);
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "No access" }));
+		mocks.inbox.results = [{ state: "unavailable", inboxId: "receipt", kind: "mention" }];
+		view.rerender(<ChannelsActivity />);
+		expect(screen.getByRole("button", { name: "Unavailable" })).toBeTruthy();
+		expect(mocks.reads).toHaveBeenCalledTimes(1);
+	});
 	test("continues an empty readable page and uses its inbox root in the context link", () => {
 		mocks.inbox.status = "CanLoadMore";
 		const view = render(<ChannelsActivity compact />);
-		fireEvent.click(screen.getByRole("button", { name: "Load more activity" }));
+		fireEvent.click(screen.getByRole("button", { name: "Show more activity" }));
 		expect(mocks.inbox.loadMore).toHaveBeenCalledWith(50);
 		mocks.inbox.results = [
-			{ item: { _id: "item", kind: "mention", threadRootId: "post" }, message: message(), unread: true },
+			{
+				state: "readable",
+				item: { _id: "item", kind: "mention", threadRootId: "post" },
+				message: message(),
+				unread: true,
+			},
 		];
 		view.rerender(<ChannelsActivity compact key="loaded" />);
 		expect(screen.getByRole("link", { name: "Open context" }).getAttribute("href")).toContain("thread=post");
@@ -135,7 +170,7 @@ describe("ChannelsThreads", () => {
 		expect(screen.getByText("Loading threads…")).toBeTruthy();
 		mocks.threads.status = "CanLoadMore";
 		view.rerender(<ChannelsThreads key="next" />);
-		fireEvent.click(screen.getByRole("button", { name: "Load more threads" }));
+		fireEvent.click(screen.getByRole("button", { name: "Show more threads" }));
 		expect(mocks.threads.loadMore).toHaveBeenCalledWith(50);
 	});
 });

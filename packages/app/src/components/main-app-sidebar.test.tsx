@@ -10,7 +10,7 @@ const { tenantContextMock, localStorageSetterMock, useQueryMock, pathnameMock, c
 		localStorageSetterMock: vi.fn(),
 		useQueryMock: vi.fn(),
 		pathnameMock: vi.fn(),
-		channelContextMock: vi.fn(() => ({ unreadMentions: 0 })),
+		channelContextMock: vi.fn(() => ({ unreadMentions: 0 as number | null, status: "delayed" })),
 	}),
 );
 
@@ -300,10 +300,17 @@ function mockQueries(args: {
 
 describe("MainAppSidebar", () => {
 	test("keeps the Messages mention dot live on Files", () => {
-		channelContextMock.mockReturnValueOnce({ unreadMentions: 2 });
+		channelContextMock.mockReturnValueOnce({ unreadMentions: 2, status: "delayed" });
 		pathnameMock.mockReturnValueOnce("/w/team/home/files");
 		render(<MainAppSidebar />);
 		expect(screen.getByRole("link", { name: /Messages/ }).getAttribute("data-unread")).toBe("true");
+	});
+	test("replaces the Messages dot with Updating during access repair", () => {
+		channelContextMock.mockReturnValueOnce({ unreadMentions: null, status: "updating" });
+		render(<MainAppSidebar />);
+		const link = screen.getByRole("link", { name: /Messages Updating/ });
+		expect(link.getAttribute("data-unread")).toBe("false");
+		expect(link.textContent).not.toContain("•");
 	});
 	beforeEach(() => {
 		tenantContextMock.mockReturnValue(createTenantContext());

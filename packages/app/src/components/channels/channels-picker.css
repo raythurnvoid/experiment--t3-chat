@@ -1,0 +1,25 @@
+@layer components {
+	.ChannelsPicker {
+		display: grid;
+		gap: 1rem;
+	}
+	.ChannelsPicker-group {
+		display: grid;
+		gap: 0.25rem;
+	}
+	.ChannelsPicker-group h3 {
+		font-size: 18px;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+	.ChannelsPicker-status {
+		min-height: 36px;
+		padding: 0.5rem;
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+	.ChannelsPicker-status[data-loading="true"] {
+		background: var(--color-fg-02);
+		border-radius: 4px;
+	}
+}

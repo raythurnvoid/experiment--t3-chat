@@ -4,11 +4,11 @@ import { usePaginatedQuery, useQuery } from "convex/react";
 import {
 	app_convex,
 	app_convex_api,
-	type app_convex_Doc,
 	type app_convex_FunctionReturnType,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import type { ChannelsNavigationMode } from "@/lib/app-channels-context.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
@@ -30,7 +30,8 @@ import {
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { useChannelsDirectName, useChannelsProfiles } from "./channels-people.ts";
+import { useChannelsProfiles } from "./channels-people.ts";
+import { ChannelsNamedPicker } from "./channels-picker.tsx";
 
 export type ChannelsDialogKind = "create" | "direct" | "members" | "settings" | "quick";
 type ChannelsDialogs_ClassNames =
@@ -53,7 +54,7 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 	kind: ChannelsDialogKind;
 	channel: app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel>;
 	onClose: () => void;
-	onChannel: (channelId: app_convex_Id<"channels">) => void;
+	onChannel: (channelId: app_convex_Id<"channels">, mode?: ChannelsNavigationMode) => void;
 }) {
 	const { kind, channel, onClose, onChannel } = props;
 	const { membershipId } = AppTenantProvider.useContext();
@@ -72,6 +73,7 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 			: false,
 	);
 	const [filter, setFilter] = useState("");
+	const [archived, setArchived] = useState(false);
 	const [selected, setSelected] = useState<app_convex_Id<"users">[]>([]);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
@@ -93,16 +95,6 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 		addsPeople ? { membershipId, text: filter } : "skip",
 		{ initialNumItems: PEOPLE_PAGE_SIZE },
 	);
-	const joined = usePaginatedQuery(
-		app_convex_api.channels.list_my_channels,
-		kind === "quick" ? { membershipId } : "skip",
-		{ initialNumItems: 50 },
-	);
-	const publicChannels = usePaginatedQuery(
-		app_convex_api.channels.browse_public_channels,
-		kind === "quick" ? { membershipId, archived: false } : "skip",
-		{ initialNumItems: 50 },
-	);
 	const title =
 		kind === "create"
 			? "Create channel"
@@ -112,7 +104,7 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 					? "Channel members"
 					: kind === "settings"
 						? "Channel details"
-						: "Find a channel";
+						: "Find a named channel";
 	const submit = useFn(async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (!event.currentTarget.checkValidity() || busy) return;
@@ -144,7 +136,7 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 					setBusy(false);
 					return;
 				}
-				onChannel(result._yay.channelId);
+				onChannel(result._yay.channelId, "alreadyOpened");
 				onClose();
 			} else if (kind === "members" && channel) {
 				const result = await app_convex.mutation(app_convex_api.channels.add_channel_members, {
@@ -224,9 +216,6 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 	// nothing on the server, so a member on a page that is not loaded yet is harmless. A person who left
 	// and came back can be added again, so a "left" row does not lock them.
 	const memberUserIds = new Set(members.results.flatMap((row) => (row.status === "left" ? [] : [row.member.userId])));
-	const quickChannels = [
-		...new Map([...joined.results, ...publicChannels.results].map((item) => [item._id, item])).values(),
-	];
 	return (
 		<MyModal
 			open
@@ -333,23 +322,17 @@ export const ChannelsDialogs = memo(function ChannelsDialogs(props: {
 						)}
 						{kind === "quick" && (
 							<div className={"ChannelsDialogs-list" satisfies ChannelsDialogs_ClassNames}>
-								{quickChannels.map((item) => (
-									<ChannelsDialogsQuickRow
-										key={item._id}
-										channel={item}
-										filter={filter}
-										onOpen={() => {
-											onChannel(item._id);
-											onClose();
-										}}
-									/>
-								))}
-								{joined.status === "CanLoadMore" && (
-									<MyButton onClick={() => joined.loadMore(50)}>Load more joined channels</MyButton>
-								)}
-								{publicChannels.status === "CanLoadMore" && (
-									<MyButton onClick={() => publicChannels.loadMore(50)}>Load more public channels</MyButton>
-								)}
+								<MyButton aria-pressed={archived} onClick={() => setArchived(!archived)}>
+									{archived ? "Show active channels" : "Show archived channels"}
+								</MyButton>
+								<ChannelsNamedPicker
+									prefix={filter}
+									archived={archived}
+									onSelect={(id) => {
+										onChannel(id);
+										onClose();
+									}}
+								/>
 							</div>
 						)}
 						{kind === "members" && (
@@ -475,28 +458,4 @@ const ChannelsDialogsPersonName = memo(function ChannelsDialogsPersonName(props:
 	const { userId } = props;
 	const profile = useChannelsProfiles([userId])[0];
 	return profile === undefined ? "…" : (profile?.name ?? "User");
-});
-
-const ChannelsDialogsQuickRow = memo(function ChannelsDialogsQuickRow(props: {
-	channel: app_convex_Doc<"channels">;
-	filter: string;
-	onOpen: () => void;
-}) {
-	const { channel, filter, onOpen } = props;
-	const { membershipId } = AppTenantProvider.useContext();
-	const { userId } = AppAuthProvider.useAuthenticated();
-	const file = useQuery(
-		app_convex_api.channels.get_channel,
-		channel.kind === "file" ? { membershipId, channelId: channel._id } : "skip",
-	);
-	const directName = useChannelsDirectName(
-		channel.kind === "direct" ? channel.participantUserIds.filter((id) => id !== userId) : [],
-	);
-	const name = channel.kind === "direct" ? directName : channel.kind === "file" ? file?.file?.path : `#${channel.name}`;
-	if (!name || !name.toLowerCase().includes(filter.toLowerCase())) return null;
-	return (
-		<MyButton variant="ghost-highlightable" onClick={onOpen}>
-			{name}
-		</MyButton>
-	);
 });

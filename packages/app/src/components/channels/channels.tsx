@@ -1,8 +1,9 @@
 import "./channels.css";
-import { memo, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import type { ImperativePanelHandle } from "react-resizable-panels";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useConvexConnectionState, usePaginatedQuery, useQuery } from "convex/react";
+import { toast } from "sonner";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
@@ -10,7 +11,7 @@ import { MyModal, MyModalPopover, MyModalScrollableArea } from "@/components/my-
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import { app_convex, app_convex_api, app_convex_is_id_like, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
+import { AppChannelsProvider, type ChannelsNavigationMode } from "@/lib/app-channels-context.tsx";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
@@ -21,6 +22,8 @@ import { ChannelsConversation } from "./channels-conversation.tsx";
 import { ChannelsActivity, ChannelsThreads } from "./channels-feed.tsx";
 import { ChannelsLayoutContext } from "./channels-layout-context.ts";
 import { ChannelsPaneHeader } from "./channels-pane-header.tsx";
+import { ChannelsPickerError } from "./channels-picker.tsx";
+import { useChannelsPickerFocus } from "./channels-picker-hooks.ts";
 
 export type ChannelsSearch = { thread?: string; message?: string };
 type ChannelsContent_ClassNames = "ChannelsContent" | "ChannelsContent-empty" | "ChannelsContent-status";
@@ -52,13 +55,13 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	channelId?: string;
 	search: ChannelsSearch;
 	view?: "messages" | "browse" | "activity" | "threads" | "search";
-	onNavigate: (channelId: app_convex_Id<"channels">, search?: ChannelsSearch) => void;
+	onNavigate: (channelId: app_convex_Id<"channels">, search?: ChannelsSearch, mode?: ChannelsNavigationMode) => void;
 	children?: ReactNode;
 }) {
 	const { channelId, search, view = "messages", onNavigate, children } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const connection = useConvexConnectionState();
-	const { channelList, states } = AppChannelsProvider.useContext();
+	const { navigation, consumeNavigation } = AppChannelsProvider.useContext();
 	const [lastOpen, setLastOpen] = useAppLocalStorageStateValue(`app_state::channels_last_open::scope::${membershipId}`);
 	const selectedId = channelId && app_convex_is_id_like(channelId) ? (channelId as app_convex_Id<"channels">) : null;
 	const channel = useQuery(
@@ -77,9 +80,11 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	);
 	const [dialog, setDialog] = useState<ChannelsDialogKind | null>(null);
 	const [drawer, setDrawer] = useState(false);
+	const [collapsed, setCollapsed] = useState<string[]>([]);
 	const [sidebarOpen, setSidebarOpen] = useAppLocalStorageStateValue("app_state::sidebar::channels_open");
 	const [sidebarWidth, setSidebarWidth] = useAppLocalStorageStateValue("app_state::channels_sidebar_width");
 	const region = useRef<HTMLDivElement>(null);
+	const sidebarFocus = useRef<{ element: HTMLElement; memberId: string | null } | null>(null);
 	const sidebarPanel = useRef<ImperativePanelHandle>(null);
 	const sidebarLayout = useRef(0);
 	const [width, setWidth] = useState(0);
@@ -102,15 +107,15 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	const openSidebar = useFn(() =>
 		width < 820 || (hasThread && width >= 940 && width < 1200) ? setDrawer(true) : setSidebarOpen(true),
 	);
-	const open = useFn((id: app_convex_Id<"channels">, query?: ChannelsSearch) => {
+	const open = useFn((id: app_convex_Id<"channels">, query?: ChannelsSearch, mode?: ChannelsNavigationMode) => {
 		setDrawer(false);
-		onNavigate(id, query);
+		onNavigate(id, query, mode);
 	});
 	const sidebar = (
 		<ChannelsSidebar
 			channelId={channelId}
-			channelList={channelList}
-			states={states}
+			collapsed={collapsed}
+			setCollapsed={setCollapsed}
 			onClose={() => (drawer ? setDrawer(false) : setSidebarOpen(false))}
 			onDialog={setDialog}
 			onNavigate={() => setDrawer(false)}
@@ -128,12 +133,46 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	useEffect(() => {
 		if (sidebarVisible) sidebarPanel.current?.resize((actualSidebarWidth / available) * 100);
 	}, [sidebarVisible, actualSidebarWidth, available]);
+	useLayoutEffect(() => {
+		const previous = sidebarFocus.current;
+		if (!previous || previous.element.isConnected || document.activeElement !== document.body) return;
+		const row = previous.memberId
+			? region.current?.querySelector<HTMLElement>(
+					`[data-member-id="${CSS.escape(previous.memberId)}"] a, [data-member-id="${CSS.escape(previous.memberId)}"] button`,
+				)
+			: null;
+		(
+			row ??
+			region.current?.querySelector<HTMLElement>(
+				'button[aria-label="Open channels"], aside[aria-label="Channels"] button[aria-expanded]',
+			)
+		)?.focus();
+	}, [sidebarVisible, drawer]);
 	useEffect(() => {
-		if (lastChannel) open(lastChannel.channel._id);
+		if (lastChannel) open(lastChannel.channel._id, undefined, "passive");
 	}, [lastChannel, open]);
 	useEffect(() => {
 		if (channel) setLastOpen(channel.channel._id);
 	}, [channel, setLastOpen]);
+	useEffect(() => {
+		if (!selectedId || !navigation?.committed || navigation.channelId !== selectedId || channel === undefined) return;
+		if (channel && state === undefined) return;
+		if (!consumeNavigation(selectedId)) return;
+		if (channel?.channel.kind !== "direct" || !state?.member) return;
+		void app_convex
+			.mutation(app_convex_api.channels.open_direct_channel_by_id, {
+				membershipId,
+				channelId: channel.channel._id,
+				expectedVisibilityRevision: state.member.visibilityRevision,
+			})
+			.then((result) => {
+				if (result._nay) toast.error(result._nay.message);
+			})
+			.catch((error: unknown) => {
+				console.error("[ChannelsContent] Could not open conversation", { error });
+				toast.error("Could not open this conversation");
+			});
+	}, [selectedId, navigation, channel, state, membershipId, consumeNavigation]);
 
 	const content =
 		view === "activity" ? (
@@ -177,6 +216,13 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	return (
 		<div
 			ref={region}
+			onFocusCapture={(event) => {
+				if (event.target.closest('aside[aria-label="Channels"]'))
+					sidebarFocus.current = {
+						element: event.target,
+						memberId: event.target.closest<HTMLElement>("[data-member-id]")?.dataset.memberId ?? null,
+					};
+			}}
 			className={"ChannelsContent" satisfies ChannelsContent_ClassNames}
 			data-layout={
 				width < 820
@@ -213,11 +259,12 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 						minSize={sidebarVisible ? (220 / available) * 100 : 0}
 						maxSize={sidebarVisible ? (maximumSidebar / available) * 100 : 100}
 					>
-						{sidebar}
+						{sidebarVisible && !drawer ? sidebar : null}
 					</MyPanel>
 					<MyPanelResizeHandle
 						isOpen={sidebarVisible}
 						closeBehavior="hidden"
+						aria-label="Resize channels sidebar"
 						onKeyUp={(event) => {
 							if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
 								setSidebarWidth(Math.max(220, Math.min(maximumSidebar, (sidebarLayout.current * available) / 100)));
@@ -250,7 +297,7 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 				</MyPanelGroup>
 				<MyModal open={drawer} setOpen={setDrawer}>
 					<MyModalPopover aria-label="Channels" className="ChannelsContent-drawer">
-						<MyModalScrollableArea>{sidebar}</MyModalScrollableArea>
+						<MyModalScrollableArea>{drawer ? sidebar : null}</MyModalScrollableArea>
 					</MyModalPopover>
 				</MyModal>
 			</ChannelsLayoutContext>
@@ -260,7 +307,7 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 					kind={dialog}
 					channel={channel ?? null}
 					onClose={() => setDialog(null)}
-					onChannel={open}
+					onChannel={(id, mode) => open(id, undefined, mode)}
 				/>
 			)}
 		</div>
@@ -275,11 +322,7 @@ const ChannelsBrowse = memo(function ChannelsBrowse(props: { onNavigate: (id: ap
 	const [archived, setArchived] = useState(false);
 	const [filter, setFilter] = useState("");
 	const [error, setError] = useState("");
-	const channels = usePaginatedQuery(
-		app_convex_api.channels.browse_public_channels,
-		{ membershipId, archived },
-		{ initialNumItems: 50 },
-	);
+	const { accessScopeKey, status } = AppChannelsProvider.useContext();
 	const join = useFn(async (id: app_convex_Id<"channels">) => {
 		setError("");
 		await app_convex
@@ -315,29 +358,79 @@ const ChannelsBrowse = memo(function ChannelsBrowse(props: { onNavigate: (id: ap
 				{archived ? "Show active channels" : "Show archived channels"}
 			</MyButton>
 			{error && <p role="alert">{error}</p>}
-			<div className={"ChannelsBrowse-list" satisfies ChannelsBrowse_ClassNames}>
-				{channels.results
-					.filter(
-						(channel) =>
-							(channel.kind === "public" || channel.kind === "private") && channel.name.includes(filter.toLowerCase()),
-					)
-					.map((channel) => (
-						<div key={channel._id} className={"ChannelsBrowse-row" satisfies ChannelsBrowse_ClassNames}>
-							<div>
-								<strong>{channel.kind === "public" || channel.kind === "private" ? `#${channel.name}` : ""}</strong>
-								<p>{channel.kind === "public" || channel.kind === "private" ? channel.topic : ""}</p>
-							</div>
-							<MyButton onClick={() => onNavigate(channel._id)}>View</MyButton>
-							{!archived && <MyButton onClick={() => join(channel._id)}>Join</MyButton>}
-						</div>
-					))}
-			</div>
-			{channels.status === "LoadingFirstPage" ? (
-				<p>Loading channels…</p>
-			) : channels.results.length === 0 ? (
-				<p>No public channels yet</p>
-			) : null}
-			{channels.status === "CanLoadMore" && <MyButton onClick={() => channels.loadMore(50)}>Load more</MyButton>}
+			{accessScopeKey === null ? (
+				<p>
+					{status === "error"
+						? "Could not load channels"
+						: status === "unavailable"
+							? "Channels unavailable"
+							: "Loading channels…"}
+				</p>
+			) : (
+				<CatchBoundary getResetKey={() => `${membershipId}:${accessScopeKey}`} errorComponent={ChannelsPickerError}>
+					<ChannelsBrowsePages
+						key={`${membershipId}:${accessScopeKey}`}
+						accessScopeKey={accessScopeKey}
+						archived={archived}
+						prefix={filter}
+						onNavigate={onNavigate}
+						onJoin={join}
+					/>
+				</CatchBoundary>
+			)}
 		</section>
+	);
+});
+
+const ChannelsBrowsePages = memo(function ChannelsBrowsePages(props: {
+	accessScopeKey: string;
+	archived: boolean;
+	prefix: string;
+	onNavigate: (id: app_convex_Id<"channels">) => void;
+	onJoin: (id: app_convex_Id<"channels">) => void;
+}) {
+	const { accessScopeKey, archived, prefix, onNavigate, onJoin } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const channels = usePaginatedQuery(
+		app_convex_api.channels.browse_public_channels,
+		{ membershipId, accessScopeKey, archived, prefix },
+		{ initialNumItems: 50 },
+	);
+	const loading = channels.status === "LoadingFirstPage";
+	const [held, setHeld] = useState<typeof channels.results | null>(null);
+	if (!loading && held !== channels.results) setHeld(channels.results);
+	const rows = loading && held ? held : channels.results;
+	const focus = useChannelsPickerFocus();
+	return (
+		<div {...focus} className={"ChannelsBrowse-list" satisfies ChannelsBrowse_ClassNames} aria-busy={loading}>
+			{rows.map((channel) => (
+				<div key={channel._id} className={"ChannelsBrowse-row" satisfies ChannelsBrowse_ClassNames}>
+					<div>
+						<strong>{channel.kind === "public" || channel.kind === "private" ? `#${channel.name}` : ""}</strong>
+						{(channel.kind === "public" || channel.kind === "private") && channel.archived && <span>Archived</span>}
+						<p>{channel.kind === "public" || channel.kind === "private" ? channel.topic : ""}</p>
+					</div>
+					<MyButton data-picker-row={channel._id} disabled={loading} onClick={() => onNavigate(channel._id)}>
+						View
+					</MyButton>
+					{!archived && (
+						<MyButton disabled={loading} onClick={() => onJoin(channel._id)}>
+							Join
+						</MyButton>
+					)}
+				</div>
+			))}
+			{loading && held === null ? <p>Loading channels…</p> : rows.length === 0 ? <p>No public channels yet</p> : null}
+			{(channels.status === "CanLoadMore" || channels.status === "LoadingMore") && (
+				<MyButton
+					aria-disabled={channels.status === "LoadingMore"}
+					onClick={() => {
+						if (channels.status === "CanLoadMore") channels.loadMore(50);
+					}}
+				>
+					{channels.status === "LoadingMore" ? "Loading…" : "Show more channels"}
+				</MyButton>
+			)}
+		</div>
 	);
 });

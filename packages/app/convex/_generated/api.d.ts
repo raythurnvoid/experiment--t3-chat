@@ -34,6 +34,7 @@ import type * as billing_http_routes from "../billing_http_routes.js";
 import type * as billing_polar from "../billing_polar.js";
 import type * as channels from "../channels.js";
 import type * as channels_messages from "../channels_messages.js";
+import type * as channels_notifications from "../channels_notifications.js";
 import type * as channels_uploads from "../channels_uploads.js";
 import type * as crons from "../crons.js";
 import type * as data_deletion from "../data_deletion.js";
@@ -217,6 +218,7 @@ declare const fullApi: ApiFromModules<{
   billing_polar: typeof billing_polar;
   channels: typeof channels;
   channels_messages: typeof channels_messages;
+  channels_notifications: typeof channels_notifications;
   channels_uploads: typeof channels_uploads;
   crons: typeof crons;
   data_deletion: typeof data_deletion;

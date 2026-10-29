@@ -7,6 +7,7 @@ import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-p
 import { ChannelsComposer, type ChannelsComposerControl_Ref } from "./channels-composer.tsx";
 import { file_quotes_serialize_draft } from "../../../shared/file-quotes.ts";
 import { app_convex, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { getFunctionName } from "convex/server";
 
 const mocks = vi.hoisted(() => ({
 	readable: true,
@@ -19,6 +20,10 @@ const mocks = vi.hoisted(() => ({
 		{ userId: "person-2", displayName: "Nora", avatarUrl: null },
 	],
 	lockedUserIds: [] as string[],
+	namedPublic: [{ _id: "channel-public", kind: "public", name: "general" }],
+	namedPrivate: [{ state: "locked", memberId: "private-member", kind: "private" }],
+	moreChannels: vi.fn(),
+	namedLoading: false,
 	file: {
 		_id: "file-1",
 		name: "notes.md",
@@ -41,23 +46,41 @@ vi.mock(import("convex/react"), async (importOriginal) => ({
 					: mocks.file,
 	// A name search finds the file when the text starts one of its words. The people search finds
 	// the members whose name starts with the text.
-	usePaginatedQuery: (_query: unknown, args: unknown) => ({
-		results:
-			typeof args !== "object" || args === null
-				? []
-				: "clause" in args
-					? mocks.file.name.startsWith((args.clause as { text: string }).text)
-						? [{ kind: "file", nodeId: mocks.file._id, path: mocks.file.path, contentType: mocks.file.contentType }]
-						: []
-					: "text" in args
-						? mocks.people.filter((person) =>
-								person.displayName.toLowerCase().startsWith(String(args.text).toLowerCase()),
-							)
-						: [],
-		status: "Exhausted",
-		isLoading: false,
-		loadMore: () => {},
-	}),
+	usePaginatedQuery: (query: Parameters<typeof getFunctionName>[0], args: unknown) =>
+		typeof args === "object" && args !== null && "prefix" in args
+			? {
+					results: getFunctionName(query).includes("browse_public_channels") ? mocks.namedPublic : mocks.namedPrivate,
+					...(getFunctionName(query).includes("browse_public_channels")
+						? { status: "CanLoadMore" as const, isLoading: false as const }
+						: mocks.namedLoading
+							? { status: "LoadingFirstPage" as const, isLoading: true as const }
+							: { status: "Exhausted" as const, isLoading: false as const }),
+					loadMore: mocks.moreChannels,
+				}
+			: {
+					results:
+						typeof args !== "object" || args === null
+							? []
+							: "clause" in args
+								? mocks.file.name.startsWith((args.clause as { text: string }).text)
+									? [
+											{
+												kind: "file",
+												nodeId: mocks.file._id,
+												path: mocks.file.path,
+												contentType: mocks.file.contentType,
+											},
+										]
+									: []
+								: "text" in args
+									? mocks.people.filter((person) =>
+											person.displayName.toLowerCase().startsWith(String(args.text).toLowerCase()),
+										)
+									: [],
+					status: "Exhausted",
+					isLoading: false,
+					loadMore: () => {},
+				},
 	// The attach picker asks which shown files can be attached. The people list asks which people can
 	// be mentioned. A person chip reads the member's profile.
 	useQueries: (queries: Record<string, { args: Record<string, unknown> }>) =>
@@ -92,6 +115,9 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 		useContext: () => ({ membershipId: "membership", organizationName: "qa", workspaceName: "home" }),
 	},
 }));
+vi.mock("@/lib/app-channels-context.tsx", () => ({
+	AppChannelsProvider: { useContext: () => ({ accessScopeKey: "access", status: "delayed" }) },
+}));
 vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: {
 		// The root holds the one file.
@@ -108,11 +134,49 @@ afterEach(() => {
 	mocks.attachable = true;
 	mocks.chipFile = "file";
 	mocks.lockedUserIds = [];
+	mocks.moreChannels.mockClear();
+	mocks.namedLoading = false;
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
 
 describe("ChannelsComposer", () => {
+	test("channel suggestions page with the keyboard, block locked rows, and keep the saved link", async () => {
+		mocks.namedLoading = true;
+		const ref = createRef<ChannelsComposerControl_Ref>();
+		const onEnter = vi.fn();
+		render(
+			<ChannelsComposer
+				controlRef={ref}
+				ariaLabel="Channel mention"
+				submitTooltip="Send"
+				submitDisabled={false}
+				onEnter={onEnter}
+				mentionTarget={{ fileNodeId: "file-1" as app_convex_Id<"files_nodes"> }}
+			/>,
+		);
+		const composer = await screen.findByLabelText("Channel mention");
+		await userEvent.click(composer);
+		await userEvent.keyboard("#g");
+		await screen.findByRole("listbox", { name: "Channels" });
+		expect(screen.queryByRole("option", { name: "general" })).toBeNull();
+		expect(composer.getAttribute("aria-activedescendant")).toBeNull();
+		mocks.namedLoading = false;
+		await userEvent.keyboard("e");
+		await screen.findByRole("option", { name: "general" });
+		await userEvent.keyboard("{ArrowDown}{Enter}");
+		expect(mocks.moreChannels).toHaveBeenCalledWith(50);
+		expect(onEnter).not.toHaveBeenCalled();
+		expect(ref.current?.getMarkdownContent()).toBe("#ge");
+		await userEvent.keyboard("{ArrowDown}{Enter}");
+		expect(screen.getByRole("option", { name: "No access" }).getAttribute("aria-disabled")).toBe("true");
+		expect(screen.getByRole("status").textContent).toBe("Permission denied");
+		expect(ref.current?.getMarkdownContent()).toBe("#ge");
+		await userEvent.keyboard("{ArrowDown}{Enter}");
+		expect(ref.current?.getMarkdownContent()).toContain("[#general](/w/qa/home/messages/channel-public)");
+		expect(onEnter).not.toHaveBeenCalled();
+		expect(composer.querySelector(".ChannelsComposerMention")?.textContent).toBe("#general");
+	});
 	test("formatting commands keep the selection, update pressed state and survive restore", async () => {
 		const ref = createRef<ChannelsComposerControl_Ref>();
 		const view = render(

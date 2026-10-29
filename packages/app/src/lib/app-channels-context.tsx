@@ -1,20 +1,48 @@
-import { createContext, memo, use, useEffect, useMemo, type ContextType, type ReactNode } from "react";
-import { usePaginatedQuery, useQueries, type UsePaginatedQueryReturnType } from "convex/react";
-import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { createContext, memo, use, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useQueries, type RequestForQueries } from "convex/react";
+import { useRouter, type HistoryState, type ParsedLocation } from "@tanstack/react-router";
+import { useFn } from "@/hooks/utils-hooks.ts";
+import {
+	app_convex_api,
+	app_convex_is_id_like,
+	type app_convex_FunctionReturnType,
+	type app_convex_Id,
+} from "@/lib/app-convex-client.ts";
+
+export type ChannelsNavigationMode = "open" | "passive" | "alreadyOpened";
+
+declare module "@tanstack/react-router" {
+	interface HistoryState {
+		messagesNavigation?: { nonce: string; mode: ChannelsNavigationMode };
+	}
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function channels_navigation_state(mode: ChannelsNavigationMode = "open"): HistoryState {
+	return { messagesNavigation: { nonce: crypto.randomUUID(), mode } };
+}
+
+type ChannelNavigation = {
+	serial: number;
+	channelId: string;
+	key: string | undefined;
+	href: string;
+	committed: boolean;
+};
+type ChannelsSummary = app_convex_FunctionReturnType<typeof app_convex_api.channels_notifications.get_summary>;
 
 const AppChannelsContext = createContext<{
-	channelList: UsePaginatedQueryReturnType<typeof app_convex_api.channels.list_my_channels>;
-	states: Record<
-		string,
-		app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel_state> | Error | undefined
-	>;
-	inbox: UsePaginatedQueryReturnType<typeof app_convex_api.channels_messages.list_my_inbox>;
-	threads: UsePaginatedQueryReturnType<typeof app_convex_api.channels_messages.list_my_threads>;
-	unreadMentions: number;
-	inboxUnreadCount: number;
-	threadsUnreadCount: number;
-	inboxHasMore: boolean;
-	threadsHasMore: boolean;
+	summary: ChannelsSummary | Error | undefined;
+	status: "loading" | "unavailable" | "updating" | "delayed" | "error";
+	accessScopeKey: string | null;
+	unreadMentions: number | null;
+	inboxUnreadCount: number | null;
+	threadsUnreadCount: number | null;
+	navigation: ChannelNavigation | null;
+	consumeNavigation: (channelId: string) => boolean;
+	cancelNavigation: (channelId: string) => void;
+	followLink: (event: MouseEvent<HTMLAnchorElement>) => void;
+	retrySummary: () => void;
 } | null>(null);
 
 const AppChannelsProvider = Object.assign(
@@ -23,65 +51,135 @@ const AppChannelsProvider = Object.assign(
 		children: ReactNode;
 	}) {
 		const { membershipId, children } = props;
-		const channelList = usePaginatedQuery(
-			app_convex_api.channels.list_my_channels,
-			{ membershipId },
-			{ initialNumItems: 50 },
-		);
-		const inbox = usePaginatedQuery(
-			app_convex_api.channels_messages.list_my_inbox,
-			{ membershipId },
-			{ initialNumItems: 50 },
-		);
-		const threads = usePaginatedQuery(
-			app_convex_api.channels_messages.list_my_threads,
-			{ membershipId },
-			{ initialNumItems: 50 },
-		);
-		const queries = useMemo(
-			() =>
-				Object.fromEntries(
-					channelList.results.map((channel) => [
-						channel._id,
-						{
-							query: app_convex_api.channels.get_channel_state,
-							args: { membershipId, channelId: channel._id },
-						},
-					]),
-				),
-			[channelList.results, membershipId],
-		);
-		const states = useQueries(queries) as NonNullable<ContextType<typeof AppChannelsContext>>["states"];
-		const unreadMentions = Object.values(states).filter(
-			(value) => value && !(value instanceof Error) && value.mentionCount > 0,
-		).length;
-		const inboxUnreadCount = inbox.results.filter((item) => item.unread).length;
-		const threadsUnreadCount = threads.results.filter((item) => item.unread).length;
-		const inboxHasMore = inbox.status === "CanLoadMore" || inbox.status === "LoadingMore";
-		const threadsHasMore = threads.status === "CanLoadMore" || threads.status === "LoadingMore";
+		const router = useRouter();
+		const [retrying, setRetrying] = useState(false);
+		const queries = useMemo(() => {
+			const result: RequestForQueries = {};
+			if (!retrying)
+				result.summary = { query: app_convex_api.channels_notifications.get_summary, args: { membershipId } };
+			return result;
+		}, [membershipId, retrying]);
+		const summary = useQueries(queries).summary as ChannelsSummary | Error | undefined;
+		const status =
+			summary instanceof Error
+				? "error"
+				: summary === undefined
+					? "loading"
+					: summary === null
+						? "unavailable"
+						: summary.state;
+		const ready = summary && !(summary instanceof Error) && summary.state === "delayed" ? summary : null;
+		const accessScopeKey = summary && !(summary instanceof Error) ? summary.accessScopeKey : null;
+		const [navigation, setNavigation] = useState<ChannelNavigation | null>(null);
+		const pending = useRef<ChannelNavigation | null>(null);
+		const serial = useRef(0);
+		const arrived = useRef(false);
+		const consumeNavigation = useFn((channelId: string) => {
+			if (pending.current?.channelId !== channelId || !pending.current.committed) return false;
+			pending.current = null;
+			setNavigation(null);
+			return true;
+		});
+		const cancelNavigation = useFn((channelId: string) => {
+			if (pending.current?.channelId !== channelId) return;
+			pending.current = null;
+			setNavigation(null);
+		});
+		const followLink = useFn((event: MouseEvent<HTMLAnchorElement>) => {
+			if (
+				event.defaultPrevented ||
+				event.button !== 0 ||
+				event.metaKey ||
+				event.ctrlKey ||
+				event.shiftKey ||
+				event.altKey ||
+				event.currentTarget.target === "_blank"
+			)
+				return;
+			const href = event.currentTarget.getAttribute("href");
+			if (!href) return;
+			event.preventDefault();
+			void router
+				.navigate({ href, state: channels_navigation_state() })
+				.catch((error: unknown) => console.error("[AppChannelsProvider] Could not open conversation", { error }));
+		});
+		const retrySummary = useFn(() => setRetrying(true));
 
 		useEffect(() => {
-			if (channelList.status === "CanLoadMore") channelList.loadMore(50);
-		}, [channelList.status, channelList.loadMore]);
+			if (!retrying) return;
+			const timer = setTimeout(() => setRetrying(false), 0);
+			return () => clearTimeout(timer);
+		}, [retrying]);
 		useEffect(() => {
-			document.title = unreadMentions ? `(${unreadMentions}) Bonobo Senate` : "Bonobo Senate";
+			const record = (
+				location: { pathname: string; href: string; state: ParsedLocation["state"] },
+				suppress: boolean,
+			) => {
+				const channelId = /\/messages\/([^/]+)\/?$/.exec(location.pathname)?.[1];
+				pending.current =
+					channelId && app_convex_is_id_like(channelId) && !suppress
+						? {
+								serial: ++serial.current,
+								channelId,
+								key: location.state.__TSR_key,
+								href: location.href,
+								committed: false,
+							}
+						: null;
+				setNavigation(pending.current);
+			};
+			const confirm = (location: ParsedLocation) => {
+				const intent = pending.current;
+				if (!intent || intent.key !== location.state.__TSR_key || intent.href !== location.href) return;
+				pending.current = { ...intent, committed: true };
+				setNavigation(pending.current);
+			};
+			const unsubscribeHistory = router.history.subscribe(({ location, action }) => {
+				const mode = location.state.messagesNavigation?.mode;
+				// Back and Forward are new choices, even when the original entry was passive.
+				record(
+					location,
+					(action.type === "PUSH" || action.type === "REPLACE") && (mode === "passive" || mode === "alreadyOpened"),
+				);
+			});
+			// Loads and invalidations can resolve too. Only a recorded navigation may open a DM.
+			const unsubscribeResolved = router.subscribe("onResolved", ({ toLocation }) => confirm(toLocation));
+			if (!arrived.current) {
+				arrived.current = true;
+				record(router.state.location, false);
+				if (router.state.resolvedLocation) confirm(router.state.resolvedLocation);
+			}
+			return () => {
+				unsubscribeHistory();
+				unsubscribeResolved();
+			};
+		}, [router]);
+		useEffect(() => {
+			document.title =
+				status === "updating"
+					? "Bonobo Senate — Messages updating"
+					: ready?.mentionChannels
+						? `(${ready.mentionChannels}) Bonobo Senate`
+						: "Bonobo Senate";
 			return () => {
 				document.title = "Bonobo Senate";
 			};
-		}, [unreadMentions]);
+		}, [status, ready?.mentionChannels]);
 
 		return (
 			<AppChannelsContext.Provider
 				value={{
-					channelList,
-					states,
-					inbox,
-					threads,
-					unreadMentions,
-					inboxUnreadCount,
-					threadsUnreadCount,
-					inboxHasMore,
-					threadsHasMore,
+					summary,
+					status,
+					accessScopeKey,
+					unreadMentions: ready?.mentionChannels ?? null,
+					inboxUnreadCount: ready?.unreadInbox ?? null,
+					threadsUnreadCount: ready?.unreadThreads ?? null,
+					navigation,
+					consumeNavigation,
+					cancelNavigation,
+					followLink,
+					retrySummary,
 				}}
 			>
 				{children}

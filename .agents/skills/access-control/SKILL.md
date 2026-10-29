@@ -130,6 +130,32 @@ not permission caches. Final publication still checks current access.
 Advance only for a change that can turn a passing proof into a failing one. Check all four readers:
 Copy, pending Save, folder Move check, and Move cohort. See the pending and transfer specs.
 
+## Messages authority
+
+Messages totals use their own `channels_authority_versions` organization and workspace clocks.
+The summary pins both document IDs and revisions. A changed pin hides totals until its member's
+bounded repair finishes. Ordinary queued messages keep the same delayed-count notice. They must
+not reveal hidden work through an Updating state.
+
+`server/files-access-version.ts` captures these scopes beside the existing Files clocks, in the
+same mutation. Tenant, human read grant, role and membership changes use the existing field set.
+For files, Messages compares existence, tenant, kind and the restricted/extended scope pointers.
+Names, paths, archive, content, sizes and dates do not change this clock. New file identities have
+no old conversation to invalidate. Inserting or deleting saved Move places is preparation or
+cleanup, not an access change.
+
+A held physical file is not the current access source. Sharing writes to its selected saved place
+invalidate immediately. Move publication instead uses `channels_move_authority_proofs`: a bounded
+pass compares each validated node's before/after access fields. Publication requires the complete
+proof for the current cohort epoch, fences and access/review pins. It advances Messages authority
+in the same transaction as the selected view only when access changes. Rename-only Move, staging,
+abort and physical cleanup keep it unchanged. Release drains the proof without deleting Files work.
+
+The small `server/channels-notifications.ts` leaf owns clock changes and durable dispatch. It must
+not import registered Convex handlers. Private channel member changes use that member's own
+authority revision. Live membership and channel/file access checks remain required; clocks never
+grant access. See the channels spec for counts, restore work and exact membership lifetime pins.
+
 ## Service accounts
 
 Service accounts are workspace identities for software. They are not users and have no roles,

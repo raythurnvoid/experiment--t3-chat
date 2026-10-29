@@ -49,6 +49,8 @@ import type { AppClassName } from "@/lib/dom-utils.ts";
 import { channels_search_query_schema } from "../../../shared/channels.ts";
 import { ChannelsFeedMessage } from "./channels-feed.tsx";
 import { useChannelsDirectName, useChannelsProfiles } from "./channels-people.ts";
+import { ChannelsPickerError } from "./channels-picker.tsx";
+import { useChannelsNamedPages } from "./channels-picker-hooks.ts";
 
 export type ChannelsSearchFilters = {
 	q?: string;
@@ -217,12 +219,235 @@ const SearchChannelName = memo(function SearchChannelName(props: { channelId: ap
 			: `#${channel.channel.name}`;
 });
 
+const SearchChannelNamedOptions = memo(function SearchChannelNamedOptions(props: {
+	accessScopeKey: string;
+	prefix: string;
+	archived: boolean;
+}) {
+	const pages = useChannelsNamedPages(props);
+	const [refusal, setRefusal] = useState<string | null>(null);
+	return (
+		<MySearchSelectList aria-busy={pages.loading}>
+			{!pages.noRowsYet && (
+				<MySearchSelectItem value="" disabled={pages.loading}>
+					All readable channels
+				</MySearchSelectItem>
+			)}
+			{pages.groups.map((group) => (
+				<div key={group.name}>
+					<h3>{group.name}</h3>
+					{pages.noRowsYet ? (
+						<p data-loading="true">Loading…</p>
+					) : (
+						<>
+							{group.rows.map((row) => (
+								<MySearchSelectItem
+									key={row.memberId}
+									value={row.state === "readable" ? row.channel._id : row.memberId}
+									disabled={pages.loading}
+									hideOnClick={row.state === "readable"}
+									setValueOnClick={row.state === "readable"}
+									onClick={() => {
+										if (row.state !== "readable")
+											setRefusal(row.state === "locked" ? "Permission denied" : "Unavailable");
+									}}
+								>
+									{row.state === "readable" && (row.channel.kind === "public" || row.channel.kind === "private")
+										? `#${row.channel.name}`
+										: row.state === "locked"
+											? "No access"
+											: "Unavailable"}
+									{row.state === "readable" &&
+										(row.channel.kind === "public" || row.channel.kind === "private") &&
+										row.channel.archived &&
+										" · Archived"}
+								</MySearchSelectItem>
+							))}
+							{!group.rows.length && <p>No matches</p>}
+							{(group.status === "CanLoadMore" || group.status === "LoadingMore") && (
+								<MySearchSelectItem
+									value={`more:${group.name}`}
+									aria-disabled={pages.loading || group.status === "LoadingMore"}
+									hideOnClick={false}
+									setValueOnClick={false}
+									onClick={() => {
+										if (!pages.loading && group.status === "CanLoadMore") group.loadMore(50);
+									}}
+								>
+									{group.status === "LoadingMore" ? "Loading…" : `Show more ${group.name.toLowerCase()}`}
+								</MySearchSelectItem>
+							)}
+						</>
+					)}
+				</div>
+			))}
+			{refusal && <p role="status">{refusal}</p>}
+		</MySearchSelectList>
+	);
+});
+
+const SearchChannelKindOptions = memo(function SearchChannelKindOptions(props: {
+	accessScopeKey: string;
+	kind: "direct" | "file";
+}) {
+	const { membershipId } = AppTenantProvider.useContext();
+	const [refusal, setRefusal] = useState<string | null>(null);
+	const channels = usePaginatedQuery(
+		app_convex_api.channels.list_my_channel_kind,
+		{ membershipId, ...props },
+		{ initialNumItems: 50 },
+	);
+	return (
+		<div>
+			{channels.status === "LoadingFirstPage" ? (
+				<p data-loading="true">Loading…</p>
+			) : (
+				<>
+					<MySearchSelectItem value="">All readable channels</MySearchSelectItem>
+					{channels.results.map((row) => (
+						<MySearchSelectItem
+							key={row.memberId}
+							value={row.state === "readable" ? row.channel._id : row.memberId}
+							hideOnClick={row.state === "readable"}
+							setValueOnClick={row.state === "readable"}
+							onClick={() => {
+								if (row.state !== "readable") setRefusal(row.state === "locked" ? "Permission denied" : "Unavailable");
+							}}
+						>
+							{row.state === "readable" ? (
+								<SearchChannelName channelId={row.channel._id} />
+							) : row.state === "locked" ? (
+								"No access"
+							) : (
+								"Unavailable"
+							)}
+						</MySearchSelectItem>
+					))}
+					{channels.results.length === 0 && <p>No matches</p>}
+					{(channels.status === "CanLoadMore" || channels.status === "LoadingMore") && (
+						<MySearchSelectItem
+							value="more:kind"
+							aria-disabled={channels.status === "LoadingMore"}
+							hideOnClick={false}
+							setValueOnClick={false}
+							onClick={() => {
+								if (channels.status === "CanLoadMore") channels.loadMore(50);
+							}}
+						>
+							{channels.status === "LoadingMore" ? "Loading…" : "Show more"}
+						</MySearchSelectItem>
+					)}
+				</>
+			)}
+			{refusal && <p role="status">{refusal}</p>}
+		</div>
+	);
+});
+
+const SearchChannelOptions = memo(function SearchChannelOptions() {
+	const { membershipId } = AppTenantProvider.useContext();
+	const { accessScopeKey, status } = AppChannelsProvider.useContext();
+	const [kind, setKind] = useState<"named" | "direct" | "file">("named");
+	const [prefix, setPrefix] = useState("");
+	const [archived, setArchived] = useState(false);
+	return (
+		<>
+			<div>
+				{(
+					[
+						["named", "Channels"],
+						["direct", "Direct messages"],
+						["file", "Files"],
+					] as const
+				).map(([value, label]) => (
+					<MyButton key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>
+						{label}
+					</MyButton>
+				))}
+			</div>
+			{kind === "named" && (
+				<>
+					<MySearchSelectSearch
+						aria-label="Find channel"
+						placeholder="Channel name…"
+						value={prefix}
+						onChange={(event) => setPrefix(event.target.value)}
+					/>
+					<MyButton aria-pressed={archived} onClick={() => setArchived(!archived)}>
+						{archived ? "Show active channels" : "Show archived channels"}
+					</MyButton>
+				</>
+			)}
+			{accessScopeKey === null ? (
+				<p>
+					{status === "error"
+						? "Could not load channels"
+						: status === "unavailable"
+							? "Channels unavailable"
+							: "Loading…"}
+				</p>
+			) : (
+				<CatchBoundary
+					getResetKey={() => `${membershipId}:${accessScopeKey}:${kind}`}
+					errorComponent={ChannelsPickerError}
+				>
+					{kind === "named" ? (
+						<SearchChannelNamedOptions
+							key={`${membershipId}:${accessScopeKey}:named`}
+							accessScopeKey={accessScopeKey}
+							prefix={prefix}
+							archived={archived}
+						/>
+					) : (
+						<SearchChannelKindOptions
+							key={`${membershipId}:${accessScopeKey}:${kind}`}
+							accessScopeKey={accessScopeKey}
+							kind={kind}
+						/>
+					)}
+				</CatchBoundary>
+			)}
+		</>
+	);
+});
+
+const SearchChannelFilter = memo(function SearchChannelFilter(props: {
+	value: string;
+	onChange: (value: string) => void;
+}) {
+	return (
+		<div className={"ChannelsSearchView-field" satisfies ChannelsSearchView_ClassNames}>
+			<MySearchSelect value={props.value} setValue={(value) => props.onChange(value as string)}>
+				<MySearchSelectLabel>Channel</MySearchSelectLabel>
+				<MySearchSelectTrigger>
+					<MyButton type="button" variant="outline">
+						<span className={"ChannelsSearchView-value" satisfies ChannelsSearchView_ClassNames}>
+							{props.value ? (
+								<SearchChannelName channelId={props.value as app_convex_Id<"channels">} />
+							) : (
+								"All readable channels"
+							)}
+						</span>
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySearchSelectTrigger>
+				<MySearchSelectPopover unmountOnHide sameWidth>
+					<MySearchSelectPopoverScrollableArea>
+						<MySearchSelectPopoverContent>
+							<SearchChannelOptions />
+						</MySearchSelectPopoverContent>
+					</MySearchSelectPopoverScrollableArea>
+				</MySearchSelectPopover>
+			</MySearchSelect>
+		</div>
+	);
+});
+
 export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 	filters: ChannelsSearchFilters;
 	onSearch: (filters: ChannelsSearchFilters) => void;
 }) {
 	const { filters, onSearch } = props;
-	const { channelList } = AppChannelsProvider.useContext();
 	const [draft, setDraft] = useState({
 		q: filters.q ?? "",
 		channel: filters.channel ?? "",
@@ -296,18 +521,7 @@ export const ChannelsSearchView = memo(function ChannelsSearchView(props: {
 							aria-label="Search filters"
 							className={"ChannelsSearchView-filters" satisfies ChannelsSearchView_ClassNames}
 						>
-							<SearchFilter
-								label="Channel"
-								value={draft.channel}
-								options={[
-									{ value: "", label: "All readable channels" },
-									...channelList.results.map((channel) => ({
-										value: channel._id,
-										label: <SearchChannelName channelId={channel._id} />,
-									})),
-								]}
-								onChange={(channel) => setDraft({ ...draft, channel })}
-							/>
+							<SearchChannelFilter value={draft.channel} onChange={(channel) => setDraft({ ...draft, channel })} />
 							<SearchPersonFilter value={draft.from} onChange={(from) => setDraft({ ...draft, from })} />
 							<SearchFilter
 								label="Attachments"

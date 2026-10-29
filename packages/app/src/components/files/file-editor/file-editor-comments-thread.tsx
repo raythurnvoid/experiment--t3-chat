@@ -99,7 +99,6 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 							name="File comments"
 							root={thread}
 							readSequence={0}
-							mentionItems={[]}
 							jumpMessageId={jumpMessageId}
 							resolvable={true}
 							onThread={onActivate ?? (() => {})}

@@ -327,6 +327,18 @@ Stored files return exact saved bytes. Editable files return UTF-8 of current sa
 
 `remainingReadBytes` is required on short grants. Ordinary `create_grant` sets 8 MiB only when `files:download` is present, and sets `agentSource` and `codeReadBudgetId` to `null`. The byte route atomically reserves the requested length before fetching, including concurrent calls. Failed or aborted reads are not refunded; retries spend bytes again. Long-lived keys keep the normal request rate limit and 1 MiB range cap without a per-run byte budget. Text routes keep their existing per-request limits.
 
+## Planned unified read API (agreed 2026-10-29)
+
+This design is agreed but not implemented. The route contracts above describe the current API.
+
+- Use one `POST /api/v1/files/read` for saved text and stored binary files. Accept `path` and an optional opaque `cursor`. Omit the cursor or send `null` for the first page; pass the returned cursor with the same path to continue. Do not expose `maxBytes`, `pageBytes`, or a byte offset in this contract.
+- Return raw bytes. Headers carry the content type, revision, and next cursor. No next cursor means the read is complete. A file larger than one page returns a successful page with continuation, not a size error or 404. Text clients decode UTF-8 across page boundaries; helpers can read one page, read all pages, or make a preview.
+- The server owns page-size and work limits. Resume directly at an indexed text chunk and its byte position, or at a stored object's byte range. Do not scan earlier pages or reconstruct the whole file for each page. The current text branch of `public_api_http_read_bytes` does reconstruct the whole text before slicing; do not copy that behavior.
+- Bind the protected cursor to the caller, file, revision, and read position. Recheck live access on each request. A cursor grants no access. Retries return the same bytes while that revision is available; otherwise return a clear changed or expired error. Keep the same permission denial for every path inside a locked folder.
+- Before implementation, define when the selected text version is ready for bounded reads and how long it stays available. Current reads can reconstruct edits newer than the stored chunks. Do not silently switch to older text or mix versions between pages. Update callers, helpers, SDKs, docs, and tests together when replacing the existing read contracts.
+
+TODO: Revisit optional `pageBytes` or a streaming API only when a concrete use case needs them. Page-size control limits one response; streaming may reduce round trips for large reads. A stream still needs bounded storage reads, byte budgets, cancellation, recovery after a disconnect, a stable file version, and access checks during long reads. Neither option is part of the agreed first version.
+
 ## Code execution grants
 
 `public_api.create_code_grants({ source, principalKey, tokenHashes: { current, personal } })` returns a Result with `{ personalIsCurrent }`. The caller creates the two tokens; the mutation stores only hashes. It resolves both roots through `ai_chat_workspaces` from the captured original source. Both checks finish before writes. It then creates one `ai_chat_code_read_budgets` doc and the grants in the same transaction. The server uses `Date.now()` and a fixed ten-minute lifetime. Scopes are exactly list, read, and download for each whole root. No argument can select a third workspace or widen scopes.

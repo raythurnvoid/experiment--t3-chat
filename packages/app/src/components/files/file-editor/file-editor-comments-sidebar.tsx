@@ -91,7 +91,6 @@ export function FileEditorCommentsSidebar(props: {
 								name={file?.name ?? "File comments"}
 								root={thread.root}
 								readSequence={0}
-								mentionItems={[]}
 								quoteRequest={quoteRequest}
 								onQuoteInserted={() => setQuoteRequest(null)}
 								jumpMessageId={undefined}
@@ -121,7 +120,6 @@ export function FileEditorCommentsSidebar(props: {
 							fileNodeId={fileNodeId}
 							state={state}
 							canPost={canPost}
-							mentionItems={[]}
 							quoteRequest={quoteRequest}
 							onQuoteInserted={() => setQuoteRequest(null)}
 							markThreadIds={threadIds}

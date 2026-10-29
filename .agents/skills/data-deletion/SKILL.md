@@ -21,6 +21,14 @@ Load each companion skill that owns the affected boundary:
 - Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
+- Human Messages personal state belongs to an exact workspace membership. User and organization
+  member cleanup drain its joins, reads, followers, inbox receipts, summaries and member jobs.
+  Cleanup subtracts stamped count contributions before deleting sources and never creates new
+  summaries. Workspace purge drains all Messages content, jobs, clocks and Move proof sidecars
+  through exact tenant indexes. It runs again before each workspace structure batch, because later
+  membership or grant deletion can advance a clock. The organization-wide Messages clock and
+  dispatch job have a null workspace id; delete them beside the organization doc in the final
+  transaction. Capture sees the deleted tenant and cannot recreate those rows on flush.
 - Node deletion removes its current content head. Existing paged cohort cleanup removes prior
   and candidate heads. Old history must never select or delete the current content owner.
   Preparing and current heads retain their content and Yjs snapshot assets until they retire.

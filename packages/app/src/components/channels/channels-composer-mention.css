@@ -24,9 +24,16 @@
 		&[aria-selected="true"] {
 			background: var(--color-base-1-05);
 		}
+		&[aria-disabled="true"] {
+			color: var(--color-fg-08);
+			cursor: default;
+		}
 	}
 	.ChannelsComposerMentionList-status {
 		padding: 8px;
 		color: var(--color-fg-08);
+		&[data-loading="true"] {
+			background: var(--color-base-1-05);
+		}
 	}
 }

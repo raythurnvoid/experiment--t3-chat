@@ -13,6 +13,11 @@ before changing it; this cleanup check was not a fresh content catalog. Native R
 recovery, bulk, Copy and Restore checks ran on 2026-10-29. See the exact checks and remaining
 gaps in [Files QA](../../app-playwriter-harness/references/files.md#file-and-folder-read-only).
 
+The separate Messages reset on 2026-10-29 erased all old human Messages channels, messages,
+file comments and related state. It also removed current document comment marks. Ordinary Files,
+saved file copies, file history and AI chats were preserved. Use the new Messages fixtures below;
+older channel and comment IDs in saved AI chat output are stale.
+
 Paths are written `org/workspace:/path`. The Files route for a workspace is
 `/w/<org>/<workspace>/files`.
 
@@ -160,40 +165,34 @@ to a `chitchat-qa` workspace unless the check is about the upload plugins.
 
 ### Chats
 
-Human Messages checks reuse public channel `channels-qa` in `chitchat-qa/home`. It has a short root
-and reply from the phase 1 backend check. Continue this channel for Messages UI checks.
+Human Messages checks reuse these fixtures in `chitchat-qa/home`, created after the 2026-10-29
+reset. Organization ID: `gs7pjc3hzy2m10e1hj3vk0kzad8cm7tb`. Workspace ID:
+`h57vccrf1r4j9q6ky0etf6v0gx8cm2kw`.
 
-Public `channels-page-qa` in the same workspace has 51 short plain messages, `Page check 1` through
-`Page check 51`. Reuse it for the 50-message head and Load older checks. The existing paid QA
-viewer can read it. Its channel id is `ts7qvkrkvmp8zs3y5nnqmmre7d8fjxaw`.
+| Fixture | Channel ID | State and use |
+| --- | --- | --- |
+| Public `sidebar-qa-alpha` | `ts7rj0ydq4q0paxyhc54tq2kjd8h7rcj` | Named-channel order and whole-name prefix search. Created through the native dialog. |
+| Public `sidebar-qa-zulu` | `ts7vzeyhyq3wchqsrchfpezp4s8h7k3g` | Archive and restore, Starred, and name order. Archived again after the retained-star restore check; the owner's star is retained. Archived Find shows `#sidebar-qa-zulu · Archived`. |
+| Private `sidebar-qa-private` | `ts7tpt6fpa1gx616z8pktq3h918h7s89` | Owner and `qa.perm.member`. Mention root `v97wbdf2z2b8y8cw48yst50nmh8h7317` has `Sidebar QA mention`. Thread root `v97vekr47m0zg8tgbtp3p4hebn8h68nv` has `Sidebar QA thread` and a reply. Both roots remain live. Use for unread counts, Activity, Threads, and access loss/restore. |
+| Owner/member DM | `ts7yv1kpbsqaq4zaj4e1brw93n8h7c8h` | Root `v97x5dncmfafw8znb2rncgwwbs8h7tga` has `Sidebar QA direct message` and a reply. Close and explicit URL reopen passed for `qa.perm.member`. It is open now (`hidden: false`, visibility revision 2). Reuse for Close, discovery, explicit reopen and reply behavior. |
 
-Public `channels-qa` has upload roots `v97rmx9836ygkwdx3rbpvsxxdx8fkptd` (8-byte binary) and
-`v97vxsrhxk55b77g1da2250tm98fj3t2` (shapes.png and speakers.mp4). The binary's normal Files copy
-is `/upload-small.bin`. Its temporary `thread-drop.bin` reply was deleted and its asset cleaned.
-An unattached `paste-check.bin` has its normal 24-hour deadline; do not reuse it after expiry.
+The seeded member's exact Home membership is `h97w612te123z9485k4yrp648n8ed4cm`. Its private
+channel membership is `v57g5zmsaw970z4nsmwa2jxp1s8h7h7d`; its DM membership is
+`v57n7693yr3w0p9e03ty18rt618h78cb`. The temporary no-content role test restored the original
+`member` assignment and kept these memberships. The temporary custom role was deleted.
+Read current roles, members, stars and archive state before reuse.
 
-Root `v97h20zabbfd418wt1tpjehne58fmapp` in `channels-qa` has `Phase five native message`.
-The native composer mentioned `qa.perm.viewer` and `/r2-upload-sample.pdf`. Reuse it for inbox
-and search checks. The matching general PDF comment below uses the same mention primitive.
-
-Root `v97jwwep6mbq0hrnpv0r91yagd8fnkyv` in the same paid public channel has
-`Phase five attachment search`. It attaches the existing `/upload-small.bin` file and is by the
-QA viewer. Reuse it for author, attachment and October 4 UTC date filters. It made no new upload.
-
-Private `channels-upload-private-qa` in `chitchat-qa/home` is owner-only. It has one 8-byte upload
-root `v97sj5r0ryz5bhgqxqb7txn1ch8fk53r`. The existing `qa.perm.viewer` account is also a member
-of this paid workspace. It was added to and then removed from this private channel for access QA.
-Reuse that account for paid upload read checks; it has no private channel access.
-
-Retired: all `qa-browser/home` channel and direct-conversation fixtures were erased, including
-`channels-qa`, `channels-private-qa`, `channels-owner-private-qa`, `channels-ui-qa` and
-`channels-ui-private-qa`. Their old roles, notifications, roots and replies are not live fixtures.
-Use a kept channel above only after checking its current members and access.
+Retired: the old `channels-qa`, `channels-page-qa`, `channels-upload-private-qa` and all earlier
+human Messages fixtures were erased. Their old roots, replies, notifications and channel uploads
+are not live fixtures. The old 51-message paging fixture is gone. Ordinary saved Files copies,
+including `/upload-small.bin` and `/r2-upload-sample.pdf`, were preserved.
 
 Channel agent checks reuse chat `n178qh29w0n8sk7yjxjfky7d8n8fjnd8` in `chitchat-qa/home`.
 Its Bash calls list channels and members, then read the saved root and reply in a UTC date range.
 Its saved search turn checks author, attachments, UTC dates, text/JSON output, an exact Next page
 command, `--workspace home`, and refusal of a foreign workspace URL. It used the real paid agent.
+The AI chat is preserved, but its old human channel, root and reply IDs were erased by the
+Messages reset. Treat those saved outputs as history; use the new fixtures for another check.
 
 Public AI output reads reuse chat `n174yyeysbxqbzk9szcv77pz3x8g9281` in
 `chitchat-qa/metadata-qa-0906`, owned by the QA Edge account. These existing outputs are ready
@@ -207,25 +206,17 @@ and have committed owners. Read their current `byteCount` and `sha256` before a 
 Both passed complete public API reads with matching stored hashes on 2026-10-20.
 Reuse them without sending another model request. Keep their content and ownership unchanged.
 
-File comments reuse these saved files and roots. Open them in Files or Messages:
+Retired: all file-comment roots and file channels listed before 2026-10-29 were erased, including
+the PDF and binary comments in `chitchat-qa/home`, collaborative and non-collaborative marks in
+`personal/home`, and the resolved read-only quote. Their current document comment marks were
+removed too. The ordinary Files and old saved versions remain in kept workspaces. The separate
+2026-10-28 cleanup had already erased the `qa-browser/home` files and their comments.
+
+File-comment checks reuse this new native fixture from 2026-10-29:
 
 | File | Channel | Root | State |
 | --- | --- | --- | --- |
-| `qa-browser/home:/two-roots-qa-0921.txt` | `ts7zw3nfjr34thgt4mhz440mt98fk8q2` | `v97x2csrr5z067d4jwcph8r3zn8fjv0e` | Retired: file and comment erased. |
-| `qa-browser/home:/two-roots-qa-0921.txt` | `ts7zw3nfjr34thgt4mhz440mt98fk8q2` | `v97p6fm4q6xe39y9vgrgejp7dx8fkvyh` | Retired: file and closed-tab comment fixture erased. |
-| `chitchat-qa/home:/r2-upload-sample.pdf` | `ts7wvnhvhnm0s4z86krf8jnta18fjd0x` | `v97xsqbsgnd1xd6vqgqqrbxwnd8fjbb8` | General PDF comment, open. |
-| `chitchat-qa/home:/r2-upload-sample.pdf` | `ts7wvnhvhnm0s4z86krf8jnta18fjd0x` | `v97smz0hrfwmxsan9kkwven7bn8fk6xe` | Attachment-only comment with comment-paste.bin and comment-drop.bin, both 8 B. File access was restored to unrestricted, with no grants, public link or plugin binding. |
-| `chitchat-qa/home:/r2-upload-sample.pdf` | `ts7wvnhvhnm0s4z86krf8jnta18fjd0x` | `v97xqsefpvggk9txp6pj6zdh0d8fmp75` | General comment with `Phase five native comment`. Native people and file mentions match the Messages fixture above. |
-| `chitchat-qa/home:/upload-small.bin` | `ts7meayx1tx53k8apay3hecz2h8fng4e` | `v97gyfp8ga9pcbyyqxq48w90n98fnf3r`, `v97hwetp4tanme9eqtg8nm5yjx8fnasf` | Two first comments sent from two tabs. Both use this one file channel, with main sequences 1 and 2. The original 8-byte file is unchanged. |
-| `personal/home:/qa/qa-noncollab/notes.md` | `ts7j6hbckx8vp8g6ae8hqr5kvd8fk0k7` | `v97vwh25wjkggr985jr5mfqnvd8fj6d7` | Saved mark on `Non collaborative`, open. |
-| `personal/home:/documents/notes.md` | `ts7hpnwgb4j4m4a10t4j7y0vs98fj626` | `v97h3temt3e1kayr4p44np78jn8fkn77` | Saved collaborative mark on `MOVE-MARKER-4411`, open. |
-| `personal/home:/documents/notes.md` | `ts7hpnwgb4j4m4a10t4j7y0vs98fj626` | `v97v7x28vby3kp4r4xp938tsgd8fk0v3` | Saved overlapping mark on `MOVE-MARKER-4411`, open. Public head stayed 1 while confirmation waited, then became 2. |
-| `personal/home:/aaa-closing-qa-dest-mu6ynzn5/aaa-closing-qa-mu6ygix9.md` | `ts7qb663jk5y1myk2yn5v4nq0h8fk3k5` | `v97mek727ht4rfqhr3jk937kh98fkx5j` | General comment, resolved. The file stays read-only and its saved text stayed unchanged. |
-| `qa-browser/home:/chitchat/general.md` | `ts7wtgbxq25qmthesbe4kr6ses8fjv35` | `v97hf5tv517vzbc1p2jgn0negn8fkwxv` | Retired: file and read-only quote comment fixture erased. |
-
-Retired: the empty file channel `ts7tf4pt69pnbm53ewrr43aae18fkpea` on
-`qa-browser/home:/qa-search-0905/tasks/public-task.md` and public quote root
-`v97jpw71ze1ze0rvs8v8a7mzcx8fjakt` in that workspace were erased.
+| `chitchat-qa/home:/new-file.md` (`v974vdsy4egs8ge4ywhrgarpen8fjt4g`) | `ts7pj1aw7wt647557yscedqv718h62p3` | `v97yxmgg71r9c3cfrddc6q58k18h7cxx` | `Sidebar QA file comment`. General comment with no document mark. The saved Welcome text is unchanged. The owner follows the thread. The seeded member follows the file comments; the native button shows `Unfollow comments`. |
 
 `personal/home` already has about 410 chats. For an agent check where chat history does not
 matter, continue a chat you already made for the same task instead of starting a new one.
@@ -247,6 +238,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-10-29: reset all old human Messages and file-comment data, then added the four small sidebar fixtures and one native general comment on the existing `/new-file.md`. Old current comment marks were removed; ordinary Files, saved file copies, history and AI chats were preserved. The seeded member's role and memberships are restored after permission QA. Its DM is open after Close/reopen QA. Old human message IDs in saved AI output are stale. No new tenant or user.
 - 2026-10-29: archived the new Read-only QA branch, its 35-byte accepted upload, and the three saved selective Copy nodes. Four test flags were cleared first. The two unselected Copy drafts were discarded; pending and active job counts are zero. The source Markdown file and `/u18/type-find-private.txt` keep their original text and metadata. `/u18` is editable again. The owner upload key is revoked. No new tenant or user.
 - 2026-10-29: retired `qa-browser` and `f5-repro-org` fixtures after two complete cleanup reads. Kept scopes, all Clerk auth/billing links and four anonymous kept-space members were preserved. Old fixture results below remain history. Native Read-only checks and their gaps are recorded in Files QA.
 

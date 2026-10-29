@@ -18,6 +18,8 @@ import { files_pending_update_runs_db_request_stop } from "./files_pending_updat
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
 import { files_ancestor_ids, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { channels_notifications_db_get_authority_pins } from "../server/channels-notifications.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -329,8 +331,13 @@ describe("Move cohort publication", () => {
 
 	test("keeps normal names until one complete group switch", async () => {
 		const f = await native_rotation(3);
+		const authority = await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.scope));
 		let switched = false;
 		const finished = await finish_cohort(f, async (cohort) => {
+			expect(
+				await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.scope)),
+				"a rename and its cleanup must not reveal hidden activity through Messages",
+			).toEqual(authority);
 			const ids = (await f.readNames()).map((node) => node?._id);
 			if (cohort.publishedAt === null)
 				expect(ids, "all old normal names keep the same file IDs until publication").toEqual(f.nodes);
@@ -344,6 +351,62 @@ describe("Move cohort publication", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_move_source_reservations").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_saved_places").collect())).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
+	}, 120_000);
+
+	test("rebuilds a missing Messages proof before publishing an existing cohort", async () => {
+		const f = await native_rotation(3);
+		let removed = false;
+		let checked = false;
+		const finished = await finish_cohort(f, async (cohort) => {
+			const proof = await f.t.run((ctx) => ctx.db
+				.query("channels_move_authority_proofs")
+				.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id).eq("proofEpoch", cohort.proofEpoch))
+				.unique());
+			if (!removed && cohort.workPhase === "publish" && proof && proof.lastOrder !== null) {
+				await f.t.run((ctx) => ctx.db.delete("channels_move_authority_proofs", proof._id));
+				removed = true;
+			} else if (cohort.workPhase === "finish_content") {
+				expect(proof, "publication rebuilt a complete current proof after loss").toMatchObject({
+					complete: true,
+					changed: false,
+					proofEpoch: cohort.proofEpoch,
+					fence: cohort.fence,
+					attemptFence: cohort.attemptFence,
+					clockPins: cohort.clockPins,
+				});
+				checked = true;
+			}
+		});
+		expect(removed).toBe(true);
+		expect(checked).toBe(true);
+		expect(finished.publishedAt).not.toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
+	}, 120_000);
+
+	test("a sharing change during the Messages proof stops stale publication", async () => {
+		const f = await native_rotation(3);
+		let restricted = false;
+		const finished = await finish_cohort(f, async (cohort) => {
+			if (restricted || cohort.workPhase !== "publish") return;
+			const proof = await f.t.run((ctx) => ctx.db
+				.query("channels_move_authority_proofs")
+				.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id).eq("proofEpoch", cohort.proofEpoch))
+				.unique());
+			if (!proof || proof.lastOrder === null) return;
+			const before = await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.scope));
+			expect(await f.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodes[0]!,
+			})).toEqual({ _yay: null });
+			const after = await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.scope));
+			expect(after.workspaceAuthorityPin?.revision).toBe((before.workspaceAuthorityPin?.revision ?? 0) + 1);
+			restricted = true;
+		});
+		expect(restricted).toBe(true);
+		expect(finished.publishedAt, "a false proof cannot survive a selected-place sharing change").toBeNull();
+		expect(finished.errorCode).toBe("needs_review");
+		expect(await f.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
 	}, 120_000);
 
 	test("Stop before publication keeps all old names and proposals", async () => {
@@ -730,6 +793,42 @@ async function transfer_workspace() {
 }
 
 describe("Move cohort and folder-wide jobs", () => {
+	test("Messages access changes at Move publication and stays fixed through cleanup", async () => {
+		const w = await transfer_workspace();
+		// The raw membership fixture has no lifetime yet. Intake must not create that authority fact here.
+		await w.t.run(async (ctx) => organizations_membership_lifetimes_db_ensure(
+			ctx, (await ctx.db.get("organizations_workspaces_users", w.db.membershipId))!,
+		));
+		const source = await w.folder("/source");
+		for (let index = 0; index < 64; index++) await w.folder(`/source/child-${index}`);
+		const target = await w.folder("/restricted");
+		expect(await w.asUser.mutation(api.files_sharing.restrict_node, {
+			membershipId: w.db.membershipId,
+			nodeId: target,
+		})).toEqual({ _yay: null });
+		await w.finish();
+		const before = await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db));
+		const cohortId = await w.move(source, target, async () => !!(await w.node(source))?.moveCohortId);
+		for (let pass = 0; pass < 500; pass++) {
+			const cohort = (await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
+			if (cohort.publishedAt !== null) break;
+			expect(await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db)),
+				"staging and partial proof leave the old access clock intact").toEqual(before);
+			await w.t.mutation(internal.files_move_cohorts.advance, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				join: false,
+			});
+		}
+		expect((await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!.publishedAt).not.toBeNull();
+		const published = await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db));
+		expect(published.workspaceAuthorityPin?.revision, "publication invalidates old Messages counts atomically").toBe(before.workspaceAuthorityPin!.revision + 1);
+		await w.finish();
+		expect(await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db))).toEqual(published);
+		expect(await w.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
+	}, 120_000);
+
 	test.each(["finish", "stop_before", "stop_after", "first_archive"] as const)(
 		"Save Archive keeps numeric and absent allowances through %s",
 		async (end) => {

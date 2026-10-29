@@ -39,7 +39,8 @@ are `channels_message_write`, `channels_reaction_write`, `channels_write`, and `
 Read-position writes take no rate token. Anchored confirm/discard also take no extra token.
 
 Every send gets a `channelSequence`. Roots and broadcast replies get a `mainSequence`. Replies
-get a per-thread `threadSequence`. A retry uses the author's `clientMessageId` and returns the same
+get a per-thread `threadSequence`. A retry uses the author's pinned workspace membership and
+`clientMessageId` and returns the same
 message without another counter or inbox write. Threads use their root message id in public doors,
 URLs, and document marks. A reply cannot start another thread.
 
@@ -52,17 +53,21 @@ viewer; an unreadable file returns no file id, name, or path. Do not return raw 
 the safe fields.
 
 Authors edit with `expectedRevision`. Edits never notify or create new followers. Removing a mention
-deletes only its mention inbox item, keeping a separate inline-reply item. Authors and managers can
+retires only its mention inbox item, keeping a separate inline-reply item. Authors and managers can
 delete under their channel rules. Deleted messages disappear, except a root with live replies keeps
-a tombstone. Counts and inbox items leave in the delete transaction. Reaction docs drain in bounded
-jobs. A deleted empty root loses its thread immediately; follower cleanup continues in batches when
-there are more than 100 followers.
+a tombstone. Readable inbox items leave in the delete transaction. Previously delivered items for
+denied readers stay as inert locked rows until access returns. Reaction docs drain in bounded jobs.
+A deleted empty root loses its thread immediately; a durable cursor job cleans readable followers.
+Denied followers keep their locked row. Whole-channel deletion may remove those rows.
 
 People mentions are unique user ids, at most 50. Each person must currently read the channel.
 An owner who only reads a private/direct channel cannot be mentioned. Refusals never reveal another
 workspace's profile name. Notifications use `channels_inbox` only. Inline reply authors also receive
 an item when they still have access. Thread authors, reply authors, mentioned people, and inline
 reply targets follow automatically. Unfollowing retains their read position.
+Store `authorWorkspaceMembershipId` and the parallel `mentionWorkspaceMembershipIds` beside user
+ids. Later thread creation and anchor confirmation use these exact pins. Never resolve an old
+author or mention to a replacement membership. These internal pins do not enter message UI results.
 
 File mentions use `fileMentionIds`: at most 50 unique saved file or folder ids. Check current file
 read access before sending. Store neutral positions in Markdown. Shape every reference for the
@@ -79,7 +84,8 @@ the name and link. Never store copied names or paths. Edits may retain a quote w
 
 Routes live under `/w/:organizationName/:workspaceName/messages`. The index restores the last
 readable channel for the current membership. `:channelId` accepts `thread` and `message` search
-params. Missing and hidden ids show the same notice. Browse lists public channels.
+params. Missing or unreadable ids show the same unavailable notice. A personally closed DM remains
+readable; explicit navigation can reopen it through the revision-checked Open door. Browse lists public channels.
 
 Activity lists current mention and inline-reply inbox items. Threads lists followed roots by
 latest activity. Search keeps text, channel, person, attachment and UTC date filters in the URL.
@@ -88,15 +94,20 @@ All three use checked message previews and Open context. Posts and replies open 
 Opening a feed never marks its items read; visible channel and thread content advances the
 existing read positions. Keep Load more after an empty readable page when a cursor remains.
 
-`AppChannelsProvider` owns the followed-channel states, inbox and threads for each membership.
-The main Messages dot and `(N) Bonobo Senate` title count followed channels with unread mentions, even
-while Files is open. Channel row bold follows all/mentions/none. Activity, Threads and the bell
-show unread loaded-item counts, with `+` while older pages remain. These are not history totals.
-The bell reuses Activity and its inbox; Dismiss jobs and invites keeps the old archive writes.
+`AppChannelsProvider` owns one summary query per active membership. Pane components own their pages
+and visible row queries. The main Messages dot and `(N) Bonobo Senate` title count followed channels
+with unread mentions, even while Files is open. Channel row bold follows all/mentions/none. Activity,
+Threads and the bell use stored full-history totals. Totals can lag while durable work runs; the UI
+says so. During access repair, show Updating without a number or dot. Never derive a global total
+from loaded pages. The bell reuses Activity; Dismiss jobs and invites keeps the old archive writes.
 There is no second notification producer or message-item read flag.
 
 UI modules live in `src/components/channels`. The sidebar has starred channels, public/private
-channels, direct conversations, and followed files. Settings and member actions follow the backend
+channels, direct conversations, and followed files, each with its own indexed pages and Show more.
+Member pages set native row and byte read limits before checking each channel's access. Reactive
+end cursors can grow a page beyond its initial size; keep native split metadata and every read item.
+Starred rows use star recency, named rows use A–Z, direct rows use main-message recency, and files use
+accepted comment activity. Archived named channels stay out of these sections. Settings and member actions follow the backend
 permissions. Private and direct headers disclose the owner read rule. Lists have named landmarks
 and message ids. Pane headers and neutral surfaces follow Files. There is no extra Messages bar.
 
@@ -134,8 +145,7 @@ open from Filters; applied filters can be removed. Never invent a search total o
 
 `ChannelsComposer` is shared with Files comments. People chips store neutral Markdown positions
 with ids in `mentionUserIds`. Render names from current profiles; a chip reads its name by id.
-The composer's `mentionTarget` (a channel or a file) turns on `@` and `#`. `mentionItems` holds
-only the `#` channels. The sender's local draft keeps raw
+The composer's `mentionTarget` (a channel or a file) turns on `@` and `#`. The sender's local draft keeps raw
 chip ids so it can restore them. Enter chooses a suggestion before sending; Shift+Enter adds a line.
 Escape closes a suggestion first, then cancels reply/edit. Empty Up edits the latest own message.
 
@@ -155,12 +165,41 @@ only at the root while the text has no `/`. The popup asks `get_mentionable_user
 loaded people only, one page of ids per query. A person who cannot be mentioned stays in the list as
 "Name (can't see this)" with a lock, and a pick does nothing, like Slack shows people outside a
 channel. A row can be picked until its answer arrives; send checks every id again. The `#` popup
-lists channels. Messages and Files Comments use
+pages public and joined private channel prefixes from the server. Messages and Files Comments use
 this same popup and composer.
 
-Current scale gap: Browse channels filters only its loaded pages by name. This does not meet the
-no-scan rule in AGENTS.md. Replace it with paginated indexed search before extending its search
-behavior. A browser result cap does not fix it.
+Browse and channel pickers use normalized whole-name prefix ranges. Public Browse uses the workspace,
+kind, archived and name index. Private search uses exact-membership name projections. Discovery pages
+must carry the current `accessScopeKey`; a stale key returns no rows before reading the name range.
+Mount each page group by that key so old cached names leave immediately after an access change.
+Private search keeps joined matches after read access is lost. Match the last readable name and
+return only a generic No access row; a hidden rename must not change that match. Public Browse
+still requires workspace read access.
+
+A sidebar or feed row whose reader loses access returns only its stable personal row id, immutable
+kind, and `locked` state. Render No access without mounting name, profile, path or message queries.
+Keep its last readable sort and archive fields frozen. Hidden activity, rename, archive and message
+deletion must not move it or change access status. Current access is checked again when opening.
+An authorized reader whose source disappeared gets Unavailable until cleanup. Files use current
+saved placement, including the published Move view, for this check.
+
+Close is personal to one exact membership. It stores the current main sequence and advances a
+visibility revision. Only a later readable main message, broadcast reply, or explicit Open reopens
+a direct conversation. Ordinary thread replies and send retries do not. Explicit Open compares the
+expected revision, so an Open that captured an older revision cannot undo Close. Navigation waits for
+readable state, captures that revision once, and never retries with a newer one. Close also cancels
+pending navigation in the same tab. A different tab that has not loaded any state yet can load the
+post-Close revision and reopen. Keep this rule so direct links work with one click; Close hides a
+conversation and does not revoke access. Restoring the same membership catches up main activity
+after its saved cutoff. A new membership gets fresh personal state.
+Visible and stale-revision Open calls take no write token. A real reopen checks the write rate limit
+after access and revision checks, before changing personal state.
+
+Slack documents [opening or resuming a DM](https://docs.slack.dev/reference/methods/conversations.open/),
+but does not promise an order for this two-tab race. Rocket.Chat's
+[room loader](https://github.com/RocketChat/Rocket.Chat/blob/7a174fd05604dac39af95f76ea9db73db2b3ca5f/apps/meteor/client/views/room/hooks/useOpenRoomById.tsx)
+loads the room and subscription before opening a hidden room. Our one-click rule follows that pattern;
+the revision check adds protection for an Open that already read older state.
 
 Both human and AI composers use `components/file-quotes/file-quote-extension.tsx` and `FileQuote`.
 Private local drafts keep encoded quote markers; human sends replace them with neutral quote
@@ -254,12 +293,36 @@ the post opens. Channel visits do not clear this flag. Channel mention badges co
 
 Thread followers store reply read positions and a following flag. `mark_thread_read` clears a root
 mention and advances the reply cursor. Follower ordering syncs in batches after a reply, using the
-thread's current activity time. The thread doc supplies the exact unread count during that sync.
+thread's current activity time. The thread doc supplies current unread state during that sync.
+New auto-follows made while denied start off the feed; access restoration can reveal them.
+Previously visible denied followers stay locked at their last readable position.
 
-`list_my_threads` and `list_my_inbox` read at most 50 docs per page and re-check current channel
+`list_my_threads` and `list_my_inbox` read at most 50 source docs per page and re-check current channel
 access before returning any item. Inbox unread state comes from channel and thread read positions.
 A broadcast is unread only while both positions are behind it. A post root uses the follower's
-`pendingRootMention`, so visiting the channel cannot clear it. Deleted messages have no inbox item.
+`pendingRootMention`, so visiting the channel cannot clear it. Removing a root mention queues the
+sequence-zero interval even if the reply cursor did not move. Deleted messages have no readable
+inbox item; denied readers retain their locked receipt until access restoration can clean it.
+
+Global totals live in `channels_summaries`, keyed by exact workspace membership. Each member,
+receipt and follower stores its summary id, generation and current boolean contribution. A write
+replaces that contribution in the same transaction; a hard delete subtracts it first. Baseline repair
+zeros totals, advances the generation and pages members, receipts, then followers. Both summary id
+and generation must match before an old contribution can be subtracted. Concurrent writes stamp
+the current generation, so a later baseline visit cannot count them twice.
+
+`server/channels-notifications.ts` owns count writes, Messages authority clocks and durable job enqueue.
+`convex/channels_notifications.ts` owns worker doors and the summary query. Scope access changes bump
+Messages clocks and page actual summaries; private/direct member changes advance the member's own
+authority revision. File content, names and archive changes do not bump these access clocks. Move
+publication requires a complete bounded semantic access proof before advancing a clock. Summary
+readiness checks clock doc ids and revisions plus the stored member authority repair target.
+
+Sidebar and follower fan-out use stable source indexes with coalesced pass revisions. Read changes
+queue exact receipt intervals. Workers recompute current predicates instead of applying old numeric
+deltas. The recovery cron pages one job kind per call with a fixed cutoff and native cursor. It skips
+pending scheduled calls but still continues past that page. Failed calls retry from stored progress.
+Ordinary writes may leave delayed totals; access mismatch hides them until repair finishes.
 
 # Uploads
 
@@ -316,14 +379,17 @@ This copy uses browser memory for the downloaded blob.
 
 # Cleanup and checks
 
-Organization removal and user finalization drain members, reads, followers, and inbox. Keep messages,
+Organization removal and user finalization drain members, reads, followers, inbox, summaries and
+their member jobs. Cleanup must not recreate derived state for a deleted user. Keep messages,
 reactions, and channel uploads as workspace content. Member deletion lowers `memberCount` in
-the same transaction. Workspace purge deletes children before parents through tenant indexes.
+the same transaction. Workspace purge also drains authority clocks, Move proofs and all durable
+Messages jobs before deleting parents through tenant indexes.
 See [Data deletion](../data-deletion/SKILL.md) and [Tenancy](../organizations-tenancy/SKILL.md).
 
-Focused tests live in `convex/channels.test.ts` and `convex/channels_uploads.test.ts`. Run through Vite Plus:
+Focused tests live in `convex/channels.test.ts`, `convex/channels_notifications.test.ts` and
+`convex/channels_uploads.test.ts`. Run through Vite Plus:
 
-`vp env exec pnpm --dir packages/app exec vitest run --project convex convex/channels.test.ts`
+`vp env exec pnpm --dir packages/app exec vitest run --project convex convex/channels.test.ts convex/channels_notifications.test.ts convex/channels_uploads.test.ts`
 
 Files uses the channel door for every saved file. The old comment table, doors, composer, and orphan
 attribute are removed. Feed, search, provider and bell tests cover the shared UI and read state.

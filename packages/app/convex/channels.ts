@@ -7,12 +7,21 @@ import { mutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { access_control_db_authorize_membership, access_control_db_authorize_node } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { channels_LIMITS, channels_normalize_name } from "../shared/channels.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import {
+	channels_notifications_db_ensure_summary,
+	channels_notifications_db_apply,
+	channels_notifications_db_delete_source,
+	channels_notifications_db_advance_member_authority,
+	channels_notifications_db_enqueue_sidebar,
+	channels_notifications_db_enqueue_inbox,
+	channels_notifications_db_get_scope,
+} from "../server/channels-notifications.ts";
 
 // Make Convex reuse the loaded module between calls. No mutable module state is allowed here.
 export const experimental_reuseContext = true;
@@ -150,6 +159,8 @@ export async function channels_db_add_member(
 		.withIndex("by_channel_user", (q) => q.eq("channelId", channel._id).eq("userId", membership.userId))
 		.unique();
 	if (existing?.workspaceMembershipId === membership._id) return existing._id;
+	await channels_notifications_db_ensure_summary(ctx, membership);
+	if (existing) await channels_notifications_db_delete_source(ctx, existing);
 	const fields = {
 		channelId: channel._id,
 		organizationId: channel.organizationId,
@@ -161,20 +172,144 @@ export async function channels_db_add_member(
 		addedBy: args.addedBy,
 		notify: "all" as const,
 		starred: false,
+		section:
+			channel.kind === "file"
+				? ("files" as const)
+				: channel.kind === "direct"
+					? ("direct" as const)
+					: ("channels" as const),
+		hidden: false,
+		sidebarArchived: false,
+		sidebarName: null,
+		sidebarActivityAt: Date.now(),
+		starredAt: null,
+		visibilityRevision: 0,
+		countSummaryId: null,
+		countGeneration: 0,
+		countedMention: false,
 		hiddenAtMainSequence: null,
 		joinedAt: Date.now(),
 	};
-	if (existing) {
-		await ctx.db.replace("channels_members", existing._id, fields);
-		return existing._id;
-	}
 	const memberId = await ctx.db.insert("channels_members", fields);
 	const activity = await ctx.db
 		.query("channels_activity")
 		.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
 		.unique();
-	await ctx.db.patch("channels_activity", activity!._id, { memberCount: activity!.memberCount + 1 });
+	if (!existing) await ctx.db.patch("channels_activity", activity!._id, { memberCount: activity!.memberCount + 1 });
+	if (channel.kind === "private" || channel.kind === "direct")
+		await channels_notifications_db_advance_member_authority(ctx, membership);
+	await channels_db_reconcile_member(ctx, (await ctx.db.get("channels_members", memberId))!);
 	return memberId;
+}
+
+export async function channels_db_reconcile_member(ctx: MutationCtx, member: Doc<"channels_members">) {
+	const membership = await ctx.db.get("organizations_workspaces_users", member.workspaceMembershipId);
+	if (!membership?.active || membership.userId !== member.userId) return;
+	const channel = await ctx.db.get("channels", member.channelId);
+	if (!channel) {
+		await channels_notifications_db_delete_source(ctx, member);
+		return;
+	}
+	const access = await channels_db_get_access(ctx, { membership, channel, userAuth: { id: member.userId } });
+	if (access._nay) {
+		// Hidden changes must not move or remove a locked conversation.
+		await channels_notifications_db_apply(ctx, member, false);
+		return;
+	}
+	const activity = await ctx.db
+		.query("channels_activity")
+		.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+		.unique();
+	const named = channel.kind === "public" || channel.kind === "private";
+	const reopen =
+		channel.kind === "direct" &&
+		member.hidden &&
+		member.hiddenAtMainSequence !== null &&
+		(activity?.lastMainSequence ?? 0) > member.hiddenAtMainSequence;
+	const fields = {
+		sidebarName: named ? channel.name : null,
+		sidebarArchived: named ? channel.archived : false,
+		sidebarActivityAt:
+			channel.kind === "direct"
+				? activity?.lastMainMessageAt || member.joinedAt
+				: channel.kind === "file"
+					? activity?.lastMessageAt || member.joinedAt
+					: member.sidebarActivityAt,
+		...(reopen ? { hidden: false, hiddenAtMainSequence: null, visibilityRevision: member.visibilityRevision + 1 } : {}),
+	};
+	await ctx.db.patch("channels_members", member._id, fields);
+	const current = { ...member, ...fields };
+	const mention =
+		!current.hidden && !current.sidebarArchived && (await channels_db_has_mention(ctx, membership._id, channel));
+	await channels_notifications_db_apply(ctx, current, mention);
+}
+
+export async function channels_db_reconcile_member_by_channel(
+	ctx: MutationCtx,
+	membershipId: Id<"organizations_workspaces_users">,
+	channelId: Id<"channels">,
+) {
+	const member = await ctx.db
+		.query("channels_members")
+		.withIndex("by_workspaceMembership_channel", (q) =>
+			q.eq("workspaceMembershipId", membershipId).eq("channelId", channelId),
+		)
+		.unique();
+	if (member) await channels_db_reconcile_member(ctx, member);
+}
+
+async function channels_db_has_mention(
+	ctx: QueryCtx,
+	membershipId: Id<"organizations_workspaces_users">,
+	channel: Doc<"channels">,
+) {
+	const posts =
+		channel.kind === "file" ||
+		((channel.kind === "public" || channel.kind === "private") && channel.layout === "posts");
+	if (posts)
+		return !!(await ctx.db
+			.query("channels_thread_followers")
+			.withIndex("by_m_channel_pendingRootMention", (q) =>
+				q.eq("workspaceMembershipId", membershipId).eq("channelId", channel._id).eq("pendingRootMention", true),
+			)
+			.first());
+	const read = await ctx.db
+		.query("channels_read_states")
+		.withIndex("by_workspaceMembership_channel", (q) =>
+			q.eq("workspaceMembershipId", membershipId).eq("channelId", channel._id),
+		)
+		.unique();
+	return !!(await ctx.db
+		.query("channels_inbox")
+		.withIndex("by_m_channel_kind_retired_root_main", (q) =>
+			q
+				.eq("workspaceMembershipId", membershipId)
+				.eq("channelId", channel._id)
+				.eq("kind", "mention")
+				.eq("retired", false)
+				.eq("threadRootId", null)
+				.gt("mainSequence", read?.readSequence ?? 0),
+		)
+		.first());
+}
+
+export async function channels_db_refresh_direct_members(ctx: MutationCtx, channel: Doc<"channels">) {
+	const members = await ctx.db
+		.query("channels_members")
+		.withIndex("by_channel_user", (q) => q.eq("channelId", channel._id))
+		.take(channels_LIMITS.directParticipants);
+	for (const member of members) await channels_db_reconcile_member(ctx, member);
+}
+
+async function open_direct_member(ctx: MutationCtx, member: Doc<"channels_members">) {
+	if (member.hidden || member.hiddenAtMainSequence !== null) {
+		await ctx.db.patch("channels_members", member._id, {
+			hidden: false,
+			hiddenAtMainSequence: null,
+			visibilityRevision: member.visibilityRevision + 1,
+		});
+	}
+	await channels_db_reconcile_member(ctx, (await ctx.db.get("channels_members", member._id))!);
 }
 
 export const channels_member_status_validator = v.union(v.literal("active"), v.literal("left"), v.literal("locked"));
@@ -197,8 +332,14 @@ export async function channels_db_get_member_status(
 
 export async function channels_db_mark_read(
 	ctx: MutationCtx,
-	args: { channel: Doc<"channels">; userId: Id<"users">; sequence: number; allowBackwards?: boolean },
+	args: {
+		channel: Doc<"channels">;
+		membership: Doc<"organizations_workspaces_users">;
+		sequence: number;
+		allowBackwards?: boolean;
+	},
 ) {
+	await channels_notifications_db_ensure_summary(ctx, args.membership);
 	const activity = await ctx.db
 		.query("channels_activity")
 		.withIndex("by_channel", (q) => q.eq("channelId", args.channel._id))
@@ -210,7 +351,9 @@ export async function channels_db_mark_read(
 			: activity!.lastMainSequence;
 	const current = await ctx.db
 		.query("channels_read_states")
-		.withIndex("by_channel_user", (q) => q.eq("channelId", args.channel._id).eq("userId", args.userId))
+		.withIndex("by_workspaceMembership_channel", (q) =>
+			q.eq("workspaceMembershipId", args.membership._id).eq("channelId", args.channel._id),
+		)
 		.unique();
 	const bounded = Math.max(0, Math.min(args.sequence, last));
 	const readSequence = args.allowBackwards ? bounded : Math.max(current?.readSequence ?? 0, bounded);
@@ -222,11 +365,23 @@ export async function channels_db_mark_read(
 			channelId: args.channel._id,
 			organizationId: args.channel.organizationId,
 			workspaceId: args.channel.workspaceId,
-			userId: args.userId,
+			userId: args.membership.userId,
+			workspaceMembershipId: args.membership._id,
 			readSequence,
 			updatedAt: Date.now(),
 		});
 	}
+	await channels_notifications_db_enqueue_inbox(ctx, {
+		workspaceMembershipId: args.membership._id,
+		channelId: args.channel._id,
+		organizationId: args.channel.organizationId,
+		workspaceId: args.channel.workspaceId,
+		kind: "main",
+		rootMessageId: null,
+		lowerExclusive: Math.min(current?.readSequence ?? 0, readSequence),
+		upperInclusive: Math.max(current?.readSequence ?? 0, readSequence),
+	});
+	await channels_db_reconcile_member_by_channel(ctx, args.membership._id, args.channel._id);
 }
 
 export const create_channel = mutation({
@@ -283,19 +438,21 @@ export const create_channel = mutation({
 			createdBy: userAuth.id,
 			createdAt: Date.now(),
 			archivedAt: null,
+			archived: false,
 		});
 		await ctx.db.insert("channels_activity", {
 			channelId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			lastMainSequence: 0,
+			lastMainMessageAt: 0,
 			lastChannelSequence: 0,
 			lastMessageAt: 0,
 			memberCount: 0,
 		});
 		const channel = (await ctx.db.get("channels", channelId))!;
 		await channels_db_add_member(ctx, { channel, membership, level: "manager", addedBy: userAuth.id });
-		await channels_db_mark_read(ctx, { channel, userId: userAuth.id, sequence: 0 });
+		await channels_db_mark_read(ctx, { channel, membership, sequence: 0 });
 		return Result({ _yay: { channelId } });
 	},
 });
@@ -353,7 +510,7 @@ export const open_direct_channel = mutation({
 				.query("channels_members")
 				.withIndex("by_channel_user", (q) => q.eq("channelId", existing._id).eq("userId", userAuth.id))
 				.unique();
-			await ctx.db.patch("channels_members", own!._id, { hiddenAtMainSequence: null });
+			await open_direct_member(ctx, own!);
 			return Result({ _yay: { channelId: existing._id } });
 		}
 		const channelId = await ctx.db.insert("channels", {
@@ -370,6 +527,7 @@ export const open_direct_channel = mutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			lastMainSequence: 0,
+			lastMainMessageAt: 0,
 			lastChannelSequence: 0,
 			lastMessageAt: 0,
 			memberCount: 0,
@@ -377,9 +535,36 @@ export const open_direct_channel = mutation({
 		const channel = (await ctx.db.get("channels", channelId))!;
 		for (const participant of memberships) {
 			await channels_db_add_member(ctx, { channel, membership: participant, level: "member", addedBy: userAuth.id });
-			await channels_db_mark_read(ctx, { channel, userId: participant.userId, sequence: 0 });
+			await channels_db_mark_read(ctx, { channel, membership: participant, sequence: 0 });
 		}
 		return Result({ _yay: { channelId } });
+	},
+});
+
+export const open_direct_channel_by_id = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		channelId: v.id("channels"),
+		expectedVisibilityRevision: v.number(),
+	},
+	returns: v_result({ _yay: v.object({ opened: v.boolean() }) }),
+	handler: async (ctx, args) => {
+		const context = await get_context(ctx, args.membershipId);
+		if (context._nay) return context;
+		const channel = await ctx.db.get("channels", args.channelId);
+		if (!channel || channel.kind !== "direct") return Result({ _nay: { message: "Not found" } });
+		const access = await channels_db_get_access(ctx, { ...context._yay, channel });
+		if (access._nay) return access;
+		const member = access._yay.member;
+		if (!member) return Result({ _nay: { message: "Not found" } });
+		// Visible and stale choices are reads. Charge only a real reopen.
+		if (member.visibilityRevision !== args.expectedVisibilityRevision)
+			return Result({ _yay: { opened: false } });
+		if (!member.hidden && member.hiddenAtMainSequence === null) return Result({ _yay: { opened: true } });
+		const limit = await rate_limiter_limit_by_key(ctx, { name: "channels_write", key: context._yay.userAuth.id });
+		if (limit) return Result({ _nay: { message: limit.message } });
+		await open_direct_member(ctx, member);
+		return Result({ _yay: { opened: true } });
 	},
 });
 
@@ -424,7 +609,18 @@ export const get_channel_state = query({
 		v.null(),
 		v.object({
 			activity: doc(app_convex_schema, "channels_activity"),
-			member: v.union(doc(app_convex_schema, "channels_members"), v.null()),
+			member: v.union(
+				v.object({
+					_id: v.id("channels_members"),
+					userId: v.id("users"),
+					level: v.union(v.literal("member"), v.literal("manager")),
+					notify: v.union(v.literal("all"), v.literal("mentions"), v.literal("none")),
+					starred: v.boolean(),
+					hidden: v.boolean(),
+					visibilityRevision: v.number(),
+				}),
+				v.null(),
+			),
 			readSequence: v.number(),
 			unread: v.boolean(),
 			mentionCount: v.number(),
@@ -444,10 +640,12 @@ export const get_channel_state = query({
 			.query("channels_activity")
 			.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
 			.unique())!;
-		const userId = context._yay.userAuth.id;
+		const membershipId = context._yay.membership._id;
 		const read = await ctx.db
 			.query("channels_read_states")
-			.withIndex("by_channel_user", (q) => q.eq("channelId", channel._id).eq("userId", userId))
+			.withIndex("by_workspaceMembership_channel", (q) =>
+				q.eq("workspaceMembershipId", membershipId).eq("channelId", channel._id),
+			)
 			.unique();
 		const readSequence = read?.readSequence ?? 0;
 		const posts =
@@ -456,24 +654,35 @@ export const get_channel_state = query({
 		const mentions = posts
 			? await ctx.db
 					.query("channels_thread_followers")
-					.withIndex("by_user_channel_pendingRootMention", (q) =>
-						q.eq("userId", userId).eq("channelId", channel._id).eq("pendingRootMention", true),
+					.withIndex("by_m_channel_pendingRootMention", (q) =>
+						q.eq("workspaceMembershipId", membershipId).eq("channelId", channel._id).eq("pendingRootMention", true),
 					)
 					.take(100)
 			: await ctx.db
 					.query("channels_inbox")
-					.withIndex("by_recipient_channel_kind_threadRoot_mainSequence", (q) =>
+					.withIndex("by_m_channel_kind_retired_root_main", (q) =>
 						q
-							.eq("recipientUserId", userId)
+							.eq("workspaceMembershipId", membershipId)
 							.eq("channelId", channel._id)
 							.eq("kind", "mention")
+							.eq("retired", false)
 							.eq("threadRootId", null)
 							.gt("mainSequence", readSequence),
 					)
 					.take(100);
 		return {
 			activity,
-			member: access._yay.member,
+			member: access._yay.member
+				? {
+						_id: access._yay.member._id,
+						userId: access._yay.member.userId,
+						level: access._yay.member.level,
+						notify: access._yay.member.notify,
+						starred: access._yay.member.starred,
+						hidden: access._yay.member.hidden,
+						visibilityRevision: access._yay.member.visibilityRevision,
+					}
+				: null,
 			readSequence,
 			unread:
 				access._yay.member !== null &&
@@ -483,50 +692,92 @@ export const get_channel_state = query({
 	},
 });
 
+const channel_kind_validator = v.union(
+	v.literal("public"),
+	v.literal("private"),
+	v.literal("direct"),
+	v.literal("file"),
+);
+const member_channel_validator = v.union(
+	v.object({
+		state: v.literal("readable"),
+		memberId: v.id("channels_members"),
+		channel: doc(app_convex_schema, "channels"),
+	}),
+	v.object({ state: v.literal("locked"), memberId: v.id("channels_members"), kind: channel_kind_validator }),
+	v.object({ state: v.literal("unavailable"), memberId: v.id("channels_members"), kind: channel_kind_validator }),
+);
+
+async function shape_member_channel(
+	ctx: QueryCtx,
+	membership: Doc<"organizations_workspaces_users">,
+	member: Doc<"channels_members">,
+) {
+	const channel = await ctx.db.get("channels", member.channelId);
+	if (!channel) return { state: "unavailable" as const, memberId: member._id, kind: member.channelKind };
+	const access = await channels_db_get_access(ctx, { membership, userAuth: { id: membership.userId }, channel });
+	if (access._nay) return { state: "locked" as const, memberId: member._id, kind: member.channelKind };
+	return { state: "readable" as const, memberId: member._id, channel };
+}
+
 export const list_my_channels = query({
-	args: { membershipId: v.id("organizations_workspaces_users"), paginationOpts: paginationOptsValidator },
-	returns: paginationResultValidator(doc(app_convex_schema, "channels")),
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		section: v.union(v.literal("starred"), v.literal("channels"), v.literal("direct"), v.literal("files")),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(member_channel_validator),
 	handler: async (ctx, args) => {
 		const context = await get_context(ctx, args.membershipId);
 		if (context._nay) {
 			if (context._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
 			return { page: [], isDone: true, continueCursor: "" };
 		}
-		const { membership, userAuth } = context._yay;
-		const members = await ctx.db
-			.query("channels_members")
-			.withIndex("by_organization_workspace_user_channel", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("userId", userAuth.id),
-			)
-			.paginate({
-				...args.paginationOpts,
-				numItems: Math.min(channels_LIMITS.page, args.paginationOpts.numItems),
-				maximumRowsRead: channels_LIMITS.page,
-			});
-		const page: Doc<"channels">[] = [];
-		for (const member of members.page) {
-			const channel = await ctx.db.get("channels", member.channelId);
-			if (!channel) continue;
-			const access = await channels_db_get_access(ctx, { membership, userAuth, channel });
-			if (
-				access._nay ||
-				!access._yay.member ||
-				((channel.kind === "public" || channel.kind === "private") && channel.archivedAt !== null)
-			)
-				continue;
-			if (channel.kind === "direct" && member.hiddenAtMainSequence !== null) {
-				const activity = (await ctx.db
-					.query("channels_activity")
-					.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
-					.unique())!;
-				if (activity.lastMainSequence <= member.hiddenAtMainSequence) continue;
-			}
-			page.push(channel);
-		}
-		return { ...members, page };
+		const { membership } = context._yay;
+		const members =
+			args.section === "starred"
+				? ctx.db
+						.query("channels_members")
+						.withIndex("by_m_star_hidden_archived_starredAt", (q) =>
+							q
+								.eq("workspaceMembershipId", membership._id)
+								.eq("starred", true)
+								.eq("hidden", false)
+								.eq("sidebarArchived", false),
+						)
+						.order("desc")
+				: args.section === "channels"
+					? ctx.db
+							.query("channels_members")
+							.withIndex("by_m_star_hidden_archived_section_name", (q) =>
+								q
+									.eq("workspaceMembershipId", membership._id)
+									.eq("starred", false)
+									.eq("hidden", false)
+									.eq("sidebarArchived", false)
+									.eq("section", "channels"),
+							)
+					: ctx.db
+							.query("channels_members")
+							.withIndex("by_m_star_hidden_archived_section_activity", (q) =>
+								q
+									.eq("workspaceMembershipId", membership._id)
+									.eq("starred", false)
+									.eq("hidden", false)
+									.eq("sidebarArchived", false)
+									.eq("section", args.section === "direct" ? "direct" : "files"),
+							)
+							.order("desc");
+		const page = await members.paginate({
+			...args.paginationOpts,
+			numItems: Math.min(channels_LIMITS.page, args.paginationOpts.numItems),
+			maximumRowsRead: channels_LIMITS.page,
+			maximumBytesRead: channels_LIMITS.pageBytes,
+		});
+		return {
+			...page,
+			page: await Promise.all(page.page.map((member) => shape_member_channel(ctx, membership, member))),
+		};
 	},
 });
 
@@ -534,6 +785,8 @@ export const browse_public_channels = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		archived: v.boolean(),
+		prefix: v.string(),
+		accessScopeKey: v.string(),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(doc(app_convex_schema, "channels")),
@@ -544,6 +797,11 @@ export const browse_public_channels = query({
 			return { page: [], isDone: true, continueCursor: "" };
 		}
 		const { membership, userAuth } = context._yay;
+		const scope = await channels_notifications_db_get_scope(ctx, membership);
+		if (scope.accessScopeKey !== args.accessScopeKey) return { page: [], isDone: true, continueCursor: "" };
+		const prefix = args.prefix.trim().toLowerCase();
+		if (prefix && channels_normalize_name(prefix)._nay) return { page: [], isDone: true, continueCursor: "" };
+		const upperBound = string_prefix_upper_bound(prefix);
 		const read = await access_control_db_authorize_membership(ctx, {
 			membership,
 			userAuth,
@@ -552,18 +810,102 @@ export const browse_public_channels = query({
 		if (read._nay) return { page: [], isDone: true, continueCursor: "" };
 		return ctx.db
 			.query("channels")
-			.withIndex("by_organization_workspace_kind_archivedAt_name", (q) => {
+			.withIndex("by_organization_workspace_kind_archived_name", (q) => {
 				const scoped = q
 					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
-					.eq("kind", "public");
-				return args.archived ? scoped.gt("archivedAt", null) : scoped.eq("archivedAt", null);
+					.eq("kind", "public")
+					.eq("archived", args.archived);
+				if (!prefix) return scoped;
+				return upperBound === null ? scoped.gte("name", prefix) : scoped.gte("name", prefix).lt("name", upperBound);
 			})
 			.paginate({
 				...args.paginationOpts,
 				numItems: Math.min(channels_LIMITS.page, args.paginationOpts.numItems),
 				maximumRowsRead: channels_LIMITS.page,
 			});
+	},
+});
+
+export const search_my_private_channels = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		accessScopeKey: v.string(),
+		archived: v.boolean(),
+		prefix: v.string(),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(member_channel_validator),
+	handler: async (ctx, args) => {
+		const context = await get_context(ctx, args.membershipId);
+		if (context._nay) {
+			if (context._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
+			return { page: [], isDone: true, continueCursor: "" };
+		}
+		const { membership } = context._yay;
+		const scope = await channels_notifications_db_get_scope(ctx, membership);
+		if (scope.accessScopeKey !== args.accessScopeKey) return { page: [], isDone: true, continueCursor: "" };
+		const prefix = args.prefix.trim().toLowerCase();
+		if (prefix && channels_normalize_name(prefix)._nay) return { page: [], isDone: true, continueCursor: "" };
+		const upperBound = string_prefix_upper_bound(prefix);
+		// Frozen names keep denied matches; the row shaper checks current access.
+		const page = await ctx.db
+			.query("channels_members")
+			.withIndex("by_m_kind_archived_name", (q) => {
+				const scoped = q
+					.eq("workspaceMembershipId", membership._id)
+					.eq("channelKind", "private")
+					.eq("sidebarArchived", args.archived);
+				if (!prefix) return scoped;
+				return upperBound === null
+					? scoped.gte("sidebarName", prefix)
+					: scoped.gte("sidebarName", prefix).lt("sidebarName", upperBound);
+			})
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(channels_LIMITS.page, args.paginationOpts.numItems),
+				maximumRowsRead: channels_LIMITS.page,
+				maximumBytesRead: channels_LIMITS.pageBytes,
+			});
+		return {
+			...page,
+			page: await Promise.all(page.page.map((member) => shape_member_channel(ctx, membership, member))),
+		};
+	},
+});
+
+export const list_my_channel_kind = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		accessScopeKey: v.string(),
+		kind: v.union(v.literal("direct"), v.literal("file")),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(member_channel_validator),
+	handler: async (ctx, args) => {
+		const context = await get_context(ctx, args.membershipId);
+		if (context._nay) {
+			if (context._nay.message === "Unauthenticated") throw convex_error({ message: "Unauthenticated" });
+			return { page: [], isDone: true, continueCursor: "" };
+		}
+		const { membership } = context._yay;
+		const scope = await channels_notifications_db_get_scope(ctx, membership);
+		if (scope.accessScopeKey !== args.accessScopeKey) return { page: [], isDone: true, continueCursor: "" };
+		const page = await ctx.db
+			.query("channels_members")
+			.withIndex("by_workspaceMembership_channelKind_channel", (q) =>
+				q.eq("workspaceMembershipId", membership._id).eq("channelKind", args.kind),
+			)
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(channels_LIMITS.page, args.paginationOpts.numItems),
+				maximumRowsRead: channels_LIMITS.page,
+				maximumBytesRead: channels_LIMITS.pageBytes,
+			});
+		return {
+			...page,
+			page: await Promise.all(page.page.map((member) => shape_member_channel(ctx, membership, member))),
+		};
 	},
 });
 
@@ -580,7 +922,7 @@ export const mark_read = mutation({
 		if ((channel.kind === "private" || channel.kind === "direct") && !access._yay.member) return Result({ _yay: null });
 		if (!Number.isSafeInteger(args.sequence) || args.sequence < 0)
 			return Result({ _nay: { message: "Invalid read position" } });
-		await channels_db_mark_read(ctx, { channel, userId: context._yay.userAuth.id, sequence: args.sequence });
+		await channels_db_mark_read(ctx, { channel, membership: context._yay.membership, sequence: args.sequence });
 		return Result({ _yay: null });
 	},
 });
@@ -591,11 +933,11 @@ export const join_channel = mutation({
 	handler: async (ctx, args) => {
 		const context = await get_write_context(ctx, args.membershipId, args.channelId);
 		if (context._nay) return context;
-		const { channel, membership, userAuth } = context._yay;
+		const { channel, membership } = context._yay;
 		if (channel.kind !== "public" && channel.kind !== "file")
 			return Result({ _nay: { message: "This channel needs an invitation" } });
 		await channels_db_add_member(ctx, { channel, membership, level: "member", addedBy: null });
-		await channels_db_mark_read(ctx, { channel, userId: userAuth.id, sequence: 0 });
+		await channels_db_mark_read(ctx, { channel, membership, sequence: 0 });
 		return Result({ _yay: null });
 	},
 });
@@ -627,6 +969,7 @@ export async function channels_db_ensure_file_channel(
 		organizationId: args.membership.organizationId,
 		workspaceId: args.membership.workspaceId,
 		lastMainSequence: 0,
+		lastMainMessageAt: 0,
 		lastChannelSequence: 0,
 		lastMessageAt: 0,
 		memberCount: 0,
@@ -690,6 +1033,7 @@ export const rename_channel = mutation({
 				return Result({ _nay: { message: "Channel name is already used" } });
 		}
 		await ctx.db.patch("channels", channel._id, { name: name._yay });
+		await channels_notifications_db_enqueue_sidebar(ctx, channel);
 		return Result({ _yay: null });
 	},
 });
@@ -736,7 +1080,8 @@ export const archive_channel = mutation({
 		const { channel, access } = context._yay;
 		if (!access.canManage || (channel.kind !== "public" && channel.kind !== "private"))
 			return Result({ _nay: { message: "Permission denied" } });
-		await ctx.db.patch("channels", channel._id, { archivedAt: Date.now() });
+		await ctx.db.patch("channels", channel._id, { archivedAt: Date.now(), archived: true });
+		await channels_notifications_db_enqueue_sidebar(ctx, channel);
 		return Result({ _yay: null });
 	},
 });
@@ -750,13 +1095,20 @@ export const unarchive_channel = mutation({
 		const { channel, access } = context._yay;
 		if (!access.canManage || (channel.kind !== "public" && channel.kind !== "private"))
 			return Result({ _nay: { message: "Permission denied" } });
-		await ctx.db.patch("channels", channel._id, { archivedAt: null });
+		await ctx.db.patch("channels", channel._id, { archivedAt: null, archived: false });
+		await channels_notifications_db_enqueue_sidebar(ctx, channel);
 		return Result({ _yay: null });
 	},
 });
 
-async function delete_member(ctx: MutationCtx, member: Doc<"channels_members">) {
-	await ctx.db.delete("channels_members", member._id);
+async function delete_member(ctx: MutationCtx, member: Doc<"channels_members">, repairAccess = true) {
+	await channels_notifications_db_delete_source(ctx, member);
+	if (repairAccess && (member.channelKind === "private" || member.channelKind === "direct")) {
+		const membership = await ctx.db.get("organizations_workspaces_users", member.workspaceMembershipId);
+		const user = membership?.active ? await ctx.db.get("users", membership.userId) : null;
+		if (membership?.active && user && user.deletedAt == null)
+			await channels_notifications_db_advance_member_authority(ctx, membership);
+	}
 	const activity = await ctx.db
 		.query("channels_activity")
 		.withIndex("by_channel", (q) => q.eq("channelId", member.channelId))
@@ -789,7 +1141,12 @@ export const hide_direct_channel = mutation({
 			.query("channels_activity")
 			.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
 			.unique())!;
-		await ctx.db.patch("channels_members", access.member._id, { hiddenAtMainSequence: activity.lastMainSequence });
+		await ctx.db.patch("channels_members", access.member._id, {
+			hidden: true,
+			hiddenAtMainSequence: activity.lastMainSequence,
+			visibilityRevision: access.member.visibilityRevision + 1,
+		});
+		await channels_db_reconcile_member(ctx, (await ctx.db.get("channels_members", access.member._id))!);
 		return Result({ _yay: null });
 	},
 });
@@ -909,7 +1266,12 @@ export const set_channel_starred = mutation({
 		const context = await get_write_context(ctx, args.membershipId, args.channelId);
 		if (context._nay) return context;
 		if (!context._yay.access.member) return Result({ _nay: { message: "Join the channel first" } });
-		await ctx.db.patch("channels_members", context._yay.access.member._id, { starred: args.starred });
+		const member = context._yay.access.member;
+		if (member.starred !== args.starred)
+			await ctx.db.patch("channels_members", member._id, {
+				starred: args.starred,
+				starredAt: args.starred ? Date.now() : null,
+			});
 		return Result({ _yay: null });
 	},
 });
@@ -921,7 +1283,14 @@ export const list_channel_members = query({
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(
-		v.object({ member: doc(app_convex_schema, "channels_members"), status: channels_member_status_validator }),
+		v.object({
+			member: v.object({
+				_id: v.id("channels_members"),
+				userId: v.id("users"),
+				level: v.union(v.literal("member"), v.literal("manager")),
+			}),
+			status: channels_member_status_validator,
+		}),
 	),
 	handler: async (ctx, args) => {
 		const context = await get_context(ctx, args.membershipId);
@@ -943,7 +1312,10 @@ export const list_channel_members = query({
 			});
 		const page = [];
 		for (const member of members.page)
-			page.push({ member, status: await channels_db_get_member_status(ctx, { channel, member }) });
+			page.push({
+				member: { _id: member._id, userId: member.userId, level: member.level },
+				status: await channels_db_get_member_status(ctx, { channel, member }),
+			});
 		return { ...members, page };
 	},
 });
@@ -968,7 +1340,7 @@ export const mark_unread = mutation({
 		if (sequence === null) return Result({ _nay: { message: "Open this thread to change its read position" } });
 		await channels_db_mark_read(ctx, {
 			channel,
-			userId: context._yay.userAuth.id,
+			membership: context._yay.membership,
 			sequence: sequence - 1,
 			allowBackwards: true,
 		});
@@ -994,7 +1366,7 @@ export async function channels_db_drain_member_batch(
 			: ctx.db.query("channels_members").withIndex("by_user", (q) => q.eq("userId", args.userId))
 	).take(100);
 	if (members.length) {
-		for (const member of members) await delete_member(ctx, member);
+		for (const member of members) await delete_member(ctx, member, false);
 		return { drainedAny: true };
 	}
 	const reads = await (
@@ -1020,7 +1392,7 @@ export async function channels_db_drain_member_batch(
 			: ctx.db.query("channels_thread_followers").withIndex("by_user", (q) => q.eq("userId", args.userId))
 	).take(100);
 	if (followers.length) {
-		await Promise.all(followers.map((follower) => ctx.db.delete("channels_thread_followers", follower._id)));
+		for (const follower of followers) await channels_notifications_db_delete_source(ctx, follower);
 		return { drainedAny: true };
 	}
 	const inbox = await (
@@ -1032,8 +1404,29 @@ export async function channels_db_drain_member_batch(
 					)
 			: ctx.db.query("channels_inbox").withIndex("by_recipient", (q) => q.eq("recipientUserId", args.userId))
 	).take(100);
-	await Promise.all(inbox.map((item) => ctx.db.delete("channels_inbox", item._id)));
-	return { drainedAny: inbox.length > 0 };
+	for (const item of inbox) await channels_notifications_db_delete_source(ctx, item);
+	if (inbox.length) return { drainedAny: true };
+	const summaries = await (
+		args.organizationId
+			? ctx.db
+					.query("channels_summaries")
+					.withIndex("by_organization_user", (q) =>
+						q.eq("organizationId", args.organizationId!).eq("userId", args.userId),
+					)
+			: ctx.db.query("channels_summaries").withIndex("by_user", (q) => q.eq("userId", args.userId))
+	).take(100);
+	for (const summary of summaries) {
+		for (const table of ["channels_inbox_jobs", "channels_summary_jobs"] as const) {
+			const jobs = await ctx.db
+				.query(table)
+				.withIndex("by_workspaceMembership", (q) => q.eq("workspaceMembershipId", summary.workspaceMembershipId))
+				.take(100);
+			for (const job of jobs) await ctx.db.delete(table, job._id);
+			if (jobs.length) return { drainedAny: true };
+		}
+		await ctx.db.delete("channels_summaries", summary._id);
+	}
+	return { drainedAny: summaries.length > 0 };
 }
 
 /**
@@ -1053,6 +1446,13 @@ export async function channels_db_purge_workspace_batch(
 		"channels_threads",
 		"channels_messages",
 		"channels_read_states",
+		"channels_sidebar_jobs",
+		"channels_thread_jobs",
+		"channels_inbox_jobs",
+		"channels_summary_jobs",
+		"channels_authority_jobs",
+		"channels_move_authority_proofs",
+		"channels_authority_versions",
 	] as const) {
 		const rows = await ctx.db
 			.query(table)
@@ -1061,7 +1461,10 @@ export async function channels_db_purge_workspace_batch(
 			)
 			.take(batchSize);
 		if (rows.length) {
-			await Promise.all(rows.map((row) => ctx.db.delete(table, row._id)));
+			for (const row of rows) {
+				if ("countedUnread" in row) await channels_notifications_db_delete_source(ctx, row);
+				else await ctx.db.delete(table, row._id);
+			}
 			return rows.length;
 		}
 	}
@@ -1072,8 +1475,18 @@ export async function channels_db_purge_workspace_batch(
 		)
 		.take(batchSize);
 	if (members.length) {
-		await Promise.all(members.map((member) => ctx.db.delete("channels_members", member._id)));
+		for (const member of members) await channels_notifications_db_delete_source(ctx, member);
 		return members.length;
+	}
+	const summaries = await ctx.db
+		.query("channels_summaries")
+		.withIndex("by_organization_workspace_membership", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (summaries.length) {
+		for (const summary of summaries) await ctx.db.delete("channels_summaries", summary._id);
+		return summaries.length;
 	}
 	const activity = await ctx.db
 		.query("channels_activity")
