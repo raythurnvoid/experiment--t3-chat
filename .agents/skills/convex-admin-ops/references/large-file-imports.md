@@ -28,7 +28,7 @@ Measure a small pilot with complete HTTP durations and readbacks before changing
 
 ## Verify the right representation
 
-- Inspect `truncated` and per-file errors from `read-many`. Current limits are in the public API skill. Use full downloads when that door cannot return all bytes.
+- Read each file through `files/read` and follow `X-File-Next-Cursor` until absent. Compare the complete byte count with `X-File-Size`. Current limits are in the public API skill.
 - Compare stored MIME with the app's canonical mapping. `text/plain` and `text/markdown` gain `;charset=utf-8`. Do not strip every MIME parameter or exempt a failing file. A plain-text upload can still follow the binary upload contract when processing was skipped.
 - Text content snapshot assets do not supply the upload ETag used for binary checks. Do not infer a fresh text hash from asset size or a missing checksum field.
 - State the exact strength of a check: full remote SHA-256, source hash plus upload MD5/remote ETag, database asset continuity, and metadata readback prove different things. A few full downloads do not prove that every binary was downloaded again.

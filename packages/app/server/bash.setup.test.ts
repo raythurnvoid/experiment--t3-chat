@@ -116,10 +116,10 @@ beforeEach(async () => {
 				const endInclusive = Math.min(Number(rangeMatch[2]), bytes.byteLength - 1);
 				return new Response(bytes.slice(start, endInclusive + 1), {
 					status: 206,
-					headers: { "Content-Range": `bytes ${start}-${endInclusive}/${bytes.byteLength}` },
+					headers: { "Content-Range": `bytes ${start}-${endInclusive}/${bytes.byteLength}`, ETag: '"saved-file"' },
 				});
 			}
-			return new Response(bytes.slice(0), { status: 200 });
+			return new Response(bytes.slice(0), { status: 200, headers: { ETag: '"saved-file"' } });
 		}),
 	);
 });

@@ -470,6 +470,8 @@ Rules:
 - The tool only works while the tab that sent the message is open. The agent sees a timeout error when the member closed it.
 - There is no approval step. A page tool runs as soon as the agent calls it, so a plugin should only declare tools that are safe to run without asking, like writing a draft. When a call times out, the page may still finish it later, so a retried call can run twice.
 
+The SDK's `fetchRaw` returns the HTTP status, headers and unread response body. Use it for `files/read`, following `X-File-Next-Cursor` until absent. Decode text with one streaming UTF-8 decoder across all pages. `fetchJson` accepts only JSON routes. Both methods share the same token refresh and one 401 retry.
+
 # Plugin file views
 
 A manifest may declare `fileViews` — frames the host offers after the built-in options in the searchable View dropdown when a member opens a matching file. They reuse the page machinery: same sandboxed iframe, same asset route, same `plugins_ui_sessions` table, same bridge protocol through the shared `PluginsUiFrame` component (`packages/app/src/components/plugins-ui-frame.tsx`). Generated HTML Preview uses a separate runtime with no plugin session or auth bridge.

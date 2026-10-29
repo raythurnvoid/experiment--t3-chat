@@ -4,7 +4,6 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 import {
 	create_bash_runner,
-	get_seeded_node_id,
 	test_db_files_mount,
 	test_r2_objects,
 } from "../server/bash.setup.test.ts";
@@ -47,12 +46,10 @@ describe("saved-only public reads", () => {
 					headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
 					body: JSON.stringify(body),
 				});
-			const read_bytes = (path: string, revision: string | null = null) =>
-				request("read-bytes", { path, offset: 0, length: 100, revision });
-			const nodeId = await get_seeded_node_id(runner, "/saved.txt");
+			const read = (path: string) => request("read", { path });
 			const revisions = new Map<string, string>();
 			for (const path of ["/saved.txt", "/saved.bin"]) {
-				const response = await read_bytes(path);
+				const response = await read(path);
 				expect(response.status).toBe(200);
 				const revision = response.headers.get("X-File-Revision");
 				expect(revision).toMatch(/^[0-9a-f]{64}$/u);
@@ -81,22 +78,13 @@ describe("saved-only public reads", () => {
 			}
 			const single = await request("read", { path: "/saved.txt" });
 			expect(single.status, "pending changes must not hide the saved text path").toBe(200);
-			expect(await single.json(), "grants must read saved text").toEqual({
-				path: "/saved.txt",
-				target: { kind: "saved", id: nodeId },
-				content: text,
-			});
-			const many = await request("read-many", { paths: ["/saved.txt", "/missing.txt"] });
-			expect(await many.json()).toEqual({
-				files: [{ path: "/saved.txt", target: { kind: "saved", id: nodeId }, content: text }],
-				errors: [{ path: "/missing.txt", message: "File not found or exceeds the read limit." }],
-				truncated: false,
-			});
+			expect(await single.text(), "grants must read saved text").toBe(text);
+			expect((await read("/missing.txt")).status).toBe(404);
 			for (const [path, content, contentType] of [
 				["/saved.txt", text, "text/plain;charset=utf-8"],
 				["/saved.bin", binary, "application/octet-stream"],
 			]) {
-				const response = await read_bytes(path, revisions.get(path)!);
+				const response = await read(path);
 				expect(response.status, "pending changes must not alter the saved byte revision").toBe(200);
 				expect(await response.text(), "grants must read saved bytes").toBe(content);
 				expect(response.headers.get("X-File-Content-Type"), "grants must read the saved type").toBe(contentType);
@@ -104,14 +92,13 @@ describe("saved-only public reads", () => {
 			}
 			for (const path of ["/draft.txt", "/draft.png", "/moved.txt", "/moved.bin"]) {
 				expect((await request("read", { path })).status).toBe(404);
-				expect((await read_bytes(path)).status).toBe(404);
 			}
 		},
 	);
 });
 
 describe("public_api_http_read_file", () => {
-	test("returns a whole saved file over 128 KB, while read-many keeps its item cap", async () => {
+	test("returns a saved file over 128 KB with a text-only grant", async () => {
 		const text = "a saved line of text\n".repeat(10_000);
 		const runner = await create_bash_runner({
 			extraFiles: [{ path: "/big.txt", content: text, contentType: "text/plain;charset=utf-8" }],
@@ -137,13 +124,7 @@ describe("public_api_http_read_file", () => {
 
 		const single = await request("read", { path: "/big.txt" });
 		expect(single.status, "a file under the text limit must be readable").toBe(200);
-		expect(((await single.json()) as { content: string }).content).toBe(text);
-
-		const many = await request("read-many", { paths: ["/big.txt"] });
-		expect(await many.json()).toEqual({
-			files: [],
-			errors: [{ path: "/big.txt", message: "File not found or exceeds the read limit." }],
-			truncated: false,
-		});
+		expect(await single.text()).toBe(text);
+		expect(single.headers.get("X-File-Next-Cursor")).toBeNull();
 	});
 });

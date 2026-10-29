@@ -345,6 +345,8 @@ so a later insert uses the new selected content without losing earlier writes.
 
 The two toggles answer a permission refusal with different words, and that is not an oversight: the mutation asks the permission question itself and bubbles the shared helper's `Permission denied`, while the action only learns that its preflight query said no and answers `Not found` for every reason, exactly like `restore_snapshot_r2`.
 
+Public `files/read` serves the selected saved version asset through byte pages. It does not reconstruct Yjs text or wait for materialization. Recent editor changes may be newer than these bytes. Neither `stat`'s `status: "ready"` nor the read headers report that gap today. An explicit freshness signal is a follow-up in the [public API spec](../public-api/SKILL.md#bounded-file-reads).
+
 ## Where the mode comes from
 
 Creation, Properties, and whole-file replacement choose the mode:

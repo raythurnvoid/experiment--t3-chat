@@ -617,12 +617,13 @@ Check these steps separately. A successful code result alone does not prove Save
 After the folder check with Bash, run this through `execute_code` in Agent mode. Use the saved fixture's actual canonical path. The gateway supplies authorization; do not read or pass a token.
 
 ```js
-const response = await fetch(`${process.env.T3_APP_ORIGIN}/api/v1/files/read-bytes`, {
+const response = await fetch(`${process.env.T3_APP_ORIGIN}/api/v1/files/read`, {
 	method: "POST",
 	headers: { "Content-Type": "application/json", "X-Bonobo-Workspace": "current" },
-	body: JSON.stringify({ path: "/qa-binary-RUN/nested/opaque", offset: 0, length: 32, revision: null }),
+	body: JSON.stringify({ path: "/qa-binary-RUN/nested/opaque" }),
 });
 if (!response.ok) throw new Error(`File read failed: ${response.status}`);
+if (response.headers.has("X-File-Next-Cursor")) throw new Error("Expected a complete small fixture");
 const bytes = new Uint8Array(await response.arrayBuffer());
 const expected = [0, 255, 128, 65, 10];
 if (bytes.length !== expected.length || !bytes.every((byte, index) => byte === expected[index])) {
@@ -634,7 +635,7 @@ return { checkedBytes: bytes.length, matched: true };
 
 Download the new proposal and require `[10, 65, 128, 255, 0]`. Return only the check result from code. Code returns and logs are stored in chat, so returning the bytes would break this privacy check.
 
-Each byte read allows 1 byte to 1 MiB. Later ranges must reuse `X-File-Revision` from the first response. Check `X-File-Size`, `X-File-Offset`, and `X-File-Content-Type`. The run has an 8 MiB read budget and charges requested length, including retries. A changed revision returns 409; start a fresh read. For editable text, these bytes represent current canonical UTF-8 text, including the caller's pending changes.
+The server chooses each page size. Pass `X-File-Next-Cursor` as `cursor` with the same path until that header is absent. Check `X-File-Revision`, `X-File-Size`, and `X-File-Content-Type`. The run has an 8 MiB read budget and charges actual page bytes, including retries. A changed version returns 409; discard partial bytes and start again. Reads return saved bytes only. Recent editor changes may not be saved yet, and pending proposals are excluded.
 
 ### Editable text output
 

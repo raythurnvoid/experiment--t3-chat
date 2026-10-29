@@ -50,13 +50,22 @@ const listed = await fetch(api + "/api/v1/files/list", {
 }).then((response) => response.json());
 // A missing folder answers 404 { message: "Folder not found: /payments" }; a locked one answers 403.
 if (!listed.items) throw new Error(listed.message);
-const read = await fetch(api + "/api/v1/files/read-many", {
-	method: "POST",
-	headers,
-	body: JSON.stringify({ paths: listed.items.map((item) => item.path) }),
-}).then((response) => response.json());
-if (read.truncated || read.errors.length) throw new Error("Some files were not read");
-return { count: read.files.length };
+const file = listed.items[0];
+if (!file) return { characters: 0 };
+const decoder = new TextDecoder();
+let cursor = null;
+let text = "";
+do {
+	const read = await fetch(api + "/api/v1/files/read", {
+		method: "POST",
+		headers,
+		body: JSON.stringify({ path: file.path, cursor }),
+	});
+	if (!read.ok) throw new Error(`Read failed: HTTP ${read.status}`);
+	text += decoder.decode(await read.arrayBuffer(), { stream: true });
+	cursor = read.headers.get("X-File-Next-Cursor");
+} while (cursor !== null);
+return { characters: (text + decoder.decode()).length };
 ```
 
 ```jsonc
@@ -99,12 +108,14 @@ Later changes to the source buffer do not change the file. Empty files are allow
 these transport bounds. The app checks canonical workspace paths and MIME syntax.
 Missing content types use the file name's type hint or `application/octet-stream` in the app.
 
-For binary input, POST to `process.env.T3_APP_ORIGIN + "/api/v1/files/read-bytes"`
+For text or binary input, POST to `process.env.T3_APP_ORIGIN + "/api/v1/files/read"`
 with `X-Bonobo-Workspace: current` or `personal` and
-`{ path: "/reports/input.bin", offset: 0, length: 1048576, revision: null }`.
+`{ path: "/reports/input.bin", cursor: null }`.
 Check `response.ok`, then use `await response.arrayBuffer()`. The response is raw
-bytes. `X-File-Content-Type`, `X-File-Revision`, `X-File-Size`, and `X-File-Offset`
-describe the range. Pass the returned revision on later range reads.
+bytes. `X-File-Content-Type`, `X-File-Revision`, and `X-File-Size` describe the saved
+file. Pass `X-File-Next-Cursor` unchanged with the same path to get the next page.
+The gateway preserves cursors up to the host's 16-KiB limit. No cursor means EOF.
+Errors are JSON. A `409` with `file_changed` means discard collected pages and start again.
 
 Only this exact POST route gets a 1-MiB response cap. Other requests keep the
 512,000-byte cap. Byte reads refuse redirects and use `Cache-Control: no-store`.
@@ -174,9 +185,8 @@ them as canonical base64 for HTTP. There is no caller-supplied size. The app rea
   requests and redirects. App tokens are never forwarded outside the app file API. Redirects
   within that API keep the selected grant; public redirects cannot gain app access, and a
   redirect that leaves the API loses app access for the rest of that redirect chain.
-  Byte reads still refuse all redirects. Use `/api/v1/files/list` for discovery, `/api/v1/files/read-many` for
-  folder-scale text reads, `/api/v1/files/read` for one-off text reads, and
-  `/api/v1/files/read-bytes` for bounded binary ranges. The gateway only
+  File reads still refuse all redirects. Use `/api/v1/files/list` for discovery and
+  `/api/v1/files/read` for saved text or binary pages. The gateway only
   injects the grant; tenant isolation is enforced by the app public file API. The
   grant does not authorize reserved `GLOBAL`/`GITHUB` mount docs.
 - **No platform bindings/secrets.** No Worker Loader `env` is passed to the Dynamic Worker.

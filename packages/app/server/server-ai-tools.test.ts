@@ -1981,7 +1981,7 @@ test("execute_code tool: describes app file API reads", () => {
 
 	expect(tool).toEqual(
 		expect.objectContaining({
-			description: expect.stringContaining("/api/v1/files/read-many"),
+			description: expect.stringContaining("X-File-Next-Cursor"),
 		}),
 	);
 	expect(tool).toEqual(

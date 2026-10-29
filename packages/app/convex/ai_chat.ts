@@ -205,7 +205,10 @@ function ai_chat_system_prompt(args: {
 		"On failed web search, continue from organization context and state that current web results were unavailable.",
 		"Use `execute_code` to run small JavaScript snippets for precise calculations, JSON transformation, parsing, public HTTPS fetches, or algorithmic checks when doing it by hand would be error-prone.",
 		"The snippet has `fetch`, `input`, and `process.env.T3_APP_ORIGIN`; the runner gateway adds app file API authorization.",
-		"To read app files from code, fetch `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for paths, then `${process.env.T3_APP_ORIGIN}/api/v1/files/read-many` for contents; follow `cursor` until `isDone`, check `errors` and `truncated`, and use `/api/v1/files/read` only for one known file.",
+		"To read app files from code, fetch `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for paths; follow its `cursor` until `isDone`.",
+		"Read each file with POST `/api/v1/files/read` and `{path, cursor}`.",
+		"Start with cursor null, read raw bytes with arrayBuffer(), and pass X-File-Next-Cursor back until that header is absent.",
+		"Use one streaming TextDecoder for text across pages.",
 		"Do not pass app file paths or contents through `input`; keep `input` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents.",
 		"Summarize `execute_code` results and logs in your answer; do not paste large raw output.",
 		// The picture tool needs a model marked in `ai_chat_MODELS` and Agent mode, because the picture

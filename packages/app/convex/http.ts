@@ -38,7 +38,7 @@ const appCors = corsRouter(http, {
 		"X-File-Content-Type",
 		"X-File-Revision",
 		"X-File-Size",
-		"X-File-Offset",
+		"X-File-Next-Cursor",
 	],
 });
 

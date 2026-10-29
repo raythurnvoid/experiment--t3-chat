@@ -24,14 +24,8 @@ import {
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
-import {
-	r2_confirmed_object_delete,
-	r2_server_side_copy,
-} from "./r2_client.ts";
-import {
-	r2_create_asset_key,
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
-} from "./r2_assets.ts";
+import { r2_confirmed_object_delete, r2_server_side_copy } from "./r2_client.ts";
+import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { prepare_file_write } from "./public_api.ts";
 import { delete_paths, transfer_paths } from "./public_api_files_organize.ts";
@@ -120,14 +114,22 @@ function install_r2_object_reads() {
 			const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
 			const body = r2Objects.get(key);
 			const metadata = r2ObjectMetadata.get(key);
-			const range = new Headers(init?.headers).get("Range")?.match(/^bytes=(\d+)-(\d+)$/u);
+			const headers = new Headers(init?.headers);
+			const range = headers.get("Range")?.match(/^bytes=(\d+)-(\d+)$/u);
 			if (body !== undefined && range) {
 				const bytes = typeof body === "string" ? new TextEncoder().encode(body) : new Uint8Array(body);
+				const etag = metadata?.etag ?? `"${await crypto_sha256_hex(bytes)}"`;
+				if (headers.has("If-Match") && headers.get("If-Match") !== etag)
+					return new Response(null, { status: 412 });
 				const start = Number(range[1]);
+				if (start >= bytes.byteLength) return new Response(null, { status: 416 });
 				const end = Math.min(Number(range[2]), bytes.byteLength - 1);
 				return new Response(bytes.slice(start, end + 1), {
 					status: 206,
-					headers: { "Content-Range": `bytes ${start}-${end}/${bytes.byteLength}` },
+					headers: {
+						"Content-Range": `bytes ${start}-${end}/${bytes.byteLength}`,
+						ETag: etag,
+					},
 				});
 			}
 			return body === undefined
@@ -447,7 +449,8 @@ async function seed_markdown_file(args: {
 				workspaceId: args.workspaceId,
 				userId: args.userId,
 				target: { kind: "saved", id: nodeId },
-				expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion,
+				expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!
+					.pendingContentVersion,
 			},
 		);
 		if (batch._nay) {
@@ -479,24 +482,48 @@ async function seed_markdown_file(args: {
 	return nodeId;
 }
 
+async function finish_saved_file_content(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
+	await t.finishInProgressScheduledFunctions();
+	const node = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+	if (!node) throw new Error("Expected the saved file");
+	// These fixtures are member-owned workspace files.
+	const scope = {
+		organizationId: node.organizationId as Id<"organizations">,
+		workspaceId: node.workspaceId as Id<"organizations_workspaces">,
+		nodeId,
+	};
+	const state = await t.query(internal.files_nodes.get_file_content_materialization_state, scope);
+	if (!state || state.yjsLastSequenceDoc.lastSequence === state.yjsSnapshotDoc.sequence) return;
+	expect(
+		await t.action(internal.files_nodes_content.materialize_file_content, {
+			...scope,
+			userId: node.createdBy as Id<"users">,
+			targetSequence: state.yjsLastSequenceDoc.lastSequence,
+		}),
+	).toEqual({ _yay: null });
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 
-describe("public_api_http_read_bytes", () => {
-	async function create_fixture() {
+describe("public_api_http_read_file", () => {
+	async function create_fixture(size = 6) {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-byte-reader" });
 		const token = crypto_random_hex(32);
 		await seed_public_api_grant({ t, ...db, token, scopes: ["files:read", "files:download"] });
 		const nodeId = await seed_markdown_file({ t, ...db, path: "/data.bin", committedMarkdown: "unused\n" });
-		const data = new Uint8Array([0, 255, 128, 10, 13, 1]);
+		const data = Uint8Array.from({ length: size }, (_, index) => [0, 255, 128, 10, 13, 1][index % 6]!);
+		let r2Key = "";
 		await test_run_with_flush(t, async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			const asset = node?.assetId && (await ctx.db.get("files_r2_assets", node.assetId));
 			if (!asset?.r2Key) throw new Error("Missing fixture asset");
+			r2Key = asset.r2Key;
 			await ctx.db.patch("files_nodes", nodeId, {
 				textKind: null,
 				collaborationEnabled: null,
@@ -505,69 +532,69 @@ describe("public_api_http_read_bytes", () => {
 				contentType: "application/octet-stream",
 			});
 			await ctx.db.patch("files_r2_assets", asset._id, { size: data.byteLength });
-			r2Objects.set(asset.r2Key, data.buffer);
+			r2Objects.set(r2Key, data.buffer);
 		});
-		const read = (body: Record<string, unknown> = {}) =>
-			t.fetch("/api/v1/files/read-bytes", {
+		const read = (body: Record<string, unknown> = {}, credential = token) =>
+			t.fetch("/api/v1/files/read", {
 				method: "POST",
-				headers: auth_headers(token),
-				body: JSON.stringify({ path: "/data.bin", offset: 0, length: 6, revision: null, ...body }),
+				headers: auth_headers(credential),
+				body: JSON.stringify({ path: "/data.bin", ...body }),
 			});
-		return { t, db, token, nodeId, data, read };
+		return { t, db, token, nodeId, data, read, r2Key };
 	}
 
-	test("returns exact bytes, bounded headers, and a revision for later ranges", async () => {
-		const { read, data } = await create_fixture();
-		const first = await read({ offset: 1, length: 3 });
+	test("returns raw pages and repeats a cursor without mixing bytes", async () => {
+		const { read, data } = await create_fixture(1024 * 1024 + 6);
+		const first = await read();
 		expect(first.status).toBe(200);
-		expect(new Uint8Array(await first.arrayBuffer())).toEqual(data.slice(1, 4));
+		expect(new Uint8Array(await first.arrayBuffer())).toEqual(data.slice(0, 1024 * 1024));
 		expect(first.headers.get("Content-Type")).toBe("application/octet-stream");
 		expect(first.headers.get("Cache-Control")).toBe("no-store");
-		expect(first.headers.get("X-File-Size")).toBe("6");
-		expect(first.headers.get("X-File-Offset")).toBe("1");
+		expect(first.headers.get("X-File-Size")).toBe(String(data.byteLength));
+		expect(first.headers.get("X-File-Offset")).toBeNull();
 		expect(first.headers.get("X-File-Content-Type")).toBe("application/octet-stream");
 		const revision = first.headers.get("X-File-Revision");
 		expect(revision).toMatch(/^[0-9a-f]{64}$/u);
-		const next = await read({ offset: 4, length: 4, revision });
-		expect(next.status).toBe(200);
-		expect(new Uint8Array(await next.arrayBuffer())).toEqual(data.slice(4));
-		expect(next.headers.get("X-File-Revision")).toBe(revision);
-		expect((await read({ revision: "f".repeat(64) })).status).toBe(409);
-
-		type ResponseSpec = api_schemas_Main["/api/v1/files/read-bytes"]["POST"]["response"];
+		const cursor = first.headers.get("X-File-Next-Cursor");
+		expect(cursor).toMatch(/^c1\./u);
+		for (let replay = 0; replay < 2; replay++) {
+			const next = await read({ cursor });
+			expect(next.status).toBe(200);
+			expect(new Uint8Array(await next.arrayBuffer())).toEqual(data.slice(1024 * 1024));
+			expect(next.headers.get("X-File-Revision")).toBe(revision);
+			expect(next.headers.get("X-File-Next-Cursor")).toBeNull();
+		}
+		type ResponseSpec = api_schemas_Main["/api/v1/files/read"]["POST"]["response"];
 		expectTypeOf<ResponseSpec[200]["body"]>().toEqualTypeOf<Uint8Array<ArrayBuffer>>();
-		expectTypeOf<ResponseSpec[400]["body"] | ResponseSpec[409]["body"]>().toMatchTypeOf<{ message: string }>();
+		expectTypeOf<ResponseSpec[400]["body"] | ResponseSpec[409]["body"]>().toMatchTypeOf<{
+			message: string;
+			errorCode: string;
+		}>();
 	});
 
-	test("returns an empty body at EOF and refuses offsets beyond EOF", async () => {
-		const { t, nodeId, read } = await create_fixture();
-		const eof = await read({ offset: 6 });
-		expect(eof.status).toBe(200);
-		expect((await eof.arrayBuffer()).byteLength).toBe(0);
-		expect((await read({ offset: 7 })).status).toBe(416);
-		await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", nodeId);
-			await ctx.db.patch("files_r2_assets", node!.assetId!, { size: 0 });
-		});
-		const empty = await read();
-		expect(empty.status).toBe(200);
-		expect((await empty.arrayBuffer()).byteLength).toBe(0);
+	test("returns an empty file without spending its byte budget", async () => {
+		const { t, read } = await create_fixture(0);
+		const response = await read();
+		expect(response.status).toBe(200);
+		expect((await response.arrayBuffer()).byteLength).toBe(0);
+		expect(response.headers.get("X-File-Next-Cursor")).toBeNull();
+		expect(response.headers.get("X-File-Size")).toBe("0");
+		expect((await t.run((ctx) => ctx.db.query("public_api_grants").first()))?.remainingReadBytes).toBe(8 * 1024 * 1024);
 	});
 
-	test("exposes all byte headers to an allowed browser origin", async () => {
-		const { t, token } = await create_fixture();
+	test("exposes every read header to an allowed browser origin", async () => {
+		const { t, token } = await create_fixture(1024 * 1024 + 1);
 		const origin = new URL(process.env.ALLOWED_ORIGINS!.split(",")[0]).origin;
-		const response = await t.fetch("/api/v1/files/read-bytes", {
+		const response = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: { ...auth_headers(token), Origin: origin },
-			body: JSON.stringify({ path: "/data.bin", offset: 0, length: 6, revision: null }),
+			body: JSON.stringify({ path: "/data.bin" }),
 		});
 		expect(response.status).toBe(200);
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin);
 		const exposed = response.headers.get("Access-Control-Expose-Headers")?.toLowerCase();
-		for (const header of ["x-file-content-type", "x-file-revision", "x-file-size", "x-file-offset"]) {
+		for (const header of ["x-file-content-type", "x-file-revision", "x-file-size", "x-file-next-cursor"])
 			expect(exposed).toContain(header);
-		}
 	});
 
 	test.each([
@@ -579,22 +606,68 @@ describe("public_api_http_read_bytes", () => {
 		{ path: "/data*" },
 		{ path: "/data.bin " },
 		{ path: "/data\u0000.bin" },
-		{ offset: -1 },
-		{ offset: 0.5 },
-		{ offset: Number.MAX_SAFE_INTEGER + 1 },
-		{ length: 0 },
-		{ length: 1024 * 1024 + 1 },
-		{ revision: "bad" },
-	])("refuses invalid range or path %j before fetching bytes", async (body) => {
+		{ offset: 0 },
+		{ length: 800 },
+		{ revision: null },
+		{ maxBytes: 800 },
+		{ pageBytes: 800 },
+		{ cursor: "" },
+		{ cursor: "x".repeat(16 * 1024 + 1) },
+	])("refuses invalid paths and unsupported fields %j before fetching bytes", async (body) => {
 		const { read } = await create_fixture();
 		vi.mocked(fetch).mockClear();
-		expect((await read(body)).status).toBe(400);
+		const response = await read(body);
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ errorCode: "invalid_input" });
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
-	test("atomically spends the requested length across concurrent reads", async () => {
-		const { t, read } = await create_fixture();
-		const responses = await Promise.all(Array.from({ length: 9 }, () => read({ length: 1024 * 1024 })));
+	test("binds cursors to one path and credential and refuses tampering", async () => {
+		const { t, db, read } = await create_fixture(1024 * 1024 + 1);
+		const first = await read();
+		const cursor = first.headers.get("X-File-Next-Cursor")!;
+		const otherToken = crypto_random_hex(32);
+		await seed_public_api_grant({ t, ...db, token: otherToken, scopes: ["files:read", "files:download"] });
+		for (const response of [
+			await read({ cursor, path: "/other.bin" }),
+			await read({ cursor }, otherToken),
+			await read({ cursor: cursor.slice(0, -8) }),
+			await read({ cursor: cursor.slice(0, 10) + "!" + cursor.slice(11) }),
+		]) {
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({ errorCode: "invalid_cursor" });
+		}
+	});
+
+	test("refuses an overwritten object even when its saved size and asset stay unchanged", async () => {
+		const { read, data, r2Key } = await create_fixture(1024 * 1024 + 1);
+		const first = await read();
+		const cursor = first.headers.get("X-File-Next-Cursor");
+		r2Objects.set(r2Key, new Uint8Array(data.length).fill(42).buffer);
+		const changed = await read({ cursor });
+		expect(changed.status).toBe(409);
+		expect(await changed.json()).toMatchObject({ errorCode: "file_changed" });
+		const restart = await read();
+		expect(restart.status).toBe(200);
+		expect(restart.headers.get("X-File-Revision")).not.toBe(first.headers.get("X-File-Revision"));
+	});
+
+	test.each([2 * 1024 * 1024, 1])("returns file_changed when the stored object changes to %i bytes", async (size) => {
+		const { read, data, r2Key } = await create_fixture(1024 * 1024 + 6);
+		const first = await read();
+		expect(first.status).toBe(200);
+		const cursor = first.headers.get("X-File-Next-Cursor");
+		r2Objects.set(r2Key, new Uint8Array(size).fill(42).buffer);
+		const changed = await read({ cursor });
+		expect(changed.status).toBe(409);
+		expect(await changed.json()).toMatchObject({ errorCode: "file_changed" });
+		const headers = new Headers(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.headers);
+		expect(headers.get("If-Match")).toBe(`"${await crypto_sha256_hex(data)}"`);
+	});
+
+	test("atomically spends actual page bytes across concurrent dual-scope reads", async () => {
+		const { t, read } = await create_fixture(1024 * 1024);
+		const responses = await Promise.all(Array.from({ length: 9 }, () => read()));
 		expect(responses.filter((response) => response.status === 200)).toHaveLength(8);
 		expect(responses.filter((response) => response.status === 429)).toHaveLength(1);
 		const grants = await t.run((ctx) => ctx.db.query("public_api_grants").collect());
@@ -623,22 +696,29 @@ describe("public_api_http_read_bytes", () => {
 		},
 	);
 
-	test("refuses an ignored range or oversized response and keeps the charge", async () => {
-		const { t, read } = await create_fixture();
+	test("refuses ignored ranges, oversized bodies and missing ETags and keeps the charge", async () => {
+		const { t, read } = await create_fixture(1024 * 1024 + 6);
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(new Uint8Array(6)));
-		expect((await read({ offset: 1, length: 2 })).status).toBe(502);
+		expect((await read()).status).toBe(502);
 		vi.mocked(fetch).mockResolvedValueOnce(
-			new Response(new Uint8Array(3), {
+			new Response(new Uint8Array(1024 * 1024 + 1), {
 				status: 206,
-				headers: { "Content-Range": "bytes 1-2/6" },
+				headers: { "Content-Range": "bytes 0-1048575/1048582", ETag: '"valid"' },
 			}),
 		);
-		expect((await read({ offset: 1, length: 2 })).status).toBe(502);
+		expect((await read()).status).toBe(502);
+		vi.mocked(fetch).mockResolvedValueOnce(
+			new Response(new Uint8Array(1024 * 1024), {
+				status: 206,
+				headers: { "Content-Range": "bytes 0-1048575/1048582" },
+			}),
+		);
+		expect((await read()).status).toBe(502);
 		const grant = await t.run((ctx) => ctx.db.query("public_api_grants").first());
-		expect(grant?.remainingReadBytes).toBe(8 * 1024 * 1024 - 4);
+		expect(grant?.remainingReadBytes).toBe(5 * 1024 * 1024);
 	});
 
-	test("requires download scope, honors prefix, and still denies signed URLs to grants", async () => {
+	test("requires download scope for stored files, honors prefixes and denies signed URLs to grants", async () => {
 		const { t, nodeId, token, read } = await create_fixture();
 		const download = await t.fetch("/api/v1/files/download-urls", {
 			method: "POST",
@@ -650,7 +730,7 @@ describe("public_api_http_read_bytes", () => {
 			const grant = await ctx.db.query("public_api_grants").first();
 			await ctx.db.patch("public_api_grants", grant!._id, { pathPrefix: "/other" });
 		});
-		expect((await read()).status).toBe(404);
+		expect((await read()).status).toBe(403);
 		await t.run(async (ctx) => {
 			const grant = await ctx.db.query("public_api_grants").first();
 			await ctx.db.patch("public_api_grants", grant!._id, { pathPrefix: null, scopes: ["files:read"] });
@@ -658,8 +738,37 @@ describe("public_api_http_read_bytes", () => {
 		expect((await read()).status).toBe(403);
 	});
 
+	test("reads text with read-only grants and with download-only keys", async () => {
+		const { t, db, read, token } = await create_fixture();
+		await seed_markdown_file({
+			t,
+			...db,
+			path: "/saved.md",
+			committedMarkdown: "Saved text\n",
+			pendingMarkdown: "Private draft\n",
+		});
+		await t.run(async (ctx) => {
+			const grant = await ctx.db.query("public_api_grants").first();
+			await ctx.db.patch("public_api_grants", grant!._id, { scopes: ["files:read"], remainingReadBytes: 0 });
+		});
+		const text = await read({ path: "/saved.md" }, token);
+		expect(text.status).toBe(200);
+		expect(await text.text()).toBe("Saved text\n");
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: null,
+			name: "Downloader",
+			scopes: ["files:download"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const downloaded = await read({ path: "/saved.md" }, key._yay.credential);
+		expect(downloaded.status).toBe(200);
+		expect(await downloaded.text()).toBe("Saved text\n");
+	});
+
 	test("uses a service account's saved text and checks its file grant after reading", async () => {
-		const { t, db } = await create_fixture();
+		const { t, db, read } = await create_fixture();
 		const nodeId = await seed_markdown_file({
 			t,
 			...db,
@@ -688,17 +797,11 @@ describe("public_api_http_read_bytes", () => {
 			scopes: ["files:download"],
 		});
 		if (key._nay) throw new Error(key._nay.message);
-		const read = () =>
-			t.fetch("/api/v1/files/read-bytes", {
-				method: "POST",
-				headers: auth_headers(key._yay.credential),
-				body: JSON.stringify({ path: "/saved.md", offset: 0, length: 100, revision: null }),
-			});
-		const saved = await read();
+		const saved = await read({ path: "/saved.md" }, key._yay.credential);
 		expect(saved.status).toBe(200);
 		expect(await saved.text()).toBe("Saved text\n");
 		const gate = defer_download_url();
-		const pending = read();
+		const pending = read({ path: "/saved.md" }, key._yay.credential);
 		await gate.started;
 		const removed = await asUser.mutation(api.access_control.remove_service_account_grant, {
 			membershipId: db.membershipId,
@@ -707,18 +810,18 @@ describe("public_api_http_read_bytes", () => {
 		});
 		if (removed._nay) throw new Error(removed._nay.message);
 		gate.release();
-		expect((await pending).status).toBe(404);
+		expect((await pending).status).toBe(403);
 	});
 
 	test("does not refund an aborted read", async () => {
 		const { t, token } = await create_fixture();
 		const gate = defer_download_url();
 		const abort = new AbortController();
-		const pending = t.fetch("/api/v1/files/read-bytes", {
+		const pending = t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(token),
 			signal: abort.signal,
-			body: JSON.stringify({ path: "/data.bin", offset: 0, length: 6, revision: null }),
+			body: JSON.stringify({ path: "/data.bin" }),
 		});
 		await gate.started;
 		abort.abort();
@@ -728,8 +831,8 @@ describe("public_api_http_read_bytes", () => {
 		expect(grant?.remainingReadBytes).toBe(8 * 1024 * 1024 - 6);
 	});
 
-	test("keeps private text unavailable through text and byte routes", async () => {
-		const { t, db, token, read } = await create_fixture();
+	test("keeps private text unavailable for grants and keys", async () => {
+		const { t, db, read } = await create_fixture();
 		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_private_text" as never);
 		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 		const created = await t.mutation(internal.files_nodes.create_private_node_by_path, {
@@ -739,12 +842,11 @@ describe("public_api_http_read_bytes", () => {
 		});
 		if (created._nay || !created._yay.operationBatchId) throw new Error("Private text create failed");
 		const { target, operationBatchId } = created._yay;
-		const text = "café\n";
 		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
 			...scope,
 			operationBatchId,
 			role: "unstaged",
-			text,
+			text: "café\n",
 		});
 		if (staged._nay) throw new Error(staged._nay.message);
 		const ready = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
@@ -753,25 +855,9 @@ describe("public_api_http_read_bytes", () => {
 			operationBatchId,
 		});
 		if (ready._nay) throw new Error(ready._nay.message);
-		const bytes = await read({ path: "/draft.txt", offset: 3, length: 2 });
-		expect(bytes.status, "byte grants must not read a private create").toBe(404);
-		const single = await t.fetch("/api/v1/files/read", {
-			method: "POST",
-			headers: auth_headers(token),
-			body: JSON.stringify({ path: "/draft.txt" }),
-		});
-		expect(single.status, "text grants must not read a private create").toBe(404);
-		expect(await single.json()).toEqual({ message: "File not found or exceeds the read limit." });
-		const many = await t.fetch("/api/v1/files/read-many", {
-			method: "POST",
-			headers: auth_headers(token),
-			body: JSON.stringify({ paths: ["/draft.txt"] }),
-		});
-		expect(await many.json()).toEqual({
-			files: [],
-			errors: [{ path: "/draft.txt", message: "File not found or exceeds the read limit." }],
-			truncated: false,
-		});
+		const single = await read({ path: "/draft.txt" });
+		expect(single.status).toBe(404);
+		expect(await single.json()).toMatchObject({ errorCode: "not_found" });
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		const key = await asUser.mutation(api.public_api.api_credential_create, {
 			membershipId: db.membershipId,
@@ -780,12 +866,7 @@ describe("public_api_http_read_bytes", () => {
 			scopes: ["files:download"],
 		});
 		if (key._nay) throw new Error(key._nay.message);
-		const savedOnly = await t.fetch("/api/v1/files/read-bytes", {
-			method: "POST",
-			headers: auth_headers(key._yay.credential),
-			body: JSON.stringify({ path: "/draft.txt", offset: 0, length: 20, revision: null }),
-		});
-		expect(savedOnly.status).toBe(404);
+		expect((await read({ path: "/draft.txt" }, key._yay.credential)).status).toBe(404);
 	});
 });
 
@@ -984,7 +1065,7 @@ describe("service-bound API credentials", () => {
 			body: JSON.stringify({ path: "/logs/run.md" }),
 		});
 		expect(read.status).toBe(200);
-		expect(await read.json()).toMatchObject({ content: expect.stringContaining("Second run") });
+		expect(await read.text()).toEqual(expect.stringContaining("Second run"));
 
 		const personal = await asUser.mutation(api.public_api.api_credential_create, {
 			membershipId: db.membershipId,
@@ -1008,7 +1089,7 @@ describe("service-bound API credentials", () => {
 			body: JSON.stringify({ path: "/logs/run.md" }),
 		});
 		expect(humanRead.status).toBe(200);
-		expect(await humanRead.json()).toMatchObject({ content: expect.stringContaining("Human overwrite") });
+		expect(await humanRead.text()).toEqual(expect.stringContaining("Human overwrite"));
 
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
 		const writeOnly = await asUser.mutation(api.public_api.api_credential_create, {
@@ -1126,9 +1207,8 @@ describe("service-bound API credentials", () => {
 			async (ctx) => (await ctx.db.get("files_nodes", vaultFileId))!.parentId as Id<"files_nodes">,
 		);
 		expect(
-			(
-				await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: vaultId })
-			)._nay,
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: vaultId }))
+				._nay,
 		).toBeUndefined();
 		const account = await asOwner.mutation(api.access_control.create_service_account, {
 			membershipId: db.membershipId,
@@ -1186,7 +1266,7 @@ describe("service-bound API credentials", () => {
 		// The account's grant is enough, though the sponsor cannot open the folder.
 		const vault = await read("/vault/v.md");
 		expect(vault.status).toBe(200);
-		expect(await vault.json()).toMatchObject({ content: expect.stringContaining("Vault text") });
+		expect(await vault.text()).toEqual(expect.stringContaining("Vault text"));
 		// The sponsor can read the open file, but the account has no grant there, so it is locked.
 		expect((await read("/open.md")).status).toBe(403);
 	});
@@ -1201,8 +1281,7 @@ describe("service-bound API credentials", () => {
 			async (ctx) => (await ctx.db.get("files_nodes", teamFileId))!.parentId as Id<"files_nodes">,
 		);
 		expect(
-			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: teamId }))
-				._nay,
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: teamId }))._nay,
 		).toBeUndefined();
 		expect(
 			(
@@ -1245,7 +1324,7 @@ describe("service-bound API credentials", () => {
 			body: JSON.stringify({ path: "/team/t.md" }),
 		});
 		expect(read.status, await read.clone().text()).toBe(200);
-		expect(await read.json()).toMatchObject({ content: expect.stringContaining("Team text") });
+		expect(await read.text()).toEqual(expect.stringContaining("Team text"));
 	});
 
 	test("an account key replaces a stored file inside its grant on a nested restricted folder", async () => {
@@ -1265,9 +1344,8 @@ describe("service-bound API credentials", () => {
 			async (ctx) => (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/a/b")!._id,
 		);
 		expect(
-			(
-				await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: folderId })
-			)._nay,
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: folderId }))
+				._nay,
 		).toBeUndefined();
 		// A stored (non-editable) file keeps the write on the archive-and-recreate door.
 		const occupant = await asOwner.mutation(api.files_nodes.create_upload_node, {
@@ -1721,9 +1799,13 @@ describe("public files API", () => {
 			scopes: ["files:list"],
 		});
 		if (key._nay) throw new Error(key._nay.message);
-		expect(await t.query(internal.public_api.get_file_read_membership, {
-			organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId,
-		})).not.toBeNull();
+		expect(
+			await t.query(internal.public_api.get_file_read_membership, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+			}),
+		).not.toBeNull();
 		for (const path of ["/", "/scope", `/scope/${suffix}folder`]) {
 			for (const contentTypePrefixes of [undefined, ["image/"], ["image/png"]]) {
 				const response = await t.fetch("/api/v1/files/list", {
@@ -1762,7 +1844,6 @@ describe("public files API", () => {
 			["/api/v1/files/list", { scanLimit: 0 }],
 			["/api/v1/files/list", { contentTypePrefixes: [] }],
 			["/api/v1/files/read", { path: "/file.md", maxBytes: 0 }],
-			["/api/v1/files/read-many", { paths: [] }],
 			["/api/v1/files/write", { path: 42, content: "" }],
 			["/api/v1/files/download-urls", { fileNodeIds: [] }],
 		] as const) {
@@ -1772,7 +1853,10 @@ describe("public files API", () => {
 				body: JSON.stringify(body),
 			});
 			expect(response.status).toBe(400);
-			expect(await response.json()).toEqual({ message: "Request body validation failed" });
+			expect(await response.json()).toEqual({
+				message: "Request body validation failed",
+				...(path === "/api/v1/files/read" ? { errorCode: "invalid_input" } : {}),
+			});
 		}
 
 		const invalidJson = await t.fetch("/api/v1/files/download-urls", {
@@ -1786,7 +1870,6 @@ describe("public files API", () => {
 		type PublicValidationError =
 			| api_schemas_Main["/api/v1/files/list"]["POST"]["response"][400]["body"]
 			| api_schemas_Main["/api/v1/files/read"]["POST"]["response"][400]["body"]
-			| api_schemas_Main["/api/v1/files/read-many"]["POST"]["response"][400]["body"]
 			| api_schemas_Main["/api/v1/files/write"]["POST"]["response"][400]["body"]
 			| api_schemas_Main["/api/v1/files/download-urls"]["POST"]["response"][400]["body"];
 		expectTypeOf<PublicValidationError>().toMatchTypeOf<{ message: string }>();
@@ -1872,24 +1955,9 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/payments/payment-001.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		const readBody = (await readResponse.json()) as { content: string; pendingUpdateId?: string | null };
-		expect(readBody.content).toContain("amount: 12.50");
-		expect(readBody).not.toHaveProperty("pendingUpdateId");
-
-		const readManyResponse = await t.fetch("/api/v1/files/read-many", {
-			method: "POST",
-			headers: auth_headers(credential),
-			body: JSON.stringify({ paths: ["/payments/payment-001.md"] }),
-		});
-		expect(readManyResponse.status).toBe(200);
-		const readManyBody = (await readManyResponse.json()) as {
-			files: Array<{ content: string; pendingUpdateId?: string | null }>;
-			errors: Array<{ path: string; message: string }>;
-		};
-		expect(readManyBody.files[0]?.content).toContain("amount: 12.50");
-		expect(readManyBody.files[0]?.content).not.toContain("amount: 999.00");
-		expect(readManyBody.files[0]).not.toHaveProperty("pendingUpdateId");
-		expect(readManyBody.errors).toEqual([]);
+		const readBody = await readResponse.text();
+		expect(readBody).toContain("amount: 12.50");
+		expect(readBody).not.toContain("amount: 999.00");
 
 		const afterUse = await t.run(async (ctx) => {
 			return await ctx.db.get("api_credentials", created._yay!.credentialId);
@@ -1991,7 +2059,7 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/notes/report.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		expect(((await readResponse.json()) as { content: string }).content).toContain("Written via the public API");
+		expect(await readResponse.text()).toContain("Written via the public API");
 
 		const conflict = await t.fetch("/api/v1/files/write", {
 			method: "POST",
@@ -2042,6 +2110,7 @@ describe("public files API", () => {
 	)(
 		"writes and downloads $path ($storedType, nonCollaborative: $nonCollaborative)",
 		async ({ path, contentType, storedType, nonCollaborative }) => {
+			vi.useFakeTimers();
 			const t = test_convex();
 			install_r2_object_reads();
 			const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-html" });
@@ -2080,9 +2149,10 @@ describe("public files API", () => {
 			});
 			expect(replaced.status).toBe(200);
 			expect(await replaced.json()).toMatchObject({ nodeId: writtenBody.nodeId, contentType: storedType });
+			await finish_saved_file_content(t, writtenBody.nodeId);
 			const read = await t.fetch("/api/v1/files/read", { method: "POST", headers, body: JSON.stringify({ path }) });
 			expect(read.status).toBe(200);
-			expect(await read.json()).toMatchObject({ content: nextContent });
+			expect(await read.text()).toEqual(nextContent);
 
 			const getUrl = vi.spyOn(R2.prototype, "getUrl");
 			getUrl.mockClear();
@@ -2103,6 +2173,7 @@ describe("public files API", () => {
 	);
 
 	test("the write route creates a non-collaborative file with no Yjs docs", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-non-collaborative" });
@@ -2174,7 +2245,7 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/imported/report.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		expect(((await readResponse.json()) as { content: string }).content).toContain("no collaboration here");
+		expect(await readResponse.text()).toContain("no collaboration here");
 
 		// Without the flag the same route still creates a normal collaborative file. Without this
 		// the checks above could pass because the route ignores the flag and never builds a
@@ -2224,13 +2295,14 @@ describe("public files API", () => {
 		expect(afterFlagOnExisting.collaborationEnabled).toBe(true);
 		expect(afterFlagOnExisting.hasPointers).toBe(true);
 		expect(afterFlagOnExisting.versions).toBe(2);
+		await finish_saved_file_content(t, collaborativeNodeId as Id<"files_nodes">);
 		const readAfterFlag = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path: "/imported/normal.md" }),
 		});
 		expect(readAfterFlag.status).toBe(200);
-		expect(((await readAfterFlag.json()) as { content: string }).content).toBe("# Normal\n\nsecond body\n");
+		expect(await readAfterFlag.text()).toBe("# Normal\n\nsecond body\n");
 
 		// Writing again over the non-collaborative file replaces its text in place. Without this the
 		// write would archive the file and create a new one, so a repeated import would change the
@@ -2269,7 +2341,7 @@ describe("public files API", () => {
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path: "/imported/report.md" }),
 		});
-		expect(((await readAgain.json()) as { content: string }).content).toContain("second import");
+		expect(await readAgain.text()).toContain("second import");
 
 		// A re-import of the same text mints no new version.
 		const unchanged = await t.fetch("/api/v1/files/write", {
@@ -2520,6 +2592,7 @@ describe("public files API", () => {
 		["write-many", "readme", "README.md"],
 		["touch", "readme", "README.md"],
 	] as const)("%s preserves an existing literal special-name target", async (door, literalName, canonicalName) => {
+		vi.useFakeTimers();
 		for (const withCanonicalSibling of [false, true]) {
 			const t = test_convex();
 			install_r2_object_reads();
@@ -2558,12 +2631,13 @@ describe("public files API", () => {
 						? { written: [expected], errors: [] }
 						: expected,
 			);
+			await finish_saved_file_content(t, literalId);
 			const read = await t.fetch("/api/v1/files/read", {
 				method: "POST",
 				headers,
 				body: JSON.stringify({ path: literalPath }),
 			});
-			expect(await read.json()).toMatchObject({ content: door === "touch" ? "Legacy text\n" : content });
+			expect(await read.text()).toEqual(door === "touch" ? "Legacy text\n" : content);
 			const nodes = await t.run(async (ctx) =>
 				(await ctx.db.query("files_nodes").collect()).filter((node) => node.archiveOperationId === null),
 			);
@@ -2575,7 +2649,7 @@ describe("public files API", () => {
 					headers,
 					body: JSON.stringify({ path: canonicalPath }),
 				});
-				expect(await readCanonical.json()).toMatchObject({ content: "Canonical text\n" });
+				expect(await readCanonical.text()).toEqual("Canonical text\n");
 			}
 		}
 	});
@@ -2619,7 +2693,7 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/lf/report.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		expect(((await readResponse.json()) as { content: string }).content).toBe(normalizedContent);
+		expect(await readResponse.text()).toBe(normalizedContent);
 
 		// The R2 content snapshot holds the same LF bytes.
 		const download = await t.fetch("/api/v1/files/download-urls", {
@@ -2778,6 +2852,7 @@ describe("public files API", () => {
 	});
 
 	test("skipIfUnchanged skips staging when the content did not change", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-skip-unchanged" });
@@ -2839,13 +2914,14 @@ describe("public files API", () => {
 		expect(changedBody.nodeId).toBe(firstBody.nodeId);
 		expect(changedBody).not.toHaveProperty("unchanged");
 
+		await finish_saved_file_content(t, changedBody.nodeId as Id<"files_nodes">);
 		const readResponse = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path: "/skip/report.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		expect(((await readResponse.json()) as { content: string }).content).toContain("New content");
+		expect(await readResponse.text()).toContain("New content");
 	});
 
 	test("a replace needs write on the file and its folder only, not on a locked folder above", async () => {
@@ -3097,7 +3173,7 @@ describe("public files API", () => {
 		// Every node in the subtree carries the scope, the way `restrict_node` stamps it.
 		await t.run(async (ctx) => await ctx.db.patch("files_nodes", notesId, { restrictedScopeNodeId: sharedId }));
 
-		const legacyId = await t.run(async (ctx) => {
+		const legacyId = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			// No Yjs pointers: a stored upload rather than an editable doc, which is what sends /write
 			// down the archive-and-recreate path instead of the fill-in-place one. Restricted on itself
@@ -3302,6 +3378,7 @@ describe("public files API", () => {
 	});
 
 	test("touches empty Markdown files and fills them in place", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-touch" });
@@ -3355,7 +3432,7 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/meetings/video.mp4.transcript.md" }),
 		});
 		expect(readEmpty.status).toBe(200);
-		expect(((await readEmpty.json()) as { content: string }).content).toBe("");
+		expect(await readEmpty.text()).toBe("");
 
 		// Producer shape pair for the empty-document case: the node has a shape and the document
 		// has no root at all (an empty root is never encoded), and that pair is legal.
@@ -3400,13 +3477,14 @@ describe("public files API", () => {
 		expect(written.status).toBe(200);
 		expect(((await written.json()) as { nodeId: string }).nodeId).toBe(touchedBody.files[0]!.nodeId);
 
+		await finish_saved_file_content(t, touchedNodeId);
 		const readFilled = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path: "/meetings/video.mp4.transcript.md" }),
 		});
 		expect(readFilled.status).toBe(200);
-		expect(((await readFilled.json()) as { content: string }).content).toContain("Hello there");
+		expect(await readFilled.text()).toContain("Hello there");
 
 		// The fill appended a non-user Yjs update that open editor sessions apply as a remote change.
 		const transcriptNodeId = touchedBody.files[0]!.nodeId as Id<"files_nodes">;
@@ -3556,26 +3634,15 @@ describe("public files API", () => {
 			expect(readMount.status).toBe(404);
 		}
 
-		const readMany = await t.fetch("/api/v1/files/read-many", {
+		const saved = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(token),
-			body: JSON.stringify({
-				paths: ["/tenant-visible.md", "/t3-chat/README.md", "/.mounts/t3-chat/README.md"],
-			}),
+			body: JSON.stringify({ path: "/tenant-visible.md" }),
 		});
-		expect(readMany.status).toBe(200);
-		const readManyBody = (await readMany.json()) as {
-			files: Array<{ path: string; content: string }>;
-			errors: Array<{ path: string; message: string }>;
-		};
-		expect(readManyBody.files).toEqual([
-			expect.objectContaining({ path: "/tenant-visible.md", content: expect.stringContaining("tenant visible") }),
-		]);
-		expect(readManyBody.errors.map((error) => error.path)).toEqual([
-			"/t3-chat/README.md",
-			"/.mounts/t3-chat/README.md",
-		]);
-		expect(JSON.stringify(readManyBody)).not.toContain("Zorptelemetry");
+		expect(saved.status).toBe(200);
+		const content = await saved.text();
+		expect(content).toContain("tenant visible");
+		expect(content).not.toContain("Zorptelemetry");
 	});
 
 	test("rotates an API credential and refuses to rotate revoked credentials", async () => {
@@ -4452,7 +4519,11 @@ describe("locked and missing paths", () => {
 			headers: auth_headers(credential),
 			body: JSON.stringify(body),
 		});
-		return { status: response.status, body: (await response.json()) as unknown };
+		return {
+			status: response.status,
+			body:
+				route === "/api/v1/files/read" && response.ok ? await response.text() : ((await response.json()) as unknown),
+		};
 	}
 
 	test("files list answers 403 for a locked path, 404 for a missing one and 400 for a readable file", async () => {
@@ -4541,7 +4612,8 @@ describe("locked and missing paths", () => {
 		});
 		const ascFirst = await list(t, f.memberCredential, { path: "/", limit: 1 });
 		expect(
-			(await list(t, f.memberCredential, { path: "/", order: "asc", limit: 1, cursor: ascFirst.body.cursor })).body.items,
+			(await list(t, f.memberCredential, { path: "/", order: "asc", limit: 1, cursor: ascFirst.body.cursor })).body
+				.items,
 		).toMatchObject([{ path: "/hidden.md" }]);
 		expect(await list(t, f.memberCredential, { path: "/", order: "desc", recursive: true })).toEqual({
 			status: 400,
@@ -4665,45 +4737,14 @@ describe("locked and missing paths", () => {
 		for (const path of ["/hidden.md", "/secret/h01.md", "/secret/nope.md"]) {
 			const read = await post(t, "/api/v1/files/read", f.memberCredential, { path });
 			expect(read.status, path).toBe(403);
-			expect(read.body).toEqual({ message: `Permission denied: ${path}` });
+			expect(read.body).toEqual({ message: `Permission denied: ${path}`, errorCode: "permission_denied" });
 		}
 		expect(await post(t, "/api/v1/files/read", f.memberCredential, { path: "/nope.md" })).toEqual({
 			status: 404,
-			body: { message: "File not found or exceeds the read limit." },
+			body: { message: "File unavailable", errorCode: "not_found" },
 		});
 		// Control: the owner reads the locked file.
 		expect((await post(t, "/api/v1/files/read", f.ownerCredential, { path: "/hidden.md" })).status).toBe(200);
-	});
-
-	test("read-many reports a locked file with the permission text", async () => {
-		const t = test_convex();
-		install_r2_object_reads();
-		const f = await seed_hidden_folder(t);
-
-		expect(
-			await post(t, "/api/v1/files/read-many", f.memberCredential, { paths: ["/b.md", "/hidden.md", "/nope.md"] }),
-		).toMatchObject({
-			status: 200,
-			body: {
-				files: [{ path: "/b.md" }],
-				errors: [
-					{ path: "/hidden.md", message: "Permission denied: /hidden.md" },
-					{ path: "/nope.md", message: "File not found or exceeds the read limit." },
-				],
-			},
-		});
-	});
-
-	test("read-bytes answers 403 for a locked file, 404 for a missing one", async () => {
-		const t = test_convex();
-		const f = await seed_hidden_folder(t);
-		const read_bytes = (path: string) =>
-			post(t, "/api/v1/files/read-bytes", f.memberCredential, { path, offset: 0, length: 4, revision: null });
-
-		for (const path of ["/hidden.md", "/secret/nope.md"]) {
-			expect(await read_bytes(path)).toEqual({ status: 403, body: { message: `Permission denied: ${path}` } });
-		}
-		expect(await read_bytes("/nope.md")).toEqual({ status: 404, body: { message: "File unavailable" } });
 	});
 
 	test("download-urls reports a locked file with the permission text", async () => {
@@ -4829,7 +4870,7 @@ describe("locked and missing paths", () => {
 
 		const response = await post(t, "/api/v1/files/read", guestCredential, { path: "/secret/shared/ok.md" });
 		expect(response.status).toBe(200);
-		expect(response.body).toMatchObject({ content: expect.stringContaining("/secret/shared/ok.md") });
+		expect(response.body).toEqual(expect.stringContaining("/secret/shared/ok.md"));
 		expect(await list(t, guestCredential, { path: "/secret/shared" })).toMatchObject({
 			status: 200,
 			body: { items: [{ path: "/secret/shared/ok.md", locked: false }] },
@@ -4861,12 +4902,8 @@ describe("locked and missing paths", () => {
 		for (const path of ["/b.md", "/hidden.md", "/nope.md"]) {
 			expect(await post(t, "/api/v1/files/read", guestCredential, { path }), path).toEqual({
 				status: 403,
-				body: { message: `Permission denied: ${path}` },
+				body: { message: `Permission denied: ${path}`, errorCode: "permission_denied" },
 			});
-			expect(
-				await post(t, "/api/v1/files/read-bytes", guestCredential, { path, offset: 0, length: 4, revision: null }),
-				path,
-			).toEqual({ status: 403, body: { message: `Permission denied: ${path}` } });
 		}
 		expect(
 			await post(t, "/api/v1/files/download-urls", guestCredential, { fileNodeIds: [openFileId, f.hiddenFileId] }),
@@ -4898,7 +4935,7 @@ describe("locked and missing paths", () => {
 		expect(written.status).toBe(200);
 		expect(await post(t, "/api/v1/files/read", guestCredential, { path: "/secret/shared/new.md" })).toMatchObject({
 			status: 200,
-			body: { content: expect.stringContaining("Guest") },
+			body: expect.stringContaining("Guest"),
 		});
 		// A replace of a file with no text checks the file and its folder, not the locked `/secret` above them.
 		await t.run(async (ctx) => {
@@ -4921,7 +4958,7 @@ describe("locked and missing paths", () => {
 		).toMatchObject({ status: 200 });
 		expect(await post(t, "/api/v1/files/read", guestCredential, { path: "/secret/shared/ok.md" })).toMatchObject({
 			status: 200,
-			body: { content: expect.stringContaining("Replaced") },
+			body: expect.stringContaining("Replaced"),
 		});
 		// The upload door checks the shared folder too, not the root.
 		expect(
@@ -5639,9 +5676,7 @@ describe("locked and missing paths", () => {
 			// below comes from the account's own grants, never from the person behind the key.
 			async function create_account_key(args: {
 				f: Awaited<ReturnType<typeof seed_hidden_folder>>;
-				grants: Array<
-					Pick<FunctionArgs<typeof api.access_control.set_service_account_grant>, "resource" | "level">
-				>;
+				grants: Array<Pick<FunctionArgs<typeof api.access_control.set_service_account_grant>, "resource" | "level">>;
 				scopes: FunctionArgs<typeof api.public_api.api_credential_create>["scopes"];
 			}) {
 				const { f } = args;
@@ -5684,9 +5719,7 @@ describe("locked and missing paths", () => {
 				});
 
 				// The account reads `/b.md` but cannot change it.
-				expect(
-					await post(t, "/api/v1/files/delete", key.credential, { paths: ["/b.md", "/secret/h01.md"] }),
-				).toEqual({
+				expect(await post(t, "/api/v1/files/delete", key.credential, { paths: ["/b.md", "/secret/h01.md"] })).toEqual({
 					status: 200,
 					// A refused item keeps the job, so its Activity can list what was not archived.
 					body: {
@@ -5710,9 +5743,9 @@ describe("locked and missing paths", () => {
 				});
 
 				// Control: the person behind the key may delete both.
-				expect(
-					await post(t, "/api/v1/files/delete", f.ownerCredential, { paths: ["/b.md", "/secret"] }),
-				).toMatchObject({ status: 200, body: { refused: [] } });
+				expect(await post(t, "/api/v1/files/delete", f.ownerCredential, { paths: ["/b.md", "/secret"] })).toMatchObject(
+					{ status: 200, body: { refused: [] } },
+				);
 				await test_finish_archive_jobs(t);
 				expect(
 					await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/secret/shared/ok.md"] }),
@@ -5728,7 +5761,11 @@ describe("locked and missing paths", () => {
 					scopes: ["files:list", "files:write"],
 				});
 				expect(
-					await post(t, "/api/v1/files/move", reader.credential, { from: ["/b.md"], to: "/notes", requestId: "read-1" }),
+					await post(t, "/api/v1/files/move", reader.credential, {
+						from: ["/b.md"],
+						to: "/notes",
+						requestId: "read-1",
+					}),
 				).toEqual({ status: 403, body: { message: "Permission denied" } });
 
 				// Write on `/secret` lets the account change what is inside, but taking an item out changes who
@@ -5779,9 +5816,7 @@ describe("locked and missing paths", () => {
 				expect(intoSecret.status).toBe(200);
 				const intoSecretJobId = (intoSecret.body as { jobId: string }).jobId;
 				await finish_move(t, intoSecretJobId);
-				expect(
-					await post(t, "/api/v1/files/jobs/get", inside.credential, { jobId: intoSecretJobId }),
-				).toMatchObject({
+				expect(await post(t, "/api/v1/files/jobs/get", inside.credential, { jobId: intoSecretJobId })).toMatchObject({
 					status: 200,
 					body: { refused: [{ path: "/notes/b.md", message: "Permission denied" }] },
 				});
@@ -6194,7 +6229,7 @@ describe("files upload-urls", () => {
 			body: JSON.stringify({ path: "/imports/notes.yaml" }),
 		});
 		expect(readAfter.status).toBe(200);
-		expect(((await readAfter.json()) as { content: string }).content).toBe(content);
+		expect(await readAfter.text()).toBe(content);
 	});
 
 	test("refuses read-only keys and grant tokens", async () => {
@@ -6604,7 +6639,7 @@ describe("files upload-urls", () => {
 		// Names saved before the limit existed.
 		const folderName = "f".repeat(files_NAME_MAX_LENGTH + 1);
 		const fileName = `${"n".repeat(files_NAME_MAX_LENGTH)}.png`;
-		const oldFileId = await t.run(async (ctx) => {
+		const oldFileId = await test_run_with_flush(t, async (ctx) => {
 			const insert_old = (name: string, kind: "file" | "folder") =>
 				ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -6651,7 +6686,7 @@ describe("files upload-urls", () => {
 		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-old-long-path" });
 		// Folders saved before the limits existed. Their path alone is 1,024 characters.
 		const folderName = "f".repeat(files_NAME_MAX_LENGTH);
-		const { folderPath, oldFileId } = await t.run(async (ctx) => {
+		const { folderPath, oldFileId } = await test_run_with_flush(t, async (ctx) => {
 			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
 			let path = "";
 			const insert_old = (name: string, kind: "file" | "folder", pathDepth: number) =>
@@ -7203,6 +7238,7 @@ describe("files write-many", () => {
 	}
 
 	test("writes new files and fills existing ones with per-item results", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many" });
@@ -7240,13 +7276,14 @@ describe("files write-many", () => {
 			{ path: "/bulk/existing.md", nodeId: firstBody.nodeId, contentType: "text/markdown;charset=utf-8" },
 		]);
 
+		await finish_saved_file_content(t, firstBody.nodeId as Id<"files_nodes">);
 		const readResponse = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path: "/bulk/existing.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		expect(((await readResponse.json()) as { content: string }).content).toContain("Replaced by the batch");
+		expect(await readResponse.text()).toContain("Replaced by the batch");
 
 		// Every published write consumed its stage; nothing is left for the cleanup cron.
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
@@ -7342,7 +7379,9 @@ describe("files write-many", () => {
 		expect(startedWith[3]).toEqual(["/a/2.md", "/b/2.md"]);
 		// Each new folder was created once.
 		const folders = await t.run(async (ctx) =>
-			(await ctx.db.query("files_nodes").collect()).filter((node) => node.kind === "folder" && !node.archiveOperationId),
+			(await ctx.db.query("files_nodes").collect()).filter(
+				(node) => node.kind === "folder" && !node.archiveOperationId,
+			),
 		);
 		expect(folders.map((folder) => folder.path).sort()).toEqual(["/a", "/b"]);
 	});
@@ -7699,6 +7738,7 @@ describe("files write-many", () => {
 	});
 
 	test("skipIfUnchanged marks unchanged items and still writes changed ones", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-write-many-skip" });
@@ -7755,13 +7795,14 @@ describe("files write-many", () => {
 
 		// The unchanged file gained no new version snapshot; the changed one was rewritten.
 		expect(await count_stable_snapshots()).toBe(stableSnapshotsBefore);
+		await finish_saved_file_content(t, firstBody.written[1]!.nodeId as Id<"files_nodes">);
 		const readResponse = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path: "/rerun/changed.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		expect(((await readResponse.json()) as { content: string }).content).toContain("After");
+		expect(await readResponse.text()).toContain("After");
 	});
 
 	test("an exhausted bulk bucket rejects the whole batch before any write", async () => {
@@ -8366,7 +8407,7 @@ describe("files read-only locks", () => {
 			body: JSON.stringify({ path: args.path }),
 		});
 		expect(response.status).toBe(200);
-		return ((await response.json()) as { content: string }).content;
+		return await response.text();
 	}
 
 	test("force cannot move a writable child out of a view-only parent", async () => {
@@ -8504,7 +8545,7 @@ describe("files read-only locks", () => {
 		const hiddenId = await seed_restricted_root_folder({ t, db: writer.db, name: "secret" });
 		// Inside the hidden folder: a folder, and an old file whose path is over the length limit.
 		const longFolder = "f".repeat(files_PATH_MAX_LENGTH);
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			let parentId = hiddenId;
 			let path = "/secret";
 			for (const [name, kind] of [
@@ -8742,6 +8783,7 @@ describe("files read-only locks", () => {
 	});
 
 	test("a locked file answers the public write with a 409 conflict while the internal name stays read_only", async () => {
+		vi.useFakeTimers();
 		const t = test_convex();
 		install_r2_object_reads();
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-write" });
@@ -8795,6 +8837,7 @@ describe("files read-only locks", () => {
 			content: "# Change\n",
 		});
 		expect(allowed.status).toBe(200);
+		await finish_saved_file_content(t, nodeId);
 		expect(await read_file_content({ t, credential: writer.credential, path: "/locks/doc.md" })).toContain("# Change");
 	});
 

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID, files_get_utf8_byte_size } from "../server/files.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { api, internal } from "./_generated/api.js";
@@ -10,7 +11,13 @@ import { files_media_validation_db_advance_version } from "./files_media_validat
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
 import { r2 } from "./r2_client.ts";
-import { test_convex, test_create_saved_text_file, test_meta_search, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_meta_search,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 
 const volume_text = "# unfinished [markdown\nZorptelemetry marker.\nUnicode: café 🐒\nLast line without newline";
 
@@ -67,7 +74,7 @@ async function create_volume_fixture() {
 		membershipId: membership._id,
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
-	const stored = await t.run(async (ctx) => {
+	const stored = await test_run_with_flush(t, async (ctx) => {
 		const now = Date.now();
 		const tenant = { organizationId: owner.organizationId, workspaceId: owner.workspaceId };
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
@@ -612,13 +619,14 @@ describe("volume tenant API isolation", () => {
 			"fetch",
 			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 				const value = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
-				const key = new URL(value).searchParams.get("key");
+				const parsed = new URL(value);
+				const key = parsed.searchParams.get("key") ?? decodeURIComponent(parsed.pathname.replace(/^\/test-files-bucket\//u, ""));
 				if (value.startsWith("https://r2.test/upload?") && init?.method === "PUT" && key) {
 					objects.set(key, init.body ?? "");
 					return new Response(null, { status: 200 });
 				}
 				const body = key ? objects.get(key) : undefined;
-				return body === undefined ? new Response(null, { status: 404 }) : new Response(body);
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
 			}),
 		);
 		const tenantPath = "/tenant-visible.md";
@@ -665,7 +673,7 @@ describe("volume tenant API isolation", () => {
 			body: JSON.stringify({ path: tenantPath }),
 		});
 		expect(visible.status).toBe(200);
-		expect(await visible.json()).toMatchObject({ content: expect.stringContaining("Tenant visible") });
+		expect(await visible.text()).toContain("Tenant visible");
 		for (const path of [f.rootPath, "/.mounts/sources/repo"]) {
 			const response = await f.t.fetch("/api/v1/files/list", {
 				method: "POST",
@@ -683,23 +691,8 @@ describe("volume tenant API isolation", () => {
 				body: JSON.stringify({ path }),
 			});
 			expect(text.status).toBe(404);
-			const bytes = await f.t.fetch("/api/v1/files/read-bytes", {
-				method: "POST",
-				headers,
-				body: JSON.stringify({ path, offset: 0, length: 20, revision: null }),
-			});
-			expect(bytes.status).toBe(404);
+			expect(await text.text()).not.toContain("Zorptelemetry");
 		}
-		const many = await f.t.fetch("/api/v1/files/read-many", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ paths: [tenantPath, ...volumePaths] }),
-		});
-		expect(many.status).toBe(200);
-		const manyBody = (await many.json()) as { files: Array<{ path: string }>; errors: Array<{ path: string }> };
-		expect(manyBody.files.map((file) => file.path)).toEqual([tenantPath]);
-		expect(manyBody.errors.map((error) => error.path)).toEqual(volumePaths);
-		expect(JSON.stringify(manyBody)).not.toContain("Zorptelemetry");
 		getUrl.mockClear();
 		const download = await f.t.fetch("/api/v1/files/download-urls", {
 			method: "POST",
@@ -761,7 +754,7 @@ describe("volume action final checks", () => {
 		test.each(["disable", "replace"] as const)(`${action} refuses bytes after %s during R2 I/O`, async (change) => {
 			const f = await create_volume_fixture();
 			// Force the R2 branch, so the test reaches the final check instead of a chunk query.
-			await f.t.run(async (ctx) => {
+			await test_run_with_flush(f.t, async (ctx) => {
 				for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
 					const chunks = await ctx.db.query(table).collect();
 					for (const chunk of chunks) await ctx.db.delete(table, chunk._id);
@@ -788,7 +781,7 @@ describe("volume action final checks", () => {
 			fetch.mockClear();
 			let changed = false;
 			fetch.mockImplementation(async () => {
-				await f.t.run(async (ctx) => {
+				await test_run_with_flush(f.t, async (ctx) => {
 					if (change === "disable") {
 						await ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" });
 					} else {
@@ -826,6 +819,7 @@ describe("volume content storage", () => {
 					pendingInserts -= 1;
 				}
 			};
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				...f.scope,
 				userId: users_SYSTEM_AUTHOR,
@@ -865,7 +859,7 @@ describe("volume content storage", () => {
 
 	test("creates and materializes SYSTEM text through trusted helpers after the reader leaves", async () => {
 		const f = await create_volume_fixture();
-		const created = await f.t.run(async (ctx) => {
+		const created = await test_run_with_flush(f.t, async (ctx) => {
 			await ctx.db.delete("organizations_workspaces_users", f.agentSource.membershipId);
 			const result = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				...f.scope,

@@ -4,12 +4,13 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { getFunctionName } from "convex/server";
-import { public_api_http_read_bytes, public_api_http_read_file, public_api_http_read_many } from "./public_api.ts";
+import { public_api_http_read_file } from "./public_api.ts";
 import * as publicApiHttpAuth from "./public_api_http_auth.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 	test_save_file_pending_update,
 } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -34,7 +35,8 @@ beforeEach(() => {
 		"fetch",
 		vi.fn<typeof fetch>(async (input, init) => {
 			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-			const key = url.searchParams.get("key")!;
+			const key =
+				url.searchParams.get("key") ?? decodeURIComponent(url.pathname.replace(/^\/test-files-bucket\//u, ""));
 			if (init?.method === "PUT") {
 				objects.set(key, await new Response(init.body).arrayBuffer());
 				return new Response(null);
@@ -47,10 +49,10 @@ beforeEach(() => {
 				const end = Math.min(Number(range[2]), body.byteLength - 1);
 				return new Response(body.slice(start, end + 1), {
 					status: 206,
-					headers: { "Content-Range": `bytes ${start}-${end}/${body.byteLength}` },
+					headers: { "Content-Range": `bytes ${start}-${end}/${body.byteLength}`, ETag: '"test-etag"' },
 				});
 			}
-			return new Response(body);
+			return new Response(body, { headers: { ETag: '"test-etag"' } });
 		}),
 	);
 });
@@ -125,8 +127,8 @@ async function fixture(personal = false) {
 			body: JSON.stringify(body),
 		});
 	};
-	const read = (workspace: "current" | "personal", length = 6) =>
-		request({ workspace, route: "read-bytes", body: { path: "/data.txt", offset: 0, length, revision: null } });
+	const read = (workspace: "current" | "personal", cursor?: string) =>
+		request({ workspace, route: "read", body: { path: "/data.txt", ...(cursor ? { cursor } : {}) } });
 	async function file(args: { workspace: "current" | "personal"; textContent?: string; stored?: boolean }) {
 		const { workspace, textContent = workspace, stored = false } = args;
 
@@ -136,7 +138,7 @@ async function fixture(personal = false) {
 			textContent,
 		});
 		if (stored)
-			await t.run(async (ctx) => {
+			await test_run_with_flush(t, async (ctx) => {
 				const node = await ctx.db.get("files_nodes", nodeId);
 				await ctx.db.patch("files_nodes", nodeId, {
 					textKind: null,
@@ -208,20 +210,8 @@ describe("two-root code grants", () => {
 		if (ready._nay) throw new Error(ready._nay.message);
 		const single = await f.request({ workspace, route: "read", body: { path: "/data.txt" } });
 		expect(single.status).toBe(200);
-		expect(await single.json(), "code grants must read saved text").toMatchObject({
-			content: "saved\n",
-			target: { kind: "saved", id: nodeId },
-		});
-		const many = await f.request({ workspace, route: "read-many", body: { paths: ["/data.txt"] } });
-		expect(await many.json()).toMatchObject({ files: [{ content: "saved\n" }], errors: [] });
-		const bytes = await f.request({
-			workspace,
-			route: "read-bytes",
-			body: { path: "/data.txt", offset: 0, length: 100, revision },
-		});
-		expect(bytes.status, "private text must not change a code grant's saved revision").toBe(200);
-		expect(await bytes.text()).toBe("saved\n");
-		expect(bytes.headers.get("X-File-Revision")).toBe(revision);
+		expect(await single.text(), "code grants must read saved text").toBe("saved\n");
+		expect(single.headers.get("X-File-Revision"), "private text must not change the saved revision").toBe(revision);
 	});
 
 	test("mints only the trusted pair with one budget and reads each root through HTTP", async () => {
@@ -264,10 +254,7 @@ describe("two-root code grants", () => {
 		for (const workspace of ["current", "personal"] as const) {
 			const read = await f.request({ workspace, route: "read", body: { path: "/data.txt" } });
 			expect(read.status).toBe(200);
-			expect(await read.json()).toMatchObject({ content: workspace });
-			const many = await f.request({ workspace, route: "read-many", body: { paths: ["/data.txt"] } });
-			expect(many.status).toBe(200);
-			expect(await many.json()).toMatchObject({ files: [{ content: workspace }] });
+			expect(await read.text()).toBe(workspace);
 			const list = await f.request({ workspace, route: "list", body: { path: "/" } });
 			expect(list.status).toBe(200);
 			expect(await list.json()).toMatchObject({ items: [{ path: "/data.txt" }] });
@@ -289,28 +276,17 @@ describe("two-root code grants", () => {
 			)._nay,
 		).toBeUndefined();
 		await f.mint();
-		for (const route of ["read", "read-many", "read-bytes"]) {
-			const responses = [];
-			for (const path of ["/data.txt", "/missing.txt"]) {
-				const response = await f.request({
-					workspace: "current",
-					route,
-					body:
-						route === "read-many"
-							? { paths: [path] }
-							: route === "read-bytes"
-								? { path, offset: 0, length: 100, revision: null }
-								: { path },
-				});
-				responses.push({ status: response.status, body: JSON.stringify(await response.json()) });
-			}
-			const [locked, missing] = responses;
-			expect(locked?.status).toBe(route === "read-many" ? 200 : 403);
-			expect(missing?.status).toBe(route === "read-many" ? 200 : 404);
-			expect(locked?.body).toContain("Permission denied: /data.txt");
-			expect(missing?.body).not.toContain("Permission denied");
-			expect(locked?.body).not.toContain("hidden content");
+		const responses = [];
+		for (const path of ["/data.txt", "/missing.txt"]) {
+			const response = await f.request({ workspace: "current", route: "read", body: { path } });
+			responses.push({ status: response.status, body: JSON.stringify(await response.json()) });
 		}
+		const [locked, missing] = responses;
+		expect(locked?.status).toBe(403);
+		expect(missing?.status).toBe(404);
+		expect(locked?.body).toContain("Permission denied: /data.txt");
+		expect(missing?.body).not.toContain("Permission denied");
+		expect(locked?.body).not.toContain("hidden content");
 	});
 
 	test("home uses one grant and ignores the unused personal token", async () => {
@@ -357,7 +333,7 @@ describe("two-root code grants", () => {
 
 	test("old home authority stays revoked after source removal and re-invitation", async () => {
 		const f = await fixture();
-		await f.file({ workspace: "personal" });
+		await f.file({ workspace: "personal", textContent: "abcdef" });
 		await f.mint();
 		expect((await f.read("personal")).status).toBe(200);
 		expect(
@@ -366,19 +342,13 @@ describe("two-root code grants", () => {
 				userIdToRemove: f.actor.userId,
 			}),
 		).toEqual({ _yay: null });
-		for (const route of ["read", "read-many", "list", "read-bytes"]) {
+		for (const route of ["read", "list"]) {
 			expect(
 				(
 					await f.request({
 						workspace: "personal",
 						route,
-						body: {
-							path: "/data.txt",
-							paths: ["/data.txt"],
-							offset: 0,
-							length: 6,
-							revision: null,
-						},
+						body: { path: "/data.txt" },
 					})
 				).status,
 			).toBe(401);
@@ -413,11 +383,18 @@ describe("two-root code grants", () => {
 
 	test("both roots atomically share eight range reservations under concurrent HTTP reads", async () => {
 		const f = await fixture();
-		await f.file({ workspace: "current", textContent: "abcdef", stored: true });
-		await f.file({ workspace: "personal", textContent: "ghijkl", stored: true });
+		for (const workspace of ["current", "personal"] as const) {
+			const nodeId = await f.file({ workspace, stored: true });
+			await f.t.run(async (ctx) => {
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				const asset = (await ctx.db.get("files_r2_assets", node.assetId!))!;
+				objects.set(asset.r2Key!, new ArrayBuffer(1024 * 1024));
+				await ctx.db.patch("files_r2_assets", asset._id, { size: 1024 * 1024 });
+			});
+		}
 		await f.mint();
 		const reads = await Promise.all(
-			Array.from({ length: 9 }, (_, index) => f.read(index % 2 ? "personal" : "current", 1024 * 1024)),
+			Array.from({ length: 9 }, (_, index) => f.read(index % 2 ? "personal" : "current")),
 		);
 		expect(reads.filter((response) => response.status === 200)).toHaveLength(8);
 		expect(reads.filter((response) => response.status === 429)).toHaveLength(1);
@@ -441,10 +418,11 @@ describe("two-root code grants", () => {
 		await f.mint();
 		const started = Promise.withResolvers<void>();
 		const released = Promise.withResolvers<void>();
-		vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key) => {
+		const fetchRange = vi.mocked(fetch).getMockImplementation()!;
+		vi.mocked(fetch).mockImplementationOnce(async (...args) => {
 			started.resolve();
 			await released.promise;
-			return `https://r2.test/object?key=${encodeURIComponent(key)}`;
+			return fetchRange(...args);
 		});
 		const response = f.read("personal");
 		await started.promise;
@@ -458,30 +436,28 @@ describe("two-root code grants", () => {
 		);
 	});
 
-	test.each(["read", "read-many"] as const)("rechecks source at the %s response boundary", async (route) => {
+	test("rechecks source at the text read response boundary", async () => {
 		const f = await fixture();
 		await f.file({ workspace: "personal", textContent: "abcdef" });
 		await f.mint();
 		const started = Promise.withResolvers<void>();
 		const released = Promise.withResolvers<void>();
 		const response = f.t.action(async (ctx) => {
-			// Pause after the real content action; chunk reads need no R2 fetch to pause.
-			const runAction: typeof ctx.runAction = async (ref, args) => {
-				const result = await ctx.runAction(ref, args);
-				if (getFunctionName(ref) === "files_nodes_content:get_file_last_available_text_content_by_path") {
+			let sourceReads = 0;
+			const runQuery: typeof ctx.runQuery = async (ref, args) => {
+				const result = await ctx.runQuery(ref, args);
+				if (getFunctionName(ref) === "files_nodes_content:get_saved_file_read_source" && ++sourceReads === 2) {
 					started.resolve();
 					await released.promise;
 				}
 				return result;
 			};
-			const request = new Request(`https://app.test/api/v1/files/${route}`, {
+			const request = new Request("https://app.test/api/v1/files/read", {
 				method: "POST",
 				headers: { Authorization: `Bearer ${tokens.personal}`, "Content-Type": "application/json" },
-				body: JSON.stringify(route === "read" ? { path: "/data.txt" } : { paths: ["/data.txt"] }),
+				body: JSON.stringify({ path: "/data.txt" }),
 			});
-			return route === "read"
-				? await public_api_http_read_file({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read" })
-				: await public_api_http_read_many({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read-many" });
+			return await public_api_http_read_file({ ctx: { ...ctx, runQuery }, request, path: "/api/v1/files/read" });
 		});
 		await started.promise;
 		await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.source.membershipId, { active: false }));
@@ -602,47 +578,57 @@ describe("two-root code grants", () => {
 		expect(await list()).toEqual([200, expect.objectContaining({ items: [], isDone: true })]);
 	});
 
-	test.each(["read", "read-many"] as const)(
-		"%s suppresses missing-file results after source re-invitation",
-		async (route) => {
-			const f = await fixture();
-			await f.mint();
-			const started = Promise.withResolvers<void>();
-			const released = Promise.withResolvers<void>();
-			const response = f.t.action(async (ctx) => {
-				const runAction: typeof ctx.runAction = async (ref, args) => {
-					const result = await ctx.runAction(ref, args);
-					if (getFunctionName(ref) === "files_nodes_content:get_file_last_available_text_content_by_path") {
-						started.resolve();
-						await released.promise;
-					}
-					return result;
-				};
-				const request = new Request(`https://app.test/api/v1/files/${route}`, {
-					method: "POST",
-					headers: { Authorization: `Bearer ${tokens.personal}`, "Content-Type": "application/json" },
-					body: JSON.stringify(route === "read" ? { path: "/missing.txt" } : { paths: ["/missing.txt"] }),
-				});
-				return route === "read"
-					? await public_api_http_read_file({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read" })
-					: await public_api_http_read_many({ ctx: { ...ctx, runAction }, request, path: "/api/v1/files/read-many" });
+	test("read suppresses missing-file results after source re-invitation", async () => {
+		const f = await fixture();
+		await f.mint();
+		const started = Promise.withResolvers<void>();
+		const released = Promise.withResolvers<void>();
+		const response = f.t.action(async (ctx) => {
+			const runQuery: typeof ctx.runQuery = async (ref, args) => {
+				const result = await ctx.runQuery(ref, args);
+				if (getFunctionName(ref) === "files_nodes_content:get_saved_file_read_source") {
+					started.resolve();
+					await released.promise;
+				}
+				return result;
+			};
+			const request = new Request("https://app.test/api/v1/files/read", {
+				method: "POST",
+				headers: { Authorization: `Bearer ${tokens.personal}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ path: "/missing.txt" }),
 			});
-			await started.promise;
-			try {
-				await f.leave(true);
-			} finally {
-				released.resolve();
-			}
-			expect(await response).toMatchObject({ status: 404, body: { message: "File unavailable" } });
-		},
-	);
+			return await public_api_http_read_file({ ctx: { ...ctx, runQuery }, request, path: "/api/v1/files/read" });
+		});
+		await started.promise;
+		try {
+			await f.leave(true);
+		} finally {
+			released.resolve();
+		}
+		expect(await response).toMatchObject({ status: 404, body: { message: "File unavailable" } });
+	});
 
 	test.each(["revision", "final-query"] as const)(
 		"byte reads suppress %s results after source re-invitation",
 		async (phase) => {
 			const f = await fixture();
-			await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
+			const nodeId = await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
 			await f.mint();
+			let cursor: string | undefined;
+			if (phase === "revision") {
+				const asset = await f.t.run(async (ctx) => {
+					const node = (await ctx.db.get("files_nodes", nodeId))!;
+					const asset = (await ctx.db.get("files_r2_assets", node.assetId!))!;
+					objects.set(asset.r2Key!, new ArrayBuffer(1024 * 1024 + 6));
+					await ctx.db.patch("files_r2_assets", asset._id, { size: 1024 * 1024 + 6 });
+					return asset;
+				});
+				const first = await f.read("personal");
+				expect(first.status).toBe(200);
+				cursor = first.headers.get("X-File-Next-Cursor")!;
+				expect(cursor).toBeTruthy();
+				await f.t.run((ctx) => ctx.db.patch("files_r2_assets", asset._id, { size: 1024 * 1024 + 7 }));
+			}
 			const started = Promise.withResolvers<void>();
 			const released = Promise.withResolvers<void>();
 			const response = f.t.action(async (ctx) => {
@@ -650,7 +636,7 @@ describe("two-root code grants", () => {
 				const runQuery: typeof ctx.runQuery = async (ref, args) => {
 					const result = await ctx.runQuery(ref, args);
 					if (
-						getFunctionName(ref) === "files_nodes_content:get_file_byte_read_source" &&
+						getFunctionName(ref) === "files_nodes_content:get_saved_file_read_source" &&
 						++sourceReads === (phase === "revision" ? 1 : 2)
 					) {
 						started.resolve();
@@ -658,19 +644,17 @@ describe("two-root code grants", () => {
 					}
 					return result;
 				};
-				const result = await public_api_http_read_bytes({
+				const result = await public_api_http_read_file({
 					ctx: { ...ctx, runQuery },
-					request: new Request("https://app.test/api/v1/files/read-bytes", {
+					request: new Request("https://app.test/api/v1/files/read", {
 						method: "POST",
 						headers: { Authorization: `Bearer ${tokens.personal}`, "Content-Type": "application/json" },
 						body: JSON.stringify({
 							path: "/data.txt",
-							offset: 0,
-							length: 6,
-							revision: phase === "revision" ? "0".repeat(64) : null,
+							...(cursor ? { cursor } : {}),
 						}),
 					}),
-					path: "/api/v1/files/read-bytes",
+					path: "/api/v1/files/read",
 				});
 				return { ...result, body: result.status === 200 ? new TextDecoder().decode(result.body) : result.body };
 			});
@@ -710,7 +694,7 @@ describe("two-root code grants", () => {
 			const result = await response;
 			expect(result.status).toBe(404);
 			expect(result.headers.get("Location")).toBeNull();
-			expect(await result.json()).toEqual({ message: "File unavailable" });
+			expect(await result.json()).toEqual({ message: "File unavailable", errorCode: "not_found" });
 		},
 	);
 

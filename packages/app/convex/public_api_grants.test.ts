@@ -27,7 +27,7 @@ beforeEach(() => {
 				return new Response(null);
 			}
 			const body = objects.get(key);
-			return body ? new Response(body) : new Response(null, { status: 404 });
+			return body ? new Response(body, { headers: { ETag: '"saved-file"' } }) : new Response(null, { status: 404 });
 		}),
 	);
 });
@@ -253,34 +253,18 @@ describe("public API grants", () => {
 		const readResponse = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: grant_headers(token),
-			body: JSON.stringify({ path: "/payments/payment-001.md", maxBytes: 1024 * 1024 }),
+			body: JSON.stringify({ path: "/payments/payment-001.md" }),
 		});
 		expect(readResponse.status).toBe(200);
-		const readBody = (await readResponse.json()) as { path: string; content: string };
-		expect(readBody.path).toBe("/payments/payment-001.md");
-		expect(readBody.content).toContain("amount: 12.50");
+		expect(await readResponse.text()).toContain("amount: 12.50");
 
-		const readManyResponse = await t.fetch("/api/v1/files/read-many", {
+		const secondResponse = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: grant_headers(token),
-			body: JSON.stringify({
-				paths: ["/payments/payment-001.md", "/payments/payment-002.md"],
-				maxBytes: 1024 * 1024,
-			}),
+			body: JSON.stringify({ path: "/payments/payment-002.md" }),
 		});
-		expect(readManyResponse.status).toBe(200);
-		const readManyBody = (await readManyResponse.json()) as {
-			files: Array<{ path: string; content: string }>;
-			errors: Array<{ path: string; message: string }>;
-			truncated: boolean;
-		};
-		expect(readManyBody.files.map((file) => file.path).sort()).toEqual([
-			"/payments/payment-001.md",
-			"/payments/payment-002.md",
-		]);
-		expect(readManyBody.files.map((file) => file.content).join("\n")).toContain("amount: 7.25");
-		expect(readManyBody.errors).toEqual([]);
-		expect(readManyBody.truncated).toBe(false);
+		expect(secondResponse.status).toBe(200);
+		expect(await secondResponse.text()).toContain("amount: 7.25");
 	});
 
 	test("enforces grant path prefix before listing or reading files", async () => {
@@ -363,12 +347,5 @@ describe("public API grants", () => {
 			body: JSON.stringify({ path: "/payments/payment-001.md" }),
 		});
 		expect(readWithListOnly.status).toBe(403);
-
-		const readManyWithListOnly = await t.fetch("/api/v1/files/read-many", {
-			method: "POST",
-			headers: grant_headers(listOnlyToken),
-			body: JSON.stringify({ paths: ["/payments/payment-001.md"] }),
-		});
-		expect(readManyWithListOnly.status).toBe(403);
 	});
 });

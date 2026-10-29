@@ -434,7 +434,7 @@ Needs `AI_CHAT_BROWSER_ENABLED=true` on the dev deployment and an HTML file (sea
 - Keep a separate image pending for image-read checks. While the shared browser is live, switch to Ask mode and request a new screenshot proposal. Require no new pending files and the stored result `status: "errored", reason: "agent_required"`. The model's answer alone is not evidence. Ask may still inspect the page and return private text observations.
 - Then end the shared browser. In both Ask and Agent mode, call `view_image({ workspace: "personal", path: "/qa-browser-RUN/page.png" })` for a private image and a saved image. Resolve an old id or Files URL with Bash first when the path is unknown. Use the canonical Files path, not the Bash mount path. Ask about a visible detail to confirm that the model received the image. The tool card must show only safe status and one Files link, including after reload. This read needs neither a live browser nor the image's creation chat.
 - `view_image` accepts PNG, JPEG, WEBP, and GIF. It allows 8 MiB per turn, 8192 pixels per edge, and 16 million canvas pixels. Header checks do not prove that all compressed pixels are valid. A later turn must read the image again. Stored chat keeps no pixels or browser observations.
-- Test non-image output separately with the [arbitrary-file and byte-transform recipes](agent-panel.md#deterministic-arbitrary-file-check). The same `emitFile` helper supports every byte type. Editable UTF-8 becomes a normal private text draft. Invalid, unsupported, or over-limit text remains stored bytes. Use Bash for text and `execute_code` with `/api/v1/files/read-bytes` for binary transforms.
+- Test non-image output separately with the [arbitrary-file and byte-transform recipes](agent-panel.md#deterministic-arbitrary-file-check). The same `emitFile` helper supports every byte type. Editable UTF-8 becomes a normal private text draft. Invalid, unsupported, or over-limit text remains stored bytes. Use Bash for text and `execute_code` with `/api/v1/files/read` for binary transforms.
 - Use Tab and Enter or Space to expand Pending images and reach Save/Discard. During a review, require a progress message and no duplicate action. When a focused row disappears, focus must stay in the Pending panel or file view. Check preview loading, a failed load with `Retry image`, stale review errors, and denied Save. A late preview response must not replace the newly selected image.
 - Save and Discard leave their Activity dialog open after completion. Close `Save reviewed changes` or `Discard reviewed changes` before acting behind it. Use the scoped footer `Close` recipe below; the icon has the same accessible name.
 - Check a narrow viewport and 200% zoom. Long file paths truncate on the row and wrap in the private-file view, image previews must fit, and the row's Accept/Discard must remain reachable. At 360px, close the Files tree and widen Pending with its resize handle. The tab strip scrolls horizontally. This checks screenshot controls; the wider Files layout still needs manual panel sizing. Return to the HTML file and start a new browser session before continuing live browser checks.
@@ -1916,13 +1916,13 @@ full paging.
 
 ### Public File API From The Browser
 
-`/api/v1/files/read`, `read-many` and `list` take **paths**. `download-urls` is the only public
+`/api/v1/files/read` and `list` take **paths**. `download-urls` is the public
 file door that takes ids (`fileNodeIds`), and it needs scope `files:download` — a key without it
 answers `403 Permission denied` for every id, valid or not. Always send a known-good saved node in
 the same check, or a refusal proves nothing about the id you care about.
 
-A private (agent-created) target is refused everywhere public: `read` 404s, `read-many` returns it
-under `errors` with `files: []`, `list` omits it, and `download-urls` returns
+A private (agent-created) target is refused everywhere public: `read` returns 404,
+`list` omits it, and `download-urls` returns
 `{fileNodeId, message: "Not found"}` while a saved id in the same batch still returns its signed
 URL. The public doors also serve committed state only — a saved file with a pending replacement
 reads back at its saved size and body.

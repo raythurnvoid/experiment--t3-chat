@@ -1900,18 +1900,9 @@ describe("accept_file_pending_replacement", () => {
 			expect(
 				(await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, readArgs))?.content,
 			).toBe(draftText);
-			expect(
-				await t.query(internal.files_nodes_content.get_file_byte_read_source, { ...readArgs, includePending: true }),
-			).toMatchObject({
-				kind: "text",
-				// The draft keeps its text shape. MIME still describes the saved file.
-				contentType: sourceKind === "text" ? "text/plain;charset=utf-8" : "application/pdf",
-			});
-			const savedSource = await t.query(internal.files_nodes_content.get_file_byte_read_source, {
-				...readArgs,
-				includePending: false,
-			});
+			const savedSource = await t.query(internal.files_nodes_content.get_saved_file_read_source, readArgs);
 			expect(savedSource?.kind).toBe(sourceKind === "text" ? "text" : "stored");
+			expect(savedSource?.contentType).toBe(sourceKind === "text" ? "text/plain;charset=utf-8" : "application/pdf");
 			const saved = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				...readArgs,
 				includePending: false,

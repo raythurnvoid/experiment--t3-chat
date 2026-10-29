@@ -24,7 +24,13 @@ import { files_stored_uploads_db_admit } from "./files_stored_uploads.ts";
 import { quotas_db_get } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
+import {
+	crypto_open_cursor,
+	crypto_seal_cursor,
+	crypto_random_hex,
+	crypto_sha256_hex,
+	crypto_timing_safe_equal,
+} from "../server/crypto-utils.ts";
 import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_path_normalize,
@@ -63,7 +69,6 @@ import {
 	files_resolve_upload_content_type,
 	files_u8_to_array_buffer,
 	type files_ContentType,
-	type files_PendingTarget,
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
@@ -95,18 +100,12 @@ import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	files_nodes_create_yjs_snapshot_update_from_text,
 	files_nodes_db_fill_text_node_content,
-	type files_nodes_get_file_byte_read_source_Result,
+	type files_nodes_get_saved_file_read_source_Result,
 } from "./files_nodes_content.ts";
-import {
-	files_nodes_db_insert_file_content_docs,
-} from "./files_nodes_create.ts";
+import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
-import {
-	r2,
-	r2_put_object,
-	r2_fetch_object_range_from_bucket,
-} from "./r2_client.ts";
+import { r2, r2_put_object } from "./r2_client.ts";
 import {
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
@@ -156,15 +155,8 @@ type stage_trusted_yjs_update_LocalResult =
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
 export const experimental_reuseContext = true;
 
-// One read returns any saved text file. A text file can never be bigger than this.
-const FILES_READ_MAX_BYTES = files_MAX_TEXT_CONTENT_BYTES;
-const FILES_READ_BYTES_MAX_LENGTH = 1024 * 1024;
-const FILES_GRANT_READ_BYTES = 8 * FILES_READ_BYTES_MAX_LENGTH;
-const FILES_READ_MANY_MAX_ITEMS = 50;
-const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
-// Keep one item well under the batch total. A bigger item would end every batch as `truncated`
-// with nothing returned, and the caller could never move past it. Bigger files use `files/read`.
-const FILES_READ_MANY_MAX_ITEM_BYTES = 128_000;
+const FILES_READ_PAGE_BYTES = 1024 * 1024;
+const FILES_GRANT_READ_BYTES = 8 * FILES_READ_PAGE_BYTES;
 const FILES_DOWNLOAD_URL_MAX_TTL_SECONDS = 15 * 60;
 // The signer timestamps after our pre-sign check, so leave one full second inside plugin authority.
 const FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS = 1;
@@ -195,7 +187,6 @@ const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
 const INVALID_WRITE_CONTENT_TYPE_MESSAGE = "contentType must be an editable text type.";
 const ACTIVITIES_TITLE_MAX_CHARS = 120;
 
-const TEXT_ENCODER = new TextEncoder();
 const CREDENTIAL_KEY_PREFIX = "pk_";
 const CREDENTIAL_KEY_ID_BYTES = 16;
 const CREDENTIAL_SECRET_BYTES = 32;
@@ -628,7 +619,7 @@ export const reserve_grant_read_bytes = internalMutation({
 	args: { presented: v.string(), length: v.number() },
 	returns: v.boolean(),
 	handler: async (ctx, args) => {
-		if (!Number.isSafeInteger(args.length) || args.length < 1 || args.length > FILES_READ_BYTES_MAX_LENGTH) {
+		if (!Number.isSafeInteger(args.length) || args.length < 1 || args.length > FILES_READ_PAGE_BYTES) {
 			return false;
 		}
 		const tokenHash = await crypto_sha256_hex(args.presented);
@@ -2036,7 +2027,10 @@ export const get_file_read_membership = internalQuery({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 	},
-	returns: v.union(v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.union(v.number(), v.null()) }), v.null()),
+	returns: v.union(
+		v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.union(v.number(), v.null()) }),
+		v.null(),
+	),
 	handler: async (ctx, args) => {
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
@@ -5708,10 +5702,24 @@ export async function public_api_write_one_text_file(
 
 // HTTP routes
 
-const read_file_body_validator = z.object({
-	path: z.string(),
-	maxBytes: z.number().int().min(1).optional(),
-});
+const read_file_body_validator = z
+	.object({
+		path: z.string().min(2).max(4096),
+		cursor: z
+			.string()
+			.min(1)
+			.max(16 * 1024)
+			.nullable()
+			.optional(),
+	})
+	.strict();
+const read_file_cursor_validator = z
+	.object({
+		sourceRevision: z.string().regex(/^[0-9a-f]{64}$/u),
+		etag: z.string().regex(/^"[\x21\x23-\x7e]{1,256}"$/u),
+		offset: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+	})
+	.strict();
 
 export type public_api_http_read_file_Body = z.infer<typeof read_file_body_validator>;
 
@@ -5721,480 +5729,296 @@ export async function public_api_http_read_file(args: {
 	path: "/api/v1/files/read";
 }) {
 	const { ctx, request, path } = args;
-
+	const headers = { "Cache-Control": "no-store" };
+	const refuse = <S extends number>(status: S, errorCode: string, message: string) => ({
+		status,
+		headers,
+		body: { message, errorCode },
+	});
 	const auth = await public_api_authorize_request({
 		ctx,
 		request,
-		requiredScope: "files:read" satisfies public_api_Scope,
+		requiredScope: ["files:read", "files:download"],
 		allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui", "plugin_run"],
 		route: path,
 	});
 	if (auth._nay) {
-		return auth._nay;
-	}
-	const principal = auth._yay.principal;
-	const pluginCallId = auth._yay.pluginCallId;
-
-	// Authorizing consumed a plugin run's call slot, and a run that ends with a call still open is
-	// failed as "Plugin left API calls unfinished". So every branch below settles it, including the
-	// successful one.
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
-		await public_api_settle_plugin_call_best_effort(ctx, {
-			callId: pluginCallId,
-			status: "failed",
-			responseStatus: failArgs.status,
-			errorCode: failArgs.errorCode,
-			errorMessage: failArgs.message,
-		});
-		return { message: failArgs.message };
-	};
-
-	const body = await server_request_json_parse_and_validate(request, read_file_body_validator);
-	if (body._nay) {
 		return {
-			status: 400,
-			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
-		} as const;
-	}
-
-	const requestedPath = server_path_normalize(body._yay.path);
-	if (requestedPath === "/") {
-		return {
-			status: 400,
-			body: await fail({ status: 400, message: "Path must point to a file.", errorCode: "invalid_input" }),
-		} as const;
-	}
-	if (!public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix)) {
-		return {
-			status: 403,
-			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
-		} as const;
-	}
-
-	const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-		agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
-		organizationId: principal.organizationId,
-		workspaceId: principal.workspaceId,
-		// A plugin run has no user of its own, so its actor's id picks drafts. Access uses `subject`.
-		userId: public_api_visibility_user_id(principal),
-		subject: principal.subject,
-		path: requestedPath,
-		includePending: false,
-		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
-	});
-	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
-		const current = await public_api_resolve_live_principal(ctx, {
-			presented: auth._yay.presentedToken,
-			now: Date.now(),
-			requiredScope: "files:read",
-		});
-		if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
-	}
-	if (!content) {
-		// Locked, not hidden: a file the caller cannot open is 403. Only a missing one is 404.
-		const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			subject: principal.subject,
-			path: requestedPath,
-		});
-		if (access.status === "locked") {
-			return {
-				status: 403,
-				body: await fail({
-					status: 403,
-					message: `Permission denied: ${requestedPath}`,
-					errorCode: "permission_denied",
-				}),
-			} as const;
-		}
-		return {
-			status: 404,
-			body: await fail({
-				status: 404,
-				message: "File not found or exceeds the read limit.",
-				errorCode: "not_found",
-			}),
-		} as const;
-	}
-
-	const bytes = TEXT_ENCODER.encode(content.content).length;
-	let callSettled = false;
-	if (principal.kind === "plugin_run" && pluginCallId) {
-		if (content.target.kind !== "saved")
-			return {
-				status: 404,
-				body: await fail({ status: 404, message: "File unavailable", errorCode: "not_found" }),
-			} as const;
-		const checked = (await ctx.runMutation(internal.public_api.validate_and_finish_scheduled_file_read, {
-			runId: principal.runId,
-			callId: pluginCallId,
-			tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
-			requiredScope: "files:read",
-			nodes: [{ nodeId: content.target.id, path: requestedPath }],
-			responseBytes: bytes,
-		})) as public_api_validate_and_finish_scheduled_file_read_Result;
-		if (checked._nay?.name === "locked")
-			return {
-				status: 403,
-				body: await fail({ status: 403, message: checked._nay.message, errorCode: "permission_denied" }),
-			} as const;
-		if (checked._nay)
-			return {
-				status: 404,
-				body: await fail({ status: 404, message: "File unavailable", errorCode: "not_found" }),
-			} as const;
-		callSettled = checked._yay;
-	}
-	console.info("Public API file read", {
-		principalKind: principal.kind,
-		principalKey: principal.principalKey,
-		bytes,
-	});
-
-	if (!callSettled)
-		await public_api_settle_plugin_call_best_effort(ctx, {
-			callId: pluginCallId,
-			status: "succeeded",
-			responseStatus: 200,
-			responseBytes: bytes,
-		});
-
-	return {
-		status: 200,
-		body: {
-			path: requestedPath,
-			target: content.target,
-			content: content.content,
-		},
-		headers: { "Cache-Control": "no-store" },
-	} as const;
-}
-
-const read_many_body_validator = z.object({
-	paths: z.array(z.string()).min(1),
-	maxBytes: z.number().int().min(1).optional(),
-});
-
-export type public_api_http_read_many_Body = z.infer<typeof read_many_body_validator>;
-
-export async function public_api_http_read_many(args: {
-	ctx: ActionCtx;
-	request: Request;
-	path: "/api/v1/files/read-many";
-}) {
-	const { ctx, request, path } = args;
-
-	const auth = await public_api_authorize_request({
-		ctx,
-		request,
-		requiredScope: "files:read" satisfies public_api_Scope,
-		allowedKinds: ["user_api_key", "public_api_grant"],
-		route: path,
-	});
-	if (auth._nay) {
-		return auth._nay;
-	}
-	const principal = auth._yay.principal;
-
-	const body = await server_request_json_parse_and_validate(request, read_many_body_validator);
-	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-
-	const requestedPaths = body._yay.paths
-		.slice(0, FILES_READ_MANY_MAX_ITEMS)
-		.map((filePath) => server_path_normalize(filePath));
-	if (requestedPaths.some((filePath) => filePath === "/")) {
-		return { status: 400, body: { message: "Paths must point to files." } } as const;
-	}
-	if (requestedPaths.some((filePath) => !public_api_is_path_inside_prefix(filePath, principal.pathPrefix))) {
-		return { status: 403, body: { message: "Permission denied" } } as const;
-	}
-
-	const maxBytes = Math.min(body._yay.maxBytes ?? FILES_READ_MANY_MAX_ITEM_BYTES, FILES_READ_MANY_MAX_ITEM_BYTES);
-	const contents = await Promise.all(
-		requestedPaths.map(async (filePath) => {
-			const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-				agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
-				organizationId: principal.organizationId,
-				workspaceId: principal.workspaceId,
-				userId: principal.userId,
-				subject: principal.subject,
-				path: filePath,
-				includePending: false,
-				maxBytes,
-			});
-			// Locked, not hidden: a file the caller cannot open gets its own error text.
-			const access = content
-				? null
-				: await ctx.runQuery(internal.files_nodes.get_path_access, {
-						organizationId: principal.organizationId,
-						workspaceId: principal.workspaceId,
-						subject: principal.subject,
-						path: filePath,
-					});
-			return { path: filePath, content, locked: access?.status === "locked" };
-		}),
-	);
-
-	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
-		const current = await public_api_resolve_live_principal(ctx, {
-			presented: auth._yay.presentedToken,
-			now: Date.now(),
-			requiredScope: "files:read",
-		});
-		if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
-	}
-	let contentBytes = 0;
-	const pathsTruncated = body._yay.paths.length > requestedPaths.length;
-	let contentTruncated = false;
-	const files: Array<{
-		path: string;
-		target: files_PendingTarget;
-		content: string;
-	}> = [];
-	const errors: Array<{ path: string; message: string }> = [];
-
-	for (const item of contents) {
-		if (!item.content) {
-			errors.push({
-				path: item.path,
-				message: item.locked ? `Permission denied: ${item.path}` : "File not found or exceeds the read limit.",
-			});
-			continue;
-		}
-
-		const nextContentBytes = TEXT_ENCODER.encode(item.content.content).length;
-		if (contentBytes + nextContentBytes > FILES_READ_MANY_MAX_CONTENT_BYTES) {
-			contentTruncated = true;
-			break;
-		}
-
-		contentBytes += nextContentBytes;
-		files.push({
-			path: item.path,
-			target: item.content.target,
-			content: item.content.content,
-		});
-	}
-
-	console.info("Public API files read", {
-		principalKind: principal.kind,
-		principalKey: principal.principalKey,
-		count: files.length,
-		errorCount: errors.length,
-		truncated: pathsTruncated || contentTruncated,
-		bytes: contentBytes,
-	});
-
-	return {
-		status: 200,
-		body: {
-			files,
-			errors,
-			truncated: pathsTruncated || contentTruncated,
-		},
-		headers: { "Cache-Control": "no-store" },
-	} as const;
-}
-
-const read_bytes_body_validator = z
-	.object({
-		path: z.string().min(2).max(4096),
-		offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-		length: z.number().int().min(1).max(FILES_READ_BYTES_MAX_LENGTH),
-		revision: z
-			.string()
-			.regex(/^[0-9a-f]{64}$/u)
-			.nullable(),
-	})
-	.strict();
-
-export type public_api_http_read_bytes_Body = z.infer<typeof read_bytes_body_validator>;
-
-export async function public_api_http_read_bytes(args: {
-	ctx: ActionCtx;
-	request: Request;
-	path: "/api/v1/files/read-bytes";
-}) {
-	const { ctx, request, path } = args;
-
-	const auth = await public_api_authorize_request({
-		ctx,
-		request,
-		requiredScope: "files:download",
-		allowedKinds: ["user_api_key", "public_api_grant"],
-		route: path,
-	});
-	if (auth._nay) return auth._nay;
-	const { principal, presentedToken } = auth._yay;
-
-	const body = await server_request_json_parse_and_validate(request, read_bytes_body_validator);
-	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
-	const { path: requestedPath, offset, length, revision } = body._yay;
-	// Byte offsets apply only to an exact Files path, never a normalized alias.
-	if (
-		!requestedPath.startsWith("/") ||
-		requestedPath !== server_path_normalize(requestedPath) ||
-		/[\\*?\[\]]|\p{Cc}/u.test(requestedPath) ||
-		requestedPath
-			.slice(1)
-			.split("/")
-			.some((segment) => !segment || segment === "." || segment === "..")
-	) {
-		return { status: 400, body: { message: "Path must be a canonical Files path." } } as const;
-	}
-	if (!public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix)) {
-		return { status: 404, body: { message: "File unavailable" } } as const;
-	}
-
-	// Keep every file-derived response behind the final code-source check, including errors.
-	const result = await (async () => {
-		const sourceArgs = {
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			userId: principal.userId,
-			subject: principal.subject,
-			path: requestedPath,
-			includePending: false,
+			...auth._nay,
+			headers,
+			body: {
+				...auth._nay.body,
+				errorCode:
+					auth._nay.status === 401
+						? "unauthenticated"
+						: auth._nay.status === 429
+							? "rate_limited"
+							: "permission_denied",
+			},
 		};
-		const source: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
-			internal.files_nodes_content.get_file_byte_read_source,
+	}
+	const { principal, pluginCallId, presentedToken } = auth._yay;
+	let fileReadStarted = false;
+	let callSettled = false;
+
+	const result = await (async () => {
+		const body = await server_request_json_parse_and_validate(request, read_file_body_validator);
+		if (body._nay) return refuse(400, "invalid_input", body._nay.message);
+		const requestedPath = body._yay.path;
+		if (
+			!requestedPath.startsWith("/") ||
+			requestedPath !== server_path_normalize(requestedPath) ||
+			/[\\*?\[\]]|\p{Cc}/u.test(requestedPath) ||
+			requestedPath
+				.slice(1)
+				.split("/")
+				.some((segment) => !segment || segment === "." || segment === "..")
+		)
+			return refuse(400, "invalid_input", "Path must be a canonical Files path.");
+		if (!public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix))
+			return refuse(403, "permission_denied", "Permission denied");
+
+		fileReadStarted = true;
+		const userId = public_api_visibility_user_id(principal);
+		const membershipArgs = {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId,
+		};
+		const membership: { membershipId: Id<"organizations_workspaces_users">; lifetime: number | null } | null =
+			await ctx.runQuery(internal.public_api.get_file_read_membership, membershipArgs);
+		if (!membership) return refuse(404, "not_found", "File unavailable");
+		// A refreshed plugin token keeps its session. Different sessions and code grants stay separate.
+		const identity =
+			principal.kind === "user_api_key"
+				? { credentialId: principal.credentialId }
+				: principal.kind === "plugin_ui"
+					? {
+							sessionId: principal.sessionId,
+							installationId: principal.installationId,
+							pluginVersionId: principal.pluginVersionId,
+						}
+					: principal.kind === "plugin_run"
+						? {
+								runId: principal.runId,
+								installationId: principal.installationId,
+								pluginVersionId: principal.pluginVersionId,
+							}
+						: { tokenHash: await crypto_sha256_hex(presentedToken) };
+		const scope = JSON.stringify({
+			route: path,
+			path: requestedPath,
+			...membershipArgs,
+			...membership,
+			kind: principal.kind,
+			principalKey: principal.principalKey,
+			serviceAccountId: principal.serviceAccountId,
+			pathPrefix: principal.pathPrefix,
+			identity,
+		});
+		let cursor: z.infer<typeof read_file_cursor_validator> | null = null;
+		if (body._yay.cursor) {
+			const opened = read_file_cursor_validator.safeParse(
+				await crypto_open_cursor({ purpose: "files_read", scope, cursor: body._yay.cursor }),
+			);
+			if (!opened.success) return refuse(400, "invalid_cursor", "Invalid cursor");
+			cursor = opened.data;
+		}
+		const sourceArgs = {
+			...membershipArgs,
+			subject: principal.subject,
+			path: requestedPath,
+		};
+		const source: files_nodes_get_saved_file_read_source_Result = await ctx.runQuery(
+			internal.files_nodes_content.get_saved_file_read_source,
 			sourceArgs,
 		);
 		if (!source) {
-			// Locked, not hidden: a file the caller cannot open is 403. Only a missing one is 404.
 			const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
 				organizationId: principal.organizationId,
 				workspaceId: principal.workspaceId,
 				subject: principal.subject,
 				path: requestedPath,
 			});
-			if (access.status === "locked") {
-				return { status: 403, body: { message: `Permission denied: ${requestedPath}` } } as const;
-			}
-			return { status: 404, body: { message: "File unavailable" } } as const;
+			return access.status === "locked"
+				? refuse(403, "permission_denied", "Permission denied: " + requestedPath)
+				: refuse(404, "not_found", "File unavailable");
 		}
-		if (revision !== null && revision !== source.revision) {
-			return { status: 409, body: { message: "File changed. Start a new read." } } as const;
-		}
-		if (source.contentType.length > 256 || !/^[\x20-\x7e]+$/u.test(source.contentType)) {
-			return { status: 404, body: { message: "File unavailable" } } as const;
-		}
-
+		const scopes: readonly public_api_Scope[] = principal.scopes;
+		const requiredScope = source.kind === "stored" || !scopes.includes("files:read") ? "files:download" : "files:read";
 		if (
+			!scopes.includes(requiredScope) ||
+			(requiredScope === "files:download" && principal.kind !== "user_api_key" && principal.kind !== "public_api_grant")
+		)
+			return refuse(403, "permission_denied", "Permission denied");
+		if (cursor && cursor.sourceRevision !== source.revision)
+			return refuse(409, "file_changed", "File changed. Start a new read.");
+		if (source.contentType.length > 256 || !/^[\x20-\x7e]+$/u.test(source.contentType))
+			return refuse(502, "storage_unavailable", "File content type unavailable");
+		const offset = cursor?.offset ?? 0;
+		if (cursor && offset >= source.size) return refuse(400, "invalid_cursor", "Invalid cursor");
+		const length = Math.min(FILES_READ_PAGE_BYTES, source.size - offset);
+		// Code roots share a budget. Ordinary text-only grants keep their text-read authority.
+		if (
+			length > 0 &&
 			principal.kind === "public_api_grant" &&
-			!(await ctx.runMutation(internal.public_api.reserve_grant_read_bytes, {
-				presented: presentedToken,
-				length,
-			}))
-		) {
-			return { status: 429, body: { message: "File byte budget exhausted" } } as const;
-		}
+			(requiredScope === "files:download" || principal.agentSource !== null) &&
+			!(await ctx.runMutation(internal.public_api.reserve_grant_read_bytes, { presented: presentedToken, length }))
+		)
+			return refuse(429, "read_budget_exhausted", "File byte budget exhausted");
 
-		let bytes: Uint8Array<ArrayBuffer>;
-		let size: number;
+		const bytes = new Uint8Array(length);
+		let etag: string | null = null;
 		try {
 			request.signal.throwIfAborted();
-			if (source.kind === "text") {
-				const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-					...sourceArgs,
-					agentSource: principal.kind === "public_api_grant" ? (principal.agentSource ?? undefined) : undefined,
-					maxBytes: files_MAX_TEXT_CONTENT_BYTES,
+			if (length > 0) {
+				const endInclusive = offset + length - 1;
+				const url = await r2.getUrl(source.r2Key, { expiresIn: 60 });
+				// Check the saved object before its range, even if a later upload made it shorter.
+				const response = await fetch(url, {
+					headers: { Range: `bytes=${offset}-${endInclusive}`, ...(cursor ? { "If-Match": cursor.etag } : {}) },
+					signal: request.signal,
 				});
-				if (!content) {
-					return { status: 404, body: { message: "File unavailable" } } as const;
+				if (cursor && response.status === 412) {
+					await response.body?.cancel();
+					return refuse(409, "file_changed", "File changed. Start a new read.");
 				}
-				if (content.target.kind !== source.target.kind || content.target.id !== source.target.id) {
-					return { status: 409, body: { message: "File changed. Start a new read." } } as const;
+				etag = response.headers.get("ETag");
+				if (!response.ok || !response.body || !etag || !/^"[\x21\x23-\x7e]{1,256}"$/u.test(etag)) {
+					await response.body?.cancel();
+					return refuse(502, "storage_unavailable", "File range unavailable");
 				}
-				const textBytes = TEXT_ENCODER.encode(content.content);
-				size = textBytes.byteLength;
-				bytes = textBytes.slice(offset, offset + length);
-			} else {
-				size = source.size;
-				const byteLength = Math.min(length, Math.max(0, size - offset));
-				bytes = new Uint8Array(byteLength);
-				if (byteLength > 0) {
-					const endInclusive = offset + byteLength - 1;
-					const response = await r2_fetch_object_range_from_bucket({
-						key: source.r2Key,
-						start: offset,
-						endInclusive,
-						signal: request.signal,
-					});
-					const validRange =
-						response.status === 206
-							? response.headers.get("Content-Range") === `bytes ${offset}-${endInclusive}/${size}`
-							: response.status === 200 && offset === 0 && byteLength === size;
-					if (!validRange || !response.body) {
-						await response.body?.cancel();
-						return { status: 502, body: { message: "File range unavailable" } } as const;
-					}
-					const reader = response.body.getReader();
-					let received = 0;
-					try {
-						while (true) {
-							const chunk = await reader.read();
-							if (chunk.done) break;
-							if (received + chunk.value.byteLength > byteLength) {
-								return { status: 502, body: { message: "File range unavailable" } } as const;
-							}
-							bytes.set(chunk.value, received);
-							received += chunk.value.byteLength;
-						}
-					} finally {
-						await reader.cancel();
-					}
-					if (received !== byteLength) {
-						return { status: 502, body: { message: "File range unavailable" } } as const;
-					}
+				// A still-live upload URL can replace the object without changing its saved asset doc.
+				if (cursor && cursor.etag !== etag) {
+					await response.body.cancel();
+					return refuse(409, "file_changed", "File changed. Start a new read.");
 				}
+				const validRange =
+					response.status === 206
+						? response.headers.get("Content-Range") === "bytes " + offset + "-" + endInclusive + "/" + source.size
+						: response.status === 200 && offset === 0 && length === source.size;
+				if (!validRange) {
+					await response.body.cancel();
+					return refuse(502, "storage_unavailable", "File range unavailable");
+				}
+				const reader = response.body.getReader();
+				let received = 0;
+				try {
+					while (true) {
+						const chunk = await reader.read();
+						if (chunk.done) break;
+						if (received + chunk.value.byteLength > length)
+							return refuse(502, "storage_unavailable", "File range unavailable");
+						bytes.set(chunk.value, received);
+						received += chunk.value.byteLength;
+					}
+				} finally {
+					await reader.cancel();
+				}
+				if (received !== length) return refuse(502, "storage_unavailable", "File range unavailable");
 			}
 			request.signal.throwIfAborted();
 		} catch {
-			return { status: 502, body: { message: "File bytes unavailable" } } as const;
+			return refuse(502, "storage_unavailable", "File bytes unavailable");
 		}
+		const revision = await crypto_sha256_hex(JSON.stringify([source.revision, etag]));
+		const nextCursor =
+			offset + length < source.size
+				? await crypto_seal_cursor({
+						purpose: "files_read",
+						scope,
+						payload: { sourceRevision: source.revision, etag, offset: offset + length },
+					})
+				: null;
 
-		// A fetch can outlive a grant, a sharing change, or a file edit. Recheck before releasing bytes.
+		// Storage and cursor work can outlive a token, membership, sharing change, or saved version.
 		const current = await public_api_resolve_live_principal(ctx, {
 			presented: presentedToken,
 			now: Date.now(),
-			requiredScope: "files:download",
+			requiredScope,
 		});
-		if (current._nay || !has_same_download_authority(principal, current._yay)) {
-			return { status: 404, body: { message: "File unavailable" } } as const;
-		}
-		const after: files_nodes_get_file_byte_read_source_Result = await ctx.runQuery(
-			internal.files_nodes_content.get_file_byte_read_source,
-			sourceArgs,
+		const currentScopes: readonly public_api_Scope[] = current._yay?.scopes ?? [];
+		if (
+			current._nay ||
+			current._yay.kind !== principal.kind ||
+			current._yay.organizationId !== principal.organizationId ||
+			current._yay.workspaceId !== principal.workspaceId ||
+			current._yay.serviceAccountId !== principal.serviceAccountId ||
+			current._yay.principalKey !== principal.principalKey ||
+			public_api_visibility_user_id(current._yay) !== userId ||
+			current._yay.pathPrefix !== principal.pathPrefix ||
+			!currentScopes.includes(requiredScope)
+		)
+			return refuse(404, "not_found", "File unavailable");
+		const currentMembership = await ctx.runQuery(internal.public_api.get_file_read_membership, membershipArgs);
+		if (
+			!currentMembership ||
+			currentMembership.membershipId !== membership.membershipId ||
+			currentMembership.lifetime !== membership.lifetime
+		)
+			return refuse(404, "not_found", "File unavailable");
+		const after: files_nodes_get_saved_file_read_source_Result = await ctx.runQuery(
+			internal.files_nodes_content.get_saved_file_read_source,
+			{ ...sourceArgs, subject: current._yay.subject },
 		);
-		if (!after) return { status: 404, body: { message: "File unavailable" } } as const;
-		if (after.revision !== source.revision) {
-			return { status: 409, body: { message: "File changed. Start a new read." } } as const;
+		if (!after) {
+			const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				subject: current._yay.subject,
+				path: requestedPath,
+			});
+			return access.status === "locked"
+				? refuse(403, "permission_denied", "Permission denied: " + requestedPath)
+				: refuse(404, "not_found", "File unavailable");
 		}
-		if (offset > size) return { status: 416, body: { message: "Offset exceeds file size" } } as const;
+		if (after.revision !== source.revision) return refuse(409, "file_changed", "File changed. Start a new read.");
+		if (principal.kind === "plugin_run" && pluginCallId) {
+			const checked = (await ctx.runMutation(internal.public_api.validate_and_finish_scheduled_file_read, {
+				runId: principal.runId,
+				callId: pluginCallId,
+				tokenHash: await crypto_sha256_hex(presentedToken),
+				requiredScope: "files:read",
+				nodes: [{ nodeId: source.target.id, path: requestedPath }],
+				responseBytes: length,
+			})) as public_api_validate_and_finish_scheduled_file_read_Result;
+			if (checked._nay)
+				return checked._nay.name === "locked"
+					? refuse(403, "permission_denied", checked._nay.message)
+					: refuse(404, "not_found", "File unavailable");
+			callSettled = checked._yay;
+		}
 		return {
 			status: 200,
 			body: bytes,
 			headers: {
+				...headers,
 				"Content-Type": "application/octet-stream",
-				"Cache-Control": "no-store",
 				"X-File-Content-Type": source.contentType,
-				"X-File-Revision": source.revision,
-				"X-File-Size": String(size),
-				"X-File-Offset": String(offset),
+				"X-File-Revision": revision,
+				"X-File-Size": String(source.size),
+				...(nextCursor ? { "X-File-Next-Cursor": nextCursor } : {}),
 			},
 		} as const;
 	})();
-	if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
+	// A lost source hides file-derived errors too, including storage and revision failures.
+	if (fileReadStarted && principal.kind === "public_api_grant" && principal.agentSource !== null) {
 		const current = await public_api_resolve_live_principal(ctx, {
 			presented: presentedToken,
 			now: Date.now(),
-			requiredScope: "files:download",
+			requiredScope: ["files:read", "files:download"],
 		});
-		if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
+		if (current._nay) return refuse(404, "not_found", "File unavailable");
+	}
+	if (!callSettled) {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: result.status === 200 ? "succeeded" : "failed",
+			responseStatus: result.status,
+			...(result.status === 200
+				? { responseBytes: result.body.byteLength }
+				: { errorCode: result.body.errorCode, errorMessage: result.body.message }),
+		});
 	}
 	return result;
 }

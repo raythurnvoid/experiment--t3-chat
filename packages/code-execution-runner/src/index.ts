@@ -456,10 +456,13 @@ function copy_response_headers(headers: Headers, fileRead: boolean) {
 	const contentType = headers.get("content-type");
 	if (contentType) out.set("content-type", contentType.slice(0, 128));
 	if (fileRead) {
-		for (const name of ["X-File-Content-Type", "X-File-Revision", "X-File-Size", "X-File-Offset"]) {
+		for (const name of ["X-File-Content-Type", "X-File-Revision", "X-File-Size"]) {
 			const value = headers.get(name);
 			if (value !== null) out.set(name, value.slice(0, 1024));
 		}
+		// The host bounds this opaque cursor at 16 KiB. Keep it unchanged.
+		const cursor = headers.get("X-File-Next-Cursor");
+		if (cursor !== null) out.set("X-File-Next-Cursor", cursor);
 	}
 	out.set("cache-control", "no-store");
 	return out;
@@ -595,11 +598,11 @@ export async function handle_outbound_gateway_request(request: Request, props: E
 		}
 
 		const app = props.app;
-		// Only the bounded byte API gets a larger body. Other URLs keep the network cap.
+		// Only the paged file API gets a larger body. Other URLs keep the network cap.
 		const fileRead =
 			app !== undefined &&
 			nextUrl.origin === app.origin &&
-			nextUrl.pathname === "/api/v1/files/read-bytes" &&
+			nextUrl.pathname === "/api/v1/files/read" &&
 			nextMethod === "POST";
 		if (app && is_app_public_api_url(nextUrl, app)) {
 			// A public redirect cannot choose an app grant, even if it started with a selector.

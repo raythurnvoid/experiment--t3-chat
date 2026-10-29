@@ -10,7 +10,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_db_yjs_push_update } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { r2 } from "./r2_client.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
@@ -42,7 +42,7 @@ beforeEach(() => {
 			if (urlString.startsWith("https://r2.test/object?key=")) {
 				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
 				const body = r2Objects.get(key);
-				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200, headers: { ETag: '"saved-file"' } });
 			}
 			return new Response(null, { status: 404 });
 		}),
@@ -345,7 +345,7 @@ async function seed_pending_markdown_node(args: {
 		mut_yjsDoc: yjsDoc,
 	});
 	if (updated._nay) throw new Error(updated._nay.message);
-	await t.run(async (ctx) =>
+	await test_run_with_flush(t, async (ctx) =>
 		files_db_yjs_push_update(ctx, {
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
@@ -392,7 +392,7 @@ async function seed_upload_node(args: {
 }) {
 	const { t, fixture } = args;
 
-	return await t.run(async (ctx) => {
+	return await test_run_with_flush(t, async (ctx) => {
 		const now = Date.now();
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: fixture.membership.organizationId,
@@ -1543,16 +1543,17 @@ describe("plugin ui sessions", () => {
 		expect(JSON.stringify(body)).not.toContain("test/foreign.png");
 	});
 
-	test("returns 403 on read-many, which plugin ui principals never get", async () => {
+	test("returns 403 when a plugin page reads stored bytes", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
+		const seeded = await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
+		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
 		const session = await mint_session_token(fixture);
 
-		const response = await t.fetch("/api/v1/files/read-many", {
+		const response = await t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: auth_headers(session.token),
-			body: JSON.stringify({ paths: ["/photo.png"] }),
+			body: JSON.stringify({ path: "/photo.png" }),
 		});
 		expect(response.status).toBe(403);
 	});

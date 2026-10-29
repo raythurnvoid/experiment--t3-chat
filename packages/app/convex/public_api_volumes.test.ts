@@ -5,7 +5,12 @@ import { z } from "zod";
 
 import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { test_convex, test_drain_billing_usage_event_outbox, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_drain_billing_usage_event_outbox,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size, files_ROOT_ID } from "../server/files.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
@@ -37,14 +42,18 @@ beforeEach(() => {
 		url: `https://r2.test/put?key=${encodeURIComponent(key)}`,
 	}));
 	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`);
 	vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 	billingCalls = vi.spyOn(Workpool.prototype, "enqueueAction").mock.calls;
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-			if (url.origin !== "https://r2.test" || init?.method !== "PUT") return new Response(null, { status: 404 });
-			const key = url.searchParams.get("key");
+			const key = url.searchParams.get("key") ?? decodeURIComponent(url.pathname.replace(/^\/test-files-bucket\//u, ""));
+			if (init?.method !== "PUT") {
+				const body = key ? objects.get(key) : undefined;
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
+			}
 			if (!key || typeof init.body !== "string") throw new Error("Expected a text PUT");
 			activePuts += 1;
 			maxPuts = Math.max(maxPuts, activePuts);
@@ -328,7 +337,7 @@ async function post(args: {
 }
 
 async function readable_file(f: Awaited<ReturnType<typeof fixture>>, path = "/note.txt") {
-	const saved = await f.t.run(async (ctx) => {
+	const saved = await test_run_with_flush(f.t, async (ctx) => {
 		const scope = { organizationId: f.owner.organizationId, workspaceId: f.owner.workspaceId };
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			...scope,
@@ -338,7 +347,9 @@ async function readable_file(f: Awaited<ReturnType<typeof fixture>>, path = "/no
 			createdBy: f.owner.userId,
 			updatedAt: Date.now(),
 		});
-		await ctx.db.patch("files_r2_assets", assetId, { r2Key: r2_create_asset_key({ ...scope, assetId }) });
+		const r2Key = r2_create_asset_key({ ...scope, assetId });
+		await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+		objects.set(r2Key, "read");
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			...scope,
 			userId: f.owner.userId,
@@ -410,17 +421,15 @@ function is_api_function(reference: Parameters<typeof getFunctionName>[0], name:
 }
 
 async function read_after_io(f: Awaited<ReturnType<typeof fixture>>, afterIo: () => Promise<void>) {
+	const fetchImpl = vi.mocked(fetch).getMockImplementation()!;
+	vi.mocked(fetch).mockImplementationOnce(async (...args) => {
+		const response = await fetchImpl(...args);
+		await afterIo();
+		return response;
+	});
 	return await f.t.action(async (ctx) =>
 		public_api_http_read_file({
-			ctx: {
-				...ctx,
-				runAction: async (...args) => {
-					const result = await ctx.runAction(...args);
-					if (is_api_function(args[0], "files_nodes_content:get_file_last_available_text_content_by_path"))
-						await afterIo();
-					return result;
-				},
-			},
+			ctx,
 			request: api_request({ f, path: "/api/v1/files/read", body: { path: "/note.txt" } }),
 			path: "/api/v1/files/read",
 		}),
@@ -1157,7 +1166,7 @@ describe("scheduled Files response authority", () => {
 			body: JSON.stringify({ path: file.path }),
 		});
 		expect(read.status, "the saved file proof must not add a workspace read gate").toBe(200);
-		expect(await read.json()).toMatchObject({ content: "read" });
+		expect(await read.text()).toBe("read");
 		const listed = await f.t.fetch("/api/v1/files/list", {
 			method: "POST",
 			headers: { Authorization: `Bearer ${f.token}` },
@@ -1227,7 +1236,8 @@ describe("scheduled Files response authority", () => {
 	test.each(["read", "list"] as const)("%s rechecks the exact returned path after I/O", async (kind) => {
 		const f = await fixture({ scheduled: true });
 		const file = await readable_file(f);
-		if (kind === "list") await open_root(f);
+		// An open parent makes the old path missing, rather than locked after the file moves.
+		await open_root(f);
 		const afterIo = async () => {
 			await f.t.run((ctx) => ctx.db.patch("files_nodes", file.nodeId, { path: "/renamed.txt" }));
 		};

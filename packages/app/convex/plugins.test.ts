@@ -7425,6 +7425,25 @@ describe("plugins manifest limits", () => {
 });
 
 describe("plugins metadata file doors", () => {
+	beforeEach(() => {
+		const objects = new Map<string, BodyInit>();
+		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key = "test-upload-key") => ({
+			key,
+			url: `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		}));
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`);
+		vi.mocked(fetch).mockImplementation(async (input, init) => {
+			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			if (url.origin !== "https://r2.test") return new Response(null, { status: 200 });
+			const key = url.searchParams.get("key")!;
+			if (init?.method === "PUT") {
+				objects.set(key, init.body ?? "");
+				return new Response(null);
+			}
+			const body = objects.get(key);
+			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
+		});
+	});
 	const FILE_CAPABILITIES: plugins_Capability[] = [
 		"plugin.backend.invoke",
 		"workspace.files.write",
@@ -8324,7 +8343,7 @@ describe("plugins metadata file doors", () => {
 			body: { path: "/probe/tail.md" },
 		});
 		expect(read.status).toBe(200);
-		expect(await read.json()).toMatchObject({ path: "/probe/tail.md", content: "# Tail\n" });
+		expect(await read.text()).toBe("# Tail\n");
 
 		const listed = await door_call({ t, path: "/api/v1/files/list", apiToken: run.apiToken, body: { path: "/probe" } });
 		expect(listed.status).toBe(200);
@@ -8489,11 +8508,17 @@ describe("plugins metadata file doors", () => {
 		] as const) {
 			const refused = await door_call({ t, path: route, apiToken: run.apiToken, body });
 			expect([route, refused.status]).toEqual([route, 403]);
-			expect([route, await refused.json()]).toEqual([route, { message: "Permission denied" }]);
+			expect([route, await refused.json()]).toEqual([
+				route,
+				{
+					message: "Permission denied",
+					...(route === "/api/v1/files/read" ? { errorCode: "permission_denied" } : {}),
+				},
+			]);
 		}
 	});
 
-	test("read-many refuses a run that reads single files fine", async () => {
+	test("the removed bulk read route returns 404", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
 		const run = await start_file_invoke_run({ t, fixture });
@@ -8522,16 +8547,10 @@ describe("plugins metadata file doors", () => {
 				.status,
 		).toBe(200);
 
-		// The bulk read door stays with the key holders. A run reads one file at a time, so this
-		// refusal is the kind gate, not the consent: the same run reads that exact path above.
-		const refused = await door_call({
-			t,
-			path: "/api/v1/files/read-many",
-			apiToken: run.apiToken,
-			body: { paths: ["/probe/tail.md"] },
-		});
-		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Permission denied" });
+		expect(
+			(await door_call({ t, path: "/api/v1/files/read-many", apiToken: run.apiToken, body: { paths: ["/probe/tail.md"] } }))
+				.status,
+		).toBe(404);
 	});
 
 	test("a run reads with its actor's eyes, so a restricted folder stays locked", async () => {
@@ -8636,7 +8655,7 @@ describe("plugins metadata file doors", () => {
 			body: { path: "/probe/tail.md" },
 		});
 		expect(read.status).toBe(403);
-		expect(await read.json()).toEqual({ message: "Permission denied: /probe/tail.md" });
+		expect(await read.json()).toEqual({ message: "Permission denied: /probe/tail.md", errorCode: "permission_denied" });
 	});
 
 	test("invoke writes label every new node and require a matching target or folder", async () => {
@@ -8748,11 +8767,7 @@ describe("plugins metadata file doors", () => {
 		const write = (content: string) =>
 			door_call({ t, path: "/api/v1/files/write", apiToken: run.apiToken, body: { path: "/probe/doc.md", content } });
 		const read_doc = async () =>
-			(
-				(await (
-					await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/doc.md" } })
-				).json()) as { content: string }
-			).content;
+			(await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/doc.md" } })).text();
 
 		const kept = `![a](bonobo-file://${shared})\n`;
 		expect((await write(kept)).status).toBe(200);
@@ -9353,7 +9368,7 @@ describe("plugins metadata file doors", () => {
 		// An unlabeled member file is refused the same way. The route answers an already-existing file by
 		// itself and never reaches the publish mutation, so the label check has to be asked there too.
 		// Otherwise the status alone tells the plugin which paths exist anywhere in the workspace.
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("files_nodes", {
 				organizationId: fixture.membership.organizationId,
@@ -10027,7 +10042,7 @@ describe("plugins metadata file doors", () => {
 
 		// An upload run with a source holds files:write for its sibling rule, so it reaches the
 		// door itself — and the door's own event gate refuses it.
-		const sourceNodeId = await t.run(async (ctx) => {
+		const sourceNodeId = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			return await ctx.db.insert("files_nodes", {
 				organizationId: fixture.membership.organizationId,

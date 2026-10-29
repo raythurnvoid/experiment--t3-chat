@@ -116,7 +116,7 @@ const API_KEY_SCOPE_ROWS = [
 		scope: "ai_chat:read",
 		description: "Read saved messages and tool outputs from AI conversations you created in this workspace.",
 	},
-	{ scope: "files:download", description: "Get temporary download links for files." },
+	{ scope: "files:download", description: "Read file bytes and get temporary download links." },
 	{ scope: "files:write", description: "Create and update editable text files by path, and upload other files." },
 	{
 		scope: "files:read-only",
@@ -316,7 +316,7 @@ curl --fail-with-body --silent --show-error \\
   --header "Content-Type: application/json" \\
   --data '{"path":"/","recursive":true,"kind":"file","extension":"md","limit":100}'
 
-curl --fail-with-body --silent --show-error \\
+curl --fail-with-body --silent --show-error --include \\
   --request POST "$T3_API_ORIGIN/api/v1/files/read" \\
   --header "Authorization: Bearer $T3_API_KEY" \\
   --header "Content-Type: application/json" \\
@@ -336,13 +336,13 @@ async function post(path, body) {
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(\`API request failed: ${"${response.status}"}\`);
-  return response.json();
+  return response;
 }
 
 let cursor = null;
 let firstMarkdownFilePath;
 do {
-  const result = await post("/api/v1/files/list", {
+  const result = await (await post("/api/v1/files/list", {
     path: "/",
     cursor,
     recursive: true,
@@ -350,15 +350,22 @@ do {
     // One file extension per call.
     extension: "md",
     limit: 100,
-  });
+  })).json();
   firstMarkdownFilePath ??= result.items[0]?.path;
   cursor = result.cursor;
   if (result.isDone) break;
 } while (true);
 
 if (!firstMarkdownFilePath) throw new Error("No Markdown files found");
-const file = await post("/api/v1/files/read", { path: firstMarkdownFilePath });
-console.log(file.content);`;
+const decoder = new TextDecoder();
+let text = "";
+cursor = null;
+do {
+  const page = await post("/api/v1/files/read", { path: firstMarkdownFilePath, cursor });
+  text += decoder.decode(await page.arrayBuffer(), { stream: true });
+  cursor = page.headers.get("X-File-Next-Cursor");
+} while (cursor);
+console.log(text + decoder.decode());`;
 
 	return (
 		<section className={"RouteApiKeysQuickStart" satisfies RouteApiKeysQuickStart_ClassNames}>
@@ -389,8 +396,8 @@ console.log(file.content);`;
 			<div className={"RouteApiKeysQuickStart-notes" satisfies RouteApiKeysQuickStart_ClassNames}>
 				<p className={"RouteApiKeysQuickStart-note" satisfies RouteApiKeysQuickStart_ClassNames}>
 					<Info aria-hidden />
-					API reads return the committed content of editable text files: Markdown plus recognized plain text types like
-					.json, .yaml, or .csv. Unsaved or pending changes are not returned.
+					Reads return saved bytes. Follow X-File-Next-Cursor until it is absent. Text may briefly lag recent editor
+					changes. Binary files need the files:download scope.
 				</p>
 				<p className={"RouteApiKeysQuickStart-note" satisfies RouteApiKeysQuickStart_ClassNames}>
 					<Info aria-hidden />

@@ -2972,30 +2972,22 @@ export const get_file_read_source = internalQuery({
 	},
 });
 
-export const get_file_byte_read_source = internalQuery({
+export const get_saved_file_read_source = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		subject: access_control_subject_validator,
 		path: v.string(),
-		includePending: v.boolean(),
 	},
 	returns: v.union(
 		v.object({
-			kind: v.literal("stored"),
-			target: files_pending_target_validator,
+			kind: v.union(v.literal("text"), v.literal("stored")),
+			target: v.object({ kind: v.literal("saved"), id: v.id("files_nodes") }),
 			assetId: v.id("files_r2_assets"),
 			r2Key: v.string(),
 			contentType: v.string(),
 			size: v.number(),
-			path: v.string(),
-			revision: v.string(),
-		}),
-		v.object({
-			kind: v.literal("text"),
-			target: files_pending_target_validator,
-			contentType: v.string(),
 			path: v.string(),
 			revision: v.string(),
 		}),
@@ -3008,27 +3000,44 @@ export const get_file_byte_read_source = internalQuery({
 			path: args.path,
 			visibilityUserId: args.userId,
 			subject: args.subject,
-			overlayUserId: args.includePending ? args.userId : undefined,
 		})) as files_nodes_get_visible_entry_by_path_Result;
-		if (!entry || entry.node.kind !== "file" || entry.pendingUpdate?.preparation) return null;
-		const version = await files_transfer_db_get_entry_version(ctx, entry);
-		if (!version) return null;
-		if (version.textKind === null && !entry.pendingUpdate?.content) {
-			const source = await db_get_stored_file_read_source(ctx, { entry, userId: args.userId });
-			return source && { kind: "stored" as const, ...source };
-		}
-		const target: files_PendingTarget =
-			entry.kind === "saved" ? { kind: "saved", id: entry.node._id } : { kind: "private", id: entry.node._id };
-		// The head and pending state pin the text that the action reconstructs, not its older R2 snapshot.
-		const revision = await crypto_sha256_hex(
-			JSON.stringify([target.kind, target.id, entry.path, version, entry.pendingUpdate?.content?.unstagedStateId]),
+		if (!entry || entry.kind !== "saved" || entry.node.kind !== "file") return null;
+		const node = files_saved_content_apply_header(
+			entry.node,
+			await files_saved_content_db_get_head(ctx.db, entry.node),
 		);
-		return { kind: "text" as const, target, contentType: version.contentType, path: entry.path, revision };
+		if (!node.assetId || !node.contentType) return null;
+		const asset = await ctx.db.get("files_r2_assets", node.assetId);
+		if (!asset || asset.organizationId !== args.organizationId || asset.workspaceId !== args.workspaceId) {
+			const errorMessage = "Saved file read asset is missing or in a different workspace";
+			const errorData = { nodeId: node._id, assetId: node.assetId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		// Review can publish an asset before its unfinalized cleanup flag is cleared.
+		if (!asset.r2Key || asset.uploadRetiredAt !== undefined || !Number.isSafeInteger(asset.size) || asset.size < 0)
+			return null;
+		const target = { kind: "saved" as const, id: node._id };
+		const kind = node.textKind === null ? ("stored" as const) : ("text" as const);
+		// Serve the available saved bytes. Newer editor updates do not change this revision.
+		const revision = await crypto_sha256_hex(
+			JSON.stringify([target.kind, target.id, entry.path, kind, asset._id, asset.r2Key, asset.size, node.contentType]),
+		);
+		return {
+			kind,
+			target,
+			assetId: asset._id,
+			r2Key: asset.r2Key,
+			contentType: node.contentType,
+			size: asset.size,
+			path: entry.path,
+			revision,
+		};
 	},
 });
 
-export type files_nodes_get_file_byte_read_source_Result =
-	typeof get_file_byte_read_source extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+export type files_nodes_get_saved_file_read_source_Result =
+	typeof get_saved_file_read_source extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 

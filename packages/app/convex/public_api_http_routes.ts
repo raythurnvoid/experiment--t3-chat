@@ -5,8 +5,6 @@ import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type {
 	public_api_http_read_file_Body,
-	public_api_http_read_many_Body,
-	public_api_http_read_bytes_Body,
 	public_api_http_get_file_read_only_Body,
 	public_api_http_set_file_read_only_Body,
 	public_api_http_set_file_public_Body,
@@ -35,70 +33,6 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_read_file } = await import("./public_api.ts");
 								const result = await public_api_http_read_file({ ctx, request, path });
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
-								typeof import("./public_api.ts").public_api_http_read_file
-							>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((/* iife */ path = "/api/v1/files/read-many" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = public_api_http_read_many_Body;
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { public_api_http_read_many } = await import("./public_api.ts");
-								const result = await public_api_http_read_many({ ctx, request, path });
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
-								typeof import("./public_api.ts").public_api_http_read_many
-							>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((/* iife */ path = "/api/v1/files/read-bytes" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = Record<string, string>;
-						type Body = public_api_http_read_bytes_Body;
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { public_api_http_read_bytes } = await import("./public_api.ts");
-								const result = await public_api_http_read_bytes({ ctx, request, path });
 								return result.status === 200 ? new Response(result.body, result) : Response.json(result.body, result);
 							}),
 						});
@@ -109,7 +43,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							headers: Headers;
 							body: Body;
 							response: api_schemas_BuildResponseSpecFromHandler<
-								typeof import("./public_api.ts").public_api_http_read_bytes
+								typeof import("./public_api.ts").public_api_http_read_file
 							>;
 						};
 					})(),

@@ -201,7 +201,7 @@ describe("execution outcomes", () => {
 		try {
 			const code = `
 				for (const workspace of ["current", "personal"]) {
-					const response = await fetch(process.env.T3_APP_ORIGIN + "/api/v1/files/read-bytes", {
+					const response = await fetch(process.env.T3_APP_ORIGIN + "/api/v1/files/read", {
 						method: "POST", headers: { "X-Bonobo-Workspace": workspace }, body: JSON.stringify({ path: "/input.bin" }),
 					});
 					if (!response.ok) throw new Error("Read failed");
@@ -1044,31 +1044,32 @@ describe("outbound gateway", () => {
 		}
 	});
 
-	it("reads one MiB through the byte API with only the named file headers", async () => {
+	it("reads one MiB and preserves the full next cursor with only the named file headers", async () => {
 		const bytes = new Uint8Array(LIMITS.fileReadResponseBytes).map((_, index) => index % 256);
+		const cursor = "c".repeat(16 * 1024);
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { headers: {
 			"Content-Type": "application/octet-stream", "X-File-Content-Type": "application/x-custom",
-			"X-File-Revision": "revision-1", "X-File-Size": "2097152", "X-File-Offset": "0",
+			"X-File-Revision": "revision-1", "X-File-Size": "2097152", "X-File-Next-Cursor": cursor,
 			"Set-Cookie": "private", "X-Private": "secret",
 		} })));
 		try {
-			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", {
-				method: "POST", headers: { "X-Bonobo-Workspace": "personal" }, body: JSON.stringify({ path: "/reports/input.bin", offset: 0, length: bytes.length, revision: null }),
+			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read", {
+				method: "POST", headers: { "X-Bonobo-Workspace": "personal" }, body: JSON.stringify({ path: "/reports/input.bin" }),
 			}), { executionId: "exec_1", allowPublic: false, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
 			expect(response.status).toBe(200);
 			expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 			expect(Object.fromEntries(response.headers)).toEqual({
 				"cache-control": "no-store", "content-type": "application/octet-stream", "x-file-content-type": "application/x-custom",
-				"x-file-revision": "revision-1", "x-file-size": "2097152", "x-file-offset": "0",
+				"x-file-revision": "revision-1", "x-file-size": "2097152", "x-file-next-cursor": cursor,
 			});
 		} finally { vi.unstubAllGlobals(); }
 	});
 
 	it.each([
-		["https://app.example.com/api/v1/files/read-bytes", "GET"],
-		["https://app.example.com/api/v1/files/read-bytes/", "POST"],
-		["https://app.example.com/api/v1/files/read", "POST"],
-		["https://other.example.com/api/v1/files/read-bytes", "POST"],
+		["https://app.example.com/api/v1/files/read", "GET"],
+		["https://app.example.com/api/v1/files/read/", "POST"],
+		["https://app.example.com/api/v1/files/read-bytes", "POST"],
+		["https://other.example.com/api/v1/files/read", "POST"],
 	])("keeps the public body limit for %s %s", async (url, method) => {
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(LIMITS.fetchResponseBytes + 1))));
 		try {
@@ -1085,7 +1086,7 @@ describe("outbound gateway", () => {
 			start(controller) { controller.enqueue(new Uint8Array(LIMITS.fileReadResponseBytes + 1)); }, cancel,
 		}))));
 		try {
-			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", { method: "POST", headers: { "X-Bonobo-Workspace": "personal" } }), {
+			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read", { method: "POST", headers: { "X-Bonobo-Workspace": "personal" } }), {
 				executionId: "exec_1", allowPublic: false, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
 			});
 			expect(response.status).toBe(413);
@@ -1098,7 +1099,7 @@ describe("outbound gateway", () => {
 		const fetchMock = vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 307, headers: { location } }));
 		vi.stubGlobal("fetch", fetchMock);
 		try {
-			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read-bytes", {
+			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read", {
 				method: "POST", headers: { "X-Bonobo-Workspace": "personal" }, body: "private file request",
 			}), { executionId: "exec_1", allowPublic: true, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
 			expect(response.status).toBe(403);
@@ -1266,7 +1267,7 @@ describe("outbound gateway", () => {
 		);
 
 		try {
-			const pending = handle_outbound_gateway_request(new Request(fileRead ? "https://app.example.com/api/v1/files/read-bytes" : "https://example.com/stalled", { method: fileRead ? "POST" : "GET", headers: { "X-Bonobo-Workspace": "personal" } }), {
+			const pending = handle_outbound_gateway_request(new Request(fileRead ? "https://app.example.com/api/v1/files/read" : "https://example.com/stalled", { method: fileRead ? "POST" : "GET", headers: { "X-Bonobo-Workspace": "personal" } }), {
 				executionId: "exec_1",
 				allowPublic: true,
 				deniedHosts: [],

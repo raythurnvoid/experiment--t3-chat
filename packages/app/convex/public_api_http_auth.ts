@@ -56,6 +56,7 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 
 type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
 type PrincipalKind = "public_api_grant" | "user_api_key" | "plugin_run" | "plugin_ui" | "plugin_service";
+type RequiredScope = public_api_Scope | readonly [public_api_Scope, ...public_api_Scope[]];
 
 function get_bearer_token(request: Request) {
 	const authorization = request.headers.get("Authorization");
@@ -133,7 +134,7 @@ export async function public_api_resolve_live_principal(
 	args: {
 		presented: string;
 		now: number;
-		requiredScope: public_api_Scope;
+		requiredScope: RequiredScope;
 	},
 ) {
 	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
@@ -160,7 +161,12 @@ export async function public_api_resolve_live_principal(
 	// `seal-processing` binds a `processing` grant to one destination path prefix, and that seal says
 	// where the grant may write. It does not say whether the member behind it may still write at all.
 	// So do not exempt `processing` here: the seal is not a substitute for this check.
-	const requiredAppPermission = REQUIRED_APP_PERMISSION_BY_SCOPE[args.requiredScope];
+	const scopes: readonly public_api_Scope[] = principal.scopes;
+	const requiredScope =
+		typeof args.requiredScope === "string"
+			? args.requiredScope
+			: (args.requiredScope.find((scope) => scopes.includes(scope)) ?? args.requiredScope[0]);
+	const requiredAppPermission = REQUIRED_APP_PERMISSION_BY_SCOPE[requiredScope];
 	if (requiredAppPermission && principal.kind !== "plugin_run") {
 		const allowed =
 			requiredAppPermission === CONTENT_READ_PERMISSION
@@ -288,7 +294,7 @@ export async function public_api_settle_plugin_call_best_effort(
 export async function public_api_authorize_request<K extends PrincipalKind>(args: {
 	ctx: ActionCtx;
 	request: Request;
-	requiredScope: public_api_Scope;
+	requiredScope: RequiredScope;
 	allowedKinds: readonly K[];
 	route: string;
 }) {
@@ -341,6 +347,11 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 
 	const principal = resolved._yay;
 	const now = Date.now();
+	const principalScopes: readonly public_api_Scope[] = principal.scopes;
+	const requiredScope =
+		typeof args.requiredScope === "string"
+			? args.requiredScope
+			: (args.requiredScope.find((scope) => principalScopes.includes(scope)) ?? args.requiredScope[0]);
 	const postAuthRateLimit = await rate_limiter_limit_by_key(ctx, {
 		name: "public_api_principal",
 		key: `${principal.kind}:${principal.principalKey}:${args.route}`,
@@ -362,7 +373,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 	// Claim the call before the route's kind and cached scope checks.
 	let pluginCallId: Id<"plugins_event_run_calls"> | null = null;
 	if (principal.kind === "plugin_run") {
-		if (args.requiredScope === "files:read-only")
+		if (requiredScope === "files:read-only")
 			return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
 		const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
 			internal.plugins_runtime.consume_run_api_call,
@@ -370,7 +381,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 				runId: principal.runId,
 				kind: "api_request",
 				route: args.route,
-				requiredScope: args.requiredScope,
+				requiredScope,
 			},
 		);
 		if (consumed._nay) {
@@ -390,7 +401,6 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 	}
 
 	// Capture these before generic kind narrowing. Each principal union arm has a narrower scope array.
-	const principalScopes: readonly public_api_Scope[] = principal.scopes;
 	const credentialId = principal.kind === "plugin_run" ? null : principal.credentialId;
 
 	if (!is_principal_kind_allowed(principal, args.allowedKinds)) {
@@ -410,7 +420,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
 	}
 
-	if (!principalScopes.includes(args.requiredScope)) {
+	if (!principalScopes.includes(requiredScope)) {
 		console.warn("Public API principal scope rejected", {
 			route: args.route,
 			requiredScope: args.requiredScope,

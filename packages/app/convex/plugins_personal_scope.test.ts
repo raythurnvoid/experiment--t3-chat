@@ -33,7 +33,7 @@ beforeEach(() => {
 				return new Response(null);
 			}
 			const body = r2Objects.get(key);
-			return body === undefined ? new Response(null, { status: 404 }) : new Response(body);
+			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
 		}),
 	);
 });
@@ -311,34 +311,33 @@ describe("personal plugin scope", () => {
 		const homeRead = await f.t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: f.home.pageHeaders,
-			body: JSON.stringify({ path: PATH, maxBytes: 1024 }),
+			body: JSON.stringify({ path: PATH }),
 		});
 		expect(homeRead.status, await homeRead.clone().text()).toBe(200);
-		const homeBody = await homeRead.json();
-		expect(homeBody).toMatchObject({
-			content: "HOME_PRIVATE_IMPORT\n",
-			target: { kind: "saved", id: f.homeFile.saved.nodeId },
+		expect(await homeRead.text()).toBe("HOME_PRIVATE_IMPORT\n");
+		const wrongWorkspace = await f.t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: f.team.pageHeaders,
+			body: JSON.stringify({ path: PATH, workspaceId: f.home.workspaceId }),
 		});
+		expect(wrongWorkspace.status).toBe(400);
 		// This header selects tokens only inside the trusted runner, not in a direct plugin API call.
 		const teamRead = await f.t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: { ...f.team.pageHeaders, "X-Bonobo-Workspace": "personal" },
-			body: JSON.stringify({ path: PATH, maxBytes: 1024, workspaceId: f.home.workspaceId }),
+			body: JSON.stringify({ path: PATH }),
 		});
 		expect(teamRead.status, await teamRead.clone().text()).toBe(200);
-		const teamBody = await teamRead.json();
-		expect(teamBody).toMatchObject({
-			content: "TEAM_IMPORT\n",
-			target: { kind: "saved", id: f.teamFile.saved.nodeId },
-		});
-		expect(JSON.stringify(teamBody)).not.toContain("HOME_PRIVATE_IMPORT");
+		const teamBody = await teamRead.text();
+		expect(teamBody).toBe("TEAM_IMPORT\n");
+		expect(teamBody).not.toContain("HOME_PRIVATE_IMPORT");
 		const missing = await f.t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: f.team.pageHeaders,
-			body: JSON.stringify({ path: onlyHome.body.path, maxBytes: 1024 }),
+			body: JSON.stringify({ path: onlyHome.body.path }),
 		});
 		expect(missing.status).toBe(404);
-		expect(await missing.json()).toEqual({ message: "File not found or exceeds the read limit." });
+		expect(await missing.json()).toMatchObject({ errorCode: "not_found" });
 		const listed = await f.t.fetch("/api/v1/files/list", {
 			method: "POST",
 			headers: f.team.pageHeaders,
