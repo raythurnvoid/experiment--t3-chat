@@ -940,6 +940,24 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
+SDK 0.25.0 was mirrored on 2026-10-29 at `a0322669307d364a83eaff2458a8bf7445266b2a`.
+Its tree equals `0c260db7:packages/bonobo-plugin-sdk`. Host commit `c76f890f` replaces file reads
+with raw bytes and `{path,cursor?}`. Use `fetchRaw`; `fetchJson` only accepts JSON routes.
+The host and code runner are deployed. Live checks read a 5,668-byte transcript and a 22 MB file
+across 22 pages, with hashes matching their signed downloads. A two-page runner read also matched.
+Schema and relevant indexes stayed unchanged. See `../public-api/SKILL.md` for the contract and
+the deferred freshness and streaming work.
+
+Gmail 0.4.2 (`2eddb3d65d6fd25fadce4b6904d2812b1372bc19`, version doc
+`hn7nwncbjdgd2bawdt8gvjem358h73c0`) and Data Probe 0.4.5
+(`70422e535f5ee85ead83f548d345662c7f387f94`, version doc `hn7pyc10gqgv8322xsbb5xmtqh8h7ach`)
+passed review and were installed in their existing workspaces. Both builds were repeated with
+equal hashes. Gmail passed 508 tests; Probe passed 79. Gmail's hosted SDK read the transcript
+successfully. Full Mail checks and sync-grant renewal could not run: its separate Convex backend
+was disabled by its configured usage limit. Open Gmail or Mail after that backend resumes to renew
+the grant. No usage limit was changed. The user chose a weekly idle check for the older personal
+Probe installation; its new run grant has no scopes. Existing folders and service accounts were kept.
+
 SDK 0.24.0 was mirrored on 2026-10-28 at `00fb32707c6c8e48be2cfb9e1074f64c4011a6ff`.
 Its tree `815f85021c03c47078c90c0250510af0603e919c` equals the SDK folder in host commit
 `8d68c5f628c425dd850096b4fb55a559214472ed`. It replaces the old Read-only capability and policy
