@@ -1242,6 +1242,12 @@ Two things that do work:
 
 Keep a hand-rolled DOM sweep only as a way to pick candidates, and confirm every candidate with one of those two before reporting it.
 
+## `ariaSnapshot({ mode: "ai" })` is accepted but ignored, and a snapshot covers the whole DOM, not the screen
+
+Seen 2026-10-29 on playwriter 0.9.0. `locator.ariaSnapshot({ mode: "ai" })` throws no error, but it returns the same text as the default mode: no `[ref=…]` refs. For refs, use Playwriter's `snapshot()` (it adds a locator per line, and costs about 1.5 s instead of about 0.1 s).
+
+Both snapshots include everything in the DOM, even text scrolled far out of view. On `chitchat-qa/home:/qa-long-scroll.md` the whole 50 KB document is in the ProseMirror DOM, so the snapshot is about 59,000 characters while the screen shows about 5,000. To measure only what is on screen, walk the text nodes and keep the parts inside the window and every scrolling ancestor. That file is one 49,000-character paragraph, so cut long text nodes to their visible characters too: binary-search the character offsets with a one-character `Range` and keep the characters whose rect is inside the box.
+
 ## Grep output can misrender comment lines
 
 Grep/`rg` tool output can render a source line's leading `//` as `\ `. It looks like a stray backslash at line start — a syntax error the dev server would never accept. It is a rendering artifact, not file content: open the file at that line before diagnosing (observed 2026-08-03 on comment lines in `files_pending_updates.ts` and `file-editor-diff.tsx`; both files were clean on disk).
