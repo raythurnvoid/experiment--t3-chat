@@ -1052,6 +1052,10 @@ follow an old recipe.
 - A create-only public upload was accepted before its file became Read-only. One signed PUT then
   completed normal conversion with the flag still set and exact saved bytes. The ordinary key had
   no force scope and was revoked. The unused first placeholder was removed without sending a PUT.
+- A real Agent `cp -R` made five ready private Copy nodes. Saving only one leaf published its
+  copied root and protected parent first, then the leaf. Both unselected sibling folders stayed
+  private and were discarded. The saved leaf's exact bytes matched the source. Later parent
+  decision changes still have controlled-test coverage; this native check did not force that race.
 - At a 640 × 900 viewport, Properties fit without horizontal overflow. Its checkbox, bulk buttons
   and footer stayed inside the view. The viewport override was removed afterward. This checks
   narrow layout, not real browser zoom.
@@ -1064,9 +1068,12 @@ follow an old recipe.
   hit-test and pane-fit assertion; restoring it passed with a normal click. The dialog fit without
   horizontal overflow. Tab reached Copy, Download and Discard; confirmation focused Keep text.
   A screenshot and exact draft check passed. Restore native zoom and window bounds afterward.
+- At the same native zoom, both folder bulk confirmations fit and began on Cancel. Tab reached
+  Start; Enter on Cancel and Escape closed them without starting work. The completed member
+  Archive Activity dialog also fit with scrolling, and its footer Close worked by keyboard.
 
-Partial pending Save, bulk partial/Stop outcomes and a queued
-collaborative-write race still need native checks. The cases below remain the full recipe.
+Bulk partial/Stop outcomes and a queued collaborative-write race still need native checks.
+The cases below remain the full recipe.
 
 - Fixtures: one Read-only file, one Read-only folder with editable descendants, an editable folder
   with a Read-only child and an editable sibling, and a pending proposal created before the flag.
