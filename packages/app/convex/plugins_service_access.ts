@@ -472,7 +472,7 @@ export const get_events = internalMutation({
 				return Result({ _nay: { message: "Snapshot required" } });
 			// No change of this installation ever came after the cursor, so nothing was lost.
 			return Result({
-				_yay: { events: [], currentRevision: state.revision, continueRevision: state.revision, isDone: true },
+				_yay: { events: [] as [], currentRevision: state.revision, continueRevision: state.revision, isDone: true },
 			});
 		}
 

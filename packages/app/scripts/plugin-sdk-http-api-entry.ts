@@ -15,6 +15,7 @@ import type { api_schemas_Main } from "../shared/api-schemas.ts";
  * - The `string | number | boolean | null | undefined` branch keeps `GenericId<"users">` intact.
  *   That type is `string & { __tableName }`, so without the branch the mapped type would walk
  *   every method of `string` and print them all.
+ * - `Uint8Array<ArrayBuffer>` keeps raw file response bytes intact instead of expanding methods.
  * - `-readonly` drops the `readonly` marker every property inherits from the handlers' `as const`
  *   return unions. The `?: undefined` filler properties those unions also produce are left alone;
  *   they are harmless, and removing them belongs in the handlers, not here.
@@ -26,7 +27,7 @@ import type { api_schemas_Main } from "../shared/api-schemas.ts";
  * What is really load-bearing is `Expand` itself. Take the wrapper off and the emitted declaration
  * is one line naming `api_schemas_Main`, with a top-level import the generator refuses.
  */
-type Expand<T> = T extends string | number | boolean | null | undefined
+type Expand<T> = T extends string | number | boolean | null | undefined | Uint8Array<ArrayBuffer>
 	? T
 	: T extends (...args: never[]) => unknown
 		? T
