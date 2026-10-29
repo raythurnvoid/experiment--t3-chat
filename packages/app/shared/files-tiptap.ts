@@ -527,7 +527,9 @@ function configure_marked(instance: Marked | typeof marked) {
 			processAllTokens: (tokens) =>
 				markdown_mark_tight_blocks(html_hide_unmodeled_inline_tags(html_merge_tokens(tokens))),
 			provideParser() {
-				return this.block ? (tokens, options) => new TightBlockParser(options).parse(tokens) : Parser.parseInline;
+				return this.block
+					? (tokens, options) => new TightBlockParser(options).parse(tokens)
+					: (tokens, options) => Parser.parseInline(tokens, options);
 			},
 		},
 		renderer: {
