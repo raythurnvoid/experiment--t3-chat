@@ -1,5 +1,9 @@
 # Chitchat plugin page
 
+The `qa-browser` and `f5-repro-org` fixtures used below were erased in the 2026-10-28 cleanup.
+Those steps are historical recipes. Pick a kept fixture from [QA-data](../../qa-data/SKILL.md)
+and read its exact permissions and content before running a step. Do not recreate the old tenant.
+
 Driving `plugins/bonobo-plugin-chitchat` in its real frame. Read
 `references/plugin-marketplace.md` first for the bundle-swap background, and the
 plugin-frame section of `references/known-hazards.md` before the first frame

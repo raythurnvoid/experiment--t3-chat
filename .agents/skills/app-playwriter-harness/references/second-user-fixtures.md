@@ -4,7 +4,7 @@ Use this when a check needs two identities at once: permission refusals, share g
 
 The org owner passes every permission check, so an owner-only run proves **no over-refusal** and never proves a refusal works. Do not report a permission fix as verified from owner flows alone.
 
-Use the seeded `qa.perm.owner` and `qa.perm.viewer` accounts in `qa-browser/home` for normal two-user checks. They cannot use agent chat (402: no billing state). When the second user must drive agent chat, use `ray-test-1+clerk_test@gmail.com`, a member of `chitchat-qa/home` (see `clerk-test-accounts.md`). The app also mints an anonymous user for any visitor with no Clerk session. Use that identity only when the check needs it, because each one creates new data.
+Use the [QA-data account table](../../qa-data/SKILL.md#pick-an-account) for normal two-user checks. The QA Edge account and existing `chitchat-qa` members were kept. Read each member's current role, grants and billing first. `ray-test-1+clerk_test@gmail.com` is one kept member of `chitchat-qa/home` (see `clerk-test-accounts.md`). The old `qa-browser/home` setup was erased in the 2026-10-28 cleanup. The app mints an anonymous user for any visitor with no Clerk session; use that path only when the check needs it.
 
 ## When a check needs a specific Clerk account
 
@@ -13,7 +13,7 @@ The dev database holds signable `qa.perm.owner` / `admin` / `member` / `viewer` 
 Two constraints shape the choice, both checked on 2026-08-02:
 
 - This Clerk instance runs with `singleSessionMode === true` (read it from `Clerk.__unstable__environment.authConfig`). One browser profile holds one signed-in user, and the app has no account switcher (`packages/app/src/components/main-app-sidebar-account-control.tsx` renders only `Manage account` and `Sign out`). So test-account sign-in must happen **only** in the isolated scratch browser from section 1 below — in the user's own profile it would kick the user out of their own session.
-- Prefer a seeded Clerk test account, even when the check only needs "some non-owner member". Every new anonymous visitor adds a user, a personal org, a workspace, and quota rows that stay in the dev database, and its token dies with the headless profile, so it can never be reused. On 2026-09-24 the database held 113 such unused users. Use the anonymous identity below only when the check is about anonymous users, or when no seeded account fits. The [qa-data](../../qa-data/SKILL.md) catalog lists the accounts and which workspaces each one reaches.
+- Prefer a seeded Clerk test account, even when the check only needs "some non-owner member". Every new anonymous visitor adds a user, a personal org, a workspace, and quota rows. Its token can be lost with the headless profile. The 2026-10-28 cleanup tombstoned approved old anonymous accounts but preserved four members of kept workspaces and their data. Do not delete those four as leftovers. Use the anonymous identity below only when the check is about anonymous users, or when no seeded account fits. The [qa-data](../../qa-data/SKILL.md) catalog lists the accounts and which workspaces each one reaches.
 
 Hand the work back to the user only when a check needs a **real** account: the user's own data, a real credential, or an invite-by-email flow that needs a real address. That is the single step to ask a human for; everything around it you can still drive yourself.
 
@@ -88,9 +88,9 @@ The sidebar shows the same string in a sonner toast, but that toast is short-liv
 
 ## 3. Invite it into a workspace
 
-For a normal owner-and-member check, sign `qa.perm.owner` and `qa.perm.viewer` into separate scratch sessions. Both already belong to `qa-browser/home`. Check each membership before the test; no invite is needed.
+For a normal owner-and-member check, use the QA Edge account and an existing member from the QA-data table. Check each membership before the test; no invite is needed.
 
-If the check needs an anonymous member, invite it into the existing `qa-browser/home` workspace as `qa.perm.owner`. The default `personal` organization refuses invites (`Cannot add user to default organization`). In the owner's session:
+The following `qa-browser` invite example is historical: that workspace was erased. Do not run it or replace its organization with a kept one just to follow this recipe. A task that needs a new anonymous member must first choose its exact allowed scope. The default `personal` organization refuses invites (`Cannot add user to default organization`). Historical owner-side call:
 
 ```js
 const membership = await cx.query(api.organizations.get_membership_by_organization_workspace_name, {
@@ -126,6 +126,6 @@ Live demotion recipe: `restrict_node` + `set_node_share_grant(level: "read")` on
 
 ## 5. Clean up
 
-- If you created an anonymous user, delete it from its own session with `app_convex.action(app_convex_api.users.delete_current_user_account, {})` — it is a Convex action, not a mutation. This also deactivates its `qa-browser` membership.
+- If you created an anonymous user for this check, delete that exact user from its own session with `app_convex.action(app_convex_api.users.delete_current_user_account, {})` — it is a Convex action, not a mutation. This also deactivates its memberships. Never apply this step to an existing kept member.
 - Close the scratch sessions. If you launched Chrome for Testing yourself, close it and remove its `--user-data-dir` folder.
 - Close only the tab you opened in the user's browser. Snapshot `context.pages()` URLs before opening it and compare after closing.

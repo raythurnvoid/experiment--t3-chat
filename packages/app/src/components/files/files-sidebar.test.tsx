@@ -75,7 +75,10 @@ function set_links(links: unknown) {
 }
 
 vi.mock("@/components/app-auth.tsx", () => ({
-	AppAuthProvider: { useAuthenticated: () => ({ userId: "user" }) },
+	AppAuthProvider: {
+		useAuthenticated: () => ({ userId: "user" }),
+		useAuth: () => ({ userId: "user" }),
+	},
 }));
 
 vi.mock("@/lib/files-move-intake.ts", () => ({
@@ -965,6 +968,49 @@ describe("FilesSidebar", () => {
 		await view.findByRole("menuitem", { name: "Copy path" });
 		expect(view.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy path", "Properties"]);
 		expect(view.queryByRole("menuitem", { name: "Restore" })).toBeNull();
+	});
+
+	test.each([
+		{ surface: "tree", reason: "read_only", allowed: true },
+		{ surface: "tree", reason: "permission", allowed: false },
+		{ surface: "shared", reason: "read_only", allowed: true },
+		{ surface: "shared", reason: "permission", allowed: false },
+	] as const)("Restore keeps the own flag and ACL check in the $surface menu: $reason", async ({ surface, reason, allowed }) => {
+		createNode.mockResolvedValue({ _yay: null });
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "alpha"
+				? { ...node, archiveOperationId: "qa-archive", readOnly: true, canWrite: false, writeBlockedReason: reason }
+				: node,
+		);
+		if (surface === "shared") treeState.sharedRoots = [share("secret")];
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		fireEvent.click(await view.findByRole("button", { name: "More options" }));
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		fireEvent.click(showArchived);
+		fireEvent.keyDown(showArchived, { key: "Escape" });
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
+
+		const row =
+			surface === "tree"
+				? await view.findByRole("treeitem", { name: "alpha, Read-only archived" })
+				: within(view.getByRole("region", { name: "Shared with you" })).getByRole("button", {
+						name: "secret restricted, Read-only archived",
+					});
+		fireEvent.contextMenu(row);
+		const restore = await view.findByRole("menuitem", { name: "Restore" });
+		expect(restore.matches("[aria-disabled='true']")).toBe(!allowed);
+		fireEvent.click(restore);
+		if (allowed) {
+			await waitFor(() =>
+				expect(createNode).toHaveBeenCalledWith(app_convex_api.files_nodes.unarchive_nodes, {
+					membershipId: "membership",
+					nodeIds: [surface === "tree" ? "alpha" : "secret"],
+				}),
+			);
+		} else {
+			expect(createNode).not.toHaveBeenCalled();
+		}
 	});
 
 	test("a Restore that throws shows an error toast", async () => {

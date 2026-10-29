@@ -290,7 +290,8 @@ function can_unarchive_item(args: {
 	canWriteRoot: boolean;
 	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
 }) {
-	if (!is_open_node(args.item) || !args.canWriteItem(args.item)) {
+	// Restore keeps the item's own flag. A read_only reason means its ACL already allowed writing.
+	if (!is_open_node(args.item) || (!args.canWriteItem(args.item) && args.item.writeBlockedReason !== "read_only")) {
 		return false;
 	}
 
@@ -2804,7 +2805,7 @@ const FilesSidebarTreeRow = memo(
 						canCreate={capabilities.canReceiveChildren}
 						canRename={canRename}
 						canShare={canShare}
-						canArchive={isArchived ? capabilities.canArchiveOrRestore && canUnarchive : canArchiveItems}
+						canArchive={isArchived ? canUnarchive : canArchiveItems}
 						canExpandSubtree={canExpandSubtree}
 						canCollapseSubtree={canCollapseSubtree}
 						expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -4447,7 +4448,7 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 					canRename={false}
 					canShare
 					// The parent is hidden, so the server checks the rest.
-					canArchive={row.canWrite}
+					canArchive={row.canWrite || (isArchived && row.writeBlockedReason === "read_only")}
 					canExpandSubtree={false}
 					canCollapseSubtree={false}
 					expandedFolderActionsVisible={false}
@@ -7741,6 +7742,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("can_unarchive_item", () => {
+		test("ignores the archived item's flag but keeps the live parent's flag", () => {
+			const folder = test_node({ id: "folder", parentId: files_ROOT_ID, kind: "folder", name: "folder" });
+			const child = test_node({
+				id: "file",
+				parentId: "folder",
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "archive-operation",
+				canWrite: false,
+			});
+			const args = {
+				item: child,
+				canWriteItem: (item: FilesSidebarItem) => is_open_node(item) && item.canWrite,
+				canWriteRoot: true,
+				canManageRestrictedScope: () => false,
+			};
+
+			expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, folder]]) })).toBe(true);
+			expect(
+				can_unarchive_item({
+					...args,
+					itemById: new Map([[folder._id, { ...folder, canWrite: false, writeBlockedReason: "read_only" }]]),
+				}),
+			).toBe(false);
+		});
+
 		test("allows an in-place restore with only node write permission", () => {
 			const activeFolder = test_node({ id: "folder", parentId: files_ROOT_ID, kind: "folder", name: "folder" });
 			const archivedChild = test_node({

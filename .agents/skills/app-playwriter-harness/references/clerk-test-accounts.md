@@ -1,6 +1,11 @@
 # Clerk Test Account Login And Logout
 
-Use this when a QA check needs a **specific** signed-in account: a specific role, data already attached to an account, or a flow that anonymous users cannot reach. For a normal owner-and-member check, use `qa.perm.owner` and `qa.perm.viewer` in separate scratch sessions. They already share `qa-browser/home`. For uploads or any other paid feature, use `qa.paid.owner`. The qa-data skill's "Pick An Account" table says which account fits which check.
+Use this when a QA check needs a **specific** signed-in account: a specific role, data already attached to an account, or a flow that anonymous users cannot reach. Start with the [qa-data account table](../../qa-data/SKILL.md#pick-an-account). For owner-and-member checks, it lists kept `chitchat-qa` members. Read current membership and billing before choosing an account.
+
+The 2026-10-28 cleanup preserved all Clerk accounts, auth and billing links. It erased
+`qa-browser` and `f5-repro-org` content. Old sign-in, role, credit and fixture observations below
+are history, not current setup. Four anonymous members of kept workspaces were also preserved;
+do not delete them as old QA leftovers.
 
 Login and logout with the seeded `+clerk_test` accounts is a supported autonomous flow. The fixed test code `424242` is Clerk's public, documented test-mode constant. It is fixture data, not a secret, and it only works for `+clerk_test` addresses on a development instance.
 
@@ -19,20 +24,20 @@ All emails end with `+clerk_test@example.com` and all accept the code `424242`.
 
 | Email prefix       | Convex `users` id                  | Notes                                                                                            |
 | ------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `qa.perm.owner`    | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | Owns the `qa-browser` organization.                                                               |
-| `qa.perm.admin`    | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | Not a member of `qa-browser`.                                                                     |
-| `qa.perm.member`   | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | Owns `qa-tmp-share`. Active member of `qa-browser` and `chitchat-qa` since 2026-10-03 (checked 2026-10-11). |
-| `qa.perm.viewer`   | `m572qhnpq7xw34askfcy6w97h18ck1f8` | Member of `qa-browser` holding the `member` role (the name is misleading; see `app-map.md`).      |
+| `qa.perm.owner`    | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | Account and default home preserved. Former `qa-browser` owner; that workspace was erased. |
+| `qa.perm.admin`    | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | Account and default home preserved. |
+| `qa.perm.member`   | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | Owns kept `qa-tmp-share/home`. Member of kept `chitchat-qa/home` and `xfer-qa-0914`. Read current roles and grants. |
+| `qa.perm.viewer`   | `m572qhnpq7xw34askfcy6w97h18ck1f8` | Member of kept `chitchat-qa/home`. Read its current role; the account name does not define it. |
 | `import-qa-member` | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | Deleted: its `users` doc has `deletedAt` (seen 2026-10-21). Do not use it. |
-| `qa.paid.owner`    | `m5774tmwzz27knb7mwbzjbn9t58gn6fx` | Added 2026-10-20. Owns `f5-repro-org` (workspace `home`). Seeded **Pro** plan (balance 11000 on 2026-10-21): uploads and Save work, checked live. Agent chat should pass the credit check too, but it was not checked live. Use it for any check that needs a paid plan. |
+| `qa.paid.owner`    | `m5774tmwzz27knb7mwbzjbn9t58gn6fx` | Account, default home and billing links preserved. Former `f5-repro-org` owner. Seeded Pro plan was observed on 2026-10-21; read current billing and available workspaces before paid checks. |
 
 **Check billing before agent chat.** On 2026-10-11, `qa.perm.owner` had a subscription, a usage snapshot and available credit. Its native Agent Bash check passed in `qa-browser/home`. This seeded state does not prove Polar can bootstrap an `example.com` account. For a second user, `ray-test-1+clerk_test@gmail.com` (Convex `users` id `m570f2kgg8jq3qka7snprkpeks8cme94`, code `424242`) held the `member` role in `chitchat-qa/home` and had credits on 2026-10-08. Read back billing and membership before using either fixture. By 2026-10-18 `qa-browser` had no credits left, so do not count on that older state.
 
-**Uploads need a paid plan on the account that uploads.** The `qa.perm.*` accounts have none, so `qa-browser` uploads fail with `File uploads need a paid plan` (see the qa-data skill, "Pick An Account"). For uploads, images, videos, public pages with media, or any other paid feature, sign in as `qa.paid.owner` and use `f5-repro-org/home`. Its Pro plan was seeded with `billing:apply_polar_customer_state_refresh` (section "Polar bootstrap and seeded billing"). Use `eur`, the app's currency, and include a subscription meter: the refresh throws for a paid metered plan without one. Read `billing.get_usage_snapshot` first; if the balance or plan changed, reseed only when the user asks.
+**Uploads need a paid plan on the account that uploads.** Read `billing.get_usage_snapshot` and current membership first. The old `f5-repro-org/home` paid fixtures were erased. `qa.paid.owner` keeps its account and billing links; do not recreate that workspace or reseed billing just to follow an old recipe. Reseed only when the user asks.
 
-**A guest must be a member.** A "guest" is a workspace member whose role has no `content.read`. `set_node_share_grant` refuses a user who is not a member (`This person is not a member of this workspace`), so `ray-test-1` cannot get a share in `qa-browser/home` as it is. On 2026-10-11 the owner invited it, then gave it a temporary custom role with only `workspace.mcp.use` (`access_control.create_role` + `set_user_role`), and `get_current_user_workspace_permission(content.read)` answered `false`. Undo it after the check: `organizations.remove_user_from_organization`, then `access_control.delete_role`.
+**A guest must be a member.** A "guest" is a workspace member whose role has no `content.read`. `set_node_share_grant` refuses a user who is not a member (`This person is not a member of this workspace`). Historical example: on 2026-10-11 the owner invited `ray-test-1` into `qa-browser`, then gave it a temporary custom role with only `workspace.mcp.use`. The permission query answered `false`; the temporary membership and role were removed afterward. That erased workspace cannot be reused.
 
-Do not infer membership or role from the account name. Before building a check on an account, read its membership back: `organizations.get_membership_by_organization_workspace_name` from its signed-in tab, or the `organizations_workspaces_users` table over the Convex CLI. On 2026-10-11 `qa-browser` had five active members: `qa.perm.owner` (owner), `qa.perm.viewer` (`member` role), `qa.perm.member` (joined 2026-10-03), and two anonymous QA users (`m574dezwj7y4jabxw4yapyxjvd8etxf7`, `m57appscr5y8m8nkfp1pfade458d5fpr`) left by earlier invite checks — the fake members named `Bob Reader`, `New Owner` and charlie were artifacts of an older DB seed and no longer exist; do not expect them and do not recreate them.
+Do not infer membership or role from the account name. Before a check, read its membership with `organizations.get_membership_by_organization_workspace_name` from its signed-in tab, or the `organizations_workspaces_users` table over the Convex CLI. Use the current [QA catalog](../../qa-data/references/inventory.md#accounts). Old `qa-browser` member lists and fake seed accounts are historical; do not recreate them.
 
 These accounts have no display name: the dev Clerk instance has both the name and the username attributes disabled (`Clerk.user.update` rejects `first_name`/`username` with `form_param_unknown`), and the app has no anagraphic edit UI, so `resolve_user` stores the fallback `User <clerkUserId>` as the display name on every sign-in. Build locators on emails and ids, never on display names.
 

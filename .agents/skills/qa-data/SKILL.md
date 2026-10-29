@@ -42,16 +42,15 @@ accounts, and a "what do you need" table that points to real files.
 
 | The check needs | Use |
 | --- | --- |
-| An owner and a member: permissions, refusals, shares. No uploads. | `qa.perm.owner` and `qa.perm.viewer` in `qa-browser/home`, each in its own scratch browser. These accounts have no paid plan, so they cannot upload (seen 2026-10-21). `qa.perm.viewer` has no credits either, so its content saves fail with `Insufficient funds`. The server checks write permission before credits, so that error still proves the member may write (seen 2026-10-27). |
-| A paid plan: uploads, images, videos, public pages with media, Save with credits. | `qa.paid.owner` in `f5-repro-org/home`, in a scratch browser. The account has a Pro plan. |
+| An owner and a member: permissions, refusals, shares. | The QA Edge account and an existing QA member of a kept `chitchat-qa` workspace. `qa.perm.member` belongs to `home` and `xfer-qa-0914`; `qa.perm.viewer` and `ray-test-1` belong to `home`. Read the exact membership, role, file grants and billing first. The old `qa-browser/home` setup was erased in the 2026-10-28 cleanup. |
+| A paid plan: uploads, images, videos, public pages with media, Save with credits. | The `qa.paid.owner` account and its billing links were preserved, but its `f5-repro-org/home` fixtures were erased. Read its current plan, credits and available workspaces first. Do not recreate the old workspace or reseed billing just to follow an old recipe. |
 | An anonymous visitor (public link pages). | A new headless session with no sign-in. Open the share URL first, not `/`. |
 | Lots of existing data: big folders, many file types, existing images. | The QA Edge profile and its `chitchat-qa` workspaces. Use the account that is already signed in there; never sign in or out in that profile. |
 
 **The plan belongs to the account, not the workspace.** Uploads and credits are checked on the
 plan of the account that acts. The org owner pays only when the org's `billingMode` is
 `organization_owner`, and the QA orgs use `user`. A refused upload says "File uploads need a paid
-plan". So `qa.paid.owner` can upload in any workspace it is a member of, and a second user
-invited into `f5-repro-org` pays with its own plan.
+plan". Check the acting account's current plan and membership before a paid check.
 
 Sign-in steps and the account list are in
 [clerk-test-accounts.md](../app-playwriter-harness/references/clerk-test-accounts.md). Before you

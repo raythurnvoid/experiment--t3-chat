@@ -944,17 +944,25 @@ Its tree `815f85021c03c47078c90c0250510af0603e919c` equals the SDK folder in hos
 routes, adds explicit force to supported requests, and types partial archive results. It also
 includes the earlier generated `contentRevision` field ordering change. SDK typecheck passed;
 tests passed 48 cases with one generated-route assertion also failing on the unchanged baseline.
-Host data migration, caller releases and native checks remain open. The source push did not deploy
-the new host contract.
 
-The Read-only caller source is pushed but not deployed or published: Council plugin 0.2.17 at
-`7e2bf27dddf0c7a3b57c71d4851a1186b40d9523`, Chitchat 0.8.13 at
-`006a69972147d12d192dab81db24d46c854f0b9b`, and Council Worker at
-`65b53c07cea8c87e03b8a8b5e4c2a9aca09a0909`. Both plugins pin the real 0.24.0 mirror. Their
-typechecks, manifest tests and host manifest validation pass; repeated builds match all release
-files. Keep parent gitlinks at the published versions until release. Council still needs its
-separate release approval, D1 `0012`, and new capability consent. Drain old prepared requests
-before changing callers to force; never rewrite an accepted request to add force.
+The Read-only host commit `341ff635a76bee352b20b3fb5395e477716d2239` was deployed on
+2026-10-29 at 03:11 UTC. The full 13-table migration audit passed at 03:20 UTC. Council Worker
+`65b53c07cea8c87e03b8a8b5e4c2a9aca09a0909` and D1 migration `0012` are deployed. The Worker
+version is `3bcb4017-0406-467d-8ddb-611564818d6d`, with room revision `council-room-b9a29220`.
+The Chitchat backend at `006a69972147d12d192dab81db24d46c854f0b9b` was ready at 03:31:57 UTC.
+
+Council 0.2.17 at `7e2bf27dddf0c7a3b57c71d4851a1186b40d9523` is published as
+`hn7s6j4antptg3hc0bebdbgx398h6pwm`. Chitchat 0.8.13 at
+`006a69972147d12d192dab81db24d46c854f0b9b` is published as `hn7nwmdvz278b047n7jv53znwd8h6rvc`.
+Both match the reviewed source pins and artifact hashes, have ready sources and passed reviews,
+and are the latest versions. Both keep the SDK 0.24.0 pin. Their typechecks, manifest tests and
+host manifest validation passed; repeated builds matched all release files.
+
+All four existing installations were updated through normal capability consent. The 03:46 UTC
+readback confirmed their versions and consent, with accounts, grants and configuration unchanged.
+The parent gitlinks point to these released versions. Native Update consent and both plugins'
+served asset hashes passed. Reconnecting one existing Chitchat channel kept its destinations and history.
+Five older expired grants remain unchanged. Never rewrite an accepted request to add force.
 
 SDK 0.23.0 was mirrored on 2026-10-20 at `ea875be3eaf4c51df85233a52fad095b8625c1b5`. Its tree equals
 the folder in host commit `5990f1f71fe4ae7189b7a2788432a6eff43957d3`, which adds `order: "asc" | "desc"`

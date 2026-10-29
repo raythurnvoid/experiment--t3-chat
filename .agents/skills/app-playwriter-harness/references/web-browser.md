@@ -1,5 +1,9 @@
 # Workspace Browser QA
 
+The `qa-browser` and `f5-repro-org` fixtures used below were erased in the 2026-10-28 cleanup.
+Those steps are historical recipes. Pick a kept fixture from [QA-data](../../qa-data/SKILL.md)
+and read its exact permissions, billing and content before running a step. Do not recreate the old tenant.
+
 Recipes for the workspace web browser route `/w/<org>/<ws>/browser`. The file mode browser inside
 Files has its own recipe in [files.md](files.md) under "Shared Cloud Browser End To End". Product
 rules and limits live in `.agents/skills/cloud-browser/SKILL.md`. The older cloud checks were verified

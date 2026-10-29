@@ -1,5 +1,9 @@
 # Known Browser Hazards
 
+The `qa-browser` and `f5-repro-org` fixtures used below were erased in the 2026-10-28 cleanup.
+Those steps are historical recipes. Pick a kept fixture from [QA-data](../../qa-data/SKILL.md)
+and read its exact permissions and content before running a step. Do not recreate the old tenant.
+
 Use this file for reusable problems that affect app browser QA.
 
 An owned blank tab may change while QA waits. Check its URL before navigation.
@@ -576,7 +580,9 @@ Poll it: the editor mounts a few seconds after `domcontentloaded`, and until the
   looking for a permissions bug that does not exist. Ask the editor instead:
   `window.__qa.monaco().diffModified.getRawOptions().readOnly`. On a writable file that answers
   `false` for the modified pane and `true` for the original one, which is the intended split.
-- **Working route to a live editor handle (verified 2026-08-10 in the joint 4/5 QA run):** two equivalent page-context forms. The dev-only keyed accessor `window.__qa.monaco()` returns `{ plainText?, diffOriginal?, diffModified? }`, so a runner can tell the diff panes apart. The namespace import `const m = await import("/@id/monaco-editor")` gives `m.editor.getEditors()` (mount order — ambiguous once the diff editor's two panes are up) plus the full API. A bare `import("monaco-editor")` throws in page context; `/@id/monaco-editor` is the Vite-transformed id.
+- **Use the app's exact Monaco module URL for model access.** The dev-only accessor `window.__qa.monaco()` returns `{ plainText?, diffOriginal?, diffModified? }`. For other editors, fetch the served `/src/lib/app-monaco-config.ts` as text and import its exact versioned `monaco-editor.js?v=...` URL, keeping the query string. Then use `editor.getEditors()` and match the editor's `ariaLabel`. Do not guess the version or import `/@id/monaco-editor`.
+  - Verified 2026-10-29: the `/@id/` import shared the app's editor API but created different JSON defaults. Its diagnostics, colors, document symbols and folding services were enabled; the app's were disabled. Opening the API-key JSON editor then caused `Missing requestHandler or method: doValidation`, `findDocumentColors`, `findDocumentSymbols` and `getFoldingRanges` errors in the base editor worker.
+  - This was a QA-created second set of JSON providers, not a Read-only regression. A working editor handle does not prove both imports share the same language defaults. Compare `json.jsonDefaults` identity and `modeConfiguration` if this happens. Avoid changing worker routing to hide it.
 - To CHANGE local editor content through the app's own command pipeline, use the handle: `ed.trigger("keyboard", "type", { text })` runs the same command path as typing (change events, dirty check, undo stack), and `ed.executeEdits("qa", [{ range: ed.getModel().getFullModelRange(), text }])` replaces the document without auto-indent/auto-closing interference. Position the caret first with `ed.setSelection(...)` / `ed.setPosition(...)`; undo with `ed.trigger("keyboard", "undo", null)`. Honesty line for reports: `trigger` proves the editor→model pipeline, not the browser→Monaco input path (`native-edit-context`), so it cannot prove a real-user typing regression. Use native input or paste (bullet above) for that.
 - To READ the language, read `data-mode-id` from the editor root (`document.querySelector(".FileEditorPlainText .monaco-editor").getAttribute("data-mode-id")`) or `ed.getModel().getLanguageId()` — `json` for a `.json` node, and so on. Verified 2026-08-10; pair it with the distinct `mtk*` token classes under `.view-lines` to prove tokenization actually ran.
 - To create a pending draft as server state instead of a local edit, use the client helper recipe in `file-node-view.md` (`files_upsert_file_pending_update` from `/src/lib/files.ts`). The old direct `upsert_file_pending_update({ unstagedMarkdown })` action shape is gone since the 2026-08-10 paged staging flow.

@@ -722,7 +722,8 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   3-5 s on dev). Archive it with `files_nodes.archive_nodes` through a fresh `ConvexHttpClient` (see
   "`app_convex.query(...)` in page context" in `known-hazards.md`). A cold localhost load of `/people`
   can take more than 30 s before `data-app-ready`; wait up to 60 s.
-- Properties source contract, pending native QA: open the folder, click its `Properties of` button,
+- Properties checkbox verified natively 2026-10-29; see "File And Folder Read-only" for the tested
+  subset. Open the folder, click its `Properties of` button,
   and scope to `.FilesPropertiesModalReadOnly`. There is one `Read-only` checkbox, no writer picker
   and no new-item default. Read `files_nodes.read_only_get({ membershipId, nodeId })` for
   `readOnly` and `canEdit`; this reads only the folder. Use the footer `Save` for a flag change.
@@ -988,9 +989,42 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 
 ### File And Folder Read-only
 
-Source contract as of 2026-10-28. Native QA of the new checkbox, recovery entry, and bulk buttons is
-still required. Use existing QA data and the signed-in session. A second member fixture needs
-separate authorization; do not sign in or out just to follow an old recipe.
+Native subset verified 2026-10-29 with the signed-in owner. Use existing QA data and the signed-in
+session. A second member fixture needs separate authorization; do not sign in or out just to
+follow an old recipe.
+
+- On `/u23p/my-file.md`, the checkbox saved both directions, including keyboard toggling, and the
+  owner editor locked. A second tab's flag change captured the local draft. Recovery kept the exact
+  final character and emoji. Copy text and the downloaded file matched the draft. Canceling a real
+  reload warning kept it too. Discard confirmation focused `Keep text`, app navigation kept the
+  capture, and unlocking did not replay it. Saved text, metadata and flag were
+  restored afterward. This does not cover every editor or permission-loss case.
+- A metadata draft made while writable survived another tab locking the file. Explicitly clearing
+  the flag and saving wrote the draft. The test key was then removed. Typing into an already locked
+  metadata editor, a failed metadata save while enabling the flag, and partial-save failures remain unverified.
+- In `chitchat-qa/home`, `Make contents Read-only` completed 2/2 descendants with no failures while
+  the selected folder stayed writable. `Clear Read-only from contents` later completed 2/2 copied
+  descendants with no failures while their selected copied folder stayed Read-only. Both native
+  buttons and their Activity results passed. Partial results, Stop and timing races remain untested.
+- After the folder itself was locked, clipboard Copy completed 3/3 items: the folder, an empty folder and a
+  collaborative rich-text file. Fresh readback proved all three copies were Read-only with new
+  decision IDs, matching folder receipts and no pending proposals. All metadata maps were empty
+  and equal; populated metadata was not tested. The file had independent content and Yjs IDs, and
+  its saved text matched the source after the actual comment-removal and Yjs Copy round-trip.
+- Sidebar Restore of `/restore-qa-1021` passed after the Restore UI gates were fixed. The same four
+  IDs and paths returned, with the root still Read-only and its three children writable. After the
+  root flag was cleared, normal Archive returned all four to Trash with all flags false under one
+  new operation. This checks node Restore, not history-version restore.
+- Native Cut/Paste moved the writable A folder into B and back to root. Both jobs finished 1/1.
+  Its two Read-only children kept their IDs and flags; all original paths returned. Ordinary
+  Archive then refused the Read-only child by name and archived none of the original items.
+  All original flags were cleared afterward. Only the three new copied items were archived.
+- At a 640 × 900 viewport, Properties fit without horizontal overflow. Its checkbox, bulk buttons
+  and footer stayed inside the view. The viewport override was removed afterward. This checks
+  narrow layout, not real browser zoom.
+
+Permission loss, real browser zoom, the remaining editor variants, accepted-upload races, and
+partial/Stop outcomes still need native checks. The cases below remain the full recipe.
 
 - Fixtures: one Read-only file, one Read-only folder with editable descendants, an editable folder
   with a Read-only child and an editable sibling, and a pending proposal created before the flag.
@@ -1005,7 +1039,8 @@ separate authorization; do not sign in or out just to follow an old recipe.
   Read back nodes after refusals; a toast alone does not prove no write.
 - Copy a Read-only source with exact `Copy`, then `Paste` in an editable destination.
   Read back `readOnly: true` on the copy. The UI uses `data-file-read-only="true"`.
-  The copy must have its own internal decision, checked by backend tests rather than public UI.
+  The copy must have its own internal decision, checked by backend tests or an exact internal
+  readback; the public UI does not expose it.
 - With metadata dirty, enable Read-only and Save: metadata must save first. If metadata fails,
   the flag stays unchanged. If a late flag leaves a metadata draft, explicitly clear Read-only
   and Save: clear first, then save the draft. A later failure keeps the draft and reports partial
@@ -1077,7 +1112,7 @@ To build a writable one, follow the UI steps below.
 1. Create a `.md` file from the sidebar. A new file is collaborative.
 2. Open it, switch to the **Markdown** view, and give it a body that carries a real Markdown escape, for example a line holding `2026\-08\-30`. Save.
 3. Open the breadcrumb Properties dialog (see "File Properties Modal" below for its two click hazards) and uncheck `Collaboration` by clicking its label, `.FilesPropertiesModalCollaboration-checkbox`. Focusing the 1px input and pressing Space does NOT toggle it (tried 2026-08-31: the input stayed `checked`), so use the label. The confirmation is not a separate dialog — it appears INSIDE the properties modal as a `Turn collaboration off` / `Cancel` pair, so do not wait for a new `[role=dialog]` to show up.
-4. For a read-only variant, choose `Read-only` in the write-policy radios, then click `Save policy`. Unlock with `Editable` + `Save policy`.
+4. In `.FilesPropertiesModalReadOnly`, tick the `Read-only` checkbox, then click the dialog footer `Save`. To unlock, clear the same checkbox and click `Save`. Both directions passed on the existing non-collaborative fixture on 2026-10-29.
 5. Reopen the dialog and read both states back before you start the checks.
 
 The rich view must then render the content un-escaped (`2026-08-30`) while the Markdown view shows the raw bytes. Selectors and behaviors of the non-collaborative rich and diff editors are in `file-node-view.md` under "Non-Collaborative Editors (No Yjs)".
@@ -1336,7 +1371,8 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 ### File Properties Modal
 
 One dialog holding the file's facts, its Read-only flag, and the flat key-value map edited as YAML.
-The Read-only controls below are source contracts pending native QA. Spec: `.agents/skills/file-metadata/SKILL.md` and
+The native subset is recorded under "File And Folder Read-only" above; untested cases remain
+requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
 `.agents/skills/files-read-only/SKILL.md`. It replaced both the sidebar `Metadata` tab and the old
 `Read-only settings` modal, so a recipe that clicks either of those is out of date.
 
@@ -1369,19 +1405,21 @@ The Read-only controls below are source contracts pending native QA. Spec: `.age
   directions every time. Use the keyboard for the confirm button. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
-- Current Read-only source contract (native QA pending): scope to `.FilesPropertiesModalReadOnly`.
+- Read-only checkbox verified natively 2026-10-29: scope to `.FilesPropertiesModalReadOnly`.
   The single checkbox is `Read-only`; click its visible label and footer `Save`.
   `files_nodes.read_only_get({ membershipId, nodeId })` returns `readOnly` and `canEdit`.
   Both flag directions need Can edit. Saving metadata plus enabling the flag saves metadata first;
   explicitly clearing a late flag clears it before saving a kept metadata draft. A later failure
   keeps the remaining draft and reports that only part was saved.
-- Folder bulk source contract (native QA pending): choose `Make contents Read-only` or
+- Both folder bulk buttons verified natively 2026-10-29 on two descendants: choose
+  `Make contents Read-only` or
   `Clear Read-only from contents`, then `Start` in its confirm dialog. No folder default is saved.
   The folder's own checkbox is separate. The text explains that this is a live pass, new or moved
   items may be missed, Stop keeps work already done, and there is no Undo. Clearing also clears
   flags set by hand. Poll the Activity by its new run id or start time, then read reached children.
   Do not restore the fixture by changing only the parent flag; each child keeps its own flag.
-- Recovery source contract (native QA pending): after a late flag or permission refusal, verify
+- Recovery source contract (only the flag-change subset above is verified): after a late flag or
+  permission refusal, verify
   `Unsaved text (N)` in Files. It keeps exact text in this tab after route close or file access loss.
   After workspace access ends, the denied-workspace screen keeps the same entry. Each name read
   uses the copy's original membership; unavailable files have generic names.

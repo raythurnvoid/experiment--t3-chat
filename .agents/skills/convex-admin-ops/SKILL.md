@@ -327,6 +327,11 @@ The SDK's browser XML parser needs `DOMParser`, which the default Convex runtime
 
 # Environment And Logs
 
+For related Cloudflare checks, set `WRANGLER_WRITE_LOGS=false` before running Wrangler.
+Wrangler 4.127.1 writes `auth token --json` output to its debug file even with log sanitization.
+Keep token output in memory and save only the safe fields needed for the check. Set an absolute
+scratch `WRANGLER_LOG_PATH` too, so any later enabled logging stays outside the repo.
+
 For a provider billing audit, use `billing:inspect_polar_billing_page`. Supply the checked app `userId`, mapped `expectedCustomerId`, exact `expectedCloudUrl` and `expectedSiteUrl`, and `expectedPolarServer`. Omit `events` for a customer-only read, or supply `{ page, metadata? }` for one event page. Metadata filters accept an app event name, organization id, workspace id or asset id. Page is 1–5; the fixed page size is 100. Follow the returned provider pagination in the outside runner; a short or empty page alone does not prove completion. The action keeps the Polar token on Convex and returns only checked billing fields and safe target/HTTP values. It does not write or refresh billing state. Check the selected payer, event links and any task-specific counts in the runner. Separate calls are not an atomic snapshot or proof of a meter, invoice or payment.
 
 Read only the needed non-secret deployment URLs and ids from `packages/app/.env.local`; never dump the whole file. Use `convex env list --names-only` only when the task must confirm that an exact remote variable exists. Never use `convex env get` for a secret, and never copy a secret value into a command, captured output, or report. Confirm required secret values through an approved operator channel without retrieving them from Convex, a browser page, or logs.

@@ -1,5 +1,9 @@
 # Plugin Marketplace QA (install / uninstall / update)
 
+The `qa-browser` and `f5-repro-org` fixtures used below were erased in the 2026-10-28 cleanup.
+Those steps are historical recipes. Pick a kept fixture from [QA-data](../../qa-data/SKILL.md)
+and read its exact permissions and plugin setup before running a step. Do not recreate the old tenant.
+
 Recipes for driving the Plugins catalog and plugin detail pages. Selectors and behavior verified 2026-08-01 on the dev deployment.
 
 ## Naming trap
