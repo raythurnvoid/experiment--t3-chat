@@ -1219,7 +1219,9 @@ per hour. Over 730 hours that is 82,000 calls (20% of 400,000) and 2.0 Node GB-h
 On 2026-10-27 at 21:50 UTC, Convex disabled the plugin deployment because it went over a usage limit
 set in the dashboard. Every function stopped, crons too, and the two new accounts stopped syncing. The
 `_scheduled_functions` table shows the error on the failed slice. `convex logs` then shows nothing at
-all. Which limit was hit is visible only in the dashboard.
+all. `convex deployment usage-limits list` showed the cause: the 400,000 function calls a month limit
+(400,005 used), while both action compute limits were at 39%. Most of those calls came from earlier
+October versions. The deployment turns on again on 2026-11-01 at 00:00 UTC.
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`

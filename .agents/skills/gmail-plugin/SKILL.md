@@ -43,7 +43,7 @@ From `plugins/bonobo-plugin-gmail`, all through `vp env exec`: `pnpm run typeche
 - A new email should reach Files within about a minute while push is on. Read the account's `lastSyncedAt`, `nextSyncAt`, `idleSlices` and `watchExpiresAt` with the safe script, and the plugin deployment logs with `convex logs` (it streams forever, so run it in the background and stop it).
 - The Gmail page card has `data-gmail-push="on"` while the watch is live.
 - Do not send CDP commands to a tab that has a plugin frame (see known-hazards).
-- If every account's `nextSyncAt` is in the past and `convex logs` shows nothing for 15 minutes, read `convex data _scheduled_functions`. "This deployment has been disabled because it exceeded a configured usage limit" means Convex stopped all functions. Only the user can see which limit and raise it, in the Convex dashboard (it needs their sign-in). Do not sign in for them.
+- If every account's `nextSyncAt` is in the past and `convex logs` shows nothing for 15 minutes, read `convex data _scheduled_functions`. "This deployment has been disabled because it exceeded a configured usage limit" means Convex stopped all functions. `convex deployment usage-limits list` shows each limit, its window, current usage and whether it fired. A day limit turns back on at 00:00 UTC, a month limit on the 1st at 00:00 UTC. Raising or removing a limit is the user's choice, so ask first.
 
 ## Connect another account
 
