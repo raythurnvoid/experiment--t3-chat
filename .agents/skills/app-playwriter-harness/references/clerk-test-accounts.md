@@ -110,6 +110,20 @@ The URL passed to `Start-Process` does not always open: the first tab can sit on
 
 ## Sign in
 
+For a new isolated profile, sign in before loading the app. This avoids creating an anonymous
+account. Verified 2026-10-29 with the seeded member:
+
+1. Fulfill one owned same-origin scratch URL with a plain HTML sign-in container. Do not load app
+   scripts on that page.
+2. Load the app's pinned Clerk JS version from its dev frontend API, set its public `pk_test_` key,
+   call `Clerk.load()`, then `Clerk.mountSignIn(container)`. Follow the native email and test-code UI.
+   Use the [Clerk JS script-tag setup](https://clerk.com/docs/js-frontend/getting-started/quickstart).
+3. Check the exact expected `external_id` in the Convex token and confirm the app's anonymous-token
+   storage key is absent. Never print the token.
+4. Remove only that scratch page's route, then navigate to the app. Recheck the account before writes.
+
+If the app was already loaded, use the cleanup path below.
+
 The first app load in a fresh scratch profile mints an anonymous user with its own org and workspace. Signing in does not remove it, and after sign-in the tab no longer holds its token. So delete it **before** you sign in: `app_convex.action(app_convex_api.users.delete_current_user_account, {})` from that tab, then wait for `window.Clerk?.loaded` (see the reload note below). If you already signed in, record its id and creation time from the `users` table and delete it as operator cleanup. Seen 2026-09-30: two scratch browsers left two anonymous users.
 
 Operator cleanup, from `packages/app` (the [convex-admin-ops](../../convex-admin-ops/SKILL.md) skill has the full rules):

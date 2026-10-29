@@ -1,4 +1,10 @@
 @layer components {
+	.FilesUnsavedText-trigger {
+		height: auto;
+		min-height: 36px;
+		white-space: normal;
+	}
+
 	.FilesUnsavedText {
 		width: min(48rem, calc(100vw - 2rem));
 		max-width: none;

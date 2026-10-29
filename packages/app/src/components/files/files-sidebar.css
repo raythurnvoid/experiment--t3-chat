@@ -60,6 +60,10 @@
 		contain: content;
 	}
 
+	.FilesSidebarTopSection > .FilesUnsavedText-trigger {
+		margin: 0 12px;
+	}
+
 	.FilesSidebarTopSection-actions {
 		display: flex;
 		align-items: center;

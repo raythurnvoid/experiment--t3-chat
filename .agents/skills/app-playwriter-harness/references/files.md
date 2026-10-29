@@ -989,8 +989,9 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 
 ### File And Folder Read-only
 
-Native subset verified 2026-10-29 with the signed-in owner. Use existing QA data and the signed-in
-session. A second member fixture needs separate authorization; do not sign in or out just to
+Native subset verified 2026-10-29 with the signed-in owner and an authorized isolated member.
+Use existing QA data and the signed-in session. A second member fixture needs separate
+authorization; do not sign in or out just to
 follow an old recipe.
 
 - On `/u23p/my-file.md`, the checkbox saved both directions, including keyboard toggling, and the
@@ -999,6 +1000,24 @@ follow an old recipe.
   reload warning kept it too. Discard confirmation focused `Keep text`, app navigation kept the
   capture, and unlocking did not replay it. Saved text, metadata and flag were
   restored afterward. This does not cover every editor or permission-loss case.
+- A member with Can edit and without file-management rights saved the flag both ways through
+  Properties. A native rich-text failure proof disabled only the draft-retention call: the late
+  lock then produced zero captures and failed the complete-draft assertion. Restoring the call
+  passed the same check. Served source maps proved which code ran; saved text stayed unchanged.
+- Changing General access to `Everyone in this workspace can view` kept the member's full draft
+  with the permission reason. Both flag setters refused, and Properties disabled its checkbox
+  with the Can edit explanation. Changing to `Only people added` then removed read access:
+  recovery stayed reachable under `Unavailable file` and hid the old name. Restoring access did
+  not replay the draft. Original sharing, text, metadata and flag were restored.
+- SPA navigation to an existing workspace the member cannot open kept the exact capture in the
+  `Organization access denied` alert's recovery dialog, with no reload. This does not test actual
+  membership removal. Return through the typed app route too; an absolute external-style `href`
+  can reload and lose tab-local text, as the recovery warning says.
+- Markdown, Code, local Review and proposal Review kept each complete draft on a late lock.
+  Save and input refused; proposal Accept refused too. Pending row Discard still worked while
+  locked and its exact job finished. A clean collaborative Rich editor also locked and refused
+  input. All saved bytes and Yjs sequences stayed unchanged. This does not prove a queued
+  collaborative-write race.
 - A metadata draft made while writable survived another tab locking the file. Explicitly clearing
   the flag and saving wrote the draft. The test key was then removed. Typing into an already locked
   metadata editor, a failed metadata save while enabling the flag, and partial-save failures remain unverified.
@@ -1008,8 +1027,9 @@ follow an old recipe.
   buttons and their Activity results passed. Partial results, Stop and timing races remain untested.
 - After the folder itself was locked, clipboard Copy completed 3/3 items: the folder, an empty folder and a
   collaborative rich-text file. Fresh readback proved all three copies were Read-only with new
-  decision IDs, matching folder receipts and no pending proposals. All metadata maps were empty
-  and equal; populated metadata was not tested. The file had independent content and Yjs IDs, and
+  decision IDs, matching folder receipts and no pending proposals. A separate native Copy kept
+  text, number and boolean metadata in order. Clearing the source flag left the copy Read-only.
+  The original metadata and flag were restored. The file had independent content and Yjs IDs, and
   its saved text matched the source after the actual comment-removal and Yjs Copy round-trip.
 - Sidebar Restore of `/restore-qa-1021` passed after the Restore UI gates were fixed. The same four
   IDs and paths returned, with the root still Read-only and its three children writable. After the
@@ -1019,12 +1039,34 @@ follow an old recipe.
   Its two Read-only children kept their IDs and flags; all original paths returned. Ordinary
   Archive then refused the Read-only child by name and archived none of the original items.
   All original flags were cleared afterward. Only the three new copied items were archived.
+- A real member key with explicit force archived the allowed sibling of a restricted folder.
+  The denied branch and parent stayed active. API and Activity showed partial completion;
+  denied paths were null, and the private child was neither named nor counted. Ordinary Restore
+  brought back the exact allowed node with its Read-only flag. Missing force scope returned 403;
+  omitting force still refused the flag. Temporary grants and keys were cleaned up.
+- After that completed job, removing read access to its disposable root hid the old paths in
+  both public result queries and the native Activity dialog. Outcome order and count stayed the
+  same. Restoring the original sharing brought the paths back under the same membership lifetime.
+- A Read-only folder allowed native Code Save in a writable direct child. Direct child creation
+  and Rename stayed disabled. Exact original bytes, metadata and flags were restored.
+- A create-only public upload was accepted before its file became Read-only. One signed PUT then
+  completed normal conversion with the flag still set and exact saved bytes. The ordinary key had
+  no force scope and was revoked. The unused first placeholder was removed without sending a PUT.
 - At a 640 × 900 viewport, Properties fit without horizontal overflow. Its checkbox, bulk buttons
   and footer stayed inside the view. The viewport override was removed afterward. This checks
   narrow layout, not real browser zoom.
+- Native Chrome Page zoom at 200% doubled the app's device-pixel ratio and halved layout width
+  with the same outer window size. Properties had no horizontal overflow, Save stayed in view,
+  and its checkbox could be scrolled into view and focused. The original zoom was restored.
+  This was a DOM check; screenshot capture failed, and the whole Files route was not checked.
+- At actual 200% zoom, a narrow Files pane clipped the old recovery button behind the editor.
+  Recovery now has its own wrapping row. Turning only that placement fix off failed the button's
+  hit-test and pane-fit assertion; restoring it passed with a normal click. The dialog fit without
+  horizontal overflow. Tab reached Copy, Download and Discard; confirmation focused Keep text.
+  A screenshot and exact draft check passed. Restore native zoom and window bounds afterward.
 
-Permission loss, real browser zoom, the remaining editor variants, accepted-upload races, and
-partial/Stop outcomes still need native checks. The cases below remain the full recipe.
+Partial pending Save, bulk partial/Stop outcomes and a queued
+collaborative-write race still need native checks. The cases below remain the full recipe.
 
 - Fixtures: one Read-only file, one Read-only folder with editable descendants, an editable folder
   with a Read-only child and an editable sibling, and a pending proposal created before the flag.

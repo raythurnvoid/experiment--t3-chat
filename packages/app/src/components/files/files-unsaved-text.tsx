@@ -19,7 +19,11 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { files_download_blob } from "@/lib/files.ts";
 import { files_unsaved_text_discard, useFilesUnsavedText, type files_UnsavedText } from "@/lib/files-unsaved-text.ts";
 
-type FilesUnsavedText_ClassNames = "FilesUnsavedText" | "FilesUnsavedText-item" | "FilesUnsavedText-actions";
+type FilesUnsavedText_ClassNames =
+	| "FilesUnsavedText"
+	| "FilesUnsavedText-trigger"
+	| "FilesUnsavedText-item"
+	| "FilesUnsavedText-actions";
 
 const FilesUnsavedTextItem = memo(function FilesUnsavedTextItem(props: { capture: files_UnsavedText }) {
 	const { capture } = props;
@@ -95,7 +99,11 @@ export const FilesUnsavedText = memo(function FilesUnsavedText() {
 	if (captures.length === 0) return null;
 	return (
 		<>
-			<MyButton variant="ghost" onClick={() => setOpen(true)}>
+			<MyButton
+				className={"FilesUnsavedText-trigger" satisfies FilesUnsavedText_ClassNames}
+				variant="ghost"
+				onClick={() => setOpen(true)}
+			>
 				Unsaved text ({captures.length})
 			</MyButton>
 			<MyModal open={open} setOpen={setOpen}>

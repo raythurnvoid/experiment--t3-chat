@@ -236,6 +236,59 @@ export type r2_get_assets_ready_states_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+export const get_inventory_scope = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+	},
+	returns: v.object({ organizationExists: v.boolean(), workspaceExists: v.boolean() }),
+	handler: async (ctx, args) => ({
+		organizationExists: (await ctx.db.get("organizations", args.organizationId)) !== null,
+		workspaceExists: (await ctx.db.get("organizations_workspaces", args.workspaceId)) !== null,
+	}),
+});
+
+export type get_inventory_scope_Result =
+	typeof get_inventory_scope extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const get_live_default_inventory_scope = internalQuery({
+	args: {
+		ownerUserId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const [owner, organization, workspace] = await Promise.all([
+			ctx.db.get("users", args.ownerUserId),
+			ctx.db.get("organizations", args.organizationId),
+			ctx.db.get("organizations_workspaces", args.workspaceId),
+		]);
+		return (
+			owner !== null &&
+			owner.clerkUserId !== null &&
+			owner.deletedAt === undefined &&
+			owner.deletionFinalizationStartedAt === undefined &&
+			owner.defaultOrganizationId === args.organizationId &&
+			owner.defaultWorkspaceId === args.workspaceId &&
+			organization !== null &&
+			organization.ownerUserId === args.ownerUserId &&
+			organization.default &&
+			organization.defaultWorkspaceId === args.workspaceId &&
+			workspace !== null &&
+			workspace.organizationId === args.organizationId &&
+			workspace.default
+		);
+	},
+});
+
+export type get_live_default_inventory_scope_Result =
+	typeof get_live_default_inventory_scope extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 /**
  * Read one asset of a workspace the caller has already authorized.
  *

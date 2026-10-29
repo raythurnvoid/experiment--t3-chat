@@ -177,6 +177,7 @@ import type * as r2_assets from "../r2_assets.js";
 import type * as r2_client from "../r2_client.js";
 import type * as r2_get_url from "../r2_get_url.js";
 import type * as r2_http_routes from "../r2_http_routes.js";
+import type * as r2_inventory from "../r2_inventory.js";
 import type * as rate_limiter from "../rate_limiter.js";
 import type * as users from "../users.js";
 import type * as users_http_routes from "../users_http_routes.js";
@@ -358,6 +359,7 @@ declare const fullApi: ApiFromModules<{
   r2_client: typeof r2_client;
   r2_get_url: typeof r2_get_url;
   r2_http_routes: typeof r2_http_routes;
+  r2_inventory: typeof r2_inventory;
   rate_limiter: typeof rate_limiter;
   users: typeof users;
   users_http_routes: typeof users_http_routes;

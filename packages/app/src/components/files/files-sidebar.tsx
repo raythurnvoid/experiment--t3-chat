@@ -3663,7 +3663,6 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 					</MyTooltipTrigger>
 					<MyTooltipContent>Open files root</MyTooltipContent>
 				</MyTooltip>
-				<FilesUnsavedText />
 			</div>
 
 			<MyIconButton
@@ -3879,6 +3878,8 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 	return (
 		<div className={cn("FilesSidebarTopSection" satisfies FilesSidebarTopSection_ClassNames)}>
 			<FilesSidebarHeader view={view} onClose={onClose} />
+			{/* Recovery needs its own row when the pane cannot fit the header buttons. */}
+			<FilesUnsavedText />
 
 			<FilesSearchInput
 				id={"app_files_sidebar_search" satisfies AppElementId}
