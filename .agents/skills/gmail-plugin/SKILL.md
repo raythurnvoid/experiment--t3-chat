@@ -34,7 +34,7 @@ From `plugins/bonobo-plugin-gmail`, all through `vp env exec`: `pnpm run typeche
 3. Commit in the plugin repo and push it (pinned-token recipe in the root `CLAUDE.md`, with the plugin repo's remote).
 4. Deploy the backend from that pushed commit while no slice runs: `vp env exec pnpm exec convex dev --once --typecheck disable`. A schema change that makes a field required needs two deploys: first optional plus a backfill, then required (see `../convex-migrations/SKILL.md`).
 5. Publish in the app and press Update on the installation. The publish review sometimes ends with "could not finish its assessment". Retry the same commit; 0.3.12 needed three tries.
-6. Open the Gmail or Mail page and keep it open until the next slice. The update makes Bonobo Senate refuse the old sync grant, and only an open page renews it.
+6. Open the Gmail or Mail page and keep it visible until each older account has saved a new email. The update makes Bonobo Senate refuse the old sync grant, and only a visible page renews it. Sync finds out only at its next write, which can come hours later, so a slice that saves nothing proves nothing. Send one test email (see "Live checks"), or check the accounts later for `press_reconnect_needed` and open the page then.
 7. Update the gitlink in this repo, add a Gmail paragraph to `../plugin-system/SKILL.md`, commit and push.
 
 ## Live checks
@@ -43,6 +43,7 @@ From `plugins/bonobo-plugin-gmail`, all through `vp env exec`: `pnpm run typeche
 - A new email should reach Files within about a minute while push is on. Read the account's `lastSyncedAt`, `nextSyncAt`, `idleSlices` and `watchExpiresAt` with the safe script, and the plugin deployment logs with `convex logs` (it streams forever, so run it in the background and stop it).
 - The Gmail page card has `data-gmail-push="on"` while the watch is live.
 - Do not send CDP commands to a tab that has a plugin frame (see known-hazards).
+- If every account's `nextSyncAt` is in the past and `convex logs` shows nothing for 15 minutes, read `convex data _scheduled_functions`. "This deployment has been disabled because it exceeded a configured usage limit" means Convex stopped all functions. Only the user can see which limit and raise it, in the Convex dashboard (it needs their sign-in). Do not sign in for them.
 
 ## Connect another account
 

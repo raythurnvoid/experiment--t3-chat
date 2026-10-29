@@ -1204,8 +1204,22 @@ failed its test.
 After the publish, the Update button stayed disabled for a moment. A second press opened the consent,
 which asked for nothing new. Live check: the page listed only 7 and 30 days. Two more accounts were
 connected with 30 days and the read-only scope only. Their backfills saved 111 and 30 emails in about
-40 minutes, and none was older than the saved date. The older account kept syncing after the update,
-and all three got a push watch.
+40 minutes, and none was older than the saved date. All three got a push watch.
+
+The older account only checked for mail after the update and wrote nothing. Its first write came at
+22:49 UTC with a new email, more than four hours later. Bonobo Senate refused the old sync grant, and
+the account stopped with `press_reconnect_needed`, because no Gmail page was visible to renew it. An
+update fix that "syncs" without a write proves nothing.
+
+The 18.7-hour log after the update (17:13 UTC on 2026-10-25 to 11:57 UTC on 2026-10-26) had no failed
+call. The backfill hour had 6,552 calls, 35 MB database I/O and 28 MB egress. After it, with three
+accounts and push on, the rate was 112 calls, 0.49 MB I/O, 0.19 MB egress and 0.0027 Node GB-hours
+per hour. Over 730 hours that is 82,000 calls (20% of 400,000) and 2.0 Node GB-hours (49% of 4).
+
+On 2026-10-27 at 21:50 UTC, Convex disabled the plugin deployment because it went over a usage limit
+set in the dashboard. Every function stopped, crons too, and the two new accounts stopped syncing. The
+`_scheduled_functions` table shows the error on the failed slice. `convex logs` then shows nothing at
+all. Which limit was hit is visible only in the dashboard.
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
