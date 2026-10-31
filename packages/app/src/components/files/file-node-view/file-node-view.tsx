@@ -33,7 +33,6 @@ import { FilesPropertiesModal } from "../files-properties-modal.tsx";
 import { FilesClipboardMenuItems, FilesClipboardProvider } from "../files-clipboard.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
-import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyCheckboxButton, MyCheckboxButtonContent, MyCheckboxButtonLabel } from "@/components/my-checkbox-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
@@ -137,7 +136,6 @@ import {
 import { app_local_storage_set_value, useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { global_custom_event_dispatch, useGlobalCustomEvent } from "@/lib/global-event.tsx";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
-import { url_path_file_by_node_id } from "@/lib/urls.ts";
 import { cn, copy_to_clipboard, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
@@ -167,7 +165,6 @@ import {
 	Hash,
 	Home,
 	Info,
-	Link2,
 	ListFilter,
 	Lock,
 	LockKeyhole,
@@ -676,10 +673,6 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 		: breadcrumbPath.map((node) => ({ id: node._id, name: node.name, target: "saved" }));
 
 	const currentNode = breadcrumbPath.at(-1);
-	const currentNodePath = currentNode?.path;
-	const currentNodeLink = selectedNodeId
-		? `${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: selectedNodeId })}`
-		: undefined;
 	// Restricted anywhere at or above this node, so the button says "restricted" for a file inside a
 	// restricted folder too. The dialog is what explains where the restriction comes from. `null` means
 	// nothing restricts it, and the two other values say whether this node is the one carrying the
@@ -876,17 +869,6 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 								filesSidebarOpen={filesSidebarOpen}
 								currentMenu={currentMenu}
 							/>
-							<li>
-								<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={privateView.entry.path} />
-							</li>
-							<li>
-								<CopyIconButton
-									variant="ghost-highlightable"
-									tooltipCopy="Copy link"
-									icon={<Link2 />}
-									text={window.location.href}
-								/>
-							</li>
 						</>
 					) : selectedNodeId && breadcrumbPath.length > 0 ? (
 						<>
@@ -925,17 +907,6 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 								filesSidebarOpen={filesSidebarOpen}
 								currentMenu={currentMenu}
 							/>
-							<li>
-								<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={currentNodePath} />
-							</li>
-							<li>
-								<CopyIconButton
-									variant="ghost-highlightable"
-									tooltipCopy="Copy link"
-									icon={<Link2 />}
-									text={currentNodeLink}
-								/>
-							</li>
 							{/* One button with two faces: the lock says the answer at a glance, and opening it is
 							    how you change the answer. `data-file-restricted` carries the same values the sidebar
 							    row uses, except the sidebar only ever marks the node holding the restriction while

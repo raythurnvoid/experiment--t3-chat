@@ -53,6 +53,7 @@ import { FilesShareModal } from "./files-share-modal.tsx";
 const SHARE = {
 	nodeId: "node_1",
 	nodeName: "Reports",
+	nodePath: "/Reports",
 	nodeKind: "folder",
 	organizationOwnerUserId: "owner_1",
 	canManage: true,
@@ -86,7 +87,14 @@ const SHARE = {
 /**
  * A manager's view of a file, not a folder, so the public link section shows.
  */
-const FILE_SHARE = { ...SHARE, nodeName: "notes.md", nodeKind: "file", scope: null, access: "inherits" };
+const FILE_SHARE = {
+	...SHARE,
+	nodeName: "notes.md",
+	nodePath: "/notes.md",
+	nodeKind: "file",
+	scope: null,
+	access: "inherits",
+};
 
 /**
  * A manager's view of an image file, so the section also has the public flag.
@@ -94,6 +102,7 @@ const FILE_SHARE = { ...SHARE, nodeName: "notes.md", nodeKind: "file", scope: nu
 const IMAGE_SHARE = {
 	...FILE_SHARE,
 	nodeName: "photo.png",
+	nodePath: "/photo.png",
 	public: { isPublic: false, canChange: true, mediaKind: "image" as const },
 };
 
@@ -108,6 +117,7 @@ const OPEN_SHARE = { ...SHARE, scope: null, access: "inherits" };
 const INSIDE_SHARE = {
 	...SHARE,
 	nodeName: "notes.md",
+	nodePath: "/Team/notes.md",
 	nodeKind: "file",
 	scope: { nodeId: "node_0", name: "Team", path: "/Team", isSelf: false },
 	baseScope: { nodeId: "node_0", name: "Team", path: "/Team", workspaceView: false },
@@ -138,6 +148,7 @@ const INSIDE_SHARE = {
 const TEAM_ROOT_SHARE = {
 	...INSIDE_SHARE,
 	nodeName: "Reports",
+	nodePath: "/Team/Reports",
 	nodeKind: "folder",
 	scope: { ...SHARE.scope },
 	access: "restricted_root",
@@ -747,7 +758,7 @@ describe("FilesShareModal", () => {
 		expect(linkSection()?.dataset.shareLink).toBe("on");
 		expect(linkSection()?.textContent).toContain("Link created by Ada on Sep 27, 2026.");
 
-		fireEvent.click(within(linkSection()!).getByRole("button", { name: "Copy link" }));
+		fireEvent.click(within(linkSection()!).getByRole("button", { name: "Copy public link" }));
 		await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/share/token_1`));
 
 		fireEvent.click(screen.getByRole("combobox", { name: "Anyone with the link" }));

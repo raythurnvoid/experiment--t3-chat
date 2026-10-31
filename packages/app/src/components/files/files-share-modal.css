@@ -317,6 +317,19 @@
 	}
 	/* #endregion link */
 
+	/* #region copy */
+	/* The exact text the row's button copies. A path or a link can be one long word, so it may break
+	   anywhere. It keeps the size of a row's meta line, so the skeleton row has the same height. */
+	.FilesShareModalCopy-preview {
+		font-family: var(--app-font-monospace);
+		font-size: 15px;
+		line-height: 1.4;
+		color: var(--color-fg-08);
+
+		overflow-wrap: anywhere;
+	}
+	/* #endregion copy */
+
 	/* #region skeleton */
 	/* Each bar takes the box of what it stands for, so the loaded dialog has the same height. A button
 	   bar is 36px, like `MyButton`. A text bar is one line (`1lh`) with the font size and line height of

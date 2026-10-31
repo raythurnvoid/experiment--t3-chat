@@ -645,6 +645,8 @@ export const get_node_share_state = query({
 		v.object({
 			nodeId: v.id("files_nodes"),
 			nodeName: v.string(),
+			/** The node's path. The dialog shows it and copies it. */
+			nodePath: v.string(),
 			nodeKind: doc(app_convex_schema, "files_nodes").fields.kind,
 			/**
 			 * The restricted node that decides access here, or `null` when the workspace roles decide.
@@ -1192,6 +1194,7 @@ export const get_node_share_state = query({
 			return {
 				nodeId: node._id,
 				nodeName: node.name,
+				nodePath: node.path,
 				nodeKind: node.kind,
 				scope: null,
 				canManage,
@@ -1219,6 +1222,7 @@ export const get_node_share_state = query({
 		return {
 			nodeId: node._id,
 			nodeName: node.name,
+			nodePath: node.path,
 			nodeKind: node.kind,
 			scope: {
 				nodeId: scopeNode._id,

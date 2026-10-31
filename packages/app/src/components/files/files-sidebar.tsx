@@ -47,7 +47,6 @@ import {
 	Link2,
 	Lock,
 	LockKeyhole,
-	Route,
 	Upload,
 	UserRound,
 	Users,
@@ -77,6 +76,7 @@ import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
 import { defaultRangeExtractor, useVirtualizer, type Range, type Virtualizer } from "@tanstack/react-virtual";
 import { useNavigate } from "@tanstack/react-router";
+import { CopyPathIcon } from "@/components/copy-path-icon.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
 import {
@@ -1479,7 +1479,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 						<MyMenuItem hideOnClick onClick={onCopy}>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
-									<Route />
+									<CopyPathIcon />
 								</MyMenuItemContentIcon>
 								<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
@@ -1552,7 +1552,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 					<MyMenuItem hideOnClick onClick={onCopy}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
-								<Route />
+								<CopyPathIcon />
 							</MyMenuItemContentIcon>
 							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
 						</MyMenuItemContent>

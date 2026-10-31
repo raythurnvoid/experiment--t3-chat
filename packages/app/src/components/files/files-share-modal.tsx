@@ -1,11 +1,12 @@
 import "./files-share-modal.css";
 
 import { useQueries, useQuery } from "convex/react";
-import { Lock, Plug, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
+import { Link2, Lock, Plug, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
 import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
+import { CopyPathIcon } from "@/components/copy-path-icon.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
@@ -40,7 +41,7 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_time } from "@/lib/date.ts";
-import { url_share_link } from "@/lib/urls.ts";
+import { url_path_file_by_node_id, url_share_link } from "@/lib/urls.ts";
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import {
 	access_control_FILE_SHARE_LEVEL_KEYS,
@@ -510,7 +511,9 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 							</MySelectPopover>
 						</MySelect>
 
-						{linkOn ? <CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy link" /> : null}
+						{linkOn ? (
+							<CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy public link" />
+						) : null}
 					</div>
 				)}
 			</div>
@@ -595,6 +598,67 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 });
 // #endregion link
 
+// #region copy
+type FilesShareModalCopy_ClassNames = "FilesShareModalCopy" | "FilesShareModalCopy-preview";
+
+type FilesShareModalCopy_Props = {
+	nodeKindText: "file" | "folder";
+	path: string;
+	link: string;
+};
+
+/**
+ * The item's path and its app link. Each row shows the exact text that its button copies. The app link
+ * opens only for people with access. The public link above is the one for everybody else.
+ */
+const FilesShareModalCopy = memo(function FilesShareModalCopy(props: FilesShareModalCopy_Props) {
+	const { nodeKindText, path, link } = props;
+
+	return (
+		<section
+			aria-label="Path and link"
+			className={cn(
+				"FilesShareModal-section" satisfies FilesShareModal_ClassNames,
+				"FilesShareModalCopy" satisfies FilesShareModalCopy_ClassNames,
+			)}
+		>
+			<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Path and link</h3>
+			<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+				{`The link opens this ${nodeKindText} only for people with access.`}
+			</p>
+
+			{/* The rows use the people row layout, so the icons and text line up with the list above. */}
+			<ul className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}>
+				<li className={"FilesShareModalEntry" satisfies FilesShareModalEntry_ClassNames}>
+					<div className={"FilesShareModalEntry-icon" satisfies FilesShareModalEntry_ClassNames} aria-hidden>
+						<CopyPathIcon />
+					</div>
+					<div className={"FilesShareModalEntry-main" satisfies FilesShareModalEntry_ClassNames}>
+						<span className={"FilesShareModalEntry-name" satisfies FilesShareModalEntry_ClassNames}>Path</span>
+						<span className={"FilesShareModalCopy-preview" satisfies FilesShareModalCopy_ClassNames}>{path}</span>
+					</div>
+					<div className={"FilesShareModalEntry-actions" satisfies FilesShareModalEntry_ClassNames}>
+						<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={path} />
+					</div>
+				</li>
+				<li className={"FilesShareModalEntry" satisfies FilesShareModalEntry_ClassNames}>
+					<div className={"FilesShareModalEntry-icon" satisfies FilesShareModalEntry_ClassNames} aria-hidden>
+						<Link2 />
+					</div>
+					<div className={"FilesShareModalEntry-main" satisfies FilesShareModalEntry_ClassNames}>
+						<span className={"FilesShareModalEntry-name" satisfies FilesShareModalEntry_ClassNames}>Link</span>
+						<span className={"FilesShareModalCopy-preview" satisfies FilesShareModalCopy_ClassNames}>{link}</span>
+					</div>
+					<div className={"FilesShareModalEntry-actions" satisfies FilesShareModalEntry_ClassNames}>
+						<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy link" text={link} />
+					</div>
+				</li>
+			</ul>
+		</section>
+	);
+});
+// #endregion copy
+
 // #region skeleton
 type FilesShareModalSkeleton_ClassNames =
 	| "FilesShareModalSkeleton"
@@ -668,6 +732,22 @@ const FilesShareModalSkeleton = memo(function FilesShareModalSkeleton() {
 					<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
 						<MySkeleton className={"FilesShareModalSkeleton-link-level" satisfies FilesShareModalSkeleton_ClassNames} />
 					</div>
+				</div>
+			</section>
+
+			<section className={"FilesShareModal-section" satisfies FilesShareModal_ClassNames}>
+				<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Path and link</h3>
+				<MySkeleton className={"FilesShareModalSkeleton-text" satisfies FilesShareModalSkeleton_ClassNames} />
+				<div className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}>
+					{["path", "link"].map((row) => (
+						<div key={row} className={"FilesShareModalEntry" satisfies FilesShareModalEntry_ClassNames}>
+							<MySkeleton className={"FilesShareModalSkeleton-icon" satisfies FilesShareModalSkeleton_ClassNames} />
+							<div className={"FilesShareModalEntry-main" satisfies FilesShareModalEntry_ClassNames}>
+								<MySkeleton className={"FilesShareModalSkeleton-name" satisfies FilesShareModalSkeleton_ClassNames} />
+								<MySkeleton className={"FilesShareModalSkeleton-meta" satisfies FilesShareModalSkeleton_ClassNames} />
+							</div>
+						</div>
+					))}
 				</div>
 			</section>
 		</div>
@@ -758,7 +838,7 @@ function sentence_case(text: string) {
 export const FilesShareModal = memo(function FilesShareModal(props: FilesShareModal_Props) {
 	const { nodeId, onClose } = props;
 
-	const { organizationId, membershipId } = AppTenantProvider.useContext();
+	const { organizationId, organizationName, workspaceName, membershipId } = AppTenantProvider.useContext();
 
 	// Set when the user steps from a node up to the restricted folder that decides its access. It is
 	// keyed by the node it was opened from, so opening the dialog on another node drops it without an
@@ -1694,6 +1774,14 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									onPublicChange={handlePublicEnabledChange}
 								/>
 							) : null}
+
+							{/* Every reader gets these. They follow `viewNodeId`, so after a step up they copy the
+							    folder the dialog shows now. */}
+							<FilesShareModalCopy
+								nodeKindText={nodeKindText}
+								path={shareState.nodePath}
+								link={`${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: shareState.nodeId })}`}
+							/>
 						</div>
 					)}
 				</MyModalScrollableArea>
