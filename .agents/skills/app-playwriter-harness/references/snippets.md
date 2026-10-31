@@ -904,10 +904,13 @@ and a CLI call takes longer than that, so polling for it and then taking a scree
 
 A folder's skeleton row (`.FilesSidebarTreeItemPlaceholder-skeleton`) shows for about 150 ms after
 Expand, and only on the first open in 5 minutes. Install the `MutationObserver` on `[role=tree]` before
-the click. When the skeleton appears, clone its `.FilesSidebarTreeItemPlaceholder` and insert the copy
-right after it. React does not own the copy, so it stays where the first child row lands. Hide that real
-row with `visibility: hidden` for the screenshot, then compare the copy's icon, name and action rects with
-a real file row one level down. Reload afterwards.
+the click. When the skeleton appears, clone the whole `[role=tree]`, remove `role` from the copy, and
+insert it right after the tree. React does not own the copy, so it keeps that frame. Then hide the real
+tree with `display: none` and take the screenshot, and compare the skeleton's icon, name and action rects
+with a real file row one level down. Reload afterwards. Do not copy only the placeholder over the first
+real row: hiding that row also hides its piece of the guide rail, and the copy ends its rail at mid-row
+like a last row, so the screenshot shows a rail gap the app never draws. For fine details such as the
+rail, take the screenshot with CDP `Page.captureScreenshot` and `clip.scale: 4`.
 
 ## Propose A Durable Memory
 
