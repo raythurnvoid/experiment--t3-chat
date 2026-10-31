@@ -290,6 +290,8 @@ export async function seed_organization_node(args: {
 		...files_content_type_index_fields(seedContentType),
 		textKind: spec.withoutYjsState ? null : seedRootKind,
 		collaborationEnabled: spec.withoutYjsState ? null : !spec.nonCollaborative,
+		// Every real content write keeps the node's size equal to its content asset's size.
+		contentByteSize: spec.size ?? bytes.byteLength,
 		updatedAt,
 	});
 	const r2Key = `bash-test${spec.path}`;

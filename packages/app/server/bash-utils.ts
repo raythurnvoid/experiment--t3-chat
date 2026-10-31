@@ -38,7 +38,7 @@ import {
 	files_get_utf8_byte_size,
 	files_normalize_lf_newlines,
 	files_normalize_special_node_path,
-	files_pending_update_has_content,
+	files_pending_update_content_size,
 	type files_PendingTarget,
 } from "../shared/files.ts";
 import { math_clamp, should_never_happen } from "../shared/shared-utils.ts";
@@ -1370,7 +1370,8 @@ export class bash_DbFilesFs implements IFileSystem {
 				if (!options?.allowLocked || !access.node) {
 					throw new bash_DbFilesPermissionDeniedError(this.shellPathOf(normalizedPath));
 				}
-				// Only what a locked row shows: no owner, no content. Not cached, so no later read uses it.
+				// Only what a locked row shows: name, type, size and dates, no owner and no content. Not
+				// cached, so no later read uses it.
 				return {
 					target: { kind: "saved", id: access.node._id },
 					path: normalizedPath,
@@ -1379,6 +1380,7 @@ export class bash_DbFilesFs implements IFileSystem {
 					updatedAt: access.node.updatedAt,
 					contentType: access.node.contentType,
 					assetId: null,
+					contentSize: access.node.contentByteSize ?? undefined,
 					textKind: null,
 					locked: true,
 				};
@@ -1431,16 +1433,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			preparing:
 				entry.kind === "private" &&
 				(!intent || (intent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new")),
-			contentSize:
-				entry.kind === "private"
-					? intent?.kind === "stored"
-						? intent.size
-						: entry.pendingUpdate.content
-							? entry.pendingUpdate.size
-							: undefined
-					: files_pending_update_has_content(entry.pendingUpdate)
-						? entry.pendingUpdate.size
-						: replacement?.size,
+			contentSize: files_pending_update_content_size(entry.pendingUpdate),
 		};
 		this.rememberEntry(cacheEntry);
 		return cacheEntry;

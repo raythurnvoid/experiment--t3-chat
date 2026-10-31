@@ -226,7 +226,7 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				continue;
 			}
 
-			// A locked item stats like a locked row: mode 0000, no size. Below a locked folder, stat fails.
+			// A locked item stats like a locked row: mode 0000, with its size. Below a locked folder, stat fails.
 			let dbFilesDoc;
 			try {
 				dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath, { allowLocked: true });

@@ -2658,13 +2658,15 @@ describe("locked paths", () => {
 		);
 	});
 
-	test("stat on a locked file shows mode 0000 and no owner", async () => {
+	test("stat on a locked file shows mode 0000, its size and no owner", async () => {
 		const runner = await create_locked_runner();
 
 		const result = await runner.run({ command: `stat ${mount}/open/locked.md` });
 
 		expect(result.metadata.exitCode, result.stderr).toBe(0);
 		expect(result.stdout).toContain("Access: (0000/----------)");
+		// A locked row shows its size, so stat does too ("locked body\n" is 12 bytes).
+		expect(result.stdout).toContain("  Size: 12");
 		expect((await runner.run({ command: `ls -l ${mount}/open/locked.md` })).stdout).toContain("updatedBy=-");
 		expect((await runner.run({ command: `stat ${mount}/Team/secret.md` })).stderr).toBe(
 			`stat: cannot stat '${mount}/Team/secret.md': Permission denied\n`,
@@ -2812,12 +2814,15 @@ describe("locked paths", () => {
 
 		const long = (await runner.run({ command: `ls -l ${mount}/open` })).stdout.trim().split("\n");
 		const lockedLine = long.find((line) => line.endsWith("\tlocked.md"));
-		expect(lockedLine).toMatch(/^file\t\S+\tupdatedBy=-\tcontentType=\S+\taccess=locked\tlocked\.md$/);
-		expect(long.find((line) => line.endsWith("\tSub/"))).toMatch(/\tupdatedBy=-\taccess=locked\tSub\/$/);
+		// A locked row shows its size ("locked body\n" is 12 bytes), like the Files table.
+		expect(lockedLine).toMatch(/^file\t\S+\tsize=12\tupdatedBy=-\tcontentType=\S+\taccess=locked\tlocked\.md$/);
+		expect(long.find((line) => line.endsWith("\tSub/"))).toMatch(/^folder\t\S+\tupdatedBy=-\taccess=locked\tSub\/$/);
 		expect(long.find((line) => line.endsWith("\ta.md"))).not.toContain("access=locked");
 		expect(long.find((line) => line.endsWith("\ta.md"))).not.toContain("updatedBy=-");
 		// The file operand form marks it too.
-		expect((await runner.run({ command: `ls -l ${mount}/open/locked.md` })).stdout).toContain("\taccess=locked\t");
+		expect((await runner.run({ command: `ls -l ${mount}/open/locked.md` })).stdout).toMatch(
+			/\tsize=12\tupdatedBy=-\t\S+\taccess=locked\t/,
+		);
 	});
 
 	test("cp -r copies what it can and prints Permission denied for a locked file and folder", async () => {

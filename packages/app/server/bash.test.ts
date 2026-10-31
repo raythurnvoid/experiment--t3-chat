@@ -1248,7 +1248,7 @@ describe("bash_run_command", () => {
 		expect(result.stdout).toMatch(new RegExp(`folder\\t[^\\t]+Z\\tupdatedBy=${seeded.userId}\\tnested/`, "u"));
 		expect(result.stdout).toMatch(
 			new RegExp(
-				`file\\t[^\\t]+Z\\tupdatedBy=${seeded.userId}\\tcontentType=text/markdown;charset=utf-8\\treadme\\.md`,
+				`file\\t[^\\t]+Z\\tsize=\\d+\\tupdatedBy=${seeded.userId}\\tcontentType=text/markdown;charset=utf-8\\treadme\\.md`,
 				"u",
 			),
 		);

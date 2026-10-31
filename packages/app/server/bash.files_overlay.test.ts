@@ -551,6 +551,24 @@ describe("bash_run_command", () => {
 		expect(pendingRows[0]!.createIntent).toBeUndefined();
 	});
 
+	test("ls -l shows the size of the agent's draft, not the saved size", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/docs/existing.md", content: "committed body\n", withRealYjsSnapshot: true }],
+		});
+		const file = `${test_db_files_mount}/docs/existing.md`;
+
+		const result = await runner.run({
+			command: `printf 'a longer draft body' > ${file} && wc -c ${file} && ls -l ${test_db_files_mount}/docs && ls -l ${file}`,
+		});
+
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		// The draft is "a longer draft body\n" (20 bytes). The saved file has 15 bytes.
+		expect(result.stdout).toContain(`20 ${file}\n`);
+		const lines = result.stdout.split("\n");
+		expect(lines.find((line) => line.endsWith("\texisting.md"))).toContain("\tsize=20\t");
+		expect(lines.find((line) => line.endsWith(`\t${file}`))).toContain("\tsize=20\t");
+	});
+
 	test("redirect overwrite on a file with collaboration off stays a pending proposal", async () => {
 		const runner = await create_bash_runner({
 			extraFiles: [{ path: "/docs/off.md", content: "committed body\n", nonCollaborative: true }],

@@ -1022,6 +1022,22 @@ export function files_pending_update_has_content<Row extends FilePendingUpdateFi
 }
 
 /**
+ * The bytes the draft's author reads: a new stored file, the draft text, or a whole-file replacement.
+ *
+ * Undefined when the draft does not change the content, like a move-only draft. Then the saved size
+ * applies. Also undefined for a new file that is still preparing.
+ */
+export function files_pending_update_content_size(
+	update:
+		| Pick<app_convex_Doc<"files_pending_updates">, "content" | "size" | "pendingReplacement" | "createIntent">
+		| null
+		| undefined,
+) {
+	if (update?.createIntent?.kind === "stored") return update.createIntent.size;
+	return files_pending_update_has_content(update) ? update.size : update?.pendingReplacement?.size;
+}
+
+/**
  * Return the proposal's base and three branch ids, or null for a structural-only doc.
  * Load branch bytes with `files_db_load_pending_update_yjs_state_bytes` or the one-page queries.
  */

@@ -11,6 +11,7 @@ import {
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
+	bash_get_db_file_byte_size,
 	bash_external_mounts_fan_out_paginate,
 	bash_external_mounts_fan_out_db_files_path,
 	bash_GLOB_METACHARACTER_REGEX,
@@ -202,6 +203,7 @@ function format_item(args: {
 	updatedAt: number;
 	updatedBy?: string;
 	contentType?: string | null;
+	size: number | null;
 	locked?: boolean;
 	display: string;
 	long: boolean;
@@ -210,7 +212,13 @@ function format_item(args: {
 	if (!args.long) {
 		return display;
 	}
-	const fields = [args.kind, new Date(args.updatedAt).toISOString(), `updatedBy=${args.updatedBy ?? "-"}`];
+	const fields = [args.kind, new Date(args.updatedAt).toISOString()];
+	// Exact bytes, like `stat`. A folder has no size. A file whose size is not known yet (a new file that
+	// is still preparing) shows `size=-`.
+	if (args.kind === "file") {
+		fields.push(`size=${args.size ?? "-"}`);
+	}
+	fields.push(`updatedBy=${args.updatedBy ?? "-"}`);
 	if (args.contentType != null) {
 		fields.push(`contentType=${args.contentType}`);
 	}
@@ -389,6 +397,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					updatedAt: number;
 					updatedBy?: string;
 					contentType?: string | null;
+					contentByteSize?: number | null;
 				}>({
 					command: "ls",
 					externalMounts: dbFilesRoots.externalMounts,
@@ -449,6 +458,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						? item.path.slice(1)
 						: format_item({
 								...item,
+								size: item.contentByteSize ?? null,
 								display: parsed._yay.recursive ? target.pathResolution.renderShellPath(item.path) : item.path.slice(1),
 								long: parsed._yay.long,
 							}),
@@ -558,6 +568,10 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						updatedAt: dbFilesDoc.updatedAt,
 						updatedBy: dbFilesDoc.updatedBy,
 						contentType: dbFilesDoc.contentType,
+						size:
+							parsed._yay.long && dbFilesDoc.kind === "file"
+								? await bash_get_db_file_byte_size({ ctx, ctxData: target.pathResolution.ctxData, dbFilesDoc })
+								: null,
 						locked: dbFilesDoc.locked,
 						display: target.absoluteShellPath,
 						long: parsed._yay.long,
@@ -602,6 +616,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 							updatedAt: item.updatedAt,
 							updatedBy: item.updatedBy,
 							contentType: item.contentType,
+							size: item.size,
 							locked: item.locked,
 							display: parsed._yay.recursive ? target.pathResolution.renderShellPath(item.path) : item.name,
 							long: parsed._yay.long,

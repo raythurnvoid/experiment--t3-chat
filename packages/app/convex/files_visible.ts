@@ -69,6 +69,7 @@ import {
 	files_ANCESTOR_FIELD_COUNT,
 	files_ROOT_ID,
 	files_derive_tree_path_for_file_node,
+	files_pending_update_content_size,
 	files_pending_update_has_pending_chunks,
 	files_pending_update_index_revision,
 	type files_PendingTarget,
@@ -126,6 +127,11 @@ const entry_validator = v.object({
 	 */
 	updatedBy: v.optional(doc(app_convex_schema, "files_nodes").fields.updatedBy),
 	contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+	/**
+	 * Bytes of the content this reader reads: the caller's draft when there is one, else the saved file,
+	 * like Bash `stat`. Null for a folder and for a new file that is still preparing.
+	 */
+	size: v.union(v.number(), v.null()),
 	preparing: v.boolean(),
 	/**
 	 * A saved child the caller cannot open. Its folder is readable, so its name, type, size and dates
@@ -1016,6 +1022,7 @@ async function db_stream_saved_item(
 			updatedAt: node.updatedAt,
 			...(locked ? {} : { updatedBy: node.updatedBy }),
 			contentType: proposal?.pendingReplacement?.contentType ?? node.contentType,
+			size: node.kind === "folder" ? null : (files_pending_update_content_size(proposal) ?? node.contentByteSize),
 			preparing: false,
 			locked,
 		},
@@ -1102,6 +1109,8 @@ async function db_stream_place_item(
 				updatedAt: place.updatedAt,
 				updatedBy: accessNode.updatedBy,
 				contentType: proposal?.pendingReplacement?.contentType ?? accessNode.contentType,
+				size:
+					place.kind === "folder" ? null : (files_pending_update_content_size(proposal) ?? accessNode.contentByteSize),
 				preparing: false,
 				locked: false,
 			},
@@ -1120,6 +1129,7 @@ async function db_stream_place_item(
 			updatedAt: place.updatedAt,
 			updatedBy: place.userId,
 			contentType: intent && intent.kind !== "folder" ? intent.contentType : null,
+			size: place.kind === "folder" ? null : (files_pending_update_content_size(proposal) ?? null),
 			preparing: files_visible_is_preparing(proposal),
 			locked: false,
 		},
