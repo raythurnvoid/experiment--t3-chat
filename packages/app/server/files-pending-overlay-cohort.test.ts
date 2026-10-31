@@ -892,7 +892,8 @@ describe("Move owner views", () => {
 
 		const paths: string[] = [];
 		const cursors: string[] = [];
-		for (let cursor: string | null = null, page = 0; page < 40; page++) {
+		let cursor: string | null = null;
+		for (let page = 0; page < 40; page++) {
 			const result = await files_pending_overlay_list_levels(ctx, {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
@@ -914,6 +915,7 @@ describe("Move owner views", () => {
 
 		// A Move can run in any workspace, so every frame check must read the Move's view.
 		expect(paths).toEqual(["/target", ...chain, "/target/new.txt"]);
+		expect(cursor, "the walk ends").toBeNull();
 		const maxCursorLength = Math.max(...cursors.map((cursor) => cursor.length));
 		console.info("Depth walk cursor under a Move", JSON.stringify({ maxCursorLength }));
 		// The Bash cursor store keeps the cursor as one string.
