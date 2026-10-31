@@ -832,6 +832,37 @@ describe("Move owner views", () => {
 		expect(cursor).toBeNull();
 	});
 
+	test("lists a node once when a one-row page ends between its two streams", async () => {
+		// After publish, new.txt comes from the Move's after view and from the owner's draft place. `tree -L`
+		// opens each folder from a one-row children page, so a repeated row would open a folder twice.
+		const f = await fixture({ normalPaths: ["/target/a.txt"] });
+		await f.stageNode(f.normalNodes.get("/target/a.txt")!);
+		await f.publish();
+		const ctx = { runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">;
+		const paths: string[] = [];
+		let cursor: string | null = null;
+		for (let page = 0; page < 12; page++) {
+			const result = await files_pending_overlay_list(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: f.db.userId,
+				subject: { kind: "user", userId: f.db.userId, plugin: null },
+				overlayUserId: f.db.userId,
+				folderPath: "/target",
+				mode: "children",
+				order: "asc",
+				kind: "file",
+				numItems: 1,
+				cursor,
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			paths.push(...result._yay.items.map((item) => item.path));
+			cursor = result._yay.continueCursor;
+			if (cursor === null) break;
+		}
+		expect(paths).toEqual(["/target/a.txt", "/target/new.txt"]);
+	});
+
 	test("find -mmin reads the time index of the selected Move view", async () => {
 		const f = await fixture();
 		const ctx = { runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">;

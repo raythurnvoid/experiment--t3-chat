@@ -26,7 +26,7 @@ All emails end with `+clerk_test@example.com` and all accept the code `424242`.
 | ------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `qa.perm.owner`    | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | Account and default home preserved. Former `qa-browser` owner; that workspace was erased. |
 | `qa.perm.admin`    | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | Account and default home preserved. |
-| `qa.perm.member`   | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | Owns kept `qa-tmp-share/home`. Member of kept `chitchat-qa/home` and `xfer-qa-0914`. Read current roles and grants. |
+| `qa.perm.member`   | `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | Owns kept `qa-tmp-share/home`. Member of kept `chitchat-qa/home` and `xfer-qa-0914`. Read current roles and grants. Free credits were seeded on 2026-10-31 (it had no billing row and chat answered "Insufficient funds"). |
 | `qa.perm.viewer`   | `m572qhnpq7xw34askfcy6w97h18ck1f8` | Member of kept `chitchat-qa/home`. Read its current role; the account name does not define it. |
 | `import-qa-member` | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | Deleted: its `users` doc has `deletedAt` (seen 2026-10-21). Do not use it. |
 | `qa.paid.owner`    | `m5774tmwzz27knb7mwbzjbn9t58gn6fx` | Account, default home and billing links preserved. Former `f5-repro-org` owner. Seeded Pro plan was observed on 2026-10-21; read current billing and available workspaces before paid checks. |
@@ -121,6 +121,25 @@ account. Verified 2026-10-29 with the seeded member:
 3. Check the exact expected `external_id` in the Convex token and confirm the app's anonymous-token
    storage key is absent. Never print the token.
 4. Remove only that scratch page's route, then navigate to the app. Recheck the account before writes.
+
+The scratch page, verified 2026-10-31 with the seeded member. Read the key from `VITE_CLERK_PUBLISHABLE_KEY` in `packages/app/.env.local`, the version from `CLERK_JS_VERSION` in `packages/app/src/main.tsx`, and the frontend API host by base64-decoding the key after `pk_test_` (drop the trailing `$`):
+
+```js
+const html =
+	'<!doctype html><html><body><div id="signin"></div>' +
+	'<script async crossorigin="anonymous" data-clerk-publishable-key="<pk_test_...>" ' +
+	'src="https://<frontend api host>/npm/@clerk/clerk-js@<version>/dist/clerk.browser.js"></script>' +
+	"<script>window.addEventListener('load', async () => { await window.Clerk.load(); window.Clerk.mountSignIn(document.getElementById('signin')); window.__mounted = true; });</script>" +
+	"</body></html>";
+state.page = context.pages()[0];
+state.signinRoute = (route) => route.fulfill({ status: 200, contentType: "text/html", body: html });
+await state.page.route("http://localhost:5173/__qa-signin", state.signinRoute);
+state.page.goto("http://localhost:5173/__qa-signin").catch(() => {});
+// Next calls: wait for window.__mounted, fill #identifier-field, click Continue (exact), wait ~2.5s,
+// fill .cl-otpCodeField input with 424242.
+```
+
+After the code, Clerk itself moves the tab into the app (`/w/personal/home/files`), so the call that typed the code can end in a Playwright error. The sign-in has landed anyway. In the next call, read `window.Clerk.user` and check that `localStorage["app::auth::anonymous_token"]` is `null`, then `unroute` the scratch URL. No anonymous user is created this way.
 
 If the app was already loaded, use the cleanup path below.
 

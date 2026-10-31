@@ -110,17 +110,20 @@ export const bash_DEV_ZERO_TEXT = "\0".repeat(bash_DEV_ZERO_BYTE_COUNT);
 export const bash_GLOB_METACHARACTER_REGEX = /[*?[\]]/u;
 
 /**
- * Default page size for directory and search result listings.
+ * Default page size for directory and search result listings. Applies to both surface listings and
+ * subtree listings.
  *
- * Listings should be useful without letting one command dump too many results
- * into the transcript. Applies to both surface listings and subtree listings.
+ * It is 100, like the public files list. The agent rarely types `--limit`, and a reply has a few model
+ * steps only, so small pages made it stop before it saw a big workspace. A page of 100 short rows
+ * usually fits the 24 KiB inline tool output. A bigger result is stored, and the model sees its start
+ * and end.
  */
-export const bash_LISTING_DEFAULT_LIMIT = 10;
+export const bash_LISTING_DEFAULT_LIMIT = 100;
 
 /**
  * Maximum accepted page size for directory and search result listings.
  */
-export const bash_LISTING_MAX_LIMIT = 20;
+export const bash_LISTING_MAX_LIMIT = 100;
 
 /**
  * Maximum number of db-file operands one reader command can pull from the db.
@@ -130,9 +133,9 @@ export const bash_LISTING_MAX_LIMIT = 20;
  * few files at the same time; the other readers read one after another. Byte size is bounded
  * separately by `bash_READ_INLINE_MAX_BYTES`.
  *
- * Keep it equal to `bash_LISTING_MAX_LIMIT` on purpose, so the agent can read one full listing
- * page in one command. It is its own number because it guards time, not page size: raising the
- * listing limit must not make each reader command slower.
+ * It is its own number because it guards time, not page size: listing pages hold up to
+ * `bash_LISTING_MAX_LIMIT` rows, but raising the listing limit must not make each reader command
+ * slower. So reading a full listing page can take more than one command.
  */
 export const bash_READER_FILE_OPERAND_MAX = 20;
 
@@ -2460,6 +2463,10 @@ export function bash_read_option_value(command: string, args: string[], index: n
 
 /**
  * Parse a positive pagination limit, applying the command default and max clamp.
+ *
+ * A typed `--limit` outside 1..max still runs, like `head -n` above its cap. `note` is then one line
+ * for stderr that says what was shown, so the agent does not think it saw everything. The default never
+ * makes a note.
  */
 export function bash_parse_limit(args: {
 	command: string;
@@ -2469,11 +2476,26 @@ export function bash_parse_limit(args: {
 }) {
 	const { command, value, defaultLimit, maxLimit } = args;
 
-	const rawValue = value ?? String(defaultLimit);
-	if (!SIGNED_INTEGER_REGEX.test(rawValue.trim())) {
+	if (value === undefined) {
+		return Result({ _yay: { limit: Math.min(defaultLimit, maxLimit), note: null } });
+	}
+	if (!SIGNED_INTEGER_REGEX.test(value.trim())) {
 		return Result({ _nay: { message: `${command}: --limit must be an integer` } });
 	}
-	return Result({ _yay: Math.max(1, Math.min(maxLimit, Number(rawValue))) });
+
+	const typed = Number(value);
+	const limit = Math.max(1, Math.min(maxLimit, typed));
+	return Result({
+		_yay: {
+			limit,
+			note:
+				typed > maxLimit
+					? `${command}: --limit ${value.trim()} is more than the maximum of ${maxLimit}; showing ${maxLimit} per page.`
+					: typed < 1
+						? `${command}: --limit ${value.trim()} is less than 1; showing 1 per page.`
+						: null,
+		},
+	});
 }
 
 /**

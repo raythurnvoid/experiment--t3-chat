@@ -170,7 +170,7 @@ A working runner and viewer live in `../experiment--t3-chat-+personal/+ai/bash-e
 
 Both phases must start from the same fixture state:
 
-- Run the pending-edit scenario (Core 11) **last**. It deliberately leaves an unapplied
+- Run the pending-edit scenario (Core 12) **last**. It deliberately leaves an unapplied
   proposal, and Bash `search` overlays the current user's pending updates, so every later
   scenario in that phase would see the pending token.
 - Discard that proposal before starting the next phase, and confirm the pending list is
@@ -426,7 +426,19 @@ For broad Bash changes, keep two aggregate rows:
    `Use Bash to list the recent immediate children of <fixture>.`
 10. Recent immediate children through cwd:
     `Use Bash. Go into <fixture>, then list the recent immediate children of the current directory.`
-11. Pending edit search/read:
+11. Workspace overview (depth listing), in `chitchat-qa/xfer-qa-0914`:
+    `Use Bash. Give me an overview of this workspace: its top folders and the folders inside each. Then list everything in /g4-many.`
+    Pass: the overview uses `tree -d -L N` (or `tree -L N`) and ends in 3 Bash calls or fewer;
+    `/g4-many` lists in one call; no `Next page` is skipped before a total; the answer names only
+    folders seen in the output. Then `Use tree -L 2 on /g4-u15.`: it shows `d01/` and the depth note,
+    and the agent does not call `d01/` empty. `Run ls --limit 500 on /g4-many and tell me what Bash
+    said.`: the answer reports the over-max note. Member check, as `qa.perm.member` in a scratch
+    browser: `tree -d -L 2` on the workspace marks `g4-grant/` and `g4-secret/` with
+    `[error opening dir]` and shows nothing under them; `tree -L 3 g4-secret` answers Permission
+    denied; `tree -L 3 g4-media` marks `shapes.png` and `speakers.mp4` `[locked]`. A `tree -d -L 2`
+    page holds about 20 top folders, not 100: each folder it opens costs two of the page's 40 children
+    listings. So expect several pages. That is the call budget, not a bug.
+12. Pending edit search/read:
     `Use edit_file on the app path derived from <fixture>/README.md by removing only the /home/cloud-usr/w/<organization>/<workspace> prefix and preserving the full remaining suffix, never collapsing it to /README.md. Replace the exact line "Common token: basheval-common-<runId>." with "Common token: basheval-common-<runId>. pending-token-<runId>" without applying it. Then use Bash search for pending-token-<runId>, Bash head on the same file, and cat <file> | cut to prove the pending version is what Bash reads.`
 
 ### Read-Only Workspace Scenarios

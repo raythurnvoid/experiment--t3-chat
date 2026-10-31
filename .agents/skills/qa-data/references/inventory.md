@@ -53,7 +53,7 @@ Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts be
 | (not written here) | The owner's main account. The QA Edge profile is signed in as it. | Never sign it out. |
 | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | `qa.perm.owner` | Account and default home preserved. Former `qa-browser` owner; that workspace was erased. |
 | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | `qa.perm.admin` | Personal org only. |
-| `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns kept `qa-tmp-share/home`. Member of kept `chitchat-qa/home` and `xfer-qa-0914`. Read current roles, grants and credits before a check. |
+| `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns kept `qa-tmp-share/home`. Member of kept `chitchat-qa/home` and `xfer-qa-0914`. Read current roles, grants and credits before a check. It had no billing row, so agent chat failed with "Insufficient funds". On 2026-10-31 it got 1,000 Free credits through `billing:apply_polar_customer_state_refresh` (test customer `cus_qa_perm_member`). |
 | `m572qhnpq7xw34askfcy6w97h18ck1f8` | `qa.perm.viewer` | Member of kept `chitchat-qa/home`. Read its current role; the account name does not define it. |
 | `m570f2kgg8jq3qka7snprkpeks8cme94` | `ray-test-1+clerk_test@gmail.com` (2026-08-17) | Member of kept `chitchat-qa/home`. Read current billing and membership before agent chat checks (see `clerk-test-accounts.md`). |
 | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | `import-qa-member` | Deleted: its `users` doc has `deletedAt` (seen 2026-10-21). |
@@ -146,6 +146,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Folder a plugin service owns | `chitchat-qa/home:/chitchat-2eff489e` (read-only for tests). The old `qa-browser/home:/chitchat` choice was erased. |
 | Restricted (shared) scope roots | `chitchat-qa/xfer-qa-0914:/u34-dst-a/u34a/sub`, `/u34-dst-b/u34b/sub`, `/g4-media/speakers.mp4`, `/g4-media/shapes.png` |
 | Locked media rows for a plugin (Gallery) | `chitchat-qa/xfer-qa-0914:/g4-media/shapes.png` and `/g4-media/speakers.mp4` are locked for `qa.perm.member`, and `/g4-media` is readable, so a recursive `files/list` returns them as `locked: true`. Gallery 0.1.26 is installed in this workspace (`hx7k1ccsn7kqq2g8wb2jsyjjqs8grbzn`, workspace read grant) and `gallery` is on the `chitchat-qa` plugin allowlist (2026-10-22). Recipe: `plugin-gallery.md`. |
+| Locked folders for a member | `chitchat-qa/xfer-qa-0914:/g4-grant` and `/g4-secret` are locked for `qa.perm.member`: Bash `tree` marks them `[error opening dir]`, and `tree g4-secret` answers Permission denied. The owner sees `/g4-secret/s.txt`. `/u34-dst-a/u34a/sub` is open for that member, so it is no locked-folder fixture (seen 2026-10-31). |
 | Move path error below a locked folder | Retired: `qa-browser/home:/c2-move-limit` and its destination were erased. Kept `chitchat-qa/home:/restore-path-boundary` above tests a different Restore case. |
 
 ### Plugin output (read-only)
@@ -238,6 +239,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-10-31: agent listing depth checks in `chitchat-qa/xfer-qa-0914` added three owned chats (`QA listing depth 2026-10-31`, `QA listing depth overview 2026-10-31`, and `QA listing depth member 2026-10-31` for `qa.perm.member`). Reuse them for later `tree -L` checks. The member got its first billing row (Free, 1,000 credits). No file changed, no new tenant or user.
 - 2026-10-31: Council access checks added three small meetings, kept after normal close. `personal/home`: `Council token room` (`65e4eb9c-ed79-452f-af8d-39b0abaf5207`). `chitchat-qa/metadata-qa-0906`: `Council approval room` (`12b6f0f7-e921-40af-8d5f-81e3fafeccac`) and `Council link room` (`af5870c4-e221-4f36-9501-27bbc38d8a67`). No recording was started. Reuse these for finished-room checks; testing admission needs a new open room. No new app user or tenant.
 - 2026-10-29: reset all old human Messages and file-comment data, then added the four small sidebar fixtures and one native general comment on the existing `/new-file.md`. Old current comment marks were removed; ordinary Files, saved file copies, history and AI chats were preserved. The seeded member's role and memberships are restored after permission QA. Its DM is open after Close/reopen QA. Old human message IDs in saved AI output are stale. No new tenant or user.
 - 2026-10-29: archived the new Read-only QA branch, its 35-byte accepted upload, and the three saved selective Copy nodes. Four test flags were cleared first. The two unselected Copy drafts were discarded; pending and active job counts are zero. The source Markdown file and `/u18/type-find-private.txt` keep their original text and metadata. `/u18` is editable again. The owner upload key is revoked. No new tenant or user.

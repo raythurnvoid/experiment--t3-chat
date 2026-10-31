@@ -4827,7 +4827,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain("sibling-prefix paths such as /docs-archive are excluded from /docs");
 			expect(agentSurface).toContain("find searches app paths/names only, not file content.");
 			expect(agentSurface).toContain(
-				"find -maxdepth N and find -mindepth N filter non-search app subtree results by depth.",
+				"find -maxdepth N and find -mindepth N filter non-search app subtree results by depth; in an app folder, -maxdepth 2 or more works with no filter or with -type d.",
 			);
 			expect(agentSurface).toContain("When asked for app files under a folder, include -type f");
 			expect(agentSurface).toContain("find -type f and find -type d restrict app results to files or folders.");
@@ -4871,7 +4871,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain(
 				"for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched)",
 			);
-			expect(agentSurface).toContain("Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape");
+			expect(agentSurface).toContain(
+				"Use tree [-d] [-L N] [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape",
+			);
 			expect(agentSurface).toContain("also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context.");
 			expect(agentSurface).toContain("When using bash -c or sh -c to compare /tmp and app-mount behavior");
 			expect(agentSurface).toContain("For xargs path checks, print pathnames into xargs");

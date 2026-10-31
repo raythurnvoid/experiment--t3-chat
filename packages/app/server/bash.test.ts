@@ -1051,6 +1051,26 @@ describe("bash_run_command", () => {
 		expect(continuations[0][1]).not.toBe(continuations[1][1]);
 	});
 
+	test("says when ls --limit is above the maximum and pages with the maximum", async () => {
+		const { run } = await create_bash_runner({
+			extraFiles: Array.from({ length: 101 }, (_, index) => ({
+				path: `/many/d${String(index).padStart(3, "0")}`,
+				kind: "folder" as const,
+			})),
+		});
+
+		const first = await run({ command: `ls --limit 500 ${test_db_files_mount}/many` });
+		const next = first.stderr.match(/Next page: (ls --limit 100 --cursor \S+ \S+)/u)?.[1];
+		if (next == null) throw new Error(`expected a Next page with --limit 100 in: ${first.stderr}`);
+		const second = await run({ command: next });
+
+		expect(first.metadata.exitCode).toBe(0);
+		expect(first.stdout.trim().split("\n")).toHaveLength(100);
+		expect(first.stderr).toContain("ls: --limit 500 is more than the maximum of 100; showing 100 per page.\n");
+		expect(second.stdout).toBe("d100/\n");
+		expect(second.stderr).toBe("");
+	});
+
 	test("supports mixed /tmp and app ls operands without a cursor", async () => {
 		const { run } = await create_bash_runner();
 

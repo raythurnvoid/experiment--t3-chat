@@ -158,7 +158,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 			query: searchQuery?.success ? searchQuery.data : undefined,
 			authorUserId: options.from,
 			hasAttachments: options.attachments === undefined ? undefined : options.attachments === "true",
-			limit: limit._yay,
+			limit: limit._yay.limit,
 		});
 		let cursor: string | null = null;
 		if (options.cursor) {
@@ -175,7 +175,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 				return fail("Cursor belongs to another command. Run this command again.");
 			cursor = parsed.data.cursor;
 		}
-		const paginationOpts = { numItems: limit._yay, cursor };
+		const paginationOpts = { numItems: limit._yay.limit, cursor };
 		const result =
 			command === "ls"
 				? await ctx.runQuery(internal.channels_messages.agent_list, { ...common, kind: kind.data, paginationOpts })
@@ -207,14 +207,23 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 		const nextCursor = page.isDone
 			? null
 			: await bash_cursor_id_create(ctx, source.userId, JSON.stringify({ key, cursor: page.continueCursor }));
+		// Print the clamped `--limit`, so the next page does not repeat the over-max note.
 		const next = nextCursor
-			? `Next page: channels ${args
-					.filter((arg, index) => arg !== "--cursor" && args[index - 1] !== "--cursor" && !arg.startsWith("--cursor="))
-					.map(bash_shell_arg_quote)
-					.join(" ")} --cursor ${bash_shell_arg_quote(nextCursor)}\n`
+			? `Next page: channels ${[
+					...args
+						.filter(
+							(arg, index) =>
+								!["--cursor", "--limit"].some(
+									(option) => arg === option || args[index - 1] === option || arg.startsWith(`${option}=`),
+								),
+						)
+						.map(bash_shell_arg_quote),
+					...(options.limit === undefined ? [] : ["--limit", String(limit._yay.limit)]),
+				].join(" ")} --cursor ${bash_shell_arg_quote(nextCursor)}\n`
 			: "";
+		const limitNote = limit._yay.note ? `${limit._yay.note}\n` : "";
 		if ((command === "read" || command === "search") && options.format === "json")
-			return { stdout: `${JSON.stringify({ messages: page.page, nextCursor })}\n`, stderr: "", exitCode: 0 };
+			return { stdout: `${JSON.stringify({ messages: page.page, nextCursor })}\n`, stderr: limitNote, exitCode: 0 };
 		const lines = page.page.map((item) => {
 			if ("channelId" in item) {
 				if (item.access === "locked") return `${item.channelId}\t-\t${item.kind}\t(locked)\t-`;
@@ -253,9 +262,10 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 		});
 		// Print the notice on every page, so the agent does not read a short list as "no public channels".
 		const stderr =
-			"publicSkipped" in page && page.publicSkipped
+			limitNote +
+			("publicSkipped" in page && page.publicSkipped
 				? "channels: Public channel browsing was skipped because you lack workspace read access. Ask an owner or admin for access.\n"
-				: "";
+				: "");
 		return { stdout: `${lines.join("\n")}${lines.length ? "\n" : ""}${next}`, stderr, exitCode: 0 };
 	});
 }

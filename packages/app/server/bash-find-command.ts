@@ -39,7 +39,12 @@ import {
 	type bash_ExternalSourceMount,
 } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
-import { files_pending_overlay_list, files_pending_overlay_search_name } from "./files-pending-overlay.ts";
+import {
+	files_pending_overlay_LEVELS_MAX_DEPTH,
+	files_pending_overlay_list,
+	files_pending_overlay_list_levels,
+	files_pending_overlay_search_name,
+} from "./files-pending-overlay.ts";
 import { files_type_query_page } from "./files-type-query.ts";
 
 const EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
@@ -458,7 +463,7 @@ function parse_args(args: string[]) {
 									query: simplePathWordGlob,
 									...(type == null ? {} : { type }),
 									...(path == null ? {} : { path }),
-									limit: limit._yay,
+									limit: limit._yay.limit,
 								},
 							},
 						}),
@@ -481,7 +486,7 @@ function parse_args(args: string[]) {
 									query: simplePathWordGlob,
 									...(type == null ? {} : { type }),
 									...(path == null ? {} : { path }),
-									limit: limit._yay,
+									limit: limit._yay.limit,
 								},
 							},
 						}),
@@ -510,7 +515,8 @@ function parse_args(args: string[]) {
 		_yay: {
 			path,
 			prefix,
-			limit: limit._yay,
+			limit: limit._yay.limit,
+			limitNote: limit._yay.note,
 			cursor,
 			unsupportedDbFilesPredicate,
 			unsupportedRegexPathQuery,
@@ -587,7 +593,8 @@ function prefix_to_shell_path(args: { commandCtx: CommandContext; dbFilesRoots: 
  * Map `-mindepth/-maxdepth` to the depth shapes of one listing whose root row sits at depth `shift`
  * (0 for an app folder, 1 for a plugin under `/.plugins`, 1 or 2 for a mount under `/.mounts`): the
  * root row only, the root row and its direct children, or the whole subtree. Each shape is one index
- * range; other depths would need a scan, so they are refused with a hint.
+ * range; other depths would need a scan, so they are refused with a hint. A folder's `-maxdepth 2` and
+ * more with no file filter take the depth walk instead (`files_pending_overlay_list_levels`).
  *
  * `_yay` is null when no row of this listing is at those depths.
  */
@@ -603,10 +610,13 @@ function denied_lines(denied: readonly string[] | undefined, render: (path: stri
  * lines on stderr. Then a pipe such as `find ... | wc -l` reads only paths, like real find. The
  * agent still sees the stderr lines, because the shell keeps the stderr of every pipeline stage.
  */
-function find_output(args: { paths: string[]; notes: string[]; denied: string }) {
+function find_output(args: { paths: string[]; limitNote: string | null; notes: string[]; denied: string }) {
 	return {
 		stdout: args.paths.length > 0 ? `${args.paths.join("\n")}\n` : "",
-		stderr: `${args.notes.map((note) => `${note}\n`).join("")}${args.denied}`,
+		stderr: `${[args.limitNote ?? [], args.notes]
+			.flat()
+			.map((note) => `${note}\n`)
+			.join("")}${args.denied}`,
 		exitCode: args.denied ? bash_COMMAND_EXIT_FAILURE : 0,
 	};
 }
@@ -619,7 +629,9 @@ function map_find_depth(args: { minDepth: number | null; maxDepth: number | null
 				message:
 					`find: -maxdepth/-mindepth here support only the folder itself (-maxdepth ${shift}), ` +
 					`its direct children (-maxdepth ${shift + 1}), or the whole subtree (no -maxdepth). ` +
-					`-mindepth ${shift + 1} leaves the folder itself out.`,
+					`-mindepth ${shift + 1} leaves the folder itself out. ` +
+					`In a workspace folder, -maxdepth 2 or more also works with no filter or with -type d. ` +
+					`For the files a few levels down, use tree -L N <folder>.`,
 			},
 		});
 	}
@@ -775,6 +787,11 @@ export async function bash_find_type_render(args: {
 	contentType: string;
 	directoriesOnly: boolean;
 	limit: number;
+	/**
+	 * The typed `find` argv. A background render runs later from the stored argv, so it prints the same
+	 * over-max note as the first answer.
+	 */
+	argv: string[];
 }) {
 	if (args.result._nay)
 		return {
@@ -785,6 +802,7 @@ export async function bash_find_type_render(args: {
 					: `find: ${args.result._nay.message}\n`,
 			exitCode: bash_COMMAND_EXIT_FAILURE,
 		};
+	const limitNote = parse_args(args.argv)._yay?.limitNote ?? null;
 	const page = args.result._yay;
 	const next = async () => {
 		const cursor = await bash_cursor_id_create(
@@ -797,7 +815,7 @@ export async function bash_find_type_render(args: {
 	if (page.state !== "page")
 		return {
 			stdout: "",
-			stderr: `find: file search is preparing. Check and continue with:\n${await next()}\n`,
+			stderr: `${limitNote ? `${limitNote}\n` : ""}find: file search is preparing. Check and continue with:\n${await next()}\n`,
 			exitCode: 3,
 		};
 	const paths = page.items.map(
@@ -816,7 +834,7 @@ export async function bash_find_type_render(args: {
 		page.denied,
 		(path) => args.shellPrefix.replace(/\/$/u, "") + (args.dbPrefix === "/" ? path : path.slice(args.dbPrefix.length)),
 	);
-	return find_output({ paths, notes, denied });
+	return find_output({ paths, limitNote, notes, denied });
 }
 
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
@@ -836,6 +854,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				contentType: request.contentType,
 				directoriesOnly: request.directoriesOnly,
 				limit: request.limit,
+				argv: args,
 			});
 		}
 		const parsed = parse_args(args);
@@ -1064,7 +1083,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				notes.push("0 matches.");
 			}
 
-			return find_output({ paths, notes, denied: "" });
+			return find_output({ paths, limitNote: parsed._yay.limitNote, notes, denied: "" });
 		}
 
 		// Root and group listings share a cursor over their pinned leaves.
@@ -1260,7 +1279,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				notes.push("0 matches.");
 			}
 
-			return find_output({ paths, notes, denied: "" });
+			return find_output({ paths, limitNote: parsed._yay.limitNote, notes, denied: "" });
 		}
 
 		// Non-app targets belong to Just Bash's built-in find unless the caller requested app-file prefix search.
@@ -1425,7 +1444,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 
 			const denied = denied_lines(result._yay.denied, prefixResolution.renderShellPath);
-			return find_output({ paths, notes, denied });
+			return find_output({ paths, limitNote: parsed._yay.limitNote, notes, denied });
 		}
 
 		// App-file find does not expand shell globs; path search flags handle search.
@@ -1582,15 +1601,32 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					files_content_type_index_fields(entry.contentType ?? null)[typePrefix.field] === typePrefix.value);
 			return find_output({
 				paths: cursor == null && matches ? [pathResolution.renderShellPath(target.dbFilesPath)] : [],
+				limitNote: parsed._yay.limitNote,
 				notes: cursor == null && matches ? [] : ["0 matches."],
 				denied: "",
 			});
 		}
 
+		// `-maxdepth 2` and more open one folder at a time through the children listing, like `tree -L`, so
+		// they read only the rows they print. With a file filter the walk would read folders it does not
+		// print, so `-type f`, `--extension` and `-mindepth 2` keep the depth rules below. Name search and
+		// time tests refused `-maxdepth` above.
+		const levels =
+			parsed._yay.maxDepth !== null &&
+			parsed._yay.maxDepth >= 2 &&
+			(parsed._yay.minDepth ?? 0) <= 1 &&
+			(parsed._yay.type == null || parsed._yay.type === "d") &&
+			parsed._yay.extension == null;
+		if (levels && parsed._yay.maxDepth! > files_pending_overlay_LEVELS_MAX_DEPTH)
+			return {
+				stdout: "",
+				stderr: `find: -maxdepth ${parsed._yay.maxDepth} is more than ${files_pending_overlay_LEVELS_MAX_DEPTH}. For the whole subtree, run find without -maxdepth.\n${FIND_USAGE}`,
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
 		// Name search keeps its own depth rules above. Other app reads take the depth shapes of
 		// `map_find_depth`: the folder only, its children, or its whole subtree.
 		const depth =
-			pathQuery == null || window
+			!levels && (pathQuery == null || window)
 				? map_find_depth({ minDepth: parsed._yay.minDepth, maxDepth: parsed._yay.maxDepth, shift: 0 })
 				: null;
 		if (depth?._nay)
@@ -1631,14 +1667,20 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						list: { ...listArgs, mode: parsed._yay.maxDepth === 1 ? "children" : "subtree", order: "asc" },
 						query: pathQuery!,
 					})
-				: !depth?._yay || depth._yay.maxDepth === 0
-					? Result({ _yay: { items: [], continueCursor: null, isDone: true } })
-					: await files_pending_overlay_list(ctx, {
+				: levels
+					? await files_pending_overlay_list_levels(ctx, {
 							...listArgs,
-							mode: depth._yay.maxDepth === 1 ? "children" : "subtree",
-							order: "asc",
-							...(window ? { updated: window } : {}),
-						}));
+							maxDepth: parsed._yay.maxDepth!,
+							foldersOnly: parsed._yay.type === "d",
+						})
+					: !depth?._yay || depth._yay.maxDepth === 0
+						? Result({ _yay: { items: [], continueCursor: null, isDone: true } })
+						: await files_pending_overlay_list(ctx, {
+								...listArgs,
+								mode: depth._yay.maxDepth === 1 ? "children" : "subtree",
+								order: "asc",
+								...(window ? { updated: window } : {}),
+							}));
 		if (result._nay)
 			return {
 				stdout: "",
@@ -1675,7 +1717,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			in_window(entry.updatedAt) &&
 			(parsed._yay.minDepth == null || parsed._yay.minDepth === 0) &&
 			(pathQuery == null
-				? depth?._yay != null
+				? levels || depth?._yay != null
 				: pathScan
 					? parsed._yay.maxDepth !== 1 && entry.path.toLowerCase().includes(pathQuery.toLowerCase())
 					: name_words_match(entry.name, pathQuery))
@@ -1700,6 +1742,6 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		} else if (lines.length === 0) {
 			notes.unshift("0 matches.");
 		}
-		return find_output({ paths: lines, notes, denied });
+		return find_output({ paths: lines, limitNote: parsed._yay.limitNote, notes, denied });
 	});
 }

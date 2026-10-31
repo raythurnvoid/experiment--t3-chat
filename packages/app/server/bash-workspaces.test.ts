@@ -197,6 +197,28 @@ describe("channels", () => {
 			"a copied cursor must not reach another workspace",
 		).toContain("another command");
 	});
+	test("says when a channels --limit is out of range and pages with the limit it used", async () => {
+		const f = await fixture();
+		for (const name of ["first", "second"]) {
+			const created = await f.asUser.mutation(api.channels.create_channel, {
+				membershipId: f.team.membershipId,
+				kind: "public",
+				name,
+				topic: "",
+				layout: "messages",
+			});
+			expect(created._nay).toBeUndefined();
+		}
+		const first = await f.run("channels ls --kind public --limit 0", false);
+		const next = first.stdout.split("Next page: ")[1]!.trim();
+		const second = await f.run(next, false);
+
+		expect(first.stdout).toContain("#first");
+		expect(first.stderr).toBe("channels: --limit 0 is less than 1; showing 1 per page.\n");
+		expect(next).toMatch(/^channels ls --kind public --limit 1 --cursor \S+$/u);
+		expect(second.stdout).toContain("#second");
+		expect(second.stderr).toBe("");
+	});
 	test("binds search continuation to its query and filters", async () => {
 		const f = await fixture();
 		const created = await f.asUser.mutation(api.channels.create_channel, {

@@ -1075,6 +1075,34 @@ describe("get_pending_move_occupant", () => {
 	});
 });
 
+describe("internal_list_children_places", () => {
+	test("a folders-only page reads the user's draft folders past their draft files", async () => {
+		const f = await fixture();
+		await create_saved(f, "source");
+		// The draft files sort before the draft folders, and there are more of them than one page holds.
+		for (let index = 0; index < 5; index++) await create_private({ f, path: `/source/a-${index}.md`, kind: "file" });
+		await create_private({ f, path: "/source/z-one" });
+		await create_private({ f, path: "/source/z-two" });
+
+		const result = await f.t.query(internal.files_visible.internal_list_children_places, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			visibilityUserId: f.db.userId,
+			subject: { kind: "user", userId: f.db.userId, plugin: null },
+			overlayUserId: f.db.userId,
+			folderPath: "/source",
+			kind: "folder",
+			orderBy: "name",
+			order: "asc",
+			numItems: 2,
+			position: { rangeStart: null, cursor: null, lastKey: null },
+		});
+
+		if (result._nay) throw new Error(result._nay.message);
+		expect(result._yay.rows.map((row) => row.item?.name)).toEqual(["z-one", "z-two"]);
+	});
+});
+
 describe("internal_list_children_saved", () => {
 	test("a service account stream stops at the read budget and goes on from its position", async () => {
 		const f = await fixture();

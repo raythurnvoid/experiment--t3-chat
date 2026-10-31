@@ -4176,6 +4176,19 @@ const app_convex_schema = defineSchema({
 			"parent.id",
 			"name",
 		])
+		// The folders or files of one folder, for `tree -L`: one pass reads folders only.
+		.index("by_org_ws_user_visible_parent_kind_name", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"moveView.cohortId",
+			"moveView.view",
+			"isVisible",
+			"parent.kind",
+			"parent.id",
+			"kind",
+			"name",
+		])
 		.index("by_org_ws_user_visible_parent_updatedAt", [
 			"organizationId",
 			"workspaceId",

@@ -366,7 +366,17 @@ function parse_search_args(args: string[], options: { cwd: string }) {
 		pathShell = bash_resolve_path(options.cwd, pathValue);
 	}
 
-	return Result({ _yay: { plan: plan._yay, whereJson, limit: limit._yay, cursor, pathShell, format } });
+	return Result({
+		_yay: {
+			plan: plan._yay,
+			whereJson,
+			limit: limit._yay.limit,
+			limitNote: limit._yay.note,
+			cursor,
+			pathShell,
+			format,
+		},
+	});
 }
 
 function parse_get_args(args: string[], options: { cwd: string }) {
@@ -680,6 +690,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			result.isDone || result.continueCursor == null
 				? null
 				: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result.continueCursor);
+		const limitNote = parsed._yay.limitNote ? `${parsed._yay.limitNote}\n` : "";
 		if (parsed._yay.format === "json") {
 			return {
 				stdout: `${JSON.stringify(
@@ -698,7 +709,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					null,
 					2,
 				)}\n`,
-				stderr: "",
+				stderr: limitNote,
 				exitCode: 0,
 			};
 		}
@@ -707,8 +718,8 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			dedupedItems.length === 0 ? "" : `${dedupedItems.map((item) => scope.renderShellPath(item.path)).join("\n")}\n`;
 		const stderr =
 			nextCursor == null
-				? ""
-				: `${build_search_continuation({
+				? limitNote
+				: `${limitNote}${build_search_continuation({
 						renderShellPath: scope.renderShellPath,
 						path,
 						limit: parsed._yay.limit,

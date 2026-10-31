@@ -133,7 +133,9 @@ describe("bash_run_command", () => {
 	});
 
 	test("supports find -mindepth and accepts -print as a no-op", async () => {
-		const { run } = await create_bash_runner();
+		const { run } = await create_bash_runner({
+			extraFiles: [{ path: "/docs/nested/inner/far.md", content: "far\n" }],
+		});
 
 		const self = await run({ command: `find ${test_db_files_mount}/docs -maxdepth 0 --limit 50` });
 		const below = await run({ command: `find ${test_db_files_mount}/docs -mindepth 1 --limit 50` });
@@ -142,17 +144,28 @@ describe("bash_run_command", () => {
 		const directOnly = await run({ command: `find ${test_db_files_mount}/docs -mindepth 1 -maxdepth 1 --limit 50` });
 		const printed = await run({ command: `find ${test_db_files_mount}/docs -maxdepth 1 -print --limit 50` });
 
-		// App folders take three depth shapes: the folder, its children, or its whole subtree.
+		// App folders take the folder, its children, its whole subtree, or a depth walk for -maxdepth 2 and more.
 		expect(self.stdout.trim()).toBe(`${test_db_files_mount}/docs/`);
 		expect(below.metadata.exitCode).toBe(0);
 		expect(below.stdout).not.toContain(`${test_db_files_mount}/docs/\n`);
 		expect(below.stdout).toContain(`${test_db_files_mount}/docs/nested/deep.md`);
-		for (const refused of [deepOnly, twoLevels]) {
-			expect(refused.metadata.exitCode).toBe(2);
-			expect(refused.stderr).toContain(
-				"support only the folder itself (-maxdepth 0), its direct children (-maxdepth 1), or the whole subtree",
-			);
-		}
+		expect(deepOnly.metadata.exitCode).toBe(2);
+		expect(deepOnly.stderr).toContain(
+			"support only the folder itself (-maxdepth 0), its direct children (-maxdepth 1), or the whole subtree",
+		);
+		// The walk lists each folder's subfolders before its files, and never opens a folder at depth 2.
+		expect(twoLevels.metadata.exitCode).toBe(0);
+		expect(twoLevels.stdout).toBe(
+			[
+				`${test_db_files_mount}/docs/`,
+				`${test_db_files_mount}/docs/nested/`,
+				`${test_db_files_mount}/docs/nested/inner/`,
+				`${test_db_files_mount}/docs/nested/deep.md`,
+				`${test_db_files_mount}/docs/readme.md`,
+				`${test_db_files_mount}/docs/tutorial.md`,
+				"",
+			].join("\n"),
+		);
 		expect(directOnly.metadata.exitCode).toBe(0);
 		expect(directOnly.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		expect(directOnly.stdout).toContain(`${test_db_files_mount}/docs/nested/`);
@@ -1706,28 +1719,6 @@ describe("bash_run_command", () => {
 		expect(treeResult.stderr).toMatch(
 			new RegExp(`Next page: tree ${test_db_files_mount}/docs --limit 2 --cursor \\S+`, "u"),
 		);
-	});
-
-	test("tree continuation pages remind agents to stop after one requested continuation", async () => {
-		const { run } = await create_bash_runner({
-			extraFiles: [
-				{ path: "/tree-stop/a.md", content: "a\n" },
-				{ path: "/tree-stop/b.md", content: "b\n" },
-				{ path: "/tree-stop/c.md", content: "c\n" },
-			],
-		});
-
-		const firstPage = await run({ command: `tree ${test_db_files_mount}/tree-stop --limit 1` });
-		const continuation = firstPage.stderr.match(/Next page: (tree .+)/u)?.[1];
-		if (continuation == null) {
-			throw new Error("expected a tree continuation in the first page stderr");
-		}
-
-		const secondPage = await run({ command: continuation });
-
-		expect(secondPage.metadata.exitCode).toBe(0);
-		expect(secondPage.stderr).toContain("Next page: tree");
-		expect(secondPage.stderr).toContain("if the user asked for exactly one continuation, stop here");
 	});
 
 	test("renders exact file tree targets without subtree pagination", async () => {

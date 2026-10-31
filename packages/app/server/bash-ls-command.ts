@@ -163,11 +163,13 @@ function parse_args(args: string[]) {
 		paths.push(arg);
 	}
 
+	// 100 rows of `ls -l -R` (long rows with full paths) measure about 24 KiB, the inline tool output
+	// limit. Over it the model sees only the start and the end, so this mode pages by 50.
 	const limit = bash_parse_limit({
 		command: "ls",
 		value: limitValue,
 		defaultLimit: bash_LISTING_DEFAULT_LIMIT,
-		maxLimit: bash_LISTING_MAX_LIMIT,
+		maxLimit: long && recursive && !directory ? 50 : bash_LISTING_MAX_LIMIT,
 	});
 	if (limit._nay) {
 		return limit;
@@ -186,7 +188,8 @@ function parse_args(args: string[]) {
 	return Result({
 		_yay: {
 			paths,
-			limit: limit._yay,
+			limit: limit._yay.limit,
+			limitNote: limit._yay.note,
 			cursor,
 			unsupportedDbFilesOption,
 			recursive,
@@ -371,7 +374,8 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		const sections: string[] = [];
-		let stderr = "";
+		// A `--limit` over the maximum still lists, so say on stderr how many rows a page shows.
+		let stderr = hasDbFilesPathTarget && parsed._yay.limitNote ? `${parsed._yay.limitNote}\n` : "";
 		let exitCode = 0;
 		for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
 			const target = targets[targetIndex];

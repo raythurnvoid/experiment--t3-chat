@@ -3420,6 +3420,11 @@ const moved_in_validator = v.union(v.object({ savedNodeId: v.string(), ownerTree
 const list_cursor_validator = v.object({
 	scope: v.string(),
 	root: v.string(),
+	/**
+	 * The target of the last row of the page before. In name order the rows of one node from two streams
+	 * sit next to each other, so the next page drops a row with this target.
+	 */
+	lastTargetId: v.union(v.string(), v.null()),
 	/** At most 256 streams, each with a positive integer `numItems`. The parse checks it by hand. */
 	streams: v.array(
 		v.object({
@@ -3658,6 +3663,7 @@ export async function files_pending_overlay_list(
 				})
 			: [null];
 	let root: string | null = null;
+	let lastTargetId: string | null = null;
 	let cursorStreams: CursorStream[];
 	if (args.cursor === null) {
 		cursorStreams = savedSources.flatMap((savedStream, index) => [
@@ -3727,6 +3733,7 @@ export async function files_pending_overlay_list(
 				},
 			});
 		root = raw.root;
+		lastTargetId = raw.lastTargetId;
 		cursorStreams = raw.streams;
 	}
 	const is_walk = (stream: Pick<CursorStream, "kind">) => walk && (stream.kind === "saved" || stream.kind === "nested");
@@ -3960,7 +3967,7 @@ export async function files_pending_overlay_list(
 	// A metadata row also says which value it matched.
 	const items: Array<NonNullable<Row["item"]> & { match?: Row["match"] }> = [];
 	const denied: string[] = [];
-	const seen = new Set<string>();
+	const seen = new Set<string>(lastTargetId === null ? [] : [lastTargetId]);
 	let rounds = 0;
 	let progressed = false;
 	let overBudget = false;
@@ -4056,7 +4063,8 @@ export async function files_pending_overlay_list(
 				});
 		}
 		if (row.denied !== undefined && args.mode === "subtree") denied.push(row.denied);
-		// Two calls read different snapshots, so a moved row can come from two streams.
+		// Two calls read different snapshots, so a moved row can come from two streams. `seen` starts with
+		// the last row of the page before, so a page that ends between two such rows does not repeat it.
 		if (row.item && !seen.has(row.item.target.id)) {
 			seen.add(row.item.target.id);
 			items.push(row.match ? { ...row.item, match: row.match } : row.item);
@@ -4119,6 +4127,7 @@ export async function files_pending_overlay_list(
 					: JSON.stringify({
 							scope,
 							root: root ?? "null",
+							lastTargetId: items.at(-1)?.target.id ?? lastTargetId,
 							streams: left.map((stream) => ({
 								kind: stream.kind,
 								movedIn: stream.movedIn,
@@ -4131,6 +4140,238 @@ export async function files_pending_overlay_list(
 							})),
 						} satisfies Infer<typeof list_cursor_validator>),
 			isDone: left.length === 0,
+		},
+	});
+}
+
+/**
+ * The deepest `tree -L` and `find -maxdepth` walk. The page cursor keeps one frame per open folder, and
+ * each page checks every open folder again, so both grow with this depth.
+ */
+export const files_pending_overlay_LEVELS_MAX_DEPTH = 16;
+
+/**
+ * The children listings one page of a depth walk runs at most. Each one is a few queries. A page that
+ * runs out ends short, with a cursor.
+ */
+const LEVELS_MAX_CALLS = 40;
+
+const levels_cursor_validator = v.object({
+	scope: v.string(),
+	/**
+	 * The Move view of the first page. The page stops when it changed, so it never mixes two views.
+	 */
+	view: v.string(),
+	/**
+	 * One per open folder, the start folder first. A folder stays here until its own rows and every
+	 * folder inside it are done, so each page checks the whole chain.
+	 */
+	frames: v.array(
+		v.object({
+			parent: v.union(
+				v.object({ kind: v.literal("root") }),
+				v.object({ kind: v.union(v.literal("saved"), v.literal("private")), id: v.string() }),
+			),
+			/**
+			 * The folder's path when the walk opened it.
+			 */
+			folderPath: v.string(),
+			/**
+			 * The depth of its children. The start folder's children are at depth 1.
+			 */
+			childDepth: v.number(),
+			/**
+			 * `done`: no rows are left, but a folder inside it is still open.
+			 */
+			phase: v.union(v.literal("folders"), v.literal("files"), v.literal("done")),
+			/**
+			 * The children listing cursor of this phase.
+			 */
+			cursor: v.union(v.string(), v.null()),
+		}),
+	),
+});
+
+/**
+ * One page of a walk that goes `maxDepth` levels down from a folder, for `tree -L` and
+ * `find -maxdepth N`. It runs only children listings (`files_pending_overlay_list`), so drafts show
+ * and it never reads below `maxDepth`: its cost follows the rows it returns.
+ *
+ * In each folder the child folders come first, each one right before its own rows, then the files.
+ * Each group is in name order, like GNU `tree --dirsfirst`. The walk asks for one folder at a time when
+ * it will open it, so the children cursor stops right after that folder.
+ *
+ * A locked folder inside the limit is listed but not opened, and its path comes back in `denied`.
+ * `depthCut` is true when the page listed a folder at the limit that it did not open.
+ *
+ * Each page first checks the Move view and every open folder, and checks the view again at the end.
+ * So a page never goes on below a folder that changed, and never mixes rows of two views.
+ */
+export async function files_pending_overlay_list_levels(
+	ctx: Pick<ActionCtx, "runQuery">,
+	args: {
+		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		visibilityUserId: Id<"users">;
+		subject: access_control_Subject;
+		overlayUserId?: Id<"users">;
+		folderPath: string;
+		maxDepth: number;
+		foldersOnly: boolean;
+		numItems: number;
+		cursor: string | null;
+	},
+) {
+	const streamArgs = {
+		agentSource: args.agentSource,
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		visibilityUserId: args.visibilityUserId,
+		subject: args.subject,
+		overlayUserId: args.overlayUserId,
+		folderPath: args.folderPath,
+	};
+	const changed = Result({
+		_nay: { message: "the folder changed since the last page; rerun the original command without --cursor." },
+	});
+	const listingChanged = Result({ _nay: { message: "Listing changed. Start again." } });
+	const read_view = async () => {
+		const view = await ctx.runQuery(internal.files_visible.internal_get_move_view, streamArgs);
+		return view && JSON.stringify([view.cohortId, view.view, view.generation, view.migrationDirection]);
+	};
+	const view = await read_view();
+	if (view === null)
+		return Result({ _yay: { items: [], denied: [], depthCut: false, continueCursor: null, isDone: true } });
+	const scope = JSON.stringify([
+		args.organizationId,
+		args.workspaceId,
+		args.visibilityUserId,
+		args.subject,
+		args.overlayUserId,
+		args.folderPath,
+		args.maxDepth,
+		args.foldersOnly,
+	]);
+	const pageSize = Math.max(1, Math.floor(args.numItems));
+
+	type Frame = Infer<typeof levels_cursor_validator>["frames"][number];
+	let frames: Frame[];
+	if (args.cursor === null) {
+		const start = await ctx.runQuery(internal.files_visible.internal_get_walk_frame, streamArgs);
+		if (start._nay) return start;
+		if (!start._yay)
+			return Result({ _yay: { items: [], denied: [], depthCut: false, continueCursor: null, isDone: true } });
+		frames = [{ parent: start._yay, folderPath: args.folderPath, childDepth: 1, phase: "folders", cursor: null }];
+	} else {
+		let raw: unknown;
+		try {
+			raw = JSON.parse(args.cursor);
+		} catch {
+			return Result({
+				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
+			});
+		}
+		if (
+			!validate(levels_cursor_validator, raw) ||
+			raw.scope !== scope ||
+			raw.frames.length === 0 ||
+			raw.frames.length > args.maxDepth
+		)
+			return Result({
+				_nay: {
+					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
+				},
+			});
+		if (raw.view !== view) return changed;
+		// One query per folder, the start folder first. A lost grant on the start folder answers
+		// "Permission denied", like a first page would.
+		for (const [index, frame] of raw.frames.entries()) {
+			const opened = await ctx.runQuery(internal.files_visible.internal_get_walk_frame, {
+				...streamArgs,
+				folderPath: frame.folderPath,
+			});
+			if (opened._nay && index === 0) return opened;
+			const parent = opened._yay;
+			if (
+				!parent ||
+				parent.kind !== frame.parent.kind ||
+				(parent.kind !== "root" && frame.parent.kind !== "root" && parent.id !== frame.parent.id)
+			)
+				return changed;
+		}
+		frames = raw.frames;
+	}
+
+	const items: Array<NonNullable<files_visible_list_Result["_yay"]>["items"][number]> = [];
+	const denied: string[] = [];
+	let depthCut = false;
+	let calls = 0;
+	while (items.length < pageSize && frames.length > 0 && calls < LEVELS_MAX_CALLS) {
+		const frame = frames.at(-1)!;
+		// Only the top frame is popped, so a folder stays open while a folder inside it is.
+		if (frame.phase === "done") {
+			frames.pop();
+			continue;
+		}
+
+		// Ask for one folder when the walk opens it, so the cursor stops right after it.
+		const opens = frame.phase === "folders" && frame.childDepth < args.maxDepth;
+		const listed = await files_pending_overlay_list(ctx, {
+			...streamArgs,
+			folderPath: frame.folderPath,
+			mode: "children",
+			orderBy: "name",
+			order: "asc",
+			kind: frame.phase === "folders" ? "folder" : "file",
+			numItems: opens ? 1 : pageSize - items.length,
+			cursor: frame.cursor,
+		});
+		calls++;
+		// A frame's cursor holds the view of the call that made it. After a Move changes the view in this
+		// page, the next call refuses that cursor, so say what really happened.
+		if (listed._nay) return (await read_view()) === view ? listed : listingChanged;
+
+		// Move the phase on before pushing a child, so the parent never lists its last folder again.
+		frame.cursor = listed._yay.continueCursor;
+		if (listed._yay.isDone) {
+			frame.phase = frame.phase === "folders" && !args.foldersOnly ? "files" : "done";
+			frame.cursor = null;
+		}
+		for (const item of listed._yay.items) {
+			items.push(item);
+			if (item.kind !== "folder") continue;
+			if (!opens) {
+				if (!item.locked) depthCut = true;
+				continue;
+			}
+			if (item.locked) {
+				denied.push(item.path);
+				continue;
+			}
+			frames.push({
+				parent: item.target,
+				folderPath: item.path,
+				childDepth: frame.childDepth + 1,
+				phase: "folders",
+				cursor: null,
+			});
+		}
+	}
+	while (frames.at(-1)?.phase === "done") frames.pop();
+
+	// A children call checks its own view, but the view can change between two calls of this page.
+	if ((await read_view()) !== view) return listingChanged;
+	return Result({
+		_yay: {
+			items,
+			denied,
+			depthCut,
+			continueCursor:
+				frames.length === 0
+					? null
+					: JSON.stringify({ scope, view, frames } satisfies Infer<typeof levels_cursor_validator>),
+			isDone: frames.length === 0,
 		},
 	});
 }

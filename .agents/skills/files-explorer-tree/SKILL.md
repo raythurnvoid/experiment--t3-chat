@@ -370,6 +370,8 @@ filter to search inside the folder". `/*` takes words only. Both input footers s
   and "Global Search").
 - One exception: the folder table's draft hint (`files_tree.has_drafts_in_folder`) asks whether
   the user has a place or a hide in the folder. It lists no draft (see "Table UI").
+- The agent's depth listings (`tree -L N`, `find -maxdepth N`) open one folder at a time through the
+  same draft-aware `children` listing as `ls`, so they show drafts and read nothing below the depth.
 - Code that keeps a list saved-only says so in a short comment that points here, like
   `// Saved rows only: UI lists never show drafts.` in `list_tree_children_sorted`.
 

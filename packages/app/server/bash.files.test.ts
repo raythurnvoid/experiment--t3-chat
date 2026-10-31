@@ -2501,6 +2501,41 @@ describe("bash_run_command", () => {
 		expect(sourceFind.stdout).not.toContain("deep.md");
 	});
 
+	test("tree -L pages a folder's levels with drafts and says which folders it did not open", async () => {
+		const runner = await create_bash_runner({ extraFiles: [{ path: "/reports/keep/inner/far.md", content: "far\n" }] });
+		const reports = `${test_db_files_mount}/reports`;
+		// A folder moved in with its file, a new folder with a new file, and a file moved out.
+		for (const command of [
+			`mv ${test_db_files_mount}/docs/nested ${reports}/nested`,
+			`mkdir ${reports}/new`,
+			`printf n > ${reports}/new/n.md`,
+			`mv ${reports}/summary.md ${test_db_files_mount}/docs/summary.md`,
+		])
+			expect((await runner.run({ command })).metadata.exitCode, command).toBe(0);
+
+		const pages = [];
+		for (let command: string | undefined = `tree -L 2 ${reports} --limit 2`; command;) {
+			const page = await runner.run({ command });
+			expect(page.metadata.exitCode, command).toBe(0);
+			pages.push(page);
+			command = page.stderr.match(/Next page: (tree .+)/u)?.[1];
+		}
+
+		// Every page repeats the root line, so drop it before joining the pages.
+		expect(pages.flatMap((page) => page.stdout.trim().split("\n").slice(1))).toEqual([
+			"|-- keep/",
+			"|   |-- inner/",
+			"|-- nested/",
+			"|   |-- deep.md",
+			"|-- new/",
+			"|   |-- n.md",
+		]);
+		expect(pages[0].stderr).toContain(
+			"tree: folders at depth 2 were not opened (-L 2). Run tree -L N <folder> to look inside.\n",
+		);
+		expect(pages[0].stderr).toMatch(new RegExp(`Next page: tree -L 2 ${reports} --limit 2 --cursor \\S+`, "u"));
+	});
+
 	test("lists a pending move nested under a moved folder exactly once", async () => {
 		const runner = await create_bash_runner();
 
@@ -2895,6 +2930,15 @@ describe("locked paths", () => {
 		expect(lines).toHaveLength(101);
 		expect(lines[0]).toBe(`cp: cannot open '${mount}/many/f-000.md' for reading: Permission denied`);
 		expect(lines.at(-1)).toBe("cp: more items were not copied: Permission denied");
+	});
+
+	test("tree -L marks a locked folder inside the limit and shows nothing under it", async () => {
+		const runner = await create_locked_runner();
+
+		const result = await runner.run({ command: `tree -L 2 ${mount}/open` });
+
+		expect(result.metadata.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toBe(`${mount}/open\n|-- Sub/  [error opening dir]\n|-- a.md\n|-- locked.md  [locked]\n`);
 	});
 
 	test("find -name prints a locked file whose folder is readable, and nothing inside a locked folder", async () => {

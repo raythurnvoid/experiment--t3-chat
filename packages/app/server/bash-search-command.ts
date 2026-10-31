@@ -140,7 +140,8 @@ function parse_args(args: string[], options: { currentWorkspacePath: string; cwd
 	return Result({
 		_yay: {
 			query,
-			limit: limit._yay,
+			limit: limit._yay.limit,
+			limitNote: limit._yay.note,
 			cursor,
 			pathShell,
 		},
@@ -477,7 +478,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 
 		return {
 			stdout: `${output}\n`,
-			stderr: "",
+			stderr: parsed._yay.limitNote ? `${parsed._yay.limitNote}\n` : "",
 			exitCode: 0,
 		};
 	});

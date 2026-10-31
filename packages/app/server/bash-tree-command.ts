@@ -13,6 +13,7 @@ import {
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_LISTING_DEFAULT_LIMIT,
 	bash_LISTING_MAX_LIMIT,
+	bash_NON_NEGATIVE_INTEGER_REGEX,
 	bash_parse_limit,
 	bash_external_mounts_fan_out_db_files_path,
 	bash_external_mounts_fan_out_paginate,
@@ -27,7 +28,11 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
-import { files_pending_overlay_list } from "./files-pending-overlay.ts";
+import {
+	files_pending_overlay_LEVELS_MAX_DEPTH,
+	files_pending_overlay_list,
+	files_pending_overlay_list_levels,
+} from "./files-pending-overlay.ts";
 
 const BUILTIN_OPTIONS_WITH_VALUES = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
 
@@ -49,9 +54,40 @@ function parse_args(args: string[]) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	let unsupportedDbFilesOption: string | null = null;
+	let maxDepth: number | null = null;
+	let foldersOnly = false;
+	// A wrong depth is refused only for db-files paths, so `/tmp` keeps native `tree`.
+	let depthError: string | null = null;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
+
+		if (arg === "-L") {
+			const value = bash_read_option_value("tree", args, index, "-L");
+			if (value._nay) return value;
+			index++;
+			const depth = value._yay.value.trim();
+			if (
+				bash_NON_NEGATIVE_INTEGER_REGEX.test(depth) &&
+				Number(depth) >= 1 &&
+				Number(depth) <= files_pending_overlay_LEVELS_MAX_DEPTH
+			) {
+				maxDepth = Number(depth);
+			} else {
+				depthError ??= `-L needs a depth from 1 to ${files_pending_overlay_LEVELS_MAX_DEPTH}, like -L 2. For the whole tree, run tree without -L.`;
+			}
+			continue;
+		}
+		// Only the GNU form `-L N`: a clear error teaches it in one call.
+		if (/^-L./u.test(arg) || arg === "--level" || arg.startsWith("--level=")) {
+			depthError ??= "write the depth as -L N, like -L 2.";
+			if (arg === "--level") index++;
+			continue;
+		}
+		if (arg === "-d") {
+			foldersOnly = true;
+			continue;
+		}
 
 		if (arg === "--limit") {
 			const value = bash_read_option_value("tree", args, index, "--limit");
@@ -108,17 +144,29 @@ function parse_args(args: string[]) {
 	return Result({
 		_yay: {
 			path,
-			limit: limit._yay,
+			limit: limit._yay.limit,
+			limitNote: limit._yay.note,
 			cursor,
 			unsupportedDbFilesOption,
+			maxDepth,
+			foldersOnly,
+			depthError,
 		} as const,
 	});
 }
 
-function build_continuation(args: { target: string; limit: number; cursor: string }) {
+function build_continuation(args: {
+	target: string;
+	foldersOnly: boolean;
+	maxDepth: number | null;
+	limit: number;
+	cursor: string;
+}) {
 	return [
 		"Next page:",
 		"tree",
+		...(args.foldersOnly ? ["-d"] : []),
+		...(args.maxDepth === null ? [] : ["-L", String(args.maxDepth)]),
 		bash_shell_arg_quote(args.target),
 		"--limit",
 		String(args.limit),
@@ -135,7 +183,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		if (parsed._nay) {
 			return {
 				stdout: "",
-				stderr: `${parsed._nay.message}\nUsage: tree [PATH] [--limit N] [--cursor CURSOR]\n`,
+				stderr: `${parsed._nay.message}\nUsage: tree [-d] [-L N] [PATH] [--limit N] [--cursor CURSOR]\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -148,7 +196,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					"tree: --next-page is not supported\n" +
 					"Copy the exact `Next page: tree <path> --limit N --cursor ...` command from the previous tree output.\n" +
-					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+					"Usage: tree [-d] [-L N] [PATH] [--limit N] [--cursor CURSOR]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -163,6 +211,10 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			dbFilesPath: pathResolution.dbFilesPath,
 			builtinOperand: parsed._yay.path ?? ".",
 		};
+		// The `/.plugins` and `/.mounts` roots are saved-only fan-outs. They have no depth walk yet.
+		const fanOutUnsupportedOption =
+			parsed._yay.unsupportedDbFilesOption ??
+			(parsed._yay.maxDepth !== null || parsed._yay.depthError !== null ? "-L" : parsed._yay.foldersOnly ? "-d" : null);
 
 		// The `/.plugins` root spans one indexed tree per installed plugin. Fan out one
 		// subtree listing per plugin, in name order, under a composite cursor.
@@ -174,12 +226,12 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
-			if (parsed._yay.unsupportedDbFilesOption != null) {
+			if (fanOutUnsupportedOption != null) {
 				return {
 					stdout: "",
 					stderr:
-						`tree: unsupported option ${parsed._yay.unsupportedDbFilesOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
-						"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+						`tree: unsupported option ${fanOutUnsupportedOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
+						"Usage: tree [-d] [-L N] [PATH] [--limit N] [--cursor CURSOR]\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -242,20 +294,17 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
 			}
 			// The Next page command goes to stderr, so stdout holds only the tree.
-			const notes: string[] = [];
+			const notes = parsed._yay.limitNote ? [parsed._yay.limitNote] : [];
 			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
 				notes.push(
 					build_continuation({
 						target: target.absoluteShellPath,
+						foldersOnly: false,
+						maxDepth: null,
 						limit: parsed._yay.limit,
 						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
-				if (parsed._yay.cursor != null) {
-					notes.push(
-						"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
-					);
-				}
 			}
 			return {
 				stdout: `${lines.join("\n")}\n`,
@@ -273,12 +322,12 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
-			if (parsed._yay.unsupportedDbFilesOption != null) {
+			if (fanOutUnsupportedOption != null) {
 				return {
 					stdout: "",
 					stderr:
-						`tree: unsupported option ${parsed._yay.unsupportedDbFilesOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
-						"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+						`tree: unsupported option ${fanOutUnsupportedOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
+						"Usage: tree [-d] [-L N] [PATH] [--limit N] [--cursor CURSOR]\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
@@ -347,20 +396,17 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
 			}
 			// The Next page command goes to stderr, so stdout holds only the tree.
-			const notes: string[] = [];
+			const notes = parsed._yay.limitNote ? [parsed._yay.limitNote] : [];
 			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
 				notes.push(
 					build_continuation({
 						target: target.absoluteShellPath,
+						foldersOnly: false,
+						maxDepth: null,
 						limit: parsed._yay.limit,
 						cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, fanOut._yay.continueCursor),
 					}),
 				);
-				if (parsed._yay.cursor != null) {
-					notes.push(
-						"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
-					);
-				}
 			}
 			return {
 				stdout: `${lines.join("\n")}\n`,
@@ -389,7 +435,14 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stdout: "",
 				stderr:
 					`tree: unsupported option ${parsed._yay.unsupportedDbFilesOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
-					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+					"Usage: tree [-d] [-L N] [PATH] [--limit N] [--cursor CURSOR]\n",
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
+		if (parsed._yay.depthError != null) {
+			return {
+				stdout: "",
+				stderr: `tree: ${parsed._yay.depthError}\nUsage: tree [-d] [-L N] [PATH] [--limit N] [--cursor CURSOR]\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -458,19 +511,32 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		}
 
 		// The shared list returns descendants only. The first line below prints the requested root.
-		const result = await files_pending_overlay_list(ctx, {
+		const listArgs = {
 			agentSource: target.pathResolution.ctxData.agentSource,
 			organizationId: target.pathResolution.ctxData.organizationId,
 			workspaceId: target.pathResolution.ctxData.workspaceId,
 			visibilityUserId: target.pathResolution.ctxData.userId,
-			subject: { kind: "user", userId: target.pathResolution.ctxData.userId, plugin: null },
+			subject: { kind: "user" as const, userId: target.pathResolution.ctxData.userId, plugin: null },
 			overlayUserId: target.pathResolution.fs.overlayUserId,
 			folderPath: rootDbFilesPath,
-			mode: "subtree",
-			order: "asc",
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
-		});
+		};
+		// `-L` opens one folder at a time through the children listing, folders first, so it never reads
+		// below the depth. Plain `tree` reads the subtree in path order; `-d` alone keeps that order.
+		const result =
+			parsed._yay.maxDepth !== null
+				? await files_pending_overlay_list_levels(ctx, {
+						...listArgs,
+						maxDepth: parsed._yay.maxDepth,
+						foldersOnly: parsed._yay.foldersOnly,
+					})
+				: await files_pending_overlay_list(ctx, {
+						...listArgs,
+						mode: "subtree",
+						order: "asc",
+						...(parsed._yay.foldersOnly ? { kind: "folder" as const } : {}),
+					});
 		if (result._nay?.name === "permission_denied") return permissionDenied;
 		if (result._nay)
 			return { stdout: "", stderr: `tree: ${result._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
@@ -494,20 +560,23 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// Emit a complete continuation command so the next page can be copied without
 		// reconstructing the path, limit, or cursor by hand. It goes to stderr, so stdout holds only
 		// the tree.
-		const notes: string[] = [];
+		const notes = parsed._yay.limitNote ? [parsed._yay.limitNote] : [];
+		// GNU tree prints nothing at the depth limit. Agents read "nothing inside" as "empty", so say it.
+		if ("depthCut" in result._yay && result._yay.depthCut) {
+			notes.push(
+				`tree: folders at depth ${parsed._yay.maxDepth} were not opened (-L ${parsed._yay.maxDepth}). Run tree -L N <folder> to look inside.`,
+			);
+		}
 		if (!result._yay.isDone && result._yay.continueCursor != null) {
 			notes.push(
 				build_continuation({
 					target: target.absoluteShellPath,
+					foldersOnly: parsed._yay.foldersOnly,
+					maxDepth: parsed._yay.maxDepth,
 					limit: parsed._yay.limit,
 					cursor: await bash_cursor_id_create(ctx, dbFilesRoots.app.fs.ctxData.userId, result._yay.continueCursor),
 				}),
 			);
-			if (parsed._yay.cursor != null) {
-				notes.push(
-					"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
-				);
-			}
 		}
 
 		return {

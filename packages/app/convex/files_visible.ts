@@ -1369,6 +1369,8 @@ export const internal_list_children_saved = internalQuery({
 			indexKey,
 			mergeKey: indexKey,
 			decide: async (node) => {
+				// A saved child the user's own drafts hide is read, then dropped. This is a known limit to review:
+				// "Known limit: hidden rows in children listings" in the files-agent-pending-updates skill.
 				if (is_hidden && (await is_hidden(node._id))) {
 					if (!args.requireComplete || !reader) return null;
 					// A draft move into a folder the user can no longer read drops the place too, so a full
@@ -1400,8 +1402,10 @@ export type files_visible_stream_Result =
 		: never;
 
 /**
- * The user's places in the listing folder, in name or update order. The index has no kind, so a
- * filter drops rows here; they are the user's own drafts.
+ * The user's places in the listing folder, in name or update order. In name order a `kind` filter is
+ * an index range, so the folder pass of `tree -L` reads no file place. The update-time index has no
+ * kind, and no index has the extension, so those filters drop rows here; they are the user's own
+ * drafts.
  */
 export const internal_list_children_places = internalQuery({
 	args: {
@@ -1435,21 +1439,28 @@ export const internal_list_children_places = internalQuery({
 			? stream_range({ ...args, fields: [byTime ? "updatedAt" : "name", "_creationTime", "_id"] })
 			: null;
 		if (args.seek && !range) return stream_done(root.parent);
+		const byKind = !byTime && args.kind !== undefined;
 		const nativePage = await ctx.db
 			.query("files_pending_places")
-			.withIndex(byTime ? "by_org_ws_user_visible_parent_updatedAt" : "by_org_ws_user_visible_parent_name", (q) =>
-				files_index_range_apply(
-					q
-						.eq("organizationId", tenant.organizationId)
-						.eq("workspaceId", tenant.workspaceId)
-						.eq("userId", args.visibilityUserId)
-						.eq("moveView.cohortId", stream_move_view(args)?.cohortId)
-						.eq("moveView.view", stream_move_view(args)?.view)
-						.eq("isVisible", true)
-						.eq("parent.kind", parent.kind)
-						.eq("parent.id", parent.kind === "root" ? undefined : parent.id),
-					range?.bounds ?? [],
-				),
+			.withIndex(
+				byTime
+					? "by_org_ws_user_visible_parent_updatedAt"
+					: byKind
+						? "by_org_ws_user_visible_parent_kind_name"
+						: "by_org_ws_user_visible_parent_name",
+				(q) =>
+					files_index_range_apply(q, [
+						["eq", "organizationId", tenant.organizationId],
+						["eq", "workspaceId", tenant.workspaceId],
+						["eq", "userId", args.visibilityUserId],
+						["eq", "moveView.cohortId", stream_move_view(args)?.cohortId],
+						["eq", "moveView.view", stream_move_view(args)?.view],
+						["eq", "isVisible", true],
+						["eq", "parent.kind", parent.kind],
+						["eq", "parent.id", parent.kind === "root" ? undefined : parent.id],
+						...(byKind ? ([["eq", "kind", args.kind]] as ReturnType<typeof files_index_range_phases>[number]) : []),
+						...(range?.bounds ?? []),
+					]),
 			)
 			.order(args.order)
 			.paginate(range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) });
@@ -2000,6 +2011,29 @@ export const internal_resolve_walk_stack = internalQuery({
 			start: args.start,
 			top: args.top,
 		});
+	},
+});
+
+/**
+ * One open folder of a depth walk (`files_pending_overlay_list_levels`): the folder now at
+ * `folderPath`, null when no folder is there. "Permission denied" when the caller cannot open it.
+ *
+ * The walk checks every open folder at the start of each page, so a page never goes on below a folder
+ * that was renamed or locked since the last page. Path lookup does not check access on every parent,
+ * so a check of the top folder alone is not enough. It is one query per folder, because each lookup
+ * resolves the whole path and deep paths read a lot (like `internal_resolve_walk_stack`).
+ */
+export const internal_get_walk_frame = internalQuery({
+	args: stream_args.omit("numItems", "position").fields,
+	returns: v_result({ _yay: v.union(files_pending_parent_validator, v.null()) }),
+	handler: async (ctx, args) => {
+		const opened = await db_stream_open(ctx, args);
+		if (opened._nay) return opened;
+		if (!opened._yay) return Result({ _yay: null });
+		// The workspace root has no row, so the open does not check it.
+		if (await db_stream_root_locked(ctx, args, opened._yay))
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
+		return Result({ _yay: opened._yay.root.parent });
 	},
 });
 

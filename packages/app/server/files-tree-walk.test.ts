@@ -14,7 +14,11 @@ import {
 	drain_scheduled_continuations,
 	get_seeded_node_id,
 } from "./bash.setup.test.ts";
-import { files_pending_overlay_list, files_pending_overlay_search_name } from "./files-pending-overlay.ts";
+import {
+	files_pending_overlay_list,
+	files_pending_overlay_list_levels,
+	files_pending_overlay_search_name,
+} from "./files-pending-overlay.ts";
 import { files_saved_list_page } from "./files-saved-list.ts";
 import {
 	files_tree_walk_boundary_status,
@@ -182,6 +186,36 @@ function metered_ctx(t: ReturnType<typeof test_convex>) {
 			}),
 	} as unknown as Pick<ActionCtx, "runQuery">;
 	return { ctx, calls };
+}
+
+/**
+ * Every page of a depth walk, as paths with a slash after folders, and each page's cursor.
+ */
+async function walk_levels(
+	ctx: Pick<ActionCtx, "runQuery">,
+	args: Omit<Parameters<typeof files_pending_overlay_list_levels>[1], "cursor">,
+) {
+	const paths: string[] = [];
+	const denied: string[] = [];
+	const cursors: string[] = [];
+	let depthCut = false;
+	let cursor: string | null = null;
+	for (let page = 0; page < 200; page++) {
+		const result: Awaited<ReturnType<typeof files_pending_overlay_list_levels>> =
+			await files_pending_overlay_list_levels(ctx, { ...args, cursor });
+		if (result._nay) throw new Error(result._nay.message);
+		paths.push(
+			...result._yay.items.map(
+				(item) => `${item.path}${item.kind === "folder" ? "/" : ""}${item.locked ? " (locked)" : ""}`,
+			),
+		);
+		denied.push(...result._yay.denied);
+		depthCut ||= result._yay.depthCut;
+		cursor = result._yay.continueCursor;
+		if (cursor === null) return { paths, denied, depthCut, cursors };
+		cursors.push(cursor);
+	}
+	throw new Error("The walk did not end");
 }
 
 describe("files_tree_walk_page", () => {
@@ -526,6 +560,41 @@ describe("the walk at 500 levels", () => {
 			expect(Math.max(...calls.map((call) => call.ranges)), name).toBeLessThan(3_000);
 		}
 	}, 300_000);
+
+	test("a 16-level depth walk near the path limit keeps a small cursor and small checks", async () => {
+		const { ctx, calls, args } = await seed_chain();
+		// Paths are `/a` per level, so the start folder's path has 968 characters and the deepest 1,000.
+		const start = "/a".repeat(CHAIN_DEPTH - 16);
+		const below = (levels: number) => `${start}${"/a".repeat(levels)}`;
+
+		const walked = await walk_levels(ctx, {
+			...args,
+			folderPath: start,
+			maxDepth: 16,
+			foldersOnly: false,
+			numItems: 1,
+		});
+
+		// The folders come first down to depth 16, then each folder's file on the way back up. The folder
+		// at depth 16 is not opened, so its file at depth 17 is not listed.
+		expect(walked.paths).toEqual([
+			...Array.from({ length: 16 }, (_, index) => `${below(index + 1)}/`),
+			...Array.from({ length: 16 }, (_, index) => `${below(15 - index)}/x`),
+		]);
+		expect(walked.depthCut).toBe(true);
+		const frameChecks = calls.filter((call) => call.name === "files_visible:internal_get_walk_frame");
+		console.info(
+			"Depth walk cost at 16 levels",
+			JSON.stringify({
+				pages: walked.cursors.length + 1,
+				maxCursorLength: Math.max(...walked.cursors.map((cursor) => cursor.length)),
+				frameCheckRanges: Math.max(...frameChecks.map((call) => call.ranges)),
+			}),
+		);
+		expect(Math.max(...calls.map((call) => call.ranges)), "each call and each frame check").toBeLessThan(3_000);
+		// The Bash cursor store keeps the cursor as one string.
+		expect(Math.max(...walked.cursors.map((cursor) => cursor.length))).toBeLessThan(64 * 1024);
+	}, 300_000);
 });
 
 describe("a caller who cannot open the root", () => {
@@ -727,6 +796,33 @@ describe("the walk on a real database", () => {
 			expect(shared._nay).toBeUndefined();
 			await drain_scheduled_continuations(ownerRunner);
 		};
+		const unshare = async (path: string) => {
+			const removed = await asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+				membershipId: seeded.membershipId,
+				nodeId: await get_seeded_node_id(ownerRunner, path),
+				principal: { kind: "user", userId: memberId },
+			});
+			expect(removed._nay).toBeUndefined();
+			await drain_scheduled_continuations(ownerRunner);
+		};
+		// Like a Move step: listings compare the workspace's Move view before and after they read.
+		const bump_move_view = () =>
+			t.run(async (ctx) => {
+				const slot = await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) =>
+						q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId),
+					)
+					.unique();
+				if (slot) await ctx.db.patch("files_move_workspace_slots", slot._id, { generation: slot.generation + 1 });
+				else
+					await ctx.db.insert("files_move_workspace_slots", {
+						organizationId: seeded.organizationId,
+						workspaceId: seeded.workspaceId,
+						cohortId: null,
+						generation: 1,
+					});
+			});
 		const { ctx, calls } = metered_ctx(t);
 		const as_user = (userId: Id<"users">) => ({
 			organizationId: seeded.organizationId,
@@ -757,8 +853,11 @@ describe("the walk on a real database", () => {
 			t,
 			seeded,
 			ownerRunner,
+			ctx,
 			calls,
 			share,
+			unshare,
+			bump_move_view,
 			list,
 			owner: as_user(seeded.userId),
 			member: as_user(memberId),
@@ -935,5 +1034,170 @@ describe("the walk on a real database", () => {
 			.reduce((sum, call) => sum + call.documents, 0);
 		expect(rows, "the per-folder read skips the 100 recent rows outside the sandbox").toBeLessThan(50);
 		expect(listed).toEqual({ paths: ["/reports/summary.md"], denied: [] });
+	});
+
+	test("a depth walk lists each folder's levels in order over any page size and stops at the limit", async () => {
+		const { ctx, owner } = await seed_team([
+			{ path: "/deep/a/b/c/d.md", content: "d" },
+			{ path: "/deep/a/b/y.md", content: "y" },
+			{ path: "/deep/a/a1.md", content: "a1" },
+			{ path: "/deep/a/a2.md", content: "a2" },
+			{ path: "/deep/e/f", kind: "folder" },
+			{ path: "/deep/e/e1.md", content: "e1" },
+			{ path: "/deep/e/e2.md", content: "e2" },
+			{ path: "/deep/g", kind: "folder" },
+			{ path: "/deep/m1.md", content: "m1" },
+			{ path: "/deep/m2.md", content: "m2" },
+			{ path: "/deep/m3.md", content: "m3" },
+		]);
+		const walk = (args: { maxDepth: number; foldersOnly: boolean; numItems: number }) =>
+			walk_levels(ctx, { ...owner, folderPath: "/deep", ...args });
+
+		for (const numItems of [1, 2, 5, 50]) {
+			const walked = await walk({ maxDepth: 2, foldersOnly: false, numItems });
+			expect(walked.paths, `${numItems} per page`).toEqual([
+				"/deep/a/",
+				"/deep/a/b/",
+				"/deep/a/a1.md",
+				"/deep/a/a2.md",
+				"/deep/e/",
+				"/deep/e/f/",
+				"/deep/e/e1.md",
+				"/deep/e/e2.md",
+				"/deep/g/",
+				"/deep/m1.md",
+				"/deep/m2.md",
+				"/deep/m3.md",
+			]);
+			expect(walked.depthCut).toBe(true);
+		}
+		expect((await walk({ maxDepth: 3, foldersOnly: true, numItems: 1 })).paths).toEqual([
+			"/deep/a/",
+			"/deep/a/b/",
+			"/deep/a/b/c/",
+			"/deep/e/",
+			"/deep/e/f/",
+			"/deep/g/",
+		]);
+	}, 120_000);
+
+	test("a depth walk reads no row below its limit", async () => {
+		// Ten printable rows at depths 1 and 2, then a folder at depth 2 with `count` folders inside it.
+		const page_cost = async (count: number) => {
+			const { ctx, calls, owner } = await seed_team([
+				...Array.from({ length: 10 }, (_, index) => ({ path: `/deep/a/f${index}.md`, content: "x" })),
+				...Array.from({ length: count }, (_, index) => ({
+					path: `/deep/a/big/s${String(index).padStart(3, "0")}`,
+					kind: "folder" as const,
+				})),
+			]);
+			calls.length = 0;
+			const page = await files_pending_overlay_list_levels(ctx, {
+				...owner,
+				folderPath: "/deep",
+				maxDepth: 2,
+				foldersOnly: false,
+				numItems: 10,
+				cursor: null,
+			});
+			if (page._nay) throw new Error(page._nay.message);
+			return {
+				paths: page._yay.items.map((item) => item.path),
+				documents: calls.reduce((sum, call) => sum + call.documents, 0),
+				subtreeCalls: calls.filter((call) => call.name === "files_visible:internal_list_subtree_saved").length,
+			};
+		};
+
+		const small = await page_cost(250);
+		const large = await page_cost(500);
+
+		expect(small.paths).toEqual(["/deep/a", "/deep/a/big", ...Array.from({ length: 8 }, (_, i) => `/deep/a/f${i}.md`)]);
+		expect(small.subtreeCalls).toBe(0);
+		console.info("Depth walk page reads", JSON.stringify({ small: small.documents, large: large.documents }));
+		expect(large.documents, "250 more rows at depth 3 cost no read").toBe(small.documents);
+	}, 300_000);
+
+	test("a depth walk page stops when a folder it holds open changed since the last page", async () => {
+		const { ownerRunner, ctx, share, unshare, bump_move_view, owner, member } = await seed_team([
+			{ path: "/docs/nested/s1", kind: "folder" },
+			{ path: "/docs/nested/s2", kind: "folder" },
+		]);
+		const changed = {
+			_nay: { message: "the folder changed since the last page; rerun the original command without --cursor." },
+		};
+		// Page with one row per page until the cursor holds `/docs/nested` open.
+		const open_nested = async (who: typeof owner, overlay: boolean) => {
+			const args = {
+				...who,
+				...(overlay ? { overlayUserId: who.visibilityUserId } : {}),
+				folderPath: "/",
+				maxDepth: 3,
+				foldersOnly: true,
+				numItems: 1,
+			};
+			let cursor: string | null = null;
+			for (let page = 0; page < 20; page++) {
+				const result: Awaited<ReturnType<typeof files_pending_overlay_list_levels>> =
+					await files_pending_overlay_list_levels(ctx, { ...args, cursor });
+				if (result._nay) throw new Error(result._nay.message);
+				cursor = result._yay.continueCursor;
+				if (cursor?.includes('"folderPath":"/docs/nested"'))
+					return () => files_pending_overlay_list_levels(ctx, { ...args, cursor });
+			}
+			throw new Error("The walk never held /docs/nested open");
+		};
+		// The member reads `/docs/nested` through its own grant too. So only the check of `/docs`, a
+		// folder above the open one, sees that its grant is gone.
+		await share("/docs");
+		await share("/docs/nested");
+		const lostGrant = await open_nested(member, false);
+		await unshare("/docs");
+		expect(await lostGrant()).toEqual(changed);
+
+		const renamed = await open_nested(owner, true);
+		const mount = "/home/cloud-usr/w/walk-db/home";
+		expect(
+			(await ownerRunner.run({ command: `mv ${mount}/docs/nested ${mount}/docs/renamed` })).metadata.exitCode,
+		).toBe(0);
+		expect(await renamed()).toEqual(changed);
+
+		const moved = await open_nested(owner, false);
+		await bump_move_view();
+		expect(await moved()).toEqual(changed);
+	}, 120_000);
+
+	test("a depth walk page answers Listing changed when a Move changes the view between two of its listings", async () => {
+		const { ctx, bump_move_view, owner } = await seed_team();
+		// One page that changes the view right after its `bumpAt`-th view read.
+		const page_with_bump = async (bumpAt: number | null) => {
+			let viewReads = 0;
+			const changing = {
+				runQuery: async (query: FunctionReference<"query">, args: Record<string, unknown>) => {
+					const result = await ctx.runQuery(query, args);
+					if (getFunctionName(query) === "files_visible:internal_get_move_view" && ++viewReads === bumpAt)
+						await bump_move_view();
+					return result;
+				},
+			} as unknown as Pick<ActionCtx, "runQuery">;
+			const page = await files_pending_overlay_list_levels(changing, {
+				...owner,
+				folderPath: "/",
+				maxDepth: 2,
+				foldersOnly: false,
+				numItems: 50,
+				cursor: null,
+			});
+			return { page, viewReads };
+		};
+
+		const clean = await page_with_bump(null);
+		expect(clean.page._yay?.isDone).toBe(true);
+		// The walker reads the view first and last. Each children listing reads it at its start and end.
+		// Read 3 ends the first listing, so the next listing gets a cursor of the old view. The read
+		// before the last one ends the last listing, so only the walker's last read sees the change.
+		for (const bumpAt of [3, clean.viewReads - 1])
+			expect((await page_with_bump(bumpAt)).page, `change after view read ${bumpAt}`).toEqual({
+				_nay: { message: "Listing changed. Start again." },
+			});
 	});
 });

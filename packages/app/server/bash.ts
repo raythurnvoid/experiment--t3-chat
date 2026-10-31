@@ -2490,6 +2490,7 @@ export async function bash_run_job(
 						contentType: query.contentType,
 						directoriesOnly: query.directoriesOnly,
 						limit: query.limit,
+						argv: checkpoint.expandedArgs,
 					})
 				: {
 						stdout: "",
