@@ -428,7 +428,7 @@ async function db_check_archive_parent(
 		return Result({
 			_nay: {
 				name: "read_only",
-				message: `The folder "${parent.path}" is read-only. Unlock it before archiving items inside it.`,
+				message: `The folder "${parent.path}" is read-only. Unlock it before moving items inside it to Trash.`,
 			},
 		});
 	return writable;
@@ -578,7 +578,7 @@ export function files_archive_runs_get_all_refused_nay(refusedItems: RunFields["
 	const refusal = refusedItems.length === 1 ? refusedItems[0]!.refusal : null;
 	return refusal
 		? { ...(refusal.name !== null ? { name: refusal.name } : {}), message: refusal.message }
-		: { message: "None of these items can be archived. You cannot change them or items inside them." };
+		: { message: "None of these items can be moved to Trash. You cannot change them or items inside them." };
 }
 
 /**
@@ -766,7 +766,7 @@ async function db_finish_forced_item(
 		if (args.row.forceArchive?.rootNodeId === args.row.nodeId) {
 			args.run.refusedItems.push({
 				nodeId: args.row.nodeId,
-				refusal: { name: null, message: "Some items could not be archived. See the job results." },
+				refusal: { name: null, message: "Some items could not be moved to Trash. See the job results." },
 			});
 		}
 	}
@@ -906,7 +906,7 @@ async function db_finish_purge_item(
 			reason: args.reason,
 		});
 		args.progress.blocked += 1;
-		// Empty archive can keep any number of top items, so it only counts them.
+		// Empty Trash can keep any number of top items, so it only counts them.
 		if (args.row.purge?.rootNodeId === args.row.nodeId && args.run.emptyArchive) {
 			args.run.emptyArchive.keptCount += 1;
 		} else if (args.row.purge?.rootNodeId === args.row.nodeId) {
@@ -983,7 +983,7 @@ async function db_check_purge_node(
 const LEGACY_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
- * Empty archive: queue the next page of top items of the area as named items, so the walk deletes
+ * Empty Trash: queue the next page of top items of the area as named items, so the walk deletes
  * them like a Delete permanently of the same items. Returns null when the walk can go on, or the
  * step's outcome.
  *
@@ -1507,15 +1507,15 @@ function get_long_paths_text(longPaths: NonNullable<RunFields["longPaths"]>) {
 }
 
 /**
- * Say which items stayed archived because their paths got too long after the check, or null.
+ * Say which items stayed in Trash because their paths got too long after the check, or null.
  */
 function get_long_paths_end_text(run: Pick<RunFields, "longPaths" | "longPathOperationId">) {
 	const longPaths = run.longPaths;
 	if (!longPaths || run.longPathOperationId === undefined) return null;
 	const example = `…/${longPaths.name} (${longPaths.length.toLocaleString("en-US")} characters)`;
 	return longPaths.count === 1
-		? `1 item stayed archived because its path would be too long: ${example}. Shorten a folder name, then restore it again.`
-		: `${longPaths.count} items stayed archived because their paths would be too long, like ${example}. Shorten a folder name, then restore them again.`;
+		? `1 item stayed in Trash because its path would be too long: ${example}. Shorten a folder name, then restore it again.`
+		: `${longPaths.count} items stayed in Trash because their paths would be too long, like ${example}. Shorten a folder name, then restore them again.`;
 }
 
 /**
@@ -1570,7 +1570,7 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 					.take(files_archive_runs_CHECK_STEP_MAX_NODES + 1 + pageIds.size)
 			).filter((node) => !pageIds.has(node._id));
 			if (sameTreePath.length > files_archive_runs_CHECK_STEP_MAX_NODES)
-				return { kind: "failed", nay: { message: "Too many archived items share one path." } };
+				return { kind: "failed", nay: { message: "Too many items in Trash share one path." } };
 			page.push(...sameTreePath);
 		}
 		args.budget.checkNodes -= page.length;
@@ -1613,14 +1613,14 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			if (parentRun && parentRun.kind === "archive") {
 				return {
 					kind: "failed",
-					nay: { name: "busy", message: "These items are being archived. Wait for it to finish." },
+					nay: { name: "busy", message: "These items are being moved to Trash. Wait for it to finish." },
 				};
 			}
 			if (parentOperationId !== null && !parentRun) {
 				const moveRefusal = await db_check_restore_move({ ctx, ...args, node });
 				if (moveRefusal) return moveRefusal;
 				if (run.rootNodeIds.length >= MAX_ROOT_LANDINGS) {
-					return { kind: "failed", nay: { message: "This archive has too many items to restore at once." } };
+					return { kind: "failed", nay: { message: "This delete has too many items to restore at once." } };
 				}
 				run.rootNodeIds.push(node._id);
 			}
@@ -2273,7 +2273,7 @@ async function db_settle_step(
 			return;
 		}
 		case "done": {
-			// Items that stayed archived because their path got too long make the job only partly done.
+			// Items that stayed in Trash because their path got too long make the job only partly done.
 			const status = activities_get_result_status(args.progress);
 			await db_finish_run({
 				ctx,
@@ -2535,7 +2535,7 @@ export async function files_archive_runs_db_start(
 					name: "busy",
 					message:
 						busy.kind === "archive"
-							? "These items are being archived. Wait for it to finish."
+							? "These items are being moved to Trash. Wait for it to finish."
 							: "These items are being restored. Wait for it to finish.",
 				},
 			});
@@ -2687,7 +2687,7 @@ export async function files_archive_runs_db_start(
 		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, args.membership),
 		source: { kind: "files_archive_run", id: runId, archiveKind: args.kind, force },
 		// Keep names and paths out of the title. The requester may lose access to the items later.
-		title: args.kind === "archive" ? "Archive files" : "Restore files",
+		title: args.kind === "archive" ? "Move files to Trash" : "Restore files",
 		targets: [],
 		visibility: "requester",
 		// A queued job shows no card until it starts.
@@ -2737,7 +2737,7 @@ export async function files_archive_runs_db_start(
  * Delete permanently through the job. The caller checked that each named node is archived and that the
  * person can manage it. The job checks every node inside again and keeps what it may not delete.
  *
- * Empty archive passes no nodes and `emptyArchive` instead. The job then finds the top items itself,
+ * Empty Trash passes no nodes and `emptyArchive` instead. The job then finds the top items itself,
  * one page at a time. The caller checked that the person can manage the area.
  *
  * Returns `runId` null when the work finished inside this request with nothing kept. The counts are
@@ -2903,7 +2903,7 @@ export async function files_archive_runs_db_start_purge(
 		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, args.membership),
 		source: { kind: "files_archive_run", id: runId, archiveKind: "purge", force: false },
 		// Keep names and paths out of the title. The requester may lose access to the items later.
-		title: run.emptyArchive ? "Empty archive" : "Delete files",
+		title: run.emptyArchive ? "Empty Trash" : "Delete files permanently",
 		targets: [],
 		visibility: "requester",
 		// A queued job shows no card until it starts.

@@ -80,10 +80,10 @@ afterEach(cleanup);
 describe("FilesArchiveModal", () => {
 	test("archives the given nodes and reports them", async () => {
 		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
-		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/note.md\n/Reports");
+		const dialog = await screen.findByRole("dialog", { name: "Move 2 items to Trash?" });
+		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe("/note.md\n/Reports");
 
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 
 		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([NOTE._id, REPORTS._id]));
 		expect(mutationMock).toHaveBeenCalledTimes(1);
@@ -111,12 +111,12 @@ describe("FilesArchiveModal", () => {
 		});
 		const { onArchived } = renderModal([REPORTS]);
 		const dialog = await screen.findByRole("dialog");
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 
 		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([REPORTS._id]));
 		expect(toastInfoMock).toHaveBeenCalledTimes(1);
 		const [message, options] = toastInfoMock.mock.calls[0] as [string, { action: { onClick: () => void } }];
-		expect(message).toBe("Archiving in the background. See Activity.");
+		expect(message).toBe("Moving to Trash in the background. See Activity.");
 		options.action.onClick();
 		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
 	});
@@ -135,12 +135,12 @@ describe("FilesArchiveModal", () => {
 			},
 		});
 		const { onArchived } = renderModal([NOTE, REPORTS]);
-		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
+		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Move to Trash" }));
 
 		await waitFor(() => expect(onArchived).toHaveBeenCalledWith([NOTE._id]));
 		expect(toastInfoMock).not.toHaveBeenCalled();
 		const [message, options] = toastWarningMock.mock.calls[0] as [string, { action: { onClick: () => void } }];
-		expect(message).toBe(`"Reports" was not archived: ${reason}`);
+		expect(message).toBe(`"Reports" was not moved to Trash: ${reason}`);
 		options.action.onClick();
 		expect(openArchiveRunMock).toHaveBeenCalledWith("run_1");
 	});
@@ -158,19 +158,19 @@ describe("FilesArchiveModal", () => {
 			},
 		});
 		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
-		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Archive" }));
+		fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Move to Trash" }));
 
 		await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
 		expect(onArchived).not.toHaveBeenCalled();
 		expect(toastInfoMock).not.toHaveBeenCalled();
 		expect(toastWarningMock.mock.calls[0]?.[0]).toBe(
-			'"note.md" was not archived: Permission denied. 1 more is being checked.',
+			'"note.md" was not moved to Trash: Permission denied. 1 more is being checked.',
 		);
 	});
 
 	test("starts on Cancel", async () => {
 		renderModal([NOTE, REPORTS]);
-		const dialog = await screen.findByRole("dialog", { name: "Archive 2 items?" });
+		const dialog = await screen.findByRole("dialog", { name: "Move 2 items to Trash?" });
 		const cancel = within(dialog).getByRole("button", { name: "Cancel" });
 		await waitFor(() => expect(document.activeElement).toBe(cancel));
 	});
@@ -179,7 +179,7 @@ describe("FilesArchiveModal", () => {
 		mutationMock.mockResolvedValue({ _nay: { name: "nay", message: "Permission denied" } });
 		const { onArchived } = renderModal([NOTE]);
 		const dialog = await screen.findByRole("dialog");
-		const archiveButton = within(dialog).getByRole("button", { name: "Archive" });
+		const archiveButton = within(dialog).getByRole("button", { name: "Move to Trash" });
 		fireEvent.click(archiveButton);
 
 		expect((await within(dialog).findByRole("alert")).textContent).toBe(
@@ -196,9 +196,9 @@ describe("FilesArchiveModal", () => {
 		);
 		const { onClose, onArchived } = renderModal([NOTE]);
 		const dialog = await screen.findByRole("dialog");
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 
-		expect(within(dialog).getByRole("button", { name: "Archive" })).toHaveProperty("disabled", true);
+		expect(within(dialog).getByRole("button", { name: "Move to Trash" })).toHaveProperty("disabled", true);
 		expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true);
 		fireEvent.keyDown(dialog, { key: "Escape", code: "Escape" });
 		expect(onClose).not.toHaveBeenCalled();
@@ -283,7 +283,7 @@ describe("FilesArchiveRunModal", () => {
 			activity: {
 				_id: "activity_1",
 				status: "partial",
-				title: "Archive files",
+				title: "Move files to Trash",
 				errorMessage: null,
 				finishedAt: 1,
 				progress: { completed: 4, skipped: 0, failed: 0, blocked: 2, canceled: 0, total: 6 },
@@ -308,7 +308,7 @@ describe("FilesArchiveRunModal", () => {
 			loadMore,
 		});
 		renderRunModal();
-		const dialog = await screen.findByRole("dialog", { name: "Archive files" });
+		const dialog = await screen.findByRole("dialog", { name: "Move files to Trash" });
 		expect(within(dialog).getByText("Partly completed.")).toBeTruthy();
 		expect(within(dialog).getByText("4 items moved to Trash. Some items remain.")).toBeTruthy();
 		expect(within(dialog).getByText("/Reports")).toBeTruthy();
@@ -329,7 +329,7 @@ describe("FilesArchiveRunModal", () => {
 			activity: {
 				_id: "activity_1",
 				status: "partial",
-				title: "Archive files",
+				title: "Move files to Trash",
 				errorMessage: null,
 				finishedAt: 1,
 				progress: { completed: 4, skipped: 0, failed: 0, blocked: 2, canceled: 0, total: 6 },
@@ -348,19 +348,19 @@ describe("FilesArchiveRunModal", () => {
 			],
 		});
 		renderRunModal();
-		const dialog = await screen.findByRole("dialog", { name: "Archive files" });
+		const dialog = await screen.findByRole("dialog", { name: "Move files to Trash" });
 		// A refused read-only item is expected, so the job reads as completed, not partly completed.
 		expect(within(dialog).getByText("Completed.")).toBeTruthy();
 		expect(dialog.querySelector("[data-activity-status-icon]")?.getAttribute("data-activity-status-icon")).toBe(
 			"succeeded",
 		);
-		expect(within(dialog).getByText("Archived 4 of 6 items.")).toBeTruthy();
+		expect(within(dialog).getByText("Moved 4 of 6 items to Trash.")).toBeTruthy();
 		// A path the person can no longer read is left out.
-		expect(within(dialog).getByRole("textbox", { name: "Archived items" }).textContent).toBe("/note.md\n/Plans");
-		const list = within(dialog).getByRole("region", { name: "Not archived (3)" });
+		expect(within(dialog).getByRole("textbox", { name: "Items moved to Trash" }).textContent).toBe("/note.md\n/Plans");
+		const list = within(dialog).getByRole("region", { name: "Not moved (3)" });
 		// One reason is written once, above all the paths it refused.
 		expect(
-			within(list).getByRole("textbox", { name: "Not archived: This item is read-only. Unlock it, then try again." })
+			within(list).getByRole("textbox", { name: "Not moved: This item is read-only. Unlock it, then try again." })
 				.textContent,
 		).toBe("/Reports\n/Drafts");
 		expect(within(list).getByText("1 item you cannot open")).toBeTruthy();

@@ -712,7 +712,7 @@ carry the title in their accessible name and cannot drift from the row.
 
 **The delete confirmation deliberately does not focus its confirm button.** Pressing `Delete` moves
 focus to the warning paragraph (`Delete <title>? Any files Council saved for it move to the Files
-archive…`). That is not an oversight to report: a `<button>` activates on Enter **keydown**, so if the
+Trash…`). That is not an oversight to report: a `<button>` activates on Enter **keydown**, so if the
 confirm button took focus, the auto-repeat from the same still-held Enter that opened the panel would
 activate it and destroy the row before the member read one word. Tab order from the warning is
 `Confirm delete` -> `Cancel` -> the next row's action. `Confirm delete` stays enabled with

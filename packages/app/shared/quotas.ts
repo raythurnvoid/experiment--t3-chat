@@ -24,7 +24,7 @@ export const quotas = {
 		// Starting value, not a product rule. It only protects the system. Raise it step by step as needed.
 		maxCount: 10 * 1024 * 1024 * 1024,
 		tooltip_explanation:
-			"Counts published stored files in this workspace. Deleting or archiving files does not give space back.",
+			"Counts published stored files in this workspace. Moving files to Trash does not give space back.",
 	},
 	files_private_user_bytes: {
 		disabledReason: "Your pending files in this workspace have reached 1 GiB. Save or discard work to free space",

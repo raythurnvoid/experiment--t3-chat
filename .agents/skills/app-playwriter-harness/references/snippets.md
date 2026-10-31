@@ -65,7 +65,7 @@ What cost time on the first run:
 - `finalize` answers `200` with `state: "pending"` and `actualBytes: null` while the R2 event has not arrived yet. Call it again a few seconds later to see `committed`. The R2 queue decides when, not the route.
 - Current source contract, pending native QA: the accepted upload target and its first PUT may finish after a later Read-only change. A new create/remint attempt is a new byte write: it rechecks the current flag or explicit authorized force. Keep the exact target identity and current attempt; never silently retarget a replacement. Finalize polls the accepted attempt without adding force. The bounded delete door uses force only when explicitly supplied by a capable caller; it still checks current file permissions.
 - To prove where the quota is charged, declare a size that is deliberately wrong (for example declare 1 byte and PUT 4096) and read the `quotas` doc between `create-target` and the PUT. `create-target` must leave `usedCount` unchanged; the R2 settlement then adds exactly the stored size. Read it with `convex data quotas --limit 200 --format jsonLines` and pick the row with `quotaName: "plugin_service_storage_bytes"` for the workspace. The final total alone cannot tell the two models apart, because charging the guess plus the difference lands on the same number.
-- Choose one cleanup door. Use `delete` for one target key across upload runs, or `archive-destination` for the sealed folder. Current source contract, pending native QA: archive-destination requires `requestId`; force is explicit and needs `workspace.files.manage-read-only`. Keep the request id after a lost reply. A partial reply returns `complete: false`, moved count, and safe refusals. Keep that result, then use a new request id with `previousRequestId` for another pass on the exact same folder. Refused children and their parent folders remain. A complete reply alone means the folder archive finished. Read paths only while authorized, and never persist hidden blocker names.
+- Choose one cleanup door. Use `delete` for one target key across upload runs, or `archive-destination` for the sealed folder. Current source contract, pending native QA: archive-destination requires `requestId`; force is explicit and needs `workspace.files.manage-read-only`. Keep the request id after a lost reply. A partial reply returns `complete: false`, moved count, and safe refusals. Keep that result, then use a new request id with `previousRequestId` for another pass on the exact same folder. Refused children and their parent folders remain. A complete reply alone means the move of a folder to Trash finished. Read paths only while authorized, and never persist hidden blocker names.
 
 ## Move The QA Account To A Paid Plan Through Polar Checkout
 
@@ -751,7 +751,7 @@ workspace read gets no root rows from the open stream, so the walk also reads
 Rows are saved nodes only, never drafts. Each row has `_id`, `kind`, `name`, `path`, `parentId`,
 `archiveOperationId`, `restrictedScopeNodeId`, `contentType`, `canWrite`, `writeBlockedReason`, and
 `readOnly`. The internal decision id is not public. This field change is a source contract pending
-native QA. Pass `archived: [false, true]` to get archived nodes too. Each folder costs about
+native QA. Pass `archived: [false, true]` to get trashed nodes too. Each folder costs about
 10 calls, so start at the smallest folder that holds your fixture. A big walk takes longer than 5 s,
 so start it in one call and read it in later calls:
 

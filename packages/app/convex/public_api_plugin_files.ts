@@ -523,7 +523,7 @@ export const archive_plugin_path = internalMutation({
 			previous &&
 			(!node || node._id !== previous.destinationNodeId || node.path !== args.path || node.archiveOperationId !== null)
 		) {
-			return Result({ _nay: { name: "conflict", message: "The original archive destination changed" } });
+			return Result({ _nay: { name: "conflict", message: "The destination changed after the delete started" } });
 		}
 		if (args.principalRef.kind === "plugin_service" && node && node.kind !== "file")
 			return Result({ _nay: { message: "Permission denied" } });

@@ -400,7 +400,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 								? ["Restoring", "Restored"]
 								: archiveRun.archiveKind === "purge"
 									? ["Deleting", "Deleted"]
-									: ["Archiving", "Archived"],
+									: ["Moving", "Moved"],
 						onOpen: () => openArchiveRun(archiveRun.id),
 					}
 				: writePolicyRun
@@ -454,6 +454,7 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 		: 0;
 	// Skipped items were already in place or the person chose Skip, so the result line leaves them out.
 	const missedCount = progress ? progress.failed + progress.blocked : 0;
+	const trashSuffix = archiveRun?.archiveKind === "archive" ? " to Trash" : "";
 	const jobLine =
 		!job || !progress
 			? null
@@ -464,11 +465,11 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 					? "Waiting for another Move in this workspace to finish."
 					: isActive
 						? progress.total === null
-							? `${job.verbs[0]}…`
-							: `${job.verbs[0]} ${handledCount} of ${count_label(progress.total, progress.unit)}…`
+							? `${job.verbs[0]}${trashSuffix}…`
+							: `${job.verbs[0]} ${handledCount} of ${count_label(progress.total, progress.unit)}${trashSuffix}…`
 						: missedCount > 0
-							? `${job.verbs[1]} ${progress.completed} of ${count_label(progress.completed + missedCount, progress.unit)}.`
-							: `${job.verbs[1]} ${count_label(progress.completed, progress.unit)}.`;
+							? `${job.verbs[1]} ${progress.completed} of ${count_label(progress.completed + missedCount, progress.unit)}${trashSuffix}.`
+							: `${job.verbs[1]} ${count_label(progress.completed, progress.unit)}${trashSuffix}.`;
 
 	return (
 		<article className={"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames}>

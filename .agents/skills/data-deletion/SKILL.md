@@ -38,12 +38,12 @@ Load each companion skill that owns the affected boundary:
   lifecycle scope, so they do not call normal writable guards. They delete protected subtrees like other
   content. See [files-read-only](../files-read-only/SKILL.md).
 - Only these flows and Delete permanently (below) hard-delete a member's real file. Everywhere else
-  "delete a file" means archive: the UI delete, the agent, and the Council delete-meeting workflow,
-  which archives the meeting folder through `/api/v1/files/service-uploads/archive-destination`
+  "delete a file" means move to Trash: the UI delete, the agent, and the Council delete-meeting workflow,
+  which moves the meeting folder to Trash through `/api/v1/files/service-uploads/archive-destination`
   instead of removing its files. `files_nodes_db_hard_delete_node` outside these purges only ever
   removes a node that never became real content — a rejected agent create proposal, or an upload
-  placeholder that was canceled or never finished. An archived file keeps its R2 object and its quota
-  bytes, so archiving frees no storage.
+  placeholder that was canceled or never finished. A trashed file keeps its R2 object and its quota
+  bytes, so moving to Trash frees no storage. Follow the [Files delete words](../files-explorer-tree/SKILL.md#trash-view-and-delete-permanently).
 - A member deletes one of their own MCP servers with `mcp_custom_servers.remove`. It deletes the
   server and its secrets at once, revokes the member's sign-in for it through
   `plugins_mcp_db_revoke_grant`, deletes its running sign-ins, and schedules `drain_removed_server`,
@@ -81,22 +81,22 @@ Load each companion skill that owns the affected boundary:
   because that path writes no `revoked` feed doc.
 - `billing_usage_event_rejected` holds usage events Polar refused (422), with Polar's trimmed error text. No deletion path touches it either, for the same reason: each doc is a charge for work that already happened and waits for a resend after a fix. Unlike the outbox, a doc can stay until an operator acts, but it still holds only ids, amounts, and Polar's validation message, no names, paths, or content. So no purge pass is needed; the operator resends or deletes the docs.
 
-# Delete Permanently (Archived Items)
+# Delete Permanently (Items in Trash)
 
-A person deletes archived items for good from the Files UI (`files_nodes.purge_nodes` for named
-items, `files_nodes.empty_archive` for one area of the Archive view). The UI is in
-`../files-explorer-tree/SKILL.md` ("Archive view and Delete permanently"). No agent tool, public
+A person deletes trashed items for good from the Files UI (`files_nodes.purge_nodes` for named
+items, `files_nodes.empty_archive` for one area of the Trash view). The UI is in
+`../files-explorer-tree/SKILL.md` ("Trash view and Delete permanently"). No agent tool, public
 API or plugin door can do it yet.
 
-- Only archived items. The caller needs `content.permissions.manage` on the workspace for the open
+- Only trashed items. The caller needs `content.permissions.manage` on the workspace for the open
   part, or on the restricted folder. The request refuses the whole list when one named item is
-  missing, not archived, not allowed, or still in a running archive operation, like Restore.
+  missing, not in Trash, not allowed, or still in a running Trash operation, like Restore.
 - It runs as a `files_archive_runs` job of kind "purge", with its own new operation id. Its busy
   paths are the named items' paths, so a Move, scope change or Restore on the same paths waits
   behind it, and it waits behind them (`files_subtree_ops_db_find_blocker`). The first step runs in
   the request. A small delete ends there; the result `runId` is then null.
-- The walk visits children before their parent, like a forced archive. It reads children with
-  `files_subtree_ops_db_next_children`, because archived siblings can share a name.
+- The walk visits children before their parent, like a forced move to Trash. It reads children with
+  `files_subtree_ops_db_next_children`, because trashed siblings can share a name.
 - Each node is deleted by `files_purge_db_drain_node_batch` in `convex/files_purge_db.ts`, one small
   batch of one family per call: content heads (the last call retires older heads and schedules their
   discard), Yjs states, chunks, versions, metadata, grants, share links, the comment channel
@@ -114,11 +114,11 @@ API or plugin door can do it yet.
   dialog lists the kept names under "Not deleted (N)".
 - Deleting a stored asset takes its `storedFileBytes` off the workspace `stored_file_bytes` counter.
   Assets settled before that field existed give nothing back. Credits are never refunded.
-- Empty archive deletes every top item archived in the area strictly before the request's millisecond
+- Empty Trash deletes every top item trashed in the area strictly before the request's millisecond
   (`emptyArchive.cutoff`, a `t<ms>` prefix of the operation id). It skips ids with no time, except
-  plain old UUIDs, and skips items whose archive job was still running or ended after the start. It
+  plain old UUIDs, and skips items whose Trash job was still running or ended after the start. It
   reads one page of top items at a time and keeps only counts (`foundCount`, `deletedCount`,
-  `keptCount`), never a list. Only one Empty archive runs per workspace. It refuses while a Move
+  `keptCount`), never a list. Only one Empty Trash runs per workspace. It refuses while a Move
   view is selected.
 - Workspace deletion force-finishes a running purge job. A member's account drain skips it; the job
   ends by itself on the lost membership.
@@ -152,8 +152,8 @@ API or plugin door can do it yet.
   A present review still returns `done: false` when its Move abort or repair deletes nothing.
   Both user paths wait. Zero deleted docs never means that this review family is empty.
 - `db_drain_user_write_policy_runs_batch`: stops and deletes one "Apply to contents" protection job the user started, with its Activity. Items it already updated keep their new rule. Both user-deletion paths run it right after review runs.
-- `db_drain_user_archive_runs_batch`: stops and deletes one archive or restore job the user started, with its Activity. Items it already archived or restored stay that way. Both user-deletion paths run it right after protection jobs.
-- The user's move and scope jobs, and an ordinary archive that already stamps items, do not hold the user deletion. They have no Stop, and their steps do not need the user: an ordinary archive stamp still reads the user row, but works when it is gone. They keep running and end on their own. Forced archive visits children before their parent and can stop safely; user deletion stops and drains it, keeping completed changes. An archive check stops once the user is gone, before it changes anything; a restore stops at its next step. The expired Activity deletes a finished job later.
+- `db_drain_user_archive_runs_batch`: stops and deletes one Trash or restore job the user started, with its Activity. Items it already trashed or restored stay that way. Both user-deletion paths run it right after protection jobs.
+- The user's move and scope jobs, and an ordinary move to Trash that already stamps items, do not hold the user deletion. They have no Stop, and their steps do not need the user: an ordinary move to Trash stamp still reads the user row, but works when it is gone. They keep running and end on their own. Forced moves to Trash visit children before their parent and can stop safely; user deletion stops and drains them, keeping completed changes. A move to Trash check stops once the user is gone, before it changes anything; a restore stops at its next step. The expired Activity deletes a finished job later.
 - Delete chat (`ai_chat.thread_delete`): sets `deletingAt`, stops the live run (`ai_chat_runs_db_stop`), aborts at most 50 branch copies that read from the chat, and schedules `drain_deleting_thread`. Each pass does one wait check (`db_wait_deleting_thread`) or one delete step (`db_drain_thread_batch`), then runs again: at once after progress, after 30 seconds while it waits. It waits for `running` and `stopping` runs whose lease has not passed (a run past its lease is ended by the `end expired chat runs` cron), stops the transfers the chat started and waits until they end, waits for a running foreground command before its deadline, and waits for browser calls that are still resolving. Every chat door treats `deletingAt` as not found meanwhile.
 - `db_drain_thread_batch` is the one delete step for a chat, shared by Delete chat and account deletion. The order is: Bash calls (a job through `ai_chat_files_db_delete_job_batch`, transfer links before the call), chat-bound `public_api_grants`, `ai_chat_code_read_budgets`, preparing ingestion receipts and operation batches (aborted, not deleted), scratch bytes, scratch files, `ai_chat_output_owners`, unattached `ai_chat_output_objects` (`reserved` or `uploading`), `ai_chat_runs`, branch copies that target the chat (pages, then the copy doc), `plugins_mcp_calls`, `plugins_page_tool_calls`, `ai_chat_run_steps` (at most 8 per pass, because a step can be close to 1 MiB), `ai_chat_run_inbox`, `ai_chat_tool_receipts`, `ai_chat_compactions`, messages, transcripts, shells, and the thread last. Removing an output's last owner queues its R2 deletion job, and that job gives the quota back after the thread is gone.
 - `db_drain_user_chat_threads_batch`: uses `ai_chat_threads.by_createdBy` to drain one private chat at a time, including chats in surviving team workspaces. It first deletes the user's `public_api_grants` and `ai_chat_code_read_budgets`, then runs `db_drain_thread_batch` on each chat, in the order above. It needs no live user or membership. The shared user-finalization path reaches it after jobs, transfers, reviews, browser records, proposals, and public API grants are gone.
@@ -299,8 +299,8 @@ Current purge coverage includes:
 
 - Pending review runs before pending-state payloads. Stop invalidates active workers; retire prepared bytes before deleting item rows. Review units and the paired Activity follow. Delete the owner's review clock only after all proposals, private nodes, and runs are gone.
 - `files_write_policy_runs` (protection jobs) right after review runs, one job per pass through `files_write_policy_runs_db_delete_run_batch`. It stops the job first, so a scheduled step writes nothing.
-- `files_archive_runs` (archive and restore jobs) right after protection jobs, one job per pass through `files_archive_runs_db_delete_run_batch`. It stops the job first, so a scheduled step writes nothing. Then it deletes the job's `files_archive_run_items` rows (API Restore changes and forced archive refusals), 50 per pass, before the Activity and the run. Workspace deletion can stop any job because its files are being purged too. People can stop forced archive; ordinary archive has no Stop. Stopping a restore job also ends the queued jobs of the same Unarchive request. Ending a job deletes its `files_subtree_ops` op, which can start another waiting op; a later pass stops and deletes that one too.
-- `files_subtree_ops` of kind `move` or `scope` right after the archive runs, one op per pass. These ops have no run doc, so the purge deletes the op's Activity and then the op with `files_subtree_ops_db_delete`. The files it walks go away with the workspace. Archive, restore, and copy ops are deleted with their runs.
+- `files_archive_runs` (Trash and restore jobs) right after protection jobs, one job per pass through `files_archive_runs_db_delete_run_batch`. It stops the job first, so a scheduled step writes nothing. Then it deletes the job's `files_archive_run_items` rows (API Restore changes and forced delete refusals), 50 per pass, before the Activity and the run. Workspace deletion can stop any job because its files are being purged too. People can stop forced moves to Trash; ordinary moves to Trash have no Stop. Stopping a restore job also ends the queued jobs of the same Restore request. Ending a job deletes its `files_subtree_ops` op, which can start another waiting op; a later pass stops and deletes that one too.
+- `files_subtree_ops` of kind `move` or `scope` right after the Trash runs, one op per pass. These ops have no run doc, so the purge deletes the op's Activity and then the op with `files_subtree_ops_db_delete`. The files it walks go away with the workspace. Move to Trash, restore, and copy ops are deleted with their runs.
 - `files_browser_sessions` with their `files_browser_download_saves` docs. Every session delete, in every path, goes through the private `browser_db_delete_session` helper in `files_browser.ts`, which deletes the session's download saves first (at most 20 per session). The saved download files are ordinary Files nodes and follow Files deletion, not the session.
 - `files_browser_profiles` (saved browser logins) after browser sessions. Every delete, here and in every other path, goes through `files_browser_db_delete_profile`. It writes a `files_browser_profile_wipes` doc in the same transaction, and the wipe job asks the runner to delete the stored cookie bytes. Wipe docs outlive user and workspace deletion on purpose: they hold only ids and retry state, and they leave when the runner confirms the wipe. User finalization and the data-only reset (`hard_delete_user_data`) drain the user's profiles the same way through `files_browser_db_delete_user_batch`.
   - The wipe job is `files_browser.process_browser_profile_wipes` (20 wipes per run). Each deletion schedules it at once, and the `process browser profile wipes` cron runs it every 5 minutes. A failed wipe retries after 1 minute, doubling up to 6 hours, with no attempt limit (`finish_browser_profile_wipe`). The hourly `cleanup_expired_browser_docs` also deletes profiles unused for 90 days. As a backstop, the runner deletes stored profile bytes by itself 100 days after the last save.
@@ -370,7 +370,7 @@ Current purge coverage includes:
 - Saved index runs before their source tables. The workspace purge fence stops new publication.
   Drain each run's `files_index_candidates` in pages, then its input, owned workspace slot and run.
   Drain `files_index_states`, `files_index_tickets` and `files_content_save_requests` by workspace.
-  Late worker callbacks see the fence or missing run and write nothing. Ordinary archive, restore
+  Late worker callbacks see the fence or missing run and write nothing. Ordinary moves to Trash, restore
   and history cleanup keep committed Save receipts; only file-lifetime cleanup removes them.
 - `files_metadata_docs`
 - `files_metadata_maps`, including saved, pending, and capture owners. Physical owner deletes
@@ -383,7 +383,7 @@ Current purge coverage includes:
 - `files_saved_content_heads`, after their source docs and before generic assets and nodes.
 - `files_folder_sorts` (the saved sort of each folder's table). The workspace purge is the only
   delete path, and organization deletion reaches it through that purge. No per-folder delete is
-  needed: user folders are archived, never hard-deleted, and a row keyed by an archived folder id
+  needed: user folders are in Trash, never hard-deleted, and a row keyed by a trashed folder id
   comes back with the folder on restore. The GLOBAL GitHub and plugin trees that `delete_subtree_batch`
   removes belong to no membership, so no member can save a sort there.
 - `files_updated_by_docs` (updater sort docs: the folder table's copy of each node's updater

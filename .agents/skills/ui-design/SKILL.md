@@ -66,7 +66,7 @@ is turned on or off, or when it is blocked. This is a product rule, decided by t
 
 ## Button labels stay fixed while the action runs
 
-A button keeps its label while its action runs. Do not swap "Archive" for "Archiving...". This is
+A button keeps its label while its action runs. Do not swap "Move to Trash" for "Moving to Trash...". This is
 a product rule, decided by the user.
 
 - While the action runs, set `disabled` (or `aria-disabled` when focus must stay on the button) and

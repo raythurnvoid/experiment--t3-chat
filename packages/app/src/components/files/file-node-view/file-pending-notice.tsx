@@ -55,7 +55,7 @@ export const FilePendingNotice = memo(function FilePendingNotice(props: FilePend
 			{recovery && (
 				<>
 					<p>
-						This draft's folder was archived. You can copy or download your draft. Restore the folder before saving
+						This draft's folder is in Trash. You can copy or download your draft. Restore the folder before saving
 						here.
 					</p>
 					<p>Unsaved draft expires {format_datetime(recovery.expiresAt)}.</p>
@@ -64,7 +64,7 @@ export const FilePendingNotice = memo(function FilePendingNotice(props: FilePend
 						params={{ organizationName, workspaceName }}
 						search={{ nodeId: recovery.savedParentId }}
 					>
-						Open archived folder
+						Open folder in Trash
 					</MyLink>
 				</>
 			)}

@@ -29,7 +29,7 @@ or mention items in a private/direct channel they have not joined.
 
 Creation supports the messages layout. Direct always uses messages. File channels always use posts
 and support resolve. Public/private resolve is off by default and a manager can enable it. Layout
-never changes. Archived channels and archived files stay readable but refuse posts.
+never changes. Archived channels and files in Trash stay readable but refuse posts.
 
 # Messages and threads
 
@@ -76,7 +76,7 @@ or link. The returned message's raw `fileMentionIds` array stays empty.
 
 Selected file quotes use the shared `{ fileNodeId: string | null, text }` shape in
 `shared/file-quotes.ts`. Allow at most 20 quotes and 4,096 UTF-8 bytes per quote. Body plus quote
-text must fit the 16 KiB message cap. Quotes require readable, unarchived saved files. Reads keep
+text must fit the 16 KiB message cap. Quotes require readable, saved files outside Trash. Reads keep
 the selected text but replace an unreadable file id with null. The current file query supplies
 the name and link. Never store copied names or paths. Edits may retain a quote whose id is null.
 
@@ -159,7 +159,7 @@ https or mailto. The link form sits outside the message form and stops its submi
 link and Enter in its field cannot send the message. Files comments share these tools.
 
 The `@` popup lists matching people first, then saved files or folders from the
-shared `FilesNodePicker`, excluding archived nodes and private drafts. It browses one folder at a
+shared `FilesNodePicker`, excluding trashed nodes and private drafts. It browses one folder at a
 time or searches names in pages of 50; an open folder offers "Mention this folder". People show
 only at the root while the text has no `/`. The popup asks `get_mentionable_users` about the
 loaded people only, one page of ids per query. A person who cannot be mentioned stays in the list as
@@ -314,7 +314,7 @@ the current generation, so a later baseline visit cannot count them twice.
 `server/channels-notifications.ts` owns count writes, Messages authority clocks and durable job enqueue.
 `convex/channels_notifications.ts` owns worker doors and the summary query. Scope access changes bump
 Messages clocks and page actual summaries; private/direct member changes advance the member's own
-authority revision. File content, names and archive changes do not bump these access clocks. Move
+authority revision. File content, names and Trash changes do not bump these access clocks. Move
 publication requires a complete bounded semantic access proof before advancing a clock. Summary
 readiness checks clock doc ids and revisions plus the stored member authority repair target.
 
@@ -356,7 +356,7 @@ Attach files offers Upload from computer and Attach from workspace. Attach from 
 `get_attachable_files` refuses (unreadable, or its upload has not finished) shows disabled with
 "This file cannot be attached"; send checks again. Each file chip reads its name by id with
 `files_tree.get_file_node_for_membership`; it says "Loading…" until the answer arrives and
-"File unavailable" for a file that is unreadable or archived. Text, quote/edit context,
+"File unavailable" for a file that is unreadable or trashed. Text, quote/edit context,
 attachments and a visible Send button share one input box. The editor scrolls when it grows.
 File Comments use this same composer and thread pane, with Back to comments.
 Each local upload shows its name, progress, Ready or its error, and Remove. Failed uploads have
@@ -386,10 +386,10 @@ the same transaction. Workspace purge also drains authority clocks, Move proofs 
 Messages jobs before deleting parents through tenant indexes.
 See [Data deletion](../data-deletion/SKILL.md) and [Tenancy](../organizations-tenancy/SKILL.md).
 
-Delete permanently of an archived file deletes its comment channel too, with every message, reply,
+Delete permanently of a trashed file deletes its comment channel too, with every message, reply,
 reaction, member, read position, follower, inbox row, Messages job and upload in it (`channels_db_purge_channel_batch`). It deletes
 one table at a time, children before parents, in the workspace purge order, and the channel doc goes
-last. Only this path deletes a single channel. Archiving a file keeps its channel.
+last. Only this path deletes a single channel. Moving a file to Trash keeps its channel.
 
 Focused tests live in `convex/channels.test.ts`, `convex/channels_notifications.test.ts` and
 `convex/channels_uploads.test.ts`. Run through Vite Plus:

@@ -62,7 +62,7 @@ Expected result:
 
 ## Cleanup
 
-1. Archive the run folders.
+1. Move the run folders to Trash.
 2. Confirm all four repository secrets are present again on the video plugin's `Plugin secrets` tab.
 3. Record skipped steps with the real blocker, not as pass.
 

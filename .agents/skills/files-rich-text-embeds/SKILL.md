@@ -186,7 +186,7 @@ An embed shows only when all of these hold (`db_read_media_node`, `db_check_medi
    permanent saved origin: `files_pending_nodes_db_resolve_read_target` must return `kind: "saved"`.
    An unsaved draft never shows, and no draft bytes are read. The owner-only branch of
    `get_media_by_reference` is never used, because a visitor has no identity.
-2. The file is not archived. Its content type is in the inline-served media set
+2. The file is not in Trash. Its content type is in the inline-served media set
    (`files_is_inline_media_content_type`) and matches the node: an image node needs `image/*`, and a
    video node needs `video/*`. SVG and other types are unavailable.
 3. It has a finished asset.

@@ -6909,7 +6909,7 @@ const app_convex_schema = defineSchema({
 		 */
 		longPathOperationId: v.optional(v.string()),
 		/**
-		 * Set only on an Empty archive job: a purge of every top item of one area that was archived before
+		 * Set only on an Empty Trash job: a purge of every top item of one area that was archived before
 		 * the job started. `area` is null for the open part of the workspace. `cutoff` is
 		 * `files_archive_operation_id_cutoff` of the start time; only operation ids below it are deleted.
 		 * `cursor` is where the Archive view reader goes on (`files_tree_db_read_archived_tops`). The

@@ -76,12 +76,12 @@ with private proposals. `files_pending_updates.ts` and
   headers, descendants, content, metadata, search chunks and owner overlays in separate transactions.
   Normal names keep their old IDs and content until one small switch selects the complete group.
   Physical repair then drains before the next transfer item. A folder uses the same path.
-  Existing Move, scope, Archive and Restore repairs must finish before a new Move starts.
+  Existing Move, scope, Move to Trash and Restore repairs must finish before a new Move starts.
   Review repeats this check after planning, before it selects a new saved view. A repair keeps
   Review waiting with a one-second retry and fresh deadlines. Once repair ends, Review resumes.
   Saved path requests pin that view and use exact normal and selected-path indexes. Missing
-  parents use binary path probes during Move. Outside Move, Archive repair keeps the backwards
-  lookup because an active child can still have an archived parent.
+  parents use binary path probes during Move. Outside Move, Move to Trash repair keeps the backwards
+  lookup because an active child can still have a trashed parent.
   Complete human Move input can join the real parent body after derived writes flush and the budget
   passes. A new cohort starts its ready exact work in that same transaction. Empty folders can
   publish before acceptance returns. Only initial cohort work uses the one-quarter budget and
@@ -112,7 +112,7 @@ with private proposals. `files_pending_updates.ts` and
   per mutation and drops those answers when a reservation or a parent changes, so a bulk metadata or
   chunk write of one file stays cheap while any Move runs. Security changes can revoke access;
   their clocks prevent a later publication from using stale permission. New files elsewhere in the
-  workspace do not stop a Move. Restrict, folder protection and Archive wait while a Move holds
+  workspace do not stop a Move. Restrict, folder protection and Move to Trash wait while a Move holds
   the workspace, so they never skip the nodes it holds.
 - Name and path limits (255 and 1,024 characters): `files_transfer` start checks the new names and
   the destination path. Copy plan checks every item, so a folder copied deeper stops the run before
@@ -127,8 +127,8 @@ with private proposals. `files_pending_updates.ts` and
   These path moves stay within one workspace. Cross-workspace Move is refused before output.
   OS links, ownership bits, timestamps, and subtree replacement are not supported.
 - Rename starts the same Move Activity. Parent segments use the fixed relative path and source
-  pins. Missing folders are after-only candidates, created one at a time. Archived Rename keeps
-  its archive identity and does not claim a normal active file's name.
+  pins. Missing folders are after-only candidates, created one at a time. Trashed Rename keeps
+  its Trash identity and does not claim a normal active file's name.
 - Ready Renames run in order before the next bulk group. The active Move group finishes repair
   first. In-flight Copy workers finish and dispose their callbacks first; progress alone does
   not prove that they have stopped. New Copy workers wait. The two user/workspace/kind/inFlight
@@ -162,7 +162,7 @@ with private proposals. `files_pending_updates.ts` and
 - A blocked item has two different shapes, and the review UI must keep them apart. A **name
   conflict** is stored with `conflictKind: "name_conflict"`. It can have a destination document,
   when something already occupies the name, or none at all, when another source in the same paste
-  claimed a free name first. An **unavailable item** is one whose source moved, was archived, or is
+  claimed a free name first. An **unavailable item** is one whose source moved, was moved to Trash, or is
   no longer readable.
   The public door returns `conflictKind` next to `conflict` for exactly this reason: `conflict` is
   the destination document and is null in the same-paste case, so it cannot be used to tell the two
@@ -261,7 +261,7 @@ with private proposals. `files_pending_updates.ts` and
   replacement claim follows the source with the same saved ID and content version.
   A saved occupant with its own pending Move must be saved or discarded before it can be replaced.
 - A saved occupant stays intact while a private source claims its name. Single Save and bulk Save
-  archive that exact occupant and publish the source at one group switch. Active saved children,
+  move that exact occupant to Trash and publish the source at one group switch. Active saved children,
   private children, pending moves into the folder, changed content, a new occupant, or lost access
   refuse the affected Save. Discard, expiry, and moving away keep the saved occupant unchanged.
 - Bulk review stores the selected proposal IDs, revisions, and content states. Independent Copy
@@ -286,7 +286,7 @@ with private proposals. `files_pending_updates.ts` and
   `cross_workspace_move`: “Moves between workspaces are not allowed. Use cp to copy files instead,
   or cp -R for a folder. The originals will stay in place.” Bash prefixes `mv:` and exits 1.
 - The refusal creates no transfer, proposal, asset hold, charge, or source change. Do not turn
-  it into automatic Copy plus Archive or delete. Source cleanup needs a separate user request.
+  it into automatic Copy plus Move to Trash or delete. Source cleanup needs a separate user request.
 - New copies use destination read access. Replacements keep the destination identity and access.
   Never copy grants, invite source readers, or transfer ownership. Personal home stays owner-private.
   The destination payer pays for storage; agent-run billing is unchanged.

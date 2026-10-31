@@ -157,8 +157,8 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 	const details = [
 		parentPath,
 		archivedAt === null
-			? `Archived before ${FilesSidebarArchive_TIME_IDS_SINCE}`
-			: `Archived ${format_time(archivedAt)}`,
+			? `Moved to Trash before ${FilesSidebarArchive_TIME_IDS_SINCE}`
+			: `Moved to Trash ${format_time(archivedAt)}`,
 		...(updatedByName ? [`Changed by ${updatedByName}`] : []),
 	].join(" · ");
 
@@ -236,7 +236,7 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 										</MyMenuItemContentIcon>
 										<MyMenuItemContentPrimary>Restore</MyMenuItemContentPrimary>
 										{/* Restore brings back the item's whole archive operation. */}
-										<MyMenuItemContentSecondary>With everything archived together with it</MyMenuItemContentSecondary>
+										<MyMenuItemContentSecondary>With everything moved to Trash with it</MyMenuItemContentSecondary>
 									</MyMenuItemContent>
 								</MyMenuItem>
 								<MyMenuItem variant="destructive" disabled={!canDelete} hideOnClick onClick={handleDeleteClick}>
@@ -489,9 +489,9 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 
 	const statusText =
 		topStatus === "loading"
-			? "Loading archived items…"
+			? "Loading Trash…"
 			: topRows.length === 0 && topStatus === "done"
-				? "Nothing archived here."
+				? "Trash is empty."
 				: null;
 
 	return (
@@ -510,12 +510,12 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 						Back to files
 					</MyButton>
 					<h2 id={titleId} className={"FilesSidebarArchive-title" satisfies FilesSidebarArchive_ClassNames}>
-						Archive
+						Trash
 					</h2>
 				</div>
 				<div className={"FilesSidebarArchive-toolbar" satisfies FilesSidebarArchive_ClassNames}>
 					<MySelect value={area?.id ?? ""} setValue={handleAreaChange}>
-						<MySelectTrigger aria-label={`Archive of ${areaLabel}`}>
+						<MySelectTrigger aria-label={`Trash of ${areaLabel}`}>
 							<MyButton
 								variant="outline"
 								className={"FilesSidebarArchive-area-trigger" satisfies FilesSidebarArchive_ClassNames}
@@ -573,7 +573,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 						disabled={!canManageArea || (topStatus === "done" && topRows.length === 0)}
 						onClick={handleEmptyArchiveClick}
 					>
-						Empty archive…
+						Empty Trash…
 					</MyButton>
 				</div>
 			</div>

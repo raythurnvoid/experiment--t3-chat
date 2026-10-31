@@ -636,7 +636,7 @@ describe("advance", () => {
 
 		expect(await step(f, activityId)).toMatchObject({
 			status: "failed",
-			errorMessage: "The folder moved or was archived during the update. Run it again.",
+			errorMessage: "The folder moved or went to Trash during the update. Run it again.",
 		});
 		expect(await read_only(f, ids[50]!)).toBe(false);
 	});
@@ -662,7 +662,7 @@ describe("advance", () => {
 		const failed = await step(f, activityId);
 		expect(failed).toMatchObject({
 			status: "failed",
-			errorMessage: "The folder moved or was archived during the update. Run it again.",
+			errorMessage: "The folder moved or went to Trash during the update. Run it again.",
 		});
 		expect(progress_of(failed)).toMatchObject({ skipped: 50, total: null });
 	});

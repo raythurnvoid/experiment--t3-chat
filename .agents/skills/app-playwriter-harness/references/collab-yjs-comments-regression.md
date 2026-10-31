@@ -278,10 +278,10 @@ Treat these as real failures: `should_never_happen`, `Maximum update depth`, `Ty
 
 ## Cleanup
 
-- Archive the disposable file: park the pointer away from the tree (`mouse.move(1400, 20)`), press `Escape`,
+- Move the disposable file to Trash: park the pointer away from the tree (`mouse.move(1400, 20)`), press `Escape`,
   wait ~600ms, then use the sidebar row menu scoped to the tree:
   `getByRole("tree").first().getByRole("button", { name: "More actions for <name>", exact: true })`
-  and choose menu item `Archive`.
+  and choose menu item `Move to Trash`.
 - If you enabled presence, turn it back off. The `Disable` button lives in an Ariakit hover card, which
   synthetic hover opens fine as long as the pointer changes position first:
 

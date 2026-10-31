@@ -1708,14 +1708,14 @@ function archived_tops_position_after(node: Doc<"files_nodes">) {
 export function files_tree_archived_tops_parse_cursor(cursor: string) {
 	const parsed: unknown = JSON.parse(cursor);
 	if (!validate(archived_tops_cursor_validator, parsed)) {
-		throw convex_invalid_cursor_error("The Archive view cursor is invalid.");
+		throw convex_invalid_cursor_error("The Trash view cursor is invalid.");
 	}
 	return parsed;
 }
 
 /**
  * Read the top items of one area of the Archive view from `positions` on: the merge of its two
- * streams, described at `list_archived_tops`. The Archive view and Empty archive both read it.
+ * streams, described at `list_archived_tops`. The Archive view and Empty Trash both read it.
  * `over_budget` says when the call must stop reading. Then `stopped` is true, and `positions`
  * holds where each stream got to. `positions` is changed in place.
  */

@@ -124,7 +124,7 @@ const REPAIR_STUCK_COUNT = 8;
  */
 const REPAIR_HELP_COUNT = 3;
 const REPAIR_STUCK_MESSAGE =
-	"Your files are already in their new place. A cleanup step keeps failing. We try again on our own. Until it finishes, other Moves, Archives and access changes in this workspace wait.";
+	"Your files are already in their new place. A cleanup step keeps failing. We try again on our own. Until it finishes, other Moves, Trash changes and access changes in this workspace wait.";
 
 function placement_header(node: Doc<"files_nodes">) {
 	const {

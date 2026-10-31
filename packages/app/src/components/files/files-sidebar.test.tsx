@@ -396,7 +396,7 @@ describe("FilesSidebar", () => {
 		// Named like a tree row, so the "Archived" text does not run into the name.
 		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
 			"bravo restricted",
-			"secret restricted archived",
+			"secret restricted in Trash",
 		]);
 		expect(view.getAllByRole("treeitem", { name: "bravo" })).toHaveLength(1);
 		fireEvent.click(rows[1]!);
@@ -580,8 +580,8 @@ describe("FilesSidebar", () => {
 			expect((await view.findByRole("menuitem", { name })).matches("[aria-disabled='true']")).toBe(false);
 		}
 		expect(view.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
-		fireEvent.click(view.getByRole("menuitem", { name: "Archive" }));
-		expect(await view.findByRole("dialog", { name: "Archive “secret”?" })).toBeTruthy();
+		fireEvent.click(view.getByRole("menuitem", { name: "Move to Trash" }));
+		expect(await view.findByRole("dialog", { name: "Move “secret” to Trash?" })).toBeTruthy();
 	});
 
 	test("a Shared with you row opens its menu from the keyboard, and Paste, Share and Properties act on the shared folder", async () => {
@@ -632,7 +632,7 @@ describe("FilesSidebar", () => {
 
 	test.each([
 		["Share", "Close"],
-		["Archive", "Cancel"],
+		["Move to Trash", "Cancel"],
 	])("closing %s with %s from a Shared with you row focuses that row, not its tree row", async (action, close) => {
 		// `bravo` also shows in the tree.
 		treeState.sharedRoots = [{ ...treeState.nodes[1]!, restrictedScopeNodeId: treeState.nodes[1]!._id }];
@@ -675,9 +675,9 @@ describe("FilesSidebar", () => {
 		const group = await view.findByRole("region", { name: "Shared with you" });
 
 		fireEvent.contextMenu(within(group).getByRole("button", { name: "s2 restricted" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
-		const dialog = await view.findByRole("dialog", { name: "Archive “s2”?" });
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Move to Trash" }));
+		const dialog = await view.findByRole("dialog", { name: "Move “s2” to Trash?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 		await waitFor(() => expect(within(group).queryByRole("button", { name: "s2 restricted" })).toBeNull());
 		// s2 has no tree row, so the tree's first row must not take focus.
 		await new Promise((resolve) => setTimeout(resolve, 50));
@@ -700,9 +700,9 @@ describe("FilesSidebar", () => {
 		const group = await view.findByRole("region", { name: "Shared with you" });
 
 		fireEvent.contextMenu(within(group).getByRole("button", { name: "s2 restricted" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
-		const dialog = await view.findByRole("dialog", { name: "Archive “s2”?" });
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Move to Trash" }));
+		const dialog = await view.findByRole("dialog", { name: "Move “s2” to Trash?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 		await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
 		set_shared_roots([share("s1"), share("s3")], "done");
 		// Wait past the tree's focus timer.
@@ -877,7 +877,7 @@ describe("FilesSidebar", () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
 		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
 		fireEvent.click(showArchived);
 		fireEvent.keyDown(showArchived, { key: "Escape" });
 		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
@@ -891,7 +891,7 @@ describe("FilesSidebar", () => {
 			for (const listener of treeState.listeners) listener();
 		});
 		view.rerender(<CreateSidebar router={router} selectedNodeId="alpha" />);
-		const alpha = await view.findByRole("treeitem", { name: "alpha archived" });
+		const alpha = await view.findByRole("treeitem", { name: "alpha in Trash" });
 		await waitFor(() => expect(alpha.hasAttribute("data-focused")).toBe(true));
 		fireEvent.keyDown(alpha, { key: "v", code: "KeyV", ctrlKey: true });
 		fireEvent.keyUp(alpha, { key: "v", code: "KeyV", ctrlKey: true });
@@ -1001,12 +1001,12 @@ describe("FilesSidebar", () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
 		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
 		fireEvent.click(showArchived);
 		fireEvent.keyDown(showArchived, { key: "Escape" });
 		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 
-		fireEvent.contextMenu(await view.findByRole("treeitem", { name: "old archived, you don't have access" }));
+		fireEvent.contextMenu(await view.findByRole("treeitem", { name: "old in Trash, you don't have access" }));
 		await view.findByRole("menuitem", { name: "Copy path" });
 		expect(view.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy path", "Properties"]);
 		expect(view.queryByRole("menuitem", { name: "Restore" })).toBeNull();
@@ -1028,16 +1028,16 @@ describe("FilesSidebar", () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
 		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
 		fireEvent.click(showArchived);
 		fireEvent.keyDown(showArchived, { key: "Escape" });
 		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 
 		const row =
 			surface === "tree"
-				? await view.findByRole("treeitem", { name: "alpha, Read-only archived" })
+				? await view.findByRole("treeitem", { name: "alpha, Read-only in Trash" })
 				: within(view.getByRole("region", { name: "Shared with you" })).getByRole("button", {
-						name: "secret restricted, Read-only archived",
+						name: "secret restricted, Read-only in Trash",
 					});
 		fireEvent.contextMenu(row);
 		const restore = await view.findByRole("menuitem", { name: "Restore" });
@@ -1062,7 +1062,7 @@ describe("FilesSidebar", () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
 		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show archived items" });
+		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
 		fireEvent.click(showArchived);
 		fireEvent.keyDown(showArchived, { key: "Escape" });
 		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
@@ -1072,8 +1072,8 @@ describe("FilesSidebar", () => {
 			);
 			for (const listener of treeState.listeners) listener();
 		});
-		await view.findByRole("treeitem", { name: "alpha archived" });
-		fireEvent.click(view.getByRole("button", { name: "More actions for alpha archived" }));
+		await view.findByRole("treeitem", { name: "alpha in Trash" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for alpha in Trash" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: "Restore" }));
 
 		await waitFor(() =>
@@ -1169,15 +1169,12 @@ describe("FilesSidebar", () => {
 		},
 	);
 
-	test("preloads a file created through the sidebar's name modal before navigation", async () => {
+	test("preloads a file created inside a folder before navigation", async () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const navigate = vi.spyOn(router, "navigate").mockResolvedValue(undefined);
-		creationPolicy.mockResolvedValue("read_only");
 		createNode.mockResolvedValue({ _yay: { nodeId: "created-node" } });
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
 		fireEvent.click(await view.findByRole("button", { name: "Add file to alpha" }));
-		const submit = await view.findByRole("button", { name: "Create file" });
-		fireEvent.click(submit);
 		await waitFor(() => expect(navigate).toHaveBeenCalledOnce());
 		expect(preloadSnapshot).toHaveBeenCalledExactlyOnceWith({ membershipId: "membership", nodeId: "created-node" });
 		expect(preloadSnapshot.mock.invocationCallOrder[0]).toBeLessThan(navigate.mock.invocationCallOrder[0]!);

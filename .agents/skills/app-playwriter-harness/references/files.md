@@ -57,7 +57,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Tables in the rich editor: plain `table`, `th`, `td` selectors inside `.FileEditorRichText-editor-content`.
 - Table commands menu: toolbar `getByRole("button", { name: "Table commands" })`; items are `Add row above`, `Add row below`, `Add column left`, `Add column right`, `Delete row`, `Delete column`, `Toggle header row`, `Delete table` (disabled while the caret is outside a table).
 - Properties in the breadcrumb: click the current crumb (the last one, `[aria-current="page"]`) to open its menu, then pick `getByRole("menuitem", { name: "Properties" })`. The menu item carries `data-file-read-only` when the node is locked. There is no separate Properties icon button in the breadcrumb any more.
-- Breadcrumb crumbs: folder crumbs are links inside `ol.FileNodeViewHeaderBreadcrumbPath-list` whose `aria-label` holds the full name while the text may end with `…`. The open node's crumb is `[aria-current="page"] button` (named by the full file name, `aria-haspopup="menu"`); its menu items are `Reveal in sidebar`, `Duplicate tab`, `Copy node id`, `Archive` (`Archive` only when the node can be archived; `Reveal in sidebar` is absent for an archived node; a pending entry gets only `Duplicate tab` and `Copy node id`). Recipe under "Breadcrumb Menu And Reveal In Sidebar" below; layout notes in `app-map.md`.
+- Breadcrumb crumbs: folder crumbs are links inside `ol.FileNodeViewHeaderBreadcrumbPath-list` whose `aria-label` holds the full name while the text may end with `…`. The open node's crumb is `[aria-current="page"] button` (named by the full file name, `aria-haspopup="menu"`); its menu items are `Reveal in sidebar`, `Duplicate tab`, `Copy node id`, `Move to Trash` (`Move to Trash` only when the node can be trashed; `Reveal in sidebar` is absent for a trashed node; a pending entry gets only `Duplicate tab` and `Copy node id`). Recipe under "Breadcrumb Menu And Reveal In Sidebar" below; layout notes in `app-map.md`.
 
 ### Sidebar And Folder Browser
 
@@ -69,13 +69,13 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or one key:value filter`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
 - Locked row accessible name: `getByRole("treeitem", { name: "<name>, Read-only" })` when the lock is on that node. A parent lock does not mark a child `read-only from /path`. A writable folder with locked children can say it contains read-only items. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26; row suffix recased 2026-09-18).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`. The row menu renders in `.FilesSidebarTree-menus`, right after the tree and outside `role="tree"`. See the `MyMenu` entry in `known-hazards.md`.
-- Archive from any menu (sidebar row, toolbar Archive selected, folder explorer row, breadcrumb) opens `getByRole("dialog", { name: /^Archive / })`; confirm with its `Archive` button, cancel with `Cancel`. When every item is refused, the refusal is a `role=alert` inside the dialog and the dialog stays open. When some items are refused and the others are archived, the dialog closes with a warning toast, and the refused items stay in the tree: `"<name>" was not archived: <reason>.` for one refused item, `N items were not archived. See Activity.` for several. When a lock or restricted folder inside sends the archive to the background check, the dialog closes with `Checking "<name>" before archiving. It stays in the list until the check ends. See Activity.` (`Checking N items…` for several), and the rows stay until the check passes (verified 2026-10-20). An archived node does not resolve through `files_nodes.get_authorized_by_path`; with Show archived on, read its id from the row's `data-file-id`. From page context, match `.FilesArchiveModal` (it unmounts while closed) and read `.MyModalHeading` (the dialog has `aria-labelledby`, no `aria-label`). After a sidebar confirm, `document.activeElement` is the next tree row (or the previous one when the archived row was last); it lands about 100 ms after the dialog has closed, after a brief stop on the button that opened the dialog, so poll for it instead of reading it the moment the dialog hides. Multi-select archive: hold Control and click each row's `.FilesSidebarTreeItemPrimaryAction` (a Control-click on the open file's row removes it from the selection), then the sidebar header `More options` menu item `Archive N selected items` opens `Archive N items?` with the names, one per line, in the read-only `textbox` named `Items to archive` (read its `textContent`); after the confirm only the open file's row is selected again. Cancel keeps a multi-selection: the sidebar's click-outside selection reset is off while the dialog is open. Archive with the mutation directly (see "Sidebar Create Then Rename By Id") when the dialog is not what you test.
-- Show archived: the sidebar header `More options` menu has a `menuitemcheckbox` whose `aria-checked` holds the state. Its visible text is `Show archived items` when off and `Hide archived items` when on, and the menu stays open after a click. Since the native menu (2026-09-25), `getByRole("menuitemcheckbox", { name: "Show archived items" }).click()` works and toggles it; the Ariakit menu needed a `page.mouse.click` on the box center. Press Escape after. Archived rows carry ` archived` at the end of their `aria-label` (verified 2026-09-25).
+- Move to Trash from any menu (sidebar row, toolbar Move selected items to Trash, folder explorer row, breadcrumb) opens `getByRole("dialog", { name: /^Move .* to Trash\?$/ })`; confirm with its `Move to Trash` button, cancel with `Cancel`. When every item is refused, the refusal is a `role=alert` inside the dialog and the dialog stays open. When some items are refused and the others are in Trash, the dialog closes with a warning toast, and the refused items stay in the tree: `"<name>" was not moved to Trash: <reason>.` for one refused item, `N items were not moved to Trash. See Activity.` for several. When a lock or restricted folder inside sends Trash to the background check, the dialog closes with `Checking "<name>" before moving it to Trash. It stays in the list until the check ends. See Activity.` (`Checking N items…` for several), and the rows stay until the check passes (verified 2026-10-20). A trashed node does not resolve through `files_nodes.get_authorized_by_path`; with Show items in Trash on, read its id from the row's `data-file-id`. From page context, match `.FilesArchiveModal` (it unmounts while closed) and read `.MyModalHeading` (the dialog has `aria-labelledby`, no `aria-label`). After a sidebar confirm, `document.activeElement` is the next tree row (or the previous one when the trashed row was last); it lands about 100 ms after the dialog has closed, after a brief stop on the button that opened the dialog, so poll for it instead of reading it the moment the dialog hides. Move a selection to Trash: hold Control and click each row's `.FilesSidebarTreeItemPrimaryAction` (a Control-click on the open file's row removes it from the selection), then the sidebar header `More options` menu item `Move N selected items to Trash` opens `Move N items to Trash?` with the names, one per line, in the read-only `textbox` named `Items to move to Trash` (read its `textContent`); after the confirm only the open file's row is selected again. Cancel keeps a multi-selection: the sidebar's click-outside selection reset is off while the dialog is open. Move to Trash with the mutation directly (see "Sidebar Create Then Rename By Id") when the dialog is not what you test.
+- Show items in Trash: the sidebar header `More options` menu has a `menuitemcheckbox` whose `aria-checked` holds the state. Its visible text is `Show items in Trash` when off and `Hide items in Trash` when on, and the menu stays open after a click. Since the native menu (2026-09-25), `getByRole("menuitemcheckbox", { name: "Show items in Trash" }).click()` works and toggles it; the Ariakit menu needed a `page.mouse.click` on the box center. Press Escape after. Trashed rows carry ` in Trash` at the end of their `aria-label` (verified 2026-09-25).
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - The folder toolbar's `Create files and folders` group opens a New folder dialog. Use its
   `Name` textbox and `Create folder` button. The sidebar's New folder action uses inline Rename.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
-- The folder table row menu has Cut, Copy, Paste and Archive, but no Rename. Open the item, use its breadcrumb menu's `Reveal in sidebar`, then focus `[role="treeitem"][data-file-id="<id>"]` and press `F2`. The textbox is named `Rename <current name>`. Escape cancels; Enter saves.
+- The folder table row menu has Cut, Copy, Paste and Move to Trash, but no Rename. Open the item, use its breadcrumb menu's `Reveal in sidebar`, then focus `[role="treeitem"][data-file-id="<id>"]` and press `F2`. The textbox is named `Rename <current name>`. Escape cancels; Enter saves.
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
 - Folder table sort state: `getByRole("table", { name: "Folder contents" })` carries
@@ -271,7 +271,7 @@ console.log(require("node:crypto").createHash("sha256").update(buf).digest("hex"
 Compare against the table's pinned SHA-256. Two caveats: the comparison holds only for fixtures already stored as LF without a BOM — `qa-plain-bom.csv` deliberately does not round-trip, because the stored document drops the BOM and stores LF. And since 2026-08-10 the signed GET serves editable text as an `attachment` with the name-derived type, so assert on bytes, never on the disposition or the URL string.
 
 To find a saved file's id from its path, use `files_nodes.get_authorized_by_path({ membershipId, path })`
-(`{ nodeId, name, kind, assetId }` or null; an archived file reads null). Its metadata is
+(`{ nodeId, name, kind, assetId }` or null; a trashed file reads null). Its metadata is
 `files_metadata.get_entries({ membershipId, fileNodeId })`, an array of `{ key, value }`.
 
 A private pending file (an agent-created file, the `pendingNodeId` in a tool card's `Open in Files`
@@ -306,7 +306,7 @@ pending native QA; the earlier delete flow was verified 2026-10-19.
 - The folder view toolbar has a different create flow: scope to `toolbar "File actions"`, choose
   `New folder`, fill the dialog's `Name` input, and press Enter. This creates inside the open folder.
 - Pending row controls inherit disabled state from their fieldsets. Use `locator.isDisabled()` or `element.matches(":disabled")`; `button.disabled` only reads the button's own attribute. Check focus after a focused action becomes pending, then check menu and arrow access again after it finishes.
-- Archived rows expose the restore action as menu item `Restore`, not `Unarchive`, and their row button label gains a suffix: `More actions for <name> archived`. Reveal them first with the sidebar `More options` menu item `Show N item(s) archived`.
+- Trashed rows expose the restore action as menu item `Restore`, not `Unarchive`, and their row button label gains a suffix: `More actions for <name> in Trash`. Reveal them first with the sidebar `More options` menu item `Show items in Trash`.
 - A restricted folder's row button also gains a suffix: `More actions for <name> restricted`. So an `exact: true` locator stops matching right after you restrict it. Use a prefix regex such as `/^More actions for copy-4( |$)/`, scoped to `getByRole("tree", { name: "Files" })`, because the folder explorer shows the same button name.
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 
@@ -314,10 +314,10 @@ pending native QA; the earlier delete flow was verified 2026-10-19.
 
 - Full action timing checklist and replay rules: [files-profiling.md](files-profiling.md).
 
-### Folder Jobs: Move, Archive, Restore, Restrict, Copy Queue
+### Folder Jobs: Move, Move to Trash, Restore, Restrict, Copy Queue
 
 Move and Copy use Transfer runs. Move uses paged cohorts. Copy uses Transfer discovery and
-workers, with a subtree-op waiter for overlapping jobs. Archive,
+workers, with a subtree-op waiter for overlapping jobs. Move to Trash,
 Restore and Restrict have their own job paths. See the `files-explorer-tree` skill. Use a folder
 with more than 75 items, so it needs several steps. Existing QA folders include `copy-2` (104
 items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog before using them.
@@ -335,11 +335,11 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   single Transfer Activity with progress and Stop. Its cohort work has no second card. A restrict
   shows no card at all: its Activity has `feedVisible: false`, so the active list stays empty. Read it
   with `convex data activities --limit 3` instead.
-- For archive and restore, `files_nodes.archive_nodes` and `unarchive_nodes` take `{ membershipId,
-  nodeIds }` from the same page context. The ids of archived roots stay the same. Archive only. Never delete catalog folders.
+- For Trash and restore, `files_nodes.archive_nodes` and `unarchive_nodes` take `{ membershipId,
+  nodeIds }` from the same page context. The ids of trashed roots stay the same. Move to Trash only. Never delete catalog folders.
 - A copy that overlaps a running job waits. `convex data files_subtree_ops` shows it `queued` with
   `blockedByOpId` set. When the blocker ends, it becomes `running` and its card shows Stop.
-- For Move and Copy, use `files_transfer_status.get` and `list_items`. For repair, Archive, Restore and
+- For Move and Copy, use `files_transfer_status.get` and `list_items`. For repair, Move to Trash, Restore and
   Restrict work, read `files_subtree_ops`, `files_subtree_op_walks` (the step
   number), and `files_subtree_op_nodes` (the folder queue). All three are empty when no job runs. Read
   each step's result with `convex data _scheduled_functions --limit 60` and look for
@@ -378,15 +378,15 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   positive run after access is restored. The old synchronous Move race recipe is retired.
   A request accepted before a job ends does not prove when its worker checked access. Record
   the blocker and worker states too. Read the run before retrying a timed-out input call.
-- Owner search while an archive job runs (verified 2026-09-27 with a search door since removed):
+- Owner search while a Trash job runs (verified 2026-09-27 with a search door since removed):
   move the catalog file `/two-roots-qa-0921.txt` (text `TEAM_QA_0921`) to
-  `/copy-4/copy-3/copy-2/copy-1/seed/f49/`, archive `copy-4`, and poll
+  `/copy-4/copy-3/copy-2/copy-1/seed/f49/`, move `copy-4` to Trash, and poll
   `files_nodes.search_saved({ membershipId, clause: { kind: "content", text: "TEAM_QA_0921" },
   paginationOpts: { numItems: 50, cursor: null } })` together with `files_archive_runs.get` every
   50 ms. `search_saved` checks only the file's own `archiveOperationId`. The owner reader's rule for
   a stamped folder (`files_search_db_create_reader`) now serves only the agent's `search` (the
   internal `files_nodes:text_search_files`), which a page-context poll cannot reach.
-  `archive_nodes` returns the `runId` in `_yay.runId`. A folder with no lock inside is archived when
+  `archive_nodes` returns the `runId` in `_yay.runId`. A folder with no lock inside is in Trash when
   the request returns, but the file must still be a hit. It must be gone once the job ends. When you
   read `archiveOperationId`, compare it with `null`. Do not use `?? fallback`, which also replaces a
   real `null`. Restore `copy-4` and move the file back to the root afterwards. The pending-delete
@@ -412,7 +412,7 @@ Needs `AI_CHAT_BROWSER_ENABLED=true` on the dev deployment and an HTML file (sea
 - Keep human control for more than 40 seconds while changing focus or editing the source. This checks two grant renewals; a quick click alone misses a timer reset that drops control after Take.
 - Source check: edit and Save while the browser stays open. Updates must appear without changing the live page. Reload must advance the source version and load generation, then clear Updates.
 - Idle is 5 minutes and watching does not extend it. Leave the viewer open without input or Keep open. After expiry, require the Start card and `current_browser_session` to return null, then start again. Check expiry before the next renewal too: a session-ended socket close must retire the app session, not strand a Time expired panel. For an expiry during a run, inspect its safe status and reason alongside the countdown. A failed card alone does not prove a transport fault.
-- Session persistence: use `chitchat-qa/xfer-qa-0914:/browser-persistence-demo` (see the `qa-data` catalog). Start on `01-stateful-app.html` and read its `Page id`. Switch the view to `Code` and back, then open `02-second-page.html`, `notes.txt`, and the folder with sidebar clicks, and come back to `01`. When returning to `01`, require `View: Browser`, the live viewer with no Start card, and the same `Page id`. A new id means the session restarted. On `02` in `Browser` view, require `A browser is open on 01-stateful-app.html.` with `Open 01-stateful-app.html` and `End it`. For access loss, archive `01` while you are on `02`. The card then turns into the Start card, because `current_browser_session` hides a session whose file is gone. `Start shared browser` on `02` must succeed without `Browser busy`. In `convex data files_browser_sessions --limit 3`, `01`'s doc must be `closed` with a `closedAt` just before the new doc's `createdAt`. The doc stores no close reason; the runner logs it as `access_lost`. Restore `01` afterwards: sidebar `More options` → `Show archived items`, then the row's `Restore`, then `Hide archived items` (the menu item's name flips between the two).
+- Session persistence: use `chitchat-qa/xfer-qa-0914:/browser-persistence-demo` (see the `qa-data` catalog). Start on `01-stateful-app.html` and read its `Page id`. Switch the view to `Code` and back, then open `02-second-page.html`, `notes.txt`, and the folder with sidebar clicks, and come back to `01`. When returning to `01`, require `View: Browser`, the live viewer with no Start card, and the same `Page id`. A new id means the session restarted. On `02` in `Browser` view, require `A browser is open on 01-stateful-app.html.` with `Open 01-stateful-app.html` and `End it`. For access loss, move `01` to Trash while you are on `02`. The card then turns into the Start card, because `current_browser_session` hides a session whose file is gone. `Start shared browser` on `02` must succeed without `Browser busy`. In `convex data files_browser_sessions --limit 3`, `01`'s doc must be `closed` with a `closedAt` just before the new doc's `createdAt`. The doc stores no close reason; the runner logs it as `access_lost`. Restore `01` afterwards: sidebar `More options` → `Show items in Trash`, then the row's `Restore`, then `Hide items in Trash` (the menu item's name flips between the two).
 - Draft Reload after navigation: choose `Code + Browser` on `01` and change its editor text without saving. Focus the `File content editor` textbox before typing; clicking its small Monaco edit context can time out. Choose `Source: Editor draft` and Start. A clean editor cannot supply a draft. Open `02` and return to `01`. The old unsaved editor text is gone, so make a new unsaved edit before clicking `Reload from current source`. Require the source hash to change, then leave and return again to discard the edit. Check that Save is disabled. End the browser.
 - Narrow layout: at a 1280 px viewport, keep editor, browser, and agent panels open. Take control so the wider Resume button appears. Require every browser action to fit; the row may wrap. Check Focus at a smaller viewport too.
 - Binding regression: only the first message of a new chat used to bind. After any transport change, send TWO messages in one thread and require a `Browser run` card in both answers — a follow-up with no card means the runtime body dropped `browserSessionId`. Verified 2026-09-19.
@@ -430,7 +430,7 @@ Needs `AI_CHAT_BROWSER_ENABLED=true` on the dev deployment and an HTML file (sea
 - Open Pending and expand each image. Require a preview, size, creator, and source chat link. The row's path link and the chat's `Open in Files` must open the same private preview. PNG/JPEG previews must work without an image-viewer plugin.
 - When parent folders are still private, require the private-file view's `Save also creates:` and the Pending row link's accessible name (`/<path>, also adds <folders>`) to list the exact folders. Accept one image from its Pending row, or Save it from the private-file view. Both use a review Activity, even without pending parents. Wait for that Activity to finish; the row's `Started accepting` and the view's `Started saving` messages only confirm that it began. Require those folders and that image to become saved while the second image stays pending. Discard must leave unused parents and siblings alone.
 - A private image can have two `.FileNodeViewPrivate-actions` containers. Use `allInnerTexts()` to inspect them, then locate the visible Save or Discard button by its role and name. Do not assume that class matches one element. Text drafts put Save in the editor toolbar.
-- Keep the first image's original `pendingNodeId` URL. After Save, reopen it and require the saved preview and saved URL. Rename or move the saved image, then reload the chat: its path must update and its link must still open the file. Discard the second image and require its chat row and old private URL to show an unavailable state. Missing, archived, or denied files must not retain an active chat link or preview.
+- Keep the first image's original `pendingNodeId` URL. After Save, reopen it and require the saved preview and saved URL. Rename or move the saved image, then reload the chat: its path must update and its link must still open the file. Discard the second image and require its chat row and old private URL to show an unavailable state. Missing, trashed, or denied files must not retain an active chat link or preview.
 - Keep a separate image pending for image-read checks. While the shared browser is live, switch to Ask mode and request a new screenshot proposal. Require no new pending files and the stored result `status: "errored", reason: "agent_required"`. The model's answer alone is not evidence. Ask may still inspect the page and return private text observations.
 - Then end the shared browser. In both Ask and Agent mode, call `view_image({ workspace: "personal", path: "/qa-browser-RUN/page.png" })` for a private image and a saved image. Resolve an old id or Files URL with Bash first when the path is unknown. Use the canonical Files path, not the Bash mount path. Ask about a visible detail to confirm that the model received the image. The tool card must show only safe status and one Files link, including after reload. This read needs neither a live browser nor the image's creation chat.
 - `view_image` accepts PNG, JPEG, WEBP, and GIF. It allows 8 MiB per turn, 8192 pixels per edge, and 16 million canvas pixels. Header checks do not prove that all compressed pixels are valid. A later turn must read the image again. Stored chat keeps no pixels or browser observations.
@@ -450,7 +450,7 @@ Use an owned tab and an empty test folder. To hold the busy state, wrap that tab
 Click the normal sidebar `New folder` button. Check native button disabling and the row's
 `aria-disabled` and pointer hit-area's `data-disabled`; the focused row stays usable.
 Release the promise and restore the original method in `finally`. Check automatic rename focus
-and enabled controls, then archive the unchanged empty test folder. Keep this delay out of timings.
+and enabled controls, then move the unchanged empty test folder to Trash. Keep this delay out of timings.
 
 ### Insert A Table
 
@@ -527,7 +527,7 @@ Use this after changing the right sidebar, tabs, panel group, or chat layout.
 - Create a folder from root; verify the route selects the new node and its default name is selected in the inline rename input.
 - Inside the temp folder, create a file and verify the basename selection for `new-file.md`.
 - Try duplicate deep paths: duplicate file should show `This file already exists.`, duplicate folder should show `This folder already exists.`.
-- Archive the temp folder when done: its row menu `Archive` opens the confirm dialog (see the sidebar bullet under "Stable Selectors"), or call the mutation directly.
+- Move the temp folder to Trash when done: its row menu `Move to Trash` opens the confirm dialog (see the sidebar bullet under "Stable Selectors"), or call the mutation directly.
 
 ### Breadcrumb Menu And Reveal In Sidebar
 
@@ -537,7 +537,7 @@ Use this after changing the file header, `files::reveal_node`, or the sidebar's 
 - Open the menu: `page.getByRole("button", { name: "<file name>", exact: true })` inside `[aria-current="page"]`, then `page.getByRole("menu")`. Read the item names before clicking one; the menu unmounts when it closes.
 - Reveal in sidebar: collapse the parent folder by hand first (the route's own auto-expand runs once per selected path, so it will not undo that), then click `Reveal in sidebar`. Assert the folder row's `aria-expanded === "true"` and `document.activeElement` is `.FilesSidebarTreeItem[data-file-id="<id>"]`. Repeat with the files panel closed (`Close` in the sidebar header): the panel opens and the same row ends focused. With a search query in the box, the reveal drops `?q=` and the full tree comes back first.
 - Duplicate tab: `const [tab] = await Promise.all([context.waitForEvent("page"), item.click()])`; the new tab's URL equals the current one, `view` and `q` included. Close only that tab.
-- Archive: opens the confirm dialog; see the sidebar bullet under "Stable Selectors". Confirming from the breadcrumb navigates to Home.
+- Move to Trash: opens the confirm dialog; see the sidebar bullet under "Stable Selectors". Confirming from the breadcrumb navigates to Home.
 - Crumb tips: a folder crumb shows a tip with its full name only while its label is shortened, below the crumb, with no delay. A folder crumb that fits shows no tip. The open-file crumb always has a tip and a small down arrow after its name. Shortened, the tip shows the full name with a dim `Click for file actions` line under it, with no delay. When the name fits, the tip is only `Click for file actions`, after the normal tooltip delay (500ms), so a read right after the hover finds no tooltip. The arrow is an `svg` with no text, so the crumb's `textContent` is still just the label. Hide the Playwriter toolbars first (see `known-hazards.md`), or the pointer lands on them instead of the crumb. Change the width with `page.setViewportSize(...)` and clear it at the end with `Emulation.clearDeviceMetricsOverride` over `getCDPSession`. At a narrow width the ancestor crumbs sit in their own scrolling group, and a crumb's middle can lie under the open-file crumb; `elementFromPoint` then names `.FileNodeViewHeaderBreadcrumbPath-current`, and the tip you see is the open file's. Pick a width where the ancestor box ends left of the open-file box. Menu case: click the open-file crumb, check the tip is gone and `aria-expanded="true"`, then move the pointer off and back on; the tip must stay hidden until the menu closes. Stale-tip case: keyboard-focus a shortened crumb (see the `:focus-visible` tooltip entry in `known-hazards.md`), widen until the name fits, `Tab` away, narrow again: no tip may come back on the crumb you left.
 
 ### Sidebar Create Then Rename By Id
@@ -607,7 +607,7 @@ const r = await state.page.evaluate(
 );
 ```
 
-Archive it the same way at the end: `m.app_convex.mutation(m.app_convex_api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })`.
+Move it to Trash the same way at the end: `m.app_convex.mutation(m.app_convex_api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })`.
 
 ### Sidebar Selection Context
 
@@ -618,7 +618,7 @@ Use this when changing tree focus, context menus, selection, or route sync.
 - Click Search files or empty tree whitespace; selection should reconcile to `[nodeId]`.
 - Open a row menu and the top more-options menu; multi-selection should remain visible while each menu is open.
 - On `nodeId=root`, outside interactions should clear temporary multi-selection to `[]`.
-- Do not click archive/delete menu items during this check.
+- Do not click Move to Trash/delete menu items during this check.
 
 ### File Cut, Copy, And Paste
 
@@ -652,15 +652,15 @@ Use this when changing tree focus, context menus, selection, or route sync.
   second Escape on the tree cancels the cut. The row menu renders outside `role="tree"` (see
   the menu note in `known-hazards.md`), so the tree does not see the menu's keys. Never paste in
   this check. Verified 2026-09-25.
-- Open an archived QA folder with a non-empty clipboard. Control+V must not paste into that
-  archived folder. The Show archived checkbox label is `Show archived items` / `Hide archived items`;
+- Open a trashed QA folder with a non-empty clipboard. Control+V must not paste into that
+  trashed folder. The Show items in Trash checkbox label is `Show items in Trash` / `Hide items in Trash`;
   press Escape after toggling it.
   In the same view, `New file`, `New folder` and `Create a README.md` inside
   `[aria-label="File content"]` must be disabled, and the top `role=status` surface must say
-  `This folder is archived. Restore it before adding items.` Read `button.disabled` from page
+  `This folder is in Trash. Restore it before adding items.` Read `button.disabled` from page
   context; the snapshot does not show disabled state. To prove the deployed create doors refuse
-  too, run `convex run files_nodes_create_preflight:get_create_file_node_write_preflight` with the archived
-  folder as `parentId`: it prints nothing (null) for an archived parent and an object for root.
+  too, run `convex run files_nodes_create_preflight:get_create_file_node_write_preflight` with the trashed
+  folder as `parentId`: it prints nothing (null) for a trashed parent and an object for root.
 - While a submitted New folder action is pending, Control+V on the New file / New folder group
   must not start a paste. A Cut/Paste dialog can briefly say `Paste files` while loading, then `Move files`; it must never
   show `Copy files` for that run. A MutationObserver installed before Paste can record this transition.
@@ -702,24 +702,24 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   paths and unchanged scope and grants as owner. The member must still be unable to open the child.
 - **Where `Upload file` actually is** (upload checked 2026-09-15; menu checked in source 2026-09-29):
   the sidebar toolbar's `More options` button. With no multi-selection, the menu offers
-  `Upload file`, `Import folder`, then a separator group with `Show archived items` (or
-  `Hide archived items`). Clear a multi-selection first. It
+  `Upload file`, `Import folder`, then a separator group with `Show items in Trash` (or
+  `Hide items in Trash`). Clear a multi-selection first. It
   uploads into the **currently selected** folder, so select the target node first (open
   `/files?nodeId=<folder id>`). Drive it with
   `state.page.waitForEvent("filechooser")` started before the click, then
   `chooser.setFiles("C:/absolute/path")`; under a Windows relay a Windows path works. A 14 KB PNG
   needs ~20 s before the node appears. It is **not** on a row's `More actions` menu (that menu is
   Cut/Copy/Paste/Copy path/Copy link/Copy node id/Rename/Expand subtree/Collapse subtree/Share/
-  Properties/Archive). Do not go looking for it behind the row's `Add file to <folder>` button or
+  Properties/Move to Trash). Do not go looking for it behind the row's `Add file to <folder>` button or
   the toolbar's `New file` button: neither opens a menu, both immediately create a `new-file.md`
-  node in inline-rename mode, so probing them litters the tree with files you then have to archive.
+  node in inline-rename mode, so probing them litters the tree with files you then have to move to Trash.
 - To check a row's `Add file to <folder>` / `Add folder to <folder>` on a big folder (verified
   2026-09-24 on `sybill-demo/demo` `/people`, about 9,700 children): hover
   `getByRole("treeitem", { name: /^people/ })`, click the button, then poll the URL until `nodeId` is
   a new id. Compare against the `nodeId` the tab had BEFORE the click, not only the folder id: a tab
   left on the last created file matches at once and you read that old file again. The folder has no
   Read-only flag, so the click creates `new-file.md` / `new-folder` at once and opens it (about
-  3-5 s on dev). Archive it with `files_nodes.archive_nodes` through a fresh `ConvexHttpClient` (see
+  3-5 s on dev). Move it to Trash with `files_nodes.archive_nodes` through a fresh `ConvexHttpClient` (see
   "`app_convex.query(...)` in page context" in `known-hazards.md`). A cold localhost load of `/people`
   can take more than 30 s before `data-app-ready`; wait up to 60 s.
 - Properties checkbox verified natively 2026-10-29; see "File And Folder Read-only" for the tested
@@ -750,8 +750,8 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
 
 ### Folder Table Filter And Sort Bar
 
-Verified 2026-10-01 as `qa.perm.owner` on `/qa-browser/home:/qa-sort-0924` (restored from the archive
-for the run, archived again after). The bar replaced the old Sort and Filter popovers. The table
+Verified 2026-10-01 as `qa.perm.owner` on `/qa-browser/home:/qa-sort-0924` (restored from Trash
+for the run, trashed again after). The bar replaced the old Sort and Filter popovers. The table
 runs one filter (or a `file.name:j*` start plus one "is" filter) and one sort. The filter picks the
 index, and the index fixes the order (`files_table_filter_order_field`).
 
@@ -795,7 +795,7 @@ index, and the index fixes the order (`files_table_filter_order_field`).
 
 Verified 2026-09-29 with the existing owner and reader accounts. Read the current
 [QA inventory](../../qa-data/references/inventory.md) and [account guide](clerk-test-accounts.md)
-first. Check membership, grants and archive state; then back up the exact fixture facts, saved arrays
+first. Check membership, grants and Trash state; then back up the exact fixture facts, saved arrays
 and personal preference entries. Restore only approved roots through normal Files doors. The checked
 run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, moves or grants.
 
@@ -826,7 +826,7 @@ run reused `/qa-sort-0924` and `/qa-sort-0924-r` without new files, metadata, mo
   less and exact ordered ids. The first Show more reveals all loaded rows; once all show, Show more asks
   for 100 more. Show less returns to five with no new query.
 - **Cleanup.** Reset both approved fixtures to file.name through normal controls and require no saved-sort
-  docs. Archive their roots again and compare all child ids, parents, paths, archive flags and raw
+  docs. Move their roots to Trash again and compare all child ids, parents, paths, Trash flags and raw
   grants with the backup. Restore only touched personal entries and viewport/sidebar settings. Detach
   owned observers and CDP listeners, remove exact HTTP routes, and close owned scratch pages to retire
   page-scoped WebSocket routes. Keep the normal signed-in profile and existing servers unchanged.
@@ -974,32 +974,32 @@ scalar sample. Do not assume a Status field exists. No new fixture is needed for
 - Active/pressed rows should use the darker pressed surface and inset-only shadow.
 - Secondary action buttons should keep button styling and not inherit row-surface styles.
 
-### Restricted Folder Archive / Restore
+### Restricted Folder Move to Trash / Restore
 
 Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restricted_scope`, or anything about restricted scopes.
 
 - Build the fixture so the two cases differ: the folder must carry its **own** restriction (`restrictedScopeNodeId === its own _id`, which the restore loop deliberately skips) and the child must **inherit** it (`restrictedScopeNodeId === the folder's _id`). Only the inheriting child exercises the leaving check. Read both with `files_tree.get_file_node_for_membership({ membershipId, fileNodeId })` — the sidebar shows neither.
 - Restrict through the row menu `Share` → the `Who can open this` select in General access → `Only people added` (no confirm box; toast `Access restricted`), then `Done`.
-- Archive from the row menu opens the confirm dialog first (`getByRole("dialog", { name: /^Archive / })`); confirm with its `Archive` button. Restore is still direct.
-- To make a restore behave as a **move**, archive the parent folder and then restore the child alone: its parent is still archived, so the restore relocates it to root. That is the only in-app route to the leaving check. Ground truth is the child's `path`, `parentId` and `restrictedScopeNodeId` from `get_file_node_for_membership`; a successful owner restore moves it to root and clears the scope pointer.
-- Reveal archived rows with the sidebar `More options` → `Show archived items` (`menuitemcheckbox`). It does **not** close the menu on click, so press `Escape` after, and it is **not persisted** — any route load resets it to off, so re-read `aria-checked` instead of assuming your earlier toggle survived. Archived rows inside a collapsed folder stay hidden until you expand that folder, so expand it before counting them.
+- Move to Trash from the row menu opens the confirm dialog first (`getByRole("dialog", { name: /^Move .* to Trash\?$/ })`); confirm with its `Move to Trash` button. Restore is still direct.
+- To make a restore behave as a **move**, move the parent folder to Trash and then restore the child alone: its parent is still in Trash, so the restore relocates it to root. That is the only in-app route to the leaving check. Ground truth is the child's `path`, `parentId` and `restrictedScopeNodeId` from `get_file_node_for_membership`; a successful owner restore moves it to root and clears the scope pointer.
+- Reveal trashed rows with the sidebar `More options` → `Show items in Trash` (`menuitemcheckbox`). It does **not** close the menu on click, so press `Escape` after, and it is **not persisted** — any route load resets it to off, so re-read `aria-checked` instead of assuming your earlier toggle survived. Trashed rows inside a collapsed folder stay hidden until you expand that folder, so expand it before counting them.
 - Restoring a folder that carries its own restriction must bring it back still restricted (`restrictedScopeNodeId` unchanged, row label keeps ` restricted`).
-- The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant on the folder. Get that member without any sign-in by following `references/second-user-fixtures.md`: an anonymous user in a scratch browser, invited by `userIdToAdd` into a throwaway non-default org. Verified end to end — a `member` with only `write` archives the folder fine, is refused on restoring the child alone with `You need Can manage on the shared folder to move this out of it.`, and still restores the scope-carrying folder itself.
-- A `write`-only member **can** archive the restricted folder. The hole this guards is the pair: archive the folder, then restore one file out of it. With the leaving check removed, that same click succeeds and clears the child's `restrictedScopeNodeId` to `null` at root — the file becomes readable by the whole workspace. Count that pointer, not the toast, when proving the guard.
+- The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant on the folder. Get that member without any sign-in by following `references/second-user-fixtures.md`: an anonymous user in a scratch browser, invited by `userIdToAdd` into a throwaway non-default org. Verified end to end — a `member` with only `write` moves the folder to Trash, is refused on restoring the child alone with `You need Can manage on the shared folder to move this out of it.`, and still restores the scope-carrying folder itself.
+- A `write`-only member **can** move the restricted folder to Trash. The hole this guards is the pair: move the folder to Trash, then restore one file out of it. With the leaving check removed, that same click succeeds and clears the child's `restrictedScopeNodeId` to `null` at root — the file becomes readable by the whole workspace. Count that pointer, not the toast, when proving the guard.
 
-### Archive View, Delete Permanently, Empty Archive
+### Trash View, Delete Permanently, Empty Trash
 
-Use this after changing `files-sidebar-archive.tsx`, `files-purge-modal.tsx`, `files_nodes.purge_nodes` / `empty_archive`, or `files_tree.list_archive_areas` / `list_archived_tops`. Spec: "Archive view and Delete permanently" in the `files-explorer-tree` skill and "Delete Permanently" in the `data-deletion` skill. Verified 2026-10-31.
+Use this after changing `files-sidebar-archive.tsx`, `files-purge-modal.tsx`, `files_nodes.purge_nodes` / `empty_archive`, or `files_tree.list_archive_areas` / `list_archived_tops`. Spec: "Trash view and Delete permanently" in the `files-explorer-tree` skill and "Delete Permanently" in the `data-deletion` skill. Verified 2026-10-31.
 
-- Open it with the sidebar header `More options` → menu item `Open archive`. The view replaces the tree inside `section.FilesSidebarArchive` (named `Archive` by its heading). Leave with the `Back to files` button or Escape.
-- Rows are `[data-archive-row-id]` buttons, newest archive first. Their `aria-label` is `<name> in <parent path>`, plus `, you don't have access` for a locked row. Items archived before the time-prefixed op ids show `Archived before Oct 31, 2026` and sort last.
-- The area picker is the select named `Archive of <area>`. `Workspace` is the open part; each restricted folder you can open is its own area. The row menu (`More actions for <name>`) has `Restore`, `Delete permanently…` and `Copy path`.
+- Open it with the sidebar header `More options` → menu item `Open Trash`. The view replaces the tree inside `section.FilesSidebarArchive` (named `Trash` by its heading). Leave with the `Back to files` button or Escape.
+- Rows are `[data-archive-row-id]` buttons, newest move to Trash first. Their `aria-label` is `<name> in <parent path>`, plus `, you don't have access` for a locked row. Items trashed before the time-prefixed op ids show `Moved to Trash before Oct 31, 2026` and sort last.
+- The area picker is the select named `Trash of <area>`. `Workspace` is the open part; each restricted folder you can open is its own area. The row menu (`More actions for <name>`) has `Restore`, `Delete permanently…` and `Copy path`.
 - Escape works one layer at a time: an open tooltip, menu, or the area picker closes first and the view stays. Only an Escape nobody handled leaves the view and focuses the tree. native-popovers marks a handled Escape with `preventDefault` on the native event, and React's `event.defaultPrevented` does not see that, so the view reads `event.nativeEvent.defaultPrevented`.
-- `Empty archive…` opens `Empty archive?`; its confirm button is `Empty archive`. The call can take more than 2 seconds before the dialog closes. Then the job toast `Emptying the archive…` shows with `View`. Only items archived before the confirm are deleted; items archived later stay.
-- Follow the job with `convex data files_archive_runs --limit 1 --order desc` (kind `purge`, `emptyArchive` set). `foundCount` grows by pages of 50, so do not read it as the total. A large archive takes minutes. Done when `active` is `false`. A Read-only item is kept and counted in `keptCount`; read each reason from `convex data files_archive_run_items` (`runId`, `reason`). An item archived on its own before its folder was archived is a top too. The job takes newer operations first, so it deletes that item with the folder; when it reaches the item later, it counts it as found but neither deleted nor kept (Activity `skipped`).
+- `Empty Trash…` opens `Empty Trash?`; its confirm button is `Empty Trash`. The call can take more than 2 seconds before the dialog closes. Then the job toast `Emptying Trash…` shows with `View`. Only items trashed before the confirm are deleted; items trashed later stay.
+- Follow the job with `convex data files_archive_runs --limit 1 --order desc` (kind `purge`, `emptyArchive` set). `foundCount` grows by pages of 50, so do not read it as the total. Emptying a large Trash area takes minutes. Done when `active` is `false`. A Read-only item is kept and counted in `keptCount`; read each reason from `convex data files_archive_run_items` (`runId`, `reason`). An item trashed on its own before its folder was moved to Trash is a top too. The job takes newer operations first, so it deletes that item with the folder; when it reaches the item later, it counts it as found but neither deleted nor kept (Activity `skipped`).
 - Check freed bytes with the `stored_file_bytes` row in `convex data quotas` before and after. Only assets with `storedFileBytes` give bytes back, so old uploads may free nothing.
 - Check R2 with `vp env exec pnpx wrangler r2 object get "bonobo-senate-press-files/<r2Key>" --remote --file <personal folder path>`: a deleted key fails with `The specified key does not exist.` Probe a live key from `convex data files_r2_assets` too, so a broken probe cannot pass. Read deleted keys from `convex data files_r2_object_deletion_jobs` (reason `permanent_delete`) right after the job. Those rows stay after the first delete, until the hourly cron (minute 50, 50 jobs per run) deletes again after the late-upload window, so a row left over does not mean the file is still in R2.
-- Delete permanently is not undoable and costs real data. Use it only on archived QA items, or on archives the user asked to empty.
+- Delete permanently is not undoable and costs real data. Use it only on trashed QA items, or in Trash areas the user asked to empty.
 
 ### File And Folder Read-only
 
@@ -1047,13 +1047,13 @@ follow an old recipe.
   its saved text matched the source after the actual comment-removal and Yjs Copy round-trip.
 - Sidebar Restore of `/restore-qa-1021` passed after the Restore UI gates were fixed. The same four
   IDs and paths returned, with the root still Read-only and its three children writable. After the
-  root flag was cleared, normal Archive returned all four to Trash with all flags false under one
+  root flag was cleared, normal Move to Trash returned all four to Trash with all flags false under one
   new operation. This checks node Restore, not history-version restore.
 - Native Cut/Paste moved the writable A folder into B and back to root. Both jobs finished 1/1.
   Its two Read-only children kept their IDs and flags; all original paths returned. Ordinary
-  Archive then refused the Read-only child by name and archived none of the original items.
-  All original flags were cleared afterward. Only the three new copied items were archived.
-- A real member key with explicit force archived the allowed sibling of a restricted folder.
+  Move to Trash then refused the Read-only child by name and trashed none of the original items.
+  All original flags were cleared afterward. Only the three new copied items were moved to Trash.
+- A real member key with explicit force trashed the allowed sibling of a restricted folder.
   The denied branch and parent stayed active. API and Activity showed partial completion;
   denied paths were null, and the private child was neither named nor counted. Ordinary Restore
   brought back the exact allowed node with its Read-only flag. Missing force scope returned 403;
@@ -1084,7 +1084,7 @@ follow an old recipe.
   A screenshot and exact draft check passed. Restore native zoom and window bounds afterward.
 - At the same native zoom, both folder bulk confirmations fit and began on Cancel. Tab reached
   Start; Enter on Cancel and Escape closed them without starting work. The completed member
-  Archive Activity dialog also fit with scrolling, and its footer Close worked by keyboard.
+  Move to Trash Activity dialog also fit with scrolling, and its footer Close worked by keyboard.
 
 Bulk partial/Stop outcomes and a queued collaborative-write race still need native checks.
 The cases below remain the full recipe.
@@ -1098,7 +1098,7 @@ The cases below remain the full recipe.
   Read the public node query for `readOnly`, `canWrite`, and `writeBlockedReason`.
   Internal decision ids are never a public readback field.
 - A folder flag protects that folder and its direct item list. Existing descendants keep their
-  own flags. Test create, rename, move, archive, restore, upload, and paste at each affected parent.
+  own flags. Test create, rename, move, move to Trash, restore, upload, and paste at each affected parent.
   Read back nodes after refusals; a toast alone does not prove no write.
 - Copy a Read-only source with exact `Copy`, then `Paste` in an editable destination.
   Read back `readOnly: true` on the copy. The UI uses `data-file-read-only="true"`.
@@ -1194,11 +1194,11 @@ Use this after changing the bulk import flow (`run_folder_import` in `files-side
 
 - Entry points: `More options` menu → `Import folder` (hidden `input[type=file][webkitdirectory]`), and multi-file/folder drops. The OS dialog cannot be fed in extension mode — use the constructed-File recipe in `known-hazards.md` ("File uploads cannot go through the OS file dialog"): predefine `path` on each `File`, assign `input.files`, dispatch a bubbling `change` event on the directory input.
 - First import of a nested fixture should recreate the folder structure; `readme.md` (markdown MIME) lands as `README.md`, `*.markdown` lands as `*.md`, `.DS_Store`/`Thumbs.db` and extension-less files never appear. Verify with "Walk The Files Tree From Page Context" in `snippets.md`, started at the imported folder; check its row paths, not the sidebar alone.
-- Re-importing the same fixture opens `.FilesSidebarImportConflictModal` listing the existing paths, with buttons `Cancel import`, `Skip existing`, `Replace existing`; `Escape` cancels. Replace soft-archives the old node (old id gains `archiveOperationId`, new id appears at the same path — `list_tree_children` returns the old id only with `archived: true`, so a walk that reads archived pages too must filter archived rows before asserting).
+- Re-importing the same fixture opens `.FilesSidebarImportConflictModal` listing the existing paths, with buttons `Cancel import`, `Skip existing`, `Replace existing`; `Escape` cancels. Replace moves the old node to Trash (old id gains `archiveOperationId`, new id appears at the same path — `list_tree_children` returns the old id only with `archived: true`, so a walk that reads trashed pages too must filter trashed rows before asserting).
 - The progress toast (`Preparing files to import...` / `Uploading N of M files...`) carries a `Cancel` action; after a cancel, files under the import prefix must equal the summary's imported count (no phantom "waiting for upload" rows). The summary toast (`Import finished/cancelled: N imported, ...`) auto-dismisses in ~4s — read it in the same execute call or from `latestLogs` (`[FilesSidebar.runFolderImport] Skipped files`).
 - Row UI during upload (the `Uploading` pill) only renders for visible rows: the tree is virtualized, so expand the destination folder (click the row, then `ArrowRight`) and scroll it into view before asserting. A missing pill on a collapsed or below-fold row proves nothing. Verified 2026-09-18.
 - Markdown finalization proof: open an imported `.md` node and assert its token text in `.FileEditorRichText-editor-content` (needs a few seconds for the R2 event + finalizer).
-- Clean up by archiving the fixture root folders through `app_convex.mutation(app_convex_api.files_nodes.archive_nodes, ...)`.
+- Clean up by moving the fixture root folders to Trash through `app_convex.mutation(app_convex_api.files_nodes.archive_nodes, ...)`.
 
 ### R2 Upload And PDF Siblings
 
@@ -1221,7 +1221,7 @@ Use this after changing the bulk import flow (`run_folder_import` in `files-side
 - In Agent mode, ask Bash to `mv` a file to a new path and verify the Pending tab shows a move proposal before acceptance. Test both a rename and a move between folders.
 - Ask Bash to `cp` a file to a new path and to an occupied path. Verify the Pending tab shows the copy or replacement proposal and that committed files stay unchanged until acceptance.
 - For a mixed move plus content proposal, accept it and verify the move is applied before the updated content is saved.
-- In Agent mode, shell writes ARE supported. `cat > path <<'EOF' ... EOF`, `>`, `>>`, and app-to-app `cp` create reviewable pending content in both collaboration modes (changed 2026-09-06; before that a target with collaboration off saved immediately). App-to-app `mv` and `rm` stay pending structural proposals (`rm` archives on acceptance). Verified 2026-08-21; the older "writes are unsupported" note here was stale. Links are still not shell operations, and app-to-`/tmp` copy stays immediate thread scratch.
+- In Agent mode, shell writes ARE supported. `cat > path <<'EOF' ... EOF`, `>`, `>>`, and app-to-app `cp` create reviewable pending content in both collaboration modes (changed 2026-09-06; before that a target with collaboration off saved immediately). App-to-app `mv` and `rm` stay pending structural proposals (`rm` moves items to Trash on acceptance). Verified 2026-08-21; the older "writes are unsupported" note here was stale. Links are still not shell operations, and app-to-`/tmp` copy stays immediate thread scratch.
 - Whole-file `cp` (verified 2026-09-05, after the content type policy landed): a copy carries the source's content, content type, and document shape onto the destination, whatever the destination's name says, so `cp a.md b.txt` makes `b.txt` a Markdown file that opens in the rich text editor, and `cp a.md shapes.png` turns the image node into a Markdown file. A new text destination inherits the source's collaboration mode; an existing text destination keeps its own mode. Build the fixtures without typing: `files_nodes.create_folder_node` from page context (`{ membershipId, parentId: "root", path: "<folder>" }`), select the folder row, then `setInputFiles` on the sidebar input for `r2-upload-markdown-sample.md`, `qa-plain.txt`, and `shapes.png` (one call each, ~3 s apart; the text nodes get their `textKind` a few seconds later). Ask the agent for exact commands with the prompt prefix from "Indexed Frontmatter Metadata" below, and use workspace-relative paths (`cp qa-x/a.md qa-x/b.txt`): the shell's cwd is the workspace root, and a leading `/` answers `cannot stat`. Expected stdout: `pending copy created: /qa-x/a.md -> /qa-x/b.txt — replaces the existing file's content and type when accepted; review in Files` for an existing destination (`— review in Files` for a new one), in both collaboration modes (since 2026-09-06). Accept it in the Pending tab with `getByRole("button", { name: "Accept changes to /qa-x/b.txt" })`. Read with `files_tree.get_file_node_for_membership({ membershipId, fileNodeId })`, the destination keeps its `_id` and `yjsSnapshotId` (the lineage is swapped in place), while `contentType` and `textKind` become the source's. Its `assetId` points at the copied content asset, which may be rebuilt when Markdown is normalized. Restore proves the other direction: `Open file snapshots` on the destination lists the replaced content as a version (`3m ago`, with the plain token in its preview), `Confirm` brings back `text/plain;charset=utf-8` and the Code editor with no reload (poll `[aria-label="Text editor actions"]` and `window.__qa.monaco().plainText.getValue()`). A rich text document that embeds the replaced image (`![x](bonobo-file://<nodeId>)` in an uploaded `.md`) shows `File is not an image or video anymore` in the node view after the accept.
 
 ### Indexed Frontmatter Metadata Through The Agent
@@ -1232,7 +1232,7 @@ Use this to verify backend changes to `files_metadata` (extraction, `meta search
 - Read results from `[aria-label="Bash terminal output"]` via `textContent`, not the assistant's prose.
 - Create the fixture with a heredoc write (`cat > qa-<topic>/a.md <<'EOF' ... EOF`) instead of editing real files. The write is a pending proposal, and pending metadata docs are indexed and overlaid for the acting user, so `meta search` and `meta get` already see them — no acceptance needed for a read-path check.
 - Copy the real frontmatter shape you care about. Imported meeting files quote their dates: `realStartTime: "2026-07-29T19:00:00.000Z"`.
-- Clean up the private fixture through the Pending tab. Select its folder and all its child proposals, then use Discard. A ready child outside that selection must require review. Discarding only a child leaves its private parent proposal. Check that the fixture disappears from owner reads, then verify private cleanup releases its node and storage holds. No saved folder should need archiving unless the fixture was saved first.
+- Clean up the private fixture through the Pending tab. Select its folder and all its child proposals, then use Discard. A ready child outside that selection must require review. Discarding only a child leaves its private parent proposal. Check that the fixture disappears from owner reads, then verify private cleanup releases its node and storage holds. No saved folder should need moving to Trash unless the fixture was saved first.
 - Metadata changes live in `convex/`, which `pnpm dev` does NOT push (that script is Vite only). Run `vp env exec pnpm exec convex dev --once` from `packages/app` after each edit (only while every uncommitted change in `git status` is yours: `convex-admin-ops` "Push Only A Pushed Commit"), and reload the route afterwards using the blanked-tab recipe in `agent-panel.md`.
 
 ### File Agent Just Bash
@@ -1497,27 +1497,27 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   uses the copy's original membership; unavailable files have generic names.
   Copy and Download need no write access. Discard asks again. Reload/close loses it and warns;
   signing out clears it. It never writes the text back automatically.
-- Archive and restore jobs (verified 2026-09-25). Call `archive_nodes` / `unarchive_nodes` through the
-  page-context `app_convex` client, or use the Archive dialog and the sidebar row menu `Restore` (turn on
-  `Show archived items` in the top More options menu first). With several rows selected, the row menu's
-  plain `Archive` item archives the whole selection (`Archive N items?`). On 2026-09-29 locator clicks
+- Move to Trash and restore jobs (verified 2026-09-25). Call `archive_nodes` / `unarchive_nodes` through the
+  page-context `app_convex` client, or use the Move to Trash dialog and the sidebar row menu `Restore` (turn on
+  `Show items in Trash` in the top More options menu first). With several rows selected, the row menu's
+  plain `Move to Trash` item moves the whole selection to Trash (`Move N items to Trash?`). On 2026-09-29 locator clicks
   on the row `More actions for <name>` button, its items, and the top `More options` button hung or did
   not land. `page.mouse.click` at the button's bounding-box center opened the menu, and `End` + `Enter`
-  picked `Restore`. `Show archived items` is React state, so closing the tab resets it. An archive job
+  picked `Restore`. `Show items in Trash` is React state, so closing the tab resets it. A move to Trash job
   returns `{ runId, activityId, isDone, notArchivedNodeIds, refusedItems }` (a restore returns
-  `{ runId, activityId }`). With one refused item the toast reads `"<name>" was not archived: <reason>`,
-  with more it reads `N items were not archived. See Activity.`
-  The Activity card shows a bar and `Archiving 12 of 46 items…` while it runs, then one line:
-  `Archived 46 items.`, or `Archived 45 of 46 items.` when the archive refused named items. A
-  refusal alone in the old normal archive path still reads `Completed`. New force archive runs read
+  `{ runId, activityId }`). With one refused item the toast reads `"<name>" was not moved to Trash: <reason>`,
+  with more it reads `N items were not moved to Trash. See Activity.`
+  The Activity card shows a bar and `Moving 12 of 46 items to Trash…` while it runs, then one line:
+  `Moved 46 items to Trash.`, or `Moved 45 of 46 items to Trash.` when Trash refused named items. A
+  refusal alone in the old normal Trash path still reads `Completed`. New forced delete runs read
   `Partly completed` and page refused items and retained folders through `files_archive_runs.list_outcomes`.
   Hidden results say `Permission denied` without a path. No app force action is added. This new outcome
   contract needs native QA. The button is `View progress` while it runs and `Open` after.
-  The job dialog lists the archived full paths in the read-only `textbox` `Archived items` and the refused
-  ones under the region `Not archived (N)`, one `textbox` per reason named `Not archived: <reason>`.
+  The job dialog lists the trashed full paths in the read-only `textbox` `Items moved to Trash` and the refused
+  ones under the region `Not moved (N)`, one `textbox` per reason named `Not moved: <reason>`.
   Its heading holds the job's `[data-activity-status-icon]`. The `Open` button can sit below the visible part of the popover list:
   call `scrollIntoView` on it before the mouse click, or the click lands outside and closes the popover.
-  Only force archive and restore jobs expose Stop; normal archive retains its accepted-work behavior. To test a name clash, archive a folder, create an empty folder with the same
+  Only forced moves to Trash and restore jobs expose Stop; normal moves to Trash retain their accepted-work behavior. To test a name clash, move a folder to Trash, create an empty folder with the same
   name, then Restore: the card says `Action needed` and `1 name conflict needs your choice.`, the bell
   count goes up by one, and `Resolve` opens a dialog with
   a group named by the path (`/seed`) holding `Keep both`, `Replace empty folder` (`Replace` for a
@@ -1527,20 +1527,20 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   Notifications popover still open, `getByRole("dialog", { name: "Restore files" }).waitFor()` timed out
   (2026-09-25); `page.locator("[role=dialog]", { hasText: "Choose how to handle this name." })` found it.
   To check the tree rule, run "Walk The Files Tree From Page Context" in `snippets.md` with
-  `archived: [false, true]` and assert no active row has an archived parent row. The
+  `archived: [false, true]` and assert no active row has a trashed parent row. The
   runners live in the `archive-job-2026-09-24` personal task folder.
   Mid-job checks (verified 2026-09-25, runners in `archive-job-followups-2026-09-25`): start the job with one
   `app_convex.mutation` call, poll `files_archive_runs.get` every 200 ms until `activity.progress.completed > 0`,
-  then act in the same `page.evaluate`. A second CLI call is too slow: an archive step stamps up to 30 items per
+  then act in the same `page.evaluate`. A second CLI call is too slow: a move to Trash step stamps up to 30 items per
   step. In the current source use `read_only_set` with `readOnly: true` on the deepest active folder.
   This setter change is pending native QA. The old normal-job check ended the job
   `failed` with `Stopped partway: This item is read-only.`, and the locked folder and its parents stay active.
   A folder created with `create_folder_node` during the check phase or after the first apply step gets the
   job's operation. Its `path` argument is relative to `parentId`, not a full path. An agent delete
-  (`rm -r` in chat) does not use this job: the Pending tab `Accept delete of <path>` archives it through
+  (`rm -r` in chat) does not use this job: the Pending tab `Accept delete of <path>` moves it to Trash through
   the review run's Save cohort worker. To check search during a job, poll `files_nodes.search_saved` with
   `clause: { kind: "content", text }` for a word from one text file inside the tree. That file must go from
-  present to absent once (archive) or from absent to present once (restore), and never back.
+  present to absent once (move to Trash) or from absent to present once (restore), and never back.
 - For screenshots and hit-target checks, scroll the Read-only block into view first. Tabbing to footer
   controls can leave the checkbox above the scroll area. At 512×768 the dialog scrolls and keeps its footer
   visible. The quick audit counts small checkbox inputs; inspect their clickable labels before treating
@@ -1592,7 +1592,7 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   page context returns the entries in stored order.
 - Properties work on uploads and folders. Folder Metadata uses the same save and lock states;
   Collaboration stays file-only. Save a folder label, search it in the sidebar and global palette,
-  then rename/move/archive/restore the folder and read back its current metadata and search path.
+  then rename/move/move to Trash/restore the folder and read back its current metadata and search path.
 - Agent side: ask the chat agent to run `meta get <path>` and to call `set_file_metadata`. The tool
   takes bare keys (`status`), and the model tends to paste the bash mount path — both are covered by
   the tool description now, but a run that fails with `Not found` is usually the path, not permissions.
@@ -2232,16 +2232,16 @@ Only Copy crosses workspaces. Spec: `files-explorer-tree/references/transfer.md`
 7. Media (owner, paid plan): build fixtures with `create_upload_node` plus a `fetch` PUT for both `shapes.png` and a `.md` that embeds `bonobo-file://<image id>`. Read the PNG bytes in the sandbox with `require("node:fs")`; bare `fs` is not defined there. `cp` of the doc alone succeeds and keeps its image link unchanged (since October 2026; not checked in the browser again). `cp -R` of the folder makes 3 drafts, and the doc embeds `bonobo-file://private/<image pendingNodeId>`. The doc's Accept stays disabled until its folder is saved. Accepting the doc alone saves it, and its link to the unsaved image stays as a link. Accept all saves both. (The doc-alone Save changed in October 2026 and was not checked in the browser again.) The saved doc keeps the private reference by design. `r2.get_media_by_reference` resolves it to the saved image with a new destination asset, and the image renders (`naturalWidth > 0`).
 8. Background cp: `cp -R $T/src/sub $H/bg1 & { cp -R $T/src/sub $H/bg2; sleep 240; echo late; } &`. Both copies land as drafts. During the sleep, job 2 shows `Queued` with the rest of its script stored; that is a normal pause. `Stop Background command 2` in Notifications settles it as `Stopped`. After a reload, `jobs` is empty and `late` never ran.
 
-### Archived-parent draft recovery
+### Parent-in-Trash draft recovery
 
-Use two identities: a member who owns an unsaved draft under a saved folder, and the org owner, who archives that folder.
+Use two identities: a member who owns an unsaved draft under a saved folder, and the org owner, who moves that folder to Trash.
 
 1. The member creates the draft with a native agent `printf`. It must be ready with `canAccept=true`.
-2. Archive the folder with `files_nodes.archive_nodes`. The tree row menu needs hover, which fails in a backgrounded tab.
+2. Move the folder to Trash with `files_nodes.archive_nodes`. The tree row menu needs hover, which fails in a backgrounded tab.
 3. As the member: path lookup returns null. `get_file_pending_target` by id returns `recovery: { expiresAt, savedParentId }` with `canAccept`, `canEdit`, and `canAcceptWithParents` all false. The org owner gets null.
-4. Open `files?pendingNodeId=<id>`. Require `.FilePendingNotice[data-recovery="archived-parent"]`, `Unsaved draft expires <date>.`, the `Open archived folder` link (keyboard Enter opens the folder), the read-only accepted and proposed text with Copy buttons, and the toolbar text `Restore the archived folder before saving this draft.` No draft editor mounts. The chat composer and the zero-height shared Monaco container still match editor selectors, so check the size and parent.
+4. Open `files?pendingNodeId=<id>`. Require `.FilePendingNotice[data-recovery="archived-parent"]`, `Unsaved draft expires <date>.`, the `Open folder in Trash` link (keyboard Enter opens the folder), the read-only accepted and proposed text with Copy buttons, and the toolbar text `Restore the folder from Trash before saving this draft.` No draft editor mounts. The chat composer and the zero-height shared Monaco container still match editor selectors, so check the size and parent.
 5. `unarchive_nodes` brings back `canAccept`, `canEdit`, and `readiness: "ready"`.
-6. Cleanup: restore parents before cleaning up drafts. Discard only owned drafts, archive only owned saved folders, and remove only the memberships added for this run.
+6. Cleanup: restore parents before cleaning up drafts. Discard only owned drafts, move only owned saved folders to Trash, and remove only the memberships added for this run.
 
 The app's hidden Monaco hoisting container also matches `.monaco-editor`. Read the mounted editor with `.monaco-editor[data-uri]`, and scope further when a diff has two models.
 

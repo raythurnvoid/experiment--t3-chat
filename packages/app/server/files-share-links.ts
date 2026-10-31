@@ -106,7 +106,7 @@ export async function files_share_links_db_check_live_node(
 	},
 ) {
 	if (args.node.archiveOperationId !== null) {
-		return Result({ _nay: { message: "This item is archived" } });
+		return Result({ _nay: { message: "This item is in Trash" } });
 	}
 
 	if (!(await files_share_links_db_is_workspace_live(ctx, args))) {

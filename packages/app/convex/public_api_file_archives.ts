@@ -67,7 +67,7 @@ export async function public_api_file_archives_db_prepare(
 		receipt.membershipLifetime === membershipLifetime;
 	const receipt = await find(args.requestId);
 	if (receipt && (!sameAuthority(receipt) || receipt.inputHash !== inputHash)) {
-		return Result({ _nay: { name: "conflict", message: "This request ID was already used for another archive" } });
+		return Result({ _nay: { name: "conflict", message: "This request ID was already used for another delete" } });
 	}
 	const previous = args.previousRequestId === undefined ? null : await find(args.previousRequestId);
 	if (
@@ -78,7 +78,7 @@ export async function public_api_file_archives_db_prepare(
 			previous.operation !== args.operation ||
 			previous.path !== args.path)
 	) {
-		return Result({ _nay: { name: "conflict", message: "The earlier archive does not match this request" } });
+		return Result({ _nay: { name: "conflict", message: "The earlier delete does not match this request" } });
 	}
 	return Result({ _yay: { receipt, previous, inputHash, membershipLifetime } });
 }
@@ -110,7 +110,7 @@ export async function public_api_file_archives_db_result(
 					: item.reason === "read_only"
 						? "This item is read-only."
 						: item.reason === "not_empty"
-							? "This folder still holds items that could not be archived."
+							? "This folder still holds items that could not be moved to Trash."
 							: "This item changed. Try again.",
 		});
 	}
@@ -210,7 +210,7 @@ export async function public_api_file_archives_db_archive(
 	while (pending.length) {
 		const node = pending.pop()!;
 		if (++visited > args.maxNodes)
-			return Result({ _nay: { message: `An archive can visit at most ${args.maxNodes} files and folders` } });
+			return Result({ _nay: { message: `A delete can visit at most ${args.maxNodes} files and folders` } });
 		if (node.archiveOperationId !== null) continue;
 		const checked = await public_api_file_archives_db_check_node(ctx, { node, writeContext: args.writeContext });
 		const failure = checked._nay ?? (await args.accept(node));
@@ -226,7 +226,7 @@ export async function public_api_file_archives_db_archive(
 		if (node.kind === "folder") {
 			const rows = await children(node._id).take(args.maxNodes - visited - pending.length + 1);
 			if (rows.length + visited + pending.length > args.maxNodes)
-				return Result({ _nay: { message: `An archive can visit at most ${args.maxNodes} files and folders` } });
+				return Result({ _nay: { message: `A delete can visit at most ${args.maxNodes} files and folders` } });
 			pending.push(...rows);
 		}
 	}

@@ -98,7 +98,7 @@ with the missing rows. `sortDisplayValue` is a typed preview of at most 256 code
 An absent flag means false, so a complete short value needs no stored flag.
 Every writer that
 changes a node's name, parent, or restriction also patches these fields on its committed field docs.
-A restrict or unrestrict patches archived docs too, because a restore does not rewrite the flag. See the `files-explorer-tree` skill, "Folder Contents".
+A restrict or unrestrict patches trashed docs too, because a restore does not rewrite the flag. See the `files-explorer-tree` skill, "Folder Contents".
 
 Sort is text only, so dates sort in time order only when they share one format and time zone. A
 later date sort mode would reuse the `maybe_date` companion that search already writes, so search
@@ -360,8 +360,8 @@ The map holds member-defined labels and details recorded by creation flows.
   paths and access checks stay current. See
   [Saved place refresh](../files-agent-pending-updates/SKILL.md#pending-overlay).
 
-Folder metadata participates in sidebar and global search. Rename, move, archive, and restore update
-its indexed scope with the folder's own path, including nested and archived descendants. Folder
+Folder metadata participates in sidebar and global search. Rename, move, move to Trash, and restore update
+its indexed scope with the folder's own path, including nested and trashed descendants. Folder
 pending moves keep the committed map and the existing per-user search overlay. True deletion removes
 both field and value docs, plus the owned full map. File and folder copies clone metadata.
 
@@ -421,7 +421,7 @@ whole-query transaction metrics and a local doc byte count. They keep a 4 MiB re
 finished. A budget stop returns the completed prefix; no first progress throws a clear query error.
 
 Missing membership or target access returns null. Missing current-user auth throws `Unauthenticated`.
-A grant-only member gets an empty, done ordinary catalog at the root. A readable archived folder
+A grant-only member gets an empty, done ordinary catalog at the root. A readable trashed folder
 gets an empty, done catalog too.
 
 # Folder Table Filter
@@ -578,10 +578,10 @@ The doors sit in the search box region of `convex/files_metadata.ts`, except `se
   file of a restricted folder from `search_saved` or `search_saved_metadata` until it is shared with them. The suggestion
   doors follow the same rule by area: a member reads the keys and values of one area they can open
   (the area rule in "Suggestions"), so a value of a file they cannot open is never suggested.
-- Archiving a file removes it from every door: `search_saved_metadata` reads `archiveOperationId: undefined`
-  docs only, and the catalog counts active docs only, so an archived file's keys and values
+- Moving a file to Trash removes it from every door: `search_saved_metadata` reads `archiveOperationId: undefined`
+  docs only, and the catalog counts active docs only, so a trashed file's keys and values
   disappear with it (after the catalog lag). `search_saved` reads saved, active rows only, so the
-  search box never lists an archived file.
+  search box never lists a trashed file.
 
 # Catalog
 
@@ -622,7 +622,7 @@ Their `area_*` counts move to the new area. The `key` and `value` docs
   by id (a missing marker ends the chain), applies up to 500 deltas older than 5 seconds to their rows,
   deletes them, and schedules itself again while any delta is left. A run that applied deltas also
   schedules one more run, so only a run with nothing to apply and no delta left deletes the marker. A
-  scope job or an archive job inserts deltas in steps a few seconds apart, and each step reads the
+  scope job or a Trash job inserts deltas in steps a few seconds apart, and each step reads the
   marker. If a run between two steps deleted it, the running step would conflict and do all its work
   again. A step that runs past that one more run can still conflict, but rarely. Drift
   (a count below 0) never throws: it clamps to 0 and logs one `files_metadata_catalog drift` line per run,

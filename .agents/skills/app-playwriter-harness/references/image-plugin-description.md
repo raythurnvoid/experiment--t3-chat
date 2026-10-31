@@ -14,7 +14,7 @@ Covers the flows that regress when the image plugin worker, publisher secrets, c
 2. Confirm the `OPENAI_API_KEY` publisher secret exists for the image plugin's repository. Open the plugin's detail page (`/w/:organizationName/:workspaceName/plugins/image`), click `Manage secrets` in the `Secrets` section, and read the `Plugin secrets` tab — repository secrets live there, installation secrets under `Workspace secrets`.
 3. Create a Playwriter session and install the app harness (see `r2-file-content-regression.md` Preflight; same commands).
 4. Warm the Convex dev deployment first — cold starts can exceed 60s and look like a hung upload.
-5. Use one unique folder per run, for example `aaa-pw-image-<timestamp>`; archive it during cleanup.
+5. Use one unique folder per run, for example `aaa-pw-image-<timestamp>`; move it to Trash during cleanup.
 
 Fixture: `.agents/skills/app-playwriter-harness/assets/files/shapes.png` — a red circle, a blue square, a green triangle, and the text `BONOBO QA IMAGE` on white (registered in `references/files.md`).
 
@@ -90,7 +90,7 @@ vp env exec node node_modules/convex/bin/main.js run plugins:run_installation_on
 
 ## Cleanup
 
-1. Archive `aaa-pw-image-<timestamp>` and any negative-test folders.
+1. Move to Trash `aaa-pw-image-<timestamp>` and any negative-test folders.
 2. Confirm the `OPENAI_API_KEY` secret was restored in the image plugin's `Plugin secrets` tab (secrets are per repository, so the video plugin's own `OPENAI_API_KEY` is unaffected), and that any installation-level override recorded before the install cycle was restored too.
 3. Record skipped steps with the real blocker, not as pass.
 

@@ -239,7 +239,7 @@ describe("unarchive_nodes path limit", () => {
 		expect(ended.activity).toMatchObject({
 			status: "partial",
 			progress: { completed: 4, skipped: 2 },
-			errorMessage: `1 item stayed archived because its path would be too long: …/${"d".repeat(250)} (1,028 characters). Shorten a folder name, then restore it again.`,
+			errorMessage: `1 item stayed in Trash because its path would be too long: …/${"d".repeat(250)} (1,028 characters). Shorten a folder name, then restore it again.`,
 		});
 		const run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
 		expect((await read_node(f, deepest._id)).archiveOperationId, "the deepest folder stays archived").toBe(
@@ -263,7 +263,7 @@ describe("unarchive_nodes path limit", () => {
 		const ended = await run_to_end(f, job);
 		expect(ended.activity.status).toBe("partial");
 		expect(ended.activity.errorMessage).toMatch(
-			/^1 item stayed archived because its path would be too long: …\/d+ \(1,028 characters\)\. Shorten a folder name, then restore it again\.$/,
+			/^1 item stayed in Trash because its path would be too long: …\/d+ \(1,028 characters\)\. Shorten a folder name, then restore it again\.$/,
 		);
 		expect(await read_node(f, short)).toMatchObject({ archiveOperationId: null, readOnly: true });
 	});

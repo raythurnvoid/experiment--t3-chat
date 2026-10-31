@@ -1409,7 +1409,7 @@ describe("bash_run_command", () => {
 		expect(removed.metadata.exitCode).toBe(0);
 		expect(removed.stderr).toBe("");
 		expect(removed.stdout).toBe(
-			"pending delete created: /docs/readme.md — archives the file when accepted; review in Files\n",
+			"pending delete created: /docs/readme.md — moves the file to Trash when accepted; review in Files\n",
 		);
 
 		const readmeId = await get_seeded_node_id(runner, "/docs/readme.md");
@@ -1452,7 +1452,7 @@ describe("bash_run_command", () => {
 		expect(removed.metadata.exitCode).toBe(0);
 		expect(removed.stderr).toBe("");
 		expect(removed.stdout).toBe(
-			"pending delete created: /docs — archives the folder and its contents when accepted; review in Files\n",
+			"pending delete created: /docs — moves the folder and its contents to Trash when accepted; review in Files\n",
 		);
 
 		const docsId = await get_seeded_node_id(runner, "/docs");
@@ -1509,7 +1509,7 @@ describe("bash_run_command", () => {
 		expect(removed.metadata.exitCode).toBe(0);
 		expect(removed.stdout).toBe(
 			"removed '/tmp/scratch.txt'\n" +
-				"pending delete created: /docs/tutorial.md — archives the file when accepted; review in Files\n",
+				"pending delete created: /docs/tutorial.md — moves the file to Trash when accepted; review in Files\n",
 		);
 		const scratchRead = await runner.run({ command: "cat /tmp/scratch.txt" });
 		expect(scratchRead.metadata.exitCode).not.toBe(0);
@@ -1521,7 +1521,7 @@ describe("bash_run_command", () => {
 		expect(partial.metadata.exitCode).not.toBe(0);
 		expect(partial.stderr).toBe(`rm: cannot remove '${test_db_files_mount}/missing.md': No such file or directory\n`);
 		expect(partial.stdout).toBe(
-			"pending delete created: /docs/nested/deep.md — archives the file when accepted; review in Files\n",
+			"pending delete created: /docs/nested/deep.md — moves the file to Trash when accepted; review in Files\n",
 		);
 	});
 
@@ -1560,12 +1560,12 @@ describe("bash_run_command", () => {
 		const upperRecursive = await runner.run({ command: `rm -R ${test_db_files_mount}/reports` });
 		expect(upperRecursive.metadata.exitCode).toBe(0);
 		expect(upperRecursive.stdout).toBe(
-			"pending delete created: /reports — archives the folder and its contents when accepted; review in Files\n",
+			"pending delete created: /reports — moves the folder and its contents to Trash when accepted; review in Files\n",
 		);
 		const clustered = await runner.run({ command: `rm -rfv -- ${test_db_files_mount}/docs/nested` });
 		expect(clustered.metadata.exitCode).toBe(0);
 		expect(clustered.stdout).toBe(
-			"pending delete created: /docs/nested — archives the folder and its contents when accepted; review in Files\n",
+			"pending delete created: /docs/nested — moves the folder and its contents to Trash when accepted; review in Files\n",
 		);
 
 		// The builtin's parser ignores a boolean long option's value, so --force=false still
@@ -1575,7 +1575,7 @@ describe("bash_run_command", () => {
 		});
 		expect(booleanForm.metadata.exitCode).toBe(0);
 		expect(booleanForm.stdout).toBe(
-			"pending delete created: /docs/tutorial.md — archives the file when accepted; review in Files\n",
+			"pending delete created: /docs/tutorial.md — moves the file to Trash when accepted; review in Files\n",
 		);
 
 		// Later commands chained in the SAME bash call already see the removed path as gone.

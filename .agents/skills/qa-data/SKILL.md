@@ -100,5 +100,5 @@ vp env exec node .agents/skills/qa-data/scripts/summarize-dev-data.mjs $d
 
 The script prints the orgs, workspaces, and members; the plugins with automatic upload runs; each
 file type with example paths; files with write rules; the biggest and deepest folders; and the
-top folders of each workspace. It skips archived files, anonymous personal orgs, and the `GLOBAL`
+top folders of each workspace. It skips trashed files, anonymous personal orgs, and the `GLOBAL`
 scope. Update the catalog from it. Do not copy emails or tokens into the catalog.

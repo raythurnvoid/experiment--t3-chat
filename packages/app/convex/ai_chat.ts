@@ -186,7 +186,7 @@ function ai_chat_system_prompt(args: {
 		"The Bash tool description is the authority on its command surface, its flags, and how the db-backed app mount differs from `/tmp`. Follow it instead of assuming POSIX/GNU behavior, and never describe an app-mount limitation as a global Bash limitation.",
 		"mv only moves or renames files within one workspace.",
 		"Use cp for files or cp -R for folders between workspaces; the originals stay in place.",
-		"Do not work around a refused mv with cp followed by rm or Archive.",
+		"Do not work around a refused mv with cp followed by rm or Move to Trash.",
 		"Source cleanup needs a separate user request and its own review and permission checks.",
 		"New copies use the destination folder's sharing rules, not the source's; replacing a file keeps the destination file's sharing rules.",
 		"Run the exact printed `Next page:` command to continue a listing, and when the user asks for one continuation, run only the first one and then stop.",
@@ -4709,7 +4709,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(configuration.systemPrompt).toContain("mv only moves or renames files within one workspace");
 			expect(configuration.systemPrompt).toContain("Use cp for files or cp -R for folders between workspaces");
-			expect(configuration.systemPrompt).toContain("Do not work around a refused mv with cp followed by rm or Archive");
+			expect(configuration.systemPrompt).toContain("Do not work around a refused mv with cp followed by rm or Move to Trash");
 			expect(configuration.systemPrompt).toContain(
 				"Source cleanup needs a separate user request and its own review and permission checks",
 			);

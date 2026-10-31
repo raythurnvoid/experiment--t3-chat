@@ -24,7 +24,7 @@ vp env exec pnpx playwriter -s $session -f "$(git rev-parse --show-toplevel)/.ag
 vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" }); console.log(await state.appPlaywriterHarness.observe({ label: "files tab", search: /Files|Agent|Comments|Toolbar|Upload|New file|New folder/i }));'
 ```
 
-4. Use one unique folder per run, for example `aaa-pw-r2-<timestamp>`, and archive it during cleanup.
+4. Use one unique folder per run, for example `aaa-pw-r2-<timestamp>`, and move it to Trash during cleanup.
 5. Keep screenshots and logs only when a step fails or shows suspicious behavior.
 
 ## Automated Verification
@@ -53,17 +53,17 @@ Expected result: all commands pass. If the full app test or lint command fails, 
 
 Expected result: the Markdown node opens as an editable file, the server-owned initial content is present, edits persist after save/reload, and no console/page errors mention missing `assetId`, `r2Key`, or `snapshotUpdate`. Since 2026-08-10 Markdown is one of 20 editable text extensions — the other 19 (`.json`, `.yaml`, ...) open in the Monaco plain editor instead of the rich editor — but this flow's rich-editor steps stay `.md`-specific.
 
-## Duplicate, Rename, Move, Drag/Drop, Archive, Unarchive
+## Duplicate, Rename, Move, Drag/Drop, Move to Trash, Restore
 
 1. Try to create the same `server-seeded-<timestamp>.md` again in the same folder.
 2. Verify duplicate-name validation blocks creation.
 3. Rename the file to `renamed-server-seeded-<timestamp>.md`.
 4. Move the file to a nested folder with the available move/drag/drop UI.
 5. Drag the file back to the run folder using real Playwright mouse movement over visible rows.
-6. Archive the file and verify it disappears from active rows.
-7. Unarchive it from the archive/trash UI if exposed in the current build, then reopen it.
+6. Move the file to Trash and verify it disappears from active rows.
+7. Restore it from the Trash view if exposed in the current build, then reopen it.
 
-Expected result: path operations update the tree and routing without losing editor content, comments, or R2-backed snapshots. If unarchive UI is not reachable in the current tab, record the blocker and rely on backend coverage for that branch.
+Expected result: path operations update the tree and routing without losing editor content, comments, or R2-backed snapshots. If restore UI is not reachable in the current tab, record the blocker and rely on backend coverage for that branch.
 
 ## Uploads And Generated Markdown Siblings
 
@@ -75,7 +75,7 @@ Expected result: path operations update the tree and routing without losing edit
 6. Verify `r2-upload-sample.pdf.md` appears as an ordinary sibling and opens in the rich text editor. The PDF node keeps its stored-file panel.
 7. Upload the same PDF again in the same folder.
 8. Rename in the conflict modal's `Filename` input and submit `Upload` (the destructive alternative is `Replace`); verify the renamed source node appears.
-9. Test `Replace` and verify the active source node is replaced while the previous active source is archived.
+9. Test `Replace` and verify the active source node is replaced while the previous active source is in Trash.
 10. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-markdown-sample.md` and verify it becomes a normal editable Markdown node, not a source conversion panel. Since 2026-08-10 the other 19 editable text extensions convert the same way: upload `qa-plain.yaml` (pinned fixture, see `files.md`) and verify it becomes an editable plain-text document in Monaco, not a stored card.
 
 Expected result: each upload attempt uses a fresh asset-id R2 key and a direct, signed create-only PUT. PDF plugin output is a regular Markdown sibling. Editable text uploads (Markdown plus the 19 plain-text extensions) become editable nodes, and duplicate PDF paths follow the collision UI.
@@ -178,7 +178,7 @@ Expected result: snapshot preview/restore and downloads use asset-backed R2 URLs
 
 ## Cleanup
 
-1. Archive `aaa-pw-r2-<timestamp>` and any renamed upload/source artifacts created during the run.
+1. Move to Trash `aaa-pw-r2-<timestamp>` and any renamed upload/source artifacts created during the run.
 2. Failed PUT probes can add signed URLs to browser logs. Use `getLatestLogs` directly and sanitize its URL text before printing or saving it. The harness `latestLogs()` wrapper logs the raw result:
 
 ```js

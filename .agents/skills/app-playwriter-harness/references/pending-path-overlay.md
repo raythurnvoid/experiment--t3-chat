@@ -25,7 +25,7 @@ Covers the user-facing flows around `files_pending_updates` move/copy proposals 
 - Row clearance can lag the status change by up to a few seconds (Convex reactivity) — after the status fires, poll row count instead of asserting immediately.
 - A saved item moved into a new pending folder needs that folder saved first. Accept the added folder, wait for `Changes saved.`, and close that review dialog. Then Accept the move. A completed dialog can still block clicks behind it. Read the dialog before retrying a click that timed out. Verified with `mkdir agent-dest && mv move-dest agent-dest/` on 2026-10-11.
 - Accept can start disabled on a new row: seen 2026-10-11 (dev), right after the agent made a draft move (`mv pwdest6-docs/notes.md pwdest6-team`), the row's `Accept move of …` and `Accept all shown pending changes` were both disabled (`disabled` and `aria-disabled="true"`) for about 10 seconds, then turned on with no user action. Before you read whether Accept is disabled (for example for a blocked move into a folder the user can no longer open), poll until the state stays the same for a few seconds, or until Accept turns on in a normal case. An early read can give a false "disabled".
-- Archived files: archived nodes disappear from the tree; the reveal affordance is a `menuitemcheckbox` named `Show archived items` / `Hide archived items` inside the sidebar-header `More options` (ellipsis) menu (`unmountOnHide` — absent from DOM until the menu opens). While shown, archived rows get aria-label `<name> archived`. The checkbox does NOT close the menu on click — press Escape or click elsewhere before re-clicking `More options`, else the second trigger click just closes the menu and the item click hangs.
+- Trashed files: trashed nodes disappear from the tree; the reveal affordance is a `menuitemcheckbox` named `Show items in Trash` / `Hide items in Trash` inside the sidebar-header `More options` (ellipsis) menu (`unmountOnHide` — absent from DOM until the menu opens). While shown, trashed rows get aria-label `<name> in Trash`. The checkbox does NOT close the menu on click — press Escape or click elsewhere before re-clicking `More options`, else the second trigger click just closes the menu and the item click hangs.
 - Sidebar tabs: `#app_file_editor_sidebar_tabs_pending` / `#app_file_editor_sidebar_tabs_agent` — click the tab before clicking inside its panel.
 - Chat composer: `[contenteditable="true"][aria-label="Send a message..."]`; send `[data-testid="ai-chat-send-button"]`.
 - Chat run state: the thread root exposes `data-ai-chat-state` = `idle` | `streaming` | `tool-running`. Preferred turn-done check: poll `[data-ai-chat-state]` at ~250ms until it returns to `idle` (guard against "never saw it running" with an assistant-message count baseline). Fallback heuristic: send button present again plus no `.AiChatMessagePartToolStatus-state-loading`.
@@ -48,7 +48,7 @@ Covers the user-facing flows around `files_pending_updates` move/copy proposals 
    - Sidebar tree header `role=button[name="New file"]` (nth=0): creates a committed `new-file.md` at the ROOT instantly, no dialog. Same for "New folder".
    - Main-view `role=toolbar[name="File actions"]` New file (nth=1): opens a MODAL dialog (accessible name `New file` / `New folder` via its heading, so `getByRole("dialog", { name: "New file" })` works; contains `textbox "Name"` + `Create file`) and creates in the CURRENT main-view folder. While it is open, `.MyModalBackdrop` swallows every click in the app — a hung row click usually means this dialog is up.
 2. Rename flow: click the new row, press F2, wait for `.FilesSidebarTreeItemTitle-input:focus`, `Control+a`, type the target name, Enter.
-3. To create a child inside a folder: clicking the folder row navigates the main view into it (URL `?nodeId=<id>`); then use the File actions toolbar New file dialog. Selecting the folder row does NOT retarget the sidebar-header New file button — that one still creates at root. The row "More actions" menu has no Add file item (only Copy path / Rename / Expand subtree / Collapse subtree / Archive).
+3. To create a child inside a folder: clicking the folder row navigates the main view into it (URL `?nodeId=<id>`); then use the File actions toolbar New file dialog. Selecting the folder row does NOT retarget the sidebar-header New file button — that one still creates at root. The row "More actions" menu has no Add file item (only Copy path / Rename / Expand subtree / Collapse subtree / Move to Trash).
 4. Collapsed folders render no child `[role="treeitem"]` rows — expand before asserting child presence. Use the chevron `button[aria-label="Expand folder <name>"]` (visible, but rendered outside the treeitem element) or row click + `ArrowRight`. Do NOT use `Add file to <name>` just to expand — it also creates a committed child (intended product design, not a bug; just a QA click hazard).
 5. For content: click the row, click `.FileEditorRichText-editor-content`, `Control+a`, type one word. Select-all replace is imperfect (template fragments can survive) and the first typed line becomes an H1 — treat the typed word as a marker substring, do not assert exact content.
 
@@ -121,13 +121,13 @@ Expected result: moving a pending file back to its source cancels the proposal i
 3. Expect: mv exit 0 with a pending move; cp exit 1 with stderr `cp: cannot create '/pwl-m.md': the path is vacated by your pending move. Accept or discard that proposal first, or choose a different destination path.`; the panel shows ONLY the move-only row (no content or copy row); the agent's prose reports the failure.
 4. Discard the row (per-row Discard button); panel returns to empty.
 
-## Scenario 7 — Replaced caption is live and accept archives the occupant
+## Scenario 7 — Replaced caption is live and accept moves the occupant to Trash
 
 1. Chat: `mv pwl-src.md pwl-occ.md` while `/pwl-occ.md` does NOT exist. Row caption is `Moved`.
 2. Create committed `/pwl-occ.md` in the Files UI.
 3. Expect: the row caption flips to the single word `Replaced` immediately (reactive — it is already flipped by the time a poller starts right after the rename commits). The caption does not name the occupant; it is `Deleted`, `Replaced`, or `Moved`.
 4. Accept the row.
-5. Expect: the status region fires and the row clears, no toasts; tree shows exactly one `pwl-occ.md` and no `pwl-src.md` (the occupant was archived, the moved file now owns the path).
+5. Expect: the status region fires and the row clears, no toasts; tree shows exactly one `pwl-occ.md` and no `pwl-src.md` (the occupant was moved to Trash, the moved file now owns the path).
 
 ## Scenario 8 — chained mv -f replaces consume the whole chain
 
@@ -135,7 +135,7 @@ Expected result: moving a pending file back to its source cancels the proposal i
 2. Chat, one turn: `mv -f pwl-f.md pwl-g.md && mv -f pwl-g.md pwl-h.md`.
 3. Expect exit 0 with TWO stdout lines `pending move created: /pwl-f.md -> /pwl-g.md — replaces the existing file when accepted; review in Files` and `... /pwl-g.md -> /pwl-h.md ...`; panel shows two rows caption `Replaced` (`/pwl-f.md → /pwl-g.md`, `/pwl-g.md → /pwl-h.md`); replace-move rows use `Accept changes to <destPath>` labels.
 4. Accept the SECOND link FIRST (`Accept changes to /pwl-h.md`).
-5. Expect: the review dialog ends at `Changes saved.`, then BOTH rows clear (poll — clearance can lag the status by a few seconds), zero toasts; `pwl-h.md` content is "alpha" (the chain result); `pwl-f.md` AND `pwl-g.md` both leave the active tree and both show under `Show archived items` with aria-label `<name> archived`. The Versions entry for the new content may lag ~30s (async materialization) — do not wait for it.
+5. Expect: the review dialog ends at `Changes saved.`, then BOTH rows clear (poll — clearance can lag the status by a few seconds), zero toasts; `pwl-h.md` content is "alpha" (the chain result); `pwl-f.md` AND `pwl-g.md` both leave the active tree and both show under `Show items in Trash` with aria-label `<name> in Trash`. The Versions entry for the new content may lag ~30s (async materialization) — do not wait for it.
 
 Regression signature (old bug): accepting the second link left the first file active and silently lost its proposal (only one row consumed).
 
@@ -151,7 +151,7 @@ The pending overlay's derived docs (`files_pending_hides`, `files_pending_places
 ## Cleanup
 
 1. Discard any leftover pending rows (scope to `.FileEditorSidebarPending`, filter rows by the FULL `"/x.md → /y.md"` text — swap cycles produce mirrored rows where a single file name matches both).
-2. Archive every test-prefixed tree row: `role=button[name="More actions for <name>"]` → menuitem `Archive`.
+2. Move every test-prefixed tree row to Trash: `role=button[name="More actions for <name>"]` → menuitem `Move to Trash`.
 3. Verify: pending panel `.FileEditorSidebarPending-empty` present (the class sits on the panel root itself, so query it from the page, not inside `.FileEditorSidebarPending`), zero test-prefixed `[role="treeitem"]`, no error toasts, `getLatestLogs` clean.
 
 ## Live-session stability (critical gotcha)

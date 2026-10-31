@@ -325,7 +325,7 @@ describe("files_nodes.purge_nodes", () => {
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", fileId))).toBeNull();
 	});
 
-	test("Empty archive deletes only what was archived before it started, in its own area", async () => {
+	test("Empty Trash deletes only what was archived before it started, in its own area", async () => {
 		const f = await fixture();
 		const insert_archived = (fields: { name: string; archiveOperationId: string }) =>
 			f.t.run((ctx) =>
@@ -403,9 +403,9 @@ describe("files_nodes.purge_nodes", () => {
 		if (emptied._nay) throw new Error(emptied._nay.message);
 		expect(
 			await f.asOwner.mutation(api.files_nodes.empty_archive, { membershipId: f.db.membershipId, area: null }),
-			"one Empty archive at a time",
+			"one Empty Trash at a time",
 		).toMatchObject({ _nay: { name: "busy" } });
-		// The archive job ends after Empty archive started, so its items still stay.
+		// The archive job ends after Empty Trash started, so its items still stay.
 		await run_to_end(f, stamping._yay!);
 		const ended = await step_to_end(f, await purge_job(f, emptied._yay.runId));
 

@@ -183,8 +183,8 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 - Keep the actual edit DOM node in session memory. Send 51 fresh roots from the second workspace member. The edited root can remain as one extra row outside the 50-message head; require the same editor node and draft. History page bounds still apply to the other rows.
 - Use a private channel and a member with no prior read position. Viewing roots must not clear an unopened reply. Open that thread to clear its own reply position. With a narrow thread covering the root log, send a new root from the other member and require its stored root position to stay behind.
 - **Transcript details** is a native `summary` disclosure. Use its exact text or a `summary` locator, not a button-role locator. Its Rebuild copies button is inside the disclosure.
-- A locked tail file also blocks the reader worker's prepare step. To check deletion after reader removal, restore the file policy, retry, wait for `deletionPhase: "copy"`, then lock the owned file while accepted copies are still pending. Require no archive and a restricted Files sync recovery entry. Restore the captured policy before finishing the test.
-- After recovery, read the exact archived node through `files_nodes_content.get_non_collaborative_file_content`, the normal Files editor query. The signed-download action refuses archived nodes. Require the queued final message and every expected message marker in the Markdown. Check the archive flag separately. The transcript file is archived; its container stays active.
+- A locked tail file also blocks the reader worker's prepare step. To check deletion after reader removal, restore the file policy, retry, wait for `deletionPhase: "copy"`, then lock the owned file while accepted copies are still pending. Require no move to Trash and a restricted Files sync recovery entry. Restore the captured policy before finishing the test.
+- After recovery, read the exact trashed node through `files_nodes_content.get_non_collaborative_file_content`, the normal Files editor query. The signed-download action refuses trashed nodes. Require the queued final message and every expected message marker in the Markdown. Check Trash flag separately. The transcript file is in Trash; its container stays active.
 - At a 512×384 host viewport, minimize the Bonobo Senate sidebar through its normal control before judging the plugin's usable width. Record both the host viewport and the frame's actual size. This is a zoom-layout equivalent, not a claim that browser zoom changed.
 
 ## Historical recipes through 0.7.x
@@ -877,7 +877,7 @@ Keep this check on a unique private channel. Do not unlock a shared transcript r
   while the mirror returns `transcriptUpdated: false` and keeps the same file hash. This proves the
   actor's read grant cannot borrow the plugin account's write grant.
 - Cleanup removes the reader membership and the unique account grant through normal app doors.
-  A protected ancestor can still refuse archive. Report retained QA files instead of changing a
+  A protected ancestor can still refuse a move to Trash. Report retained QA files instead of changing a
   shared parent policy to remove them. Keep the existing account and its original grants.
 
 Keep invoke headers and tokens in memory only. A frame fetch recorder must preserve the native
@@ -1004,15 +1004,15 @@ For the editable plugin-label flow, verify these cases through the app and read 
   `transcriptUpdated: false`. Check both the source message and unchanged file content.
 - Recreate a missing private folder through a normal Chitchat invoke. Its initial reader binding must
   exist before transcript publication. The fresh folder ID is passed as `expectedParentNodeId` on
-  every private write. Staged host tests cover a parent move/archive/replacement during that gap.
+  every private write. Staged host tests cover a parent move, move to Trash, or replacement during that gap.
 - Relock an outer folder while a nested plugin lock remains. Nested ensure, write, access, and
-  archive still succeed. A create whose immediate parent is that outer lock must refuse.
+  moves to Trash still succeed. A create whose immediate parent is that outer lock must refuse.
 
 For recovery after uninstall, use only an installation created for the test. Record its output,
 metadata, grants, and locks first. Uninstall through the detail page, then check that output remains
 and bindings drain. Unlock the leaf and folder through Properties, change the folder's labels and
 sharing, and move it by dragging its `.FilesSidebarTreeItemPrimaryAction` onto another folder's
-primary action. Verify the new parent and path in stored readbacks. Archive through the row menu.
+primary action. Verify the new parent and path in stored readbacks. Move to Trash through the row menu.
 Reinstall the same published version and check that those member choices remain. A fresh install
 has an empty plugin store; do not mistake the empty channel list for lost Files output.
 
@@ -1065,7 +1065,7 @@ Two things that will mislead you while setting this up, both hit 2026-09-01:
   the channel name, not on `private` being absent → add the viewer via the People dialog → the
   viewer sees the channel folder and can open the file, disclosure included → remove the viewer →
   the folder disappears without a reload.
-- Archiving the channel (the plugin's "delete channel") does NOT archive its transcript folder or
+- Archiving the channel (the plugin's "delete channel") does NOT move its transcript folder to Trash or
   file. The `channel-manage` `update` action stamps `archivedAt` and refreshes the projection; the
   only `files_archive` call in the backend drops surplus rollover files. So the archived channel just
   falls out of the README list while its file stays in place, and unarchiving reuses that same

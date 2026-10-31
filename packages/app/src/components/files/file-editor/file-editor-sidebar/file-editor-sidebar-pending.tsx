@@ -1174,7 +1174,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							? "Added file"
 							: kind === "copy" || kind === "replacement"
 								? "Replaced"
-								: "Modified") + (isArchived ? " · Archived" : "");
+								: "Modified") + (isArchived ? " · In Trash" : "");
 
 	// Content-plus-move rows show the same red → green move label as move-only rows; the link
 	// still opens the diff. Delete rows always show only their own path. The stale suffix gives
@@ -1186,7 +1186,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 				: `${path}, moved to a folder you can't open`
 			: path;
 	const rowAccessibleLabel =
-		(isStale ? `${rowLabel}, review to update` : rowLabel) + (isArchived ? ", archived" : "") + parentsLabel;
+		(isStale ? `${rowLabel}, review to update` : rowLabel) + (isArchived ? ", in Trash" : "") + parentsLabel;
 
 	return (
 		<li ref={itemRef}>

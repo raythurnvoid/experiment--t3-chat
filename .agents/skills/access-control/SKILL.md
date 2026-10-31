@@ -120,7 +120,7 @@ not permission caches. Final publication still checks current access.
   and review versions. Data deletion removes it with the workspace.
 - For a plain file with no pending replacement, `files_nodes_db_archive_nodes` skips the workspace
   version and `db_install_file_content_replacement` skips the content version. A plain file is not a
-  stored image or video. Creating a node advances neither. Move cohorts, archive runs and subtree jobs
+  stored image or video. Creating a node advances neither. Move cohorts, Trash runs and subtree jobs
   always advance.
 - A Copy or Save proof with no media refs skips the version check. The folder Move check and the
   Move cohort keep their pins, because the same pins catch write policy and access changes.
@@ -140,7 +140,7 @@ not reveal hidden work through an Updating state.
 `server/files-access-version.ts` captures these scopes beside the existing Files clocks, in the
 same mutation. Tenant, human read grant, role and membership changes use the existing field set.
 For files, Messages compares existence, tenant, kind and the restricted/extended scope pointers.
-Names, paths, archive, content, sizes and dates do not change this clock. New file identities have
+Names, paths, Trash state, content, sizes and dates do not change this clock. New file identities have
 no old conversation to invalidate. Inserting or deleting saved Move places is preparation or
 cleanup, not an access change.
 
@@ -191,7 +191,7 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   installation's **sandbox roots** at a level that gives the permission. An `open` root covers open
   content only. A folder root covers that folder and what is below it in the same restricted area;
   it stops at every restricted folder inside. A file root covers only that file (its `treePath` is
-  not a prefix test). A root on a deleted or archived node gives nothing. Roots are empty while
+  not a prefix test). A root on a deleted or trashed node gives nothing. Roots are empty while
   they rebuild, and after a rebuild that found more than 20 folders.
 - The installation's own output folders (a live `plugins_external_file_bindings` row of this
   installation on the restricted folder) count as roots and take no slot. Their level is the
@@ -533,14 +533,14 @@ Rules that are easy to miss, all of which were real holes:
   parent, then queues the shared `files_move_cohorts` worker. It checks the current and final scopes
   before publication. A name-only rename in the same saved parent
   needs the source grant. Reparenting or creating missing folders also needs destination write.
-  `unarchive_nodes` restores a node to a new parent when its own parent is still archived, so it is a
+  `unarchive_nodes` restores a node to a new parent when its own parent is still in Trash, so it is a
   move and asks the same questions. It skips both of them for a node that is its own restricted
   scope, and that skip is deliberate — reviewers keep reporting it. The destination there is picked
   by this code, not by the caller, and a node carrying its own scope stays closed wherever it lands,
   so the move opens it to nobody; refusing would strand the folder where only its share list can see
   it. A node that only *inherits* a restriction does lose it at the root, so that one is asked both
   questions: the destination write and the leaving check. Asking only the first was a real hole — a
-  write grant on a folder was enough to archive it and then restore one file out of it, which handed
+  write grant on a folder was enough to move it to Trash and then restore one file out of it, which handed
   that file to the whole workspace while the shared Move core refused the identical move. Every case here has
   a test in `access_control.test.ts`.
 - **A mutation an action calls proves its own permission.** Only a check inside the writing mutation
@@ -550,14 +550,14 @@ Rules that are easy to miss, all of which were real holes:
   another mutation does not: it already runs inside the caller's transaction. Watch the brand-new
   path in particular: the node walk only checks nodes that already exist, so when nothing is there
   yet the workspace is the only thing left to ask.
-- **A cascade is not covered by the node you named.** Archive checks every removed descendant.
+- **A cascade is not covered by the node you named.** Move to Trash checks every removed descendant.
   A Move group walks exact saved child ranges in background transactions. A nested restricted
   root moves along with its own people, even when the mover cannot open it, like a folder on Linux
   or Windows (decided 2026-10-18). Ordinary protected descendants travel with their rules
   unchanged.
   Replacement checks every descendant it hides. Existing Move and scope repairs finish before
   new planning uses stored scopes. Access changes advance the clocks that each group checks.
-  Restrict, folder protection and Archive wait while any Move holds the workspace. Their walk reads
+  Restrict, folder protection and Move to Trash wait while any Move holds the workspace. Their walk reads
   only nodes no Move holds, so waiting is how it reaches every node. They do not poll: the Move's
   release wakes them.
   A move that keeps the same parent and path does not change descendants. A
@@ -577,7 +577,7 @@ Rules that are easy to miss, all of which were real holes:
 - **Every refusal comes before the first write.** A Convex mutation that returns normally commits, so
   a `Result({ _nay })` after a write keeps that write and reports failure at the same time. Ask every
   question first. `create_upload_node` shows the shape: a filename may carry path segments, so it
-  walks the folders between `parentId` and the file before it archives the old file or inserts the
+  walks the folders between `parentId` and the file before it moves the old file to Trash or inserts the
   asset doc, because the create below it would otherwise refuse after both writes landed. When the
   failing step is an internal invariant rather than a question the caller can answer — Markdown that
   will not chunk, a Yjs doc that will not serialize — `throw should_never_happen(...)` instead, so the
@@ -770,18 +770,18 @@ product decision, so record the answer here before changing the behaviour. An en
   the self-grant for them on purpose — and `transfer_organization_ownership` gives them the `member`
   role. A role gives nothing inside a restricted scope, so the moment they hand the organization over
   they lose every folder they restricted, and only the new owner can let them back in.
-- **Decided: archiving a restricted folder stays at `content.write`.** A `write` grantee can archive
-  the restricted folder itself, not only what is inside it, and that is intentional. They could
-  already archive every child one by one — `archive_nodes` checks `content.write` per node on purpose
-  — so refusing them the folder would mean "you may empty the room but not close the door". Archiving
+- **Decided: moving a restricted folder to Trash stays at `content.write`.** A `write` grantee can move
+  the restricted folder itself to Trash, not only what is inside it, and that is intentional. They could
+  already move every child to Trash one by one — `archive_nodes` checks `content.write` per node on purpose
+  — so refusing them the folder would mean "you may empty the room but not close the door". Moving to Trash
   discloses nothing and changes nobody's read set. Leaving a restricted scope is the separate
   question, and `content.permissions.manage` guards that in Move and `unarchive_nodes`.
   Recovery is real, not theoretical: `list_tree_children` with `archived: true` lists a folder's
-  archived children, `access_control_db_filter_readable_file_nodes` lets the owner read everything,
-  and the sidebar has a "Show archived items" toggle whose rows carry a Restore action. Known property, not a bug: while
-  the folder sits in the archive nobody can open its share dialog, so restore it first to manage
+  trashed children, `access_control_db_filter_readable_file_nodes` lets the owner read everything,
+  and the sidebar has a "Show items in Trash" toggle whose rows carry a Restore action. Known property, not a bug: while
+  the folder sits in Trash nobody can open its share dialog, so restore it first to manage
   sharing.
-- **Decided: Delete permanently needs `content.permissions.manage`.** Archiving can be undone, so it
+- **Decided: Delete permanently needs `content.permissions.manage`.** Moving to Trash can be undone, so it
   stays at `content.write`. A permanent delete cannot, so it needs manage: on the workspace for the
   open part, or on the restricted folder the item sits in (or is). OpenViking asks for manage too.
   The job checks it again for each node, and keeps a node the person can no longer manage. A guest
@@ -984,7 +984,7 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
   caller cannot open, gets the same empty, done page as any other refusal. That page only means
   "cannot open": a locked folder still shows as a locked row in its parent. A grant-only member gets
   nothing for the root: their root rows come from `list_tree_shared_roots`. The public `files/list` route answers
-  instead: a missing or archived folder gets 404 `Folder not found: <path>`, and a locked folder gets
+  instead: a missing or trashed folder gets 404 `Folder not found: <path>`, and a locked folder gets
   403 `Permission denied: <path>` (see the public-api skill). A member who can read only
   `/Clients/Acme` gets that 403 for `/Clients`.
 - `get_tree_ancestors` takes a raw id string, so a bad `?nodeId=` returns `null` instead of an argument
@@ -1044,19 +1044,19 @@ them resolve the reader with `files_nodes_db_get_tree_reader`. A node the caller
     grant's row must also carry the member's live membership lifetime, so after a re-invite the old
     grant reads nothing, even while another grant keeps the node readable. A row that fails, or
     whose field doc does not match, is dropped, so a page can be short.
-- A folder that the caller can read but that is archived gets empty pages, not a refusal, so the
+- A folder that the caller can read but that is in Trash gets empty pages, not a refusal, so the
   table shows no error there.
 - `isRestrictedScopeRoot` on `files_nodes` is a stored copy of `restrictedScopeNodeId === _id`, and
   committed metadata field docs carry the same copy. `files_nodes_db_set_restricted_scope` writes
   both whenever a node is restricted or unrestricted. The node streams of `list_tree_children` and
   `list_tree_children_sorted` throw `should_never_happen` when a node's flag does not match the range
-  it came from. The metadata stream leaves out a field doc whose node is archived, has another
+  it came from. The metadata stream leaves out a field doc whose node is in Trash, has another
   parent, or has another flag: a background job copies the node's scope onto its docs later, so the
   page can be short. A node of another workspace still throws. The share streams
   need no such guard: they check every row.
 - `files_metadata.list_folder_fields` checks active membership and folder `content.read`, then reads
   one range of the metadata catalog's `parent` family. The root needs workspace read; a grant-only
-  member gets an empty, done page there. A readable archived folder, a missing folder and a denied
+  member gets an empty, done page there. A readable trashed folder, a missing folder and a denied
   folder get the same empty, done page. Like the folder table, it has a restricted twin
   (`restricted: true`, the `parent_restricted` family) that only the owner reads. So the keys of a
   restricted child show to the owner only, also when the child is shared with a member. A field doc
@@ -1311,18 +1311,18 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
 
 - A share is a file `content.read` grant to a user, a role, a service account or the workspace. Its
   row lives while the grant lives and its node is a scope root (restricted or extended) in the
-  grant's organization and workspace, active or archived. A public grant has no row. "Shared with
+  grant's organization and workspace, active or trashed. A public grant has no row. "Shared with
   you" (`list_tree_shared_roots`) lists both kinds, but not workspace rows; the custom-field filter
   streams (`list_tree_children_shared`) list restricted roots only, by name
   (`by_org_ws_principal_parent_kind_archive_sortName_name`).
-- A row also stores `isRestrictedScopeRoot`. The Archive view's area picker
+- A row also stores `isRestrictedScopeRoot`. The Trash view's area picker
   (`list_archive_areas`) pages a member's restricted folders by it
   (`by_org_ws_principal_restricted_archive_treePath`). The owner reads the restricted folders from
   `files_nodes` instead.
 - `principalKey` is `user:<userId>`, `role:<role>`, `service_account:<serviceAccountId>` or
   `workspace:<workspaceId>`. A role share is one row, not one row per member, and so is a workspace
   share.
-- A row copies the node's list fields (parent, kind, archive, names, `treePath`, `updatedAt`,
+- A row copies the node's list fields (parent, kind, Trash state, names, `treePath`, `updatedAt`,
   extension, size, creation time) and the grant's `externalPluginMembershipLifetime` (`null` when
   missing).
 - A re-invite schedules `plugins_external_files.delete_old_reader_grants`, which deletes the member's
@@ -1451,7 +1451,7 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
     upgrade never has to find and secure links;
   - `content.read` on the stored scope. Nobody publishes what they cannot read;
   - every check in `db_check_live_file` (`files_share_links.ts`): the node is a file, not a folder, and is
-    not archived; the organization and workspace are live (see check 4 below); the scope node is
+    not in Trash; the organization and workspace are live (see check 4 below); the scope node is
     live (`files_share_links_db_check_scope`, below); a finished asset; and a supported text shape;
   - fewer than 500 links in the workspace;
   - no Move mark on the file itself (`moveCohortId`), else `move_busy`. A file the Move has not
@@ -1462,7 +1462,7 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
   with "Wait until the access change of a folder above finishes". `bound` means a plugin decides
   who reads the area, and On refuses. A null scope is always fine.
 - Off needs only the manage permission. It skips On's file checks, so a manager can turn a link off
-  while a job runs or after the file is archived. A missing link is a success.
+  while a job runs or after the file is in Trash. A missing link is a success.
 - Agents, bash tools, API keys, and `/api/v1` never reach this mutation.
 - `get_node_share_state` returns `link: { token, createdBy, createdAt } | null`. Only a caller with
   `content.permissions.manage` on the stored scope gets the link. Every other reader gets
@@ -1471,13 +1471,13 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
 ### What the public view checks on every read
 
 `files_share_links.get_share_link_view({ token })` never reads `ctx.auth`. Every refusal answers
-`null`, so a wrong token, a turned-off link, an archived file, and a deleted workspace look the
+`null`, so a wrong token, a turned-off link, a trashed file, and a deleted workspace look the
 same. **A link checks only the file's stored state and its scope node, with a fixed number of exact
 reads and no folder walk. It ends when a job writes the file, or at once for its whole area when its
 scope node changes.** So every read checks:
 
 1. The doc exists. Its node exists, is a file of the doc's organization and workspace, and is not
-   archived.
+   trashed.
 2. The file's stored `restrictedScopeNodeId` equals the doc's.
 3. `files_share_links_db_check_scope` answers `ok`: the scope is null, or the scope node is a live restricted root of
    the same tenant with no `plugins_file_access_bindings` doc and no attached
@@ -1492,11 +1492,11 @@ scope node changes.** So every read checks:
 6. The whole view stays inside a read budget (1,500 calls, 16,000 docs, 8 MiB) and returns at most
    1,000,000 bytes. Past a budget the view refuses, or the rest of the embeds show as unavailable.
 
-A folder above that is archived, restricted, or bound while its job runs does not hide the file at
+A folder above that is in Trash, restricted, or bound while its job runs does not hide the file at
 once. This is the per-file timing rule (see the scope job above): the file shows until the job
 writes it, and that write ends the link. Until then a manager of the old area can still turn its
 link on, and the job ends that link too. The window grows with the folder size, and lasts longer
-while Moves hold the workspace, because scope and archive jobs wait at every step while a Move
+while Moves hold the workspace, because scope and Trash jobs wait at every step while a Move
 runs. An image URL signed before the end keeps working for its 15 minutes. The one exception is the
 scope node itself: a change to it ends every link of its area in the same transaction.
 
@@ -1563,7 +1563,7 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
    through a draft.
 3. E's content type is an inline-safe image or video type (`files_is_inline_media_content_type`),
    and it matches the node: an image node needs an image file, a video node needs a video file.
-4. E is not archived and has a finished asset.
+4. E is not in Trash and has a finished asset.
 5. E is public: `E.isPublic` is `true` ("The public flag", below).
 6. `files_share_links_db_check_scope` on E's **own** restricted area answers `ok`: not dead and not plugin-bound.
 
@@ -1619,9 +1619,9 @@ flag. Folders never do, so nothing is public by inheritance.
   of each image sets `Inside public documents` to `Shown` in that image's Sharing.
 - `files_sharing_db_set_node_public` refuses a folder (`not_a_file`). Repeating On or Off writes
   nothing. It charges `files_sharing_write` first (app and API).
-- On also needs: a file that is not archived and a live workspace; no Move mark on the file and no
+- On also needs: a file that is not in Trash and a live workspace; no Move mark on the file and no
   Move reservation for it (`move_busy`); no running subtree op on the file or a folder above it
-  (`not_ready`); and `files_share_links_db_check_scope` `ok` (not dead, not bound). The archive,
+  (`not_ready`); and `files_share_links_db_check_scope` `ok` (not dead, not bound). The move to Trash,
   workspace and scope checks are `files_share_links_db_check_live_node` in `server/files-share-links.ts`.
 - Off works during a Move: `files_nodes_db_set_public` patches both Move views too, so the Move end
   does not write the old value back.
@@ -1688,9 +1688,9 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Restrict or unrestrict the file or a folder above it | `files_nodes_db_set_restricted_scope`, only when the scope really changes, before the patch: the node's own link and every link of its area (`delete_for_scope`). This covers `restrict_node` and `unrestrict_node`. The folder itself and links stored with its scope end at once. A file below that the job has not reached yet keeps its link: if the folder is unrestricted before the job gets there, that file never changed scope, so its link stays |
 | A scope job gives the file a new scope | `files_nodes_db_rebuild_node`, only when the scope changes. A new path alone (a folder above was renamed) keeps the link |
 | Move to another folder, including replacement and a new parent created by the same Move | The cohort worker stages link revocation for reparented roots and replaced occupants in pages. The group switch ends their links, including a link turned on before the Move reached the file. Rename in the same folder keeps links. Move ends a link even when the new folder has the same audience |
-| Archive | `files_nodes_db_archive_node`, once per stamped node. `files_nodes_db_archive_nodes` stamps only the nodes it is given, so a caller names a folder with all its active descendants, or uses the archive job. The archive job ends each file's link in the apply step that stamps it, and the apply has no stop: user deletion leaves it running to its end (`db_drain_user_archive_runs_batch`). A queued, refused, or stopped check keeps the links |
-| Restore from the archive | `files_nodes_db_restore_node`. A restored file comes back with no link |
-| Archive-and-create replacement | The archive helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that archive and recreate. The new file has no link |
+| Move to Trash | `files_nodes_db_archive_node`, once per stamped node. `files_nodes_db_archive_nodes` stamps only the nodes it is given, so a caller names a folder with all its active descendants, or uses the Trash job. The Trash job ends each file's link in the apply step that stamps it, and the apply has no stop: user deletion leaves it running to its end (`db_drain_user_archive_runs_batch`). A queued, refused, or stopped check keeps the links |
+| Restore from Trash | `files_nodes_db_restore_node`. A restored file comes back with no link |
+| Move to Trash and create replacement | The Trash helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that move to Trash and recreate. The new file has no link |
 | Remove a failed file creation | `files_nodes_db_hard_delete_node` |
 | A plugin reader list takes over a file or a restricted folder | `plugins_data_db_apply_file_access_binding`: the node's own link and every link of its area. A folder must already be a restricted root whose scope job has ended and that holds no restricted folder, so its area is the whole folder. A file binds in one step, and the restrict in the bind ends its link |
 | An exact service-account `content.write` grant on the file is removed or lowered to View | `access_control_db_set_service_account_grant`, before it deletes the grant. This existing link-lifetime rule still applies |
@@ -1716,7 +1716,7 @@ What keeps a link:
   A bound area holds no links, because the bind ended them and On refuses there, so there is
   nothing to end.
 
-A file node that is gone or archived without a hook still shows nothing, because the view reads
+A file node that is gone or trashed without a hook still shows nothing, because the view reads
 the file on every read.
 
 **A bound area holds no other restricted item.** A bound area is an area whose scope node has a
@@ -1898,7 +1898,7 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   from a sealed destination and target key, but a member may have moved or restricted a matching file
   since upload. The mutation loads every bounded live match before its first write, drops nodes now
   outside the seal, and asks `content.write` on each remaining node. Workspace permission from the
-  processing grant never opens a restricted file by itself. It archives committed files and
+  processing grant never opens a restricted file by itself. It moves committed files to Trash and
   hard-deletes only unfinished placeholders.
 - **Service-upload target retries check the live file too.** Exact create replay, remint, and
   finalize bind the target to its original destination seal, then check its active current path and

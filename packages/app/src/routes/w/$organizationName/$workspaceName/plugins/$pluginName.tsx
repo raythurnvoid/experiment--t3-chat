@@ -2089,7 +2089,7 @@ function format_capability_label(value: string, payerName = "the workspace owner
 
 	// Explain the editable labels that select the plugin's files.
 	if (value === "workspace.files.own-write") {
-		return "Create, update, and archive files and folders marked for this plugin. Members can edit their labels.";
+		return "Create and update files and folders marked for this plugin, and move them to Trash. Members can edit their labels.";
 	}
 
 	// Explain both the plugin's access controls and the member's manage permission.
@@ -4190,7 +4190,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("explains editable labels and member control for plugin file capabilities", () => {
 			const ownWriteLabel = format_capability_label("workspace.files.own-write");
 			expect(ownWriteLabel).toBe(
-				"Create, update, and archive files and folders marked for this plugin. Members can edit their labels.",
+				"Create and update files and folders marked for this plugin, and move them to Trash. Members can edit their labels.",
 			);
 			const ownAccessLabel = format_capability_label("workspace.files.own-access");
 			expect(ownAccessLabel).toBe("Set readers for its output. Members with manage permission can change sharing.");

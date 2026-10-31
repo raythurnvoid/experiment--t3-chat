@@ -27,7 +27,7 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 - Use an owned folder and the page-scoped Vite variant recipe in the perf-profiling skill. Keep the real selected-node query running, but hold its exposed value at `undefined` with a temporary React state gate in that tab. Record the actual query state separately and release the gate with its state setter.
 - Wait for the full tree. An empty folder must show `No README.md` while the gate is held. Removing only the tree fallback must leave `Loading...` until release. This is a behavior check; do not use the delayed run as a timing sample.
 - Create an owned README, open Markdown, and make a local draft while the folder query is held. Store the editor and model references from `window.__qa.monaco().plainText`. Release the gate and check that both references, exact text, undo, and redo survive.
-- Remove the exact request route, reload, and check that the proof marker is gone. Check normal creation and direct links, then archive only the recorded fixture nodes after checking all child pages.
+- Remove the exact request route, reload, and check that the proof marker is gone. Check normal creation and direct links, then move only the recorded fixture nodes to Trash after checking all child pages.
 
 ## View Dropdown QA
 
@@ -68,7 +68,7 @@ Verify successful file-tool results before looking for the outputs. If a turn re
   with a protected source. On mutation failure the modal stays open and shows the server message.
   Escape closes, focus returns to the trigger, and a pending submit cannot run twice.
 - The top floating status says exactly `This file is read-only.`, `Read-only because /docs is locked.`,
-  or `This folder contains read-only items. It cannot be renamed, moved, or archived.` as applicable.
+  or `This folder contains read-only items. It cannot be renamed, moved, or moved to Trash.` as applicable.
 - Rich text must expose `contenteditable=false`. Plain and diff Monaco models must report read-only.
   Keep selection, copy, search, mode changes, snapshots browse/download, and existing-comment replies.
   Disable Save, Sync where it would write, Accept, anchored comment create/resolve, media insert/upload,
@@ -268,7 +268,7 @@ The wait runner reads the message before and after `waitForSelector`, and logs `
 
 ### Frontmatter Indexing Warning QA
 
-Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conversion, the rich editor stays editable and `.FileNodeViewTopFloating-frontmatter-too-large` appears in the shared top status. Its full message is in the nested span's `title`; assert it reports 129 fields and 258 index entries, with limits of 128 and 512. The node must not show the stored-file card or enter a conversion retry loop. Archive the fixture after the check.
+Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conversion, the rich editor stays editable and `.FileNodeViewTopFloating-frontmatter-too-large` appears in the shared top status. Its full message is in the nested span's `title`; assert it reports 129 fields and 258 index entries, with limits of 128 and 512. The node must not show the stored-file card or enter a conversion retry loop. Move the fixture to Trash after the check.
 
 ### Monaco Model Leak QA
 
@@ -315,7 +315,7 @@ Diff view with a pending proposal (since 2026-09-06, `FileEditorDiff` in its col
 - The pending row of a stale proposal shows the caption `Review to update`, its link name ends with `, review to update`, and its Accept button stays enabled with the refusal message in `title`.
 - Bulk Accept skips stale content and explains that it needs Review.
 - Save keeps `Save staged changes` disabled until the view's doc query shows the save, which can land about a second after the action result, so assert on the toast and the exit rather than a fixed delay.
-- `mv -f <src> <dst>` onto a file with collaboration off is a replace proposal, not a content one: the row caption is `Replaced`, its buttons are `Accept move of <src> to <dst>` / `Discard move of <src> to <dst>` (not `Accept changes to`), and Accept moves the source node onto the path with its own asset and archives the old node under the same id, so resolve the id again afterwards with `files_nodes.get_visible_target_by_path({ membershipId, path })` (`target.id`).
+- `mv -f <src> <dst>` onto a file with collaboration off is a replace proposal, not a content one: the row caption is `Replaced`, its buttons are `Accept move of <src> to <dst>` / `Discard move of <src> to <dst>` (not `Accept changes to`), and Accept moves the source node onto the path with its own asset and moves the old node to Trash under the same id, so resolve the id again afterwards with `files_nodes.get_visible_target_by_path({ membershipId, path })` (`target.id`).
 - Collaboration changes use the preservation and preparation flow below.
 - The `.FileEditorDiff-stale` status line is always rendered, so assert its text, not its presence.
 - `list_files_pending_updates` rows hold the node under `target` (`{ kind: "saved" | "private", id }`), next to `pendingUpdateId` and `revision`.
@@ -363,7 +363,7 @@ Use disposable files and a unique run id. Follow "Non-Collaborative File Fixture
 9. Before toggling, save a newer edit far from the proposal's edit. Switch modes and open Review; both edits must survive. Repeat with proposed `150` over saved `120` and `200`: accepting that line must save `150`. If saved text adds lines inside a rewritten section and the target cannot be matched, preparation must refuse while keeping both stored branches. Check `Copy accepted text`, `Copy proposed text`, Retry, and Discard for that refusal. Windows clipboard reads can use CRLF; normalize line endings before comparing.
 10. With two authorized members on a non-default QA workspace, create one proposal per owner. The switch must keep both. Each member must see and prepare only their own proposal. Also check a proposal with a pending move and one with a pending delete. Create their content proposals first, wait for readback, then ask for one exact Bash move/delete command; a model can otherwise run its setup tools in parallel.
 11. Check keyboard review, confirmation, Retry, and copy actions; status announcements; focus after loading; 200% zoom; and narrow layout. A smaller viewport is a reflow check, not proof of actual browser zoom. Screen the open Properties dialog, Pending panel, and the separate File actions toolbar with `auditAccessibility`, read `controlCount`, and inspect any reported overlap. If toolbar text is clipped, check whether Tab brings each control into view. Use the browser accessibility tree for names and states when needed.
-12. Read `latestLogs({ sinceLastCall: true })` after every action. Save exact before/after text, proposal ids, assertions, logs, and relevant screenshots in the personal task folder. Record races that were observed separately from races covered only by tests. Archive only the disposable fixtures after the final readback.
+12. Read `latestLogs({ sinceLastCall: true })` after every action. Save exact before/after text, proposal ids, assertions, logs, and relevant screenshots in the personal task folder. Record races that were observed separately from races covered only by tests. Move to Trash only the disposable fixtures after the final readback.
 
 The toggle itself keeps proposal expiry unchanged. Opening Review may prepare immediately, so inspect the retained ids from another tab before opening it. Preparation writes no committed file text. OFF still removes the shared Yjs history and comment anchors; ON may change Markdown formatting. Existing stale proposals caused by an ordinary OFF save keep the behavior described above.
 
@@ -511,7 +511,7 @@ The agent's tools do not all behave the same way, and picking the wrong one wast
 - Bash `cp` creates **pending nodes**: a pending folder for each missing parent plus a pending file.
   This is the only easy way to get a private (not yet saved) parent folder.
 - Bash `mv` creates a **pending move** on the saved node. The node itself does not move yet.
-- Bash `rm -r` creates a **pending archive** on the node.
+- Bash `rm -r` creates a **pending delete** on the node.
 
 `mv` then `rm` on the same file replaces the move, because a delete supersedes it. So build a
 two-proposal fixture on two different nodes, or the second command quietly erases the first.
@@ -536,7 +536,7 @@ Accept move of <path> to <dest>       Discard move of <path> to <dest>
 Accept changes to <path>              Discard changes to <path>
 ```
 
-`<dest>` is the projected destination. When the destination folder itself has a pending archive the
+`<dest>` is the projected destination. When the destination folder itself has a pending delete the
 projection falls back to the source, so the label reads `Accept move of /a/x.md to /a/x.md`. That is
 the app telling you the destination is going away, not a broken label.
 
@@ -576,7 +576,7 @@ other's proposal. Both of these refuse with
 `This action also affects unselected changes. Review them together.`
 
 - **Saved parent, Accept.** Chat A: `mv <file> <otherFolder>/<file>`. Chat B: `rm -r <otherFolder>`.
-  Accept the move row alone. The run refuses and `needsReviewIds` holds chat B's archive row.
+  Accept the move row alone. The run refuses and `needsReviewIds` holds chat B's delete row.
 - **Private parent, Discard.** Chat A: `cp -r <folder> <newName>`, which creates the pending folder
   and a pending child. Chat B: `cp <file> <newName>/<other>.md`, adding a second pending child from a
   different thread. Discard the folder row alone. `needsReviewIds` holds both children.

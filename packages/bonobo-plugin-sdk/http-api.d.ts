@@ -826,7 +826,7 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 					} | {
-						message: "Unauthenticated" | "Permission denied" | "This item is read-only." | "The file readers changed" | "The output folder or writer changed" | "This operation was already used for another write" | "A newer file write already exists" | "The file changed during the write";
+						message: "Unauthenticated" | "Permission denied" | "This item is being deleted." | "This item is read-only." | "The file readers changed" | "The output folder or writer changed" | "This operation was already used for another write" | "A newer file write already exists" | "The file changed during the write";
 						path?: undefined;
 						nodeId?: undefined;
 						contentType?: undefined;
@@ -841,7 +841,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 					} | {
-						message: "Unauthenticated" | "Permission denied" | "This item is read-only." | "The file readers changed" | "The output folder or writer changed" | "This operation was already used for another write" | "A newer file write already exists" | "The file changed during the write";
+						message: "Unauthenticated" | "Permission denied" | "This item is being deleted." | "This item is read-only." | "The file readers changed" | "The output folder or writer changed" | "This operation was already used for another write" | "A newer file write already exists" | "The file changed during the write";
 						path?: undefined;
 						nodeId?: undefined;
 						contentType?: undefined;
@@ -859,7 +859,7 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 					} | {
-						message: "Unauthenticated" | "Permission denied" | "This item is read-only." | "The file readers changed" | "The output folder or writer changed" | "This operation was already used for another write" | "A newer file write already exists" | "The file changed during the write";
+						message: "Unauthenticated" | "Permission denied" | "This item is being deleted." | "This item is read-only." | "The file readers changed" | "The output folder or writer changed" | "This operation was already used for another write" | "A newer file write already exists" | "The file changed during the write";
 						path?: undefined;
 						nodeId?: undefined;
 						contentType?: undefined;

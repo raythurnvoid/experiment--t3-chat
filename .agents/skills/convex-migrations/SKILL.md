@@ -316,7 +316,7 @@ Pop-Location
   - Re-tighten the schema immediately after verification.
 - Add focused runtime checks for boot-critical flows after API key renames:
   - App boot/homepage initialization.
-  - Files tree create/rename/archive/move.
+  - Files tree create/rename/move to Trash/move.
   - These paths can fail silently if response keys change.
 - Scope discipline prevents regressions:
   - Migrate only the requested table.

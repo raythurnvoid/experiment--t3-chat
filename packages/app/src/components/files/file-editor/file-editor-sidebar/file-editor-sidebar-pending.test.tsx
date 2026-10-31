@@ -2561,8 +2561,8 @@ describe("FileEditorSidebarPending", () => {
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Modified · Archived");
-		expect(screen.getByRole("link", { name: "/a.md, archived" })).toBeTruthy();
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Modified · In Trash");
+		expect(screen.getByRole("link", { name: "/a.md, in Trash" })).toBeTruthy();
 
 		fireEvent.click(screen.getByText("Accept"));
 

@@ -215,7 +215,7 @@ export async function plugins_scheduled_access_db_validate_consent(
 			});
 			if (allowed._nay) return allowed;
 			if (allowed._yay.fileNode.archiveOperationId !== null)
-				return Result({ _nay: { message: "Choose a saved file that is not archived" } });
+				return Result({ _nay: { message: "Choose a saved file that is not in Trash" } });
 		} else {
 			const allowed = await access_control_db_authorize_membership(ctx, {
 				userAuth: { id: membership.userId },

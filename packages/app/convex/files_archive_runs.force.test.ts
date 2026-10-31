@@ -107,7 +107,7 @@ describe("archive parent child list", () => {
 			const result = await request([fileId]);
 			expect(result._nay?.message, "the fast check refuses a parent child-list change").toBe(
 				refusal === "read_only"
-					? 'The folder "/parent-list/d0" is read-only. Unlock it before archiving items inside it.'
+					? 'The folder "/parent-list/d0" is read-only. Unlock it before moving items inside it to Trash.'
 					: "Permission denied",
 			);
 		} else {

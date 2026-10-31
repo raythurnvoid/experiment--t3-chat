@@ -29,7 +29,7 @@ type FilesPurgeModal_ClassNames =
 
 /**
  * What to delete forever: archived items the person picked, or every item archived in one area of
- * the Archive view before now (Empty archive).
+ * the Archive view before now (Empty Trash).
  */
 export type FilesPurgeModal_Request =
 	| { kind: "items"; nodes: FilesArchiveModal_Node[] }
@@ -57,7 +57,7 @@ export type FilesPurgeModal_Props = {
 };
 
 /**
- * The confirmation for Delete permanently and Empty archive. It owns the request and shows a refusal
+ * The confirmation for Delete permanently and Empty Trash. It owns the request and shows a refusal
  * inline. A small delete ends inside the request. A bigger one goes on as a background job, and a
  * toast follows it.
  */
@@ -78,13 +78,13 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 	const hasList = nodes.length > 1;
 	const heading =
 		request?.kind === "empty_archive"
-			? "Empty archive?"
+			? "Empty Trash?"
 			: hasList
 				? `Delete ${nodes.length} items permanently?`
 				: `Delete “${nodes[0]?.name ?? ""}” permanently?`;
 	const description =
 		request?.kind === "empty_archive"
-			? `Every item archived in ${request.areaLabel} before now will be deleted forever, with everything inside it. You can't undo this.`
+			? `Every item moved to Trash in ${request.areaLabel} before now will be deleted forever, with everything inside it. You can't undo this.`
 			: nodes.some((node) => node.kind === "folder")
 				? "Deleted items are gone forever, with everything inside them. You can't undo this."
 				: "Deleted items are gone forever. You can't undo this.";
@@ -110,7 +110,7 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 
 		const isEmptyArchive = request.kind === "empty_archive";
 		const subject = isEmptyArchive
-			? "the archive"
+			? "the Trash"
 			: request.nodes.length === 1
 				? `“${request.nodes[0]!.name}”`
 				: `${request.nodes.length} items`;
@@ -137,7 +137,7 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 				if (runId !== null) {
 					watchArchiveRun({ runId, kind: request.kind === "items" ? "purge" : "empty_archive", subject });
 				} else if (itemCount === 0) {
-					toast.info("Nothing archived here to delete.");
+					toast.info("Trash is empty. Nothing to delete.");
 				} else {
 					toast.success(
 						`${isEmptyArchive ? "Emptied" : "Deleted"} ${isEmptyArchive ? `${deletedCount} ${deletedCount === 1 ? "item" : "items"}` : subject}.`,
@@ -200,7 +200,7 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 						Cancel
 					</MyButton>
 					<MyButton variant="destructive" disabled={pending} aria-busy={pending} onClick={handleConfirm}>
-						{pending ? "Deleting…" : request?.kind === "empty_archive" ? "Empty archive" : "Delete permanently"}
+						{pending ? "Deleting…" : request?.kind === "empty_archive" ? "Empty Trash" : "Delete permanently"}
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={pending} />

@@ -1019,7 +1019,7 @@ describe("FileEditorSidebarPending review focus", () => {
 				<FileEditorSidebarPending />
 			</AppActivitiesProvider>,
 		);
-		expect(screen.getByText(/This draft's folder was archived/)).toBeTruthy();
+		expect(screen.getByText(/This draft's folder is in Trash/)).toBeTruthy();
 		expect(screen.getByText(/Unsaved draft expires/)).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).matches(":disabled")).toBe(true);
 		expect(mutationMock).not.toHaveBeenCalled();
@@ -1209,12 +1209,12 @@ describe("FileNodeView private targets", () => {
 		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
 		expect(
 			await screen.findByText(
-				"This draft's folder was archived. You can copy or download your draft. Restore the folder before saving here.",
+				"This draft's folder is in Trash. You can copy or download your draft. Restore the folder before saving here.",
 			),
 		).toBeTruthy();
 		expect(screen.getByText(/Unsaved draft expires/)).toBeTruthy();
-		expect(screen.getByRole("link", { name: "Open archived folder" }).getAttribute("data-node-id")).toBe(NODE._id);
-		expect(screen.getByText("Restore the archived folder before saving this draft.")).toBeTruthy();
+		expect(screen.getByRole("link", { name: "Open folder in Trash" }).getAttribute("data-node-id")).toBe(NODE._id);
+		expect(screen.getByText("Restore the folder from Trash before saving this draft.")).toBeTruthy();
 		expect(screen.queryByText("You don't have permission to save this draft here.")).toBeNull();
 		expect(screen.queryByTestId("editor")).toBeNull();
 		expect(screen.queryByTestId("html-preview")).toBeNull();
@@ -1747,7 +1747,7 @@ describe("FileNodeView folder clipboard", () => {
 		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder", archiveOperationId: "qa-archive" };
 		treeNodes = [node];
 		renderFileView({ nodeId: node._id });
-		expect(await screen.findByText("This folder is archived. Restore it before adding items.")).toBeTruthy();
+		expect(await screen.findByText("This folder is in Trash. Restore it before adding items.")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Create a README.md" }).matches(":disabled")).toBe(true);
 	});
 

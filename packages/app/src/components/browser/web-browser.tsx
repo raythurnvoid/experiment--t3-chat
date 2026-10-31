@@ -431,7 +431,7 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 					toast.error(result._nay.message);
 					return;
 				}
-				toast.success("Download deleted. You can restore it from the archived items in Files.");
+				toast.success("Download moved to Trash. You can restore it from the Trash in Files.");
 			})
 			.catch((error: unknown) => {
 				console.error("[WebBrowserLive.deleteDownload] Unexpected archive error", { error });

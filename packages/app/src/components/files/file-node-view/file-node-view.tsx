@@ -856,7 +856,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 								<MyMenuItemContentIcon>
 									<Archive />
 								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
+								<MyMenuItemContentPrimary>Move to Trash</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
@@ -4382,7 +4382,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 											<MyMenuItemContentIcon>
 												<Archive />
 											</MyMenuItemContentIcon>
-											<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
+											<MyMenuItemContentPrimary>Move to Trash</MyMenuItemContentPrimary>
 										</MyMenuItemContent>
 									</MyMenuItem>
 								</MyMenuPopoverContent>
@@ -6563,13 +6563,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// A draft under an archived folder is read-only because of the archive, not because of permissions.
 	const readOnlyMessage = privateEntry
 		? privateTargetView?.recovery
-			? "Restore the archived folder before saving this draft."
+			? "Restore the folder from Trash before saving this draft."
 			: privateTargetView?.canEdit === false
 				? "You don't have permission to save this draft here."
 				: null
 		: resolvedNode
 			? resolvedNode.kind === "folder" && resolvedNode.archiveOperationId !== null
-				? "This folder is archived. Restore it before adding items."
+				? "This folder is in Trash. Restore it before adding items."
 				: !resolvedNode.canWrite
 					? resolvedNode.writeBlockedReason === "read_only"
 						? resolvedNode.kind === "folder"

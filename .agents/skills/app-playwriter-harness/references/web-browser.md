@@ -358,8 +358,8 @@ nothing. On the test site `links` page the remote pixels are: `attach` (27, 18),
   array after each step. It survives between calls because the SPA does not reload.
 - Human download: the toast `Saved to .system/downloads/<name>` comes 1-8 s after the click, with
   `Open` and `Delete`. Press them with focus + Enter in a call that waits for the toast: on a
-  background tab the toast buttons measure just below the viewport. `Delete` archives the file
-  (toast `Download deleted. You can restore it from the archived items in Files.`). `Open` goes to
+  background tab the toast buttons measure just below the viewport. `Delete` moves the file to Trash
+  (toast `Download moved to Trash. You can restore it from the Trash in Files.`). `Open` goes to
   `/files?nodeId=<id>`.
 - Readback: `get_authorized_by_path` for `/.system/downloads/<name>`, `get_entries` for the
   metadata (`source: browser-download`, `original-url` = origin only, none for `data:`), then the

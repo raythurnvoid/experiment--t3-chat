@@ -130,7 +130,7 @@ export const access_control_PERMISSION_CATALOG = {
 	},
 	"content.write": {
 		label: "Edit workspace content",
-		description: "Create, edit, move, and archive files, send chat messages, and clear activity.",
+		description: "Create, edit, and move files, move them to Trash, send chat messages, and clear activity.",
 		group: "Content",
 		scope: "workspace",
 	},

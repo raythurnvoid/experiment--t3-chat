@@ -298,7 +298,7 @@ export const advance = internalMutation({
 			await db_fail_run({
 				ctx,
 				run,
-				errorMessage: "The folder moved or was archived during the update. Run it again.",
+				errorMessage: "The folder moved or went to Trash during the update. Run it again.",
 				now,
 			});
 			return null;

@@ -233,7 +233,7 @@ Consider whether the work needs:
 
 In the final response, report the relevant docs and verification work. Mention a skipped category only when it was relevant to the task.
 
-For a large Files import or cleanup, read the [import and recovery guide](.agents/skills/convex-admin-ops/references/large-file-imports.md) before writing a runner. It covers partial writes, byte checks, billing queues, safe archives, and audit time limits. Keep the run's paths, hashes, receipts, current process state, and next command in one handoff file in the personal task folder. On resume, read that file first and verify its live assumptions. Do not restart completed uploads or weaken a failed check to make progress.
+For a large Files import or cleanup, read the [import and recovery guide](.agents/skills/convex-admin-ops/references/large-file-imports.md) before writing a runner. It covers partial writes, byte checks, billing queues, safe trashes, and audit time limits. Keep the run's paths, hashes, receipts, current process state, and next command in one handoff file in the personal task folder. On resume, read that file first and verify its live assumptions. Do not restart completed uploads or weaken a failed check to make progress.
 
 ## System Spec Skills
 

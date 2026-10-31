@@ -163,7 +163,7 @@ describe("ai_chat_tool_create_bash", () => {
 		});
 		expect(tool.description).toContain("mv only moves or renames files within one workspace");
 		expect(tool.description).toContain("Use cp for files or cp -R for folders between workspaces");
-		expect(tool.description).toContain("Do not work around a refused mv with cp followed by rm or Archive");
+		expect(tool.description).toContain("Do not work around a refused mv with cp followed by rm or Move to Trash");
 		expect(tool.description).toContain(
 			"Source cleanup needs a separate user request and its own review and permission checks",
 		);

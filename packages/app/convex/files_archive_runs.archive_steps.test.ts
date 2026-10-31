@@ -212,7 +212,7 @@ describe("archive_nodes", () => {
 
 		const refused = await archive(f, [first.topId, second.topId]);
 		expect(refused._nay?.message).toBe(
-			"None of these items can be archived. You cannot change them or items inside them.",
+			"None of these items can be moved to Trash. You cannot change them or items inside them.",
 		);
 		expect(await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);

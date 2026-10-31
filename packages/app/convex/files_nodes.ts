@@ -3658,7 +3658,7 @@ export const archive_nodes = mutation({
 		}
 
 		if (args.nodeIds.length > MAX_ARCHIVE_NAMED_NODES) {
-			return Result({ _nay: { message: `Archive at most ${MAX_ARCHIVE_NAMED_NODES} items at once.` } });
+			return Result({ _nay: { message: `Move at most ${MAX_ARCHIVE_NAMED_NODES} items to Trash at once.` } });
 		}
 
 		const nodeIds = [];
@@ -3847,7 +3847,7 @@ export const purge_nodes = mutation({
 				return Result({ _nay: { message: "Not found" } });
 			}
 			if (node.archiveOperationId === null) {
-				return Result({ _nay: { message: `${node.path} is not archived. Archive it first.` } });
+				return Result({ _nay: { message: `${node.path} is not in Trash. Move it to Trash first.` } });
 			}
 			const manageable = await access_control_db_authorize_membership(ctx, {
 				userAuth,
@@ -3875,7 +3875,7 @@ export const purge_nodes = mutation({
 						name: "busy",
 						message:
 							archiveRun.kind === "archive"
-								? "These items are being archived. Wait for it to finish."
+								? "These items are being moved to Trash. Wait for it to finish."
 								: "These items are being restored. Wait for it to finish.",
 					},
 				});
@@ -3976,7 +3976,7 @@ export const empty_archive = mutation({
 			return Result({ _nay: { message: "Files are still moving in this workspace. Try again when the move ends." } });
 		}
 
-		// One Empty archive at a time in a workspace. A workspace has few active purge jobs, because each
+		// One Empty Trash at a time in a workspace. A workspace has few active purge jobs, because each
 		// one needs a person's request.
 		for await (const run of ctx.db
 			.query("files_archive_runs")
@@ -3989,7 +3989,7 @@ export const empty_archive = mutation({
 			)) {
 			if (run.emptyArchive) {
 				return Result({
-					_nay: { name: "busy", message: "The archive is already being emptied. Wait for it to finish." },
+					_nay: { name: "busy", message: "The Trash is already being emptied. Wait for it to finish." },
 				});
 			}
 		}

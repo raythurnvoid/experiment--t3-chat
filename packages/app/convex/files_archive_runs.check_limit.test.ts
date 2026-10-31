@@ -63,7 +63,7 @@ describe("unarchive_nodes", () => {
 			const failed = await run_to_end(f, refused._yay!);
 			expect(failed.activity).toMatchObject({
 				status: "failed",
-				errorMessage: "Too many archived items share one path.",
+				errorMessage: "Too many items in Trash share one path.",
 			});
 			expect((await read_node(f, tooMany.fileIds[0]!)).archiveOperationId).not.toBeNull();
 		},

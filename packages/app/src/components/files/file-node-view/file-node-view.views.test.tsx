@@ -2284,7 +2284,7 @@ describe("FileNodeView header breadcrumb", () => {
 			"Copy path",
 			"Copy link",
 			"Copy node id",
-			"Archive",
+			"Move to Trash",
 		]);
 	});
 
@@ -2301,7 +2301,7 @@ describe("FileNodeView header breadcrumb", () => {
 
 		const menu = await openCurrentCrumbMenu(node.name);
 		expect(within(menu).getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
-		expect(within(menu).queryByRole("menuitem", { name: "Archive" })).toBeNull();
+		expect(within(menu).queryByRole("menuitem", { name: "Move to Trash" })).toBeNull();
 	});
 
 	test("hides Reveal in sidebar for an archived file", async () => {
@@ -2320,11 +2320,11 @@ describe("FileNodeView header breadcrumb", () => {
 		const { onNavigateSearch } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		const menu = await openCurrentCrumbMenu("page.html");
-		fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
+		fireEvent.click(within(menu).getByRole("menuitem", { name: "Move to Trash" }));
 
-		const dialog = await screen.findByRole("dialog", { name: "Archive “page.html”?" });
+		const dialog = await screen.findByRole("dialog", { name: "Move “page.html” to Trash?" });
 		expect(archiveCalls()).toEqual([]);
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 
 		await waitFor(() => expect(archiveCalls()).toHaveLength(1));
 		expect(archiveCalls()[0]![1]).toEqual({ membershipId: "membership_1", nodeIds: [NODE._id] });
@@ -2337,9 +2337,9 @@ describe("FileNodeView header breadcrumb", () => {
 		const { otherNavigations } = renderFileView();
 		await screen.findByRole("textbox", { name: "Code draft" });
 		const menu = await openCurrentCrumbMenu("page.html");
-		fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
+		fireEvent.click(within(menu).getByRole("menuitem", { name: "Move to Trash" }));
 
-		const dialog = await screen.findByRole("dialog", { name: "Archive “page.html”?" });
+		const dialog = await screen.findByRole("dialog", { name: "Move “page.html” to Trash?" });
 		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -2353,10 +2353,10 @@ describe("FileNodeView header breadcrumb", () => {
 		treeNodes = [DOCS, PAGE_IN_DOCS];
 		const { onNavigateSearch } = renderFileView({ nodeId: node._id });
 		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
-		fireEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Move to Trash" }));
 
-		const dialog = await screen.findByRole("dialog", { name: "Archive “page.html”?" });
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		const dialog = await screen.findByRole("dialog", { name: "Move “page.html” to Trash?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 
 		await waitFor(() => expect(archiveCalls()).toHaveLength(1));
 		expect(archiveCalls()[0]![1]).toEqual({ membershipId: "membership_1", nodeIds: [PAGE_IN_DOCS._id] });

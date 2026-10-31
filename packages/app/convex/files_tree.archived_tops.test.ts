@@ -20,7 +20,7 @@ async function seed_archive() {
 	const savedStream = { kind: "normal" as const, generation: 0 };
 	const opNew = files_archive_operation_id_new(3000);
 	const opOld = files_archive_operation_id_new(2000);
-	// Archived before archive operation ids started with the time.
+	// Moved to Trash before archive operation ids started with the time.
 	const opLegacy = crypto.randomUUID();
 
 	const ids = await test_run_with_flush(f.t, async (ctx) => {

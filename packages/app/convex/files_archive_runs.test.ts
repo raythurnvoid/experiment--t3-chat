@@ -85,7 +85,7 @@ describe("archive_nodes", () => {
 		expect(archived._nay).toBeUndefined();
 		const ended = await run_to_end(f, archived._yay!);
 
-		expect(ended.activity).toMatchObject({ status: "succeeded", title: "Archive files" });
+		expect(ended.activity).toMatchObject({ status: "succeeded", title: "Move files to Trash" });
 		expect(ended.activity.progress).toMatchObject({ total: 247, completed: 247 });
 		expect(ended.steps).toBeGreaterThan(3);
 		const state = await read_state(f);
@@ -149,7 +149,7 @@ describe("archive_nodes", () => {
 		// 153 items. One file is archived first, so 152 active items are left: more than the request and
 		// one step stamp (2 * 75), so the job still runs at the Stop.
 		const tree = await seed_tree(f, { name: "stop", folderCount: 1, filesPerFolder: 151 });
-		// Archived before the job, with its own operation. It must stay archived after the Restore.
+		// Moved to Trash before the job, with its own operation. It must stay archived after the Restore.
 		expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 		const olderOperationId = (await read_node(f, tree.fileIds[0]!)).archiveOperationId;
 

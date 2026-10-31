@@ -50,17 +50,17 @@ Some continuity proofs depend on version retention. In this app, a proof based o
 
 ## Replace old content safely
 
-1. Complete the new import and its byte/asset/metadata checks first. Record the exact baseline IDs eligible for archive. Keep user edits, notes, comments, pending work, and changed Properties.
+1. Complete the new import and its byte/asset/metadata checks first. Record the exact baseline IDs eligible for moving to Trash. Keep user edits, notes, comments, pending work, and changed Properties.
 2. Move verified reused binaries through the normal member doors. Preserve node and asset IDs. Set new Properties only after the move has a durable completion receipt.
 3. Stop import and metadata writers before the final audit. Keep a successful report and its input/path/identity pins.
-4. Archive only the reviewed IDs in small batches. Read all users' pending work, comments, stored write stages, content jobs, active children, Properties, and ancestors before each batch. A capped guard read must stop; it is not an empty result.
+4. Move to Trash only the reviewed IDs in small batches. Read all users' pending work, comments, stored write stages, content jobs, active children, Properties, and ancestors before each batch. A capped guard read must stop; it is not an empty result.
 5. Measure a short freshness budget using local elapsed time from before the read through imports/auth and just before the mutation. Server and Windows clocks differ. Use server timestamps only for comparisons between server-produced dates.
-6. Flush the prepared journal before calling the native archive door. Read back the exact archive operation membership and content state. A new child swept into a folder archive is a conflict.
-7. Archive empty folders deepest first. If replacing the root overview, archive it alone, last, then create its replacement immediately with `overwrite: "fail"`. Verify full bytes, new IDs, receipts, and required Properties before the final audit.
+6. Flush the prepared journal before calling the native Trash door. Read back the exact Trash operation membership and content state. A new child swept into a move of a folder to Trash is a conflict.
+7. Move empty folders to Trash, deepest first. If replacing the root overview, move it to Trash alone, last, then create its replacement immediately with `overwrite: "fail"`. Verify full bytes, new IDs, receipts, and required Properties before the final audit.
 
-A mocked check that asserts an index name only proves that the code and the test agree. It cannot prove the index exists, because in-memory mocks never resolve a name against the real schema. A wrong name passes every mock and then throws on the first live call. That hurts most right after the old root is archived, because the path is already empty at that moment. Before the step that depends on it, check every index name a runner uses against `packages/app/convex/schema.ts`, or run the runner once in a read-only mode against the real deployment.
+A mocked check that asserts an index name only proves that the code and the test agree. It cannot prove the index exists, because in-memory mocks never resolve a name against the real schema. A wrong name passes every mock and then throws on the first live call. That hurts most right after the old root is in Trash, because the path is already empty at that moment. Before the step that depends on it, check every index name a runner uses against `packages/app/convex/schema.ts`, or run the runner once in a read-only mode against the real deployment.
 
-Never undo a folder archive with a blind `unarchive_nodes` call. That door restores the whole archive operation of each named item, can start a background job, and can move an item to root when its parent is archived. Only a reviewed exact-leaf recovery with a free path, active parent, and matching operation is narrow enough for automatic restore.
+Never undo a move of a folder to Trash with a blind `unarchive_nodes` call. That door restores the whole Trash operation of each named item, can start a background job, and can move an item to root when its parent is in Trash. Only a reviewed exact-leaf recovery with a free path, active parent, and matching operation is narrow enough for automatic restore.
 
 A native exception with unknown send status stays unresolved until readback. Do not call it `not-sent` merely because the first read looks unchanged. A pre-RPC guard refusal can be proved not sent; a timeout after RPC cannot. Do not remove journals or checks to make a retry run.
 

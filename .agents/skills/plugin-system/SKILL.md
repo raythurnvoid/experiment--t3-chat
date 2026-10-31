@@ -78,7 +78,7 @@ Capabilities are the consent set. `CAPABILITIES` in `packages/app/shared/plugins
 | `workspace.files.read`             | Read workspace files                                                               |
 | `workspace.files.write`            | Put `files:write` on a service grant, capped by its destination prefix             |
 | `workspace.files.manage-read-only` | Set or clear Read-only, create flagged items, and explicitly force allowed file changes |
-| `workspace.files.own-write`        | Create, update, and archive files and folders marked for this plugin; members may edit their labels |
+| `workspace.files.own-write`        | Create and update files and folders marked for this plugin, and move them to Trash; members may edit their labels |
 | `workspace.files.own-access`       | Set locks and readers on matching output; members with manage permission may change them |
 | `plugin.data.read`                 | Read this installation's stored documents                                          |
 | `plugin.data.write`                | Create, change, and delete them                                                    |
@@ -148,7 +148,7 @@ be described that way. This has drifted twice: the dialog was fixed while the Ac
 "Plugin pages", and before that the dialog itself had no file-view section at all. When you change one
 screen's copy, change the other in the same edit.
 
-`workspace.files.write` lets a sealed processing-phase service grant carrying `files:write` use the `/api/v1/files/service-uploads/*` pipeline (see `../public-api/SKILL.md#service-upload-routes`). It also permits `/api/v1/files/write` for Markdown and `/api/v1/files/plugin-archive` for one matching file strictly inside the seal. Existing files must have exact `plugin-name` metadata matching the installation. Same-plugin invoke output and member-labeled files can match too. There is no service-origin fallback. The live grant, capabilities, actor permissions, destination, and locks still apply. Other generic `/api/v1/files/*` routes refuse service grants. Removing a label stops generic writes; it does not cancel an accepted upload or change its separate target cleanup rules. Archiving is what "delete a file" means in this product — see `../data-deletion/SKILL.md`.
+`workspace.files.write` lets a sealed processing-phase service grant carrying `files:write` use the `/api/v1/files/service-uploads/*` pipeline (see `../public-api/SKILL.md#service-upload-routes`). It also permits `/api/v1/files/write` for Markdown and `/api/v1/files/plugin-archive` for one matching file strictly inside the seal. Existing files must have exact `plugin-name` metadata matching the installation. Same-plugin invoke output and member-labeled files can match too. There is no service-origin fallback. The live grant, capabilities, actor permissions, destination, and locks still apply. Other generic `/api/v1/files/*` routes refuse service grants. Removing a label stops generic writes; it does not cancel an accepted upload or change its separate target cleanup rules. Moving to Trash is what "delete a file" means in this product — see `../data-deletion/SKILL.md`.
 
 `workspace.files.manage-read-only` permits explicit Read-only set/clear, create-true and `force: true`. It adds no service-token scope; each final write checks current accepted capability and ordinary Can edit. It does not bypass ACLs, sandbox roots, seals, writer generations or exact receipts. Old `workspace.files.create-read-only` remains readable only in immutable version history and is rejected in new manifests; it grants no new authority.
 
@@ -175,7 +175,7 @@ Runs, UI sessions, and service grants keep the account ID present when they were
 
 Only an exact string `plugin-name` metadata value equal to the installation's plugin name selects a node. `source: plugin` describes its origin; it grants nothing. Both keys are ordinary editable metadata on files and folders. A member with content-write permission may remove or change them while the item is writable, including opting a member-created item into a plugin. Neither key is reserved. A matching label grants no account access and bypasses no Read-only flag. There is no creator, ancestor-label, or service-target fallback for this selection.
 
-An existing target checks its own label. A missing target checks the deepest existing folder before creating the rest of the path; workspace-root creation keeps its current create rules. Invoke ensure, write, touch, access, and archive keep their capability, actor ACL, and lock checks. Bounded archive preflights its limit; ordinary calls are atomic, while explicit forced calls keep allowed branches and return durable partial results. Upload-triggered runs retain their sibling write/touch rule and cannot use invoke-only ensure, archive, or access. See `../public-api/SKILL.md#plugin-file-doors`.
+An existing target checks its own label. A missing target checks the deepest existing folder before creating the rest of the path; workspace-root creation keeps its current create rules. Invoke ensure, write, touch, access, and delete keep their capability, actor ACL, and lock checks. A bounded delete preflights its limit; ordinary calls are atomic, while explicit forced calls keep allowed branches and return durable partial results. Upload-triggered runs retain their sibling write/touch rule and cannot use invoke-only ensure, delete, or access. See `../public-api/SKILL.md#plugin-file-doors`.
 
 Invoke ensure starts at that checked folder and adds only the missing path parts. Its stored scope controls access for the actor inside the sandbox roots. Locked folders above it add no permission check. The response keeps the full requested path. Live-run, label, capability, Read-only, and reader-binding checks still apply.
 
@@ -183,7 +183,7 @@ Every newly created plugin file and folder gets `source: plugin` and `plugin-nam
 
 Members with Can edit may set or clear Read-only. Can manage remains the separate sharing permission. Plugins need `workspace.files.manage-read-only` for explicit flag changes or force. The flag is local; changing a direct child list checks the parent too. Content-only changes deeper in a folder do not check every ancestor. Metadata changes never clear flags. See `../files-read-only/SKILL.md`.
 
-Ensure applies requested access only when it creates the final folder. A reused folder keeps its locks and sharing, and a detached reader binding stays detached. Any existing binding must belong to this installation and match a supplied read scope. Explicit `plugin-access/set` on an existing node requires the actor's live manage permission and cannot release a member lock. Replacing an existing binary/noneditable file with a new node also requires manage permission: the archived node retains its grants and binding, while the replacement inherits parent sharing. Complete all refusal checks before archive or access writes. An in-place text update keeps its node and sharing.
+Ensure applies requested access only when it creates the final folder. A reused folder keeps its locks and sharing, and a detached reader binding stays detached. Any existing binding must belong to this installation and match a supplied read scope. Explicit `plugin-access/set` on an existing node requires the actor's live manage permission and cannot release a member lock. Replacing an existing binary/noneditable file with a new node also requires manage permission: the trashed node retains its grants and binding, while the replacement inherits parent sharing. Complete all refusal checks before moving to Trash or access writes. An in-place text update keeps its node and sharing.
 
 `access.readScopeId` binds readers to one live private scope of the same installation. The host restricts the node and mirrors one `content.read` grant per scope member (`plugins_file_access_bindings`, at most 4 nodes per scope, `MAX_SCOPE_PRINCIPALS` = 50 readers). `user_manage_scope` updates attached human reader lists and preserves independent service-account grants. An actual human sharing change removes only that node's binding and keeps the remaining grants; an account grant edit does not detach it. A denied or no-op change, a metadata edit, or a child-only change does not detach an unrelated binding. Future scope changes leave manual sharing alone. Explicit `readScopeId: null` detaches the binding and preserves restriction, grants, and write policy. Unrestricting is a separate Files management action. A binding from another installation refuses until it drains or is detached.
 
@@ -392,7 +392,7 @@ Admin registry deletion is name-scoped and requires publishing to be quiescent. 
 - Policy 15 blocks harmful behavior, not unused permissions or code shapes. `plugins_dist_review_advisories` returns a `string[]` of neutral advice: dense `\x`/`\u` escapes, base64-looking literals, `Function`, long lines, and short identifiers. None decides the verdict. The model must trace how a value is used, especially when it reaches code execution. Advice is stored in `mechanicalAdvisoryFindings` and shown under "Advisory — did not block this version". New reviews keep `mechanicalFindings` empty; the field remains for old review history. The 10,000,000-byte bundle limit remains an uncached operational refusal.
 - Immutable reviewer policy is developer/system content. Manifest facts, source, tool output, the optional diff, and earlier model notes are untrusted data.
 - **One agent reads and submits its own review.** `run_version_review` uses `streamText`, as the main chat agent does. Its tools are `bash`, `compact_review`, and `submit_review`. Native assistant messages, tool calls, and results stay in the conversation. The agent chooses reads and searches; the host does not force every source byte into context. An ordinary text answer cannot finish a review.
-- `plugins_review.stage_sources` stages exact text under a fresh `/review-<32 hex>` root in reserved `GLOBAL/PLUGINS` storage. It validates unique normalized relative paths and the 1,000,000-byte file limit before writing. The existing source writer creates indexed text and R2 assets without Yjs. A cleanup is scheduled before writing, and the review's `finally` requests early cleanup. `delete_review_source_tree` archives that root before deleting its children in bounded batches, so MIME search pages and replay stop when cleanup starts. The one-hour fallback also covers interrupted staging or model work.
+- `plugins_review.stage_sources` stages exact text under a fresh `/review-<32 hex>` root in reserved `GLOBAL/PLUGINS` storage. It validates unique normalized relative paths and the 1,000,000-byte file limit before writing. The existing source writer creates indexed text and R2 assets without Yjs. A cleanup is scheduled before writing, and the review's `finally` requests early cleanup. `delete_review_source_tree` moves that root to Trash before deleting its children in bounded batches, so MIME search pages and replay stop when cleanup starts. The one-hour fallback also covers interrupted staging or model work.
 - Known transport risk: staging sends all source files in one Node action argument. [Convex limits Node action arguments to 5 MiB](https://docs.convex.dev/production/state/limits#functions), below the 10,000,000-byte source bundle allowance. A 1 MB file fits, but large bundles need a separate staging change. This mismatch was found in source and docs; it has not been reproduced through a live publish.
 - `bash.run_plugin_review` mounts that root at `/.plugins/review`. This mount is absent from Files UI and ordinary agents. The reviewer has no tenant workspace, installed plugin mounts, GitHub mounts, host files, credentials, or network access. The model supplies only a command; the host pins the root and caller. Source is read-only, and the shared shell guard refuses loading mounted plugin code.
 - Both agent runners use the command registry and guards in `server/bash.ts`. Indexed `ls`, `find`, `search`, `grep`, `cat`, `head`, `tail`, and `sed` read the mounted source. `find --content-type` carries the host's exact `pluginReviewRoot`; ordinary chat commands cannot supply it, and its cursor cannot switch reviews. One `grep PATTERN FILE` call scans up to 1,000,000 bytes, the plugin file limit, so it reaches the end of any plugin file. It returns matches in pages; the reviewer runs the `Next scan:` hint for the next page. Use `grep --start-index N --max-chars N` only for one line longer than that cap. Default content and metadata searches remain inside the review root even when cwd is `/tmp`.
@@ -619,14 +619,14 @@ readers keep their requested access. Setting Read-only creates no access grant. 
 setup never restores a removed grant or changes manual sharing; normal Files sharing owns recovery.
 
 Both invoke and conditional service writes pin `expectedParentNodeId`. Their final publication checks
-the exact active parent. A missing, moved, archived, or replaced pinned parent refuses the write.
+the exact active parent. A missing, moved, trashed, or replaced pinned parent refuses the write.
 Conditional writes also check saved root/folder IDs, labels, writer generation, current
 authority, file policies, and content/reader revisions. Its receipt commits with the file change.
 
 A plugin write in place keeps the file's public link ("Anyone with the link can view"). A text update
 or fill keeps the node, so the link and its token stay, and the page shows the new committed text.
-A write that archives the old file and creates a new node ends the old link, and the new node has no
-link. A plugin archive or delete ends the link too. A plugin write never makes an image or video
+A write that moves the old file to Trash and creates a new node ends the old link, and the new node has no
+link. A plugin move to Trash or delete ends the link too. A plugin write never makes an image or video
 public. An image it adds shows on the page only when a person made that image public (its public
 flag, see `../files-rich-text-embeds/SKILL.md`). A plugin cannot turn that on: the API scope
 `files:publish` is for a person's own key only. Media inside a plugin-bound folder never show, because
@@ -795,8 +795,8 @@ Configuration is manifest-driven. `plugins_versions.configuration` stores the pl
   status, errors and timings remain visible.
 - Automatic dispatch loads the matching manifest event and applies its generic filters before dedupe and run creation. Invalid stored YAML is an unreachable invariant, but dispatch logs and isolates that installation so it cannot block upload finalization or other plugins. Manual runs bypass automatic event filters. Every run receives the parsed value as `event.configuration`, or `null` for a plugin without configuration.
 - Upload dispatch rule: every upload that settles as a stored blob dispatches `files.upload.completed` — including an editable-text upload whose host conversion failed deterministically and fell back to the stored blob (`settle_upload_conversion_fallback` in `convex/r2.ts`). Only a successful host conversion suppresses the event. Service uploads are the other exception: `plugins_runtime_db_enqueue_upload_completed_runs` refuses any asset a `plugin_service_storage_targets` row owns, fallback blobs included — a plugin's stored artifact must not fan out into other plugins' backends.
-- TODO: a copy, move, archive, or restore does not dispatch `files.upload.completed`. Add separate plugin events for those subtree operations later. Do not reuse the upload event for them.
-- Service-upload targets require the sealed destination path plus its stable folder node id. The dev rollout audit found no target missing either field before the schema was tightened. Council deletion archives that exact folder even after a member renames it. Releasing a pending upload deletes its placeholder but keeps the target as a released identity record for the archive step. The archive route bounds active and archived descendant reads together at 256 docs.
+- TODO: a copy, move, move to Trash, or restore does not dispatch `files.upload.completed`. Add separate plugin events for those subtree operations later. Do not reuse the upload event for them.
+- Service-upload targets require the sealed destination path plus its stable folder node id. The dev rollout audit found no target missing either field before the schema was tightened. Council deletion moves that exact folder to Trash even after a member renames it. Releasing a pending upload deletes its placeholder but keeps the target as a released identity record for the Trash step. The Trash route bounds active and trashed descendant reads together at 256 docs.
 - Service uploads use shared stored-file admission before creating a target or fresh attempt. Publication counts actual bytes in `stored_file_bytes` and emits one `file_upload`: one cent per started 20 MiB, minimum one cent. Oversized objects are deleted without billing; finalize returns terminal HTTP 409 `oversized_upload`. Late superseded attempts only queue cleanup. See the public-api and billing-system skills.
 
 # Mount and schedule declarations
@@ -927,11 +927,11 @@ Once Files setup has started, private reader changes wait for its acknowledgemen
 After an upgrade, recovery of a saved reader operation can use a new sealed grant for the same
 installation and exact root, with current Files write and sharing-management access. Old credentials
 cannot authorize new work. Private deletion removes access first, finishes transcript copies through
-its fixed deletion sequence, then archives exact saved transcript files with durable progress.
+its fixed deletion sequence, then moves exact saved transcript files to Trash with durable progress.
 It keeps the container and unrelated files in Files. Blocked deletion stays available in a restricted
 recovery view for the current owner or the same-lifetime original delete actor. Deleted messages
-stay inaccessible. Rebuild is unavailable once file archiving begins; Retry and Reconnect still
-enforce current Files permissions. Manual sharing stops automatic archive.
+stay inaccessible. Rebuild is unavailable once moving files to Trash begins; Retry and Reconnect still
+enforce current Files permissions. Manual sharing stops automatic moves to Trash.
 
 Last-member workspace cleanup saves owner-only Files recovery before its reader request. The old
 sponsor may already have lost permission. A channel that never started Files setup needs no entry.
@@ -974,7 +974,7 @@ Probe installation; its new run grant has no scopes. Existing folders and servic
 SDK 0.24.0 was mirrored on 2026-10-28 at `00fb32707c6c8e48be2cfb9e1074f64c4011a6ff`.
 Its tree `815f85021c03c47078c90c0250510af0603e919c` equals the SDK folder in host commit
 `8d68c5f628c425dd850096b4fb55a559214472ed`. It replaces the old Read-only capability and policy
-routes, adds explicit force to supported requests, and types partial archive results. It also
+routes, adds explicit force to supported requests, and types partial delete results. It also
 includes the earlier generated `contentRevision` field ordering change. SDK typecheck passed;
 tests passed 48 cases with one generated-route assertion also failing on the unchanged baseline.
 

@@ -77,7 +77,7 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 	const hasFolder = nodes?.some((node) => node.kind === "folder") ?? false;
 	// One item is named in the heading, so it gets no list.
 	const hasList = nodes !== null && nodes.length > 1;
-	const heading = hasList ? `Archive ${nodes.length} items?` : `Archive “${nodes?.[0]?.name ?? ""}”?`;
+	const heading = hasList ? `Move ${nodes.length} items to Trash?` : `Move “${nodes?.[0]?.name ?? ""}” to Trash?`;
 
 	const handleClose = useFn(() => {
 		// Clear the refusal here and in `handleConfirm`, so a second open does not start with old text.
@@ -130,22 +130,22 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 					refusedItems.length === 1 ? nodes.find((node) => node._id === refusedItems[0]!.nodeId) : undefined;
 				const waitingSentence =
 					waitingNodes.length > 0
-						? ` ${waitingNodes.length} more ${waitingNodes.length === 1 ? "is" : "are"} ${isChecking ? "being checked" : "still being archived"}.`
+						? ` ${waitingNodes.length} more ${waitingNodes.length === 1 ? "is" : "are"} ${isChecking ? "being checked" : "still moving to Trash"}.`
 						: "";
 				if (refusedNode) {
 					// Some refusal messages end with a period and some do not.
 					const reason = refusedItems[0]!.message.replace(/\.?$/, ".");
-					toast.warning(`"${refusedNode.name}" was not archived: ${reason}${waitingSentence}`, { action });
+					toast.warning(`"${refusedNode.name}" was not moved to Trash: ${reason}${waitingSentence}`, { action });
 				} else if (refusedItems.length > 0) {
-					toast.warning(`${refusedItems.length} items were not archived.${waitingSentence} See Activity.`, { action });
+					toast.warning(`${refusedItems.length} items were not moved to Trash.${waitingSentence} See Activity.`, { action });
 				} else if (isChecking && waitingNodes.length > 0) {
 					const checkingText =
 						waitingNodes.length === 1
-							? `Checking "${waitingNodes[0]!.name}" before archiving. It stays in the list until the check ends.`
-							: `Checking ${waitingNodes.length} items before archiving. They stay in the list until the check ends.`;
+							? `Checking "${waitingNodes[0]!.name}" before moving it to Trash. It stays in the list until the check ends.`
+							: `Checking ${waitingNodes.length} items before moving them to Trash. They stay in the list until the check ends.`;
 					toast.info(`${checkingText} See Activity.`, { action });
 				} else {
-					toast.info("Archiving in the background. See Activity.", { action });
+					toast.info("Moving to Trash in the background. See Activity.", { action });
 				}
 				// A background job can still refuse more items later. The host learns only about the ones it
 				// stamped. Every host closes the dialog only in `onArchived`, so close it here when the job
@@ -160,7 +160,7 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 			})
 			.catch((error: unknown) => {
 				console.error("[FilesArchiveModal.handleConfirm] Unexpected async error", { error, nodeIds });
-				setError("Failed to archive. Try again.");
+				setError("Failed to move to Trash. Try again.");
 			})
 			.finally(() => setPending(false));
 	});
@@ -176,8 +176,8 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 				<MyModalHeader>
 					<MyModalHeading>{heading}</MyModalHeading>
 					<MyModalDescription>
-						Archived items are hidden. You can restore them later.
-						{hasFolder ? " Folders are archived with everything inside." : null}
+						Items in Trash are hidden. You can restore them later.
+						{hasFolder ? " Folders move to Trash with everything inside." : null}
 					</MyModalDescription>
 				</MyModalHeader>
 				{/* Leave out the empty body when there is no list and no refusal to show. */}
@@ -189,7 +189,7 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 							    selection the person is making. */}
 							{hasList ? (
 								<TextMonospaceBlock
-									aria-label="Items to archive"
+									aria-label="Items to move to Trash"
 									text={nodes.map((node) => node.path).join("\n")}
 									maxHeight={isListExpanded ? "16lh" : "6lh"}
 								/>
@@ -217,7 +217,7 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 						Cancel
 					</MyButton>
 					<MyButton variant="destructive" disabled={pending} aria-busy={pending} onClick={handleConfirm}>
-						Archive
+						Move to Trash
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={pending} />
@@ -337,7 +337,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 		}
 	}
 	// Match the Activity card: a refused item, like a read-only file, is expected and does not make the
-	// archive look partly failed. The "Not archived" section below names each refused item.
+	// archive look partly failed. The "Not moved" section below names each refused item.
 	const isRefusalOnly =
 		run?.kind === "archive" && !run.force && status === "partial" && progress?.failed === 0 && progress.canceled === 0;
 	const handledCount = progress
@@ -349,8 +349,9 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 			? ["Restoring", "Restored"]
 			: run?.kind === "purge"
 				? ["Deleting", "Deleted"]
-				: ["Archiving", "Archived"];
-	const runningLabel = `${verbs[0]} in the background…`;
+				: ["Moving", "Moved"];
+	const trashSuffix = run?.kind === "archive" ? " to Trash" : "";
+	const runningLabel = `${verbs[0]}${trashSuffix} in the background…`;
 
 	const statusLabel =
 		run === undefined
@@ -419,7 +420,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 				<MyModalHeader>
 					<MyModalHeading className={"FilesArchiveRunModal-title" satisfies FilesArchiveRunModal_ClassNames}>
 						{run ? <ActivityStatusIcon activity={run.activity} isRefusalOnly={isRefusalOnly} /> : null}
-						{run?.activity.title ?? "Archive"}
+						{run?.activity.title ?? "Move to Trash"}
 					</MyModalHeading>
 					<MyModalDescription role="status">{statusLabel}</MyModalDescription>
 				</MyModalHeader>
@@ -434,13 +435,13 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 							<p className={"FilesArchiveRunModal-line" satisfies FilesArchiveRunModal_ClassNames}>
 								{isActive
 									? progress.total === null
-										? `${verbs[0]}…`
-										: `${verbs[0]} ${handledCount} of ${progress.total} items…`
+										? `${verbs[0]}${trashSuffix}…`
+										: `${verbs[0]} ${handledCount} of ${progress.total} items${trashSuffix}…`
 									: run?.force && status === "partial"
 										? `${progress.completed} items moved to Trash. Some items remain.`
 										: missedCount > 0
-											? `${verbs[1]} ${progress.completed} of ${progress.completed + missedCount} items.`
-											: `${verbs[1]} ${progress.completed} ${progress.completed === 1 ? "item" : "items"}.`}
+											? `${verbs[1]} ${progress.completed} of ${progress.completed + missedCount} items${trashSuffix}.`
+											: `${verbs[1]} ${progress.completed} ${progress.completed === 1 ? "item" : "items"}${trashSuffix}.`}
 							</p>
 						) : null}
 						{/* The paths the person picked. A folder counts with everything inside, so the line above can
@@ -454,10 +455,10 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 									id={archivedHeadingId}
 									className={"FilesArchiveRunModal-heading" satisfies FilesArchiveRunModal_ClassNames}
 								>
-									{isActive ? "To archive" : "Archived"} ({archivedPaths.length})
+									{isActive ? "To move to Trash" : "Moved to Trash"} ({archivedPaths.length})
 								</h3>
 								<TextMonospaceBlock
-									aria-label={isActive ? "Items to archive" : "Archived items"}
+									aria-label={isActive ? "Items to move to Trash" : "Items moved to Trash"}
 									text={archivedPaths.join("\n")}
 									maxHeight="8lh"
 								/>
@@ -474,7 +475,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 									id={notArchivedHeadingId}
 									className={"FilesArchiveRunModal-heading" satisfies FilesArchiveRunModal_ClassNames}
 								>
-									{run.kind === "purge" ? "Not deleted" : "Not archived"} ({run.notArchived.length})
+									{run.kind === "purge" ? "Not deleted" : "Not moved"} ({run.notArchived.length})
 								</h3>
 								{notArchivedGroups.map((group) => (
 									<div
@@ -486,7 +487,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 										</p>
 										{group.paths.length > 0 ? (
 											<TextMonospaceBlock
-												aria-label={`${run.kind === "purge" ? "Not deleted" : "Not archived"}: ${group.message}`}
+												aria-label={`${run.kind === "purge" ? "Not deleted" : "Not moved"}: ${group.message}`}
 												text={group.paths.join("\n")}
 												maxHeight="8lh"
 											/>
@@ -516,7 +517,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 								</legend>
 								<p>
 									This name already exists. Keep both adds a unique counter. Skipping a folder keeps it and its contents
-									archived.
+									in Trash.
 								</p>
 								{conflict.occupantPath ? (
 									<p className={"FilesArchiveRunModal-path" satisfies FilesArchiveRunModal_ClassNames}>

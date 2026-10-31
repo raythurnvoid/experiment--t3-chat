@@ -111,7 +111,7 @@ await cx.mutation(api.organizations.invite_user_to_organization_workspace, {
 
 ## 4. Content the second user can act on
 
-A freshly minted anonymous user now gets an auto-seeded `billing_usage_snapshots` row (balance 1000, Free product, null Polar ids), so its **content** writes work with no unblock step — verified 2026-08-03: `files_pending_updates.upsert_file_pending_update` drafts succeed for the invited anonymous member. Still create committed fixture files as the signed-in owner; that stays the simplest path, and metadata work (create, rename, move, archive, restore, share) was never credit-gated anyway.
+A freshly minted anonymous user now gets an auto-seeded `billing_usage_snapshots` row (balance 1000, Free product, null Polar ids), so its **content** writes work with no unblock step — verified 2026-08-03: `files_pending_updates.upsert_file_pending_update` drafts succeed for the invited anonymous member. Still create committed fixture files as the signed-in owner; that stays the simplest path, and metadata work (create, rename, move, move to Trash, restore, share) was never credit-gated anyway.
 
 Owner-side fixture calls:
 

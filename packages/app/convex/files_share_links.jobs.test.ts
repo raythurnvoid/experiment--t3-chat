@@ -297,7 +297,7 @@ describe("archive_nodes", () => {
 			nodeId,
 			enabled: true,
 		});
-		expect(refused._nay?.message).toBe("This file is archived");
+		expect(refused._nay?.message).toBe("This file is in Trash");
 
 		// A restore does not bring the old links back.
 		await reset_rate_limits(f.t, [f.db.userId]);

@@ -13,17 +13,17 @@ The producer owns its files, credentials, attempts, conflicts, and result receip
 in one mutation. Workpool delivers work; it does not decide whether a job succeeded.
 
 - Every transfer, pending review, plugin run, Bash background job, "Apply to contents" protection job,
-  archive or restore job, and move or scope job (`files_subtree_ops`) has one Activity, created with
-  the run or op. A small archive of files and empty folders, or a small restore, move, or scope
-  change, that finishes inside its request makes no run, no op, and no Activity. An archive of a
-  folder with items inside always has a job, because the request stamps only the named items. An
-  archive that refused or could not find some named items keeps its run and Activity, even when it finished inside the request, so the person can see what
-  was not archived (`progress.blocked`). When the request's own check refuses every named item, the
+  Trash or restore job, and move or scope job (`files_subtree_ops`) has one Activity, created with
+  the run or op. Moving a few files and empty folders to Trash, or a small restore, move, or scope
+  change, that finishes inside its request makes no run, no op, and no Activity. Moving a folder with
+  items inside to Trash always has a job, because the request stamps only the named items. A
+  move to Trash that refused or could not find some named items keeps its run and Activity, even when it finished inside the request, so the person can see what
+  was not moved to Trash (`progress.blocked`). When the request's own check refuses every named item, the
   request answers with the error and makes no run and no Activity. Each refused named item counts
   once in `total`, so the counts still add up.
-  Items the archive check counted that somebody else archived, deleted, or moved out before the
+  Items the Trash check counted that somebody else moved to Trash, deleted, or moved out before the
   apply reached them count as `skipped` when the job ends.
-- An archive or restore job started by the public API `files/delete` or `files/restore` stores the
+- A move to Trash or restore job started by the public API `files/delete` or `files/restore` stores the
   key in `files_archive_runs.credentialId`. Its background steps treat a revoked key like a lost
   membership, with their own message. The person still sees the job card in the app. Through the API,
   only that key reads the job with `files/jobs/get` (public-api skill, "Organize routes").
@@ -99,12 +99,12 @@ their own expiry. These clocks serve different owners.
 Current membership is required. Hidden or dismissed entries can consume a page. Keep the raw
 continuation and follow `isDone`; an empty visible page does not prove the feed ended.
 
-- Transfer, review, Bash job, protection job, archive job, and move or scope job Activities are private
+- Transfer, review, Bash job, protection job, Trash job, and move or scope job Activities are private
   to their requester, including against other workspace owners. Their summaries contain no source names
-  or paths. Archive jobs are titled "Archive files" or "Restore files". A move job (source kind
+  or paths. Move to Trash jobs are titled "Move files to Trash" or "Restore files". A move job (source kind
   `files_subtree_op`) is titled "Move files" and shows in the feed. A scope job (restrict or
   unrestrict) is titled "Restrict files" and has `feedVisible: false`: it exists only so the recover
-  cron finds the op. A protection job, an archive job, and a move or scope job have no targets at all.
+  cron finds the op. A protection job, a Trash job, and a move or scope job have no targets at all.
   Details recheck file access separately.
 - Shared plugin Activities require current access to every target. A missing target or a changed
   target path hides the whole Activity. A shared Activity with no target requires workspace read.
@@ -112,15 +112,15 @@ continuation and follow `isDone`; an empty visible page does not prove the feed 
 - `request_stop` accepts an Activity ID, checks scope and requester, and dispatches through an
   exhaustive source switch. A folder guest may stop their own work without workspace write.
   Repeated Stop is harmless. Plugin Stop stays unavailable until its producer supports it.
-  `activities_get_controls` gives no Stop to a move or scope job, to an ordinary archive job, or to a restore
+  `activities_get_controls` gives no Stop to a move or scope job, to an ordinary Trash job, or to a restore
   job unless it is `awaiting_input` on a name clash, or to a Move whose repair is stuck
   (`errorCode: "move_repair_stuck"`). `request_stop` refuses when `canStop` is false.
-- Forced archive has Stop. It visits children before their parent and keeps denied branches active.
+- Forced moves to Trash have Stop. They visit children before their parent and keep denied branches active.
   Stop, a revoked key, or a lost Read-only grant keeps completed changes and leaves unfinished parents
-  active. Its paged results keep a generic row when current access no longer allows the item's path.
-- Delete permanently (`files_archive_runs` with `archiveKind: "purge"`, title `Delete files` or
-  `Empty archive`) has Stop. It stops between nodes: a node it started deleting always finishes, and
-  what it did not reach stays archived. A purge that kept items (Read-only, no manage, busy) ends
+  active. Their paged results keep a generic row when current access no longer allows the item's path.
+- Delete permanently (`files_archive_runs` with `archiveKind: "purge"`, title `Delete files permanently` or
+  `Empty Trash`) has Stop. It stops between nodes: a node it started deleting always finishes, and
+  what it did not reach stays in Trash. A purge that kept items (Read-only, no manage, busy) ends
   `Partly completed`, not `Completed`, and its job dialog lists them under `Not deleted (N)`.
 - Dismiss applies only to finished work. `activities_user_states` stores one dismissal per viewer
   and Activity. It does not change another viewer's feed or stop execution. Bulk dismiss is paged.
@@ -133,7 +133,7 @@ through [activities.ts](../../../packages/app/src/lib/activities.ts).
 # Feed cards
 
 [app-notifications.tsx](../../../packages/app/src/components/app-notifications.tsx) shows every job with
-progress (transfer, review, protection, archive, and restore) the same way:
+progress (transfer, review, protection, moving to Trash, and restore) the same way:
 
 - While it runs: a `MyProgressBar` and `Copying 4 of 10 files…`. The bar counts every finished outcome.
   While `total` is null, the bar has no value and moves, and the line is only `Copying…`.
@@ -146,12 +146,12 @@ progress (transfer, review, protection, archive, and restore) the same way:
   `succeeded` (green check), `partial` (lime dashed circle with a check), `failed` (red x, also timed
   out), `canceled` (gray minus). Icons never have a background. An invitation card shows a gray mail
   icon in the same column.
-- A refused item, like a read-only file, is expected. So an ordinary archive (not a restore) or a protection
+- A refused item, like a read-only file, is expected. So an ordinary move to Trash (not a restore) or a protection
   job that is `partial` only because of blocked items shows as `Completed` with a green icon. The
-  "N of M" count still includes the refused items, and the archive job dialog lists them under
-  `Not archived (N)`, grouped by their reason. Items the person cannot open are only counted. The job dialog also lists the named items it archived (`files_archive_runs.get`
+  "N of M" count still includes the refused items, and the Trash job dialog lists them under
+  `Not moved (N)`, grouped by their reason. Items the person cannot open are only counted. The job dialog also lists the named items it trashed (`files_archive_runs.get`
   returns `archived`).
-- Forced archive keeps the shared `partial` status and warning icon when it leaves any branch behind.
+- Forced moves to Trash keep the shared `partial` status and warning icon when they leave any branch behind.
 - `awaiting_input` (only a transfer or a restore name clash) shows `Action needed`, the line
   `N name conflicts need your choice.`, and a `Resolve` button. It shows no bar.
 - The button is `View progress` while the job runs and `Open` when it ends, both `ghost-highlightable`.
@@ -181,7 +181,7 @@ Dropbox show no dialog for work that needs nothing from the person.
   to wait for a conflict choice, the toast goes away and the dialog opens.
 - Save and Discard reviews use it through `AppActivitiesProvider.watchReviewRun`. They never ask, so
   their dialog never opens by itself.
-- Delete permanently and Empty archive use it through `AppActivitiesProvider.watchArchiveRun`, with
+- Delete permanently and Empty Trash use it through `AppActivitiesProvider.watchArchiveRun`, with
   `Deleting` / `Deleted` (or `Emptying` / `Emptied`). A delete that ends inside the request shows a
   plain toast instead.
 - When a job's buttons go away with the rows they acted on, give focus to the panel, so a keyboard
@@ -214,14 +214,14 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   at once, and a step that was already scheduled then does nothing. Its progress, `updatedAt`, and `deadlineAt`
   move only when 50 more items are counted or the job ends, so the deadline works as an idle limit. See the
   [read-only spec](../files-read-only/SKILL.md#apply-to-contents).
-- An archive or restore job (`files_archive_runs`) is not stopped by its 30-minute idle deadline.
+- A move to Trash or restore job (`files_archive_runs`) is not stopped by its 30-minute idle deadline.
   Recovery moves the deadline and schedules the step again (`files_subtree_ops_db_recover`). A restore
   that waits on a name clash is `awaiting_input` until `resolve_conflicts`, with a 24-hour deadline
   like a paused paste. The clash can be of a top item or of an item inside a restored folder. Only that wait can time out (`timed_out`) or be stopped. Its Stop ends the whole
-  Unarchive request, with the queued restore jobs of that request. The done part stays archived or
-  restored. The restore jobs of one Unarchive request run one at a time: the ones after the first
+  Restore request, with the queued restore jobs of that request. The done part stays in Trash or
+  restored. The restore jobs of one Restore request run one at a time: the ones after the first
   start as `queued`, with `feedVisible: false`, a 24-hour deadline, and no scheduled step. A restore
-  also waits as `queued` while it overlaps another subtree op. An archive or restore op marks at most
+  also waits as `queued` while it overlaps another subtree op. A move to Trash or restore op marks at most
   64 paths busy, so one with many top items can mark a whole shared folder, or `/`, busy. When an op ends,
   `files_subtree_ops_db_delete` starts each waiter that overlaps nothing any more: promote marks it
   `running`, shows its card, and schedules its first step. Each waiter's check reads every op of the
@@ -241,18 +241,18 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   saves the step number on the walk (`recoverStep`, `recoverCount`). The first check only saves it. When
   the next 3 checks in a row find the same step, and no Move holds the workspace slot, it logs
   `Subtree op step keeps failing` and sets `errorCode: "subtree_op_stuck"` with a short message. A later
-  check that finds a new step clears it. A move or scope job and an archive or restore apply keep
-  trying, because ending halfway would leave old access inside. An archive check or a restore
+  check that finds a new step clears it. A move or scope job and a move to Trash or restore apply keep
+  trying, because ending halfway would leave old access inside. A move to Trash check or a restore
   discover or check changed nothing yet, so it ends as `failed`. A step that fails on every try is
-  then always logged, but an ordinary archive apply or scope step still needs a code fix to finish.
-  Forced archive can end safely after repeated failed steps and keeps completed changes. A scope job's
+  then always logged, but an ordinary move to Trash apply or scope step still needs a code fix to finish.
+  Forced moves to Trash can end safely after repeated failed steps and keep completed changes. A scope job's
   Activity is hidden from the feed, so only the log shows its notice.
 - `files_transfer.recover_expired_attempts` only releases expired transfer attempts. Do not put
   a second job deadline or history scan back in that module.
 - `files_pending_update_runs.recover` checks interrupted selection uploads, planning leases, and
   active units every five minutes. It retries planning at most three times and checks the Activity
   deadline before resuming work. It does not scan finished history.
-- `activities.cleanup_history` owns retention: seven days after transfer, review, Bash job, protection job, archive job, or move or scope job finish and thirty days
+- `activities.cleanup_history` owns retention: seven days after transfer, review, Bash job, protection job, Trash job, or move or scope job finish and thirty days
   after ordinary plugin finish. Scheduled plugin history has no automatic expiry. A move or scope op is already deleted when its walk ends, so cleanup deletes only its Activity. A Bash job row can hold a 700 KiB result, so a pass reads at most eight job rows and reschedules for the rest; the job row is deleted with its Activity, while the foreground Bash call row beside it stays until thread purge. It stops a pass after a bounded child cleanup page. Each producer deletes
   its own receipts. Transfer and review producers also release their proposal holds first. Dismissal docs drain first. The Activity and its producer are then deleted together.
 - Expiry means history is old enough for a cleanup attempt. It does not bypass the producer's safety
@@ -286,7 +286,7 @@ Use `convex/activities.test.ts` for feed privacy, pagination, controls, deadline
 retention. Producer tests cover final publication, late callbacks, tokens, and saved outputs.
 `convex/files_pending_update_runs.test.ts` also checks review recovery and shared history cleanup.
 `convex/files_write_policy_runs.test.ts` checks the protection job steps, Stop, deadlines, and cleanup.
-`convex/files_archive_runs*.test.ts` check archive and restore job steps, Stop, clashes, and cleanup.
+`convex/files_archive_runs*.test.ts` check Trash and restore job steps, Stop, clashes, and cleanup.
 `convex/files_subtree_ops.test.ts` checks op overlap and how waiting ops start. `convex/files_nodes.move_nodes.test.ts`
 checks the move and scope job Activities and walks.
 `src/components/app-notifications.test.tsx` and `src/components/files/files-clipboard.test.tsx`

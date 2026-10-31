@@ -122,7 +122,7 @@ AI usage billing has its own markers. `AI usage not billed` means a charge had n
 
 A stuck Move repair logs `Move repair stuck` once, after 8 failed tries in a row (cohort id, work
 phase, count, last error). After 3 failures the starter's Activity already shows `Needs help`.
-While it is stuck, the group keeps the workspace slot, so other Moves, Archives and access changes
+While it is stuck, the group keeps the workspace slot, so other Moves, Trash changes and access changes
 in that workspace wait. To check, run `files_move_cohorts:list_stuck` (no args): it lists up to 50
 groups with `repairFailureCount` 3 or more, with `repairLastError` and `repairNextRetryAt`. Fix the
 cause first (the error says which step and why). Then run `files_move_cohorts:retry_now` with

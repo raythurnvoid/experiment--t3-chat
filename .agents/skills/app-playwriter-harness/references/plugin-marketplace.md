@@ -732,11 +732,11 @@ click provably does nothing, not before.
 - Since the 2026-08-16 upload-conversion change, the pipeline's `transcript.md` becomes a normal
   editable rich text document (`textKind: "rich_text"`, chunk-readable) and a produced
   `provider-transcript.json` becomes an editable plain-text document; the recording files stay
-  stored blobs. Deleting a meeting archives the whole `/meetings/<meetingId>` folder through the
+  stored blobs. Deleting a meeting moves the whole `/meetings/<meetingId>` folder to Trash through the
   service `archive-destination` door and tombstones the D1 row. Check it by reading the file nodes,
   not the tree alone: the folder and every file in it get ONE shared `archiveOperationId`, so they
   leave the active tree together and a member can restore them. Their bytes stay charged, and the R2
-  objects stay — that is the archive working, not failed QA cleanup.
+  objects stay — that is Trash working, not failed QA cleanup.
 - A create failure renders only as a `role="alert"` inside the frame with the Worker's generic message.
   Since the plugin-data cleanup Worker, create books no storage: it checks the member's live write
   permission first (403 `You do not have permission to create meetings in this workspace...` for a
@@ -812,7 +812,7 @@ note_revision` since migration `0011`; the columns were named `file_projection_*
   `meetings` → the uuid folders → `meeting.md, read-only`. Open it and read
   `.FileNodeView-content-panel`: title, `Status:`, `Meeting id:`, and either artifact file names
   or `Council stored no recording files for this meeting.` A leftover uuid folder with no D1 row
-  stays without `meeting.md` (delete archives the note and leaves the folder). Do not Join from QA
+  stays without `meeting.md` (delete moves the note to Trash and leaves the folder). Do not Join from QA
   Edge for this check.
 - **A Failed card is not enough.** The page always shows the same save-failed sentence. D1
   `failure_reason` is the operator text, but a Durable Object reset mid-run can write that column

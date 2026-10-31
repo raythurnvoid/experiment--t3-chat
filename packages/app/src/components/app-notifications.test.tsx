@@ -620,7 +620,7 @@ describe("AppNotifications", () => {
 								status: "partial",
 								resultKind: "saved",
 								source: { kind: "files_archive_run", id: "archive_1", archiveKind: "archive" },
-								title: "Archive files",
+								title: "Move files to Trash",
 								errorMessage: null,
 								targets: [],
 								progress: {
@@ -640,7 +640,7 @@ describe("AppNotifications", () => {
 			loadMore: vi.fn(),
 		}));
 		render(<TestNotifications />);
-		expect(screen.getByText("Archived 40 of 46 items.")).toBeTruthy();
+		expect(screen.getByText("Moved 40 of 46 items to Trash.")).toBeTruthy();
 		// A refused read-only item is expected, so the card reads as completed, not partly completed.
 		expect(screen.getByRole("status").textContent).toMatch(/^Completed/);
 		expect(screen.getByRole("button", { name: "Notifications" }).textContent).toBe("");

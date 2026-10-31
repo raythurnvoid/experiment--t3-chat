@@ -32,7 +32,7 @@ const AppActivitiesContext = createContext<{
 	 */
 	watchReviewRun: (args: WatchedReviewRun) => void;
 	/**
-	 * Show a toast while a Delete permanently or Empty archive job runs.
+	 * Show a toast while a Delete permanently or Empty Trash job runs.
 	 */
 	watchArchiveRun: (args: WatchedArchiveRun) => void;
 } | null>(null);

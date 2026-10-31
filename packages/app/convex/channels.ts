@@ -111,7 +111,7 @@ export async function channels_db_get_access(
 	}
 	if (fileNode?.archiveOperationId) {
 		canPost = false;
-		postRefusal = "This file is archived";
+		postRefusal = "This file is in Trash";
 	} else if ((channel.kind === "public" || channel.kind === "private") && channel.archivedAt !== null) {
 		canPost = false;
 		postRefusal = "This channel is archived";

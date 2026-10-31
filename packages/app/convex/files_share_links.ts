@@ -153,7 +153,7 @@ async function db_check_live_file(
 		return Result({ _nay: { message: "Only a file can have a public link" } });
 	}
 	if (node.archiveOperationId !== null) {
-		return Result({ _nay: { message: "This file is archived" } });
+		return Result({ _nay: { message: "This file is in Trash" } });
 	}
 
 	if (!(await files_share_links_db_is_workspace_live(ctx, args))) {

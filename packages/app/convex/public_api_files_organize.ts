@@ -1470,7 +1470,7 @@ export const get_job = internalQuery({
 					!readable || item.reason === "permission"
 						? "Permission denied"
 						: item.reason === "not_empty"
-							? "This folder still holds items that could not be archived."
+							? "This folder still holds items that could not be moved to Trash."
 							: "This item changed. Try again.",
 			});
 		}

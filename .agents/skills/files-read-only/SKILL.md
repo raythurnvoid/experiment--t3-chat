@@ -92,8 +92,8 @@ ACL applies in every row. A machine force request still needs current access and
 | Edit content, metadata, Yjs marks, or collaboration mode | Refuse normal writes |
 | Create, upload, import, or paste media | Check the direct destination folder |
 | Rename or Move | Check the item and direct source/destination parents; carry descendants |
-| Ordinary Archive or reviewed Delete | Check active items and their directly changed parent lists; older Trash does not block |
-| Forced Archive | Archive allowed children first; keep denied children and their ancestors |
+| Ordinary Move to Trash or reviewed Delete | Check active items and their directly changed parent lists; older Trash does not block |
+| Forced Move to Trash | Move to Trash allowed children first; keep denied children and their ancestors |
 | Restore | Preserve the item's own flag; check the live parent and any replacement occupant |
 | Restore, archive, or unarchive snapshots | Check the file's current flag |
 | Set or clear Read-only | Require Can edit; the flag itself does not block the setter |
@@ -174,30 +174,30 @@ that same ID in their publish receipt.
 Pending proposals stay visible through a refusal. Save, Accept, and rebase recheck current access.
 Whole-proposal Discard and owner expiry keep saved files intact. App agents and Bash cannot force.
 
-## Archive and Restore
+## Trash and Restore
 
 `files_archive_runs` uses the existing `files_subtree_ops` scheduling and Activity records.
 Requests do a bounded first step; larger work continues in indexed pages.
 
-Ordinary archive checks each named item's current direct parent for Can edit and Read-only in
+An ordinary move to Trash checks each named item's current direct parent for Can edit and Read-only in
 both its fast and background checks. It then keeps the existing check-then-stamp behavior. Its fast path queries active
-Read-only nodes with `by_org_ws_archive_readOnly_treePath`; archived and false nodes are outside
+Read-only nodes with `by_org_ws_archive_readOnly_treePath`; trashed and false nodes are outside
 that range. Restricted areas still need the existing authority checks. Older Trash keeps its own
-archive operation and never blocks deletion of its active parent.
+Trash operation and never blocks deletion of its active parent.
 
-Accepted limitation: an ordinary archive does not repeat flag or ACL checks during its later stamp
-walk. A flag set after its check may not stop that archive. This window also exists when a bulk job
-sets flags. Do not describe ordinary archive as checking each final stamp.
+Accepted limitation: an ordinary move to Trash does not repeat flag or ACL checks during its later stamp
+walk. A flag set after its check may not stop that move to Trash. This window also exists when a bulk job
+sets flags. Do not describe ordinary moves to Trash as checking each final stamp.
 
-Forced archive uses postorder work: children first, then their parent. Every step checks current
+Forced moves to Trash use postorder work: children first, then their parent. Every step checks current
 authority. It enters a Restricted folder only when allowed. A denied branch stays active with all
-its ancestors; allowed siblings remain archived. Before archiving a folder, check that it has no
+its ancestors; allowed siblings remain in Trash. Before moving a folder to Trash, check that it has no
 active child, including a child added behind the cursor. A queued item moved elsewhere is not
-archived at its new location. Stop or revocation keeps the completed part.
+trashed at its new location. Stop or revocation keeps the completed part.
 
 Force waits for overlapping Move, scope, or running Restore work. A Restore queued behind the
-archive does not make it wait in a cycle. Outcomes are stored and paged, with current read checks
-when shown. A retained parent is not counted as archived. Activity shows partial results.
+delete does not make it wait in a cycle. Outcomes are stored and paged, with current read checks
+when shown. A retained parent is not counted as trashed. Activity shows partial results.
 
 Restore preserves an item's own flag and decision ID. A Read-only live parent normally blocks
 landing. The narrow exception is a parent restored by this same run with the exact recorded
@@ -205,33 +205,33 @@ decision ID, including null. Repair-only docs grant no exception. Clearing and s
 the receipt. Current ACL and placement checks still apply.
 
 Restore name clashes keep Keep both, Skip, and Replace. Replace always refuses a Read-only occupant,
-even for a forced request. It keeps its existing empty-folder and bounded archived-content rules.
-Separate archive operations remain separate. Moving an item to root still needs its root and
+even for a forced request. It keeps its existing empty-folder rules and bounded checks of content in Trash.
+Separate Trash operations remain separate. Moving an item to root still needs its root and
 restricted-scope exit permissions.
 
 Reviewed pending Delete uses the Save cohort. It checks active descendants before the group switch;
-already archived descendants keep their stamps and do not block it. Stop before the switch keeps
+already trashed descendants keep their stamps and do not block it. Stop before the switch keeps
 saved files and proposals; after the switch, required repair finishes.
 
 ## Delete permanently
 
-Delete permanently and Empty archive never delete a Read-only item. The job keeps it with the
+Delete permanently and Empty Trash never delete a Read-only item. The job keeps it with the
 reason `read_only`, and keeps its folders too, because a folder goes only when it is empty. There is
 no force for a permanent delete. Details: `../data-deletion/SKILL.md` ("Delete Permanently").
 
 Once a purge job starts deleting a node, it sets `purgeRunId`. Then the write check refuses every
 write to the node, and every create inside it, with `name: "deleting"` ("This item is being
-deleted."), even a forced one. Restore does not use this check for the archive operation's own
+deleted."), even a forced one. Restore does not use this check for the Trash operation's own
 items. The purge's busy paths keep a Restore of the same items waiting instead.
 
 ## Plugin and service partial deletion
 
-Bounded plugin/service archive keeps its existing synchronous size limit. It returns an exact
+Bounded plugin/service deletion keeps its existing synchronous size limit. It returns an exact
 request receipt with completed count, completion state, and safe refusals. A new attempt names the
 previous receipt and must still match its original destination ID, epoch, and seal. Same-request
-replay returns the saved result without archiving twice. Receipts do not expire into fresh authority.
+replay returns the saved result without moving to Trash twice. Receipts do not expire into fresh authority.
 
-A partial service delete retires only targets actually archived. It does not close the destination
+A partial service delete retires only targets actually trashed. It does not close the destination
 epoch, remove remaining grants, or tell the caller all artifacts were deleted. Full completion
 closes once. Council retains its attempt and prior receipt across retries.
 
@@ -242,7 +242,7 @@ closes once. Council retains its attempt and prior receipt across retries.
   one HTTP status shape.
 - `/files/write-many` keeps per-item results. Touch keeps sequential request-level failure.
   Upload URL batches preflight before minting. Atomic batch doors remain atomic.
-- Partial archive reports completed work and refusals. It does not roll back completed siblings.
+- A partial move to Trash reports completed work and refusals. It does not roll back completed siblings.
 - `skipIfUnchanged` still checks current authority and the flag.
 
 # Race Rules
@@ -293,7 +293,7 @@ stored-cap admission. A later lock alone does not stop them.
 If a service call observes that a member moved the file outside the seal, it closes those doors
 permanently for that target. The accepted R2 event can still finish and charge the file's real size.
 
-The service `delete` route also checks current policy before any write. It archives a committed upload,
+The service `delete` route also checks current policy before any write. It moves a committed upload to Trash,
 because that file may now hold normal editable state and history. It hard-deletes only a pending
 service placeholder, which has no accepted content yet.
 
@@ -357,7 +357,7 @@ Keep visible labels, keyboard and focus behavior, and usable layout at 200% zoom
 | RO-11 | Accepted uploads and committed materialization finish; failed placeholders can be cleaned |
 | RO-12 | Capture unsaved text before reset; keep recovery reachable within the tab |
 | RO-13 | Keep read_only and each door's existing error shape |
-| RO-14 | Partial archive keeps completed work and retained parents; atomic doors stay atomic |
+| RO-14 | A partial move to Trash keeps completed work and retained parents; atomic doors stay atomic |
 
 # Test Map
 
@@ -365,7 +365,7 @@ Keep visible labels, keyboard and focus behavior, and usable layout at 200% zoom
 - `convex/files_write_policy_runs.test.ts`: bulk changes, authority loss, Stop, retries.
 - `convex/files_transfer*.test.ts`, `files_pending_nodes.test.ts`, pending structural tests:
   Copy/Save receipts, clear/re-lock, partial Save, Trash, Move.
-- `convex/files_archive_runs*.test.ts`: Restore receipts, forced partial archive, current authority.
+- `convex/files_archive_runs*.test.ts`: Restore receipts, forced partial moves to Trash, current authority.
 - `convex/public_api*.test.ts`, `plugins_external_files*.test.ts`: grant checks, force, exact retries,
   sealed destinations, partial completion, accepted uploads.
 - `convex/files_nodes_content*.test.ts`, `r2.test.ts`: final content checks and durable cleanup.

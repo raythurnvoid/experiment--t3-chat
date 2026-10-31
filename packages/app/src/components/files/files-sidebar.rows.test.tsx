@@ -90,7 +90,10 @@ function link(nodeId: string) {
 }
 
 vi.mock("@/components/app-auth.tsx", () => ({
-	AppAuthProvider: { useAuthenticated: () => ({ userId: "user" }) },
+	AppAuthProvider: {
+		useAuthenticated: () => ({ userId: "user" }),
+		useAuth: () => ({ userId: "user" }),
+	},
 }));
 
 vi.mock("@/lib/files-move-intake.ts", () => ({
@@ -686,9 +689,9 @@ describe("FilesSidebar", () => {
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
 		await view.findByRole("treeitem", { name: "bravo" });
 		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
-		const dialog = await view.findByRole("dialog", { name: "Archive “bravo”?" });
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: "Move to Trash" }));
+		const dialog = await view.findByRole("dialog", { name: "Move “bravo” to Trash?" });
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 		await waitFor(() =>
 			expect(archive).toHaveBeenCalledWith(app_convex_api.files_nodes.archive_nodes, {
 				membershipId: "membership",
@@ -715,8 +718,8 @@ describe("FilesSidebar", () => {
 
 		// The header menu is not a tree menu, so nothing else keeps the selection while the dialog is open.
 		fireEvent.click(view.getByRole("button", { name: "More options" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: /^Archive 2 selected/ }));
-		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Move 2 selected/ }));
+		const dialog = await view.findByRole("dialog", { name: "Move 2 items to Trash?" });
 		// The closed menu unmounts a moment later. While it is still there, the sidebar treats every
 		// outside interaction as the menu closing, which would hide what this test checks.
 		await waitFor(() => expect(document.querySelector(".MyMenuPopover[data-files-sidebar-tree-context]")).toBeNull());
@@ -728,7 +731,7 @@ describe("FilesSidebar", () => {
 		expect(bravo.getAttribute("aria-selected")).toBe("true");
 
 		fireEvent.click(cancel);
-		await waitFor(() => expect(view.queryByRole("dialog", { name: "Archive 2 items?" })).toBeNull());
+		await waitFor(() => expect(view.queryByRole("dialog", { name: "Move 2 items to Trash?" })).toBeNull());
 		expect(alpha.getAttribute("aria-selected")).toBe("true");
 		expect(bravo.getAttribute("aria-selected")).toBe("true");
 	});
@@ -760,9 +763,9 @@ describe("FilesSidebar", () => {
 
 		// Alpha holds a read-only file. The server refuses it and archives bravo, so the dialog names both.
 		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
-		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/alpha\n/bravo");
+		fireEvent.click(await view.findByRole("menuitem", { name: "Move to Trash" }));
+		const dialog = await view.findByRole("dialog", { name: "Move 2 items to Trash?" });
+		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe("/alpha\n/bravo");
 
 		// The request had 2 items, so the selection clears even though only bravo was archived.
 		vi.spyOn(app_convex, "mutation").mockResolvedValue({
@@ -776,8 +779,8 @@ describe("FilesSidebar", () => {
 				isChecking: false,
 			},
 		});
-		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
-		await waitFor(() => expect(view.queryByRole("dialog", { name: "Archive 2 items?" })).toBeNull());
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
+		await waitFor(() => expect(view.queryByRole("dialog", { name: "Move 2 items to Trash?" })).toBeNull());
 		expect(alpha.getAttribute("aria-selected")).not.toBe("true");
 	});
 
@@ -806,9 +809,9 @@ describe("FilesSidebar", () => {
 
 		// The server refuses locked.md and archives bravo, so the header action stays enabled.
 		fireEvent.click(view.getByRole("button", { name: "More options" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: /^Archive 2 selected/ }));
-		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/bravo\n/locked.md");
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Move 2 selected/ }));
+		const dialog = await view.findByRole("dialog", { name: "Move 2 items to Trash?" });
+		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe("/bravo\n/locked.md");
 	});
 
 	test("the menu of a read-only row in a selection still archives the selection", async () => {
@@ -836,9 +839,9 @@ describe("FilesSidebar", () => {
 
 		// Bravo can be archived, so the read-only row's menu archives the selection like the header action.
 		fireEvent.click(view.getByRole("button", { name: /^More actions for locked\.md/ }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Archive" }));
-		const dialog = await view.findByRole("dialog", { name: "Archive 2 items?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to archive" }).textContent).toBe("/bravo\n/locked.md");
+		fireEvent.click(await view.findByRole("menuitem", { name: "Move to Trash" }));
+		const dialog = await view.findByRole("dialog", { name: "Move 2 items to Trash?" });
+		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe("/bravo\n/locked.md");
 	});
 
 	test("a reveal event during a search keeps the folder expanded once the search closes", async () => {
@@ -1045,11 +1048,11 @@ describe("FilesSidebar", () => {
 		const view = render(<CreateSidebar router={router} selectedNodeId="delta" />);
 		await view.findByRole("treeitem", { name: "alpha" });
 		fireEvent.click(view.getByRole("button", { name: "More options" }));
-		fireEvent.click(await view.findByRole("menuitemcheckbox", { name: "Show archived items" }));
+		fireEvent.click(await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" }));
 
 		fireEvent.change(view.getByRole("combobox"), { target: { value: "notes" } });
 		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
-		expect(within(results).getByText("Search shows active items only.")).toBeTruthy();
+		expect(within(results).getByText("Search does not show items in Trash.")).toBeTruthy();
 		expect(within(results).getByText("No files match your search.")).toBeTruthy();
 	});
 

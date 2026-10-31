@@ -227,7 +227,7 @@ Standard `_nay.message` values for Result-returning handlers:
 
 - `"Unauthenticated"`: Convex auth has no usable current user, or the identity cannot resolve to a `users` doc.
 - `"Unauthorized"`: the user is authenticated, but the supplied membership/scope is not valid for that user.
-- `"Not found"`: the requested id is invalid, the requested doc is missing, or the requested doc is archived when active content is required.
+- `"Not found"`: the requested id is invalid, the requested doc is missing, or the requested doc is in Trash when active content is required.
 - `"Permission denied"`: the user and resource are valid, but an explicit permission check failed.
 
 Validate requested docs at the supported handler boundary that loads them. If a private helper only runs after that handler has already checked existence, scope, and kind, do not repeat those defensive checks inside the helper. Pass the already-validated fields the helper needs, such as `path` or `archiveOperationId`, and trust the caller contract.

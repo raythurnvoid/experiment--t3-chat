@@ -1808,7 +1808,7 @@ export const archive_destination = internalMutation({
 				destination.archiveOperationId !== null ||
 				(record && (record.currentEpoch !== throughEpoch || record.closedEpoch >= throughEpoch))
 			) {
-				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "The original archive destination changed" } });
+				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "The destination changed after the delete started" } });
 			}
 		} else if (!record || record.closedEpoch < record.currentEpoch) {
 			const target = await ctx.db

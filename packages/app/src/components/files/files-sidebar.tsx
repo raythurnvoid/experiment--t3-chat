@@ -1656,7 +1656,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 					>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+							<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Move to Trash"}</MyMenuItemContentPrimary>
 						</MyMenuItemContent>
 					</MyMenuItem>
 					{isArchived ? (
@@ -2638,7 +2638,7 @@ const FilesSidebarTreeRow = memo(
 					writeBlockedReason: itemData.writeBlockedReason,
 					readOnly: itemData.readOnly,
 				});
-		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}${isLocked ? ", you don't have access" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}${hasPublicLink ? ", public link" : ""}`;
+		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " in Trash" : ""}${isLocked ? ", you don't have access" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}${hasPublicLink ? ", public link" : ""}`;
 
 		const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 			onCreateNode(itemId, "file");
@@ -3887,10 +3887,10 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 	} = props;
 
 	// The tree loads folder by folder, so it does not know how many archived items exist.
-	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} archived items`;
-	const selectedItemsArchiveLabel = `Archive ${selectedNodeIdsCount} selected ${
+	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} items in Trash`;
+	const selectedItemsArchiveLabel = `Move ${selectedNodeIdsCount} selected ${
 		selectedNodeIdsCount === 1 ? "item" : "items"
-	}`;
+	} to Trash`;
 
 	const handleArchiveToggleClick = useFn(() => {
 		onArchiveToggleClick();
@@ -3948,7 +3948,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 										<Trash2 />
 									</MyMenuItemContentIcon>
 									<MyMenuItemContentPrimary>
-										{`Delete ${purgeSelectionCount} archived ${purgeSelectionCount === 1 ? "item" : "items"} permanently…`}
+										{`Delete ${purgeSelectionCount} ${purgeSelectionCount === 1 ? "item" : "items"} in Trash permanently…`}
 									</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
@@ -3987,7 +3987,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 									<MyMenuItemContentIcon>
 										<Archive />
 									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Open archive</MyMenuItemContentPrimary>
+									<MyMenuItemContentPrimary>Open Trash</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
 						</MyMenuItemsGroup>
@@ -4472,7 +4472,7 @@ const FilesSidebarImportConflictModal = memo(function FilesSidebarImportConflict
 						{conflicts.length === 1
 							? "1 path in this import already exists in the destination folder."
 							: `${conflicts.length} paths in this import already exist in the destination folder.`}{" "}
-						Replacing archives the current files; skipping keeps them and imports the rest.
+						Replacing moves the current files to Trash; skipping keeps them and imports the rest.
 					</MyModalDescription>
 				</MyModalHeader>
 				<ul
@@ -4591,7 +4591,7 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 		isArchived && isRestricted && !canDeletePermanently ? { membershipId, nodeId: row._id } : "skip",
 	);
 	const canDeletePermanentlyRow = canDeletePermanently || ownShareState?.canManage === true;
-	const label = `${row.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
+	const label = `${row.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " in Trash" : ""}`;
 
 	const handleOpenClick = useFn(() => {
 		onOpen(row._id, row.kind);
@@ -4661,7 +4661,7 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 						</span>
 						{isArchived && (
 							<span className={"FilesSidebarSharedGroup-row-archived" satisfies FilesSidebarSharedGroup_ClassNames}>
-								Archived
+								In Trash
 							</span>
 						)}
 					</MyButton>
@@ -5084,7 +5084,7 @@ const FilesSidebarSearchResults = memo(function FilesSidebarSearchResults(props:
 			{/* Search reads the active rows only, so say so while the tree shows archived rows. */}
 			{showArchived ? (
 				<p className={"FilesSidebarSearchResults-state" satisfies FilesSidebarSearchResults_ClassNames}>
-					Search shows active items only.
+					Search does not show items in Trash.
 				</p>
 			) : null}
 			{statusText !== null ? (

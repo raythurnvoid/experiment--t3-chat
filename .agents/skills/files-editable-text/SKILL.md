@@ -258,7 +258,7 @@ Every editable text file is collaborative by default. `files_nodes.collaboration
 
 On a file with collaboration off, a member Save keeps existing proposal branches. Their old base asset makes them stale. Review and the next agent edit or shell write prepare them on current text; the agent needs no owner to open Review. Preparation merges accepted and proposed text separately. Changed proposal lines win overlap while unrelated saved text survives. Preparation changes only the proposal, never the saved file. Failed preparation keeps the old branches for Copy, Retry, or Discard. See the pending-updates skill for the shared merge and race checks.
 
-An agent Bash copy carries the source's content, content type, and document shape, whatever the destination's name says. A text copy over an existing text file keeps the destination's collaboration mode. A new copy, or a text copy over a stored file, inherits the source's mode. The destination keeps its id, permissions, custom metadata, and history. The copy is staged as a whole-file replacement (`files_pending_updates.pendingReplacement`, see `../files-agent-pending-updates/SKILL.md`) and reviewed as a whole; the replaced content stays in history with its own type. Every destination gets a pending copy, whatever its collaboration mode. Text is normalized once (one leading BOM removed, line endings to LF). A plain text source stays byte-exact after that, and a Markdown source is re-serialized by the rich text document it builds. `mv -f` is not a copy: it is a structural replace-move that keeps the source's identity and archives the occupant when accepted.
+An agent Bash copy carries the source's content, content type, and document shape, whatever the destination's name says. A text copy over an existing text file keeps the destination's collaboration mode. A new copy, or a text copy over a stored file, inherits the source's mode. The destination keeps its id, permissions, custom metadata, and history. The copy is staged as a whole-file replacement (`files_pending_updates.pendingReplacement`, see `../files-agent-pending-updates/SKILL.md`) and reviewed as a whole; the replaced content stays in history with its own type. Every destination gets a pending copy, whatever its collaboration mode. Text is normalized once (one leading BOM removed, line endings to LF). A plain text source stays byte-exact after that, and a Markdown source is re-serialized by the rich text document it builds. `mv -f` is not a copy: it is a structural replace-move that keeps the source's identity and moves the occupant to Trash when accepted.
 
 Human clipboard Copy creates saved files through `files_transfer` and `files_nodes_content`.
 Each file pins its saved source version and metadata before reading bytes. Saved Yjs edits are
@@ -379,7 +379,7 @@ derived search work must not hold up source Save.
 For `replace_file_content`, each submitted text has one `requestId`. Retries reuse it. Later typing
 gets a new request. The request is bound to the actor, workspace, file and content hash. Its
 committed receipt returns the original result without publishing again. Keep this receipt for the
-file's lifetime, also after archive, restore and history cleanup. Last committed Save wins; retrying
+file's lifetime, also after moving to Trash, restore and history cleanup. Last committed Save wins; retrying
 an older completed Save does not overwrite it.
 
 `files_content_saves.ts` stages exact source chunks in separate transactions and selects the ready
@@ -474,7 +474,7 @@ These doors create a `plain_text` node:
 
 A committed collaborative service upload is a normal editable file after conversion. A committed
 non-collaborative service upload has the same chunks and version history but no Yjs docs. The service
-`delete` route archives either form and keeps its content, snapshots, metadata, and R2 asset. Only an
+`delete` route moves either form to Trash and keeps its content, snapshots, metadata, and R2 asset. Only an
 unfinished service placeholder may use `files_nodes_db_hard_delete_node`.
 
 The sidebar New-file flow creates a Markdown file with a default name, and a rename (`rename_node`, the pending-move proposal, and accept) keeps the stored content type, so no name can move a file to another type. Files of other types enter the workspace through uploads, the agent's write doors, and the public write routes. An extensionless destination is a valid rename target, which keeps mixed file/folder swap cycles working.
@@ -611,7 +611,7 @@ these rules.
 
 A content save in place keeps the link, because it is the same file with new text: Yjs pushes,
 `replace_file_content`, both collaboration toggles, version restore, pending Save, a pending copy
-accepted onto a saved file, and in-place API or plugin fills. A replacement that archives the file
+accepted onto a saved file, and in-place API or plugin fills. A replacement that moves the file to Trash
 and creates a new node ends the old link. The new node has no link. The full lifecycle is in
 `../access-control/SKILL.md`.
 

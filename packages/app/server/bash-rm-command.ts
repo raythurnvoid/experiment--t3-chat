@@ -80,8 +80,8 @@ function parse_rm_operands(args: string[]) {
  * Propose app-file deletes as pending updates for shell `rm`.
  *
  * `/tmp` removals still delegate to the built-in. In Agent mode an app `rm`
- * records a pending delete the user reviews in Files; accepting archives the
- * node (a folder with its whole subtree). `rm` on the user's own unaccepted
+ * records a pending delete the user reviews in Files; accepting moves the
+ * node to Trash (a folder with its whole subtree). `rm` on the user's own unaccepted
  * Added file cancels it immediately, like Discard. Ask mode keeps rejections.
  */
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
@@ -137,7 +137,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stdout: "",
 				stderr:
 					`rm: cannot delete app file '${firstAppOperand}' through bash.\n` +
-					`App file deletes are available in Agent mode; Ask mode is read-only for app files. Use the Files sidebar Archive action for path '${firstTarget.dbFilesPath}'.\n`,
+					`App file deletes are available in Agent mode; Ask mode is read-only for app files. Use Move to Trash in the Files sidebar for path '${firstTarget.dbFilesPath}'.\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -231,8 +231,8 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			} else {
 				stdout +=
 					proposed._yay.nodeKind === "folder"
-						? `pending delete created: ${dbFilesPath} — archives the folder and its contents when accepted; review in Files\n`
-						: `pending delete created: ${dbFilesPath} — archives the file when accepted; review in Files\n`;
+						? `pending delete created: ${dbFilesPath} — moves the folder and its contents to Trash when accepted; review in Files\n`
+						: `pending delete created: ${dbFilesPath} — moves the file to Trash when accepted; review in Files\n`;
 			}
 		}
 

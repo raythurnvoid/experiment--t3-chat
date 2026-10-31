@@ -80,7 +80,7 @@ finishes, call `state.qa.filesProfile.saveSample()`. Save an incomplete sample o
 inspect state before any retry. Read the new route ID and `files_tree.get_file_node_for_membership`
 through the app client. Require the new ID, folder kind, root parent, active state, exact path, and
 empty ready table. Save a later receipt with the raw case/start/startedAt and both final-state and
-restoration checks. Keep the new ID as a named catalog fixture, or archive only this run's new item
+restoration checks. Keep the new ID as a named catalog fixture, or move only this run's new item to Trash
 after its checks. Repeat the full setup and action for seven samples.
 
 For a menu command, arm before opening the menu. The helper brings the tab to the front, which
@@ -258,7 +258,7 @@ The sidebar mounts only nearby rows. If an exact owned ID is missing from the DO
 `.FilesSidebar-content.app-scrollable`, then use the mouse wheel over that pane and read again.
 Do not assign `scrollTop` or infer ownership from the rendered name. Read its disabled title input's
 value; row `innerText` can be empty. Expand the exact parent through its native Expand button before
-opening a child. Archive can return to root and scroll the sidebar to the top, so recheck it before
+opening a child. Move to Trash can return to root and scroll the sidebar to the top, so recheck it before
 the next setup step. Keep these setup actions outside the timed submit.
 
 Properties must be scoped to `[data-files-properties-modal][data-open="true"]`. The current footer
@@ -282,10 +282,10 @@ and press Control+V. Focus on a folder row pastes into it. Focus on a file row p
 Use a trusted Enter event for inline Rename and Control+V for Paste. Keep Copy's accept and seal
 replies separate. A matching new row is only the visible milestone; join its ID to the exact run
 output, then audit copied descendants and content before accepting the sample. One-child folder
-archives return a background run even when a file or empty-folder archive returns none.
-Read an archive run through `files_archive_runs.get` (`files_archive_runs:get` in CLI), using its
+folders moved to Trash return a background run even when a file or empty folder returns none.
+Read a Trash run through `files_archive_runs.get` (`files_archive_runs:get` in CLI), using its
 exact returned run ID and membership. Transfer status uses `files_transfer_status`; do not send
-an archive run ID there.
+a Trash run ID there.
 
 For a native drag, click the source first to clear other selected rows. Check `.FilesSidebarTree-dragging`
 after drag start and the target indicator before release. Empty `DataTransfer.types` is normal: the
@@ -331,12 +331,12 @@ If the native folder input fails, use the documented `File`/`DataTransfer` fallb
 After upload or Replace, check parent/path, published asset, processing state, exact bytes, and hash.
 For editable text, conversion publishes a `content_snapshot` asset and the expected node `textKind`.
 That new asset has no upload `processingWorkId`; checking it for `null` gives a false failure.
-Replace must create a new ID and archive the old ID. Archive only this run's outputs after checks.
+Replace must create a new ID and move the old ID to Trash. Move only this run's outputs to Trash after checks.
 
 For bulk conflicts, select the exact two owned sources, then Copy/Paste through the app. At the known
 conflict, Stop must reach a terminal run. Retry must have a new run ID. Keep both plus Continue must
 finish all items. Read completed outputs retained by Stop too. Compare every copy's bytes with its
-source, archive only new output IDs, and check all source paths and content again.
+source, move only new output IDs to Trash, and check all source paths and content again.
 
 Use the native Copy menu after checking the selection. Control+C can leave the old app clipboard
 when browser text is selected. Check source IDs in the returned run before timing its controls.
@@ -354,7 +354,7 @@ receipt after a retry or reload. Keep duplicate reads and failures in raw data, 
 medians. A baseline covers its named scenario; it does not cover every scale or permission variant.
 
 Track a created ID before timing or content checks can fail. Failure cleanup must restore changed
-fixture metadata and archive only this run's new IDs. Save each raw sample once. Mark restoration
+fixture metadata and move only this run's new IDs to Trash. Save each raw sample once. Mark restoration
 only after its checks pass, and join a batch restoration receipt to exact sample IDs.
 
 Keep native creation timing separate from direct API comparisons. The native sidebar uses
@@ -424,7 +424,7 @@ Outside timing, check snapshot fetch failure/retry, navigation while bytes are p
 creation, known read-only sidebar name-modal creation, and separate document identities. Folder,
 Code/Markdown and Review creation must make zero unused preload calls. The file-view toolbar create modal
 does not open the created file, so it must skip preload too. Use owned items for policy checks;
-restore the child rule and folder default before archive. Keep difficult access-loss, lineage and
+restore the child rule and folder default before moving to Trash. Keep difficult access-loss, lineage and
 snapshot compaction races in focused deterministic tests.
 
 ## Open-on-press preload checks
@@ -460,10 +460,10 @@ Mark a row complete only after its raw samples, final-state check, and restorati
 | R01, R02 | Rename file; rename folder | Confirmed name, path, descendants, any job |
 | M01, M02, M03 | Drag file; drag folder; Cut/Paste | Source and destination paths, clipboard, any job |
 | P01, P02 | Copy file; copy folder | New IDs, text or bytes, first item and whole run |
-| A01, A02, A03 | Archive file; archive folder; restore | Archive state, focus, descendants, conflicts, any job |
+| A01, A02, A03 | Move file to Trash; move folder to Trash; restore | Trash state, focus, descendants, conflicts, any job |
 | O01, O02, O03 | Open Markdown; plain text; stored preview | Matching provider/model/preview and correct content |
 | O04, O05, O06 | Open folder; workspace/link; A/B/A | Table, breadcrumb, selected ID, editor identity |
-| T01, T02, T03, T04 | Expand; page/scroll; sort/filter; archived items | New rows, page bounds, order, busy state |
+| T01, T02, T03, T04 | Expand; page/scroll; sort/filter; trashed items | New rows, page bounds, order, busy state |
 | S01, S02 | Name/path search; content/metadata search | Exact results, count, query completion |
 | U01, U02, U03 | Upload; batch/folder import; replace | Published node, bytes, asset, upload/conversion job |
 | E01, E02 | Live edit sync; non-collaborative Save | Local input, write reply, second client or reload |
