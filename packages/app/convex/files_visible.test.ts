@@ -1076,30 +1076,46 @@ describe("get_pending_move_occupant", () => {
 });
 
 describe("internal_list_children_places", () => {
-	test("a folders-only page reads the user's draft folders past their draft files", async () => {
-		const f = await fixture();
-		await create_saved(f, "source");
+	test("a folders-only page reads the user's draft folders and no draft file", async () => {
 		// The draft files sort before the draft folders, and there are more of them than one page holds.
-		for (let index = 0; index < 5; index++) await create_private({ f, path: `/source/a-${index}.md`, kind: "file" });
-		await create_private({ f, path: "/source/z-one" });
-		await create_private({ f, path: "/source/z-two" });
+		const page = async (fileCount: number) => {
+			const f = await fixture();
+			await create_saved(f, "source");
+			for (let index = 0; index < fileCount; index++)
+				await create_private({ f, path: `/source/a-${index}.md`, kind: "file" });
+			await create_private({ f, path: "/source/z-one" });
+			await create_private({ f, path: "/source/z-two" });
 
-		const result = await f.t.query(internal.files_visible.internal_list_children_places, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			visibilityUserId: f.db.userId,
-			subject: { kind: "user", userId: f.db.userId, plugin: null },
-			overlayUserId: f.db.userId,
-			folderPath: "/source",
-			kind: "folder",
-			orderBy: "name",
-			order: "asc",
-			numItems: 2,
-			position: { rangeStart: null, cursor: null, lastKey: null },
-		});
+			return await f.t.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const result = await ctx.runQuery(internal.files_visible.internal_list_children_places, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					visibilityUserId: f.db.userId,
+					subject: { kind: "user", userId: f.db.userId, plugin: null },
+					overlayUserId: f.db.userId,
+					folderPath: "/source",
+					kind: "folder",
+					orderBy: "name",
+					order: "asc",
+					numItems: 2,
+					position: { rangeStart: null, cursor: null, lastKey: null },
+				});
+				const after = await ctx.meta.getTransactionMetrics();
+				if (result._nay) throw new Error(result._nay.message);
+				return {
+					names: result._yay.rows.map((row) => row.item?.name),
+					documents: after.documentsRead.used - before.documentsRead.used,
+				};
+			});
+		};
 
-		if (result._nay) throw new Error(result._nay.message);
-		expect(result._yay.rows.map((row) => row.item?.name)).toEqual(["z-one", "z-two"]);
+		const none = await page(0);
+		const many = await page(50);
+
+		expect(none.names).toEqual(["z-one", "z-two"]);
+		expect(many.names).toEqual(["z-one", "z-two"]);
+		expect(many.documents, "50 draft files cost no read").toBe(none.documents);
 	});
 });
 

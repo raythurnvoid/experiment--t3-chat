@@ -11,6 +11,15 @@ failed on a fixture error, a missing membership, or a rate limit rather than on
 the assertion you care about, the test was never exercising the code. It was
 failing early for an unrelated reason and passing for an unrelated reason too.
 
+## Break Every Branch Of The Fix
+
+When a fix has more than one branch (two conditions, two messages, a check at
+the start and one at the end), turn off each branch on its own and watch its
+test go red. A break that leaves one branch on can stay green and look like a
+weak test. Check the break itself too: in `a && b ? x : y`, a change to one side
+can turn off less than you think. Seen 2026-10-31: a clamp-note break turned off
+only the over-maximum branch, so the under-minimum test stayed green.
+
 ## Every Refusal Test Needs A Positive Control
 
 A test that only asserts something is refused passes just as well against code

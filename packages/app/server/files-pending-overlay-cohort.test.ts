@@ -18,6 +18,7 @@ import {
 	files_pending_overlay_db_target_cohort,
 	files_pending_overlay_db_wake_job,
 	files_pending_overlay_list,
+	files_pending_overlay_list_levels,
 } from "./files-pending-overlay.ts";
 import { test_create_saved_placement_fixture as fixture } from "./files-saved-placement.test-fixtures.ts";
 
@@ -861,6 +862,62 @@ describe("Move owner views", () => {
 			if (cursor === null) break;
 		}
 		expect(paths).toEqual(["/target/a.txt", "/target/new.txt"]);
+		expect(cursor).toBeNull();
+	});
+
+	test("a 16-level depth walk near the path limit under a Move keeps a small cursor", async () => {
+		// 15 folders of 60 characters under /target, so the deepest folder is at depth 16 and its path has
+		// 922 characters. Its file at depth 17 is below the limit.
+		const names = Array.from({ length: 15 }, (_, index) => `${index}`.padStart(60, "n"));
+		const chain = names.map((_, index) => `/target/${names.slice(0, index + 1).join("/")}`);
+		const f = await fixture({ normalPaths: [`${chain.at(-1)}/x.txt`] });
+		// The open chain holds a folder with its own Move places, and the Move is published.
+		const staged = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", f.db.organizationId)
+						.eq("workspaceId", f.db.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("path", chain[0])
+						.eq("archiveOperationId", null),
+				)
+				.first(),
+		);
+		if (!staged) throw new Error("Expected the first chain folder");
+		await f.stageNode(staged._id);
+		await f.publish();
+		const ctx = { runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">;
+
+		const paths: string[] = [];
+		const cursors: string[] = [];
+		for (let cursor: string | null = null, page = 0; page < 40; page++) {
+			const result = await files_pending_overlay_list_levels(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				visibilityUserId: f.db.userId,
+				subject: { kind: "user", userId: f.db.userId, plugin: null },
+				overlayUserId: f.db.userId,
+				folderPath: "/",
+				maxDepth: 16,
+				foldersOnly: false,
+				numItems: 1,
+				cursor,
+			});
+			if (result._nay) throw new Error(result._nay.message);
+			paths.push(...result._yay.items.map((item) => item.path));
+			cursor = result._yay.continueCursor;
+			if (cursor === null) break;
+			cursors.push(cursor);
+		}
+
+		// A Move can run in any workspace, so every frame check must read the Move's view.
+		expect(paths).toEqual(["/target", ...chain, "/target/new.txt"]);
+		const maxCursorLength = Math.max(...cursors.map((cursor) => cursor.length));
+		console.info("Depth walk cursor under a Move", JSON.stringify({ maxCursorLength }));
+		// The Bash cursor store keeps the cursor as one string.
+		expect(maxCursorLength).toBeLessThan(64 * 1024);
 	});
 
 	test("find -mmin reads the time index of the selected Move view", async () => {

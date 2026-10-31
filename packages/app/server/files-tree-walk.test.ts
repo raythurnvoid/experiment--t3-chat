@@ -1086,6 +1086,7 @@ describe("the walk on a real database", () => {
 		const page_cost = async (count: number) => {
 			const { ctx, calls, owner } = await seed_team([
 				...Array.from({ length: 10 }, (_, index) => ({ path: `/deep/a/f${index}.md`, content: "x" })),
+				{ path: "/deep/a/big", kind: "folder" as const },
 				...Array.from({ length: count }, (_, index) => ({
 					path: `/deep/a/big/s${String(index).padStart(3, "0")}`,
 					kind: "folder" as const,
@@ -1108,13 +1109,16 @@ describe("the walk on a real database", () => {
 			};
 		};
 
-		const small = await page_cost(250);
+		// With no row at depth 3, a read of depth 3 costs nothing, so any extra read in `large` is one.
+		const empty = await page_cost(0);
 		const large = await page_cost(500);
 
-		expect(small.paths).toEqual(["/deep/a", "/deep/a/big", ...Array.from({ length: 8 }, (_, i) => `/deep/a/f${i}.md`)]);
-		expect(small.subtreeCalls).toBe(0);
-		console.info("Depth walk page reads", JSON.stringify({ small: small.documents, large: large.documents }));
-		expect(large.documents, "250 more rows at depth 3 cost no read").toBe(small.documents);
+		const expected = ["/deep/a", "/deep/a/big", ...Array.from({ length: 8 }, (_, i) => `/deep/a/f${i}.md`)];
+		expect(empty.paths).toEqual(expected);
+		expect(large.paths).toEqual(expected);
+		expect(large.subtreeCalls).toBe(0);
+		console.info("Depth walk page reads", JSON.stringify({ empty: empty.documents, large: large.documents }));
+		expect(large.documents, "500 rows at depth 3 cost no read").toBe(empty.documents);
 	}, 300_000);
 
 	test("a depth walk page stops when a folder it holds open changed since the last page", async () => {

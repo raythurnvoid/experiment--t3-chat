@@ -199,26 +199,50 @@ describe("channels", () => {
 	});
 	test("says when a channels --limit is out of range and pages with the limit it used", async () => {
 		const f = await fixture();
-		for (const name of ["first", "second"]) {
-			const created = await f.asUser.mutation(api.channels.create_channel, {
-				membershipId: f.team.membershipId,
-				kind: "public",
-				name,
-				topic: "",
-				layout: "messages",
-			});
-			expect(created._nay).toBeUndefined();
-		}
-		const first = await f.run("channels ls --kind public --limit 0", false);
-		const next = first.stdout.split("Next page: ")[1]!.trim();
-		const second = await f.run(next, false);
+		const created = await f.asUser.mutation(api.channels.create_channel, {
+			membershipId: f.team.membershipId,
+			kind: "public",
+			name: "c00",
+			topic: "",
+			layout: "messages",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		// One more channel than the maximum page of 50, so `--limit 500` has a next page too. Copy the rows,
+		// because channel creation is rate limited.
+		await f.t.run(async (ctx) => {
+			const channel = await ctx.db.get("channels", created._yay.channelId);
+			const activity = await ctx.db
+				.query("channels_activity")
+				.withIndex("by_channel", (q) => q.eq("channelId", created._yay.channelId))
+				.unique();
+			if (channel?.kind !== "public" || !activity) throw new Error("Expected the created public channel");
+			const { _id, _creationTime, ...fields } = channel;
+			const { _id: _activityId, _creationTime: _activityCreationTime, ...activityFields } = activity;
+			for (let index = 1; index <= 50; index++) {
+				const channelId = await ctx.db.insert("channels", { ...fields, name: `c${String(index).padStart(2, "0")}` });
+				await ctx.db.insert("channels_activity", { ...activityFields, channelId });
+			}
+		});
+		const low = await f.run("channels ls --kind public --limit 0", false);
+		const lowNext = low.stdout.split("Next page: ")[1]!.trim();
+		const lowSecond = await f.run(lowNext, false);
+		const high = await f.run("channels ls --kind public --limit 500", false);
+		const highNext = high.stdout.split("Next page: ")[1]!.trim();
+		const highSecond = await f.run(highNext, false);
 
-		expect(first.stdout).toContain("#first");
-		expect(first.stderr).toBe("channels: --limit 0 is less than 1; showing 1 per page.\n");
-		expect(next).toMatch(/^channels ls --kind public --limit 1 --cursor \S+$/u);
-		expect(second.stdout).toContain("#second");
-		expect(second.stderr).toBe("");
-	});
+		expect(low.stdout).toContain("#c00");
+		expect(low.stdout).not.toContain("#c01");
+		expect(low.stderr).toBe("channels: --limit 0 is less than 1; showing 1 per page.\n");
+		expect(lowNext).toMatch(/^channels ls --kind public --limit 1 --cursor \S+$/u);
+		expect(lowSecond.stdout).toContain("#c01");
+		expect(lowSecond.stderr).toBe("");
+		expect(high.stdout).toContain("#c49");
+		expect(high.stdout).not.toContain("#c50");
+		expect(high.stderr).toBe("channels: --limit 500 is more than the maximum of 50; showing 50 per page.\n");
+		expect(highNext).toMatch(/^channels ls --kind public --limit 50 --cursor \S+$/u);
+		expect(highSecond.stdout).toContain("#c50");
+		expect(highSecond.stderr).toBe("");
+	}, 120_000);
 	test("binds search continuation to its query and filters", async () => {
 		const f = await fixture();
 		const created = await f.asUser.mutation(api.channels.create_channel, {

@@ -2513,13 +2513,18 @@ describe("bash_run_command", () => {
 		])
 			expect((await runner.run({ command })).metadata.exitCode, command).toBe(0);
 
-		const pages = [];
-		for (let command: string | undefined = `tree -L 2 ${reports} --limit 2`; command;) {
-			const page = await runner.run({ command });
-			expect(page.metadata.exitCode, command).toBe(0);
-			pages.push(page);
-			command = page.stderr.match(/Next page: (tree .+)/u)?.[1];
-		}
+		const walk = async (first: string) => {
+			const pages = [];
+			for (let command: string | undefined = first; command;) {
+				const page = await runner.run({ command });
+				expect(page.metadata.exitCode, command).toBe(0);
+				pages.push(page);
+				command = page.stderr.match(/Next page: (tree .+)/u)?.[1];
+			}
+			return pages;
+		};
+		const pages = await walk(`tree -L 2 ${reports} --limit 2`);
+		const folderPages = await walk(`tree -d -L 2 ${reports} --limit 1`);
 
 		// Every page repeats the root line, so drop it before joining the pages.
 		expect(pages.flatMap((page) => page.stdout.trim().split("\n").slice(1))).toEqual([
@@ -2534,6 +2539,16 @@ describe("bash_run_command", () => {
 			"tree: folders at depth 2 were not opened (-L 2). Run tree -L N <folder> to look inside.\n",
 		);
 		expect(pages[0].stderr).toMatch(new RegExp(`Next page: tree -L 2 ${reports} --limit 2 --cursor \\S+`, "u"));
+		// The next page keeps `-d`, so it lists folders only too.
+		expect(folderPages.flatMap((page) => page.stdout.trim().split("\n").slice(1))).toEqual([
+			"|-- keep/",
+			"|   |-- inner/",
+			"|-- nested/",
+			"|-- new/",
+		]);
+		expect(folderPages[0].stderr).toMatch(
+			new RegExp(`Next page: tree -d -L 2 ${reports} --limit 1 --cursor \\S+`, "u"),
+		);
 	});
 
 	test("lists a pending move nested under a moved folder exactly once", async () => {

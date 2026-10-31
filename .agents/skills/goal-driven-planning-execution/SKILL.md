@@ -80,9 +80,11 @@ Before coding, finish the planning workflow. A goal requested for the whole task
 - uniformity passes;
 - completion criteria.
 
-When you create the implementation plan or todo list, copy closing steps 6–10 below into it as literal items, including what the final report must contain. Remembered obligations do not survive context compaction; todo items do.
+When you create the implementation plan or todo list, copy closing steps 6–11 below into it as literal items, including what the final report must contain. Remembered obligations do not survive context compaction; todo items do.
 
 Keep evidence beside each closing item: commands and results, live checks, reviewed revision, and accepted or rejected findings. A plan review does not replace a review of the completed code. Required work without evidence remains open; do not report it as verified or mark a requested goal complete.
+
+Do not skip any step and do not take any shortcut. When a step is blocked (a missing tool, an account without credits, a server that is down), fix the block or ask. Do not drop the step quietly or replace it with a weaker check. If a step really cannot run, say so in the report with the reason.
 
 Execute iteratively:
 
@@ -95,7 +97,8 @@ Execute iteratively:
 7. Verify in the running app when the repo has one and the change reaches it, per the verification standard's running-app and deployment rules below. Not only for UI work: backend changes the app can reach deserve the same check. When nothing runnable exists or the change does not reach the app, skip this step and say so.
 8. For broad or security-sensitive work, finish independent subagent correctness reviews of the completed code and separate uniformity reviews. A slice's author must not be its only correctness reviewer. Follow the uniformity pass below, including its vocabulary audit on broad or multi-file diffs. Resolve findings and repeat affected checks after fixes.
 9. Re-read the final diff.
-10. Report what changed, what passed, what was not verified, docs updated, and security/accessibility considerations. The report must also settle every open question the plan listed: each one resolved, or deferred with a reason — an open question nobody noticed surviving to the end is a report defect.
+10. Update the rules, docs, and skills with what this task taught you. Look at how the work went. When a rule made you work worse (it was wrong, out of date, or sent you the wrong way), fix it or remove it. When you made a mistake or lost time because a rule was missing, add it. Put each lesson in the file that owns it (the repo's agent rules, a skill or its reference, or the user's global rules), keep it short, and do not repeat a rule that already exists.
+11. Report what changed, what passed, what was not verified, docs updated (including the rules step 10 added or removed), and security/accessibility considerations. The report must also settle every open question the plan listed: each one resolved, or deferred with a reason — an open question nobody noticed surviving to the end is a report defect.
 
 For work that uses review lanes or spans more than a couple of slices, create `execution-log.md` in the task's scratch folder at kickoff and append one line at each boundary the loop already has: a slice verified, a finding kept or dropped with the reason. The log is not a diary; it is the state a resumed or compacted session needs to continue without re-deriving decisions.
 
@@ -180,3 +183,4 @@ Before calling a complex task complete:
 - Subagent challenge/review findings were considered explicitly.
 - Focused verification is complete, broader checks matched the verification standard, and skipped checks are clearly explained.
 - Durable skills/spec docs were updated if behavior or canonical workflow changed.
+- Rules, docs, and skills carry this task's lessons (implementation step 10), and no step was skipped without a reason in the report.

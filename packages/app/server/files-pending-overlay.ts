@@ -4236,13 +4236,30 @@ export async function files_pending_overlay_list_levels(
 		_nay: { message: "the folder changed since the last page; rerun the original command without --cursor." },
 	});
 	const listingChanged = Result({ _nay: { message: "Listing changed. Start again." } });
+	const view_key = (view: files_saved_placement_View) =>
+		JSON.stringify([view.cohortId, view.view, view.generation, view.migrationDirection]);
 	const read_view = async () => {
 		const view = await ctx.runQuery(internal.files_visible.internal_get_move_view, streamArgs);
-		return view && JSON.stringify([view.cohortId, view.view, view.generation, view.migrationDirection]);
+		return view && view_key(view);
 	};
-	const view = await read_view();
-	if (view === null)
+	const moveView = await ctx.runQuery(internal.files_visible.internal_get_move_view, streamArgs);
+	if (moveView === null)
 		return Result({ _yay: { items: [], denied: [], depthCut: false, continueCursor: null, isDone: true } });
+	const view = view_key(moveView);
+	// While a Move runs, a saved read must name its view. Read the folders in the Move's visible view,
+	// like the walk start of `files_pending_overlay_list`.
+	const frameArgs = {
+		...streamArgs,
+		savedStream:
+			moveView.cohortId && moveView.view
+				? {
+						kind: "cohort" as const,
+						cohortId: moveView.cohortId,
+						view: moveView.view,
+						generation: moveView.generation,
+					}
+				: { kind: "normal" as const, generation: moveView.generation },
+	};
 	const scope = JSON.stringify([
 		args.organizationId,
 		args.workspaceId,
@@ -4258,7 +4275,7 @@ export async function files_pending_overlay_list_levels(
 	type Frame = Infer<typeof levels_cursor_validator>["frames"][number];
 	let frames: Frame[];
 	if (args.cursor === null) {
-		const start = await ctx.runQuery(internal.files_visible.internal_get_walk_frame, streamArgs);
+		const start = await ctx.runQuery(internal.files_visible.internal_get_walk_frame, frameArgs);
 		if (start._nay) return start;
 		if (!start._yay)
 			return Result({ _yay: { items: [], denied: [], depthCut: false, continueCursor: null, isDone: true } });
@@ -4288,7 +4305,7 @@ export async function files_pending_overlay_list_levels(
 		// "Permission denied", like a first page would.
 		for (const [index, frame] of raw.frames.entries()) {
 			const opened = await ctx.runQuery(internal.files_visible.internal_get_walk_frame, {
-				...streamArgs,
+				...frameArgs,
 				folderPath: frame.folderPath,
 			});
 			if (opened._nay && index === 0) return opened;
