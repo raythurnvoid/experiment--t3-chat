@@ -295,7 +295,7 @@ export const PluginsManagementAccess = memo(function PluginsManagementAccess(pro
 				aria-busy={saving || undefined}
 				onClick={handleSave}
 			>
-				{saving ? "Saving…" : "Save plugin access"}
+				Save plugin access
 			</MyButton>
 		</section>
 	);

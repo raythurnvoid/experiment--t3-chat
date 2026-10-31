@@ -1368,7 +1368,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 							disabled={pending || (serviceAccountId !== null && !canBindAccount)}
 							aria-busy={pending}
 						>
-							{pending ? "Creating..." : "Create API key"}
+							Create API key
 						</MyButton>
 					</MyModalFooter>
 				</form>
@@ -1428,7 +1428,7 @@ const RouteApiKeysRevealModal = memo(function RouteApiKeysRevealModal(props: Rou
 				<MyModalFooter>
 					<MyButton variant="outline" disabled={verifying || reveal === null} aria-busy={verifying} onClick={onVerify}>
 						<ShieldCheck aria-hidden />
-						{verifying ? "Testing..." : "Test key"}
+						Test key
 					</MyButton>
 					<MyButton onClick={onClose}>I saved the key</MyButton>
 				</MyModalFooter>
@@ -1488,7 +1488,7 @@ const RouteApiKeysConfirmationModal = memo(function RouteApiKeysConfirmationModa
 						Cancel
 					</MyButton>
 					<MyButton variant="destructive" disabled={pending || target === null} aria-busy={pending} onClick={onConfirm}>
-						{pending ? (rotating ? "Rotating..." : "Revoking...") : rotating ? "Rotate key" : "Revoke key"}
+						{rotating ? "Rotate key" : "Revoke key"}
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={pending} />

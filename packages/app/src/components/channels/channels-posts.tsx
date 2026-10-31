@@ -297,7 +297,6 @@ export const ChannelsPosts = memo(function ChannelsPosts(props: {
 						attachmentTarget={fileNodeId ? { kind: "file", fileNodeId } : { kind: "channel", channelId: channelId! }}
 						disabled={busy}
 						submitTooltip="Send comment (Enter)"
-						submitLabel={busy ? "Sending…" : "Send"}
 						submitDisabled={busy || empty || !connection.isWebSocketConnected}
 						onChange={change}
 						onEnter={submit}

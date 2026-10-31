@@ -217,7 +217,7 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 						Cancel
 					</MyButton>
 					<MyButton variant="destructive" disabled={pending} aria-busy={pending} onClick={handleConfirm}>
-						{pending ? "Archiving..." : "Archive"}
+						Archive
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={pending} />

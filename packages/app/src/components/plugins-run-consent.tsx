@@ -376,7 +376,7 @@ export const PluginsMyRunPermissions = memo(function PluginsMyRunPermissions(pro
 					aria-busy={pending === "grant" || undefined}
 					onClick={handleGrant}
 				>
-					{pending === "grant" ? "Saving…" : "Save my run permissions"}
+					Save my run permissions
 				</MyButton>
 				{permission.grant ? (
 					<MyButton
@@ -385,7 +385,7 @@ export const PluginsMyRunPermissions = memo(function PluginsMyRunPermissions(pro
 						aria-busy={pending === "revoke" || undefined}
 						onClick={handleRevoke}
 					>
-						{pending === "revoke" ? "Revoking…" : "Revoke my run permissions"}
+						Revoke my run permissions
 					</MyButton>
 				) : null}
 			</div>

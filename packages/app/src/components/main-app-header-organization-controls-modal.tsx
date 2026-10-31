@@ -1454,8 +1454,9 @@ export const MainAppHeaderOrganizationSwitcherModalCreateModal = memo(
 							form={createFormDomId}
 							variant="accent"
 							disabled={!isNameValid || !isDescriptionValid || isSubmitting}
+							aria-busy={isSubmitting}
 						>
-							{isSubmitting ? "Creating…" : dialogTitle}
+							{dialogTitle}
 						</MyButton>
 					</MyModalFooter>
 
@@ -1723,8 +1724,9 @@ export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(
 							form={editFormDomId}
 							variant="accent"
 							disabled={!isNameValid || !isDescriptionValid || isSubmitting || isUnchanged}
+							aria-busy={isSubmitting}
 						>
-							{isSubmitting ? "Saving…" : "Save"}
+							Save
 						</MyButton>
 					</MyModalFooter>
 
@@ -1970,8 +1972,14 @@ const MainAppHeaderOrganizationSwitcherModalBillingModal = memo(
 						<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleCancel}>
 							Cancel
 						</MyButton>
-						<MyButton type="button" variant="accent" disabled={isSubmitting || isUnchanged} onClick={handleSave}>
-							{isSubmitting ? "Saving…" : "Save changes"}
+						<MyButton
+							type="button"
+							variant="accent"
+							disabled={isSubmitting || isUnchanged}
+							aria-busy={isSubmitting}
+							onClick={handleSave}
+						>
+							Save changes
 						</MyButton>
 					</MyModalFooter>
 

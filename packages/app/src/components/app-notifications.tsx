@@ -863,9 +863,10 @@ export const AppNotifications = memo(function AppNotifications() {
 						disabled={
 							dismissing || (!notificationCount && !dismissableActivityCount && activityHistory.status === "Exhausted")
 						}
+						aria-busy={dismissing}
 						onClick={dismissAll}
 					>
-						{dismissing ? "Dismissing…" : "Dismiss jobs and invites"}
+						Dismiss jobs and invites
 					</MyButton>
 				</header>
 

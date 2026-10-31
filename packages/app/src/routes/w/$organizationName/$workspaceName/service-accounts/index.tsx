@@ -412,7 +412,7 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 								</MySelect>
 								{grantManagement?.canManage === false ? <p>You cannot manage access to this resource.</p> : null}
 								<MyButton type="submit" variant="outline" disabled={!canSet} aria-busy={pending || undefined}>
-									{pending ? "Saving…" : "Save grant"}
+									Save grant
 								</MyButton>
 							</form>
 						) : (
@@ -690,7 +690,7 @@ function RouteServiceAccountsMembership() {
 								variant={editor?.kind === "revoke" ? "outline_destructive" : "outline"}
 								aria-busy={pending || undefined}
 							>
-								{pending ? "Saving…" : editor?.kind === "revoke" ? "Revoke account" : "Save account"}
+								{editor?.kind === "revoke" ? "Revoke account" : "Save account"}
 							</MyButton>
 						</MyModalFooter>
 					</form>

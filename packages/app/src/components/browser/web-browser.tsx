@@ -947,12 +947,13 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 					<MyButton
 						variant="outline"
 						disabled={!viewerId || !connected || taking || (control !== "ready" && control !== "agent")}
+						aria-busy={taking}
 						onClick={handleTake}
 					>
 						<MyButtonIcon>
 							<Hand aria-hidden />
 						</MyButtonIcon>
-						{taking ? "Taking…" : "Take control"}
+						Take control
 					</MyButton>
 				)}
 				<MyIconButton variant="ghost-highlightable" tooltip="Manage saved data" onClick={onManageSavedData}>

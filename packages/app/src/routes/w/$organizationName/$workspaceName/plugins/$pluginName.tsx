@@ -793,7 +793,7 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 				</MyButton>
 				<MyButton ref={saveButtonRef} aria-busy={saving} disabled={changeCount === 0 && !hasDraft} onClick={handleSave}>
 					<Save aria-hidden />
-					{saving ? "Saving..." : "Save"}
+					Save
 				</MyButton>
 			</div>
 		</div>
@@ -1462,7 +1462,7 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 					onClick={handleSave}
 				>
 					<Save aria-hidden />
-					{saving ? "Saving..." : "Save configuration"}
+					Save configuration
 				</MyButton>
 			</div>
 		</section>
@@ -1703,7 +1703,7 @@ const RoutePluginsSchedule = memo(function RoutePluginsSchedule(props: {
 					aria-busy={pending === "assign" || undefined}
 					onClick={handleAssign}
 				>
-					{pending === "assign" ? "Changing…" : "Change scheduled user"}
+					Change scheduled user
 				</MyButton>
 				<MyButton
 					variant="outline"
@@ -1714,7 +1714,7 @@ const RoutePluginsSchedule = memo(function RoutePluginsSchedule(props: {
 					aria-busy={pending === "run" || undefined}
 					onClick={handleRun}
 				>
-					{pending === "run" ? "Queuing…" : "Run now"}
+					Run now
 				</MyButton>
 			</div>
 		</section>
@@ -3400,8 +3400,6 @@ function RoutePluginsPlugin() {
 	});
 	// A current installation can be disabled or uninstalled. Enable asks for consent again.
 	const installAction = enablesInstalledVersion ? "Enable" : installedVersion ? "Update" : "Install";
-	const installProgress =
-		installAction === "Enable" ? "Enabling..." : installAction === "Update" ? "Updating..." : "Installing...";
 	const installationBlocked = plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged";
 	// The server refuses these installs too. Say why here instead of after the consent dialog.
 	const policyNote =
@@ -3567,7 +3565,7 @@ function RoutePluginsPlugin() {
 										aria-busy={disabling || undefined}
 										onClick={handleDisable}
 									>
-										{disabling ? "Disabling…" : "Disable"}
+										Disable
 									</MyButton>
 								) : null
 							) : null}
@@ -3579,7 +3577,7 @@ function RoutePluginsPlugin() {
 									onClick={(event) => handleUninstall(installedItem.installation, event.currentTarget)}
 								>
 									<Trash2 aria-hidden />
-									{uninstalling ? "Uninstalling..." : "Uninstall"}
+									Uninstall
 								</MyButton>
 							) : null}
 							{publisherPlugin ? (
@@ -3692,7 +3690,7 @@ function RoutePluginsPlugin() {
 									aria-busy={rebinding || undefined}
 									onClick={handleRebind}
 								>
-									{rebinding ? "Changing…" : "Change service account"}
+									Change service account
 								</MyButton>
 							</>
 						) : (
@@ -4106,7 +4104,7 @@ function RoutePluginsPlugin() {
 								onClick={() => handleAcceptAndInstall(plugin)}
 							>
 								<Download aria-hidden />
-								{installing ? installProgress : `Accept and ${installAction.toLowerCase()}`}
+								Accept and {installAction.toLowerCase()}
 							</MyButton>
 						</div>
 						{installError ? <p role="alert">{installError}</p> : null}

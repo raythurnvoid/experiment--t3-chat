@@ -351,7 +351,7 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 					aria-busy={claiming}
 				>
 					<Plus aria-hidden />
-					{claiming ? "Claiming..." : "Claim"}
+					Claim
 				</MyButton>
 			</form>
 

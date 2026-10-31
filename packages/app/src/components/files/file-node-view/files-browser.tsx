@@ -888,15 +888,14 @@ const FilesBrowser = memo(function FilesBrowser(props: FilesBrowser_Props) {
 								<MyButton
 									variant="outline"
 									disabled={!viewerId || !connected || taking}
-									tooltip={
-										taking ? "Taking control…" : !viewerId || !connected ? "Take control (connecting…)" : "Take control"
-									}
+									aria-busy={taking}
+									tooltip={!viewerId || !connected ? "Take control (connecting…)" : "Take control"}
 									onClick={handleTake}
 								>
 									<MyButtonIcon>
 										<Hand aria-hidden />
 									</MyButtonIcon>
-									{taking ? "Taking…" : "Take control"}
+									Take control
 								</MyButton>
 							)}
 							{control === "human" && (

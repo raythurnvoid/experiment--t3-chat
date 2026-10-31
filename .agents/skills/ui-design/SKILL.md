@@ -46,6 +46,22 @@ Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a descri
 - Use `MyRadioButtonLabel` and `MyRadioButtonDescription`, or `MyCheckboxButtonContent`, `MyCheckboxButtonLabel` and `MyCheckboxButtonDescription`. Do not write a local label class for them.
 - A disabled button dims its label and description with the rest of the button.
 
+## Button labels stay fixed while the action runs
+
+A button keeps its label while its action runs. Do not swap "Archive" for "Archiving...". This is
+a product rule, decided by the user.
+
+- While the action runs, set `disabled` (or `aria-disabled` when focus must stay on the button) and
+  `aria-busy`. `MyButton` shows a wait cursor for `aria-busy`.
+- Why: most actions end in well under a second, so a swapped label only flickers. It also changes
+  the button's width, and it changes the button's name, which speech input, Playwriter and tests
+  use. The result is the feedback: the dialog closes, a toast shows, or the row changes.
+- Exception: an action that usually takes several seconds or more keeps its progress text, because
+  nothing else shows that work is going on. Today these are starting a cloud browser, Playwriter
+  Connect, and plugin publish.
+- Status text that is not a button label (a `role="status"` line, a "Load more" row that shows
+  "Loading…") is not covered by this rule.
+
 ## Loading skeletons are all or nothing
 
 A popover, menu or suggestion list opens at once, with skeleton rows, and keeps its size when the

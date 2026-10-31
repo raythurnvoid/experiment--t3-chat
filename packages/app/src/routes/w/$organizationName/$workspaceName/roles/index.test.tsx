@@ -451,7 +451,9 @@ describe("RouteRoles", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Edit editor" }));
 		fireEvent.click(screen.getByRole("button", { name: "Save role" }));
 
-		await waitFor(() => expect(screen.getByRole("button", { name: "Saving..." })).not.toBeNull());
+		await waitFor(() =>
+			expect((screen.getByRole("button", { name: "Save role" }) as HTMLButtonElement).disabled).toBe(true),
+		);
 		expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
 		expect(screen.getByRole("dialog")).not.toBeNull();
 	});

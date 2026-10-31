@@ -788,7 +788,7 @@ const RouteMcpServersDraft = memo(function RouteMcpServersDraft(props: RouteMcpS
 							aria-label={`Save ${draft.name}`}
 						>
 							<Save aria-hidden />
-							{saving ? "Saving..." : "Save"}
+							Save
 						</MyButton>
 					</div>
 				</form>
@@ -1032,7 +1032,7 @@ const RouteMcpServersDeleteModal = memo(function RouteMcpServersDeleteModal(prop
 						Cancel
 					</MyButton>
 					<MyButton variant="destructive" disabled={pending || target === null} aria-busy={pending} onClick={onConfirm}>
-						{pending ? "Deleting..." : "Delete server"}
+						Delete server
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={pending} />

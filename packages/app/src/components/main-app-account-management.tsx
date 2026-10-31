@@ -230,8 +230,13 @@ const MainAppAccountManagementDeleteAccountOrganizationResolver = memo(
 				? "Before you can delete your account, transfer ownership of each organization or confirm deleting the organization."
 				: null;
 		const resolveButton = (
-			<MyButton variant="destructive" disabled={!canResolve || resolving} onClick={onResolveAndDelete}>
-				{resolving ? "Resolving..." : "Confirm account deletion"}
+			<MyButton
+				variant="destructive"
+				disabled={!canResolve || resolving}
+				aria-busy={resolving}
+				onClick={onResolveAndDelete}
+			>
+				Confirm account deletion
 			</MyButton>
 		);
 
@@ -541,8 +546,9 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 					type="submit"
 					variant="destructive"
 					disabled={confirmationText !== "delete" || isDeleting || isResolvingOrganizations}
+					aria-busy={isDeleting}
 				>
-					{isDeleting ? "Deleting..." : "Delete account"}
+					Delete account
 				</MyButton>
 			</form>
 		</div>
@@ -810,9 +816,10 @@ const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementS
 											"MainAppAccountManagementSecurity-row-actions" satisfies MainAppAccountManagementSecurity_ClassNames
 										}
 										disabled={busySessionId === session.id}
+										aria-busy={busySessionId === session.id}
 										onClick={() => void handleRevokeSession(session)}
 									>
-										{busySessionId === session.id ? "Revoking..." : "Revoke"}
+										Revoke
 									</MyButton>
 								</div>
 							))

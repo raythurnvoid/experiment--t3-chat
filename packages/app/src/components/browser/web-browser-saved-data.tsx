@@ -275,7 +275,7 @@ export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebB
 													aria-busy={clearingDomain === site.domain}
 													onClick={() => handleClearSite(site.domain)}
 												>
-													{clearingDomain === site.domain ? "Clearing…" : "Clear"}
+													Clear
 												</MyButton>
 											</li>
 										))}
@@ -324,7 +324,7 @@ export const WebBrowserSavedData = memo(function WebBrowserSavedData(props: WebB
 										aria-busy={clearAllState === "clearing"}
 										onClick={handleClearAll}
 									>
-										{clearAllState === "clearing" ? "Clearing…" : "Clear all"}
+										Clear all
 									</MyButton>
 									<MyButton
 										variant="ghost"

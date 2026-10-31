@@ -508,8 +508,8 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 					<MyButton variant="ghost" onClick={() => onInviteModalOpenChange(false)}>
 						Cancel
 					</MyButton>
-					<MyButton disabled={!inviteEmail.trim() || inviting} onClick={onInvite}>
-						{inviting ? "Inviting..." : "Invite"}
+					<MyButton disabled={!inviteEmail.trim() || inviting} aria-busy={inviting} onClick={onInvite}>
+						Invite
 					</MyButton>
 				</div>
 				<MyModalCloseTrigger />
@@ -577,9 +577,10 @@ const RouteUsersTransferModal = memo(function RouteUsersTransferModal(props: Rou
 					<MyButton
 						variant="destructive"
 						disabled={transferConfirmation !== "TRANSFER" || transferring}
+						aria-busy={transferring}
 						onClick={onTransfer}
 					>
-						{transferring ? "Transferring..." : "Transfer ownership"}
+						Transfer ownership
 					</MyButton>
 				</div>
 				<MyModalCloseTrigger />

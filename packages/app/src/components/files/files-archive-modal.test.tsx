@@ -198,7 +198,7 @@ describe("FilesArchiveModal", () => {
 		const dialog = await screen.findByRole("dialog");
 		fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
 
-		expect(within(dialog).getByRole("button", { name: "Archiving..." })).toHaveProperty("disabled", true);
+		expect(within(dialog).getByRole("button", { name: "Archive" })).toHaveProperty("disabled", true);
 		expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true);
 		fireEvent.keyDown(dialog, { key: "Escape", code: "Escape" });
 		expect(onClose).not.toHaveBeenCalled();

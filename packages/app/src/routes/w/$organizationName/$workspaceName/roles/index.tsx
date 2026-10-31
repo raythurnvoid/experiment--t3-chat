@@ -274,8 +274,8 @@ const RouteRolesEditorModal = memo(function RouteRolesEditorModal(props: RouteRo
 					<MyButton variant="ghost" disabled={saving} onClick={onClose}>
 						Cancel
 					</MyButton>
-					<MyButton disabled={!name.trim() || permissions.size === 0 || saving} onClick={onSave}>
-						{saving ? "Saving..." : editing ? "Save role" : "Create role"}
+					<MyButton disabled={!name.trim() || permissions.size === 0 || saving} aria-busy={saving} onClick={onSave}>
+						{editing ? "Save role" : "Create role"}
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={saving} />
@@ -320,8 +320,8 @@ const RouteRolesDeleteModal = memo(function RouteRolesDeleteModal(props: RouteRo
 					<MyButton variant="ghost" disabled={deleting} onClick={onClose}>
 						Cancel
 					</MyButton>
-					<MyButton variant="destructive" disabled={deleting} onClick={onDelete}>
-						{deleting ? "Deleting..." : "Delete role"}
+					<MyButton variant="destructive" disabled={deleting} aria-busy={deleting} onClick={onDelete}>
+						Delete role
 					</MyButton>
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={deleting} />
