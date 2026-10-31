@@ -561,7 +561,7 @@ const FileNodeViewHeaderBreadcrumbPath = memo(function FileNodeViewHeaderBreadcr
 			{ancestors.length > 0 && <li aria-hidden="true">/</li>}
 			{/* Mark which crumb is the open file. Playwriter finds it by this attribute. */}
 			<li ref={currentItemRef} aria-current="page">
-				<MyMenu placement="bottom-start">
+				<MyMenu placement="bottom-end">
 					{/* Unlike the ancestor crumbs, this tip always renders, because it also says what a click
 					    does. A shortened label adds the full name above that hint and shows the tip at once,
 					    since the pointer is already on the short label. A label that fits keeps the normal
