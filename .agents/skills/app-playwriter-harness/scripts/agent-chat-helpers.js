@@ -241,6 +241,8 @@ state.qa = {
 
 	// The Stop button blinks out between agent steps (tool exec gaps), so doneness needs
 	// sustained idle: no Stop button AND no aria-busy elements for 3 consecutive 2s samples.
+	// So one call needs a timeoutMs of at least about 5000. A shorter call never returns idle,
+	// even after the turn ended. To poll in short Playwriter calls, check the Stop button instead.
 	async waitIdle(timeoutMs) {
 		const start = Date.now();
 		let idleStreak = 0;
