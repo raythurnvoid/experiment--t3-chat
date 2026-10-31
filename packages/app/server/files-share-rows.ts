@@ -35,6 +35,7 @@ export const files_share_rows_NODE_FIELDS = [
 	"updatedAt",
 	"lowercaseExtension",
 	"contentByteSize",
+	"isRestrictedScopeRoot",
 ] as const;
 
 /**
@@ -222,9 +223,6 @@ export async function files_share_rows_db_node_changed(
 		old.moveCohortId !== node.moveCohortId ||
 		old.organizationId !== node.organizationId ||
 		old.workspaceId !== node.workspaceId ||
-		// TODO(migration): replace with an `isRestrictedScopeRoot` entry in `files_share_rows_NODE_FIELDS`
-		// once the backfill has run. Until then the reader would drop rows that still lack the field.
-		old.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
 		files_share_rows_NODE_FIELDS.some((field) => old[field] !== node[field]);
 	if (wasRoot || isRoot) return fieldsChanged;
 

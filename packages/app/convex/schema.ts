@@ -4647,9 +4647,8 @@ const app_convex_schema = defineSchema({
 		contentByteSize: v.union(v.number(), v.null()),
 		/**
 		 * Copy of the node's flag. True for a restricted root, false for an extended root.
-		 * TODO(migration): optional only until `backfill_files_share_rows_isRestrictedScopeRoot` has run.
 		 */
-		isRestrictedScopeRoot: v.optional(v.boolean()),
+		isRestrictedScopeRoot: v.boolean(),
 		/**
 		 * The node's `_creationTime`, so the created sort follows the node, not the share.
 		 */
