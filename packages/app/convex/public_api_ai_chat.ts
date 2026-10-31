@@ -7,9 +7,11 @@ import { internal } from "./_generated/api.js";
 import { internalQuery, type ActionCtx, type QueryCtx } from "./_generated/server.js";
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { file_quotes_db_shape } from "./file_quotes.ts";
+import { ai_chat_ui_context_db_shape } from "./ai_chat_ui_context.ts";
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { r2_fetch_object_range_from_bucket } from "./r2_client.ts";
 import { file_quotes_part_schema } from "../shared/file-quotes.ts";
+import { ai_chat_ui_context_part_schema } from "../shared/ai-chat-ui-context.ts";
 import { crypto_open_cursor, crypto_seal_cursor } from "../server/crypto-utils.ts";
 import { ai_chat_tool_output_char_boundary } from "../server/ai-chat-tool-output.ts";
 
@@ -238,6 +240,13 @@ export const get_transcript_page = internalQuery({
 		const parts: unknown[] = inline ? node.content.parts : (step?.parts ?? []);
 		const shapedParts: unknown[] = [];
 		for (const part of parts) {
+			if (typeof part === "object" && part !== null && "type" in part && part.type === "data-ui-context") {
+				const uiContext = ai_chat_ui_context_part_schema.safeParse(part);
+				if (!uiContext.success) continue;
+				const data = await ai_chat_ui_context_db_shape(ctx, { membership, context: uiContext.data.data });
+				shapedParts.push({ type: "data-ui-context", data });
+				continue;
+			}
 			if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "data-file-quote") {
 				shapedParts.push(part);
 				continue;

@@ -230,6 +230,7 @@ describe("AiChatThread", () => {
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
 			browserIntent: { policyRevision: 0 },
+			uiContext: null,
 		} as const;
 		const controller = makeController({
 			selectedThreadId: "ai_thread-optimistic",
@@ -355,6 +356,7 @@ describe("AiChatThread", () => {
 							selectedModelId: "gpt-6-luna",
 							selectedModeId: "agent",
 							browserIntent: { policyRevision: 0 },
+							uiContext: null,
 						},
 					],
 					canQueueUserText: true,
@@ -391,6 +393,7 @@ describe("AiChatThread", () => {
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
 			browserIntent: { policyRevision: 0 },
+			uiContext: null,
 		} as const;
 		const saveQueuedUserMessageEdit = vi.fn(() => true);
 		const cancelQueuedUserMessageEdit = vi.fn();
@@ -460,6 +463,7 @@ describe("AiChatThread", () => {
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
 			browserIntent: { policyRevision: 0 },
+			uiContext: null,
 		} as const;
 		const cancelQueuedUserMessageEdit = vi.fn();
 		const sendUserText = vi.fn();
@@ -510,6 +514,7 @@ describe("AiChatThread", () => {
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "agent",
 			browserIntent: { policyRevision: 0 },
+			uiContext: null,
 		} as const;
 		const secondQueuedMessage = {
 			id: "ai_message-second",
@@ -518,6 +523,7 @@ describe("AiChatThread", () => {
 			selectedModelId: "gpt-6-luna",
 			selectedModeId: "ask",
 			browserIntent: { policyRevision: 0 },
+			uiContext: null,
 		} as const;
 		const view = render(
 			<AiChatThread

@@ -228,6 +228,16 @@ Typing `@` in any AI chat composer (thread, message edit, file-editor agent side
 - Escape closes only the popup. The mention renderer calls `stopPropagation()` on that Escape, so it never reaches the form's close handler or the chat-level Escape branch — a message edit stays open. The next Escape (popup closed) closes the edit/queue surface as usual.
 - `fill()` bypasses the suggestion plugin (it replaces content without typing). Use `keyboard.type("@doc")` to open the popup.
 
+## Screen info chip
+
+Every chat composer except the `/chat` page shows what the user has open, and the next message sends it to the agent. Verified 2026-10-30:
+
+- The chip row is `.AiChatUiContext` (`aria-label="Screen info sent to the agent"`) right above the composer. Its text is the label: `/documents/notes.md · Rich text` for a file, `/documents` for a folder, `Mail (gmail)` for a plugin page. Switching the view changes the label right away.
+- `/chat` has no open file, so it has no chip (`.AiChatUiContext` count 0). Use that as the negative control.
+- Remove is the chip's button named "Don't send screen info". It hides the chip and moves focus to the composer. The chip comes back when the screen changes (another file, view, or plugin page).
+- A sent message shows `.AiChatMessagePartUiContext` above its text. The stored part is `data-ui-context` in `ai_chat_runs.branch_page`; its `path` and `kind` come from the database, not from the browser.
+- One cheap proof: in Ask mode, ask "Which file and view do I have open? Answer in one short sentence." With the chip the reply names the path and view. Remove the chip and ask again: the reply has no path, and the message has no context line.
+
 ## Message ids flip when a stream finishes
 
 While a response streams, the last assistant `.AiChatMessage` has `data-ai-chat-message-id="ai_message-…"` (the client-generated id). When the response finishes and the persisted row syncs back, that attribute flips in place to the Convex message id. A probe that stored the streaming id and later looks the message up by it finds nothing — re-read the id after idle instead. The rendered content must NOT remount at that flip (open tool-output `details` stay open); that is guarded by `keeps an open tool output open when the streamed message is persisted` in `ai-chat-message.test.tsx`. To prove a remount in the browser, tag the DOM node (`el.__qaTag = "x"`) before the transition and check the tag survives after. Verified 2026-08-02.

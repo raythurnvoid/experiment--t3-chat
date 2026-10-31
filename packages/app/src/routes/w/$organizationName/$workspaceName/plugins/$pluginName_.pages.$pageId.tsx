@@ -19,6 +19,7 @@ import {
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
 import type { Id } from "../../../../../../convex/_generated/dataModel.ts";
 
 // #region root
@@ -123,6 +124,9 @@ function RoutePluginsPluginPage() {
 
 		mainRef.current?.focus();
 	}, [renderedFrameIdentity]);
+
+	// Tell the chat panel which plugin page is open.
+	useAiChatUiContextWrite({ plugin: plugin && page ? { pluginName, title: page.title, kind: "page" } : null });
 
 	const breadcrumb = (
 		<PluginsHeaderBreadcrumb

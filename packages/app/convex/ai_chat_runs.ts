@@ -27,6 +27,8 @@ import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { file_quotes_part_schema } from "../shared/file-quotes.ts";
 import { file_quotes_db_shape } from "./file_quotes.ts";
+import { ai_chat_ui_context_part_schema } from "../shared/ai-chat-ui-context.ts";
+import { ai_chat_ui_context_db_shape } from "./ai_chat_ui_context.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -229,6 +231,13 @@ async function db_ui_message(
 	const parts: unknown[] = Array.isArray(node.content.parts) ? node.content.parts : steps.flatMap((step) => step.parts);
 	const shapedParts = [];
 	for (const part of parts) {
+		if (typeof part === "object" && part !== null && "type" in part && part.type === "data-ui-context") {
+			const uiContext = ai_chat_ui_context_part_schema.safeParse(part);
+			if (!uiContext.success) continue;
+			const data = await ai_chat_ui_context_db_shape(ctx, { membership, context: uiContext.data.data });
+			shapedParts.push({ type: "data-ui-context", data });
+			continue;
+		}
 		if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "data-file-quote") {
 			shapedParts.push(part);
 			continue;

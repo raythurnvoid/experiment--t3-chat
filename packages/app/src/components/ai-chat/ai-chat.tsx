@@ -8,7 +8,7 @@ import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { isToolOrDynamicToolUIPart, type FileUIPart } from "ai";
-import { ArrowDown, Menu, PanelLeft, SquarePen } from "lucide-react";
+import { ArrowDown, Eye, Menu, PanelLeft, SquarePen, X } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MainAppHeaderOrganizationControls } from "@/components/main-app-header.tsx";
@@ -41,6 +41,12 @@ import {
 	type AiChatComposer_Props,
 } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatQueuedMessages } from "@/components/ai-chat/ai-chat-queued-messages.tsx";
+import { MyChip, MyChipLabel, MyChipMedia, MyChipRemove, MyChipRow } from "@/components/my-chip.tsx";
+import {
+	ai_chat_ui_context_get_label,
+	ai_chat_ui_context_remove,
+	useAiChatUiContextShown,
+} from "@/lib/ai-chat-ui-context.ts";
 import { AiChatPendingReview } from "@/components/ai-chat/ai-chat-pending-review.tsx";
 import {
 	AiChatMessage,
@@ -404,6 +410,51 @@ function useAutoScroll(props: useAutoScroll_Props) {
 	} as const;
 }
 // #endregion auto scroll hook
+
+// #region ui context
+type AiChatUiContext_ClassNames = "AiChatUiContext";
+
+type AiChatUiContext_Props = {
+	onFocusExit: () => void;
+};
+
+/**
+ * Show what the next message tells the agent about the screen, with a button to leave it out.
+ */
+const AiChatUiContext = memo(function AiChatUiContext(props: AiChatUiContext_Props) {
+	const { onFocusExit } = props;
+	const uiContext = useAiChatUiContextShown();
+	if (!uiContext) return null;
+
+	return (
+		<MyChipRow
+			className={"AiChatUiContext" satisfies AiChatUiContext_ClassNames}
+			aria-label="Screen info sent to the agent"
+			size="compact"
+			onFocusExit={onFocusExit}
+		>
+			<li>
+				<MyChip size="compact">
+					<MyChipMedia>
+						<Eye />
+					</MyChipMedia>
+					<MyChipLabel>{ai_chat_ui_context_get_label(uiContext)}</MyChipLabel>
+					<MyChipRemove
+						tooltip="Don't send screen info"
+						// event.detail is 0 for keyboard clicks: MyChipRow then moves focus itself.
+						onClick={(event) => {
+							ai_chat_ui_context_remove(uiContext);
+							if (event.detail > 0) onFocusExit();
+						}}
+					>
+						<X />
+					</MyChipRemove>
+				</MyChip>
+			</li>
+		</MyChipRow>
+	);
+});
+// #endregion ui context
 
 // #region thread
 export type AiChatThread_ClassNames =
@@ -991,6 +1042,8 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							onReorder={handleQueuedUserMessagesReorder}
 							onResume={controller.resumeQueuedUserMessages}
 						/>
+						{/* A queued message keeps the screen info of its queue time, so hide the current one while editing it. */}
+						{!queuedUserMessageEdit && <AiChatUiContext onFocusExit={focusComposer} />}
 						<AiChatComposer
 							key={`${controller.session?.composerId ?? "new"}:${queuedUserMessageEdit?.id ?? "draft"}`}
 							ref={composerRef}

@@ -104,6 +104,7 @@ import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
+import { useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
@@ -1486,6 +1487,13 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				...fileViewMatches.map((match) => ({ value: file_view_id(match), label: match.fileView.title })),
 			];
 	const activePluginView = fileViewMatches.find((match) => file_view_id(match) === activeFileView);
+	const viewSelectValue = hasHtmlPreview
+		? activeFileView
+		: isEditorActive
+			? isEditable || hasRetainedDraft
+				? editorMode
+				: "details"
+			: activeFileView;
 
 	const handleViewChange = useFn((value: string) => {
 		if (hasHtmlPreview) {
@@ -1542,6 +1550,14 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			primaryPanelRef.current?.focus();
 		}
 	}, [asset, fileViewPlugins, isEditable, onFileViewChange, selectedFileView, selectedViewExists]);
+
+	// Tell the chat panel the shown view by the name the view picker shows.
+	useAiChatUiContextWrite({
+		view: viewOptions.find((option) => option.value === viewSelectValue)?.label ?? null,
+		plugin: activePluginView
+			? { pluginName: activePluginView.plugin.pluginName, title: activePluginView.fileView.title, kind: "file_view" }
+			: null,
+	});
 
 	const editorContent = isEditable ? (
 		<FileNodeViewFileEditor
@@ -1621,19 +1637,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				onNavigateNode={onNavigateNode}
 			/>
 			{createPortal(
-				<FileNodeViewViewSelect
-					options={viewOptions}
-					value={
-						hasHtmlPreview
-							? activeFileView
-							: isEditorActive
-								? isEditable || hasRetainedDraft
-									? editorMode
-									: "details"
-								: activeFileView
-					}
-					onValueChange={handleViewChange}
-				/>,
+				<FileNodeViewViewSelect options={viewOptions} value={viewSelectValue} onValueChange={handleViewChange} />,
 				viewSelectPortalHost,
 			)}
 			<div
@@ -6392,6 +6396,16 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			});
 		}
 	}, [membershipId, searchPrivateNodeId, privateTargetView, handleEditorTargetChange]);
+
+	// Tell the chat panel which saved node is open. A private draft has no saved node, and the server
+	// drops an archived node, so neither one is sent.
+	useAiChatUiContextWrite({
+		node: isRootNodeSelected
+			? { fileNodeId: null, path: "/", kind: "folder" }
+			: resolvedNode && resolvedNode.archiveOperationId === null
+				? { fileNodeId: resolvedNode._id, path: resolvedNode.path, kind: resolvedNode.kind }
+				: null,
+	});
 
 	// The search this component last asked the router to write. The router applies a navigation
 	// later, so without it the effect below could ask for the same write twice.

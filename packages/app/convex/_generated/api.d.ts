@@ -23,6 +23,7 @@ import type * as ai_chat_outputs_storage from "../ai_chat_outputs_storage.js";
 import type * as ai_chat_runs from "../ai_chat_runs.js";
 import type * as ai_chat_runs_db from "../ai_chat_runs_db.js";
 import type * as ai_chat_thread_copies from "../ai_chat_thread_copies.js";
+import type * as ai_chat_ui_context from "../ai_chat_ui_context.js";
 import type * as ai_chat_workspaces from "../ai_chat_workspaces.js";
 import type * as ai_model_call_receipts from "../ai_model_call_receipts.js";
 import type * as bash from "../bash.js";
@@ -207,6 +208,7 @@ declare const fullApi: ApiFromModules<{
   ai_chat_runs: typeof ai_chat_runs;
   ai_chat_runs_db: typeof ai_chat_runs_db;
   ai_chat_thread_copies: typeof ai_chat_thread_copies;
+  ai_chat_ui_context: typeof ai_chat_ui_context;
   ai_chat_workspaces: typeof ai_chat_workspaces;
   ai_model_call_receipts: typeof ai_model_call_receipts;
   bash: typeof bash;

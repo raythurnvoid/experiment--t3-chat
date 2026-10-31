@@ -25,6 +25,8 @@ import { should_never_happen } from "@/lib/utils.ts";
 import { generate_id, get_id_generator } from "../../shared/generated-ids.ts";
 import { browser_intent_schema, type browser_Intent } from "../../shared/browser-intent.ts";
 import { file_quotes_parse_draft } from "../../shared/file-quotes.ts";
+import type { ai_chat_UiContext } from "../../shared/ai-chat-ui-context.ts";
+import { ai_chat_ui_context_get_shown } from "@/lib/ai-chat-ui-context.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_UiMessage,
@@ -55,6 +57,11 @@ export type AiChatQueuedUserMessage = {
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
 	browserIntent: browser_Intent;
+	/**
+	 * The screen info when the user queued the message. The message is sent later, maybe from another
+	 * screen.
+	 */
+	uiContext: ai_chat_UiContext | null;
 };
 
 type ThreadSession = {
@@ -446,6 +453,13 @@ function get_optimistic_thread_list_item(tenant: {
 		optimisticThreadListItemByKey.set(key, optimisticThread);
 	}
 	return optimisticThread;
+}
+
+/**
+ * The screen info goes first, so the model reads it before the question.
+ */
+function get_ui_context_parts(uiContext: ai_chat_UiContext | null) {
+	return uiContext ? [{ type: "data-ui-context" as const, data: uiContext }] : [];
 }
 
 function message_has_visible_parts(message: ai_chat_UiMessage) {
@@ -1447,8 +1461,12 @@ const useThreadList = (props?: useThreadList_Props) => {
 			const request = optimisticChat.sendMessage(
 				{
 					role: "user",
-					// Image parts go first so the transcript shows the images above the text.
-					parts: [...(attachments ?? []), ...file_quotes_parse_draft(message ?? "")],
+					// Image parts go before the text so the transcript shows the images above it.
+					parts: [
+						...get_ui_context_parts(ai_chat_ui_context_get_shown()),
+						...(attachments ?? []),
+						...file_quotes_parse_draft(message ?? ""),
+					],
 					metadata: {
 						convexParentId: null,
 						parentClientGeneratedId: null,
@@ -2245,8 +2263,12 @@ const useThreadRuntimeController = () => {
 			const request = optimisticChat.sendMessage(
 				{
 					role: "user",
-					// Image parts go first so the transcript shows the images above the text.
-					parts: [...(attachments ?? []), ...file_quotes_parse_draft(message ?? "")],
+					// Image parts go before the text so the transcript shows the images above it.
+					parts: [
+						...get_ui_context_parts(ai_chat_ui_context_get_shown()),
+						...(attachments ?? []),
+						...file_quotes_parse_draft(message ?? ""),
+					],
 					metadata: {
 						convexParentId: null,
 						parentClientGeneratedId: null,
@@ -2570,6 +2592,13 @@ const useThreadRuntimeController = () => {
 
 			const attachmentParts =
 				explicitAttachments ?? (targetMessage ? targetMessage.parts.filter((part) => isFileUIPart(part)) : []);
+			// A queued message keeps the screen info of its queue time. A retry or an edit keeps the screen
+			// info of the message it replaces.
+			const uiContext = options?.queuedMessage
+				? options.queuedMessage.uiContext
+				: targetMessage
+					? (targetMessage.parts.flatMap((part) => (part.type === "data-ui-context" ? [part.data] : []))[0] ?? null)
+					: ai_chat_ui_context_get_shown();
 			if (!value.trim() && attachmentParts.length === 0) {
 				return false;
 			}
@@ -2706,8 +2735,8 @@ const useThreadRuntimeController = () => {
 				{
 					...(options?.queuedMessage ? { id: options.queuedMessage.id } : {}),
 					role: "user",
-					// Image parts go first so the transcript shows the images above the text.
-					parts: [...attachmentParts, ...file_quotes_parse_draft(value)],
+					// Image parts go before the text so the transcript shows the images above it.
+					parts: [...get_ui_context_parts(uiContext), ...attachmentParts, ...file_quotes_parse_draft(value)],
 					metadata: {
 						convexParentId: parentMessageIds.convexParentId,
 						parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
@@ -2786,6 +2815,7 @@ const useThreadRuntimeController = () => {
 					selectedModelId: session.selectedModelId ?? selectedModelId,
 					selectedModeId: session.selectedModeId ?? selectedModeId,
 					browserIntent,
+					uiContext: ai_chat_ui_context_get_shown(),
 				});
 				if (didEnqueue) {
 					setComposerValue(chat, "");

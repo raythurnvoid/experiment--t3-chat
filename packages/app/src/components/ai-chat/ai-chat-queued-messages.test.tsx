@@ -13,6 +13,7 @@ const messages = [
 		selectedModelId: "gpt-6-luna",
 		selectedModeId: "agent",
 		browserIntent: { policyRevision: 0 },
+		uiContext: null,
 	},
 	{
 		id: "ai_message-second",
@@ -21,6 +22,7 @@ const messages = [
 		selectedModelId: "gpt-6-luna",
 		selectedModeId: "ask",
 		browserIntent: { policyRevision: 0 },
+		uiContext: null,
 	},
 	{
 		id: "ai_message-third",
@@ -29,6 +31,7 @@ const messages = [
 		selectedModelId: "gpt-6-luna",
 		selectedModeId: "ask",
 		browserIntent: { policyRevision: 0 },
+		uiContext: null,
 	},
 ] satisfies readonly AiChatQueuedUserMessage[];
 

@@ -254,6 +254,27 @@
 	}
 	/* #endregion text user */
 
+	/* #region part ui context */
+	.AiChatMessagePartUiContext {
+		display: flex;
+		gap: 6px;
+		align-items: center;
+
+		margin-bottom: 4px;
+
+		font-size: 0.8125rem;
+		overflow-wrap: anywhere;
+		color: var(--color-fg-07);
+	}
+
+	.AiChatMessagePartUiContext-icon {
+		flex: none;
+
+		width: 14px;
+		height: 14px;
+	}
+	/* #endregion part ui context */
+
 	/* #region content */
 	.AiChatMessageContent {
 		.AiChatMessageUser-bubble:not(.AiChatMessageUser-bubble-state-editing) > .AiChatMessageUser-content-container > & {

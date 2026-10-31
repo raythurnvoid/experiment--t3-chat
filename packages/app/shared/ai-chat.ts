@@ -20,6 +20,7 @@ import type { GeneratedIdPrefix } from "./generated-ids.ts";
 import type { ai_chat_McpAuthNeededData } from "./ai-chat-files.ts";
 import type { browser_Intent } from "./browser-intent.ts";
 import { file_quotes_part_schema, file_quotes_serialize_draft, type file_quotes_Quote } from "./file-quotes.ts";
+import type { ai_chat_UiContext } from "./ai-chat-ui-context.ts";
 import { ai_chat_MODE_IDS, ai_chat_MODEL_IDS } from "./ai-chat-ids.ts";
 
 export type ai_chat_Message = Doc<"ai_chat_threads_messages_aisdk_5">;
@@ -200,6 +201,10 @@ export type ai_chat_UiTools = {
 
 export type ai_chat_UiDataParts = {
 	"file-quote": file_quotes_Quote;
+	/**
+	 * What the user had open when they sent the message. The model reads it as a `<ui_context>` block.
+	 */
+	"ui-context": ai_chat_UiContext;
 	"thread-id": {
 		threadId: string;
 	};
@@ -207,7 +212,7 @@ export type ai_chat_UiDataParts = {
 		title: string;
 	};
 	/**
-	 * Persisted, not transient: a reload shows it too. The model never sees data parts.
+	 * Persisted, not transient: a reload shows it too. The model never sees this part.
 	 */
 	"mcp-auth-needed": ai_chat_McpAuthNeededData;
 	/**
