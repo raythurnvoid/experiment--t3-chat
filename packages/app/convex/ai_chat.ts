@@ -2435,6 +2435,16 @@ export type ai_chat_http_chat_Body = z.infer<typeof chat_body_validator>;
 const AI_CHAT_MAX_STEPS = 25;
 
 /**
+ * The output ceiling of one chat step. The chat models reason, so the provider charges their
+ * thinking against the same ceiling as the answer and tool calls.
+ *
+ * If a step spends the whole ceiling on reasoning, it ends at `length` with no text and no tool
+ * call, and the reply stops in silence. So keep room for long plans and for tool calls that write
+ * whole files.
+ */
+const AI_CHAT_STEP_MAX_OUTPUT_TOKENS = 16_000;
+
+/**
  * The run's action checks its run doc this often, so Stop reaches it within about 2 seconds.
  */
 const RUN_STOP_POLL_MS = 2000;
@@ -3093,7 +3103,7 @@ async function create_agent_turn_stream(args: {
 					return { activeTools: stepTools, ...withFilteredMessages };
 				},
 				messages: modelMessages,
-				maxOutputTokens: 2000,
+				maxOutputTokens: AI_CHAT_STEP_MAX_OUTPUT_TOKENS,
 				abortSignal,
 				activeTools,
 				experimental_repairToolCall: async (failed) => {

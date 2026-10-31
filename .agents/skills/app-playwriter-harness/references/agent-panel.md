@@ -343,6 +343,10 @@ then count the rows per `messageId` and the tool parts in each row's `parts`:
 vp env exec pnpm --dir packages/app exec convex data ai_chat_run_steps --format jsonArray --limit 30 --order desc > "$d/steps.json"
 ```
 
+A reply that ends with no text and no error is often a step that hit its output ceiling while it reasoned. Its last `ai_chat_run_steps` row holds only `reasoning` parts, and `toolCalls` is empty. `finishReason` is always `null` there, so it does not tell you. Read the step's `modelCallId` in `ai_model_call_receipts` instead (`convex data ai_model_call_receipts --format jsonArray --limit 60 --order desc`): `usage.outputTokens` equal to the step ceiling, with `reasoningTokens` equal to it, proves the cut. Seen 2026-10-31 at the old 2000 ceiling.
+
+The Bash card label (`summary[aria-label^="Bash"]`) joins a multi-line command into one line, so `rm a` on one line and `rm -r b` on the next reads as `rm a rm -r b`. Read the terminal's first lines before you report a malformed command.
+
 To make a reply run many steps, ask for `execute_code` N times, one call per step (`return { call: K };`).
 To test parallel calls, ask for three `execute_code` calls in the same step, each waiting 3 seconds
 (`await new Promise((resolve) => setTimeout(resolve, 3000))`). Small file reads end too fast to overlap.
