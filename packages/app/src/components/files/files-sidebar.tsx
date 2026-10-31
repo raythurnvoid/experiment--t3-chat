@@ -3121,6 +3121,11 @@ const FilesSidebarTree_COMPACT_ACTIONS_MAX_WIDTH = 300;
  */
 const FilesSidebarTree_SKELETON_ROW_COUNT = 24;
 
+/**
+ * The tree lists folders before files, so the first skeleton rows look like folder rows.
+ */
+const FilesSidebarTree_SKELETON_FOLDER_ROW_COUNT = 16;
+
 type FilesSidebarTree_ClassNames =
 	| "FilesSidebarTree"
 	| "FilesSidebarTree-row"
@@ -3128,8 +3133,12 @@ type FilesSidebarTree_ClassNames =
 	| "FilesSidebarTree-empty-state"
 	| "FilesSidebarTree-skeleton"
 	| "FilesSidebarTree-skeleton-row"
+	| "FilesSidebarTree-skeleton-arrow"
 	| "FilesSidebarTree-skeleton-icon"
 	| "FilesSidebarTree-skeleton-name"
+	| "FilesSidebarTree-skeleton-actions"
+	| "FilesSidebarTree-skeleton-glyph"
+	| "FilesSidebarTree-skeleton-create-action"
 	| "FilesSidebarTree-folder-actions-expanded"
 	| "FilesSidebarTree-menus";
 
@@ -3537,16 +3546,40 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 				onDragEndCapture={handleDragEndCapture}
 				onDropCapture={handleDropCapture}
 			>
-				{/* Skeleton rows have the size and indent of real root rows, so the real rows replace them
-				    without moving. The tree's aria-busy tells that rows load. */}
+				{/* Skeleton rows have the parts, size and indent of real root rows: a folder row has a chevron
+				    and three actions, a file row has one action. So the real rows replace them without moving.
+				    The tree's aria-busy tells that rows load. */}
 				{isTreeLoading ? (
 					<div className={"FilesSidebarTree-skeleton" satisfies FilesSidebarTree_ClassNames} aria-hidden="true">
-						{Array.from({ length: FilesSidebarTree_SKELETON_ROW_COUNT }, (_, index) => (
-							<div key={index} className={"FilesSidebarTree-skeleton-row" satisfies FilesSidebarTree_ClassNames}>
-								<MySkeleton className={"FilesSidebarTree-skeleton-icon" satisfies FilesSidebarTree_ClassNames} />
-								<MySkeleton className={"FilesSidebarTree-skeleton-name" satisfies FilesSidebarTree_ClassNames} />
-							</div>
-						))}
+						{Array.from({ length: FilesSidebarTree_SKELETON_ROW_COUNT }, (_, index) => {
+							const isFolder = index < FilesSidebarTree_SKELETON_FOLDER_ROW_COUNT;
+
+							return (
+								<div key={index} className={"FilesSidebarTree-skeleton-row" satisfies FilesSidebarTree_ClassNames}>
+									<div className={"FilesSidebarTree-skeleton-arrow" satisfies FilesSidebarTree_ClassNames}>
+										{isFolder ? (
+											<MySkeleton className={"FilesSidebarTree-skeleton-glyph" satisfies FilesSidebarTree_ClassNames} />
+										) : null}
+									</div>
+									<MySkeleton className={"FilesSidebarTree-skeleton-icon" satisfies FilesSidebarTree_ClassNames} />
+									<MySkeleton className={"FilesSidebarTree-skeleton-name" satisfies FilesSidebarTree_ClassNames} />
+									<div className={"FilesSidebarTree-skeleton-actions" satisfies FilesSidebarTree_ClassNames}>
+										{isFolder
+											? Array.from({ length: 2 }, (_, actionIndex) => (
+													<MySkeleton
+														key={actionIndex}
+														className={cn(
+															"FilesSidebarTree-skeleton-glyph" satisfies FilesSidebarTree_ClassNames,
+															"FilesSidebarTree-skeleton-create-action" satisfies FilesSidebarTree_ClassNames,
+														)}
+													/>
+												))
+											: null}
+										<MySkeleton className={"FilesSidebarTree-skeleton-glyph" satisfies FilesSidebarTree_ClassNames} />
+									</div>
+								</div>
+							);
+						})}
 					</div>
 				) : (
 					<>

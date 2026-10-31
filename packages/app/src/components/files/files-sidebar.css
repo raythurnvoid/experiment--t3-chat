@@ -394,16 +394,24 @@
 		overflow: hidden;
 	}
 
+	/* Keep the parts of a skeleton row where a real root row draws them: the chevron in the 44px arrow
+	   column, the icon, the name, and 16px action icons 36px apart at the right. */
 	.FilesSidebarTree-skeleton-row {
 		display: flex;
 		align-items: center;
-		/* Keep this equal to the real row's 1px content gap plus the title input's 3px inline padding. */
-		gap: 4px;
 
 		height: 45px;
-		/* Start where a root row's icon starts: after the 44px arrow column. */
-		padding-left: 44px;
-		padding-right: 16px;
+	}
+
+	.FilesSidebarTree-skeleton-arrow {
+		display: flex;
+		flex: 0 0 auto;
+		align-items: center;
+		justify-content: center;
+
+		width: 44px;
+		height: 100%;
+		padding-left: 8px;
 	}
 
 	.FilesSidebarTree-skeleton-icon {
@@ -415,19 +423,50 @@
 	}
 
 	.FilesSidebarTree-skeleton-name {
-		width: 45%;
+		flex: 0 1 auto;
+		min-width: 0;
+		width: 35%;
 		height: 12px;
+		/* Keep this equal to the real row's 1px content gap plus the title input's 3px inline padding. */
+		margin-left: 4px;
 
 		border-radius: 4px;
 
 		/* Vary the name widths a little, so the rows look like names and not like one block. */
 		.FilesSidebarTree-skeleton-row:nth-child(3n + 2) & {
-			width: 30%;
+			width: 22%;
 		}
 
 		.FilesSidebarTree-skeleton-row:nth-child(3n) & {
-			width: 60%;
+			width: 42%;
 		}
+	}
+
+	/* The 10px extra padding on each side is the space between a 36px action button and its icon. */
+	.FilesSidebarTree-skeleton-actions {
+		display: flex;
+		flex: 0 0 auto;
+		align-items: center;
+		gap: 20px;
+
+		margin-left: auto;
+		padding-left: 18px;
+		padding-right: 26px;
+	}
+
+	/* A chevron or action icon is a thin line drawing, so its skeleton is smaller than its 16px box. */
+	.FilesSidebarTree-skeleton-glyph {
+		width: 12px;
+		height: 12px;
+		flex: 0 0 auto;
+		margin: 2px;
+
+		border-radius: 3px;
+	}
+
+	/* Hide the two create actions in a narrow tree, like the real folder rows do. */
+	.FilesSidebarTree-folder-actions-expanded .FilesSidebarTree-skeleton-create-action {
+		display: none;
 	}
 
 	.FilesSidebarTree:not(:has(.FilesSidebarTreeItemTitle-input:focus)) {
