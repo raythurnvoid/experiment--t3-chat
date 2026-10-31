@@ -767,7 +767,7 @@ describe("ai_chat_tool_create_bash", () => {
 
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("these readers fetch at most 10 app files per command"),
+				description: expect.stringContaining("these readers fetch at most 20 app files per command"),
 			}),
 		);
 		expect(tool).toEqual(

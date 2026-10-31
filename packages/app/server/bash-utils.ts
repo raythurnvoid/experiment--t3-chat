@@ -125,8 +125,15 @@ export const bash_LISTING_MAX_LIMIT = 20;
 /**
  * Maximum number of db-file operands one reader command can pull from the db.
  * `stat` reuses this for metadata fan-out.
+ *
+ * Each file is read with queries that run one after another, so this number bounds how long one
+ * command runs. Byte size is bounded separately by `bash_READ_INLINE_MAX_BYTES`.
+ *
+ * Keep it equal to `bash_LISTING_MAX_LIMIT` on purpose, so the agent can read one full listing
+ * page in one command. It is its own number because it guards time, not page size: raising the
+ * listing limit must not make each reader command slower.
  */
-export const bash_READER_FILE_OPERAND_MAX = 10;
+export const bash_READER_FILE_OPERAND_MAX = 20;
 
 /**
  * Maximum byte size for a full inline file read.

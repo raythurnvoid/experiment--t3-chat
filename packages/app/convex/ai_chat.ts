@@ -4855,7 +4855,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(agentSurface).toContain("cat unreadable-file advisories are stderr, not file content");
 			expect(agentSurface).toContain("Uploaded source files do not alias to generated Markdown outputs.");
 			expect(agentSurface).toContain("read the exact generated output path when the user wants converted text");
-			expect(agentSurface).toContain("these readers fetch at most 10 app files per command");
+			expect(agentSurface).toContain("these readers fetch at most 20 app files per command");
 			expect(agentSurface).toContain("accepts multiple files (per-file counts plus a total)");
 			expect(agentSurface).toContain("Large files are not read inline");
 			expect(agentSurface).toContain(`up to ${files_READ_RANGE_MAX_LINES} lines per read`);
