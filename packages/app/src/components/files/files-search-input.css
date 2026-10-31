@@ -33,10 +33,6 @@
 		margin: 0 16px;
 	}
 
-	.FilesSearchInput-area {
-		padding-right: 4px;
-	}
-
 	.FilesSearchInput-filters {
 		max-height: 96px;
 		padding: 2px;
@@ -47,9 +43,8 @@
 		}
 	}
 
+	/* Keep the default button size and no area padding, so the button fills the field's right end. */
 	.FilesSearchInput-filter-button {
-		width: 28px;
-		height: 28px;
 		flex-shrink: 0;
 	}
 
