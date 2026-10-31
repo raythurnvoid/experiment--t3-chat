@@ -505,7 +505,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		if (dbFilesDoc?.kind === "file") {
 			return {
 				stdout: `${target.absoluteShellPath}\n`,
-				stderr: "",
+				stderr: parsed._yay.limitNote ? `${parsed._yay.limitNote}\n` : "",
 				exitCode: 0,
 			};
 		}

@@ -1071,6 +1071,16 @@ describe("bash_run_command", () => {
 		expect(second.stderr).toBe("");
 	});
 
+	test("says when tree --limit is above the maximum for a file target", async () => {
+		const { run } = await create_bash_runner();
+
+		const result = await run({ command: `tree -L 2 --limit 500 ${test_db_files_mount}/reports/summary.md` });
+
+		expect(result.metadata.exitCode).toBe(0);
+		expect(result.stdout).toBe(`${test_db_files_mount}/reports/summary.md\n`);
+		expect(result.stderr).toBe("tree: --limit 500 is more than the maximum of 100; showing 100 per page.\n");
+	});
+
 	test("supports mixed /tmp and app ls operands without a cursor", async () => {
 		const { run } = await create_bash_runner();
 
