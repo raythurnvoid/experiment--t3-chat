@@ -273,6 +273,7 @@ Files should feel like apps people already know. When an edge case has more than
 - **Windows Explorer, macOS Finder, Linux file managers (GNOME Files):** the file tree, names, rename, copy and move, name clashes, path limits.
 - **Dropbox, Google Drive:** uploads, sync, sharing, trash, storage limits, work that resumes after a restart.
 - **Notion (and Google Docs):** documents, pages, embeds, comments.
+- **OpenViking** (a file system for AI agents, source in `references-submodules/openviking`): read, write and manage permissions, restricted folders, name-only rows for denied items, and what an agent may delete.
 
 If they agree, do the same. If they disagree, pick the behavior most of them share, or the one that fits our product best, and write down the choice and the reason in the owning spec skill.
 

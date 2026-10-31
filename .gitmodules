@@ -215,3 +215,6 @@
 [submodule "packages/bonobo-senate-skills"]
 	path = packages/bonobo-senate-skills
 	url = https://github.com/raythurnvoid/bonobo-senate-skills.git
+[submodule "references-submodules/openviking"]
+	path = references-submodules/openviking
+	url = https://github.com/volcengine/OpenViking.git
