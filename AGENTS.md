@@ -20,7 +20,7 @@ The app's display and product name is **Bonobo Senate**. Use it in UI, docs, ski
 - Regular TypeScript lint skips standalone tests, type tests, benchmarks, and test stubs. Run `vp env exec pnpm --dir packages/app run lint:tsc:full` when changing tests or types they use. The editor still checks tests.
 - Plugin SDK types: `packages/bonobo-plugin-sdk/convex-api.d.ts` is generated from the app's plugin doors. After changing a public function in `packages/app/convex/plugins_data.ts`, run `vp env exec pnpm --dir packages/app run generate:plugin-sdk-types` and include the generated file in the change. The app `lint` runs `check:plugin-sdk-types`, which fails while that file is stale. The check reads the working tree, and no CI runs `lint`, so keep `convex-api.d.ts` in sync with the door change. The generator is [packages/app/scripts/generate-plugin-sdk-types.ts](packages/app/scripts/generate-plugin-sdk-types.ts).
 - When full app tests are needed, use `vp env exec pnpm --dir packages/app run test:once` for a one-shot test run.
-- In a worktree under the personal `+ai` folder, `test:once` never ends: the browser tests wait forever (the `iframeId` note in [tests.md](.agents/skills/codebase-uniformity/references/tests.md)). A worktree without the plugin submodules also fails three `shared/plugins.test.ts` tests with `ENOENT` on `plugins/bonobo-plugin-*/dist`. For a backend change there, run `vitest run --project convex` and expect only those three failures.
+- In a worktree under the personal `+ai` folder, `test:once` never ends: the browser tests wait forever (the `iframeId` note in [tests.md](.agents/skills/codebase-uniformity/references/tests.md)). A worktree without the plugin submodules also fails three `shared/plugins.test.ts` tests with `ENOENT` on `plugins/bonobo-plugin-*/dist`. For a backend change there, run `vitest run --project convex`. If more tests fail, run the same files on the parent commit and compare the failing test names. Only names that fail on your commit and not on the parent are yours (on 2026-10-31, 149 tests already failed on `main`).
 - Full app lint and test commands can take up to 20 minutes to complete. Use a long enough timeout when running them through tooling.
 
 ## Modal CLI
@@ -1410,6 +1410,7 @@ A flow that runs without an error only proves the code did not crash. It does no
 - Before you change a check, find the tests that assert the behaviour it has today. A guard with a passing test and a comment next to it is a decision somebody made, not something they forgot. Argue with the reason before you change the code, and if you still think it is wrong, say why the existing test is wrong too. Reading the code only proves the report describes it correctly; it does not prove the behaviour is a mistake.
 - Check the exact thing the report describes, in the place it describes. A nearby check that looks similar is not the same check.
 - Say which checks ran, which passed, and what you could not verify.
+- A missing local tool is not a reason to leave a check unverified. Run browser tests on Playwriter's Chrome for Testing (see [tests.md](.agents/skills/codebase-uniformity/references/tests.md)). Run a refusal check as a seeded second account in a scratch browser (see "Browser QA" below).
 
 # Browser QA
 

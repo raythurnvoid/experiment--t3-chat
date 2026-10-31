@@ -298,7 +298,10 @@ A delete the user asked to make despite Read-only (`rm --ignore-read-only`, or t
 The row Accept moves it to Trash and the items keep their flag. `Accept all` first opens a dialog that
 lists those paths, with `Cancel` (focused), `Skip them` and `Delete them too`. To restore, call
 `files_nodes.unarchive_nodes({ membershipId, nodeIds })`, then `read_only_set(... readOnly: false)`.
-Verified 2026-10-31 on `/u55` in `chitchat-qa/xfer-qa-0914`.
+Verified 2026-10-31 on `/u55` in `chitchat-qa/xfer-qa-0914`. Second-user check, same day: make
+`qa.perm.member`'s proposal with the upsert above (its `userId`), then as owner `restrict_node` an item
+inside and grant the member `read`. The member's Accept stays enabled, and the run then stops with
+"Permission denied". After a `write` grant the same Accept succeeds.
 
 ## Common Gotchas
 
