@@ -1195,6 +1195,11 @@ export const files_pending_update_header_validator = v.object({
 	pendingArchive: v.optional(
 		v.object({
 			fromPath: v.string(),
+			/**
+			 * Set when the agent ran `rm --ignore-read-only`. Accept then needs the user's approval on the
+			 * review item. Missing means an ordinary delete.
+			 */
+			ignoreReadOnly: v.optional(v.literal(true)),
 		}),
 	),
 	/**
@@ -2665,6 +2670,11 @@ const app_convex_schema = defineSchema({
 		target: files_pending_target_validator,
 		privateVersion: files_move_private_version_validator,
 		nodeRecordId: v.id("files_move_cohort_nodes"),
+		/**
+		 * A delete the user approved ignoring Read-only. Its selected and descendant records skip only the
+		 * Read-only flag.
+		 */
+		ignoreReadOnly: v.optional(v.literal(true)),
 		afterProposal: v.union(files_pending_update_header_validator, v.null()),
 		contentId: v.union(v.id("files_move_cohort_content"), v.null()),
 		replacementItemId: v.union(v.id("files_move_cohort_items"), v.null()),
@@ -3587,6 +3597,8 @@ const app_convex_schema = defineSchema({
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
 		/** Discard only: remove this private folder only when it holds nothing else. */
 		onlyIfEmpty: v.optional(v.literal(true)),
+		/** Accept only: the user approved this delete ignoring Read-only, for this proposal revision. */
+		ignoreReadOnly: v.optional(v.literal(true)),
 		planKind: v.union(v.literal("atomic"), v.null()),
 		privateVersion: v.union(v.object({ creationGeneration: v.number(), structuralRevision: v.number() }), v.null()),
 		target: files_pending_target_validator,

@@ -509,6 +509,14 @@ Use normal file tools and pending review. HTML stays `plain_text` source, and `.
   inside to Trash. Its stdout says `pending delete created: <path> — moves the file to Trash when accepted; review in Files`
   (or `moves the folder and its contents to Trash when accepted; review in Files`). Keep help and
   prompt text aligned with this review step. `rm` never deletes a saved file permanently.
+- `rm`, `rm -r` and `rm -f` refuse a Read-only item, or a folder that holds one:
+  `rm: cannot remove 'X': Read-only. Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.`
+  `rm --ignore-read-only` (long flag only, never given to the `/tmp` builtin) asks for a delete that
+  ignores Read-only. Its stdout says `... when accepted, ignoring Read-only; the user must accept it in
+  Files, and restored items stay Read-only`. The tool doc tells the model to use it only when the user
+  asked in this chat to delete those Read-only items, never by habit, never to retry a refusal on its
+  own, and never for a broad cleanup. The user's Accept is the approval. See "Human-approved delete
+  exception" in `../files-read-only/SKILL.md`.
 
 - MIME search stops at locked folders and prints `Permission denied`, even without type matches. Each error uses one page slot. Readable sibling matches remain in the output. A page with an error exits 1. Starting inside a deep share checks that start and its children, not access above it.
 - `find <path> --content-type MIME` uses stored type indexes, including the caller's pending view. Exact types (`image/png`) and families (`image/`) ignore case and stored parameters. Results share one alphabetical path order. `--limit` accepts up to 50; follow every continuation, including an empty unfinished page. `-type d` returns no matches after path/access validation. Name, path, extension, prefix and depth filters cannot be combined with this mode. Use one workspace or one plugin/mount leaf; `/tmp` and synthetic roots are unsupported.
@@ -859,7 +867,8 @@ Writes:
 - For pending changes, the client is expected to open the diff/review UI before live file content changes.
 - Workspace read-only locks are enforced inside the same pending and final write doors used by the
   Files UI. Agent-mode redirects, `tee`, `touch`, `edit_file`, `mkdir`, `mv`, `cp` destinations, and
-  `rm` cannot change a locked target, destination, replacement occupant, or affected subtree. `cp`
+  `rm` cannot change a locked target, destination, replacement occupant, or affected subtree (the
+  one exception is a delete the user approves after `rm --ignore-read-only`). `cp`
   may read a locked source and create a writable copy outside the lock. `/tmp` and the separate
   immutable `/.mounts` / `/.plugins` rules are unchanged.
 - A refused tool call reports one stable read-only error. Tool descriptions tell the model that trying

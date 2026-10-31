@@ -501,6 +501,21 @@ async function db_authorize_node(
 	return Result({ _yay: null });
 }
 
+/**
+ * Get who a check acts as for one record. The user approved one delete that ignores Read-only, so the
+ * records of that delete (its root and the items inside it) skip only the Read-only flag. Records of any
+ * other change in the same group, and the anchor folders around it, keep the normal checks.
+ */
+async function db_get_record_actor(
+	ctx: QueryCtx | MutationCtx,
+	actor: MoveActor,
+	record: Doc<"files_move_cohort_nodes">,
+) {
+	if ((record.role !== "selected" && record.role !== "descendant") || !record.itemId) return actor;
+	const item = await ctx.db.get("files_move_cohort_items", record.itemId);
+	return item?.ignoreReadOnly ? { ...actor, writeContext: { ...actor.writeContext, force: true } } : actor;
+}
+
 async function db_reserve_saved(
 	ctx: MutationCtx,
 	cohort: Doc<"files_move_cohorts">,
@@ -885,6 +900,7 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 	let proposal: Doc<"files_pending_updates"> | null = null;
 	let input: Doc<"files_pending_update_run_items"> | null = null;
 	let settlementOnly = false;
+	let ignoreReadOnly = false;
 	let parentPage = false;
 	if (cohort.origin.kind === "review") {
 		input = await ctx.db
@@ -925,6 +941,9 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 		origin = { kind: "review", itemId: input._id };
 		// The graph marks a selected occupant that this group replaces. Only a saved node can be one.
 		settlementOnly = target.kind === "saved" && planned.settlementOnly;
+		// The run already matched the approval to this revision. A replaced occupant only settles, so it
+		// never skips Read-only.
+		ignoreReadOnly = !settlementOnly && !!input.ignoreReadOnly && !!proposal.pendingArchive?.ignoreReadOnly;
 	} else {
 		if (order !== 0) return Result({ _yay: { done: true, paged: false, parentPage } });
 		const transfer = await ctx.db.get("files_transfer_items", cohort.origin.itemId);
@@ -956,7 +975,13 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 			)
 				return Result({ _nay: { name: "source_changed", message: "The source changed. Review this Move again." } });
 		}
-		const authorized = await db_authorize_node(ctx, cohort, actor, node);
+		// The item and its record do not exist yet, so this check cannot use db_get_record_actor.
+		const authorized = await db_authorize_node(
+			ctx,
+			cohort,
+			ignoreReadOnly ? { ...actor, writeContext: { ...actor.writeContext, force: true } } : actor,
+			node,
+		);
 		if (authorized._nay) return authorized;
 		reserved = await db_reserve_saved(ctx, cohort, { node, role: settlementOnly ? "replacement" : "selected" });
 	} else {
@@ -990,6 +1015,7 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 		selectedContentStateId: input?.selectedContentStateId ?? null,
 		privateVersion: input?.reviewSource?.privateVersion ?? null,
 		nodeRecordId: reserved._yay,
+		...(ignoreReadOnly ? { ignoreReadOnly: true as const } : {}),
 		afterProposal,
 		contentId: null,
 		replacementItemId: null,
@@ -1245,7 +1271,12 @@ async function db_descendants(
 			cohortId: cohort._id,
 			view: "before",
 		});
-		const authorized = await db_authorize_node(ctx, cohort, actor, selectedNode);
+		const authorized = await db_authorize_node(
+			ctx,
+			cohort,
+			await db_get_record_actor(ctx, actor, selectedRecord),
+			selectedNode,
+		);
 		if (authorized._nay) return authorized;
 	}
 	const cursor = JSON.parse(range.cursor!) as { source: "before" | "normal"; cursor: string | null };
@@ -1490,10 +1521,13 @@ async function db_headers(
 		});
 	if (selected) {
 		const run = cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
+		// A delete stays in its folder, so this parent is its current one. An approved delete from a
+		// Read-only folder must pass here too.
+		const recordActor = await db_get_record_actor(ctx, actor, record);
 		if (!run?.rename || old?.parentId !== parentId) {
 			const privateSource =
 				item?.target.kind === "private" ? (await ctx.db.get("files_pending_nodes", item.target.id))! : undefined;
-			const access = await db_authorize_node(ctx, cohort, actor, parent, privateSource);
+			const access = await db_authorize_node(ctx, cohort, recordActor, parent, privateSource);
 			if (access._nay) return access;
 		}
 		if (old && old.parentId !== "root") {
@@ -1502,11 +1536,11 @@ async function db_headers(
 				view: "before",
 			});
 			if (sourceParent) {
-				const writable = actor.writeContext.force
-					? await db_authorize_node(ctx, cohort, actor, sourceParent)
+				const writable = recordActor.writeContext.force
+					? await db_authorize_node(ctx, cohort, recordActor, sourceParent)
 					: await files_nodes_db_require_writable(ctx, {
 							...cohort,
-							writeContext: actor.writeContext,
+							writeContext: recordActor.writeContext,
 							target: { kind: "node", node: sourceParent },
 						});
 				if (writable._nay) return writable;
@@ -1759,13 +1793,14 @@ async function db_authorize_record(
 	record: Doc<"files_move_cohort_nodes">,
 ) {
 	if (record.role === "anchor") return Result({ _yay: null });
+	const recordActor = await db_get_record_actor(ctx, actor, record);
 	if (record.role === "derived") {
 		const after = (await ctx.db.get("files_saved_places", record.afterPlaceId!))!;
 		const parent =
 			after.parentId === "root"
 				? null
 				: await files_saved_placement_db_get_node(ctx.db, after.parentId, { cohortId: cohort._id, view: "after" });
-		return await db_authorize_node(ctx, cohort, actor, parent);
+		return await db_authorize_node(ctx, cohort, recordActor, parent);
 	}
 	let sourceId = record.nodeId;
 	let archiveDescendant = false;
@@ -1801,10 +1836,10 @@ async function db_authorize_record(
 			after?.parentId && after.parentId !== "root"
 				? await files_saved_placement_db_get_node(ctx.db, after.parentId, { cohortId: cohort._id, view: "after" })
 				: null;
-		return await db_authorize_node(ctx, cohort, actor, parent, privateNode);
+		return await db_authorize_node(ctx, cohort, recordActor, parent, privateNode);
 	}
 	if (!node) return Result({ _nay: { name: "needs_review", message: "A moved file is no longer available." } });
-	return await db_authorize_node(ctx, cohort, actor, node);
+	return await db_authorize_node(ctx, cohort, recordActor, node);
 }
 
 async function db_sides(

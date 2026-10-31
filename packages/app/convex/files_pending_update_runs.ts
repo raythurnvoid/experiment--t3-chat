@@ -314,6 +314,8 @@ const reviewed_item_validator = v.object({
 	// Discard only: remove this private folder only when it holds nothing else. Discard all sends a
 	// shown draft's parent folders like this, because the list does not show every draft inside them.
 	onlyIfEmpty: v.optional(v.literal(true)),
+	// Accept only: the user approves a delete that the agent asked to run ignoring Read-only.
+	ignoreReadOnly: v.optional(v.literal(true)),
 });
 
 // These paths are internal planning facts. Public history returns IDs and safe status only.
@@ -394,7 +396,10 @@ async function db_validate_items(
 		userId: Id<"users">;
 		kind: "accept" | "discard";
 		items: Array<
-			Pick<Doc<"files_pending_update_run_items">, "pendingUpdateId" | "reviewedRevision" | "selectedContentStateId">
+			Pick<
+				Doc<"files_pending_update_run_items">,
+				"pendingUpdateId" | "reviewedRevision" | "selectedContentStateId" | "ignoreReadOnly"
+			>
 		>;
 	},
 ) {
@@ -429,6 +434,17 @@ async function db_validate_items(
 		)
 			return Result({
 				_nay: { name: "needs_review", message: "Pending changes were revised. Review the latest version." },
+			});
+		// A delete that ignores Read-only needs the user's approval for this exact revision, and an
+		// approval must match such a delete. Discard needs no approval.
+		if (args.kind === "accept" && !!item.ignoreReadOnly !== !!proposal.pendingArchive?.ignoreReadOnly)
+			return Result({
+				_nay: {
+					name: "needs_review",
+					message: item.ignoreReadOnly
+						? "Pending changes were revised. Review the latest version."
+						: "This delete ignores Read-only. Review and accept it in the Pending tab.",
+				},
 			});
 		proposals.push(proposal);
 	}
@@ -861,7 +877,8 @@ async function db_append_items(
 				item.pendingUpdateId !== reviewed.pendingUpdateId ||
 				item.reviewedRevision !== reviewed.reviewedRevision ||
 				item.selectedContentStateId !== reviewed.selectedContentStateId ||
-				item.onlyIfEmpty !== undefined
+				item.onlyIfEmpty !== undefined ||
+				item.ignoreReadOnly !== undefined
 			);
 		})
 	)
@@ -898,7 +915,8 @@ async function db_append_items(
 					item.pendingUpdateId !== reviewed.pendingUpdateId ||
 					item.reviewedRevision !== reviewed.reviewedRevision ||
 					item.selectedContentStateId !== reviewed.selectedContentStateId ||
-					item.onlyIfEmpty !== reviewed.onlyIfEmpty
+					item.onlyIfEmpty !== reviewed.onlyIfEmpty ||
+					item.ignoreReadOnly !== reviewed.ignoreReadOnly
 				);
 			})
 		)

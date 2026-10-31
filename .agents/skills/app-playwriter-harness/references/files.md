@@ -292,6 +292,14 @@ first. Accept then ends with "0 saved, 1 need review" and "This item is read-onl
 stays active. Clean up with Discard delete and `readOnly: false`. The new setter is a source contract
 pending native QA; the earlier delete flow was verified 2026-10-19.
 
+A delete the user asked to make despite Read-only (`rm --ignore-read-only`, or the same upsert with
+`ignoreReadOnly: true`) shows the caption `Deleted · ignores Read-only`, carries
+`data-ignores-read-only` on the row, and names its buttons `Accept delete of /<path>, ignoring Read-only`.
+The row Accept moves it to Trash and the items keep their flag. `Accept all` first opens a dialog that
+lists those paths, with `Cancel` (focused), `Skip them` and `Delete them too`. To restore, call
+`files_nodes.unarchive_nodes({ membershipId, nodeIds })`, then `read_only_set(... readOnly: false)`.
+Verified 2026-10-31 on `/u55` in `chitchat-qa/xfer-qa-0914`.
+
 ## Common Gotchas
 
 - Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.
@@ -1483,6 +1491,7 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   Both flag directions need Can edit. Saving metadata plus enabling the flag saves metadata first;
   explicitly clearing a late flag clears it before saving a kept metadata draft. A later failure
   keeps the remaining draft and reports that only part was saved.
+  Escape did not close the dialog after the checkbox click (2026-10-31); use the footer `Close`.
 - Both folder bulk buttons verified natively 2026-10-29 on two descendants: choose
   `Make contents Read-only` or
   `Clear Read-only from contents`, then `Start` in its confirm dialog. No folder default is saved.

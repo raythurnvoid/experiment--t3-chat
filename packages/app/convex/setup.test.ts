@@ -686,6 +686,8 @@ export async function test_apply_file_pending_move(
 		target: Extract<files_PendingTarget, { kind: "saved" }>;
 		pendingUpdateId: Id<"files_pending_updates">;
 		reviewedRevision: number;
+		/** Approve a delete that ignores Read-only. */
+		ignoreReadOnly?: true;
 	},
 ) {
 	const hadFakeTimers = vi.isFakeTimers();
@@ -702,6 +704,7 @@ export async function test_apply_file_pending_move(
 					pendingUpdateId: args.pendingUpdateId,
 					reviewedRevision: args.reviewedRevision,
 					selectedContentStateId: proposal?.content?.stagedStateId ?? null,
+					...(args.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}),
 				},
 			],
 		});

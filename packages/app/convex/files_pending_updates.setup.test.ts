@@ -1266,6 +1266,7 @@ export async function upsert_file_pending_archive_for_test(args: {
 	userId: Id<"users">;
 	nodeId: Id<"files_nodes">;
 	threadId?: Id<"ai_chat_threads">;
+	ignoreReadOnly?: true;
 }) {
 	return await args.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
 		organizationId: args.organizationId,
@@ -1273,6 +1274,7 @@ export async function upsert_file_pending_archive_for_test(args: {
 		userId: args.userId,
 		target: { kind: "saved", id: args.nodeId },
 		...(args.threadId ? { threadId: args.threadId } : {}),
+		...(args.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}),
 	});
 }
 

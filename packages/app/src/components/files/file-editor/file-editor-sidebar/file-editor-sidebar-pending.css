@@ -357,4 +357,10 @@
 		}
 	}
 	/* #endregion item */
+
+	/* #region ignore read-only modal */
+	.FileEditorSidebarPendingIgnoreReadOnlyModal {
+		width: min(92vw, 480px);
+	}
+	/* #endregion ignore read-only modal */
 }

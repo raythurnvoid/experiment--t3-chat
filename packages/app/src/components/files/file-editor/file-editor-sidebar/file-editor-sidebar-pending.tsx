@@ -32,7 +32,18 @@ import {
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
+import {
+	MyModal,
+	MyModalCloseTrigger,
+	MyModalDescription,
+	MyModalFooter,
+	MyModalHeader,
+	MyModalHeading,
+	MyModalPopover,
+	MyModalScrollableArea,
+} from "@/components/my-modal.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
+import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { FileImagePreview } from "@/components/files/file-image-preview.tsx";
 import { FilePendingNotice } from "@/components/files/file-node-view/file-pending-notice.tsx";
 import { format_datetime } from "@/lib/date.ts";
@@ -117,7 +128,7 @@ type FileEditorSidebarPendingRow = {
 	 * the node that occupies the destination path right now, ignoring the declared replace target.
 	 * File moves replace a file occupant; folder moves replace an EMPTY folder occupant (rename()
 	 * semantics). Unset when nothing occupies the destination (accept is then a plain move), when
-	 * the occupant has this user's own pending move (it vacates first), and for other kind mixes.
+	 * the occupant has this user's own pending move or delete (it vacates first), and for other kind mixes.
 	 */
 	replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 	/**
@@ -156,9 +167,12 @@ function build_pending_rows(
 	nodesById: Map<app_convex_Id<"files_nodes">, FileEditorSidebarPendingNode>,
 ): FileEditorSidebarPendingRow[] {
 	const pendingUpdates = views.flatMap((view) => (view.entry.pendingUpdate ? [view.entry.pendingUpdate] : []));
-	// The server requires these moves in the same reviewed unit, so they are not replacements.
-	const movingNodeIds = new Set(
-		pendingUpdates.filter((update) => update.pendingMove != null).map((update) => update.target.id),
+	// A pending move or delete frees its name first. The server requires it in the same reviewed unit, so
+	// its node is not replaced.
+	const vacatingNodeIds = new Set(
+		pendingUpdates
+			.filter((update) => update.pendingMove != null || update.pendingArchive != null)
+			.map((update) => update.target.id),
 	);
 	// Folders that count as non-empty: a folder occupant is only replaced when it is empty
 	// (rename() semantics), so a non-empty one gets no "Replaced" caption. Accept-time
@@ -216,7 +230,7 @@ function build_pending_rows(
 			// or the node itself, means accept degrades to a plain move: no indicator.
 			// Auto-replace is file-onto-file, or folder-onto-EMPTY-folder (rename() semantics);
 			// other kind mixes keep the plain caption (accept surfaces the conflict).
-			// An occupant with its own pending move vacates before this one applies: no replace.
+			// An occupant with its own pending move or delete vacates before this one applies: no replace.
 			const replacedNode = view.occupant ? nodesById.get(view.occupant.nodeId) : undefined;
 			const replaceKindsMatch =
 				node?.kind === "file"
@@ -228,7 +242,7 @@ function build_pending_rows(
 				replacedNode &&
 				replaceKindsMatch &&
 				replacedNode._id !== pendingUpdate.target.id &&
-				!movingNodeIds.has(replacedNode._id)
+				!vacatingNodeIds.has(replacedNode._id)
 			) {
 				replacedNodeId = replacedNode._id;
 				if (
@@ -813,6 +827,11 @@ const FileEditorSidebarPendingStoredFileDetails = memo(function FileEditorSideba
 // #endregion stored file details
 
 // #region item
+type FileEditorSidebarPendingItem_CustomAttributes = {
+	/** The agent asked to run this delete ignoring Read-only. Accepting the row approves that. */
+	"data-ignores-read-only": "";
+};
+
 type FileEditorSidebarPendingItem_Props = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
@@ -867,6 +886,11 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	const itemRef = useRef<HTMLLIElement>(null);
 	// A stored draft, such as a screenshot, has no text diff. Its open row shows the file details instead.
 	const storedIntent = pendingUpdate.createIntent?.kind === "stored" ? pendingUpdate.createIntent : null;
+	const ignoresReadOnly = kind === "delete" && !!pendingUpdate.pendingArchive?.ignoreReadOnly;
+	const deletedCaption = ignoresReadOnly ? "Deleted · ignores Read-only" : "Deleted";
+	const itemAttributes = ignoresReadOnly
+		? ({ "data-ignores-read-only": "" } satisfies FileEditorSidebarPendingItem_CustomAttributes)
+		: {};
 
 	// Accepting or discarding removes this row. The browser then puts focus on `<body>` and a
 	// keyboard user loses their place, so this cleanup gives focus back to the panel. Both panel
@@ -988,7 +1012,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// "Accept" reads as for example "Accept move of /a.md to /b.md".
 	const actionLabel =
 		kind === "delete"
-			? `delete of ${path}`
+			? `delete of ${path}${ignoresReadOnly ? ", ignoring Read-only" : ""}`
 			: kind === "move" || kind === "content_and_move"
 				? moveDestinationPath != null
 					? `move of ${path} to ${moveDestinationPath}`
@@ -1028,6 +1052,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						pendingUpdate.pendingArchive || pendingUpdate.pendingReplacement
 							? null
 							: (pendingUpdate.content?.unstagedStateId ?? null),
+					// The row's caption names the request, so this Accept is the user's approval.
+					...(ignoresReadOnly ? { ignoreReadOnly: true as const } : {}),
 				},
 			],
 		})
@@ -1079,7 +1105,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 					: path;
 
 		return (
-			<li ref={itemRef}>
+			<li ref={itemRef} {...itemAttributes}>
 				<div
 					className={cn(
 						"FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames,
@@ -1119,7 +1145,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 									? "Added folder"
 									: "Added file"
 								: kind === "delete"
-									? "Deleted"
+									? deletedCaption
 									: replacedNodeId != null
 										? "Replaced"
 										: movedCaption}
@@ -1163,7 +1189,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// An archived target still accepts — the file stays archived — so the row says so.
 	const caption =
 		(kind === "delete"
-			? "Deleted"
+			? deletedCaption
 			: isStale
 				? "Review to update"
 				: replacedNodeId != null
@@ -1189,7 +1215,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		(isStale ? `${rowLabel}, review to update` : rowLabel) + (isArchived ? ", in Trash" : "") + parentsLabel;
 
 	return (
-		<li ref={itemRef}>
+		<li ref={itemRef} {...itemAttributes}>
 			<FilePendingNotice recovery={props.recovery} copyDestination={props.copyDestination} />
 			<details
 				className={cn("FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames)}
@@ -1417,6 +1443,69 @@ const FileEditorSidebarPendingUnloadedItem = memo(function FileEditorSidebarPend
 });
 // #endregion unloaded item
 
+// #region ignore read-only modal
+type FileEditorSidebarPendingIgnoreReadOnlyModal_ClassNames = "FileEditorSidebarPendingIgnoreReadOnlyModal";
+
+type FileEditorSidebarPendingIgnoreReadOnlyModal_Props = {
+	/** The paths of the deletes that ignore Read-only. `null` keeps the dialog closed. */
+	paths: string[] | null;
+	onCancel: () => void;
+	onSkip: () => void;
+	onAccept: () => void;
+};
+
+/**
+ * Accept all asks before it approves deletes that ignore Read-only, because it sends every row at once.
+ */
+const FileEditorSidebarPendingIgnoreReadOnlyModal = memo(function FileEditorSidebarPendingIgnoreReadOnlyModal(
+	props: FileEditorSidebarPendingIgnoreReadOnlyModal_Props,
+) {
+	const { paths, onCancel, onSkip, onAccept } = props;
+	const cancelRef = useRef<HTMLButtonElement>(null);
+
+	return (
+		<MyModal open={paths !== null} setOpen={(open) => !open && onCancel()}>
+			{/* Start on Cancel, the safe choice. */}
+			<MyModalPopover
+				className={
+					"FileEditorSidebarPendingIgnoreReadOnlyModal" satisfies FileEditorSidebarPendingIgnoreReadOnlyModal_ClassNames
+				}
+				initialFocus={cancelRef}
+				unmountOnHide
+			>
+				<MyModalHeader>
+					<MyModalHeading>Some deletes ignore Read-only</MyModalHeading>
+					<MyModalDescription>
+						The agent asked to delete these items even if they or the folders that hold them are Read-only. Deleted
+						items stay Read-only if you restore them.
+					</MyModalDescription>
+				</MyModalHeader>
+				<MyModalScrollableArea>
+					{/* One path per line in a read-only text block, so Ctrl+A selects only the paths. */}
+					<TextMonospaceBlock
+						aria-label="Deletes that ignore Read-only"
+						text={(paths ?? []).join("\n")}
+						maxHeight="10lh"
+					/>
+				</MyModalScrollableArea>
+				<MyModalFooter>
+					<MyButton ref={cancelRef} variant="ghost" onClick={onCancel}>
+						Cancel
+					</MyButton>
+					<MyButton variant="outline" onClick={onSkip}>
+						Skip them
+					</MyButton>
+					<MyButton variant="destructive" onClick={onAccept}>
+						Delete them too
+					</MyButton>
+				</MyModalFooter>
+				<MyModalCloseTrigger />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+// #endregion ignore read-only modal
+
 // #region root
 export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending"
@@ -1459,6 +1548,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	// Busy review buttons keep focus while the job starts. Handlers block repeated clicks.
 	const isBulkBusy = isSubmitting || isStartingReview;
+	// The rows Accept all keeps until the user answers the dialog about deletes that ignore Read-only.
+	const [confirmAcceptRows, setConfirmAcceptRows] = useState<FileEditorSidebarPendingRow[] | null>(null);
 	const [selectedSource, setSelectedSource] = useState<FileEditorSidebarPendingSource>(
 		initialThreadId ?? PENDING_SOURCE_ALL,
 	);
@@ -1676,6 +1767,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 			return false;
 		}
 		if (row.pendingUpdate.target.kind === "private" || !row.savedNode) return true;
+		// The view allows a delete that ignores Read-only when only the flag blocks it. Accept checks the
+		// item, its folder and everything inside it again on the server.
+		if (row.pendingUpdate.pendingArchive?.ignoreReadOnly) return true;
 
 		// A parent that is still loading blocks Accept for now. A parent this user cannot read is
 		// like the workspace root: Accept re-checks the live parent on the server.
@@ -1730,10 +1824,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 
 	// A hidden folder draft goes with the drafts inside it. So Accept all sends each shown draft's
 	// pending parent folders first, like row Accept.
-	const handleAcceptAll = useFn(() => {
-		if (isBulkBusy || !canAcceptAllShownRows) return;
-		const acceptRows = rows.filter((row) => !row.isStale);
-		if (acceptRows.length < rows.length) toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
+	const startAccept = (acceptRows: FileEditorSidebarPendingRow[]) => {
 		if (acceptRows.length === 0) return;
 		const parentsById = new Map(
 			acceptRows.flatMap((row) => row.requiredParents.map((parent) => [parent.pendingUpdateId, parent] as const)),
@@ -1754,6 +1845,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 						pendingUpdate.pendingArchive || pendingUpdate.pendingReplacement
 							? null
 							: (pendingUpdate.content?.unstagedStateId ?? null),
+					// The confirm dialog listed these deletes, so sending them is the user's approval.
+					...(pendingUpdate.pendingArchive?.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}),
 				})),
 			],
 		})
@@ -1766,6 +1859,37 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 				toast.error(error instanceof Error ? error.message : "Failed to start review");
 			})
 			.finally(() => setIsSubmitting(false));
+	};
+
+	const handleAcceptAll = useFn(() => {
+		if (isBulkBusy || !canAcceptAllShownRows) return;
+		const acceptRows = rows.filter((row) => !row.isStale);
+		if (acceptRows.length < rows.length) toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
+		// TODO: Make Accept all smart enough to handle deletes that ignore Read-only without this dialog.
+		// The dialog exists because Accept all sends every row at once, so the user may not see that a
+		// delete ignores Read-only. Find a way to show that consent on the rows instead.
+		if (acceptRows.some((row) => row.pendingUpdate.pendingArchive?.ignoreReadOnly)) {
+			setConfirmAcceptRows(acceptRows);
+			return;
+		}
+		startAccept(acceptRows);
+	});
+
+	const handleIgnoreReadOnlyCancel = useFn(() => {
+		setConfirmAcceptRows(null);
+	});
+
+	const handleIgnoreReadOnlyAccept = useFn(() => {
+		if (!confirmAcceptRows) return;
+		setConfirmAcceptRows(null);
+		startAccept(confirmAcceptRows);
+	});
+
+	const handleIgnoreReadOnlySkip = useFn(() => {
+		if (!confirmAcceptRows) return;
+		setConfirmAcceptRows(null);
+		toast.info("The deletes that ignore Read-only stay pending.");
+		startAccept(confirmAcceptRows.filter((row) => !row.pendingUpdate.pendingArchive?.ignoreReadOnly));
 	});
 
 	// Discard all sends every loaded row, and each shown draft's hidden parent folders with
@@ -1993,6 +2117,15 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 				</ul>
 				{paginationControl}
 			</div>
+			<FileEditorSidebarPendingIgnoreReadOnlyModal
+				paths={
+					confirmAcceptRows?.filter((row) => row.pendingUpdate.pendingArchive?.ignoreReadOnly).map((row) => row.path) ??
+					null
+				}
+				onCancel={handleIgnoreReadOnlyCancel}
+				onSkip={handleIgnoreReadOnlySkip}
+				onAccept={handleIgnoreReadOnlyAccept}
+			/>
 		</>
 	);
 });

@@ -23,16 +23,25 @@ import { bash_delegate_builtin_command } from "./bash-delegate.ts";
  * Mirrors the builtin's accepted flags (-r/-R/--recursive, -f/--force, -v/--verbose,
  * short clusters, `--`). Any other option marks the parse unknown so the whole
  * command delegates to the builtin, whose parser errors before touching the fs.
+ * `--ignore-read-only` is the one app-only flag. The builtin never sees it.
  */
 function parse_rm_operands(args: string[]) {
 	const operands: string[] = [];
+	const builtinArgs: string[] = [];
 	let recursive = false;
 	let force = false;
 	let verbose = false;
+	let ignoreReadOnly = false;
 	let unknownOption = false;
 	let optionsEnded = false;
 
 	for (const arg of args) {
+		// `/tmp` items have no Read-only flag, so the builtin gets every argument except this one.
+		if (!optionsEnded && arg === "--ignore-read-only") {
+			ignoreReadOnly = true;
+			continue;
+		}
+		builtinArgs.push(arg);
 		if (optionsEnded) {
 			operands.push(arg);
 			continue;
@@ -73,7 +82,7 @@ function parse_rm_operands(args: string[]) {
 		}
 		operands.push(arg);
 	}
-	return { operands, recursive, force, verbose, unknownOption };
+	return { operands, builtinArgs, recursive, force, verbose, ignoreReadOnly, unknownOption };
 }
 
 /**
@@ -83,16 +92,19 @@ function parse_rm_operands(args: string[]) {
  * records a pending delete the user reviews in Files; accepting moves the
  * node to Trash (a folder with its whole subtree). `rm` on the user's own unaccepted
  * Added file cancels it immediately, like Discard. Ask mode keeps rejections.
+ *
+ * `-f` never deletes a Read-only item. `--ignore-read-only` only asks for that: the
+ * pending delete then waits for the user's Accept, which is the approval.
  */
 // The explicit `Command` return type breaks a type-inference cycle: the handler's inferred
 // type would otherwise flow through internal.* into the bash action and back into this command.
 export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	return defineCommand("rm", async (args, commandCtx) => {
-		const { operands, recursive, force, verbose, unknownOption } = parse_rm_operands(args);
+		const { operands, builtinArgs, recursive, force, verbose, ignoreReadOnly, unknownOption } = parse_rm_operands(args);
 
 		// Unknown options: the builtin's parser errors before touching the fs, so app paths are safe.
 		if (unknownOption) {
-			return await bash_delegate_builtin_command({ command: "rm", args, commandCtx });
+			return await bash_delegate_builtin_command({ command: "rm", args: builtinArgs, commandCtx });
 		}
 
 		// Mounts are read-only: reject any operand under /.mounts or /.plugins before
@@ -113,7 +125,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots).kind === "app",
 		);
 		if (appOperands.length === 0) {
-			return await bash_delegate_builtin_command({ command: "rm", args, commandCtx });
+			return await bash_delegate_builtin_command({ command: "rm", args: builtinArgs, commandCtx });
 		}
 
 		for (const operand of appOperands) {
@@ -211,6 +223,7 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				target: node.target,
 				threadId: threadId ?? undefined,
 				agentSource,
+				...(ignoreReadOnly ? { ignoreReadOnly: true as const } : {}),
 			})) as upsert_file_pending_archive_in_db_Result;
 			if (proposed._nay) {
 				// The node can be archived between the path lookup above and the mutation; -f
@@ -218,7 +231,12 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				if (force && proposed._nay.message === "Not found") {
 					continue;
 				}
-				stderr += `rm: cannot remove '${operand}': ${proposed._nay.message.toLowerCase()}\n`;
+				// Tell the model what to do next, so it neither retries with the flag on its own nor stops
+				// without telling the user.
+				stderr +=
+					proposed._nay.name === "read_only"
+						? `rm: cannot remove '${operand}': Read-only. Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.\n`
+						: `rm: cannot remove '${operand}': ${proposed._nay.message.toLowerCase()}\n`;
 				exitCode = bash_COMMAND_EXIT_FAILURE;
 				continue;
 			}
@@ -228,6 +246,11 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				// The user's own unaccepted new file: really removed, nothing pends. Always
 				// printed (not only with -v) so the agent knows no proposal was created.
 				stdout += `removed '${operand}'\n`;
+			} else if (ignoreReadOnly) {
+				stdout +=
+					proposed._yay.nodeKind === "folder"
+						? `pending delete created: ${dbFilesPath} — moves the folder and its contents to Trash when accepted, ignoring Read-only; the user must accept it in Files, and restored items stay Read-only\n`
+						: `pending delete created: ${dbFilesPath} — moves the file to Trash when accepted, ignoring Read-only; the user must accept it in Files, and restored items stay Read-only\n`;
 			} else {
 				stdout +=
 					proposed._yay.nodeKind === "folder"

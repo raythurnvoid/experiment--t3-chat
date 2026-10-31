@@ -18,6 +18,7 @@ import { files_pending_update_runs_db_record_cohort_publication } from "./files_
 import { files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
 import { archive, run_to_end as finish_archive, seed_tree } from "./files_archive_runs.setup.test.ts";
 import * as pendingOverlay from "../server/files-pending-overlay.ts";
+import { set_pending_test_read_only, set_pending_test_writable } from "./files_pending_updates.setup.test.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -87,6 +88,8 @@ async function start_review(args: {
 				pendingUpdateId: proposal._id,
 				reviewedRevision: proposal.revision,
 				selectedContentStateId: kind === "accept" ? (proposal.content?.unstagedStateId ?? null) : null,
+				// Approve a delete that ignores Read-only, like the row Accept in the Pending tab.
+				...(kind === "accept" && proposal.pendingArchive?.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}),
 			})),
 		],
 	});
@@ -574,6 +577,15 @@ describe("review jobs", () => {
 			name: "request_changed",
 			message: "This review page was already sent with different changes.",
 		});
+		// An approval to ignore Read-only is part of the page too.
+		expect(
+			(
+				await f.asUser.mutation(api.files_pending_update_runs.append_items, {
+					...page,
+					items: [{ ...item(second), ignoreReadOnly: true }],
+				})
+			)._nay,
+		).toMatchObject({ name: "request_changed" });
 
 		const run = await f.t.run((ctx) => ctx.db.get("files_pending_update_runs", started._yay.runId));
 		expect(run).toMatchObject({ itemCount: 2 });
@@ -1002,6 +1014,74 @@ describe("review jobs", () => {
 			[yId, "/x", false],
 		]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
+	});
+
+	test("an approved delete of Read-only x does not open its Read-only folder to y moved onto x", async () => {
+		const f = await fixture();
+		const destId = await saved_folder(f, "dest");
+		const yId = await saved_folder(f, "y");
+		const xId = await f.t.run((ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.scope.organizationId,
+				workspaceId: f.scope.workspaceId,
+				createdBy: f.scope.userId,
+				updatedBy: f.scope.userId,
+				parentId: destId,
+				name: "x",
+				sortName: files_sort_text_key("x"),
+				path: "/dest/x",
+				treePath: "/dest/x/",
+				pathDepth: 2,
+			}),
+		);
+		expect(
+			(
+				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...f.scope,
+					target: { kind: "saved", id: xId },
+					ignoreReadOnly: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					...f.scope,
+					target: { kind: "saved", id: yId },
+					destParent: { kind: "saved", id: destId },
+					destName: "x",
+				})
+			)._nay,
+		).toBeUndefined();
+		for (const nodeId of [destId, xId])
+			await set_pending_test_read_only({ asUser: f.asUser, membershipId: f.db.membershipId, nodeId });
+
+		// The delete and the move share one unit. The approval lets x leave the Read-only folder,
+		// but y still may not move into it.
+		const refused = await start_review({
+			f,
+			kind: "accept",
+			proposals: await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect()),
+		});
+		expect((await finish_review(f, refused.runId))?.run).toMatchObject({ unitCount: 1 });
+		const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
+		expect(unit?.errorMessage).toBe("This item is read-only.");
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", xId))).toMatchObject({ archiveOperationId: null });
+
+		// Once the folder is writable, the same approved delete goes through and x stays Read-only in Trash.
+		await set_pending_test_writable({ asUser: f.asUser, membershipId: f.db.membershipId, nodeId: destId });
+		const accepted = await start_review({
+			f,
+			kind: "accept",
+			proposals: await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect()),
+		});
+		expect((await finish_review(f, accepted.runId))?.activity).toMatchObject({ status: "succeeded" });
+		const moved = await f.t.run((ctx) => Promise.all([xId, yId].map((id) => ctx.db.get("files_nodes", id))));
+		expect(moved.map((node) => [node?.path, node?.archiveOperationId !== null, node?.readOnly])).toEqual([
+			["/dest/x", true, true],
+			["/dest/x", false, false],
+		]);
 	});
 
 	test("a reviewed folder delete archives its files and metadata docs within the unit budget", async () => {

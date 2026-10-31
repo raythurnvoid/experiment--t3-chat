@@ -15,6 +15,8 @@ parent, and its destination. They carry descendants without changing their flags
 Normal app, agent, and Bash writes never force. A machine request may pass explicit `force: true`
 only with its current Manage Read-only grant. Force skips the flag check only. It never grants
 access, clears a flag, changes a destination seal, or removes a content-version check.
+One exception: an agent delete that the user approves on Accept. See "Human-approved delete
+exception" below.
 
 There are no selected writers or new-item defaults. Ordinary new items start writable.
 Copy preserves Read-only on new copies. Restore preserves it on the same item. These operations
@@ -93,6 +95,7 @@ ACL applies in every row. A machine force request still needs current access and
 | Create, upload, import, or paste media | Check the direct destination folder |
 | Rename or Move | Check the item and direct source/destination parents; carry descendants |
 | Ordinary Move to Trash or reviewed Delete | Check active items and their directly changed parent lists; older Trash does not block |
+| Reviewed agent Delete that ignores Read-only | Skip only the flag after the user's Accept; check Can edit on the item, its parent and active items inside; keep flags |
 | Forced Move to Trash | Move to Trash allowed children first; keep denied children and their ancestors |
 | Restore | Preserve the item's own flag; check the live parent and any replacement occupant |
 | Restore, archive, or unarchive snapshots | Check the file's current flag |
@@ -144,7 +147,8 @@ can still reach its idle deadline. This existing limitation is not a new scalabl
   conflict details. `server/files-write-policy.ts` owns the local flag and resource-scope checks.
   Callers prove current credentials and ACL. Labels and plugin names grant nothing.
 - Trusted write context carries `subject`, `actorUserId`, `resourceScope`, and `force`.
-  Only a machine door that checked the current grant may set force true. Persist it with the
+  Only a machine door that checked the current grant may set force true, apart from the
+  human-approved delete exception below. Persist it with the
   request and fingerprint; workers recheck the live key or installation before each step.
   Existing request fingerprints encode force only when true. False and omission keep the same
   ordinary request identity; changing to true needs a new request ID.
@@ -173,6 +177,7 @@ that same ID in their publish receipt.
 
 Pending proposals stay visible through a refusal. Save, Accept, and rebase recheck current access.
 Whole-proposal Discard and owner expiry keep saved files intact. App agents and Bash cannot force.
+An agent can only ask for the human-approved delete exception, with `rm --ignore-read-only`.
 
 ## Trash and Restore
 
@@ -212,6 +217,32 @@ restricted-scope exit permissions.
 Reviewed pending Delete uses the Save cohort. It checks active descendants before the group switch;
 already trashed descendants keep their stamps and do not block it. Stop before the switch keeps
 saved files and proposals; after the switch, required repair finishes.
+
+## Human-approved delete exception
+
+The agent's `rm`, `rm -r` and `rm -f` refuse a Read-only item, or a folder that holds one. When the
+user asks in the chat to delete those items, the agent runs `rm --ignore-read-only`. That only
+records a request: `pendingArchive.ignoreReadOnly: true` on the proposal. The last `rm` decides, so
+a later plain `rm` of the same item drops the request. The proposal's early checks skip only the
+flag. They still refuse a purge and a missing permission.
+
+The user's Accept of that row is the approval. The review item carries `ignoreReadOnly: true` for
+that exact proposal revision. A plain Accept of such a delete, or an approval on any other proposal,
+returns `needs_review`. Accept all lists these deletes in a dialog first (Delete them too, Skip
+them, Cancel).
+
+Accept copies the approval to the cohort item. Only that item's `selected` and `descendant`
+records act with `force: true`: the item, its current parent, and the active items inside. Every
+other record in the same group keeps the normal checks, so a linked Move into a Read-only folder
+still fails. ACL, purge, Move holds and placement are checked as usual, and a denied item inside
+still refuses the whole delete. Flags and decision IDs stay, so a restored item is still Read-only.
+
+Who grants it: only the owner of the proposal, by Accept. It needs no new authority: Can edit may
+already clear the flag. It is not machine force, so RO-07 is unchanged, and API keys and plugins
+cannot use it.
+
+Decided 2026-10-31: people in Files keep "clear Read-only first, then delete". The exception exists
+only to approve an agent's request; a person can already clear the flag.
 
 ## Delete permanently
 
@@ -358,13 +389,17 @@ Keep visible labels, keyboard and focus behavior, and usable layout at 200% zoom
 | RO-12 | Capture unsaved text before reset; keep recovery reachable within the tab |
 | RO-13 | Keep read_only and each door's existing error shape |
 | RO-14 | A partial move to Trash keeps completed work and retained parents; atomic doors stay atomic |
+| RO-15 | An agent delete skips Read-only only with the user's Accept of that exact revision; flags stay |
 
 # Test Map
 
 - `convex/files_nodes.read_only*.test.ts`: flags, decision IDs, Can edit, direct children, privacy.
 - `convex/files_write_policy_runs.test.ts`: bulk changes, authority loss, Stop, retries.
 - `convex/files_transfer*.test.ts`, `files_pending_nodes.test.ts`, pending structural tests:
-  Copy/Save receipts, clear/re-lock, partial Save, Trash, Move.
+  Copy/Save receipts, clear/re-lock, partial Save, Trash, Move. RO-15: the structural
+  "pending update read-only checks" block (approval, ACL) and `files_pending_update_runs.test.ts`
+  (a move in the same unit, page replay).
+- `server/bash.files.test.ts`: `rm -f` refuses a Read-only file; `--ignore-read-only` only requests.
 - `convex/files_archive_runs*.test.ts`: Restore receipts, forced partial moves to Trash, current authority.
 - `convex/public_api*.test.ts`, `plugins_external_files*.test.ts`: grant checks, force, exact retries,
   sealed destinations, partial completion, accepted uploads.

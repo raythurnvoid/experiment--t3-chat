@@ -7581,6 +7581,33 @@ describe("cleanup_expired_pending_state_rows", () => {
 });
 // #endregion pending state TTL sweep
 
+/**
+ * A Read-only folder inside a Read-only folder, holding a Read-only file.
+ */
+async function seed_read_only_tree(t: ReturnType<typeof test_convex>) {
+	const seeded = await t.run(async (ctx) => {
+		const membership = await test_mocks_fill_db_with.membership(ctx);
+		const ids = {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+		};
+		const parentId = await seed_folder_node({ ctx, ...ids, path: "/ro-parent", name: "ro-parent" });
+		const folderId = await seed_folder_node({ ctx, ...ids, parentId, path: "/ro-parent/target", name: "target" });
+		const child = await seed_file_with_markdown({
+			ctx,
+			path: "/ro-parent/target/child.md",
+			name: "child.md",
+			markdown: "# Child",
+			membership,
+		});
+		await ctx.db.patch("files_nodes", child.nodeId, { parentId: folderId });
+		return { ...membership, parentId, folderId, childNodeId: child.nodeId };
+	});
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Owner" });
+	return { seeded, asUser };
+}
+
 describe("pending update read-only checks", () => {
 	test("a locked target refuses a new content proposal without creating a row", async () => {
 		const t = test_convex();
@@ -9087,6 +9114,116 @@ describe("pending update read-only checks", () => {
 			expect((await ctx.db.get("files_nodes", seeded.fileNodeId))?.archiveOperationId).toBeNull();
 			expect((await ctx.db.get("files_nodes", seeded.folderId))?.archiveOperationId).toBeNull();
 		});
+	});
+
+	test("deletes Read-only items only with the user's approval, and keeps their flags", async () => {
+		const t = test_convex();
+		const { seeded, asUser } = await seed_read_only_tree(t);
+		for (const nodeId of [seeded.childNodeId, seeded.folderId, seeded.parentId]) {
+			await set_pending_test_read_only({ asUser, membershipId: seeded.membershipId, nodeId });
+		}
+		const decisionIds = await t.run(async (ctx) =>
+			Promise.all(
+				[seeded.folderId, seeded.childNodeId].map(
+					async (id) => (await ctx.db.get("files_nodes", id))!.readOnlyDecisionId,
+				),
+			),
+		);
+
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.folderId,
+			ignoreReadOnly: true,
+		});
+		expect(proposed._nay).toBeUndefined();
+		const reviewed = {
+			membershipId: seeded.membershipId,
+			target: { kind: "saved" as const, id: seeded.folderId },
+			...(await reviewed_pending_for_test(t, {
+				membershipId: seeded.membershipId,
+				target: { kind: "saved", id: seeded.folderId },
+			})),
+		};
+
+		const plain = await test_apply_file_pending_move(asUser, reviewed);
+		expect(plain._nay).toMatchObject({
+			name: "needs_review",
+			message: "This delete ignores Read-only. Review and accept it in the Pending tab.",
+		});
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.folderId)))?.archiveOperationId).toBeNull();
+
+		const approved = await test_apply_file_pending_move(asUser, { ...reviewed, ignoreReadOnly: true });
+		expect(approved).toEqual({ _yay: null });
+		await t.run(async (ctx) => {
+			const [folder, child] = await Promise.all([
+				ctx.db.get("files_nodes", seeded.folderId),
+				ctx.db.get("files_nodes", seeded.childNodeId),
+			]);
+			expect(folder?.archiveOperationId).not.toBeNull();
+			expect(child?.archiveOperationId).not.toBeNull();
+			expect([folder?.readOnly, child?.readOnly]).toEqual([true, true]);
+			expect([folder?.readOnlyDecisionId, child?.readOnlyDecisionId]).toEqual(decisionIds);
+		});
+	});
+
+	test("an approved delete still needs Can edit on every item inside", async () => {
+		const t = test_convex();
+		const { seeded, asUser } = await seed_read_only_tree(t);
+		// The owner passes every permission check, so a member makes and accepts the delete.
+		const member = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_ignore_read_only_member" });
+			await seed_billing_snapshot_for_user(ctx, userId);
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: now,
+				displayName: "",
+				sortDisplayName: "",
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			return { userId, membershipId };
+		});
+		const proposed = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: member.userId,
+			nodeId: seeded.folderId,
+			ignoreReadOnly: true,
+		});
+		expect(proposed._nay).toBeUndefined();
+
+		// After the proposal, the folder becomes Read-only and the file inside is closed to the member.
+		await set_pending_test_read_only({ asUser, membershipId: seeded.membershipId, nodeId: seeded.folderId });
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", seeded.childNodeId, { restrictedScopeNodeId: seeded.childNodeId }),
+		);
+
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId, name: "Member" });
+		const refused = await test_apply_file_pending_move(asMember, {
+			membershipId: member.membershipId,
+			target: { kind: "saved", id: seeded.folderId },
+			ignoreReadOnly: true,
+			...(await reviewed_pending_for_test(t, {
+				membershipId: member.membershipId,
+				target: { kind: "saved", id: seeded.folderId },
+			})),
+		});
+		expect(refused._nay?.message).toBe("Permission denied");
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.folderId)))?.archiveOperationId).toBeNull();
 	});
 });
 

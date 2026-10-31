@@ -70,7 +70,7 @@ Structural state uses:
 
 - `pendingMove` for move or rename intent.
 - `copiedFrom` for copy or replace provenance.
-- `pendingArchive` for delete intent (bash `rm`): accepting moves the node to Trash; moving a folder to Trash includes its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Setting Delete keeps the content branches for Undo. Accept removes the whole proposal without saving its draft text. Discard restores the content branches as a Modified row.
+- `pendingArchive` for delete intent (bash `rm`): accepting moves the node to Trash; moving a folder to Trash includes its whole subtree, computed at accept time. Setting it clears `pendingMove` — a delete supersedes a move. Setting Delete keeps the content branches for Undo. Accept removes the whole proposal without saving its draft text. Discard restores the content branches as a Modified row. `rm --ignore-read-only` also sets `pendingArchive.ignoreReadOnly`; a later plain `rm` replaces it. See "Read-only" below.
 - `createIntent` for a private file or folder. Missing agent write and copy targets stay private until Save. Removing an owned private create discards that private identity and its approved pending work.
 
 Copy Keep both names put `-copy-N` before the first dot and cut the base to fit 255 characters.
@@ -113,7 +113,7 @@ Main table in `packages/app/convex/schema.ts`:
     - `baseStateId` / `stagedStateId` / `unstagedStateId`, each pointing at one sealed `files_pending_update_yjs_states` doc whose pages hold that branch's full Yjs state. Branch bytes never live on the pending update doc itself.
   - optional `pendingMove`
   - optional `copiedFrom`
-  - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative)
+  - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative; optional `ignoreReadOnly: true` is the agent's request to delete Read-only items)
   - optional `createIntent` for private text, stored content, or folders
     Full metadata is owned by proposal ID in `files_metadata_maps`. It stays out of create intents,
     review headers, and cohort proposal headers. Save clones it to the allocated saved owner.
@@ -645,6 +645,7 @@ Important behavior:
 - per-row Accept/Discard actions. A row Accept that would affect a hidden source gets the same server `needs_review` refusal and the same way back to `All changes`. Accept is enabled only when the row's view says `canEdit`; Discard stays available for a readable own draft after write access is removed
 - bulk Accept is enabled only when every shown row has loaded its view and can be accepted: a saved row has `canEdit`, and a draft row is ready with `canAcceptWithParents`. A move also needs its source parent, destination folder, and replaced node to be writable; the row reads each one with `get_file_node_for_membership` (a parent the user cannot read counts as writable, and the server checks it again). A row that is loading, unavailable, or too deep blocks Accept all. The client does not check protected descendants, because that needs the whole tree. The backend checks them, and the destination, replacement, and subtree permissions, when Accept runs
 - content-plus-move Accept stages content and placement together. Both become visible at the group switch. The row caption stays `Modified · Moved`
+- a delete row whose proposal has `ignoreReadOnly` shows `Deleted · ignores Read-only`, carries `data-ignores-read-only`, and its row Accept sends `ignoreReadOnly: true` (the caption makes that click the approval). When only Read-only blocks it, its view reports `canAccept` while `canEdit` stays false. Accept all opens a dialog when a shown row is such a delete: Cancel, Skip them (they stay pending), or Delete them too. A TODO in `handleAcceptAll` asks whether a smarter Accept all can drop the dialog
 - delete rows run as their own trailing bulk phase (accepting a folder delete first would move descendants to Trash and fail sibling accepts)
 - private create discard without deleting saved files
 - a folder draft that holds a draft is never listed, so it is neither drawn nor counted. A hidden folder goes with the drafts inside it. `Accept all` sends each shown draft's `requiredParents` first, like row Accept. `Discard all` sends every loaded row, and each shown draft's `requiredParents` with `onlyIfEmpty: true`. The list may not show every draft inside a folder (another chat's draft, or a draft on a page that is not loaded yet). So the server removes such a folder only when nothing is left inside, deepest folder first. Each `requiredParents` entry carries its `threadIds`, so a source-scoped Discard all sends only the folders of the selected source (every folder under `All changes`). It never sends a folder of another source, nor any folder above it. A row that is still loading or too deep has no `requiredParents` yet, so Discard all does not send its folders: they show again as their own rows after the draft goes, and a second Discard clears them. Restricted views carry no `requiredParents`, so a hidden restricted folder is never sent; it shows again as its own `Draft unavailable` row after its drafts are discarded
@@ -717,6 +718,10 @@ The full contract lives in
 - Whole-proposal Discard and Discard all stay available. They delete only the caller's pending docs.
   Diff hunk discard and editor-level discard that rewrite the pending Yjs model remain blocked.
 - Private Discard retires only the owner's approved private nodes and proposals. Saved files and folders stay intact.
+- One exception: `rm --ignore-read-only` stores `pendingArchive.ignoreReadOnly`. Accept then needs
+  `ignoreReadOnly: true` on the review item, and the review run refuses a mismatch with
+  `needs_review`. Only that item's own delete skips the flag. ACL, purge, and every other item in
+  the group still check it. See "Human-approved delete exception" in `../files-read-only/SKILL.md`.
 
 # Cleanup And Expiry Model
 

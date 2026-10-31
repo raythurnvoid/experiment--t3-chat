@@ -1615,6 +1615,36 @@ describe("bash_run_command", () => {
 		expect(sameCall.stderr).toContain("No such file or directory");
 	});
 
+	test("rm -f refuses a Read-only file, and only --ignore-read-only asks to delete it", async () => {
+		const runner = await create_bash_runner();
+		const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+		await runner.t.run((ctx) =>
+			ctx.db.patch("files_nodes", nodeId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+		);
+
+		const forced = await runner.run({ command: `rm -f ${test_db_files_mount}/docs/readme.md` });
+		expect(forced.metadata.exitCode).toBe(1);
+		expect(forced.stderr).toBe(
+			`rm: cannot remove '${test_db_files_mount}/docs/readme.md': Read-only. Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.\n`,
+		);
+		expect(await list_pending_updates(runner)).toEqual([]);
+
+		// /tmp items have no Read-only flag, so the builtin never sees the flag.
+		const prepared = await runner.run({ command: "printf scratch > /tmp/scratch.txt" });
+		expect(prepared.metadata.exitCode).toBe(0);
+		const requested = await runner.run({
+			command: `rm --ignore-read-only /tmp/scratch.txt ${test_db_files_mount}/docs/readme.md`,
+		});
+		expect(requested.metadata.exitCode, requested.stderr).toBe(0);
+		expect(requested.stdout).toBe(
+			"pending delete created: /docs/readme.md — moves the file to Trash when accepted, ignoring Read-only; the user must accept it in Files, and restored items stay Read-only\n",
+		);
+		expect((await runner.run({ command: "cat /tmp/scratch.txt" })).metadata.exitCode).not.toBe(0);
+		expect(await list_pending_updates(runner)).toMatchObject([
+			{ target: { kind: "saved", id: nodeId }, pendingArchive: { fromPath: "/docs/readme.md", ignoreReadOnly: true } },
+		]);
+	});
+
 	test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {
 		const { run } = await create_bash_runner({
 			initialCwd: test_db_files_mount,

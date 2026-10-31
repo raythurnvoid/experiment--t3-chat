@@ -40,7 +40,11 @@ import {
 import { api, internal } from "./_generated/api.js";
 import { files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_require_subtree_writable, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
-import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
+import {
+	files_nodes_db_require_user_writable,
+	files_nodes_db_require_writable,
+	files_nodes_user_write_context,
+} from "../server/files-write-policy.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
 	files_nodes_db_commit_text_replacement,
@@ -5007,6 +5011,8 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 		/** Chat thread making this write; appended (deduped) to the doc's contributor set. */
 		threadId: v.optional(v.id("ai_chat_threads")),
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
+		/** `rm --ignore-read-only`: request a delete that ignores Read-only. The user approves it on Accept. */
+		ignoreReadOnly: v.optional(v.literal(true)),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -5097,19 +5103,23 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 		// Accepting a delete archives the node and all its descendants.
 		// Require all of them to be writable before creating the proposal.
 		// A saved delete needs current write access. Discard can still remove the owner's proposal.
-		const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: node, userId: args.userId });
+		//
+		// With --ignore-read-only, these early checks skip only the Read-only flag. They still refuse a
+		// purge and a missing permission. Accept checks every item again, and only after the user approves.
+		const writeContext = { ...files_nodes_user_write_context(args.userId), force: args.ignoreReadOnly === true };
+		const nodeWritable = await files_nodes_db_require_writable(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			writeContext,
+			target: { kind: "node", node },
+		});
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
 		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			writeContext: {
-				subject: { kind: "user", userId: args.userId, plugin: null },
-				actorUserId: args.userId,
-				resourceScope: { kind: "workspace" },
-				force: false,
-			},
+			writeContext,
 			node,
 		});
 		// A folder too big to check here still gets the proposal. Save checks the items inside again
@@ -5132,6 +5142,9 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			membership: existingPendingUpdate?.pendingArchive?.fromPath !== node.path || !!existingPendingUpdate?.pendingMove,
 		});
 		if (writable._nay) return writable;
+		// Store the request, not the early check: that check misses a Read-only parent and stops early in a
+		// big folder. A later plain rm replaces the whole value, so the last rm decides.
+		const pendingArchive = { fromPath: node.path, ...(args.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}) };
 		// Contributor set: an agent rm records its thread once per doc; client deletes pass no threadId.
 		const nextThreadIds =
 			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)
@@ -5144,7 +5157,7 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 				userId: args.userId,
 				target: args.target,
 				revision: 1,
-				pendingArchive: { fromPath: node.path },
+				pendingArchive,
 				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 				size: 0,
 				updatedAt: now,
@@ -5158,7 +5171,7 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 					pendingUpdateId: existingPendingUpdate._id,
 					value: {
 						revision: existingPendingUpdate.revision + 1,
-						pendingArchive: { fromPath: node.path },
+						pendingArchive,
 						pendingMove: undefined,
 						...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
 						updatedAt: now,

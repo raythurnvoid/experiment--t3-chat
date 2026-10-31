@@ -16,7 +16,9 @@ export type files_nodes_WriteContext = {
 		| { kind: "node"; nodeId: Id<"files_nodes"> }
 		| { kind: "create"; parentNodeId: Id<"files_nodes"> | "root"; path: string };
 	/**
-	 * Set only after the machine door checks its current Read-only grant.
+	 * Skip only the Read-only flag. Set it only after the machine door checks its current Read-only grant,
+	 * or for an agent delete that asks to ignore Read-only: its early proposal checks, and its Accept
+	 * checks after the user approved it.
 	 */
 	force: boolean;
 };

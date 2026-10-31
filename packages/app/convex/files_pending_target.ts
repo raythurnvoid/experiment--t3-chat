@@ -328,6 +328,10 @@ export async function files_pending_target_db_get_view(
 	});
 
 	const canEdit = !writable._nay && !policy._nay;
+	// A delete that asks to ignore Read-only can be accepted when only the flag blocks it. Accepting it
+	// is the user's approval. A purge or a missing permission still blocks it.
+	const canAcceptDelete =
+		!writable._nay && !!pendingUpdate?.pendingArchive?.ignoreReadOnly && policy._nay?.name === "read_only";
 	const destination = pendingUpdate?.pendingMove?.destParent;
 	const destinationNode =
 		destination?.kind === "private" ? await ctx.db.get("files_pending_nodes", destination.id) : null;
@@ -349,8 +353,9 @@ export async function files_pending_target_db_get_view(
 		},
 		readiness: "ready" as const,
 		canEdit,
-		canAccept: canEdit && destinationNode?.state !== "active" && !moveDestinationUnreadable,
-		canAcceptWithParents: canEdit && destinationNode?.state !== "active" && !moveDestinationUnreadable,
+		canAccept: (canEdit || canAcceptDelete) && destinationNode?.state !== "active" && !moveDestinationUnreadable,
+		canAcceptWithParents:
+			(canEdit || canAcceptDelete) && destinationNode?.state !== "active" && !moveDestinationUnreadable,
 		moveDestinationUnreadable,
 		requiredParents: [],
 		savedParentId: null,
