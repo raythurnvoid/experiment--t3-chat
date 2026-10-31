@@ -1433,7 +1433,10 @@ export class bash_DbFilesFs implements IFileSystem {
 			preparing:
 				entry.kind === "private" &&
 				(!intent || (intent.kind === "text" && entry.pendingUpdate.content?.base.kind !== "new")),
-			contentSize: files_pending_update_content_size(entry.pendingUpdate),
+			// The saved size comes from the same content head as `assetId`, so readers need no asset read.
+			contentSize:
+				files_pending_update_content_size(entry.pendingUpdate) ??
+				(entry.kind === "saved" ? (entry.node.contentByteSize ?? undefined) : undefined),
 		};
 		this.rememberEntry(cacheEntry);
 		return cacheEntry;
