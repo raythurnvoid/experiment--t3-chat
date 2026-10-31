@@ -441,9 +441,14 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	});
 
 	const handleKeyDown = useFn((event: KeyboardEvent<HTMLElement>) => {
-		// Menus and the area picker handle their own Escape first and mark it handled. The dialog renders
-		// outside this element.
-		if (event.key === "Escape" && !event.defaultPrevented && event.currentTarget.contains(event.target as Node)) {
+		// Menus and the area picker handle their own Escape first and mark it handled. They call
+		// preventDefault on the native event, and React does not copy that to `event.defaultPrevented`
+		// after it created the event, so read the native one. The dialog renders outside this element.
+		if (
+			event.key === "Escape" &&
+			!event.nativeEvent.defaultPrevented &&
+			event.currentTarget.contains(event.target as Node)
+		) {
 			event.preventDefault();
 			onExit();
 		}
