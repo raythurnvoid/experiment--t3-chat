@@ -882,6 +882,50 @@ and `find` also keep raw name order.
   an older Activity dialog must not stop that update. A later Cut or Copy must stay intact. Copy
   stays ready after completion so it can be pasted again.
 
+### Why a Move stages two views
+
+Design principle (2026-10-31). A saved Move, and a grouped pending Save from Review, must look like
+it happened at once. Readers see the old places until one switch, then the new places.
+
+- Each saved node stores its placement: `path`, `treePath`, `pathDepth`, `ancestor1..12`, its
+  restricted scope and `archiveOperationId`. Most of these come from its parent. Restricted roots
+  and archived nodes can keep their own scope or archive state. Metadata docs, share rows and pending
+  overlays also store path fields, and plain-text search chunks cache paths. So a folder Move rewrites
+  the placement of every node under the moved folder, and stages the side docs that depend on it.
+- One Convex transaction writes at most 16,000 docs and 16 MiB, so a big Move runs over many
+  transactions. `files_saved_places` holds placement records: `before` and `after` for each existing
+  reserved node (anchors too), and only `after` for new allocated and derived nodes. A folder with
+  staged child places reads the view that the workspace slot selects. Publication changes the cohort
+  and the slot together, so one switch shows the whole Move (see "Data path" and
+  [Files transfer runs](references/transfer.md)). This also keeps physical repair apart from
+  publication.
+- Do not replace this with parent links only, where a Move changes parent links and rewrites no
+  paths below. Three decisions need the stored placement:
+  - Name search in a folder and all its subfolders needs the ancestor fields, because Convex search
+    filters allow `.eq` only. See the `ancestor1` comment in `convex/schema.ts`.
+  - Recursive reads in path order read area-scoped `treePath` ranges and separate boundary streams
+    (access-control skill, "The walk").
+  - Access comes from the scope stored on each node, never from reading the parent folders. See
+    [File sharing](../access-control/SKILL.md#file-sharing), from "Until a scope job writes a child".
+- Do not let the stored paths lag behind a parent-link Move either. A caller can Move a folder and
+  read inside it right away, for example a public API move and then a list. Missing files there are
+  wrong results, not late ones.
+- Keep the folder readable while its Move runs. Reservations still block competing writes. Past QA
+  saw a Move view stay on for over an hour under machine load.
+
+Proposal, not decided: one possible way to remove `files_saved_places` later, in this order.
+
+1. An external search engine (Elasticsearch) takes over name search, and the ancestor fields are
+   deleted.
+2. Restricted areas also become path areas. Nodes store `treePath` relative to their area root, and a
+   big folder starts its own area even when its access does not change. Moving an area root then
+   rewrites only the root. The design must show that a smaller Move, with its side docs, fits the
+   document and byte limits of one transaction.
+3. Then a Move might need no staged views. The design must still keep scope changes and grouped
+   pending Saves atomic. Recursive reads would need more walk frames, and the walk has a budget of 64
+   stream calls, checked between batches. Every path-keyed table would need the new shape, including
+   the pending overlay.
+
 Backend rules, limits, billing, cleanup, and Activity privacy are in
 [Files transfer runs](references/transfer.md).
 

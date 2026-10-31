@@ -2891,6 +2891,15 @@ const app_convex_schema = defineSchema({
 		.index("by_cohort_owner_key", ["cohortId", "userId", "listKey"])
 		.index("by_cohort", ["cohortId"]),
 
+	/**
+	 * The `before` and `after` copy of each node a Move moves. Nodes store their path and the folders
+	 * above them, so a big Move rewrites more docs than one transaction can write. A folder with places
+	 * reads the copy that the workspace slot selects, and one small switch shows the whole Move at once.
+	 *
+	 * Do not replace this with parent links only. Search needs the stored ancestors, recursive reads need
+	 * the stored paths, and access checks need the stored scopes. See "Why a Move stages two views" in
+	 * the files-explorer-tree skill.
+	 */
 	files_saved_places: defineTable({
 		cohortId: v.id("files_move_cohorts"),
 		view: files_move_view_validator,
@@ -5058,6 +5067,9 @@ const app_convex_schema = defineSchema({
 		 * ways in 2026-10: a word table on normal indexes, more search indexes, vector search, and Convex
 		 * components. Each one scans, keeps a depth limit, or makes every Move write 20 to 40 times more
 		 * rows. Delete these fields when an external search engine (Elasticsearch) takes over name search.
+		 *
+		 * Proposal: deleting them is also the first step toward removing `files_saved_places`. See "Why a
+		 * Move stages two views" in the files-explorer-tree skill.
 		 *
 		 * Only the overlay flush (`server/files-pending-overlay.ts`) writes them.
 		 */
