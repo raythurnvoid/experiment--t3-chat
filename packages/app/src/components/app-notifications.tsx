@@ -395,7 +395,12 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 				}
 			: archiveRun
 				? {
-						verbs: archiveRun.archiveKind === "restore" ? ["Restoring", "Restored"] : ["Archiving", "Archived"],
+						verbs:
+							archiveRun.archiveKind === "restore"
+								? ["Restoring", "Restored"]
+								: archiveRun.archiveKind === "purge"
+									? ["Deleting", "Deleted"]
+									: ["Archiving", "Archived"],
 						onOpen: () => openArchiveRun(archiveRun.id),
 					}
 				: writePolicyRun

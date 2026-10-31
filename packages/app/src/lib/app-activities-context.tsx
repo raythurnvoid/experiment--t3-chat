@@ -31,6 +31,10 @@ const AppActivitiesContext = createContext<{
 	 * Show a toast while a Save or Discard runs. The user opens its dialog from the toast or Activity.
 	 */
 	watchReviewRun: (args: WatchedReviewRun) => void;
+	/**
+	 * Show a toast while a Delete permanently or Empty archive job runs.
+	 */
+	watchArchiveRun: (args: WatchedArchiveRun) => void;
 } | null>(null);
 
 type WatchedReviewRun = {
@@ -38,6 +42,18 @@ type WatchedReviewRun = {
 	kind: ReviewSelection["kind"];
 	/**
 	 * What the job acts on, for example `3 changes` or `your changes`.
+	 */
+	subject: string;
+};
+
+type WatchedArchiveRun = {
+	runId: app_convex_Id<"files_archive_runs">;
+	/**
+	 * The verb in three forms, for example `["delete", "Deleting", "Deleted"]`.
+	 */
+	verbs: readonly [string, string, string];
+	/**
+	 * What the job acts on, for example `3 items`.
 	 */
 	subject: string;
 };
@@ -61,6 +77,7 @@ const AppActivitiesProvider = Object.assign(
 		} | null>(null);
 		const [archiveRunId, setArchiveRunId] = useState<app_convex_Id<"files_archive_runs"> | null>(null);
 		const [watchedReviewRuns, setWatchedReviewRuns] = useState<WatchedReviewRun[]>([]);
+		const [watchedArchiveRuns, setWatchedArchiveRuns] = useState<WatchedArchiveRun[]>([]);
 		const [isStartingReview, setIsStartingReview] = useState(false);
 		const reviewPending = useRef(false);
 		const reviewRequest = useRef<{
@@ -103,6 +120,12 @@ const AppActivitiesProvider = Object.assign(
 		// A Save or Discard never asks a question, so its dialog never opens by itself.
 		const watchReviewRun = useFn((watchedRun: WatchedReviewRun) => {
 			setWatchedReviewRuns((current) =>
+				current.some((item) => item.runId === watchedRun.runId) ? current : [...current, watchedRun],
+			);
+		});
+
+		const watchArchiveRun = useFn((watchedRun: WatchedArchiveRun) => {
+			setWatchedArchiveRuns((current) =>
 				current.some((item) => item.runId === watchedRun.runId) ? current : [...current, watchedRun],
 			);
 		});
@@ -173,6 +196,7 @@ const AppActivitiesProvider = Object.assign(
 					openReviewRun,
 					openArchiveRun,
 					watchReviewRun,
+					watchArchiveRun,
 				}}
 			>
 				{children}
@@ -186,6 +210,18 @@ const AppActivitiesProvider = Object.assign(
 						onOpen={() => openReviewRun(item.runId, item.kind)}
 						onNeedsInput={null}
 						onFinish={() => setWatchedReviewRuns((current) => current.filter((run) => run.runId !== item.runId))}
+					/>
+				))}
+				{watchedArchiveRuns.map((item) => (
+					<ActivityJobToast
+						key={item.runId}
+						membershipId={membershipId}
+						job={{ kind: "files_archive_run", id: item.runId }}
+						verbs={item.verbs}
+						subject={item.subject}
+						onOpen={() => openArchiveRun(item.runId)}
+						onNeedsInput={null}
+						onFinish={() => setWatchedArchiveRuns((current) => current.filter((run) => run.runId !== item.runId))}
 					/>
 				))}
 				{reviewRun ? (

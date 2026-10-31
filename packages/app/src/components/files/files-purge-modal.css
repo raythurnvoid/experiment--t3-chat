@@ -1,0 +1,20 @@
+@layer components {
+	.FilesPurgeModal {
+		width: min(92vw, 480px);
+	}
+
+	.FilesPurgeModal-content {
+		display: grid;
+		gap: 12px;
+	}
+
+	.FilesPurgeModal-list-toggle {
+		justify-self: start;
+	}
+
+	.FilesPurgeModal-error {
+		margin: 0;
+
+		color: var(--color-red-11);
+	}
+}

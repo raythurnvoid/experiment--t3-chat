@@ -152,6 +152,15 @@ export function files_archive_operation_id_cutoff(now: number) {
 }
 
 /**
+ * When the items of an archive operation were archived, read from its id. Null for an old plain
+ * UUID id, which holds no time.
+ */
+export function files_archive_operation_id_time(archiveOperationId: string) {
+	const match = /^t(\d{15})-/.exec(archiveOperationId);
+	return match ? Number(match[1]) : null;
+}
+
+/**
  * Require Can manage when a child leaves its restricted scope.
  * Moving the scope folder itself keeps the restriction with it.
  *

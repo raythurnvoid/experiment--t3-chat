@@ -43,7 +43,10 @@ type PageState = {
 	nextPageKey: number;
 	pageKeys: number[];
 	queries: Record<number, PageQuery>;
-	ongoingSplits: Record<number, [number, number]>;
+	/**
+	 * The pages that replace a page once they have all loaded: two halves of a split, or one pinned copy.
+	 */
+	ongoingSplits: Record<number, number[]>;
 	skip: boolean;
 };
 
@@ -92,7 +95,7 @@ function split_page(
 			...state,
 			queries,
 			nextPageKey: firstKey + 2,
-			ongoingSplits: { ...state.ongoingSplits, [key]: [firstKey, secondKey] as [number, number] },
+			ongoingSplits: { ...state.ongoingSplits, [key]: [firstKey, secondKey] },
 		};
 	};
 }
@@ -130,6 +133,13 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		 * idle in the cache for up to 5 minutes.
 		 */
 		cacheSavedStreamFirstPage?: boolean;
+		/**
+		 * Pin the end of the last page when the next page loads. Pass it for a query with its own cursor,
+		 * like the Archived view. Convex pins the end of a native page by itself, but not of such a page.
+		 * Without the pin, a row added near the top pushes the page's last row out of it, and the next
+		 * page starts after that row, so the row would not show.
+		 */
+		pinPageEnds?: boolean;
 	},
 ): UsePaginatedQueryResult<PaginatedQueryItem<Query>> & { directoryView: QueryDirectoryView<Query> | undefined } {
 	if (typeof options?.initialNumItems !== "number" || options.initialNumItems < 0)
@@ -264,7 +274,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 			result = page;
 			const split = current.ongoingSplits[key];
 			if (split) {
-				if (resultsObject[split[0]] !== undefined && resultsObject[split[1]] !== undefined)
+				if (split.every((splitKey) => resultsObject[splitKey] !== undefined))
 					next = complete_split(key)(next ?? current);
 			} else if (
 				page.splitCursor &&
@@ -312,6 +322,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 	if (nextState === "reset")
 		setState(createInitialState(next_pagination_id(), directory ? current.requestedItems : undefined, directory));
 	else if (nextState !== null) setState(nextState);
+	const pinPageEnds = options.pinPageEnds ?? false;
 	const status = useMemo(() => {
 		if (!lastResult)
 			return {
@@ -332,7 +343,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 					// New args can reuse the same ID, so check the args too.
 					if (previous.id !== current.id || previous.args !== current.args) return previous;
 					const key = previous.nextPageKey;
-					return {
+					const next = {
 						...previous,
 						requestedItems: previous.requestedItems + numItems,
 						nextPageKey: key + 1,
@@ -349,10 +360,35 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 							},
 						},
 					};
+
+					// Load a copy of the last page that ends where the new page starts. It replaces the page
+					// once it has loaded, like the halves of a split, so the rows do not blink. A page that is
+					// being split needs no copy: both halves already have an end.
+					const lastKey = previous.pageKeys.at(-1)!;
+					const lastPage = previous.queries[lastKey]!;
+					if (!pinPageEnds || lastPage.args.paginationOpts.endCursor != null || previous.ongoingSplits[lastKey]) {
+						return next;
+					}
+					const pinKey = key + 1;
+					return {
+						...next,
+						nextPageKey: pinKey + 1,
+						queries: {
+							...next.queries,
+							[pinKey]: {
+								query: lastPage.query,
+								args: {
+									...lastPage.args,
+									paginationOpts: { ...lastPage.args.paginationOpts, endCursor: lastResult.continueCursor },
+								},
+							},
+						},
+						ongoingSplits: { ...previous.ongoingSplits, [lastKey]: [pinKey] },
+					};
 				});
 			},
 		};
-	}, [lastResult, current.id, current.args, current.nextPageKey]);
+	}, [lastResult, current.id, current.args, current.nextPageKey, pinPageEnds]);
 	// The tree can retain an older result and its button while this view waits.
 	const loadMore = useFn(status.loadMore);
 	return { results, ...status, loadMore, directoryView: directoryView as QueryDirectoryView<Query> | undefined };

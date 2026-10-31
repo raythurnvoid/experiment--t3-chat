@@ -9,7 +9,8 @@ type ActivityJobToast_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	job:
 		| { kind: "files_transfer_run"; id: app_convex_Id<"files_transfer_runs"> }
-		| { kind: "files_pending_update_run"; id: app_convex_Id<"files_pending_update_runs"> };
+		| { kind: "files_pending_update_run"; id: app_convex_Id<"files_pending_update_runs"> }
+		| { kind: "files_archive_run"; id: app_convex_Id<"files_archive_runs"> };
 	/**
 	 * The verb in three forms, for example `["move", "Moving", "Moved"]`.
 	 */
@@ -44,7 +45,12 @@ export const ActivityJobToast = memo(function ActivityJobToast(props: ActivityJo
 		app_convex_api.files_pending_update_runs.get,
 		job.kind === "files_pending_update_run" ? { membershipId, runId: job.id } : "skip",
 	);
-	const run = job.kind === "files_transfer_run" ? transferRun : reviewRun;
+	const archiveRun = useQuery(
+		app_convex_api.files_archive_runs.get,
+		job.kind === "files_archive_run" ? { membershipId, runId: job.id } : "skip",
+	);
+	const run =
+		job.kind === "files_transfer_run" ? transferRun : job.kind === "files_archive_run" ? archiveRun : reviewRun;
 
 	const status = run?.activity.status;
 	// A job that is no longer available counts as finished, so its owner stops waiting for it.

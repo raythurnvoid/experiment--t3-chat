@@ -118,6 +118,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			get: "files_pending_update_runs.get",
 		},
 		files_transfer_status: { get: "files_transfer_status.get" },
+		files_archive_runs: { get: "files_archive_runs.get" },
 		access_control: {
 			get_current_user_workspace_permission: "access_control.get_current_user_workspace_permission",
 		},

@@ -1,0 +1,135 @@
+@layer components {
+	/* #region row */
+	.FilesSidebarArchiveRow {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.FilesSidebarArchiveRow-primary {
+		width: 100%;
+		height: auto;
+		min-height: 44px;
+		min-width: 0;
+
+		display: flex;
+		align-items: center;
+		justify-content: start;
+		gap: 8px;
+
+		padding: 4px 8px;
+
+		&[aria-current="page"] {
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+		}
+	}
+
+	.FilesSidebarArchiveRow-text {
+		flex: 1;
+		min-width: 0;
+
+		display: flex;
+		flex-direction: column;
+
+		text-align: start;
+	}
+
+	.FilesSidebarArchiveRow-name,
+	.FilesSidebarArchiveRow-details {
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+
+	.FilesSidebarArchiveRow-details {
+		font-size: 0.8125rem;
+		color: var(--color-fg-08);
+	}
+
+	/* An item the person cannot open. */
+	.FilesSidebarArchiveRow-locked .FilesSidebarArchiveRow-name {
+		color: var(--color-fg-06);
+	}
+	/* #endregion row */
+
+	/* #region root */
+	.FilesSidebarArchive {
+		flex: 1;
+		min-height: 0;
+
+		display: flex;
+		flex-direction: column;
+	}
+
+	.FilesSidebarArchive-header {
+		display: grid;
+		gap: 8px;
+
+		padding: 8px;
+
+		border-bottom: 1px solid var(--color-fg-04);
+	}
+
+	.FilesSidebarArchive-title-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.FilesSidebarArchive-title {
+		margin: 0;
+		padding-inline-end: 8px;
+
+		font-size: 1rem;
+		font-weight: 600;
+	}
+
+	.FilesSidebarArchive-toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.FilesSidebarArchive-area-trigger {
+		flex: 1;
+		min-width: 0;
+		justify-content: space-between;
+	}
+
+	.FilesSidebarArchive-area-trigger-label {
+		min-width: 0;
+
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+
+	.FilesSidebarArchive-content {
+		flex: 1;
+		min-height: 0;
+
+		overflow: hidden auto;
+
+		padding: 8px;
+	}
+
+	.FilesSidebarArchive-state {
+		margin: 0;
+		padding: 8px;
+
+		color: var(--color-fg-08);
+	}
+
+	.FilesSidebarArchive-list {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.FilesSidebarArchive-more {
+		width: 100%;
+	}
+	/* #endregion root */
+}

@@ -344,7 +344,13 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 		? progress.completed + progress.skipped + progress.failed + progress.blocked + progress.canceled
 		: 0;
 	const missedCount = progress ? progress.failed + progress.blocked : 0;
-	const verbs = run?.kind === "restore" ? ["Restoring", "Restored"] : ["Archiving", "Archived"];
+	const verbs =
+		run?.kind === "restore"
+			? ["Restoring", "Restored"]
+			: run?.kind === "purge"
+				? ["Deleting", "Deleted"]
+				: ["Archiving", "Archived"];
+	const runningLabel = `${verbs[0]} in the background…`;
 
 	const statusLabel =
 		run === undefined
@@ -354,8 +360,8 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 				: isStopPending && isActive && status !== "stopping"
 					? "Stop requested. Waiting for the server…"
 					: {
-							queued: run.kind === "restore" ? "Restoring in the background…" : "Archiving in the background…",
-							running: run.kind === "restore" ? "Restoring in the background…" : "Archiving in the background…",
+							queued: runningLabel,
+							running: runningLabel,
 							awaiting_input: "Choose how to handle this name.",
 							stopping: "Stopping…",
 							succeeded: "Completed.",
@@ -468,7 +474,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 									id={notArchivedHeadingId}
 									className={"FilesArchiveRunModal-heading" satisfies FilesArchiveRunModal_ClassNames}
 								>
-									Not archived ({run.notArchived.length})
+									{run.kind === "purge" ? "Not deleted" : "Not archived"} ({run.notArchived.length})
 								</h3>
 								{notArchivedGroups.map((group) => (
 									<div
@@ -496,7 +502,10 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 								))}
 							</section>
 						) : null}
-						{run?.force ? <FilesArchiveRunOutcomes membershipId={membershipId} runId={runId} /> : null}
+						{/* A forced archive and a permanent delete keep each item they cannot remove, and list it here. */}
+						{run?.force || run?.kind === "purge" ? (
+							<FilesArchiveRunOutcomes membershipId={membershipId} runId={runId} />
+						) : null}
 						{conflict ? (
 							<fieldset
 								className={"FilesArchiveRunModal-conflict" satisfies FilesArchiveRunModal_ClassNames}
@@ -578,7 +587,8 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 					<MyButton variant="ghost" onClick={onClose}>
 						{isActive ? "Hide" : "Close"}
 					</MyButton>
-					{/* An archive has no Stop. A restore has Stop only while it waits for a clash choice. */}
+					{/* An archive has no Stop. A restore has Stop only while it waits for a clash choice. A permanent
+					    delete stops after the item it is deleting, and the rest stays archived. */}
 					{run?.controls.canStop ? (
 						<MyButton variant="secondary" disabled={isSaving || isStopPending} onClick={handleStop}>
 							Stop
