@@ -147,6 +147,15 @@ function create_stream(
 				: db.query("files_nodes").withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
+		// The restricted folders of the workspace by path, for the owner's Archived view area picker.
+		by_archive_restricted_tree: (range: (q: SavedRange<["archiveOperationId", "isRestrictedScopeRoot", "treePath"]>) => IndexRange) =>
+			fixedView
+				? db.query("files_saved_places").withIndex("by_view_archive_restricted_tree", (q) =>
+						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
+					)
+				: db.query("files_nodes").withIndex("by_org_ws_archive_restricted_tree", (q) =>
+						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
+					),
 		// One restricted area of a recursive read (`server/files-tree-walk.ts`).
 		by_scope_archive_tree: (range: (q: SavedRange<["restrictedScopeNodeId", "archiveOperationId", "treePath"]>) => IndexRange) =>
 			fixedView
