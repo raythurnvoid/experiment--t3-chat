@@ -5,7 +5,6 @@ import type { files_nodes_read_file_content_from_chunks_Result } from "../convex
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_DbFilesPermissionDeniedError,
-	bash_null_if_permission_denied,
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
 	bash_enforce_reader_operand_cap,
@@ -22,6 +21,12 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
+import { async_all_settled_with_limit } from "../shared/async-utils.ts";
+
+// Each app file needs its own Convex queries, so read a few files at the same time. Keep the pool
+// small: the deployment runs only a few queries at once for all users, and one chat step can run
+// several Bash calls in parallel.
+const CAT_READ_CONCURRENCY = 4;
 
 function parse_args(args: string[]) {
 	let showLineNumbers = false;
@@ -112,30 +117,65 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 		const capError = bash_enforce_reader_operand_cap({ command: "cat", commandCtx, dbFilesRoots, files: targets });
 		if (capError != null) return capError;
 
-		// Multi-file cat is all-or-nothing. If one app file is too large to read inline,
-		// inserting only its first page into the concatenation would look like real file
-		// content and corrupt any downstream pipe. Refuse before writing stdout.
-		if (targets.length > 1) {
-			let totalBytes = 0;
-			for (const file of targets) {
-				if (file === "-" || bash_GLOB_METACHARACTER_REGEX.test(file)) continue;
+		const globFile = targets.find((file) => file !== "-" && bash_GLOB_METACHARACTER_REGEX.test(file));
+		if (globFile != null) {
+			return {
+				stdout: "",
+				stderr: bash_create_glob_syntax_unsupported_message("cat", globFile),
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
 
-				const pathResolution = bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, file), dbFilesRoots);
-				if (pathResolution.dbFilesPath == null) continue;
+		// Look up each app file once, a few at a time. The size checks and the reads below reuse
+		// these entries. Check the current byte size before reading: unsaved edits can be larger
+		// than the committed file, and each command asks Convex for fresh metadata.
+		const lookups = await async_all_settled_with_limit({
+			items: targets,
+			limit: CAT_READ_CONCURRENCY,
+			run: async (file) => {
+				if (file === "-") return { kind: "stdin", file } as const;
 
-				// A locked operand has no size here; the loop below reports it.
-				const dbFilesDoc = await bash_null_if_permission_denied(pathResolution.fs.getEntry(pathResolution.dbFilesPath));
+				const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
+				const pathResolution = bash_resolve_db_files_shell_path(resolvedPath, dbFilesRoots);
+				const dbFilesPath = pathResolution.dbFilesPath;
+				if (dbFilesPath == null) return { kind: "native", file, resolvedPath } as const;
+
+				let dbFilesDoc;
+				try {
+					dbFilesDoc = await pathResolution.fs.getEntry(dbFilesPath);
+				} catch (error) {
+					if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
+					return { kind: "denied", file } as const;
+				}
 				const size = dbFilesDoc
 					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
 					: null;
-				if (size != null && size > bash_READ_INLINE_MAX_BYTES) {
+				return { kind: "db", file, pathResolution, dbFilesPath, dbFilesDoc, size } as const;
+			},
+		});
+		// Throw the first unexpected error in operand order, after every started lookup has ended.
+		const entries = lookups.map((lookup) => {
+			if (lookup.status === "rejected") throw lookup.reason;
+			return lookup.value;
+		});
+
+		// Multi-file cat is all-or-nothing. If one app file is too large to read inline,
+		// inserting only its first page into the concatenation would look like real file
+		// content and corrupt any downstream pipe. Refuse before writing stdout.
+		if (entries.length > 1) {
+			let totalBytes = 0;
+			for (const entry of entries) {
+				// A locked operand has no size here; the reads below report it.
+				if (entry.kind !== "db") continue;
+
+				if (entry.size != null && entry.size > bash_READ_INLINE_MAX_BYTES) {
 					return {
 						stdout: "",
-						stderr: `cat: ${file}: ${size} bytes — too large to concatenate. Read large files one at a time (e.g. head -n ${bash_READ_HEAD_LARGE_FILE_MAX_LINES} ${bash_shell_arg_quote(file)} or wc ${bash_shell_arg_quote(file)}).\n`,
+						stderr: `cat: ${entry.file}: ${entry.size} bytes — too large to concatenate. Read large files one at a time (e.g. head -n ${bash_READ_HEAD_LARGE_FILE_MAX_LINES} ${bash_shell_arg_quote(entry.file)} or wc ${bash_shell_arg_quote(entry.file)}).\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
-				totalBytes += size ?? 0;
+				totalBytes += entry.size ?? 0;
 				if (totalBytes > bash_READ_INLINE_MAX_BYTES) {
 					return {
 						stdout: "",
@@ -146,64 +186,48 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 			}
 		}
 
-		let stdout = "";
-		let stderr = "";
-		let exitCode = 0;
-		let lineNumber = 1;
+		// The Bash call deadline aborts this signal. Do not start the reads after it; the shell then
+		// reports the timeout and stops the remaining commands.
+		if (commandCtx.signal?.aborted) {
+			return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_FAILURE };
+		}
 
-		const appendContent = (content: string, showLineNumbers: boolean) => {
-			// `cat -n` numbers one continuous output stream, not each file independently.
-			// Keep the next line number outside the per-file loop so stdin and files share it.
-			if (showLineNumbers) {
-				const numbered = add_line_numbers(content, lineNumber);
-				stdout += numbered.content;
-				lineNumber = numbered.nextLineNumber;
-			} else {
-				stdout += content;
-			}
-		};
-
-		for (const file of targets) {
-			if (file === "-") {
-				appendContent(String(commandCtx.stdin ?? ""), parsed._yay.showLineNumbers);
-				continue;
-			}
-
-			if (bash_GLOB_METACHARACTER_REGEX.test(file)) {
-				return {
-					stdout: "",
-					stderr: bash_create_glob_syntax_unsupported_message("cat", file),
-					exitCode: bash_COMMAND_EXIT_USAGE,
-				};
-			}
-
-			const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
-			const pathResolution = bash_resolve_db_files_shell_path(resolvedPath, dbFilesRoots);
-			const target = {
-				resolvedPath,
-				dbFilesPath: pathResolution.dbFilesPath,
-			};
-
-			// Check the current byte size before reading. Unsaved edits can be larger
-			// than the committed file, and each command asks Convex for fresh metadata.
-			if (target.dbFilesPath != null) {
-				let dbFilesDoc;
-				try {
-					dbFilesDoc = await pathResolution.fs.getEntry(target.dbFilesPath);
-				} catch (error) {
-					if (!(error instanceof bash_DbFilesPermissionDeniedError)) throw error;
-					stderr += `cat: ${file}: Permission denied\n`;
-					exitCode = bash_COMMAND_EXIT_FAILURE;
-					continue;
+		const reads = await async_all_settled_with_limit({
+			items: entries,
+			limit: CAT_READ_CONCURRENCY,
+			run: async (entry) => {
+				if (entry.kind === "stdin") {
+					return { content: String(commandCtx.stdin ?? ""), stderr: "", failed: false };
 				}
-				const size = dbFilesDoc
-					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
-					: null;
+
+				if (entry.kind === "denied") {
+					return { content: null, stderr: `cat: ${entry.file}: Permission denied\n`, failed: true };
+				}
+
+				// Non-app paths are normal Just Bash filesystem paths; read them through
+				// the delegated filesystem so `/tmp` and stdin-style pipelines keep native behavior.
+				if (entry.kind === "native") {
+					try {
+						return { content: await commandCtx.fs.readFile(entry.resolvedPath), stderr: "", failed: false };
+					} catch (error) {
+						const msg = error instanceof Error ? error.message : String(error);
+						return {
+							content: null,
+							stderr: msg.startsWith("EISDIR")
+								? `cat: ${entry.file}: Is a directory\n`
+								: `cat: ${entry.file}: No such file or directory\n`,
+							failed: true,
+						};
+					}
+				}
+
+				const { file, pathResolution, dbFilesPath, dbFilesDoc, size } = entry;
+
 				// Large app file: show a bounded first page instead of dumping the
 				// whole file. The footer tells the agent how to continue without
 				// implying that stdout contains the complete file.
 				if (size != null && size > bash_READ_INLINE_MAX_BYTES) {
-					const resolvedAppShellPath = pathResolution.renderShellPath(target.dbFilesPath);
+					const resolvedAppShellPath = pathResolution.renderShellPath(dbFilesPath);
 
 					const page = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 						agentSource: pathResolution.ctxData.agentSource,
@@ -211,7 +235,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 						workspaceId: pathResolution.ctxData.workspaceId,
 						userId: pathResolution.ctxData.userId,
 						subject: { kind: "user", userId: pathResolution.ctxData.userId, plugin: null },
-						path: target.dbFilesPath,
+						path: dbFilesPath,
 						overlayUserId: pathResolution.fs.overlayUserId,
 						mode: {
 							kind: "lines",
@@ -225,49 +249,55 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					// to print the native-looking failure for files, folders, or misses.
 					if (!page) {
 						if (dbFilesDoc?.kind === "file") {
-							stderr +=
-								dbFilesDoc.textKind !== null
-									? `cat: ${file}: content is not available from materialized chunks\n`
-									: bash_build_unreadable_file_advisory({
-											currentWorkspacePath: pathResolution.basePath,
-											normalizedPath: target.dbFilesPath,
-											contentType: dbFilesDoc.contentType,
-										});
-						} else {
-							stderr +=
+							return {
+								content: null,
+								stderr:
+									dbFilesDoc.textKind !== null
+										? `cat: ${file}: content is not available from materialized chunks\n`
+										: bash_build_unreadable_file_advisory({
+												currentWorkspacePath: pathResolution.basePath,
+												normalizedPath: dbFilesPath,
+												contentType: dbFilesDoc.contentType,
+											}),
+								failed: true,
+							};
+						}
+						return {
+							content: null,
+							stderr:
 								dbFilesDoc?.kind === "folder"
 									? `cat: ${file}: Is a directory\n`
-									: `cat: ${file}: No such file or directory\n`;
-						}
-						exitCode = bash_COMMAND_EXIT_FAILURE;
-						continue;
+									: `cat: ${file}: No such file or directory\n`,
+							failed: true,
+						};
 					}
 
 					// Content goes to stdout verbatim; the advisory goes to stderr so it never
 					// contaminates a pipe (e.g. `cat big.md | grep …`).
-					appendContent(page.content, parsed._yay.showLineNumbers);
-					stderr += bash_format_multiline_hint("cat", [
-						`'${file}' is ${size} bytes; showing the first ${page.content.split("\n").length - 1} lines`,
-						...(page.moreLines
-							? [
-									`Next page: sed -n '${page.content.split("\n").length},${page.content.split("\n").length + bash_READ_HEAD_LARGE_FILE_MAX_LINES - 1}p' ${bash_shell_arg_quote(resolvedAppShellPath)}`,
-								]
-							: []),
-						`Full counts: wc ${bash_shell_arg_quote(file)}`,
-					]);
-					continue;
+					return {
+						content: page.content,
+						stderr: bash_format_multiline_hint("cat", [
+							`'${file}' is ${size} bytes; showing the first ${page.content.split("\n").length - 1} lines`,
+							...(page.moreLines
+								? [
+										`Next page: sed -n '${page.content.split("\n").length},${page.content.split("\n").length + bash_READ_HEAD_LARGE_FILE_MAX_LINES - 1}p' ${bash_shell_arg_quote(resolvedAppShellPath)}`,
+									]
+								: []),
+							`Full counts: wc ${bash_shell_arg_quote(file)}`,
+						]),
+						failed: false,
+					};
 				}
 
 				// Small app-file cat stays query-only and chunk-backed. bash_DbFilesFs.readFile
 				// still has a legacy full-content action fallback for other callers, but
 				// cat output should be predictable and should not pull a whole file through
 				// the action path after chunks say they cannot serve it.
-				const cacheKey = `${pathResolution.ctxData.organizationId}:${pathResolution.ctxData.workspaceId}:${target.dbFilesPath}`;
+				const cacheKey = `${pathResolution.ctxData.organizationId}:${pathResolution.ctxData.workspaceId}:${dbFilesPath}`;
 				const cached = fileContentCache.get(cacheKey);
 				// Volume access can change during the size lookup. Read it through Convex again.
 				if (cached != null && pathResolution.fs.readOnlySource !== "volume") {
-					appendContent(cached, parsed._yay.showLineNumbers);
-					continue;
+					return { content: cached, stderr: "", failed: false };
 				}
 
 				const chunkRead = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
@@ -276,7 +306,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					workspaceId: pathResolution.ctxData.workspaceId,
 					userId: pathResolution.ctxData.userId,
 					subject: { kind: "user", userId: pathResolution.ctxData.userId, plugin: null },
-					path: target.dbFilesPath,
+					path: dbFilesPath,
 					overlayUserId: pathResolution.fs.overlayUserId,
 					mode: {
 						kind: "full",
@@ -285,50 +315,62 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				})) as files_nodes_read_file_content_from_chunks_Result;
 
 				if (chunkRead) {
+					// A later lookup finds a changed file only by comparing with its cached entry, and a
+					// missing operand above may have cleared that entry. Store it again with the content,
+					// or a later cat in this call could print old cached text.
+					if (dbFilesDoc) pathResolution.fs.rememberEntry(dbFilesDoc);
 					fileContentCache.set(cacheKey, chunkRead.content);
-					appendContent(chunkRead.content, parsed._yay.showLineNumbers);
-					continue;
+					return { content: chunkRead.content, stderr: "", failed: false };
 				}
 
 				// No chunk content means cat has no stdout for this operand. Check the
 				// node only to choose the right stderr message and exit status.
-				if (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
-					stderr += `cat: ${file}: Is a directory\n`;
-					exitCode = bash_COMMAND_EXIT_FAILURE;
-					continue;
+				if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
+					return { content: null, stderr: `cat: ${file}: Is a directory\n`, failed: true };
 				}
 
+				// Advisory belongs on stderr so `cat unreadable | grep ...` cannot match it
+				// as if it were file content.
 				if (dbFilesDoc?.kind === "file") {
-					// Advisory belongs on stderr so `cat unreadable | grep ...` cannot match it
-					// as if it were file content.
-					stderr +=
-						dbFilesDoc.textKind !== null
-							? `cat: ${file}: content is not available from materialized chunks\n`
-							: bash_build_unreadable_file_advisory({
-									currentWorkspacePath: pathResolution.basePath,
-									normalizedPath: target.dbFilesPath,
-									contentType: dbFilesDoc.contentType,
-								});
-					exitCode = bash_COMMAND_EXIT_FAILURE;
-					continue;
+					return {
+						content: null,
+						stderr:
+							dbFilesDoc.textKind !== null
+								? `cat: ${file}: content is not available from materialized chunks\n`
+								: bash_build_unreadable_file_advisory({
+										currentWorkspacePath: pathResolution.basePath,
+										normalizedPath: dbFilesPath,
+										contentType: dbFilesDoc.contentType,
+									}),
+						failed: true,
+					};
 				}
 
-				stderr += `cat: ${file}: No such file or directory\n`;
-				exitCode = bash_COMMAND_EXIT_FAILURE;
-				continue;
-			}
+				return { content: null, stderr: `cat: ${file}: No such file or directory\n`, failed: true };
+			},
+		});
 
-			// Non-app paths are normal Just Bash filesystem paths; read them through
-			// the delegated filesystem so `/tmp` and stdin-style pipelines keep native behavior.
-			try {
-				appendContent(await commandCtx.fs.readFile(target.resolvedPath), parsed._yay.showLineNumbers);
-			} catch (error) {
-				const msg = error instanceof Error ? error.message : String(error);
-				stderr += msg.startsWith("EISDIR")
-					? `cat: ${file}: Is a directory\n`
-					: `cat: ${file}: No such file or directory\n`;
-				exitCode = bash_COMMAND_EXIT_FAILURE;
+		let stdout = "";
+		let stderr = "";
+		let exitCode = 0;
+		let lineNumber = 1;
+
+		// Join the results in operand order, whatever order the reads finished in.
+		for (const read of reads) {
+			if (read.status === "rejected") throw read.reason;
+
+			const { content } = read.value;
+			// `cat -n` numbers one continuous output stream, not each file independently.
+			// Keep the next line number outside the loop so stdin and files share it.
+			if (content != null && parsed._yay.showLineNumbers) {
+				const numbered = add_line_numbers(content, lineNumber);
+				stdout += numbered.content;
+				lineNumber = numbered.nextLineNumber;
+			} else if (content != null) {
+				stdout += content;
 			}
+			stderr += read.value.stderr;
+			if (read.value.failed) exitCode = bash_COMMAND_EXIT_FAILURE;
 		}
 
 		return { stdout, stderr, exitCode };

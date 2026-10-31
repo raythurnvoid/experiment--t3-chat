@@ -737,6 +737,34 @@ describe("bash_run_command", () => {
 		expect(result.stderr).toContain(`you requested ${bash_READER_FILE_OPERAND_MAX + 1}`);
 	});
 
+	test("multi-file cat looks up each app file once and keeps operand order", async () => {
+		const runner = await create_bash_runner();
+		const paths = ["/docs/tutorial.md", "/docs/missing.md", "/docs/nested/deep.md", "/reports/summary.md"];
+		runner.runQuery.mockClear();
+		// Files are read a few at a time, but output and line numbers must follow the operands.
+		// Make the first file's read finish last, so joining in finish order would fail.
+		const runRealQuery = runner.runQuery.getMockImplementation()!;
+		runner.runQuery.mockImplementation(async (ref, queryArgs) => {
+			if (function_name_of(ref) === "files_nodes:read_file_content_from_chunks" && queryArgs.path === paths[0]) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			return await runRealQuery(ref, queryArgs);
+		});
+
+		const result = await runner.run({ command: `cat -n ${paths.map((path) => test_db_files_mount + path).join(" ")}` });
+
+		expect(result.metadata.exitCode).toBe(1);
+		expect(result.stdout).toBe(
+			"     1\tzeta\n     2\talpha\n     3\tALPHA\n     4\tone:two\n     5\tthree:four\n     6\tsummary\n",
+		);
+		expect(result.stderr).toBe(`cat: ${test_db_files_mount}/docs/missing.md: No such file or directory\n`);
+		const lookedUpPaths = runner.runQuery.mock.calls
+			.filter(([ref]) => function_name_of(ref) === "files_nodes:get_visible_entry_by_path")
+			.map(([, args]) => (args as { path: string }).path)
+			.filter((path) => paths.includes(path));
+		expect(lookedUpPaths.toSorted()).toEqual(paths.toSorted());
+	});
+
 	test("pages large files smoothly: cat/head/sed/tail return bounded pages with hints, wc reports counts", async () => {
 		const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 		const bigPath = `${test_db_files_mount}/big.md`;
