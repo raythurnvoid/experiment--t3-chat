@@ -1152,6 +1152,10 @@ rule that made this a user-only blocker no longer applies.
   connection means no server, which is a different problem from the wrong-checkout one below.
   Vite binds IPv6 only here, and a healthy root page can take about 5 s to answer, so a 5 s probe of
   `localhost` can time out while the server is fine (seen 2026-10-08).
+- `netstat -ano` can leave out the `LISTENING` row of a running Vite. On 2026-10-31 it showed only
+  `ESTABLISHED` rows for `[::1]:5173`, a grep for `LISTEN` found nothing, and a second Vite started on
+  5174. `Get-NetTCPConnection -State Listen` showed the listener. Use it, or treat any `:5173` row as a
+  running server.
 - Check both ports and process command lines. Reuse a running server. Do not stop it or start a
   second copy on another port. When no server is running, use
   `vp env exec pnpm --dir packages/app run dev`. Follow `AGENTS.md` for the Convex dev target too.
