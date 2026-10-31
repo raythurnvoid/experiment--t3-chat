@@ -48,24 +48,6 @@ type MainAppHeaderOrganizationControls_LocalDraft = {
 	workspaceId: app_convex_Id<"organizations_workspaces">;
 };
 
-function main_app_header_organization_controls_move_list_item_to_front_by_id<T extends { id: string }>(
-	items: T[],
-	id: string | undefined,
-): T[] {
-	if (!id) {
-		return items;
-	}
-
-	const index = items.findIndex((item) => item.id === id);
-	if (index <= 0) {
-		return items;
-	}
-
-	const next = items.slice();
-	const picked = next.splice(index, 1)[0];
-	return picked ? [picked, ...next] : items;
-}
-
 /**
  * Whether the user has one permission in a workspace, read from the map that `organizations.list`
  * sends.
@@ -291,244 +273,88 @@ export const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrga
 		setIsOpen(false);
 	});
 
-	const organizationItems: MainAppHeaderOrganizationSwitcherModal_ListItem[] =
-		main_app_header_organization_controls_move_list_item_to_front_by_id(
-			(organizations ?? []).map((organization) => {
-				// On the server, only the owner can delete an organization. The badge below says the same
-				// thing, so it also checks ownership instead of a role name.
-				const ownsOrganization = !organization.default && organization.ownerUserId === auth.userId;
-				const primaryWorkspace = organizationList
-					? app_tenant_primary_workspace_for_organization({
-							organization,
-							workspaces: organizationList.organizationIdsWorkspacesDict[organization._id] ?? [],
-						})
-					: null;
-				const canUpdateOrganization = main_app_header_organization_controls_has_permission({
-					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-					workspaceId: primaryWorkspace?._id,
-					permission: "organization.update",
-				});
-				const canManageBilling = main_app_header_organization_controls_has_permission({
-					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-					workspaceId: primaryWorkspace?._id,
-					permission: "organization.billing.manage",
-				});
-				const canManageIntegrations = main_app_header_organization_controls_has_permission({
-					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-					workspaceId: primaryWorkspace?._id,
-					permission: "organization.integrations_policy.manage",
-				});
-
-				return {
-					id: organization._id,
-					label: organization.name,
-					description: organizations_switcher_list_secondary_line({
-						storedDescription: organization.description ?? "",
-						isDefaultOrganization: organization.default,
-						isPrimaryWorkspace: false,
-					}),
-					isDefault: organization.default,
-					ownershipBadge: organization.default ? "personal" : ownsOrganization ? "owner" : "joined",
-					billingBadge: organization.default
-						? undefined
-						: organization.billingMode === "user"
-							? "members_pay"
-							: ownsOrganization
-								? "my_balance"
-								: "owner_pays",
-					onManageBilling:
-						organization.default || !canManageBilling
-							? undefined
-							: () => {
-									setBillingTarget({
-										organizationId: organization._id,
-										organizationName: organization.name,
-										billingMode: organization.billingMode,
-									});
-								},
-					// The personal organization allows every plugin and MCP server, so it has nothing to manage.
-					onManageIntegrations:
-						organization.default || !canManageIntegrations
-							? undefined
-							: () => {
-									setIntegrationPolicyTarget({ organizationId: organization._id, organizationName: organization.name });
-								},
-					onEdit:
-						organization.default || !primaryWorkspace || !canUpdateOrganization
-							? undefined
-							: () => {
-									setEditTarget({
-										kind: "organization",
-										id: organization._id,
-										initialName: organization.name,
-										initialDescription: organization.description ?? "",
-										defaultWorkspaceId: primaryWorkspace._id as app_convex_Id<"organizations_workspaces">,
-									});
-								},
-					onDelete:
-						organization.default || !ownsOrganization
-							? undefined
-							: () => {
-									void (async (/* iife */) => {
-										const result = await app_convex.mutation(app_convex_api.organizations.delete_organization, {
-											organizationId: organization._id,
-										});
-
-										if (result == null) {
-											return;
-										}
-
-										if (result._nay) {
-											console.error("[MainAppHeaderOrganizationControls] Failed to delete organization", {
-												error: result._nay,
-												organizationId: organization._id,
-											});
-											toast.error(result._nay.message);
-											return;
-										}
-
-										await app_convex.query(app_convex_api.organizations.list, {});
-
-										if (organization._id === organizationId && organizations && organizationList) {
-											const remaining = organizations.filter((other) => other._id !== organization._id);
-											const fallback = remaining[0];
-											if (!fallback) {
-												return;
-											}
-
-											const defaultWorkspace = app_tenant_default_workspace_for_organization({
-												organization: fallback,
-												workspaces: organizationList.organizationIdsWorkspacesDict[fallback._id] ?? [],
-											});
-
-											if (!defaultWorkspace) {
-												console.error(
-													"[MainAppHeaderOrganizationControls] Failed to resolve default workspace after organization delete",
-													{ organizationId: fallback._id },
-												);
-												return;
-											}
-
-											navigateToOrganizationWorkspace(fallback.name, defaultWorkspace.name);
-											return;
-										}
-
-										if (
-											organization._id === draftOrganizationId &&
-											organization._id !== organizationId &&
-											organizationId &&
-											workspaceId
-										) {
-											setLocalDraft({ organizationId, workspaceId });
-										}
-									})().catch((error) => {
-										toast.error("Failed to delete organization");
-										console.error("[MainAppHeaderOrganizationControls] Unexpected delete organization error", {
-											error,
-											organizationId: organization._id,
-										});
-									});
-								},
-					onSelect: () => {
-						if (organization._id === draftOrganizationId) {
-							return;
-						}
-
-						if (!organizationList) {
-							console.error("[MainAppHeaderOrganizationControls] Organization list not loaded");
-							return;
-						}
-
-						const defaultWorkspace = app_tenant_default_workspace_for_organization({
-							organization,
-							workspaces: organizationList.organizationIdsWorkspacesDict[organization._id] ?? [],
-						});
-
-						if (!defaultWorkspace) {
-							console.error(
-								"[MainAppHeaderOrganizationControls] Failed to resolve default workspace for organization",
-								{
-									organizationId: organization._id,
-								},
-							);
-							return;
-						}
-
-						setLocalDraft({
-							organizationId: organization._id,
-							workspaceId: defaultWorkspace._id as app_convex_Id<"organizations_workspaces">,
-						});
-					},
-				};
-			}),
-			organizationId,
-		);
-
-	const workspaceItemsRaw: MainAppHeaderOrganizationSwitcherModal_ListItem[] = (draftWorkspaces ?? []).map(
-		(workspace) => {
-			const primaryWorkspace =
-				draftOrganizationRecord && organizationList
-					? app_tenant_primary_workspace_for_organization({
-							organization: draftOrganizationRecord,
-							workspaces: organizationList.organizationIdsWorkspacesDict[draftOrganizationRecord._id] ?? [],
-						})
-					: null;
-			const workspaceIsPrimary = primaryWorkspace?._id === workspace._id;
-			// We check both permissions, because `edit_workspace` on the server accepts either one. Every
-			// system role that has `organization.update` also has `workspace.update`, so the second check
-			// looks useless. But a custom role can have one without the other, and only checking both
-			// matches what the server does.
-			const canUpdateWorkspace =
-				main_app_header_organization_controls_has_permission({
-					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-					workspaceId: workspace._id,
-					permission: "workspace.update",
-				}) ||
-				main_app_header_organization_controls_has_permission({
-					permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-					workspaceId: workspace._id,
-					permission: "organization.update",
-				});
-			const canDeleteWorkspace = main_app_header_organization_controls_has_permission({
+	// Keep the order from `organizations.list`: the personal organization first, then by name. Do not move the
+	// current organization to the front, so the list stays the same while the user switches.
+	const organizationItems: MainAppHeaderOrganizationSwitcherModal_ListItem[] = (organizations ?? []).map(
+		(organization) => {
+			// On the server, only the owner can delete an organization. The badge below says the same
+			// thing, so it also checks ownership instead of a role name.
+			const ownsOrganization = !organization.default && organization.ownerUserId === auth.userId;
+			const primaryWorkspace = organizationList
+				? app_tenant_primary_workspace_for_organization({
+						organization,
+						workspaces: organizationList.organizationIdsWorkspacesDict[organization._id] ?? [],
+					})
+				: null;
+			const canUpdateOrganization = main_app_header_organization_controls_has_permission({
 				permissionsDict: organizationList?.workspaceIdsPermissionsDict,
-				workspaceId: workspace._id,
-				permission: "workspace.delete",
+				workspaceId: primaryWorkspace?._id,
+				permission: "organization.update",
+			});
+			const canManageBilling = main_app_header_organization_controls_has_permission({
+				permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+				workspaceId: primaryWorkspace?._id,
+				permission: "organization.billing.manage",
+			});
+			const canManageIntegrations = main_app_header_organization_controls_has_permission({
+				permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+				workspaceId: primaryWorkspace?._id,
+				permission: "organization.integrations_policy.manage",
 			});
 
 			return {
-				id: workspace._id,
-				label: workspace.name,
+				id: organization._id,
+				label: organization.name,
 				description: organizations_switcher_list_secondary_line({
-					storedDescription: workspace.description ?? "",
-					isDefaultOrganization: false,
-					isPrimaryWorkspace: workspaceIsPrimary,
+					storedDescription: organization.description ?? "",
+					isDefaultOrganization: organization.default,
+					isPrimaryWorkspace: false,
 				}),
-				isDefault: workspace.default,
-				onEdit:
-					workspaceIsPrimary || !primaryWorkspace || !canUpdateWorkspace
+				isDefault: organization.default,
+				ownershipBadge: organization.default ? "personal" : ownsOrganization ? "owner" : "joined",
+				billingBadge: organization.default
+					? undefined
+					: organization.billingMode === "user"
+						? "members_pay"
+						: ownsOrganization
+							? "my_balance"
+							: "owner_pays",
+				onManageBilling:
+					organization.default || !canManageBilling
 						? undefined
 						: () => {
-								if (!draftOrganizationRecord) {
-									console.error("[MainAppHeaderOrganizationControls] Missing draft organization for workspace edit");
-									return;
-								}
-
+								setBillingTarget({
+									organizationId: organization._id,
+									organizationName: organization.name,
+									billingMode: organization.billingMode,
+								});
+							},
+				// The personal organization allows every plugin and MCP server, so it has nothing to manage.
+				onManageIntegrations:
+					organization.default || !canManageIntegrations
+						? undefined
+						: () => {
+								setIntegrationPolicyTarget({ organizationId: organization._id, organizationName: organization.name });
+							},
+				onEdit:
+					organization.default || !primaryWorkspace || !canUpdateOrganization
+						? undefined
+						: () => {
 								setEditTarget({
-									kind: "workspace",
-									id: workspace._id,
-									initialName: workspace.name,
-									initialDescription: workspace.description ?? "",
-									organizationId: draftOrganizationRecord._id,
+									kind: "organization",
+									id: organization._id,
+									initialName: organization.name,
+									initialDescription: organization.description ?? "",
 									defaultWorkspaceId: primaryWorkspace._id as app_convex_Id<"organizations_workspaces">,
 								});
 							},
 				onDelete:
-					workspace.default || !canDeleteWorkspace
+					organization.default || !ownsOrganization
 						? undefined
 						: () => {
 								void (async (/* iife */) => {
-									const result = await app_convex.mutation(app_convex_api.organizations.delete_workspace, {
-										workspaceId: workspace._id,
+									const result = await app_convex.mutation(app_convex_api.organizations.delete_organization, {
+										organizationId: organization._id,
 									});
 
 									if (result == null) {
@@ -536,9 +362,9 @@ export const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrga
 									}
 
 									if (result._nay) {
-										console.error("[MainAppHeaderOrganizationControls] Failed to delete workspace", {
+										console.error("[MainAppHeaderOrganizationControls] Failed to delete organization", {
 											error: result._nay,
-											workspaceId: workspace._id,
+											organizationId: organization._id,
 										});
 										toast.error(result._nay.message);
 										return;
@@ -546,65 +372,212 @@ export const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrga
 
 									await app_convex.query(app_convex_api.organizations.list, {});
 
-									if (workspace._id === workspaceId && organizationId && workspaces && organizations) {
-										const currentOrganization = organizations.find((candidate) => candidate._id === organizationId);
-										if (!currentOrganization) {
-											return;
-										}
-
-										const remaining = workspaces.filter((other) => other._id !== workspace._id);
-										const fallback = remaining.find((other) => other.default) ?? remaining[0];
+									if (organization._id === organizationId && organizations && organizationList) {
+										const remaining = organizations.filter((other) => other._id !== organization._id);
+										const fallback = remaining[0];
 										if (!fallback) {
 											return;
 										}
 
-										navigateToOrganizationWorkspace(currentOrganization.name, fallback.name);
+										const defaultWorkspace = app_tenant_default_workspace_for_organization({
+											organization: fallback,
+											workspaces: organizationList.organizationIdsWorkspacesDict[fallback._id] ?? [],
+										});
+
+										if (!defaultWorkspace) {
+											console.error(
+												"[MainAppHeaderOrganizationControls] Failed to resolve default workspace after organization delete",
+												{ organizationId: fallback._id },
+											);
+											return;
+										}
+
+										navigateToOrganizationWorkspace(fallback.name, defaultWorkspace.name);
 										return;
 									}
 
-									if (workspace._id === draftWorkspaceId && draftOrganizationId && organizationList) {
-										const nextWorkspaces = organizationList.organizationIdsWorkspacesDict[draftOrganizationId] ?? [];
-										const fallback =
-											nextWorkspaces.find((other) => other._id !== workspace._id && other.default) ??
-											nextWorkspaces.find((other) => other._id !== workspace._id);
-										if (!fallback) {
-											if (organizationId && workspaceId) {
-												setLocalDraft({ organizationId, workspaceId });
-											}
-											return;
-										}
-
-										setLocalDraft({
-											organizationId: draftOrganizationId,
-											workspaceId: fallback._id as app_convex_Id<"organizations_workspaces">,
-										});
+									if (
+										organization._id === draftOrganizationId &&
+										organization._id !== organizationId &&
+										organizationId &&
+										workspaceId
+									) {
+										setLocalDraft({ organizationId, workspaceId });
 									}
 								})().catch((error) => {
-									toast.error("Failed to delete workspace");
-									console.error("[MainAppHeaderOrganizationControls] Unexpected delete workspace error", {
+									toast.error("Failed to delete organization");
+									console.error("[MainAppHeaderOrganizationControls] Unexpected delete organization error", {
 										error,
-										workspaceId: workspace._id,
+										organizationId: organization._id,
 									});
 								});
 							},
 				onSelect: () => {
-					if (workspace._id === draftWorkspaceId) {
+					if (organization._id === draftOrganizationId) {
+						return;
+					}
+
+					if (!organizationList) {
+						console.error("[MainAppHeaderOrganizationControls] Organization list not loaded");
+						return;
+					}
+
+					const defaultWorkspace = app_tenant_default_workspace_for_organization({
+						organization,
+						workspaces: organizationList.organizationIdsWorkspacesDict[organization._id] ?? [],
+					});
+
+					if (!defaultWorkspace) {
+						console.error("[MainAppHeaderOrganizationControls] Failed to resolve default workspace for organization", {
+							organizationId: organization._id,
+						});
 						return;
 					}
 
 					setLocalDraft({
-						organizationId: draftOrganizationId,
-						workspaceId: workspace._id,
+						organizationId: organization._id,
+						workspaceId: defaultWorkspace._id as app_convex_Id<"organizations_workspaces">,
 					});
 				},
 			};
 		},
 	);
 
-	const workspaceItems =
-		draftOrganizationId === organizationId
-			? main_app_header_organization_controls_move_list_item_to_front_by_id(workspaceItemsRaw, workspaceId)
-			: workspaceItemsRaw;
+	// Keep the order from `organizations.list`: the default workspace first, then by name.
+	const workspaceItems: MainAppHeaderOrganizationSwitcherModal_ListItem[] = (draftWorkspaces ?? []).map((workspace) => {
+		const primaryWorkspace =
+			draftOrganizationRecord && organizationList
+				? app_tenant_primary_workspace_for_organization({
+						organization: draftOrganizationRecord,
+						workspaces: organizationList.organizationIdsWorkspacesDict[draftOrganizationRecord._id] ?? [],
+					})
+				: null;
+		const workspaceIsPrimary = primaryWorkspace?._id === workspace._id;
+		// We check both permissions, because `edit_workspace` on the server accepts either one. Every
+		// system role that has `organization.update` also has `workspace.update`, so the second check
+		// looks useless. But a custom role can have one without the other, and only checking both
+		// matches what the server does.
+		const canUpdateWorkspace =
+			main_app_header_organization_controls_has_permission({
+				permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+				workspaceId: workspace._id,
+				permission: "workspace.update",
+			}) ||
+			main_app_header_organization_controls_has_permission({
+				permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+				workspaceId: workspace._id,
+				permission: "organization.update",
+			});
+		const canDeleteWorkspace = main_app_header_organization_controls_has_permission({
+			permissionsDict: organizationList?.workspaceIdsPermissionsDict,
+			workspaceId: workspace._id,
+			permission: "workspace.delete",
+		});
+
+		return {
+			id: workspace._id,
+			label: workspace.name,
+			description: organizations_switcher_list_secondary_line({
+				storedDescription: workspace.description ?? "",
+				isDefaultOrganization: false,
+				isPrimaryWorkspace: workspaceIsPrimary,
+			}),
+			isDefault: workspace.default,
+			onEdit:
+				workspaceIsPrimary || !primaryWorkspace || !canUpdateWorkspace
+					? undefined
+					: () => {
+							if (!draftOrganizationRecord) {
+								console.error("[MainAppHeaderOrganizationControls] Missing draft organization for workspace edit");
+								return;
+							}
+
+							setEditTarget({
+								kind: "workspace",
+								id: workspace._id,
+								initialName: workspace.name,
+								initialDescription: workspace.description ?? "",
+								organizationId: draftOrganizationRecord._id,
+								defaultWorkspaceId: primaryWorkspace._id as app_convex_Id<"organizations_workspaces">,
+							});
+						},
+			onDelete:
+				workspace.default || !canDeleteWorkspace
+					? undefined
+					: () => {
+							void (async (/* iife */) => {
+								const result = await app_convex.mutation(app_convex_api.organizations.delete_workspace, {
+									workspaceId: workspace._id,
+								});
+
+								if (result == null) {
+									return;
+								}
+
+								if (result._nay) {
+									console.error("[MainAppHeaderOrganizationControls] Failed to delete workspace", {
+										error: result._nay,
+										workspaceId: workspace._id,
+									});
+									toast.error(result._nay.message);
+									return;
+								}
+
+								await app_convex.query(app_convex_api.organizations.list, {});
+
+								if (workspace._id === workspaceId && organizationId && workspaces && organizations) {
+									const currentOrganization = organizations.find((candidate) => candidate._id === organizationId);
+									if (!currentOrganization) {
+										return;
+									}
+
+									const remaining = workspaces.filter((other) => other._id !== workspace._id);
+									const fallback = remaining.find((other) => other.default) ?? remaining[0];
+									if (!fallback) {
+										return;
+									}
+
+									navigateToOrganizationWorkspace(currentOrganization.name, fallback.name);
+									return;
+								}
+
+								if (workspace._id === draftWorkspaceId && draftOrganizationId && organizationList) {
+									const nextWorkspaces = organizationList.organizationIdsWorkspacesDict[draftOrganizationId] ?? [];
+									const fallback =
+										nextWorkspaces.find((other) => other._id !== workspace._id && other.default) ??
+										nextWorkspaces.find((other) => other._id !== workspace._id);
+									if (!fallback) {
+										if (organizationId && workspaceId) {
+											setLocalDraft({ organizationId, workspaceId });
+										}
+										return;
+									}
+
+									setLocalDraft({
+										organizationId: draftOrganizationId,
+										workspaceId: fallback._id as app_convex_Id<"organizations_workspaces">,
+									});
+								}
+							})().catch((error) => {
+								toast.error("Failed to delete workspace");
+								console.error("[MainAppHeaderOrganizationControls] Unexpected delete workspace error", {
+									error,
+									workspaceId: workspace._id,
+								});
+							});
+						},
+			onSelect: () => {
+				if (workspace._id === draftWorkspaceId) {
+					return;
+				}
+
+				setLocalDraft({
+					organizationId: draftOrganizationId,
+					workspaceId: workspace._id,
+				});
+			},
+		};
+	});
 
 	const handleOrganizationSwitcherSwitch = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onSwitch"]>(() => {
 		if (!organizationList || !organizations) {
