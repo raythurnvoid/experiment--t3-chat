@@ -173,6 +173,7 @@ import {
 	files_PATH_MAX_LENGTH,
 	files_check_new_folder_count,
 	files_check_request_folder_prefixes,
+	files_archive_operation_id_new,
 	files_NEW_FOLDER_DEPTH_MAX,
 } from "../shared/files.ts";
 import {
@@ -3404,7 +3405,7 @@ export async function files_nodes_db_archive_nodes(args: {
 }) {
 	const { ctx } = args;
 
-	const archiveOperationId = crypto.randomUUID();
+	const archiveOperationId = files_archive_operation_id_new(args.now);
 	// A node named twice would schedule its saved scope job twice in parallel, and make two job docs.
 	const fileNodes = (
 		await Promise.all([...new Set(args.nodeIds)].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
@@ -3558,7 +3559,7 @@ export async function files_nodes_db_archive_named_nodes(
 		userAuth,
 		membership,
 		credentialId: args.credentialId,
-		archiveOperationId: crypto.randomUUID(),
+		archiveOperationId: files_archive_operation_id_new(Date.now()),
 		rootNodeIds: jobFileNodes.map((node) => node._id),
 		refusedNodes: refusedItems,
 		isFast: fastCheck.isFast,

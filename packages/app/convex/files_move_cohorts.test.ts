@@ -16,7 +16,7 @@ import { list_tree_children } from "./files_tree.ts";
 import { activities_db_require_by_source_id, activities_get_controls } from "./activities_db.ts";
 import { files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
 import { files_transfer_db_request_stop } from "./files_transfer.ts";
-import { files_ancestor_ids, files_PATH_MAX_LENGTH } from "../shared/files.ts";
+import { files_ancestor_ids, files_archive_operation_id_new, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { channels_notifications_db_get_authority_pins } from "../server/channels-notifications.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -945,7 +945,9 @@ describe("Move cohort and folder-wide jobs", () => {
 						)
 					)?.cohortId ?? null;
 			}
-			const afterOperations = beforeOperations.map((operation) => operation ?? cohortId);
+			const stagedCohort = (await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId!)))!;
+			const cohortOperation = files_archive_operation_id_new(stagedCohort.operationTime, stagedCohort._id);
+			const afterOperations = beforeOperations.map((operation) => operation ?? cohortOperation);
 			let staged = false;
 			let published = false;
 			let stopped = false;

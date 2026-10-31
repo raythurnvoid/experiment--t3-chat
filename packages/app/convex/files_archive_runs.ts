@@ -102,7 +102,12 @@ import {
 	path_tree_prefix_upper_bound,
 	server_convex_get_user_fallback_to_anonymous,
 } from "../server/server-utils.ts";
-import { files_check_name_and_path_length, files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
+import {
+	files_archive_operation_id_new,
+	files_check_name_and_path_length,
+	files_NAME_MAX_LENGTH,
+	files_PATH_MAX_LENGTH,
+} from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -1554,13 +1559,13 @@ async function db_land_node(
 	const path = path_join(landing?.path ?? "/", name);
 	let skipOperationId = null;
 	if (isSkipped) {
-		run.skipOperationId ??= crypto.randomUUID();
+		run.skipOperationId ??= files_archive_operation_id_new(args.now);
 		skipOperationId = run.skipOperationId;
 	} else if (
 		files_check_name_and_path_length({ path, oldPathLength: node.archivedPathLength ?? files_PATH_MAX_LENGTH })._nay
 	) {
 		add_long_path(run, { name: node.name, length: path.length });
-		run.longPathOperationId ??= crypto.randomUUID();
+		run.longPathOperationId ??= files_archive_operation_id_new(args.now);
 		skipOperationId = run.longPathOperationId;
 	}
 	if (skipOperationId !== null) {
@@ -1607,7 +1612,7 @@ async function db_land_node(
 	if (replacedNode) {
 		await files_nodes_db_archive_node(ctx, {
 			node: replacedNode,
-			archiveOperationId: crypto.randomUUID(),
+			archiveOperationId: files_archive_operation_id_new(args.now),
 			updatedBy: args.userAuth.id,
 			now: args.now,
 			savedScope: "follow",

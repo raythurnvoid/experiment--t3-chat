@@ -62,6 +62,7 @@ import {
 	files_derive_tree_path_for_file_node,
 	files_lowercase_extension,
 	files_check_name_and_path_length,
+	files_archive_operation_id_new,
 	files_PATH_MAX_LENGTH,
 	files_MOVE_REPAIR_STUCK_CODE,
 } from "../shared/files.ts";
@@ -1345,7 +1346,7 @@ async function db_headers(
 	let archiveOperationId = old?.archiveOperationId ?? null;
 	// Keep an older archive separate from the active folder being replaced.
 	if ((record.role === "replacement" && archiveOperationId === null) || proposal?.pendingArchive)
-		archiveOperationId = cohort._id;
+		archiveOperationId = files_archive_operation_id_new(cohort.operationTime, cohort._id);
 	if (selected && item) {
 		let parent: Doc<"files_pending_nodes">["parent"];
 		if (item.origin.kind === "transfer" && cohort.origin.kind === "transfer") {
@@ -2134,6 +2135,8 @@ async function db_validate(
 		.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "staged"))
 		.first();
 	if (owner) {
+		// The id this Move stamps on what it archives, like `db_headers` does.
+		const cohortArchiveOperationId = files_archive_operation_id_new(cohort.operationTime, cohort._id);
 		const proposal = owner.pendingUpdateId ? await ctx.db.get("files_pending_updates", owner.pendingUpdateId) : null;
 		if (owner.pendingUpdateId && (!proposal || proposal.revision !== owner.reviewedRevision))
 			return Result({ _nay: { name: "needs_review", message: "An affected draft changed. Review this Move again." } });
@@ -2165,7 +2168,7 @@ async function db_validate(
 				const parent = parentId
 					? await files_saved_placement_db_get_node(ctx.db, parentId, { cohortId: cohort._id, view: "after" })
 					: null;
-				if (!selected && parent?.archiveOperationId === cohort._id) {
+				if (!selected && parent?.archiveOperationId === cohortArchiveOperationId) {
 					await db_record_unselected_proposal(ctx, cohort, owner.pendingUpdateId);
 					return Result({
 						_nay: { name: "needs_review", message: "This folder has other pending changes. Review them first." },
@@ -2182,7 +2185,7 @@ async function db_validate(
 					q.eq("cohortId", cohort._id).eq("pendingUpdateId", owner.pendingUpdateId),
 				)
 				.unique();
-			if (after?.archiveOperationId === cohort._id && !selected && nodeRecord.role !== "replacement") {
+			if (after?.archiveOperationId === cohortArchiveOperationId && !selected && nodeRecord.role !== "replacement") {
 				await db_record_unselected_proposal(ctx, cohort, owner.pendingUpdateId);
 				return Result({
 					_nay: { name: "needs_review", message: "This folder has other pending changes. Review them first." },

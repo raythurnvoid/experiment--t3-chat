@@ -1147,13 +1147,13 @@ describe("review jobs", () => {
 				return [id, path, path];
 			}),
 		]);
-		expect(saved.every((node) => node.archiveOperationId === unit.cohortId && node.moveCohortId === undefined)).toBe(true);
+		expect(saved.every((node) => node.archiveOperationId?.endsWith(`-${unit.cohortId}`) && node.moveCohortId === undefined)).toBe(true);
 		const metadata = await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
 		expect(metadata.map((row) => [row.sourceKind === "committed" ? row.fileNodeId : undefined, row.fieldPath]).sort()).toEqual(
 			fileIds.flatMap((id) => Array.from({ length: 20 }, (_, field) => [id, `frontmatter.tag${field}`])).sort(),
 		);
 		expect(
-			metadata.every((row) => row.archiveOperationId === unit.cohortId),
+			metadata.every((row) => row.archiveOperationId?.endsWith(`-${unit.cohortId}`)),
 			"Reviewed Delete archives every metadata field",
 		).toBe(true);
 		expect(

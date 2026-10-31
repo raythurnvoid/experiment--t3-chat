@@ -134,6 +134,24 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 >;
 
 /**
+ * A new archive operation id. It starts with the time, so ids sort by when the items were archived.
+ * The Archived view lists the newest first, and Empty archive deletes only ids from before it started.
+ *
+ * Ids made before this format are plain UUIDs. They sort below every new id, so they read as the oldest.
+ */
+export function files_archive_operation_id_new(now: number, uniquePart: string = crypto.randomUUID()) {
+	return `${files_archive_operation_id_cutoff(now)}-${uniquePart}`;
+}
+
+/**
+ * The start of every id made in the millisecond `now`. An id that sorts below it was made earlier. The
+ * random part does not follow time, so ids of the same millisecond never count as earlier.
+ */
+export function files_archive_operation_id_cutoff(now: number) {
+	return `t${String(now).padStart(15, "0")}`;
+}
+
+/**
  * Require Can manage when a child leaves its restricted scope.
  * Moving the scope folder itself keeps the restriction with it.
  *

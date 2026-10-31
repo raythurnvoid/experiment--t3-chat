@@ -8,7 +8,7 @@ import { organizations_membership_lifetimes_db_get } from "./organizations_membe
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_check_node_write } from "../server/files-move-reservations.ts";
-import { files_ROOT_ID } from "../shared/files.ts";
+import { files_archive_operation_id_new, files_ROOT_ID } from "../shared/files.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
@@ -230,7 +230,7 @@ export async function public_api_file_archives_db_archive(
 			pending.push(...rows);
 		}
 	}
-	const archiveOperationId = crypto.randomUUID();
+	const archiveOperationId = files_archive_operation_id_new(Date.now());
 	const archivedNodeIds: Id<"files_nodes">[] = [];
 	for (const node of allowed.reverse()) {
 		if (node.kind === "folder" && (await children(node._id).first())) {

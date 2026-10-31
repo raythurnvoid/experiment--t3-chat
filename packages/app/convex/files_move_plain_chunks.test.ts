@@ -470,13 +470,13 @@ describe("Move unchanged plain chunks", () => {
 		expect(staged.filter((row) => row.moveView?.view === "before")).toHaveLength(replacedChunks.length);
 		expect(staged.filter((row) => row.moveView?.view === "after")).toHaveLength(replacedChunks.length);
 		expect(
-			staged.filter((row) => row.moveView?.view === "after").every((row) => row.archiveOperationId === move.cohortId),
+			staged.filter((row) => row.moveView?.view === "after").every((row) => row.archiveOperationId?.endsWith(`-${move.cohortId}`)),
 			"changed archive membership gets search chunks for the after view",
 		).toBe(true);
 		await finish(f, move);
 		const archived = await chunks(f, replacedId);
 		expect(archived).toHaveLength(replacedChunks.length);
-		expect(archived.every((row) => row.moveView === undefined && row.archiveOperationId === move.cohortId)).toBe(true);
+		expect(archived.every((row) => row.moveView === undefined && row.archiveOperationId?.endsWith(`-${move.cohortId}`))).toBe(true);
 		await assert_reused(f, original);
 		await assert_reads(f, "/target/note.txt");
 	}, 120_000);
