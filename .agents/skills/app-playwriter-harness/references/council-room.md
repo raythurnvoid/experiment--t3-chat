@@ -666,12 +666,26 @@ route, which answers `/room?m=<meeting id>#ticket=<ticket>`: the room reads the 
 `m` search param and the ticket from the `ticket` fragment key. The host is still a placeholder, so
 the URL is not reachable — only its shape is real.
 
-One step of that loop changed shape: the one-time invite panel now **stays** after `Open meeting`. It
-used to unmount, which destroyed the only copy of the join code — the panel warns that Council cannot
-show the code again, and the primary-styled button next to that warning was what discarded it. After
-opening, the panel keeps the code and swaps the button for a `role="status"` line, and only
-`Done, I saved the invite` dismisses it. So a driver reading the join code after `Open meeting` will
-now find it; a runner written against the old behaviour that expected the panel to disappear will not.
+The invite panel stays after `Open meeting`, so a member can finish copying it. Dashboard `0.2.18`
+also offers `Show invite <title>` on created/open cards. It fetches the saved invite on demand.
+New tokens are recoverable; old hash-only tokens are not. Closing, deleting, or expiring a meeting
+hides its invite. The panel itself stays until dismissed.
+
+### Guest access modes (0.2.18)
+
+Select `Guest access` by role `combobox`: `token`, `approval`, or `link`. Token rooms show a code and
+link. Approval and link rooms show only a link. The returned `guestUrl` carries `access=approval`
+or `access=link` as a form hint; the server always enforces the stored mode.
+
+For approval, submit a display name in the guest room. Assert `Waiting for the host`, then reload
+and assert it again. Waiting must leave `participant_count` unchanged and no provider participant.
+In the host call, find `Waiting guests`, then `Allow <name>` or `Deny <name>`. Allow moves the guest
+to the normal lobby after its state poll. Deny shows `The host did not allow you to join.` A denied
+reload stays denied. The waiting list uses `Next` and `First page`; test more than 25 equal-time
+requests when checking pagination.
+
+Check `Show invite` after dismissing the create panel. It must show the same token. Link and
+approval invites have no code field. Lists, notes, URLs, and browser storage must not contain tokens.
 
 Selectors: the root is `.council`; rows are `li.meeting[data-meeting-id]` inside `.meeting-list`,
 grouped into `Active` and `Recent`. Field ids come from React `useId`, so they are not stable — locate
