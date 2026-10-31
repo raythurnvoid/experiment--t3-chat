@@ -2913,15 +2913,6 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
-		.index("by_view_parent_name_archive", [
-			"cohortId",
-			"view",
-			"parentId",
-			"name",
-			"archiveOperationId",
-			"nodeCreationTime",
-			"nodeId",
-		])
 		.index("by_view_parent_name", ["cohortId", "view", "parentId", "name", "nodeCreationTime", "nodeId"])
 		.index("by_view_parent_kind_name", [
 			"cohortId",

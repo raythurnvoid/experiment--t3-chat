@@ -1727,7 +1727,7 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
 			)
 			.take(remaining + 1);
 		const selected = view.cohortId === null ? [] : await ctx.db.query("files_saved_places")
-			.withIndex("by_view_parent_name_archive", (q) => q.eq("cohortId", view.cohortId)
+			.withIndex("by_view_parent_name", (q) => q.eq("cohortId", view.cohortId)
 				.eq("view", view.view).eq("parentId", parentId)).take(remaining + 1);
 		if (normal.length + selected.length > remaining) {
 			return null;
