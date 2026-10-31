@@ -2277,7 +2277,15 @@ describe("FileNodeView header breadcrumb", () => {
 			within(menu)
 				.getAllByRole("menuitem")
 				.map((item) => item.textContent),
-		).toEqual(["Reveal in sidebar", "Duplicate tab", "Properties", "Copy node id", "Archive"]);
+		).toEqual([
+			"Reveal in sidebar",
+			"Duplicate tab",
+			"Properties",
+			"Copy path",
+			"Copy link",
+			"Copy node id",
+			"Archive",
+		]);
 	});
 
 	test.each(["a read-only file", "a folder with a protected descendant"])("hides Archive for %s", async (kind) => {
@@ -2425,7 +2433,7 @@ describe("FileNodeView header breadcrumb", () => {
 			within(menu)
 				.getAllByRole("menuitem")
 				.map((item) => item.textContent),
-		).toEqual(["Duplicate tab", "Copy node id"]);
+		).toEqual(["Duplicate tab", "Copy path", "Copy link", "Copy node id"]);
 	});
 
 	test("a pending entry gets crumbs for every saved parent when its folders are not loaded", async () => {

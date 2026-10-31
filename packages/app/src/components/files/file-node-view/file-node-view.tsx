@@ -31,6 +31,7 @@ import { FilesArchiveModal, type FilesArchiveModal_Node } from "../files-archive
 import { FilesShareModal } from "../files-share-modal.tsx";
 import { FilesPropertiesModal } from "../files-properties-modal.tsx";
 import { FilesClipboardMenuItems, FilesClipboardProvider } from "../files-clipboard.tsx";
+import { CopyPathIcon } from "@/components/copy-path-icon.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
@@ -136,6 +137,7 @@ import {
 import { app_local_storage_set_value, useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { global_custom_event_dispatch, useGlobalCustomEvent } from "@/lib/global-event.tsx";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
+import { url_path_file_by_node_id } from "@/lib/urls.ts";
 import { cn, copy_to_clipboard, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
@@ -165,6 +167,7 @@ import {
 	Hash,
 	Home,
 	Info,
+	Link2,
 	ListFilter,
 	Lock,
 	LockKeyhole,
@@ -730,6 +733,27 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 		window.open(window.location.href, "_blank", "noopener");
 	});
 
+	const handleCopyPath = useFn(() => {
+		const path = privateView ? privateView.entry.path : currentNode?.path;
+		if (!path) return;
+		copy_to_clipboard({ text: path }).catch((error) => {
+			console.error("[FileNodeViewHeader.handleCopyPath] Failed to copy path", { error, path });
+		});
+	});
+
+	const handleCopyLink = useFn(() => {
+		// A pending entry has no saved node to link to, so copy the page URL that opens it.
+		const link = privateView
+			? window.location.href
+			: currentNode
+				? `${window.location.origin}${url_path_file_by_node_id({ organizationName, workspaceName, nodeId: currentNode._id })}`
+				: null;
+		if (!link) return;
+		copy_to_clipboard({ text: link }).catch((error) => {
+			console.error("[FileNodeViewHeader.handleCopyLink] Failed to copy link", { error, link });
+		});
+	});
+
 	const handleCopyNodeId = useFn(() => {
 		const nodeId = privateView ? privateView.entry.node._id : currentNode?._id;
 		if (!nodeId) return;
@@ -800,6 +824,22 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 							</MyMenuItemContent>
 						</MyMenuItem>
 					)}
+					<MyMenuItem hideOnClick onClick={handleCopyPath}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<CopyPathIcon />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem hideOnClick onClick={handleCopyLink}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Link2 />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy link</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
 					<MyMenuItem hideOnClick onClick={handleCopyNodeId}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
