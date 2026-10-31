@@ -996,6 +996,22 @@
 			padding-left: calc((var(--FilesSidebarTreeItemPlaceholder-depth) * 20px) + 44px);
 		}
 	}
+
+	/* Place the parts like a real file row one level down: the icon after the indent and the 44px arrow
+	   column, and the More action icon 28px from the right edge, like the root skeleton. */
+	.FilesSidebarTreeItemPlaceholder-skeleton {
+		display: flex;
+		flex: 1 1 auto;
+		align-items: center;
+
+		height: 100%;
+		padding-left: calc((var(--FilesSidebarTreeItemPlaceholder-depth) * 20px) + 44px);
+	}
+
+	.FilesSidebarTreeItemPlaceholder-skeleton-action {
+		margin-left: auto;
+		margin-right: 28px;
+	}
 	/* #endregion tree item placeholder */
 
 	/* #region tree item track */

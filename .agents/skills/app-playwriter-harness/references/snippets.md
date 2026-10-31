@@ -902,6 +902,13 @@ and a CLI call takes longer than that, so polling for it and then taking a scree
    CSS as the real skeleton. Compare its icon `x` and row height with the real rows before you hide
    them. Reload afterwards so the injected nodes are gone.
 
+A folder's skeleton row (`.FilesSidebarTreeItemPlaceholder-skeleton`) shows for about 150 ms after
+Expand, and only on the first open in 5 minutes. Install the `MutationObserver` on `[role=tree]` before
+the click. When the skeleton appears, clone its `.FilesSidebarTreeItemPlaceholder` and insert the copy
+right after it. React does not own the copy, so it stays where the first child row lands. Hide that real
+row with `visibility: hidden` for the screenshot, then compare the copy's icon, name and action rects with
+a real file row one level down. Reload afterwards.
+
 ## Propose A Durable Memory
 
 ```powershell

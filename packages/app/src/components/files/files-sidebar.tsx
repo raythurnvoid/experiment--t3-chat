@@ -2122,7 +2122,12 @@ const FilesSidebarTreeItemTrack = memo(function FilesSidebarTreeItemTrack(props:
 // #endregion tree item track
 
 // #region tree item placeholder
-type FilesSidebarTreeItemPlaceholder_ClassNames = "FilesSidebarTreeItemPlaceholder";
+type FilesSidebarTreeItemPlaceholder_ClassNames =
+	| "FilesSidebarTreeItemPlaceholder"
+	| "FilesSidebarTreeItemPlaceholder-skeleton"
+	| "FilesSidebarTreeItemPlaceholder-skeleton-icon"
+	| "FilesSidebarTreeItemPlaceholder-skeleton-name"
+	| "FilesSidebarTreeItemPlaceholder-skeleton-action";
 
 type FilesSidebarTreeItemPlaceholder_CssVars = {
 	"--FilesSidebarTreeItemPlaceholder-depth": number;
@@ -2173,13 +2178,41 @@ const FilesSidebarTreeItemPlaceholder = memo(function FilesSidebarTreeItemPlaceh
 			onDragLeave={onDragLeave}
 			onDrop={onDrop}
 		>
-			<div
-				className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}
-				aria-hidden="true"
-			>
-				<FilesSidebarTreeItemIcon kind="folder" />
-				<span>{isLoading ? "Loading…" : "No files inside"}</span>
-			</div>
+			{/* While the folder loads, show one skeleton file row with the parts of the root skeleton's file
+			    rows: icon, name and the More action. The folder row's aria-busy tells that it loads. */}
+			{isLoading ? (
+				<div
+					className={"FilesSidebarTreeItemPlaceholder-skeleton" satisfies FilesSidebarTreeItemPlaceholder_ClassNames}
+					aria-hidden="true"
+				>
+					<MySkeleton
+						className={cn(
+							"FilesSidebarTreeItemPlaceholder-skeleton-icon" satisfies FilesSidebarTreeItemPlaceholder_ClassNames,
+							"FilesSidebarTree-skeleton-icon" satisfies FilesSidebarTree_ClassNames,
+						)}
+					/>
+					<MySkeleton
+						className={cn(
+							"FilesSidebarTreeItemPlaceholder-skeleton-name" satisfies FilesSidebarTreeItemPlaceholder_ClassNames,
+							"FilesSidebarTree-skeleton-name" satisfies FilesSidebarTree_ClassNames,
+						)}
+					/>
+					<MySkeleton
+						className={cn(
+							"FilesSidebarTreeItemPlaceholder-skeleton-action" satisfies FilesSidebarTreeItemPlaceholder_ClassNames,
+							"FilesSidebarTree-skeleton-glyph" satisfies FilesSidebarTree_ClassNames,
+						)}
+					/>
+				</div>
+			) : (
+				<div
+					className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}
+					aria-hidden="true"
+				>
+					<FilesSidebarTreeItemIcon kind="folder" />
+					<span>No files inside</span>
+				</div>
+			)}
 			<FilesSidebarTreeItemTrack
 				trackFileIds={trackFileIds}
 				trackActiveFileIds={trackActiveFileIds}
@@ -9421,7 +9454,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				// An open folder whose loaded pages were all emptied by access checks asks for its next page itself.
 				view.rerender(<TestTree folderStatusById={new Map([["child-0", "more"]])} />);
 				expect(handleLoadMore).toHaveBeenLastCalledWith("child-0");
-				expect(view.container.querySelector(".FilesSidebarTreeItemPlaceholder")?.textContent).toBe("Loading…");
+				expect(view.container.querySelector(".FilesSidebarTreeItemPlaceholder-skeleton")).not.toBeNull();
 				view.rerender(<TestTree />);
 				handleLoadMore.mockClear();
 

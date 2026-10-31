@@ -208,7 +208,9 @@ Tree-item components:
   draws it, and the skeleton fills the panel without a scrollbar, so the real rows replace it
   without moving.
 - Every folder has a chevron, because an unopened folder's children are unknown. An open empty folder
-  shows "No files inside"; a loading one shows "Loading…" and sets `aria-busy` on its row.
+  shows "No files inside"; a loading one shows one skeleton file row
+  (`.FilesSidebarTreeItemPlaceholder-skeleton`) and sets `aria-busy` on its row. The skeleton row reuses
+  the root skeleton's parts and sits where the first child's icon, name and More action will be.
 - A locked row (`data-file-locked="on"`, class `FilesSidebarTreeItem-content-locked`) shows the
   `Lock` icon (`LockKeyhole` stays the read-only mark), muted text, the tooltip "You don't have
   access", and ", you don't have access" in its name. A locked folder has no chevron, and the arrow
@@ -1186,12 +1188,12 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - Each open folder loads through 4 to 10 live queries, and Expand subtree, Expand root folders and
   Ctrl+Shift+Plus can open thousands of loaded folders at once. So an expanded folder loads only after
   the tree renders its row or a row inside it (`FilesSidebarTree_Props.onShowFolders`, kept in
-  `shownFolderIds`). Until then it stays expanded (`aria-expanded="true"`) and shows "Loading…". Once it
+  `shownFolderIds`). Until then it stays expanded (`aria-expanded="true"`) and shows its skeleton row. Once it
   loads, it keeps loading until it closes, even when it scrolls away: dropping its rows would change the
   height above the screen and make the visible rows jump. Closing a folder forgets that it was shown.
 - A closed folder keeps loading for 5 minutes, like the query cache in `main.tsx`
   (`FILES_TREE_CLOSED_FOLDER_KEEP_MS` in `files-tree-context.tsx`). Its rows stay live, so opening it
-  again in that time shows every page it had at once, with no "Loading…". The sidebar asks for such a
+  again in that time shows every page it had at once, with no skeleton. The sidebar asks for such a
   folder (`FilesTreeProvider.useLiveFolderIds`) without waiting for its row. After 5 minutes its queries
   stop, and the next open loads again.
 - A normal row is 45 px. An expanded empty folder owns its extra 45 px placeholder in the same
