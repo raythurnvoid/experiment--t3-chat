@@ -166,6 +166,7 @@ import {
 	FolderPlus,
 	Hash,
 	Home,
+	Info,
 	Link2,
 	ListFilter,
 	Lock,
@@ -705,7 +706,6 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	/** The node the Archive dialog is about, or `null` while it is closed. */
 	const [archiveNode, setArchiveNode] = useState<FilesArchiveModal_Node | null>(null);
-	const propertiesTriggerRef = useRef<HTMLButtonElement>(null);
 	const currentCrumbRef = useRef<HTMLButtonElement>(null);
 
 	const handleShareClick = useFn(() => {
@@ -792,6 +792,21 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 					</MyMenuItem>
 				</MyMenuItemsGroup>
 				<MyMenuItemsGroup separator>
+					{/* A pending entry has no saved node to show properties for. */}
+					{!privateView && (
+						<MyMenuItem
+							hideOnClick
+							data-file-read-only={currentNode?.readOnly ?? undefined}
+							onClick={handlePropertiesClick}
+						>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<Info />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Properties</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					)}
 					<MyMenuItem hideOnClick onClick={handleCopyNodeId}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
@@ -901,23 +916,6 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									</MyLinkIcon>
 								</MyLink>
 							</li>
-							<li>
-								<MyIconButton
-									ref={propertiesTriggerRef}
-									variant="ghost-highlightable"
-									// The lock icon already shows whether the file is locked, so the tooltip says what
-									// the button opens instead of repeating that. Keep the word "read-only" in the
-									// tooltip of a locked file, because on a locked file the icon is the warning.
-									tooltip={currentNode?.canWrite ? "Properties" : "Read-only. Open properties"}
-									aria-label={`Properties of ${currentNode?.name}`}
-									data-file-read-only={currentNode?.readOnly ?? undefined}
-									onClick={handlePropertiesClick}
-								>
-									<MyIconButtonIcon>
-										<LockKeyhole aria-hidden />
-									</MyIconButtonIcon>
-								</MyIconButton>
-							</li>
 							{/* Separators are list items too: an `ol` may own only `li`, and a screen reader
 							    should not read the slashes out. */}
 							<li aria-hidden="true">/</li>
@@ -975,7 +973,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 				nodeId={propertiesNodeId}
 				nodeName={currentNode?.name ?? "file"}
 				nodeKind={currentNode?.kind ?? "file"}
-				returnFocusRef={propertiesTriggerRef}
+				returnFocusRef={currentCrumbRef}
 				onClose={handlePropertiesModalClose}
 			/>
 			<FilesArchiveModal

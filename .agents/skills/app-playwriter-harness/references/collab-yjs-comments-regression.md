@@ -215,7 +215,7 @@ console line mentions `FilesConvexYjsStream` or `files_yjs_Provider`.
 Notes: the recorder dies on reload, so install it again before step 5 if you reloaded in between.
 `yjs_get_incremental_updates` answers `updates: []` right after a compaction, so count pushes from the
 recorder, never from that query. The dialog also stays open after step 4, so a second
-`getByRole("button", { name: /^Properties of / })` click is intercepted by the open modal and hangs
+second open of Properties from the breadcrumb menu is intercepted by the open modal and hangs
 until the CLI timeout. Reuse the open dialog instead of reopening it.
 
 ### 8b. An edit that races the toggle

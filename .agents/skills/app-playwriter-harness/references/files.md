@@ -56,7 +56,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Review changes button: `[data-testid="review-changes-button"]`.
 - Tables in the rich editor: plain `table`, `th`, `td` selectors inside `.FileEditorRichText-editor-content`.
 - Table commands menu: toolbar `getByRole("button", { name: "Table commands" })`; items are `Add row above`, `Add row below`, `Add column left`, `Add column right`, `Delete row`, `Delete column`, `Toggle header row`, `Delete table` (disabled while the caret is outside a table).
-- Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-write-policy` with the node's lock state. Its `.click()` can hang on "visible, enabled and stable" while `hitTest` shows the button itself on top and nothing covers it (hit 2026-08-21). Read its box in page context and click the middle with `page.mouse.click(x, y)`.
+- Properties in the breadcrumb: click the current crumb (the last one, `[aria-current="page"]`) to open its menu, then pick `getByRole("menuitem", { name: "Properties" })`. The menu item carries `data-file-read-only` when the node is locked. There is no separate Properties icon button in the breadcrumb any more.
 - Breadcrumb crumbs: folder crumbs are links inside `ol.FileNodeViewHeaderBreadcrumbPath-list` whose `aria-label` holds the full name while the text may end with `…`. The open node's crumb is `[aria-current="page"] button` (named by the full file name, `aria-haspopup="menu"`); its menu items are `Reveal in sidebar`, `Duplicate tab`, `Copy node id`, `Archive` (`Archive` only when the node can be archived; `Reveal in sidebar` is absent for an archived node; a pending entry gets only `Duplicate tab` and `Copy node id`). Recipe under "Breadcrumb Menu And Reveal In Sidebar" below; layout notes in `app-map.md`.
 
 ### Sidebar And Folder Browser
@@ -723,7 +723,7 @@ downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA 
   "`app_convex.query(...)` in page context" in `known-hazards.md`). A cold localhost load of `/people`
   can take more than 30 s before `data-app-ready`; wait up to 60 s.
 - Properties checkbox verified natively 2026-10-29; see "File And Folder Read-only" for the tested
-  subset. Open the folder, click its `Properties of` button,
+  subset. Open the folder, open its breadcrumb menu and pick `Properties`,
   and scope to `.FilesPropertiesModalReadOnly`. There is one `Read-only` checkbox, no writer picker
   and no new-item default. Read `files_nodes.read_only_get({ membershipId, nodeId })` for
   `readOnly` and `canEdit`; this reads only the folder. Use the footer `Save` for a flag change.
@@ -1274,8 +1274,7 @@ and review UI (not page-context doors).
 - Create the proposal from the Agent tab: new chat, then the "Run exactly these Bash commands"
   prompt and one `printf` / `echo` write to that path. Wait until
   `.FileEditorSidebarPendingTabBadge` shows a count.
-- Lock the **file itself** (not a parent). Breadcrumb `getByRole("button", { name: /^Properties of / })`
-  — click the box middle with `page.mouse.click` if locator click hangs. Scope to
+- Lock the **file itself** (not a parent). Open the current crumb menu and pick `Properties`. Scope to
   `[data-files-properties-modal][data-open="true"]`. In the current source, check the single
   `Read-only` checkbox, then footer `Save`. This changed control needs native QA.
 - Open `#app_file_editor_sidebar_tabs_pending`. The row button is
@@ -1426,7 +1425,7 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
 `Read-only settings` modal, so a recipe that clicks either of those is out of date.
 
 - Two ways in: right-click a sidebar row (or click its ⋮ button, `getByRole("button", { name: "More actions for <name>" })`)
-  and pick `Properties`, or click the breadcrumb button, `getByRole("button", { name: /^Properties of / })`.
+  and pick `Properties`, or open the current crumb menu in the breadcrumb and pick `Properties`.
 - When the folder browser shows the same node, its row repeats the sidebar's action button name.
   Scope the sidebar button to `getByRole("tree", { name: "Files", exact: true })` before opening its menu.
 - The sidebar and the file view each own a Properties dialog. Both unmount while closed
@@ -1555,7 +1554,7 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
 - The Properties footer `Save` uses the native `disabled` property. Read that property or use
   `isEnabled()` before pressing it. The status line explains a refused metadata write.
 - Saving metadata leaves Properties open. Reuse the visible dialog for the next edit, or close it
-  before clicking the breadcrumb button again.
+  before opening the breadcrumb menu again.
 - The footer `Save` stays disabled until a section differs from its saved state, so a `setValue` with
   the same text leaves the button disabled — that is correct, not a broken run.
 - The status line is one element: `role="status"` for `Metadata saved`, `role="alert"` for a

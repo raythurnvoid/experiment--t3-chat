@@ -2277,7 +2277,7 @@ describe("FileNodeView header breadcrumb", () => {
 			within(menu)
 				.getAllByRole("menuitem")
 				.map((item) => item.textContent),
-		).toEqual(["Reveal in sidebar", "Duplicate tab", "Copy node id", "Archive"]);
+		).toEqual(["Reveal in sidebar", "Duplicate tab", "Properties", "Copy node id", "Archive"]);
 	});
 
 	test.each(["a read-only file", "a folder with a protected descendant"])("hides Archive for %s", async (kind) => {
@@ -2289,7 +2289,7 @@ describe("FileNodeView header breadcrumb", () => {
 			treeNodes = [DOCS, { ...PAGE_IN_DOCS, canWrite: false }];
 		}
 		renderFileView({ nodeId: node._id });
-		await screen.findByRole("button", { name: `Properties of ${node.name}` });
+		await within(header).findByRole("button", { name: node.name });
 
 		const menu = await openCurrentCrumbMenu(node.name);
 		expect(within(menu).getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
@@ -2300,7 +2300,7 @@ describe("FileNodeView header breadcrumb", () => {
 		node = { ...NODE, archiveOperationId: "qa-archive" };
 		treeNodes = [node];
 		renderFileView();
-		await screen.findByRole("button", { name: `Properties of ${node.name}` });
+		await within(header).findByRole("button", { name: node.name });
 
 		const menu = await openCurrentCrumbMenu("page.html");
 		expect(within(menu).getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
