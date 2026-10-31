@@ -887,6 +887,21 @@ Their skeleton rows are `.FileNodeViewFolderExplorerColumns-skeleton-row`,
 count them in each frame too, to check the all-or-nothing swap. The sampler stops by itself, so
 nothing stays installed in the page.
 
+## Check A Page-Load Skeleton That Shows Too Briefly To Screenshot
+
+The Files sidebar tree skeleton (`.FilesSidebarTree-skeleton`) shows for about 0.5 s on a warm load,
+and a CLI call takes longer than that, so polling for it and then taking a screenshot misses it.
+
+1. In your own tab, add an init script with a `MutationObserver` before the load. When the skeleton
+   appears, record what you need: row count, the tree's `aria-busy`, and the scroll box's
+   `scrollHeight` against `clientHeight` (the skeleton must not add a scrollbar). Record again when it
+   goes away. Then reload without awaiting, and read the record in the next call.
+2. For the look, wait until the real rows load. Hide them with an injected
+   `<style>.FilesSidebarTree-row { visibility: hidden; }</style>`, prepend a copy of the skeleton
+   markup to `.FilesSidebarTree`, and take the screenshot. The copy sits in the same container and
+   CSS as the real skeleton. Compare its icon `x` and row height with the real rows before you hide
+   them. Reload afterwards so the injected nodes are gone.
+
 ## Propose A Durable Memory
 
 ```powershell
