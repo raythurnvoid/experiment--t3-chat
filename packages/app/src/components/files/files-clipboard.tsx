@@ -5,6 +5,7 @@ import { useConvex, useQuery } from "convex/react";
 import { ClipboardPaste, Copy, Scissors } from "lucide-react";
 import { toast } from "sonner";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
+import { ActivityJobToast } from "@/components/activity-job-toast.tsx";
 import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyRadio } from "@/components/my-radio.tsx";
@@ -60,7 +61,28 @@ const FilesClipboardContext = createContext<{
 	paste: (targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => void;
 	move: (sourceIds: app_convex_Id<"files_nodes">[], targetParentId: app_convex_Doc<"files_nodes">["parentId"]) => void;
 	openRun: (runId: app_convex_Id<"files_transfer_runs">) => void;
+	watchRun: (args: FilesWatchedRun) => void;
 } | null>(null);
+
+type FilesWatchedRun = {
+	runId: app_convex_Id<"files_transfer_runs">;
+	kind: keyof typeof TRANSFER_VERBS;
+	/**
+	 * What the job acts on, for example `3 items` or `"a.md" to "b.md"`.
+	 */
+	subject: string;
+	onFinish: (() => void) | null;
+};
+
+const TRANSFER_VERBS = {
+	rename: ["rename", "Renaming", "Renamed"],
+	move: ["move", "Moving", "Moved"],
+	copy: ["copy", "Copying", "Copied"],
+} as const;
+
+function items_label(count: number) {
+	return `${count} ${count === 1 ? "item" : "items"}`;
+}
 
 const FilesClipboardProvider = Object.assign(
 	memo(function FilesClipboardProvider(props: {
@@ -92,6 +114,7 @@ const FilesClipboardProvider = Object.assign(
 				finished: boolean;
 			}[]
 		>([]);
+		const [watchedRuns, setWatchedRuns] = useState<FilesWatchedRun[]>([]);
 		const startPendingRef = useRef(false);
 		const mountedRef = useRef(true);
 		const startRequestRef = useRef<{
@@ -133,6 +156,20 @@ const FilesClipboardProvider = Object.assign(
 			setIsRunOpen(true);
 		});
 
+		// A Rename, Paste or Move shows a toast while it runs, not this dialog. The dialog opens by itself
+		// only for a name conflict choice.
+		const watchRun = useFn((watchedRun: FilesWatchedRun) => {
+			setWatchedRuns((current) =>
+				current.some((item) => item.runId === watchedRun.runId) ? current : [...current, watchedRun],
+			);
+		});
+
+		const finishWatchedRun = useFn((finishedRunId: app_convex_Id<"files_transfer_runs">) => {
+			const watchedRun = watchedRuns.find((item) => item.runId === finishedRunId);
+			setWatchedRuns((current) => current.filter((item) => item.runId !== finishedRunId));
+			watchedRun?.onFinish?.();
+		});
+
 		const addCutRun = useFn((nextRunId: app_convex_Id<"files_transfer_runs">, revision: string | null) => {
 			if (!revision) return;
 			const cutRun = { runId: nextRunId, revision, finished: false };
@@ -168,7 +205,14 @@ const FilesClipboardProvider = Object.assign(
 			await files_move_intake_delete(request.storedMove);
 			startRequestRef.current = null;
 			setStartError(null);
-			if (mountedRef.current && request.sourceCount > 1) openRun(request.runId);
+			if (mountedRef.current) {
+				watchRun({
+					runId: request.runId,
+					kind: request.kind,
+					subject: items_label(request.sourceCount),
+					onFinish: null,
+				});
+			}
 			return true;
 		});
 
@@ -234,8 +278,14 @@ const FilesClipboardProvider = Object.assign(
 							await files_move_intake_update(request.storedMove);
 							if (!mountedRef.current) return;
 						}
-						// A one-item paste shows only its Activity card. The card can still open this dialog.
-						if (mountedRef.current && request.sourceCount > 1) openRun(request.runId);
+						if (mountedRef.current) {
+							watchRun({
+								runId: request.runId,
+								kind: request.kind,
+								subject: items_label(request.sourceCount),
+								onFinish: null,
+							});
+						}
 						for (
 							let offset = files_TRANSFER_SELECTION_PAGE_SIZE;
 							offset < request.sourceCount;
@@ -481,9 +531,22 @@ const FilesClipboardProvider = Object.assign(
 					paste,
 					move,
 					openRun,
+					watchRun,
 				}}
 			>
 				{children}
+				{watchedRuns.map((item) => (
+					<ActivityJobToast
+						key={item.runId}
+						membershipId={membershipId}
+						job={{ kind: "files_transfer_run", id: item.runId }}
+						verbs={TRANSFER_VERBS[item.kind]}
+						subject={item.subject}
+						onOpen={() => openRun(item.runId)}
+						onNeedsInput={() => openRun(item.runId)}
+						onFinish={() => finishWatchedRun(item.runId)}
+					/>
+				))}
 				{cutRuns
 					.filter((item) => !item.finished)
 					.map((item) => (
@@ -816,7 +879,8 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 			);
 		});
 
-	// A Rename runs as a one-item Move. Name it as a Rename.
+	// A Rename runs as a one-item Move. Name it as a Rename, and hide the counts, pages and bulk choices
+	// that only help with many items.
 	const isRename = run?.activity.source.kind === "files_transfer_run" && run.activity.source.isRename;
 
 	const statusLabel =
@@ -958,7 +1022,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 								: "File counts appear after the selection is checked."}
 						</p>
 					) : null}
-					{progress && !isSelecting ? (
+					{progress && !isSelecting && !isRename ? (
 						<p role="status">
 							{progress.completed} {completedLabel}, {progress.skipped} skipped, {progress.failed} failed,{" "}
 							{progress.blocked} need a choice, {progress.canceled} stopped.{" "}
@@ -968,7 +1032,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 						</p>
 					) : null}
 					{run && !isSelecting && itemPage === undefined ? <p role="status">Loading items…</p> : null}
-					{itemPage && !isSelecting ? (
+					{itemPage && !isSelecting && !isRename ? (
 						<p>Paths were recorded during this operation and may differ from current locations.</p>
 					) : null}
 					{itemPage === null ? <p>These items are no longer available.</p> : null}
@@ -1082,7 +1146,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 							{itemPage.page.length === 0 ? <p>No items on this page.</p> : null}
 						</div>
 					) : null}
-					{run && !isSelecting ? (
+					{run && !isSelecting && !isRename ? (
 						<div className={"FilesTransferRunModal-pages" satisfies FilesTransferRunModal_ClassNames}>
 							<MyButton
 								variant="ghost"
@@ -1103,7 +1167,7 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 							</MyButton>
 						</div>
 					) : null}
-					{status === "awaiting_input" && run ? (
+					{status === "awaiting_input" && run && !isRename ? (
 						<div className={"FilesTransferRunModal-defaults" satisfies FilesTransferRunModal_ClassNames}>
 							{(["file", "folder"] as const).map((kind) => (
 								<fieldset key={kind} disabled={isSaving || isStopPending}>

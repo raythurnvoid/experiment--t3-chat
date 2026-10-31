@@ -2268,6 +2268,10 @@ type FilesSidebarTreeItem_Props = {
 	isDropZoneIncluded: boolean;
 	pendingActionNodeIds: Set<string>;
 	renameError: string | undefined;
+	/**
+	 * The new name while this row's rename runs on the server. The saved name changes when the run publishes it.
+	 */
+	renamingName: string | undefined;
 	isTreeDragging: boolean;
 	isFallbackTabStop: boolean;
 	expandedFolderActionsVisible: boolean;
@@ -2297,7 +2301,15 @@ type FilesSidebarTreeItem_Props = {
 };
 
 const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSidebarTreeItem_Props) {
-	const { tree: _tree, item, displayNameByUserId, selectedNodeId, pendingActionNodeIds, ...rowProps } = props;
+	const {
+		tree: _tree,
+		item,
+		displayNameByUserId,
+		selectedNodeId,
+		pendingActionNodeIds,
+		renamingName,
+		...rowProps
+	} = props;
 
 	const itemId = useVal(() => item.getId());
 	const itemData = useVal(() => item.getItemData());
@@ -2351,7 +2363,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			{...rowProps}
 			item={item}
 			itemId={itemId}
-			itemData={itemData}
+			// Show the typed name at once, like a desktop file manager. If the rename fails, the saved name comes back.
+			itemData={renamingName === undefined ? itemData : ({ ...itemData, name: renamingName } as FilesSidebarItem)}
 			itemProps={itemProps}
 			renameInputProps={renameInputProps}
 			isNavigated={isNavigated}
@@ -2385,7 +2398,7 @@ type FilesSidebarTreeRow_CustomAttributes = {
 
 type FilesSidebarTreeRow_Props = Omit<
 	FilesSidebarTreeItem_Props,
-	"tree" | "displayNameByUserId" | "selectedNodeId" | "pendingActionNodeIds"
+	"tree" | "displayNameByUserId" | "selectedNodeId" | "pendingActionNodeIds" | "renamingName"
 > & {
 	itemId: string;
 	itemData: FilesSidebarItem;
@@ -3190,6 +3203,10 @@ type FilesSidebarTree_Props = {
 	isUploadingFile: boolean;
 	pendingActionNodeIds: Set<string>;
 	renameErrorByNodeId: Map<string, string>;
+	/**
+	 * The name each row shows while its rename runs on the server.
+	 */
+	renamingNameByNodeId: Map<string, string>;
 	canWriteItem: (item: FilesSidebarItem) => boolean;
 	canUnarchiveItem: (item: FilesSidebarItem) => boolean;
 	canWriteRoot: boolean;
@@ -3242,6 +3259,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		isUploadingFile,
 		pendingActionNodeIds,
 		renameErrorByNodeId,
+		renamingNameByNodeId,
 		canWriteItem,
 		canUnarchiveItem,
 		canWriteRoot,
@@ -3643,6 +3661,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										isDropZoneIncluded={dropZoneItemIds.has(itemId)}
 										pendingActionNodeIds={pendingActionNodeIds}
 										renameError={renameErrorByNodeId.get(itemId)}
+										renamingName={renamingNameByNodeId.get(itemId)}
 										isTreeDragging={isTreeDragging}
 										isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
 										expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -5234,7 +5253,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const convex = useConvex();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { openArchiveRun } = AppActivitiesProvider.useContext();
-	const { move, openRun } = FilesClipboardProvider.useContext();
+	const { move, watchRun } = FilesClipboardProvider.useContext();
 
 	const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 	const [previousRouteQuery, setPreviousRouteQuery] = useState(initialSearchQuery);
@@ -5312,6 +5331,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
 	const [renamingItem, setRenamingItem] = useState<string | null | undefined>(undefined);
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
+	const [renamingNameByNodeId, setRenamingNameByNodeId] = useState<Map<string, string>>(new Map());
 	/** The node whose share dialog is open, or `null` when it is closed. */
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	/** Whether the share dialog was opened from the "Shared with you" group or the search list. */
@@ -6227,7 +6247,18 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			clearRenameError(itemId);
 			item.setFocused();
 			markFileAsPending(itemId);
+			// The server saves the name a moment later, in a background run. Keep the row busy with the new name
+			// until that run ends.
+			setRenamingNameByNodeId((oldValue) => new Map(oldValue).set(itemId, normalizedName));
 			setKeptNodeIds((oldValue) => (oldValue.includes(itemId) ? oldValue : [...oldValue, itemId]));
+			const finishRenaming = () => {
+				unmarkFileAsPending(itemId);
+				setRenamingNameByNodeId((oldValue) => {
+					const nextValue = new Map(oldValue);
+					nextValue.delete(itemId);
+					return nextValue;
+				});
+			};
 			convex
 				.mutation(app_convex_api.files_nodes.rename_node, {
 					membershipId,
@@ -6236,6 +6267,17 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					path: normalizedName,
 				})
 				.then((result) => {
+					if (result._yay) {
+						watchRun({
+							runId: result._yay.runId,
+							kind: "rename",
+							subject: `"${itemData.name}" to "${normalizedName}"`,
+							onFinish: finishRenaming,
+						});
+						return;
+					}
+
+					finishRenaming();
 					if (result._nay) {
 						console.error("[FilesSidebar.handleRename] Failed to rename node", { result });
 						// A refused permission is not a bad name. Showing it under the name input would tell the
@@ -6246,15 +6288,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						}
 						renameValidation.cacheValidationMessage(result._nay.message);
 						setRenameError(itemId, result._nay.message);
-					} else if (result._yay) {
-						openRun(result._yay.runId);
 					}
 				})
 				.catch((error) => {
+					finishRenaming();
 					console.error("[FilesSidebar.handleRename] Error on rename node", { error });
 				})
 				.finally(() => {
-					unmarkFileAsPending(itemId);
 					files_clear_node_path_cached_validation_messages();
 				});
 		},
@@ -7543,6 +7583,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						isUploadingFile={isUploadingFile}
 						pendingActionNodeIds={pendingActionNodeIds}
 						renameErrorByNodeId={renameErrorByNodeId}
+						renamingNameByNodeId={renamingNameByNodeId}
 						canWriteItem={canWriteItem}
 						canUnarchiveItem={canUnarchiveItem}
 						canWriteRoot={canWriteRoot}
@@ -9415,6 +9456,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										isUploadingFile={false}
 										pendingActionNodeIds={props.pendingActionNodeIds ?? new Set()}
 										renameErrorByNodeId={new Map()}
+										renamingNameByNodeId={new Map()}
 										canWriteItem={() => props.canWrite ?? true}
 										canUnarchiveItem={() => true}
 										canWriteRoot={props.canWrite ?? true}

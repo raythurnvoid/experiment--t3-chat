@@ -1,4 +1,5 @@
 import { createContext, memo, use, useRef, useState, type ReactNode } from "react";
+import { ActivityJobToast } from "@/components/activity-job-toast.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { FilesArchiveRunModal } from "@/components/files/files-archive-modal.tsx";
 import { FilesPendingReviewModal } from "@/components/files/files-pending-review.tsx";
@@ -26,7 +27,25 @@ const AppActivitiesContext = createContext<{
 	/** `kind` names the run before it loads, so the dialog heading does not flip. */
 	openReviewRun: (runId: app_convex_Id<"files_pending_update_runs">, kind?: ReviewSelection["kind"]) => void;
 	openArchiveRun: (runId: app_convex_Id<"files_archive_runs">) => void;
+	/**
+	 * Show a toast while a Save or Discard runs. The user opens its dialog from the toast or Activity.
+	 */
+	watchReviewRun: (args: WatchedReviewRun) => void;
 } | null>(null);
+
+type WatchedReviewRun = {
+	runId: app_convex_Id<"files_pending_update_runs">;
+	kind: ReviewSelection["kind"];
+	/**
+	 * What the job acts on, for example `3 changes` or `your changes`.
+	 */
+	subject: string;
+};
+
+const REVIEW_VERBS = {
+	accept: ["save", "Saving", "Saved"],
+	discard: ["discard", "Discarding", "Discarded"],
+} as const;
 
 const AppActivitiesProvider = Object.assign(
 	memo(function AppActivitiesProvider(props: {
@@ -41,6 +60,7 @@ const AppActivitiesProvider = Object.assign(
 			kind: ReviewSelection["kind"] | undefined;
 		} | null>(null);
 		const [archiveRunId, setArchiveRunId] = useState<app_convex_Id<"files_archive_runs"> | null>(null);
+		const [watchedReviewRuns, setWatchedReviewRuns] = useState<WatchedReviewRun[]>([]);
 		const [isStartingReview, setIsStartingReview] = useState(false);
 		const reviewPending = useRef(false);
 		const reviewRequest = useRef<{
@@ -80,6 +100,13 @@ const AppActivitiesProvider = Object.assign(
 
 		const openArchiveRun = useFn((runId: app_convex_Id<"files_archive_runs">) => setArchiveRunId(runId));
 
+		// A Save or Discard never asks a question, so its dialog never opens by itself.
+		const watchReviewRun = useFn((watchedRun: WatchedReviewRun) => {
+			setWatchedReviewRuns((current) =>
+				current.some((item) => item.runId === watchedRun.runId) ? current : [...current, watchedRun],
+			);
+		});
+
 		const startReview = useFn(async (selection: ReviewSelection) => {
 			if (reviewPending.current) throw new Error("Your changes are already being sent.");
 			if (selection.items.length === 0) throw new Error("Select at least one pending change.");
@@ -107,7 +134,8 @@ const AppActivitiesProvider = Object.assign(
 				}
 				const runId = started._yay.runId;
 				request.runId = runId;
-				openReviewRun(runId, selection.kind);
+				const count = selection.items.length;
+				watchReviewRun({ runId, kind: selection.kind, subject: `${count} ${count === 1 ? "change" : "changes"}` });
 				for (let offset = 100; offset < selection.items.length; offset += 100) {
 					const appended = await app_convex.mutation(app_convex_api.files_pending_update_runs.append_items, {
 						membershipId,
@@ -137,9 +165,29 @@ const AppActivitiesProvider = Object.assign(
 
 		return (
 			<AppActivitiesContext.Provider
-				value={{ pendingStopSourceIds, stop, isStartingReview, startReview, openReviewRun, openArchiveRun }}
+				value={{
+					pendingStopSourceIds,
+					stop,
+					isStartingReview,
+					startReview,
+					openReviewRun,
+					openArchiveRun,
+					watchReviewRun,
+				}}
 			>
 				{children}
+				{watchedReviewRuns.map((item) => (
+					<ActivityJobToast
+						key={item.runId}
+						membershipId={membershipId}
+						job={{ kind: "files_pending_update_run", id: item.runId }}
+						verbs={REVIEW_VERBS[item.kind]}
+						subject={item.subject}
+						onOpen={() => openReviewRun(item.runId, item.kind)}
+						onNeedsInput={null}
+						onFinish={() => setWatchedReviewRuns((current) => current.filter((run) => run.runId !== item.runId))}
+					/>
+				))}
 				{reviewRun ? (
 					<FilesPendingReviewModal
 						key={reviewRun.id}

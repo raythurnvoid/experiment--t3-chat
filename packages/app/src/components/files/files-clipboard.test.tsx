@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useRef } from "react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { FilesClipboardProvider } from "./files-clipboard.tsx";
@@ -115,7 +116,9 @@ vi.mock("convex/react", async (importOriginal) => {
 	};
 });
 
-vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
+vi.mock("sonner", () => ({
+	toast: { error: toastErrorMock, loading: vi.fn(), dismiss: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() },
+}));
 
 const SOURCE_ID = "source" as app_convex_Id<"files_nodes">;
 const SECOND_ID = "second" as app_convex_Id<"files_nodes">;
@@ -397,7 +400,6 @@ describe("FilesClipboardProvider", () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		await press_paste();
-		await screen.findByRole("dialog");
 		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
 		expect(mutationMock, "complete Cut has no separate Seal").toHaveBeenCalledOnce();
 		expect(mutationMock.mock.calls[0]![1]).toEqual({
@@ -437,7 +439,7 @@ describe("FilesClipboardProvider", () => {
 		const view = render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		await press_paste();
-		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
 		push_run(
 			make_run({
 				kind: "move",
@@ -468,8 +470,7 @@ describe("FilesClipboardProvider", () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		await press_paste();
-		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
-		fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
 		fireEvent.click(screen.getByRole("button", { name: "Review older operation" }));
 		push_run(
 			make_run({
@@ -1272,8 +1273,6 @@ describe("FilesClipboardProvider", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Copy many sources" }));
 		await press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
-		// The page call goes out before React renders the dialog, so wait for its button.
-		fireEvent.click(await screen.findByRole("button", { name: "Hide" }));
 		expect(await press_paste()).toBe(true);
 		expect(mutationMock).toHaveBeenCalledTimes(2);
 		await act(async () => page.resolve({ _yay: null }));
@@ -1366,6 +1365,7 @@ describe("FilesClipboardProvider", () => {
 		await press_paste();
 		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(2));
 		push_run(make_run({ step: "uploading", progress: { discovered: 0, total: null } }));
+		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		fireEvent.click(screen.getByRole("button", { name: "Stop" }));
 		await act(async () => page.resolve({ _yay: null }));
 		expect(mutationMock.mock.calls.some(([reference]) => getFunctionName(reference) === "files_transfer:seal")).toBe(
@@ -1378,7 +1378,8 @@ describe("FilesClipboardProvider", () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		await press_paste();
-		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		push_run(
 			make_run({
 				kind: "move",
@@ -1576,9 +1577,23 @@ describe("FilesTransferRunModal", () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		await press_paste();
-		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		expect(screen.getByRole("heading", { name: "Paste files" })).toBeTruthy();
 		push_run(make_run({ kind: "move" }));
+		expect(screen.getByRole("heading", { name: "Move files" })).toBeTruthy();
+	});
+
+	test("shows a toast while a paste runs and opens the dialog only for a conflict", async () => {
+		render(<TestClipboard />);
+		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
+		await press_paste();
+		await waitFor(() => expect(intakeDeleteMock).toHaveBeenCalledOnce());
+		push_run(make_run({ kind: "move" }));
+		expect(toast.loading).toHaveBeenLastCalledWith("Moving 2 items…", expect.objectContaining({ id: RUN_ID }));
+		expect(screen.queryByRole("dialog")).toBeNull();
+
+		push_run(make_run({ kind: "move", status: "awaiting_input" }));
 		expect(screen.getByRole("heading", { name: "Move files" })).toBeTruthy();
 	});
 

@@ -1327,6 +1327,19 @@ const FileEditorSidebarPendingRestrictedItem = memo(function FileEditorSidebarPe
 
 	const { startReview } = AppActivitiesProvider.useContext();
 	const [isBusy, setIsBusy] = useState(false);
+	const itemRef = useRef<HTMLLIElement>(null);
+
+	// Discarding removes this row. Give focus back to the panel, like `FileEditorSidebarPendingItem`.
+	useLayoutEffect(() => {
+		const item = itemRef.current;
+		return () => {
+			if (!item?.contains(document.activeElement)) return;
+			const panel = item.closest<HTMLElement>(".FileEditorSidebarPending");
+			queueMicrotask(() => {
+				if (document.activeElement === document.body) panel?.focus();
+			});
+		};
+	}, []);
 
 	const handleDiscard = useFn(() => {
 		if (isBusy || disabled) return;
@@ -1350,7 +1363,7 @@ const FileEditorSidebarPendingRestrictedItem = memo(function FileEditorSidebarPe
 	});
 
 	return (
-		<li>
+		<li ref={itemRef}>
 			<div
 				className={cn(
 					"FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames,
@@ -1444,7 +1457,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 	const { startReview, isStartingReview } = AppActivitiesProvider.useContext();
 
 	const [isSubmitting, setIsSubmitting] = useState(false);
-	// Busy review buttons keep focus until the dialog opens. Handlers block repeated clicks.
+	// Busy review buttons keep focus while the job starts. Handlers block repeated clicks.
 	const isBulkBusy = isSubmitting || isStartingReview;
 	const [selectedSource, setSelectedSource] = useState<FileEditorSidebarPendingSource>(
 		initialThreadId ?? PENDING_SOURCE_ALL,
@@ -1876,7 +1889,20 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 						onLoadMoreSources={() => loadMoreSources(20)}
 						onValueChange={setSelectedSource}
 					/>
-					<div className={cn("FileEditorSidebarPending-header-actions" satisfies FileEditorSidebarPending_ClassNames)}>
+					<div
+						ref={(actions) => {
+							// Accept all and Discard all go away with the last row, and focus would fall to `<body>`.
+							// Give it back to the panel, like a removed row does.
+							return () => {
+								if (!actions?.contains(document.activeElement)) return;
+								const panel = actions.closest<HTMLElement>(".FileEditorSidebarPending");
+								queueMicrotask(() => {
+									if (document.activeElement === document.body) panel?.focus();
+								});
+							};
+						}}
+						className={cn("FileEditorSidebarPending-header-actions" satisfies FileEditorSidebarPending_ClassNames)}
+					>
 						<MyButton
 							variant="ghost"
 							className={cn(

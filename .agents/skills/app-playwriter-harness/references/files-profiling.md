@@ -185,21 +185,16 @@ and the finished Activity as separate milestones. The published saved view is th
 do not wait for all background repair to report it. Check descendant paths and terminal run state
 later, through the separate `files_transfer_status.get` and `list_items` reads.
 
-Native Rename can open a `Rename item` result dialog. Close any old dialog before input.
-Require one `.FilesTransferRunModal-item` whose legend is the exact source path. Its direct status
-paragraph must be exactly `Saved`, and its destination paragraph exactly `Destination: <new path>`.
+Native Rename opens no dialog. It opens the `Rename item` dialog only when the run needs a name
+conflict choice. Right after Enter, the row already shows the typed name and has `data-disabled`
+until the run ends; that name is not saved yet. A toast (`[data-sonner-toast]`) says `Renaming…`,
+then `Renamed…`. A failed run puts the saved name back and the toast says `Could not rename…`.
 
-Check each of those three elements is visible and contains the element returned by
-`elementFromPoint` at its centre. A requested destination without `Saved`, another dialog,
-or text covered by a dialog must not pass.
-
-Without a dialog, require the exact selected node ID, saved row name and breadcrumb, with clear
-hit tests on the row and breadcrumb. Typed input alone is not a saved name. Keep saved-label DOM
-changes as a separate milestone.
-
-Use the same exposed-result predicate with `recheckDoneAtFrame` for the frame time: a row can
-update just before a loading dialog covers it. Join either result
-surface to the exact accepted run and final saved-node audit.
+Require the exact selected node ID, saved row name and breadcrumb, with clear hit tests on the row
+and breadcrumb. The breadcrumb changes only when the run publishes, so use it (or
+`files_transfer_status.get`), not the row, as the saved milestone. Typed input alone is not a saved
+name. Keep saved-label DOM changes as a separate milestone, and join the result to the exact
+accepted run and final saved-node audit.
 
 Use `a[aria-label="Home"]` for the root breadcrumb. It is not always inside the path-list class.
 At root, that breadcrumb is absent. Check `nodeId=root` first and skip the Home click there.
@@ -271,13 +266,16 @@ has one `Save` button for metadata and protection. It stays open after a success
 completion is `Metadata saved` plus `files_metadata.get_entries` readback, not modal close. Import
 the exact already-loaded Monaco module URL and select the editor with `ariaLabel === "Metadata YAML"`.
 
-Copy/Paste keeps its clipboard in the page. Navigate inside the app after Copy. A short copy without
-a conflict can finish without a transfer dialog. Check the new row and then the completed run through
+Copy/Paste keeps its clipboard in the page. Navigate inside the app after Copy. A full page load
+also loses it, and another agent's edit can cause one through Vite. A paste without a conflict opens
+no transfer dialog; it shows a `Moving N items…` or `Copying N items…` toast, then the result.
+Check the selection before Cut: the folder open in the URL stays selected, and a selected parent
+wins over its selected children. Check the new row and then the completed run through
 `files_transfer_status.get` and `files_transfer_status.list_items`. A copied folder row can appear before its children
 finish. For successful owned Move or Rename, require the exact `source.target.id`, output target,
 and `movedNodeId`. Permission-denied items can hide the source; do not count them as success.
-Copy and Move can show Activity without opening a Transfer dialog. Native Rename can open the
-result dialog described above. A dialog alone never proves acceptance or completion.
+Copy, Move and Rename can show Activity without opening a Transfer dialog. A dialog alone never
+proves acceptance or completion.
 
 The top More options menu has no root Paste item. To paste at root, focus the Files tree container
 and press Control+V. Focus on a folder row pastes into it. Focus on a file row pastes into its parent.

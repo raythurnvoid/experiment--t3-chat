@@ -854,8 +854,9 @@ and `find` also keep raw name order.
   and blocks another start while this member has an active run in the workspace. Run progress
   comes from `get` and `list_current`. Tree changes come from the live `list_tree_children` pages
   of the open folders.
-- The progress dialog opens by itself only when the paste has more than one source. A one-item
-  paste shows only its Activity card, which can still open the dialog.
+- A Paste or drag Move shows a toast while it runs, `Moving 2 items…`, then its result. The
+  progress dialog opens by itself only when the run needs a name conflict choice. View in the
+  toast and the Activity card open it at any time (activities skill, "Job toasts").
 - The progress dialog says `Paste files` until the saved run kind is available, then shows
   `Copy files` or `Move files`, counts, and 50-item pages from `list_items`. Previous/Next page
   follows the server cursor, even after an empty page. Each conflict shows its authorized source
@@ -1038,6 +1039,13 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
   input pins its source and parent. Missing folders are created one segment per transaction as
   after-only candidates. They inherit the parent's child defaults. They appear with the renamed
   source at the same switch. Stop before that switch removes them and keeps the old source name.
+- A Rename shows no dialog. Finder, Explorer, GNOME Files, Dropbox, Google Drive and OneDrive
+  show none either, even for a big folder. The sidebar row shows the typed name and stays busy
+  until the run ends (`FilesClipboardProvider.watchRun`). A toast says `Renaming "a" to "b"…`, then
+  `Renamed "a" to "b".` The run dialog opens only when the run needs a name conflict choice; then it
+  hides the counts, pages and bulk choices. When the run ends without renaming, the saved name comes
+  back and the toast says `Could not rename "a" to "b": <reason>.`, with Details to open the dialog.
+  The Activity card says Renaming and Renamed.
 - Move and linked Pending Accept have no total selection, node, document or byte cap. Durable
   graph rows and native side-data pages keep each transaction small. The limits test checks the
   full wrapped steps, with the metadata catalog's writes. Existing per-file content

@@ -35,7 +35,7 @@ const {
 	convexActionMock,
 	fetchPrivateFilePendingTextMock,
 	savePrivateFilePendingTextMock,
-	openReviewRunMock,
+	watchReviewRunMock,
 	threadQueriesMock,
 	editorHarness,
 } = vi.hoisted(() => ({
@@ -44,7 +44,7 @@ const {
 	convexActionMock: vi.fn(),
 	fetchPrivateFilePendingTextMock: vi.fn(),
 	savePrivateFilePendingTextMock: vi.fn(),
-	openReviewRunMock: vi.fn(),
+	watchReviewRunMock: vi.fn(),
 	threadQueriesMock: vi.fn(),
 	// The drag handle is the one mounted child that already receives the Tiptap instance, so the
 	// stub below hands it to the tests. That is how a test types into the real document.
@@ -74,7 +74,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // Provider boundary: private Save hands this review starter to the save helper.
 vi.mock("@/lib/app-activities-context.tsx", () => ({
 	AppActivitiesProvider: {
-		useContext: () => ({ openReviewRun: openReviewRunMock }),
+		useContext: () => ({ watchReviewRun: watchReviewRunMock }),
 	},
 }));
 
@@ -331,7 +331,7 @@ describe("FileEditorRichTextNonCollab", () => {
 				reviewedRevision: pendingUpdate.revision,
 				text: text ? "alpha beta\n" : "",
 				onUpserted: expect.any(Function),
-				openReviewRun: openReviewRunMock,
+				watchReviewRun: watchReviewRunMock,
 			});
 			expect(onTargetChange, "queued work keeps the private file selected").not.toHaveBeenCalled();
 			expect(editorHarness.editor?.getMarkdown(), "queued work keeps the current text").toBe(text ? "alpha beta" : "");

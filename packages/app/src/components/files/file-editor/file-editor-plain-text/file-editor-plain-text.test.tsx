@@ -35,7 +35,7 @@ const {
 	fetchFileYjsStateAndTextMock,
 	fetchPrivateFilePendingTextMock,
 	savePrivateFilePendingTextMock,
-	openReviewRunMock,
+	watchReviewRunMock,
 	convexQueryMock,
 	convexActionMock,
 	monacoHarness,
@@ -45,7 +45,7 @@ const {
 	fetchFileYjsStateAndTextMock: vi.fn(),
 	fetchPrivateFilePendingTextMock: vi.fn(),
 	savePrivateFilePendingTextMock: vi.fn(),
-	openReviewRunMock: vi.fn(),
+	watchReviewRunMock: vi.fn(),
 	convexQueryMock: vi.fn(),
 	convexActionMock: vi.fn(),
 	// Shared state between the Editor mock and the tests: the created models with their language,
@@ -79,7 +79,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // Provider boundary: private Save opens the queued review before clearing busy.
 vi.mock("@/lib/app-activities-context.tsx", () => ({
 	AppActivitiesProvider: {
-		useContext: () => ({ openReviewRun: openReviewRunMock }),
+		useContext: () => ({ watchReviewRun: watchReviewRunMock }),
 	},
 }));
 
@@ -363,7 +363,7 @@ describe("FileEditorPlainText", () => {
 			reviewedRevision: pendingUpdate.revision,
 			text: currentText,
 			onUpserted: expect.any(Function),
-			openReviewRun: openReviewRunMock,
+			watchReviewRun: watchReviewRunMock,
 		});
 		expect(onTargetChange, "queued work keeps the private file selected").not.toHaveBeenCalled();
 		expect(monacoHarness.createdModels[0]!.model.getValue(), "queued work keeps the current text").toBe(currentText);

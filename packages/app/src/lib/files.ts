@@ -620,7 +620,7 @@ export async function files_upsert_file_pending_update(args: {
  * Ordinary private editors accept their whole text. Diff keeps its separate staged branch.
  * Report our upsert's revision before Save, so a refused Save can retry that exact draft.
  *
- * A review run saves the draft and its needed parent folders. Open it before clearing busy.
+ * A review run saves the draft and its needed parent folders. Watch it before clearing busy.
  */
 export async function files_save_private_file_pending_text(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -629,7 +629,11 @@ export async function files_save_private_file_pending_text(args: {
 	reviewedRevision: number;
 	text: string;
 	onUpserted: (revision: number) => void;
-	openReviewRun: (runId: app_convex_Id<"files_pending_update_runs">) => void;
+	watchReviewRun: (args: {
+		runId: app_convex_Id<"files_pending_update_runs">;
+		kind: "accept";
+		subject: string;
+	}) => void;
 }) {
 	const upserted = await files_upsert_file_pending_update({
 		membershipId: args.membershipId,
@@ -653,7 +657,9 @@ export async function files_save_private_file_pending_text(args: {
 		pendingUpdateId: pendingUpdate._id,
 		reviewedRevision: pendingUpdate.revision,
 	});
-	if (saved._yay && "kind" in saved._yay) args.openReviewRun(saved._yay.runId);
+	if (saved._yay && "kind" in saved._yay) {
+		args.watchReviewRun({ runId: saved._yay.runId, kind: "accept", subject: "your changes" });
+	}
 	return saved;
 }
 

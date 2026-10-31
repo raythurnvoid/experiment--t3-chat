@@ -315,7 +315,11 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	// A job with counts shows one block: a bar while it runs, and one result line when it ends.
 	const job = transferRun
 		? {
-				verbs: transferRun.transferKind === "move" ? ["Moving", "Moved"] : ["Copying", "Copied"],
+				verbs: transferRun.isRename
+					? ["Renaming", "Renamed"]
+					: transferRun.transferKind === "move"
+						? ["Moving", "Moved"]
+						: ["Copying", "Copied"],
 				onOpen: () => openRun(transferRun.id),
 			}
 		: reviewRun

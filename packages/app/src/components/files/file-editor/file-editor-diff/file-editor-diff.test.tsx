@@ -40,7 +40,7 @@ const {
 	useQueryMock,
 	convexWatchQueryMock,
 	waitNewQueryValueMock,
-	openReviewRunMock,
+	watchReviewRunMock,
 	monacoHarness,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
@@ -51,7 +51,7 @@ const {
 	useQueryMock: vi.fn(),
 	convexWatchQueryMock: vi.fn(),
 	waitNewQueryValueMock: vi.fn(),
-	openReviewRunMock: vi.fn(),
+	watchReviewRunMock: vi.fn(),
 	// Shared state between the DiffEditor stub and the tests: the models the component created
 	// (original first, then modified), the change listeners it put on the modified pane, and the
 	// options it set on the diff editor.
@@ -100,7 +100,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 }));
 
 vi.mock("@/lib/app-activities-context.tsx", () => ({
-	AppActivitiesProvider: { useContext: () => ({ openReviewRun: openReviewRunMock }) },
+	AppActivitiesProvider: { useContext: () => ({ watchReviewRun: watchReviewRunMock }) },
 }));
 
 // The real module creates a live ConvexReactClient at import (needs VITE_CONVEX_URL).
@@ -337,7 +337,7 @@ beforeEach(() => {
 		);
 	convexWatchQueryMock.mockReset();
 	waitNewQueryValueMock.mockReset();
-	openReviewRunMock.mockReset();
+	watchReviewRunMock.mockReset();
 	vi.mocked(files_fetch_file_yjs_state_and_text).mockReset().mockResolvedValue(null);
 	vi.mocked(files_yjs_rebase_branch_with_local_text).mockClear();
 	vi.mocked(files_persist_file_pending_update_rebased_state).mockReset();
@@ -850,10 +850,10 @@ describe("FileEditorDiff draft versions", () => {
 				? { _yay: { pendingUpdate: { ...pendingUpdate, revision: 2 }, currentYjsLastSequenceId: null } }
 				: { _yay: { kind: "queued", runId: "run_1", activityId: "activity_1" } },
 		);
-		openReviewRunMock.mockImplementation(() => {
+		watchReviewRunMock.mockImplementation(() => {
 			expect(
 				(screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled,
-				"Activity opens while Save is still busy",
+				"the job is watched while Save is still busy",
 			).toBe(true);
 		});
 		renderNonCollabProposalReview({
@@ -875,7 +875,11 @@ describe("FileEditorDiff draft versions", () => {
 			expectedPendingContentVersion: null,
 		});
 		expect(convexActionMock.mock.calls[1]?.[1]).toMatchObject({ target, reviewedRevision: 2 });
-		expect(openReviewRunMock, "queued Save opens its Activity").toHaveBeenCalledWith("run_1");
+		expect(watchReviewRunMock, "queued Save watches its job").toHaveBeenCalledWith({
+			runId: "run_1",
+			kind: "accept",
+			subject: "your changes",
+		});
 		expect(onTargetChange, "queued Save keeps the draft selected").not.toHaveBeenCalled();
 		expect(toast.success, "queued work is not reported as saved").not.toHaveBeenCalled();
 		expect(waitNewQueryValueMock, "queued Save does not wait for a completed doc reply").not.toHaveBeenCalled();

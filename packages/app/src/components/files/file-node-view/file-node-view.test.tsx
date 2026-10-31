@@ -213,7 +213,9 @@ vi.mock("@/lib/files-move-intake.ts", () => ({
 }));
 vi.mock("@/components/app-hotkeys.tsx", () => ({ AppHotkeysProvider: { useHotkey: () => {} } }));
 vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
-vi.mock("sonner", () => ({ toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() } }));
+vi.mock("sonner", () => ({
+	toast: { info: vi.fn(), error: vi.fn(), success: vi.fn(), loading: vi.fn(), dismiss: vi.fn(), warning: vi.fn() },
+}));
 
 // Monaco and the preview frame have separate tests. A local draft makes remounts visible here.
 vi.mock("../file-editor/file-editor.tsx", async () => {
@@ -1084,19 +1086,18 @@ describe("FileEditorSidebarPending review focus", () => {
 		opener.focus();
 		fireEvent.click(opener);
 
-		// The start reply has not arrived. Busy buttons must keep focus until the modal can capture it.
+		// The start reply has not arrived. Busy buttons must keep focus, so a keyboard user keeps their place.
 		expect(opener.matches(":disabled")).toBe(false);
 		expect(opener.getAttribute("aria-disabled")).toBe("true");
 		expect(document.activeElement).toBe(opener);
 		fireEvent.click(opener);
 		expect(mutationMock).toHaveBeenCalledTimes(1);
 		await act(async () => started.resolve({ _yay: { runId: "review_1" } }));
-		await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+		expect(screen.queryByRole("dialog"), "the job shows a toast, not a dialog").toBeNull();
 
 		pendingUpdates = [];
 		completed = true;
 		pushQueryChanges();
-		fireEvent.click(screen.getByText("Close"));
 		await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("Pending changes"));
 	});
 });
@@ -1529,7 +1530,7 @@ describe("FileNodeView private targets", () => {
 		).toBe(false);
 	});
 
-	test("keeps the review progress and a failed Save visible", async () => {
+	test("shows a toast while Save runs, and its failure keeps the draft", async () => {
 		privateView = {
 			...privateView!,
 			entry: {
@@ -1565,12 +1566,18 @@ describe("FileNodeView private targets", () => {
 		});
 		renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
 		fireEvent.click(await screen.findByRole("button", { name: "Save" }));
-		expect(await screen.findByText("Saving reviewed changes…")).toBeTruthy();
-		expect(screen.getByText(/1 remaining/)).toBeTruthy();
+		await waitFor(() =>
+			expect(toast.loading).toHaveBeenCalledWith("Saving 1 change…", expect.objectContaining({ id: "clipboard_run" })),
+		);
+		expect(screen.queryByRole("dialog")).toBeNull();
 		failed = true;
 		pushQueryChanges();
-		expect(await screen.findByRole("alert")).toHaveProperty("textContent", "The draft changed. Review it again.");
-		expect(screen.getByText("Review could not finish. Check the remaining changes.")).toBeTruthy();
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				"Could not save 1 change: The draft changed. Review it again.",
+				expect.objectContaining({ id: "clipboard_run" }),
+			),
+		);
 		expect(privateView?.entry.pendingUpdate?._id).toBe("pending_private");
 	});
 
@@ -1586,52 +1593,6 @@ describe("FileNodeView private targets", () => {
 
 		await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("File content"));
 		expect(screen.getByText("This draft is no longer available.")).toBeTruthy();
-	});
-
-	test.each(["Save", "Discard"])("returns focus to file content after closing completed %s", async (action) => {
-		privateView = {
-			...privateView!,
-			entry: {
-				...PRIVATE_ENTRY,
-				pendingUpdate: {
-					...PRIVATE_ENTRY.pendingUpdate,
-					content: undefined,
-					createIntent: {
-						kind: "stored",
-						contentType: "application/octet-stream",
-						size: 18,
-						assetId: "asset_binary" as app_convex_Id<"files_r2_assets">,
-					},
-				},
-			},
-		};
-		let completed = false;
-		const previousQuery = queryMock.getMockImplementation()!;
-		queryMock.mockImplementation((reference, args) => {
-			if (getFunctionName(reference) === "files_pending_update_runs:get")
-				return {
-					run: { kind: action === "Save" ? "accept" : "discard", step: "applying" },
-					activity: { status: completed ? "succeeded" : "running", finishedAt: completed ? 2 : undefined },
-					controls: { canStop: false },
-				};
-			if (getFunctionName(reference) === "files_pending_update_runs:list_items") return { page: [], isDone: true };
-			return previousQuery(reference, args);
-		});
-		const { rerender, onNavigateSearch } = renderFileView({ pendingNodeId: PRIVATE_ENTRY.node._id });
-		const opener = await screen.findByRole("button", { name: action });
-		opener.focus();
-		fireEvent.click(opener);
-		await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
-
-		privateView = null;
-		completed = true;
-		pushQueryChanges();
-		if (action === "Save")
-			rerender(<FileNodeView searchParams={{ nodeId: NODE._id }} onNavigateSearch={onNavigateSearch} />);
-		expect(opener.isConnected).toBe(false);
-		fireEvent.click(screen.getByText("Close"));
-
-		await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("File content"));
 	});
 
 	test("shows a saved image without a file viewer plugin", async () => {

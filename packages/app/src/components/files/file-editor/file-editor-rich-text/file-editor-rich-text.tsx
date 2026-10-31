@@ -1625,7 +1625,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 	} = props;
 
 	const { membershipId, userId } = AppTenantProvider.useContext();
-	const { openReviewRun } = AppActivitiesProvider.useContext();
+	const { watchReviewRun } = AppActivitiesProvider.useContext();
 	const nodeId = target.kind === "saved" ? target.id : null;
 	const [recoveryDocumentId] = useState(() => crypto.randomUUID());
 	const retainUnsavedText = useFn((text: string, reason: "read_only" | "permission" | "closed" = "closed") => {
@@ -1791,7 +1791,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 					onUpserted: (revision) => {
 						reviewedRevisionRef.current = revision;
 					},
-					openReviewRun,
+					watchReviewRun,
 				});
 				if (saved._nay) {
 					toast.error(saved._nay.message);

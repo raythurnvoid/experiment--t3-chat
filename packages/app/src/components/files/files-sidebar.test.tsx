@@ -24,6 +24,7 @@ const {
 	treeState,
 	tenantState,
 	linkState,
+	transferRunState,
 	savedState,
 	createNode,
 	creationPolicy,
@@ -53,6 +54,11 @@ const {
 		links: [] as unknown,
 		listeners: new Set<() => void>(),
 	},
+	// The answer of `files_transfer_status.get`. `null` is a run that is no longer available.
+	transferRunState: {
+		run: null as unknown,
+		listeners: new Set<() => void>(),
+	},
 	// The `search_saved` answers by clause. `undefined` keeps the first page loading, and a clause with
 	// no answer is empty and done. `revision` changes with every answer, to re-render the search.
 	savedState: {
@@ -72,6 +78,11 @@ const {
 function set_links(links: unknown) {
 	linkState.links = links;
 	for (const listener of linkState.listeners) listener();
+}
+
+function set_transfer_run(run: unknown) {
+	transferRunState.run = run;
+	for (const listener of transferRunState.listeners) listener();
 }
 
 vi.mock("@/components/app-auth.tsx", () => ({
@@ -109,6 +120,12 @@ vi.mock("convex/react", async (importOriginal) => {
 			linkState.listeners.delete(listener);
 		};
 	};
+	const subscribeTransferRun = (listener: () => void) => {
+		transferRunState.listeners.add(listener);
+		return () => {
+			transferRunState.listeners.delete(listener);
+		};
+	};
 	const subscribeSaved = (listener: () => void) => {
 		savedState.listeners.add(listener);
 		return () => {
@@ -125,6 +142,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		}),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			const links = useSyncExternalStore(subscribeLinks, () => linkState.links);
+			const transferRun = useSyncExternalStore(subscribeTransferRun, () => transferRunState.run);
 			if (args === "skip") return undefined;
 			queryCalls.push([getFunctionName(query), args]);
 			// The share and properties dialogs stay loading.
@@ -133,7 +151,7 @@ vi.mock("convex/react", async (importOriginal) => {
 				getFunctionName(query) === "files_tree:get_file_node_for_membership"
 			)
 				return undefined;
-			if (getFunctionName(query) === "files_transfer_status:get") return null;
+			if (getFunctionName(query) === "files_transfer_status:get") return transferRun;
 			if (getFunctionName(query) === "files_tree:get_workspace_move_view")
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
@@ -265,6 +283,7 @@ beforeEach(() => {
 	queryCalls.length = 0;
 	tenantState.membershipId = "membership";
 	set_links([]);
+	set_transfer_run(null);
 	savedState.answers.clear();
 	treeState.sharedRoots = [];
 	treeState.sharedRootsStatus = "done";
@@ -506,7 +525,10 @@ describe("FilesSidebar", () => {
 		expect(await view.findByText("No files yet.")).toBeTruthy();
 	});
 
-	test("rename keeps the old name and opens the accepted Move", async () => {
+	test("rename shows the new name until its run ends, without a dialog", async () => {
+		const loadingToast = vi.spyOn(toast, "loading").mockReturnValue("loading");
+		const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+		set_transfer_run({ activity: { status: "running", progress: { completed: 0 } } });
 		createNode.mockResolvedValue({ _yay: { runId: "rename-run", activityId: "rename-activity" } });
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
@@ -525,11 +547,26 @@ describe("FilesSidebar", () => {
 			}),
 		);
 		expect(createNode.mock.calls[0]).toHaveLength(2);
-		expect(view.getByRole("treeitem", { name: "bravo" })).toBeTruthy();
-		expect(view.queryByRole("treeitem", { name: "renamed" })).toBeNull();
 		await waitFor(() =>
 			expect(queryCalls).toContainEqual(["files_transfer_status:get", { membershipId: "membership", runId: "rename-run" }]),
 		);
+		expect(view.getByRole("treeitem", { name: "renamed" })).toBeTruthy();
+		expect(view.queryByRole("dialog")).toBeNull();
+		expect(loadingToast).toHaveBeenCalledWith(
+			'Renaming "bravo" to "renamed"…',
+			expect.objectContaining({ id: "rename-run" }),
+		);
+
+		// A failed run brings the saved name back and says why.
+		set_transfer_run({
+			activity: { status: "failed", finishedAt: 1, progress: { completed: 0 }, errorMessage: "Permission denied" },
+		});
+		expect(await view.findByRole("treeitem", { name: "bravo" })).toBeTruthy();
+		expect(errorToast).toHaveBeenCalledWith(
+			'Could not rename "bravo" to "renamed": Permission denied.',
+			expect.objectContaining({ id: "rename-run" }),
+		);
+		expect(view.queryByRole("dialog")).toBeNull();
 	});
 
 	test("a Shared with you row has the tree row menu, which archives that row only", async () => {
@@ -701,7 +738,9 @@ describe("FilesSidebar", () => {
 			sourceIds: ["alpha", "bravo"],
 			targetParentId: "delta",
 		});
-		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+		await waitFor(() =>
+			expect(queryCalls).toContainEqual(["files_transfer_status:get", { membershipId: "membership", runId: "run" }]),
+		);
 	});
 
 	test.each([
@@ -829,7 +868,9 @@ describe("FilesSidebar", () => {
 			sourceIds: ["bravo", "charlie", "delta"],
 			targetParentId: files_ROOT_ID,
 		});
-		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+		await waitFor(() =>
+			expect(queryCalls).toContainEqual(["files_transfer_status:get", { membershipId: "membership", runId: "run" }]),
+		);
 	});
 
 	test("does not paste into a focused archived folder", async () => {

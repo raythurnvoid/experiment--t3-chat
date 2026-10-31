@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { toast } from "sonner";
 import type { ComponentPropsWithRef, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -76,7 +77,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			start: "files_pending_update_runs.start",
 			append_items: "files_pending_update_runs.append_items",
 			seal: "files_pending_update_runs.seal",
+			get: "files_pending_update_runs.get",
 		},
+		files_transfer_status: { get: "files_transfer_status.get" },
 		access_control: {
 			get_current_user_workspace_permission: "access_control.get_current_user_workspace_permission",
 		},
@@ -714,6 +717,7 @@ describe("AppActivitiesProvider", () => {
 			selectedContentStateId: `state_${index}` as app_convex_Id<"files_pending_update_yjs_states">,
 		}));
 		const onError = vi.fn();
+		const loadingSpy = vi.spyOn(toast, "loading");
 		mutationMock.mockImplementation(async (ref: string) =>
 			ref === "files_pending_update_runs.start"
 				? { _yay: { runId: "review_1", activityId: "activity_1" } }
@@ -747,9 +751,8 @@ describe("AppActivitiesProvider", () => {
 			["files_pending_update_runs.seal", { membershipId: "membership_1", runId: "review_1" }],
 		]);
 		expect(onError).not.toHaveBeenCalled();
-		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "Hide review" }));
-		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(loadingSpy).toHaveBeenCalledWith("Saving 205 changes…", expect.objectContaining({ id: "review_1" }));
+		expect(screen.queryByRole("dialog"), "a Save never asks, so no dialog opens by itself").toBeNull();
 		expect(mutationMock).toHaveBeenCalledTimes(4);
 	});
 
@@ -808,7 +811,6 @@ describe("AppActivitiesProvider", () => {
 		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
 		expect(onError).toHaveBeenCalledTimes(1);
 		expect(mutationMock).toHaveBeenCalledTimes(2);
-		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();
 		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
 		expect(mutationMock.mock.calls[2]).toEqual(mutationMock.mock.calls[0]);
 		expect(mutationMock.mock.calls[3]).toEqual(mutationMock.mock.calls[1]);
@@ -861,7 +863,7 @@ describe("AppActivitiesProvider", () => {
 		});
 	});
 
-	test("shows a page refusal and keeps the job available for Stop", async () => {
+	test("shows a page refusal and lets the user send the pages again", async () => {
 		const items = Array.from({ length: 101 }, (_, index) => ({
 			pendingUpdateId: `proposal_${index}` as app_convex_Id<"files_pending_updates">,
 			reviewedRevision: 2,
@@ -881,7 +883,6 @@ describe("AppActivitiesProvider", () => {
 		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
 		expect(onError).toHaveBeenCalledWith(new Error("A reviewed change was revised."));
 		expect(mutationMock).toHaveBeenCalledTimes(2);
-		expect(screen.getByRole("dialog", { name: "Review review_1" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Start review" }).matches(":disabled")).toBe(false);
 	});
 

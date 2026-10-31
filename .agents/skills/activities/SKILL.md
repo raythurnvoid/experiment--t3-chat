@@ -39,7 +39,7 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
 - A human Move or Rename uses one transfer Activity even for one root. Cohort preparation and
   physical repair use that Activity. Progress counts a root once at its publication switch.
   Stop keeps published groups and lets repair finish. Move waits for repair before the next root.
-  Private direct Save opens its queued review Activity. Accept counts every item in a linked group
+  Private direct Save shows its queued review job as a toast (see "Job toasts"). Accept counts every item in a linked group
   once at the switch, before physical repair ends.
 - Rename is accepted during the requester's Copy or Move. Ready Renames run in order at the
   next free group boundary. Copy workers drain before Rename starts. A Rename that needs a
@@ -162,6 +162,23 @@ progress (transfer, review, protection, archive, and restore) the same way:
   Move or its files.
 - The bell count adds each active Activity in `awaiting_input` to the unread notifications. It drops
   when the person answers the clash or the job ends.
+
+# Job toasts
+
+Design principle: a job the person starts shows a toast, not a dialog. Its dialog opens by itself
+only when the job needs an answer, like a name conflict choice. Finder, Explorer, Google Drive and
+Dropbox show no dialog for work that needs nothing from the person.
+
+- [activity-job-toast.tsx](../../../packages/app/src/components/activity-job-toast.tsx) shows one toast per job
+  and replaces it when the job ends: `Moving 2 items…`, then `Moved 2 items.`, `Moved 1 of 2 items.`,
+  `Nothing was moved.`, `Stopped moving 2 items.`, or `Could not move 2 items: <reason>.` View or Details
+  opens the job dialog. The Activity card still opens it at any time.
+- Rename, Paste and drag Move use it through `FilesClipboardProvider.watchRun`. When the run starts
+  to wait for a conflict choice, the toast goes away and the dialog opens.
+- Save and Discard reviews use it through `AppActivitiesProvider.watchReviewRun`. They never ask, so
+  their dialog never opens by itself.
+- When a job's buttons go away with the rows they acted on, give focus to the panel, so a keyboard
+  user keeps their place. The dialog no longer does this.
 
 # Plugin opt-in and clocks
 

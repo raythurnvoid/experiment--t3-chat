@@ -253,7 +253,7 @@ describe("files_save_private_file_pending_text", () => {
 		reviewedRevision: 4,
 		text: "current text\n",
 		onUpserted: vi.fn(),
-		openReviewRun: vi.fn(),
+		watchReviewRun: vi.fn(),
 	};
 
 	beforeEach(() => {
@@ -267,10 +267,10 @@ describe("files_save_private_file_pending_text", () => {
 		convexActionMock.mockReset();
 		convexQueryMock.mockReset();
 		args.onUpserted.mockReset();
-		args.openReviewRun.mockReset();
+		args.watchReviewRun.mockReset();
 	});
 
-	test("accepts both text branches and opens the queued review for the returned revision", async () => {
+	test("accepts both text branches and watches the queued review for the returned revision", async () => {
 		const queued = { kind: "queued", runId: "run", activityId: "activity" };
 		convexActionMock
 			.mockResolvedValueOnce({ _yay: { pendingUpdate: { _id: "proposal", revision: 5, content: {} } } })
@@ -313,10 +313,14 @@ describe("files_save_private_file_pending_text", () => {
 				},
 			],
 		]);
-		expect(args.openReviewRun).toHaveBeenCalledExactlyOnceWith("run");
+		expect(args.watchReviewRun).toHaveBeenCalledExactlyOnceWith({
+			runId: "run",
+			kind: "accept",
+			subject: "your changes",
+		});
 	});
 
-	test("leaves durable parent intake on the server and opens its queued review", async () => {
+	test("leaves durable parent intake on the server and watches its queued review", async () => {
 		convexQueryMock.mockResolvedValue({
 			requiredParents: [
 				{ pendingUpdateId: "folder_a", reviewedRevision: 2 },
@@ -337,7 +341,11 @@ describe("files_save_private_file_pending_text", () => {
 		});
 		expect(args.onUpserted).toHaveBeenCalledExactlyOnceWith(5);
 		expect(convexQueryMock).not.toHaveBeenCalled();
-		expect(args.openReviewRun).toHaveBeenCalledExactlyOnceWith("parent-run");
+		expect(args.watchReviewRun).toHaveBeenCalledExactlyOnceWith({
+			runId: "parent-run",
+			kind: "accept",
+			subject: "your changes",
+		});
 		expect(convexActionMock.mock.calls.map(([name]) => name)).toEqual([
 			"upsert_file_pending_update",
 			"save_file_pending_update",
@@ -357,7 +365,7 @@ describe("files_save_private_file_pending_text", () => {
 		expect((await files_save_private_file_pending_text(args))._nay?.message).toBe(
 			"Review and save the parent draft first.",
 		);
-		expect(args.openReviewRun).not.toHaveBeenCalled();
+		expect(args.watchReviewRun).not.toHaveBeenCalled();
 		expect(convexActionMock.mock.calls.map(([name]) => name)).toEqual([
 			"upsert_file_pending_update",
 			"save_file_pending_update",

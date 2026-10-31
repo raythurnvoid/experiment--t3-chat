@@ -2533,7 +2533,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	const targetKey = `${target.kind}:${target.id}`;
 
 	const convex = useConvex();
-	const { openReviewRun } = AppActivitiesProvider.useContext();
+	const { watchReviewRun } = AppActivitiesProvider.useContext();
 	const pendingUpdateResult = useStableQuery(api.files_pending_target.get_file_pending_update, {
 		membershipId,
 		target,
@@ -2711,7 +2711,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				return;
 			}
 			if ("kind" in savePendingResult._yay) {
-				openReviewRun(savePendingResult._yay.runId);
+				watchReviewRun({ runId: savePendingResult._yay.runId, kind: "accept", subject: "your changes" });
 				return;
 			}
 			if (savePendingResult._yay.target.kind !== target.kind || savePendingResult._yay.target.id !== target.id) {
