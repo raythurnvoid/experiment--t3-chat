@@ -173,6 +173,7 @@ import {
 	files_PATH_MAX_LENGTH,
 	files_check_new_folder_count,
 	files_check_request_folder_prefixes,
+	files_archive_operation_id_cutoff,
 	files_archive_operation_id_new,
 	files_NEW_FOLDER_DEPTH_MAX,
 } from "../shared/files.ts";
@@ -3882,22 +3883,123 @@ export const purge_nodes = mutation({
 			nodes.push(node);
 		}
 
-		// A named item inside another named item goes with it. Archived items can share a path, so a path
-		// match is only a hint, and the parent chain decides.
-		const nodeIds = new Set(nodes.map((node) => node._id));
-		const folderTreePaths = nodes.filter((node) => node.kind === "folder").map((node) => node.treePath);
-		const topNodes = [];
-		for (const node of nodes) {
-			let parentId = node.parentId;
-			if (folderTreePaths.some((treePath) => treePath !== node.treePath && node.treePath.startsWith(treePath))) {
-				while (parentId !== files_ROOT_ID && !nodeIds.has(parentId)) {
-					parentId = (await ctx.db.get("files_nodes", parentId))?.parentId ?? files_ROOT_ID;
-				}
-			}
-			if (parentId === files_ROOT_ID || !nodeIds.has(parentId)) topNodes.push(node);
+		// A named item inside another named item keeps its own place in the job. The walk of the outer
+		// item may delete it first, and then its own turn finds nothing. When the walk cannot go inside a
+		// kept folder, its own turn still deletes it.
+		return await files_archive_runs_db_start_purge(ctx, { userAuth, membership, nodes, emptyArchive: null });
+	},
+});
+
+/**
+ * Delete permanently every top item of one area of the Archived view that was archived before now.
+ * `area` is null for the open part of the workspace, or a restricted folder. It needs Can manage on
+ * the area. The job keeps the items inside that the person may not delete.
+ */
+export const empty_archive = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		area: v.union(v.null(), v.id("files_nodes")),
+	},
+	returns: v_result({
+		_yay: v.object({
+			/**
+			 * Null when the archive was emptied inside the request. Otherwise the job that goes on.
+			 */
+			runId: v.union(v.id("files_archive_runs"), v.null()),
+			/**
+			 * Counts of top items found so far, not of the items inside them.
+			 */
+			itemCount: v.number(),
+			deletedCount: v.number(),
+			keptCount: v.number(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		return await files_archive_runs_db_start_purge(ctx, { userAuth, membership, nodes: topNodes });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// The area is an active restricted folder the person can open, like in the Archived view.
+		const areaNode = args.area && (await ctx.db.get("files_nodes", args.area));
+		if (args.area !== null) {
+			const readable =
+				areaNode &&
+				areaNode.organizationId === membership.organizationId &&
+				areaNode.workspaceId === membership.workspaceId &&
+				areaNode.archiveOperationId === null &&
+				areaNode.restrictedScopeNodeId === args.area &&
+				(
+					await access_control_db_authorize_membership(ctx, {
+						userAuth,
+						membership,
+						permission: "content.read",
+						fileNode: areaNode,
+					})
+				)._yay;
+			if (!readable) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+		}
+		const manageable = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.permissions.manage",
+			...(areaNode && { fileNode: areaNode }),
+		});
+		if (manageable._nay) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// A Move takes its operation id when it starts but archives the items in its way when it ends. So
+		// its items would look older than the cutoff.
+		const moveSlot = await ctx.db
+			.query("files_move_workspace_slots")
+			.withIndex("by_workspace", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
+			)
+			.unique();
+		if (moveSlot?.cohortId) {
+			return Result({ _nay: { message: "Files are still moving in this workspace. Try again when the move ends." } });
+		}
+
+		// One Empty archive at a time in a workspace. A workspace has few active purge jobs, because each
+		// one needs a person's request.
+		for await (const run of ctx.db
+			.query("files_archive_runs")
+			.withIndex("by_organization_workspace_active_kind", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("active", true)
+					.eq("kind", "purge"),
+			)) {
+			if (run.emptyArchive) {
+				return Result({
+					_nay: { name: "busy", message: "The archive is already being emptied. Wait for it to finish." },
+				});
+			}
+		}
+
+		return await files_archive_runs_db_start_purge(ctx, {
+			userAuth,
+			membership,
+			nodes: [],
+			emptyArchive: { area: args.area, cutoff: files_archive_operation_id_cutoff(Date.now()) },
+		});
 	},
 });
 

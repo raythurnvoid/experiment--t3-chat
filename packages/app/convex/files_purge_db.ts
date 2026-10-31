@@ -117,7 +117,11 @@ export async function files_purge_db_delete_asset(
  * - `deleted`: the node doc and everything in it are gone.
  *
  * The first call that passes the busy checks sets `purgeRunId`. From then on no write can land on
- * the node (`files_nodes_db_require_writable`), so the families below can only shrink.
+ * the node (`files_nodes_db_require_writable`), so the families below can only shrink. That call or a
+ * later one may still answer `busy`. Then the run must call again later and must not keep the node.
+ *
+ * Only one purge job works on a path at a time. So a `purgeRunId` of another run is left by a job that
+ * ended, and this run takes the node over.
  */
 export async function files_purge_db_drain_node_batch(
 	ctx: MutationCtx,
@@ -178,7 +182,7 @@ export async function files_purge_db_drain_node_batch(
 		return { kind: "busy" as const };
 	}
 
-	if (!node.purgeRunId) {
+	if (node.purgeRunId !== runId) {
 		await ctx.db.patch("files_nodes", nodeId, { purgeRunId: runId });
 	}
 

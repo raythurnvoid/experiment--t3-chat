@@ -11,9 +11,11 @@ import {
 	restore,
 	lock_archived,
 	read_activity,
+	run_to_end,
 	step,
 	type Fixture,
 } from "./files_archive_runs.setup.test.ts";
+import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
 import { test_mocks } from "./setup.test.ts";
 import { files_archive_operation_id_new } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -184,6 +186,11 @@ describe("files_nodes.purge_nodes", () => {
 		const [bigId, smallId] = tree.fileIds as [Id<"files_nodes">, Id<"files_nodes">];
 		await add_yjs_updates(f, bigId, 300);
 		await archive_to_end(f, tree.topId);
+		// A job that ended long ago left its id on the file. The new job takes the file over.
+		await f.t.run(async (ctx) => {
+			const endedRun = (await ctx.db.query("files_archive_runs").first())!;
+			await ctx.db.patch("files_nodes", bigId, { purgeRunId: endedRun._id });
+		});
 
 		const job = await purge_job(f, (await purge(f, [bigId, smallId])).runId);
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", bigId)))?.purgeRunId, "the request started the file").toBe(
@@ -207,6 +214,211 @@ describe("files_nodes.purge_nodes", () => {
 		expect(left.updates).toBe(0);
 		expect(left.small?.archiveOperationId, "the file the job did not reach stays archived").not.toBeNull();
 		expect(left.small?.purgeRunId).toBeUndefined();
+	});
+
+	test("waits as a queued job while an op on its paths runs, then goes on", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "wait", folderCount: 1, filesPerFolder: 1 });
+		const fileId = tree.fileIds[0]!;
+		await add_yjs_updates(f, fileId, 300);
+		await archive_to_end(f, tree.topId);
+		const job = await purge_job(f, (await purge(f, [tree.topId])).runId);
+
+		const scopeOpId = await f.t.run((ctx) =>
+			files_subtree_ops_db_insert(ctx, {
+				op: {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					userId: f.db.userId,
+					kind: "scope",
+					status: "running",
+					rootNodeIds: [],
+					treePaths: ["/wait/"],
+					blockedByOpId: null,
+				},
+				now: Date.now(),
+			}),
+		);
+		await step(f, job.runId);
+		expect((await read_activity(f, job.activityId)).status, "the job waits without new steps").toBe("queued");
+
+		await f.t.run((ctx) => files_subtree_ops_db_delete(ctx, { opId: scopeOpId, now: Date.now() }));
+		expect((await step_to_end(f, job)).status).toBe("succeeded");
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", tree.topId))).toBeNull();
+	});
+
+	test("a file that turns busy after its first write waits instead of staying locked", async () => {
+		const f = await fixture();
+		// A file with nothing to delete but its node. Its first call sets `purgeRunId`, then finds an
+		// index run that still reads it.
+		const { fileId, stateId } = await f.t.run(async (ctx) => {
+			const fileId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: "root",
+				name: "bare.md",
+				sortName: files_sort_text_key("bare.md"),
+				kind: "file",
+				path: "/bare.md",
+				treePath: "/bare.md",
+				pathDepth: 1,
+				archiveOperationId: files_archive_operation_id_new(Date.now() - 1000),
+			});
+			const placement = {
+				parentId: "root" as const,
+				kind: "file" as const,
+				name: "bare.md",
+				sortName: files_sort_text_key("bare.md"),
+				path: "/bare.md",
+				treePath: "/bare.md",
+				archiveOperationId: null,
+				restrictedScopeNodeId: null,
+				isRestrictedScopeRoot: false,
+			};
+			const indexRunId = await ctx.db.insert("files_index_runs", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				fileNodeId: fileId,
+				indexRevision: 1,
+				contentRevision: 1,
+				contentHeadId: null,
+				previousHeadId: null,
+				chunkCount: 0,
+				textKind: "rich_text",
+				placement,
+				phase: "build_text",
+				cursor: null,
+				nextPosition: 0,
+				step: 0,
+				generation: 0,
+				nextAttemptAt: 0,
+				scheduledId: null,
+				slotGeneration: null,
+				published: false,
+				aborting: false,
+				error: null,
+			});
+			const stateId = await ctx.db.insert("files_index_states", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				fileNodeId: fileId,
+				contentRevision: 1,
+				requestedRevision: 1,
+				requestedHeadId: null,
+				publishedRevision: 0,
+				publishedHeadId: null,
+				activeRunId: indexRunId,
+				needsRun: false,
+				nextAttemptAt: 0,
+				movePublication: null,
+			});
+			return { fileId, stateId };
+		});
+
+		const job = await purge_job(f, (await purge(f, [fileId])).runId);
+		expect((await read_activity(f, job.activityId)).status, "the job waits for the index run").toBe("running");
+		await f.t.run((ctx) => ctx.db.patch("files_index_states", stateId, { activeRunId: null }));
+		expect((await step_to_end(f, job)).status).toBe("succeeded");
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", fileId))).toBeNull();
+	});
+
+	test("Empty archive deletes only what was archived before it started, in its own area", async () => {
+		const f = await fixture();
+		const insert_archived = (fields: { name: string; archiveOperationId: string }) =>
+			f.t.run((ctx) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: "root",
+					name: fields.name,
+					sortName: files_sort_text_key(fields.name),
+					kind: "file",
+					path: `/${fields.name}`,
+					treePath: `/${fields.name}`,
+					pathDepth: 1,
+					archiveOperationId: fields.archiveOperationId,
+				}),
+			);
+		// More top items than one page, each under its own older operation.
+		for (let index = 0; index < 55; index++) {
+			await insert_archived({
+				name: `old-${String(index).padStart(2, "0")}.md`,
+				archiveOperationId: files_archive_operation_id_new(Date.now() - 10_000 - index),
+			});
+		}
+		await insert_archived({ name: "legacy.md", archiveOperationId: crypto.randomUUID() });
+		await insert_archived({ name: "unknown.md", archiveOperationId: "no-time" });
+		// A restricted folder is another area, so its archive stays.
+		await f.t.run(async (ctx) => {
+			const restrictedId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: "root",
+				name: "private",
+				sortName: files_sort_text_key("private"),
+				kind: "folder",
+				path: "/private",
+				treePath: "/private/",
+				pathDepth: 1,
+				isRestrictedScopeRoot: true,
+				parentScopeNodeId: null,
+			});
+			await ctx.db.patch("files_nodes", restrictedId, { restrictedScopeNodeId: restrictedId });
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: restrictedId,
+				name: "inner.md",
+				sortName: files_sort_text_key("inner.md"),
+				kind: "file",
+				path: "/private/inner.md",
+				treePath: "/private/inner.md",
+				pathDepth: 2,
+				restrictedScopeNodeId: restrictedId,
+				archiveOperationId: files_archive_operation_id_new(Date.now() - 10_000),
+			});
+		});
+		// An archive job that still stamps the items inside its folder.
+		const tree = await seed_tree(f, { name: "stamping", folderCount: 1, filesPerFolder: 60 });
+		const stamping = await archive(f, [tree.topId]);
+		expect(stamping._yay?.isDone).toBe(false);
+		vi.setSystemTime(Date.now() + 1000);
+
+		const emptied = await f.asOwner.mutation(api.files_nodes.empty_archive, {
+			membershipId: f.db.membershipId,
+			area: null,
+		});
+		if (emptied._nay) throw new Error(emptied._nay.message);
+		expect(
+			await f.asOwner.mutation(api.files_nodes.empty_archive, { membershipId: f.db.membershipId, area: null }),
+			"one Empty archive at a time",
+		).toMatchObject({ _nay: { name: "busy" } });
+		// The archive job ends after Empty archive started, so its items still stay.
+		await run_to_end(f, stamping._yay!);
+		const ended = await step_to_end(f, await purge_job(f, emptied._yay.runId));
+
+		expect(ended.status).toBe("succeeded");
+		const paths = await list_workspace_paths(f);
+		expect(paths.filter((path) => !path.startsWith("/stamping"))).toEqual([
+			"/private",
+			"/private/inner.md",
+			"/unknown.md",
+		]);
+		expect(paths, "the archive that was still running keeps its items").toContain("/stamping");
+		const run = await f.t.run((ctx) => ctx.db.get("files_archive_runs", emptied._yay.runId!));
+		expect(run?.emptyArchive).toMatchObject({ foundCount: 56, deletedCount: 56, keptCount: 0 });
 	});
 
 	test("a restore of the same archive waits until the purge ends", async () => {

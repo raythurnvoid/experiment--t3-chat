@@ -1,6 +1,6 @@
 // Saved Files tree and table queries. Keep editor handlers out of this module.
 
-import { query, type QueryCtx } from "./_generated/server.js";
+import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator, paginationResultValidator, type PaginationResult } from "convex/server";
 import {
@@ -1675,6 +1675,8 @@ const archived_tops_cursor_validator = v.object({
 
 type ArchivedTopsStreamPosition = Infer<typeof archived_tops_stream_position_validator>;
 
+export type files_tree_ArchivedTopsCursor = Infer<typeof archived_tops_cursor_validator>;
+
 /**
  * The Archived view's order: newest archive operation first, then by `treePath`.
  */
@@ -1703,12 +1705,158 @@ function archived_tops_position_after(node: Doc<"files_nodes">) {
 		: { op: node.archiveOperationId!, start: node.treePath, inclusive: false };
 }
 
-function archived_tops_parse_cursor(cursor: string) {
+export function files_tree_archived_tops_parse_cursor(cursor: string) {
 	const parsed: unknown = JSON.parse(cursor);
 	if (!validate(archived_tops_cursor_validator, parsed)) {
 		throw convex_invalid_cursor_error("The Archived view cursor is invalid.");
 	}
 	return parsed;
+}
+
+/**
+ * Read the top items of one area of the Archived view from `positions` on: the merge of its two
+ * streams, described at `list_archived_tops`. The Archived view and Empty archive both read it.
+ * `over_budget` says when the call must stop reading. Then `stopped` is true, and `positions`
+ * holds where each stream got to. `positions` is changed in place.
+ */
+export async function files_tree_db_read_archived_tops(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		saved: Awaited<ReturnType<typeof files_saved_stream_db_create>>;
+		area: Id<"files_nodes"> | null;
+		positions: files_tree_ArchivedTopsCursor;
+		end: files_tree_ArchivedTopsCursor | null;
+		numItems: number;
+		over_budget: (page: Doc<"files_nodes">[]) => Promise<boolean>;
+	},
+) {
+	const { saved, area, positions, end, numItems } = args;
+	const page: Doc<"files_nodes">[] = [];
+	const read_node = async (row: Doc<"files_nodes"> | Doc<"files_saved_places"> | null) =>
+		row ? (await saved.read_nodes([row]))[0]! : null;
+
+	const streams = {
+		items: {
+			newest_op: (below: string | null) =>
+				saved.queries
+					.by_scope_archive_tree((q) => {
+						const archived = q.eq("restrictedScopeNodeId", area).gt("archiveOperationId", null);
+						return below === null ? archived : archived.lt("archiveOperationId", below);
+					})
+					.order("desc")
+					.first(),
+			first_at: (position: { op: string; start: string; inclusive: boolean }) =>
+				saved.queries
+					.by_scope_archive_tree((q) => {
+						const rows = q.eq("restrictedScopeNodeId", area).eq("archiveOperationId", position.op);
+						return position.inclusive ? rows.gte("treePath", position.start) : rows.gt("treePath", position.start);
+					})
+					.first(),
+			// The area's own folder lists in its parent area, through the folders stream.
+			keep: (node: Doc<"files_nodes">) => !node.isRestrictedScopeRoot,
+		},
+		folders: {
+			newest_op: (below: string | null) =>
+				saved.queries
+					.by_parent_scope_archive_tree((q) => {
+						const archived = q.eq("parentScopeNodeId", area).gt("archiveOperationId", null);
+						return below === null ? archived : archived.lt("archiveOperationId", below);
+					})
+					.order("desc")
+					.first(),
+			first_at: (position: { op: string; start: string; inclusive: boolean }) =>
+				saved.queries
+					.by_parent_scope_archive_tree((q) => {
+						const rows = q.eq("parentScopeNodeId", area).eq("archiveOperationId", position.op);
+						return position.inclusive ? rows.gte("treePath", position.start) : rows.gt("treePath", position.start);
+					})
+					.first(),
+			// The index also holds a folder that just stopped being restricted, while its scope job runs.
+			keep: (node: Doc<"files_nodes">) => node.isRestrictedScopeRoot,
+		},
+	};
+
+	/**
+	 * The first top item of one stream at `from` or after it. "budget" keeps the position the
+	 * stream reached, so the next page goes on from there.
+	 */
+	const next_top = async (stream: (typeof streams)["items"], from: ArchivedTopsStreamPosition) => {
+		let position = from;
+		while (position !== "done") {
+			if (await args.over_budget(page)) return { kind: "budget" as const, position };
+
+			const row = position === null ? null : await read_node(await stream.first_at(position));
+			if (!row) {
+				// The operation has no more rows here, so go on with the next older one.
+				const older = await stream.newest_op(position?.op ?? null);
+				position = older ? { op: older.archiveOperationId!, start: "", inclusive: true } : "done";
+				continue;
+			}
+
+			if (!stream.keep(row)) {
+				position = archived_tops_position_after(row);
+				continue;
+			}
+			const parent =
+				row.parentId === files_ROOT_ID
+					? null
+					: await files_saved_placement_db_get_node(ctx.db, row.parentId, saved.tag);
+			if (parent?.archiveOperationId !== row.archiveOperationId) {
+				return { kind: "top" as const, node: row };
+			}
+
+			// Not a top: skip the highest folder above it in the same operation. The walk is as long as
+			// the folder depth. A rename may still be rewriting the paths below that folder; then skip
+			// only this row.
+			let highest = parent;
+			while (highest.parentId !== files_ROOT_ID) {
+				const above = await files_saved_placement_db_get_node(ctx.db, highest.parentId, saved.tag);
+				if (above?.archiveOperationId !== row.archiveOperationId) break;
+				highest = above;
+			}
+			position = archived_tops_position_after(row.treePath.startsWith(highest.treePath) ? highest : row);
+		}
+		return { kind: "done" as const };
+	};
+
+	// Merge the two streams. A stream's position stays at its head until the head is on the page.
+	const heads: { items: Doc<"files_nodes"> | null; folders: Doc<"files_nodes"> | null } = {
+		items: null,
+		folders: null,
+	};
+	let stopped = false;
+	while (end !== null || page.length < numItems) {
+		for (const name of ["items", "folders"] as const) {
+			if (heads[name] || positions[name] === "done") continue;
+			const next = await next_top(streams[name], positions[name]);
+			if (next.kind === "budget") {
+				positions[name] = next.position;
+				stopped = true;
+				break;
+			}
+			if (next.kind === "done") {
+				positions[name] = "done";
+				continue;
+			}
+			positions[name] = { op: next.node.archiveOperationId!, start: next.node.treePath, inclusive: true };
+			heads[name] = next.node;
+		}
+		if (stopped) break;
+
+		// A page with an end cursor takes from each stream only what is before that stream's end.
+		const candidates = (["items", "folders"] as const).filter((name) => {
+			const head = heads[name];
+			return head !== null && (end === null || archived_tops_is_before(head, end[name]));
+		});
+		const name = candidates.sort((a, b) => archived_tops_compare(heads[a]!, heads[b]!))[0];
+		if (!name) break;
+
+		page.push(heads[name]!);
+		positions[name] = archived_tops_position_after(heads[name]!);
+		heads[name] = null;
+	}
+
+	return { page, stopped };
 }
 
 /**
@@ -1760,142 +1908,28 @@ export const list_archived_tops = query({
 		}
 		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
 
-		const positions: Infer<typeof archived_tops_cursor_validator> =
+		const positions: files_tree_ArchivedTopsCursor =
 			args.paginationOpts.cursor === null
 				? { items: null, folders: null }
-				: archived_tops_parse_cursor(args.paginationOpts.cursor);
+				: files_tree_archived_tops_parse_cursor(args.paginationOpts.cursor);
 		const end =
-			args.paginationOpts.endCursor == null ? null : archived_tops_parse_cursor(args.paginationOpts.endCursor);
+			args.paginationOpts.endCursor == null
+				? null
+				: files_tree_archived_tops_parse_cursor(args.paginationOpts.endCursor);
 		const numItems = Math.max(1, Math.min(args.paginationOpts.numItems, ARCHIVED_TOPS_PAGE_MAX_ITEMS));
 
-		const page: Doc<"files_nodes">[] = [];
 		// Keep enough of the call's reads for the rows of the page.
-		const over_budget = async () =>
+		const over_budget = async (page: Doc<"files_nodes">[]) =>
 			(await ctx.meta.getTransactionMetrics()).databaseQueries.used + (page.length + 1) * ARCHIVED_TOPS_ROW_RANGES >=
 			TREE_PAGE_MAX_RANGES;
-		const read_node = async (row: Doc<"files_nodes"> | Doc<"files_saved_places"> | null) =>
-			row ? (await saved.read_nodes([row]))[0]! : null;
-
-		const streams = {
-			items: {
-				newest_op: (below: string | null) =>
-					saved.queries
-						.by_scope_archive_tree((q) => {
-							const archived = q.eq("restrictedScopeNodeId", args.area).gt("archiveOperationId", null);
-							return below === null ? archived : archived.lt("archiveOperationId", below);
-						})
-						.order("desc")
-						.first(),
-				first_at: (position: { op: string; start: string; inclusive: boolean }) =>
-					saved.queries
-						.by_scope_archive_tree((q) => {
-							const rows = q.eq("restrictedScopeNodeId", args.area).eq("archiveOperationId", position.op);
-							return position.inclusive ? rows.gte("treePath", position.start) : rows.gt("treePath", position.start);
-						})
-						.first(),
-				// The area's own folder lists in its parent area, through the folders stream.
-				keep: (node: Doc<"files_nodes">) => !node.isRestrictedScopeRoot,
-			},
-			folders: {
-				newest_op: (below: string | null) =>
-					saved.queries
-						.by_parent_scope_archive_tree((q) => {
-							const archived = q.eq("parentScopeNodeId", args.area).gt("archiveOperationId", null);
-							return below === null ? archived : archived.lt("archiveOperationId", below);
-						})
-						.order("desc")
-						.first(),
-				first_at: (position: { op: string; start: string; inclusive: boolean }) =>
-					saved.queries
-						.by_parent_scope_archive_tree((q) => {
-							const rows = q.eq("parentScopeNodeId", args.area).eq("archiveOperationId", position.op);
-							return position.inclusive ? rows.gte("treePath", position.start) : rows.gt("treePath", position.start);
-						})
-						.first(),
-				// The index also holds a folder that just stopped being restricted, while its scope job runs.
-				keep: (node: Doc<"files_nodes">) => node.isRestrictedScopeRoot,
-			},
-		};
-
-		/**
-		 * The first top item of one stream at `from` or after it. "budget" keeps the position the
-		 * stream reached, so the next page goes on from there.
-		 */
-		const next_top = async (stream: (typeof streams)["items"], from: ArchivedTopsStreamPosition) => {
-			let position = from;
-			while (position !== "done") {
-				if (await over_budget()) return { kind: "budget" as const, position };
-
-				const row = position === null ? null : await read_node(await stream.first_at(position));
-				if (!row) {
-					// The operation has no more rows here, so go on with the next older one.
-					const older = await stream.newest_op(position?.op ?? null);
-					position = older ? { op: older.archiveOperationId!, start: "", inclusive: true } : "done";
-					continue;
-				}
-
-				if (!stream.keep(row)) {
-					position = archived_tops_position_after(row);
-					continue;
-				}
-				const parent =
-					row.parentId === files_ROOT_ID
-						? null
-						: await files_saved_placement_db_get_node(ctx.db, row.parentId, saved.tag);
-				if (parent?.archiveOperationId !== row.archiveOperationId) {
-					return { kind: "top" as const, node: row };
-				}
-
-				// Not a top: skip the highest folder above it in the same operation. The walk is as long as
-				// the folder depth. A rename may still be rewriting the paths below that folder; then skip
-				// only this row.
-				let highest = parent;
-				while (highest.parentId !== files_ROOT_ID) {
-					const above = await files_saved_placement_db_get_node(ctx.db, highest.parentId, saved.tag);
-					if (above?.archiveOperationId !== row.archiveOperationId) break;
-					highest = above;
-				}
-				position = archived_tops_position_after(row.treePath.startsWith(highest.treePath) ? highest : row);
-			}
-			return { kind: "done" as const };
-		};
-
-		// Merge the two streams. A stream's position stays at its head until the head is on the page.
-		const heads: { items: Doc<"files_nodes"> | null; folders: Doc<"files_nodes"> | null } = {
-			items: null,
-			folders: null,
-		};
-		let stopped = false;
-		while (end !== null || page.length < numItems) {
-			for (const name of ["items", "folders"] as const) {
-				if (heads[name] || positions[name] === "done") continue;
-				const next = await next_top(streams[name], positions[name]);
-				if (next.kind === "budget") {
-					positions[name] = next.position;
-					stopped = true;
-					break;
-				}
-				if (next.kind === "done") {
-					positions[name] = "done";
-					continue;
-				}
-				positions[name] = { op: next.node.archiveOperationId!, start: next.node.treePath, inclusive: true };
-				heads[name] = next.node;
-			}
-			if (stopped) break;
-
-			// A page with an end cursor takes from each stream only what is before that stream's end.
-			const candidates = (["items", "folders"] as const).filter((name) => {
-				const head = heads[name];
-				return head !== null && (end === null || archived_tops_is_before(head, end[name]));
-			});
-			const name = candidates.sort((a, b) => archived_tops_compare(heads[a]!, heads[b]!))[0];
-			if (!name) break;
-
-			page.push(heads[name]!);
-			positions[name] = archived_tops_position_after(heads[name]!);
-			heads[name] = null;
-		}
+		const { page, stopped } = await files_tree_db_read_archived_tops(ctx, {
+			saved,
+			area: args.area,
+			positions,
+			end,
+			numItems,
+			over_budget,
+		});
 
 		const rows = await files_tree_db_get_list_rows(ctx, {
 			userAuth,

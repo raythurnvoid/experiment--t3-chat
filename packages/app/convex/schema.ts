@@ -6909,6 +6909,23 @@ const app_convex_schema = defineSchema({
 		 */
 		longPathOperationId: v.optional(v.string()),
 		/**
+		 * Set only on an Empty archive job: a purge of every top item of one area that was archived before
+		 * the job started. `area` is null for the open part of the workspace. `cutoff` is
+		 * `files_archive_operation_id_cutoff` of the start time; only operation ids below it are deleted.
+		 * `cursor` is where the Archived view reader goes on (`files_tree_db_read_archived_tops`). The
+		 * counts are of top items: found so far, deleted, and kept.
+		 */
+		emptyArchive: v.optional(
+			v.object({
+				area: v.union(v.null(), v.id("files_nodes")),
+				cutoff: v.string(),
+				cursor: v.string(),
+				foundCount: v.number(),
+				deletedCount: v.number(),
+				keptCount: v.number(),
+			}),
+		),
+		/**
 		 * Set only on the last job of a restore that the public API `files/restore` started. The jobs run one
 		 * after another, so the last one ends last and history cleanup deletes it last. A retry with the same
 		 * request id finds it, and answers with the same jobs instead of restoring again.
