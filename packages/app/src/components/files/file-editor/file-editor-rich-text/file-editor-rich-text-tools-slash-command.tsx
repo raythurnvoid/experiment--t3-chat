@@ -32,6 +32,7 @@ import {
 } from "novel";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
+import type { MyFloatingSurface_ClassNames } from "../../../my-floating-surface.tsx";
 import type { MyPopoverContent_ClassNames } from "../../../my-popover.tsx";
 import type {
 	MyMenuItem_ClassNames,
@@ -326,6 +327,7 @@ export function FileEditorRichTextToolsSlashCommand() {
 			className={cn(
 				"FileEditorRichTextToolsSlashCommand" satisfies FileEditorRichTextToolsSlashCommand_ClassNames,
 				"app-scrollable" satisfies AppClassName,
+				"MyFloatingSurface" satisfies MyFloatingSurface_ClassNames,
 				"MyPopoverContent" satisfies MyPopoverContent_ClassNames,
 			)}
 		>
