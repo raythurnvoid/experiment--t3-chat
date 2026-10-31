@@ -187,7 +187,7 @@ export async function files_subtree_ops_db_insert_node(
 	ctx: MutationCtx,
 	args: Pick<
 		Doc<"files_subtree_op_nodes">,
-		"opId" | "sequence" | "nodeId" | "nodeDone" | "forceArchive" | "restoredParent"
+		"opId" | "sequence" | "nodeId" | "nodeDone" | "forceArchive" | "restoredParent" | "purge"
 	>,
 ) {
 	await ctx.db.insert("files_subtree_op_nodes", { ...args, cursor: null, pending: [] });
@@ -201,7 +201,9 @@ export async function files_subtree_ops_db_enqueue_nodes(
 	ctx: MutationCtx,
 	args: {
 		opId: Id<"files_subtree_ops">;
-		nodes: Array<Pick<Doc<"files_subtree_op_nodes">, "nodeId" | "nodeDone" | "forceArchive" | "restoredParent">>;
+		nodes: Array<
+			Pick<Doc<"files_subtree_op_nodes">, "nodeId" | "nodeDone" | "forceArchive" | "restoredParent" | "purge">
+		>;
 	},
 ) {
 	if (args.nodes.length === 0) return;

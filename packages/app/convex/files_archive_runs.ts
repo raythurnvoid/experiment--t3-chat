@@ -25,6 +25,9 @@
 //
 // Forced archive visits children first and keeps denied branches active. It can stop between steps.
 // Ordinary archive cannot stop after stamping a root. Restore stops while waiting for a clash choice.
+//
+// Delete permanently (the purge kind) walks archived items the same way as forced archive, children
+// first. It deletes each node for good and keeps a folder while anything inside it stays.
 
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
@@ -79,6 +82,7 @@ import {
 	files_subtree_ops_db_save_page,
 } from "./files_subtree_ops_db.ts";
 import { files_nodes_db_rebuild_node } from "./files_subtree_ops_rebuild.ts";
+import { files_purge_db_drain_node_batch } from "./files_purge_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
@@ -93,6 +97,7 @@ import app_convex_schema from "./schema.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {
 	files_archive_runs_CHECK_STEP_MAX_NODES,
+	files_archive_runs_REQUEST_MAX_CHECK_NODES,
 	files_archive_runs_REQUEST_MAX_NODES,
 } from "../server/files-archive-runs.ts";
 import { files_ROOT_ID } from "../server/files.ts";
@@ -200,10 +205,15 @@ type StepArgs = {
 	 */
 	writeState: { isWritten: boolean };
 	restoredParents: Map<Id<"files_nodes">, NonNullable<Doc<"files_subtree_op_nodes">["restoredParent"]>>;
+	/**
+	 * Purge: true once the person asked to stop. The job first finishes the node it is deleting.
+	 */
+	isStopping: boolean;
 };
 
 type StepOutcome =
 	| { kind: "continue" }
+	| { kind: "canceled" }
 	| { kind: "blocked" }
 	| { kind: "done" }
 	| { kind: "paused" }
@@ -250,6 +260,16 @@ async function db_require_op(ctx: QueryCtx | MutationCtx, runId: Id<"files_archi
 		throw should_never_happen(errorMessage, errorData);
 	}
 	return op;
+}
+
+/**
+ * True while Delete permanently has started deleting a node and not finished it. The job may end only
+ * when this is false, so no file is left half deleted.
+ */
+async function db_is_purging_node(ctx: MutationCtx, run: Doc<"files_archive_runs">) {
+	const row = await files_subtree_ops_db_first_node(ctx, (await db_require_op(ctx, run._id))._id);
+	const node = row && (await ctx.db.get("files_nodes", row.nodeId));
+	return node?.purgeRunId === run._id;
 }
 
 /**
@@ -850,6 +870,210 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 		}
 		await db_archive_node({ ctx, ...args, node });
 		await db_finish_forced_item(ctx, { ...args, row });
+	}
+	return { kind: "continue" };
+}
+
+type PurgeKeptReason = Extract<Doc<"files_archive_run_items">, { kind: "purge" }>["reason"];
+
+/**
+ * Why Delete permanently kept an item, in the words the job results show.
+ */
+const PURGE_KEPT_MESSAGES: Record<PurgeKeptReason, string> = {
+	permission: "Permission denied",
+	read_only: "This item is read-only. Turn off Read-only, then try again.",
+	busy: "This item is in use. Try again in a moment.",
+	changed: "This item moved or changed. Try again from its current folder.",
+	not_empty: "This folder still holds items that could not be deleted.",
+};
+
+async function db_finish_purge_item(
+	ctx: MutationCtx,
+	args: StepArgs & {
+		row: Doc<"files_subtree_op_nodes">;
+		reason: PurgeKeptReason | null;
+	},
+) {
+	if (args.reason) {
+		await ctx.db.insert("files_archive_run_items", {
+			runId: args.runId,
+			order: args.progress.discovered,
+			kind: "purge",
+			nodeId: args.row.nodeId,
+			reason: args.reason,
+		});
+		args.progress.blocked += 1;
+		if (args.row.purge?.rootNodeId === args.row.nodeId) {
+			args.run.refusedItems.push({
+				nodeId: args.row.nodeId,
+				refusal: {
+					name: null,
+					message:
+						args.reason === "not_empty"
+							? "Some items inside could not be deleted. See the job results."
+							: PURGE_KEPT_MESSAGES[args.reason],
+				},
+			});
+		}
+	}
+	args.progress.discovered += 1;
+	args.budget.nodes -= 1;
+	await ctx.db.delete("files_subtree_op_nodes", args.row._id);
+}
+
+/**
+ * Whether Delete permanently must keep a node it did not start yet. Null when the node may go.
+ */
+async function db_check_purge_node(
+	ctx: MutationCtx,
+	args: StepArgs & {
+		membership: Doc<"organizations_workspaces_users">;
+		frame: NonNullable<Doc<"files_subtree_op_nodes">["purge"]>;
+		node: Doc<"files_nodes">;
+	},
+): Promise<PurgeKeptReason | null> {
+	const { frame, node } = args;
+
+	// The person picked the named item in the Archived view. When it was restored, archived again or
+	// moved since, they did not pick what is there now.
+	const root = node._id === frame.rootNodeId ? node : await ctx.db.get("files_nodes", frame.rootNodeId);
+	if (
+		!root ||
+		root.archiveOperationId !== frame.rootOperationId ||
+		root.treePath !== frame.rootTreePath ||
+		node.organizationId !== args.run.organizationId ||
+		node.workspaceId !== args.run.workspaceId ||
+		node.parentId !== frame.parentId ||
+		(node._id !== root._id && (root.kind !== "folder" || !node.treePath.startsWith(root.treePath)))
+	)
+		return "changed";
+
+	// Deleting for good needs Can manage, in every area the walk reaches. Added people change access
+	// inside an area, so the key is the pair.
+	const scopeKey = `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}`;
+	let allowed = args.checkedScopes.get(scopeKey);
+	if (allowed === undefined) {
+		allowed = await files_write_policy_db_has_write_context_permission(ctx, {
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+			writeContext: args.writeContext,
+			membership: args.membership,
+			node,
+			permission: "content.permissions.manage",
+		});
+		args.checkedScopes.set(scopeKey, allowed);
+	}
+	if (!allowed) return "permission";
+
+	// Read-only is set on each locked node, so only this node is kept. Its folders then keep it too.
+	if (node.readOnly) return "read_only";
+
+	return null;
+}
+
+/**
+ * Delete permanently. Walk each named item children first, and delete a folder only after everything
+ * inside it. An item that must stay keeps its folders, so nothing it needs is deleted.
+ *
+ * Deleting one node takes several calls of `files_purge_db_drain_node_batch`, sometimes over several
+ * steps. The first call sets the node's `purgeRunId`. From then on the walk finishes that node before
+ * anything else, so no file is left half deleted. Stop and a lost membership end the job only between
+ * nodes. The started node is always the first queue row, because the walk queues nothing while it
+ * deletes a node.
+ */
+async function db_apply_purge(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	// A running Move, scope or Restore op rewrites paths and scopes page by page. Wait until it ends, so
+	// the checks below see the final ones.
+	for (const kind of ["move", "scope", "restore"] as const) {
+		const repair = await ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_organization_workspace_kind_status", (q) =>
+				q
+					.eq("organizationId", args.run.organizationId)
+					.eq("workspaceId", args.run.workspaceId)
+					.eq("kind", kind)
+					.eq("status", "running"),
+			)
+			.first();
+		if (repair) return { kind: "continue" };
+	}
+	while (args.budget.nodes > 0 && args.budget.checkNodes > 0 && !(await files_subtree_ops_db_is_near_limits(ctx))) {
+		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
+		if (!row) return { kind: "done" };
+		const frame = row.purge;
+		if (!frame) throw should_never_happen("Purge row has no named item", { rowId: row._id });
+		args.budget.checkNodes -= 1;
+		const node = await ctx.db.get("files_nodes", row.nodeId);
+		const isStarted = node?.purgeRunId === args.runId;
+
+		if (!isStarted) {
+			if (args.isStopping) return { kind: "canceled" };
+			if (!args.membership) return MEMBERSHIP_LOST;
+		}
+		if (!node) {
+			args.progress.skipped += 1;
+			await db_finish_purge_item(ctx, { ...args, row, reason: null });
+			continue;
+		}
+		if (!isStarted && args.membership) {
+			const reason = await db_check_purge_node(ctx, { ...args, membership: args.membership, frame, node });
+			if (reason) {
+				await db_finish_purge_item(ctx, { ...args, row, reason });
+				continue;
+			}
+			// Queue the next page of children above the folder, so they go first. Archived children can
+			// share a name, so the page goes by name and creation time.
+			if (node.kind === "folder") {
+				const page = await files_subtree_ops_db_next_children(ctx, { row, folder: node, budget: args.budget });
+				if (!page) return { kind: "continue" };
+				if (page.children.length > 0 || !page.isDone) {
+					args.budget.checkNodes -= page.children.length;
+					await ctx.db.patch("files_subtree_op_nodes", row._id, { cursor: page.cursor });
+					await files_subtree_ops_db_enqueue_nodes(ctx, {
+						opId: args.opId,
+						nodes: page.children.map((child) => ({
+							nodeId: child._id,
+							nodeDone: false,
+							purge: { ...frame, parentId: node._id },
+						})),
+					});
+					continue;
+				}
+			}
+		}
+
+		const drained = await files_purge_db_drain_node_batch(ctx, {
+			organizationId: args.run.organizationId,
+			workspaceId: args.run.workspaceId,
+			node,
+			runId: args.runId,
+		});
+		args.budget.nodes -= 1;
+		switch (drained.kind) {
+			case "more": {
+				args.writeState.isWritten = true;
+				continue;
+			}
+			case "deleted": {
+				args.writeState.isWritten = true;
+				args.progress.completed += 1;
+				await db_finish_purge_item(ctx, { ...args, row, reason: null });
+				continue;
+			}
+			// Work that ends on its own still uses the node. Before the first write the job keeps it.
+			// After that it must finish the node, so it tries again in the next step.
+			case "busy": {
+				if (isStarted) return { kind: "continue" };
+				await db_finish_purge_item(ctx, { ...args, row, reason: "busy" });
+				continue;
+			}
+			case "not_empty": {
+				await db_finish_purge_item(ctx, { ...args, row, reason: "not_empty" });
+				continue;
+			}
+			default:
+				throw should_never_happen("Unknown purge drain result", drained satisfies never);
+		}
 	}
 	return { kind: "continue" };
 }
@@ -1827,6 +2051,12 @@ async function db_begin_archive_apply(ctx: MutationCtx, args: StepArgs) {
  * ends inside the request.
  */
 async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	// Each deleted node advances its own media validation version.
+	if (args.run.kind === "purge") {
+		const outcome = await db_apply_purge(ctx, args);
+		if (outcome.kind === "done") args.progress.total = args.progress.discovered;
+		return outcome;
+	}
 	if (args.run.kind === "archive" && args.run.force) {
 		const outcome = await db_apply_forced_archive(ctx, args);
 		if (args.writeState.isWritten) await files_media_validation_db_advance_version(ctx, args.run);
@@ -1927,6 +2157,17 @@ async function db_settle_step(
 			return;
 		}
 		case "paused": {
+			return;
+		}
+		case "canceled": {
+			await db_finish_run({
+				ctx,
+				runId: args.runId,
+				status: "canceled",
+				errorMessage: null,
+				errorCode: "canceled",
+				now: args.now,
+			});
 			return;
 		}
 		case "done": {
@@ -2310,6 +2551,7 @@ export async function files_archive_runs_db_start(
 		checkedScopes: new Map(),
 		writeState: { isWritten: false },
 		restoredParents: new Map(),
+		isStopping: false,
 	};
 	// A Move in the workspace makes the first step wait too. The Move wakes the job when it ends. A fast
 	// archive already proved that no Move runs.
@@ -2390,11 +2632,174 @@ export async function files_archive_runs_db_start(
 }
 
 /**
- * One scheduled step of an archive or restore op. `files_subtree_ops.advance` checked the op.
+ * Delete permanently through the job. The caller checked that each named node is archived, that the
+ * person can manage it, and that no named node is inside another one. The job checks every node
+ * inside again and keeps what it may not delete.
+ *
+ * Returns `runId` null when the work finished inside this request with nothing kept. The counts are
+ * of named items only.
+ */
+export async function files_archive_runs_db_start_purge(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		nodes: Doc<"files_nodes">[];
+	},
+) {
+	const { organizationId, workspaceId } = args.membership;
+
+	// A restore or another purge of these paths waits for this job, and this job waits for them.
+	const busyPaths = { discoverTreePaths: [] as string[] };
+	for (const node of args.nodes) add_discover_tree_path(busyPaths, node.treePath);
+	const blocker = await files_subtree_ops_db_find_blocker(ctx, {
+		organizationId,
+		workspaceId,
+		treePaths: busyPaths.discoverTreePaths,
+		waiter: null,
+	});
+
+	const now = Date.now();
+	const run: RunFields = {
+		organizationId,
+		workspaceId,
+		userId: args.userAuth.id,
+		force: false,
+		kind: "purge",
+		// The named items can come from several archive operations. A new id matches none of them, so
+		// the restore busy check never refuses because of this job. Restore waits for the paths instead.
+		archiveOperationId: files_archive_operation_id_new(now),
+		rootNodeIds: args.nodes.map((node) => node._id),
+		phase: "apply",
+		checkCursor: { rootIndex: 0, treePath: "" },
+		discoverTreePaths: [],
+		applyRootIndex: 0,
+		active: true,
+		skipOperationId: null,
+		conflict: null,
+		choice: null,
+		applyToRemaining: { file: null, folder: null },
+		revision: 0,
+		requestFirstRunId: null,
+		checkNamedItem: null,
+		refusedItems: [],
+	};
+	const progress: RunProgress = {
+		unit: "items",
+		discovered: 0,
+		total: null,
+		completed: 0,
+		skipped: 0,
+		failed: 0,
+		blocked: 0,
+		canceled: 0,
+	};
+
+	const runId = await ctx.db.insert("files_archive_runs", run);
+	const opId = await files_subtree_ops_db_insert(ctx, {
+		op: {
+			organizationId,
+			workspaceId,
+			userId: args.userAuth.id,
+			status: blocker ? "queued" : "running",
+			blockedByOpId: blocker?._id ?? null,
+			rootNodeIds: run.rootNodeIds,
+			treePaths: busyPaths.discoverTreePaths,
+			kind: "purge",
+			archiveRunId: runId,
+		},
+		now,
+	});
+	await files_subtree_ops_db_enqueue_nodes(ctx, {
+		opId,
+		nodes: args.nodes.map((node) => ({
+			nodeId: node._id,
+			nodeDone: false,
+			purge: {
+				rootNodeId: node._id,
+				rootTreePath: node.treePath,
+				rootOperationId: node.archiveOperationId!,
+				parentId: node.parentId,
+			},
+		})),
+	});
+
+	const stepArgs: StepArgs = {
+		opId,
+		runId,
+		run,
+		progress,
+		userAuth: args.userAuth,
+		writeContext: await public_api_credentials_db_get_write_context(ctx, {
+			credentialId: null,
+			userId: args.userAuth.id,
+			force: false,
+		}),
+		membership: args.membership,
+		now,
+		budget: {
+			nodes: files_archive_runs_REQUEST_MAX_NODES,
+			checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
+			hasPaginated: false,
+		},
+		isRequest: true,
+		checkedScopes: new Map(),
+		writeState: { isWritten: false },
+		restoredParents: new Map(),
+		isStopping: false,
+	};
+	// A Move holds nodes that the "no child" read cannot see, so the first step waits for it too.
+	const paused =
+		!blocker && (await files_subtree_ops_db_pause_for_move(ctx, (await ctx.db.get("files_subtree_ops", opId))!));
+	const outcome = blocker || paused ? null : await db_step(ctx, stepArgs);
+
+	const counts = {
+		itemCount: args.nodes.length,
+		// A named item is gone only once the job deleted it. The job reads at most 500 of them.
+		deletedCount: (await Promise.all(run.rootNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
+			(node) => node === null,
+		).length,
+		keptCount: run.refusedItems.length,
+	};
+	// Work that ended inside the request with nothing kept leaves no job.
+	if (
+		(outcome?.kind === "done" && progress.blocked === 0) ||
+		(outcome?.kind === "failed" && !stepArgs.writeState.isWritten)
+	) {
+		await files_subtree_ops_db_delete(ctx, { opId, now });
+		await ctx.db.delete("files_archive_runs", runId);
+		return outcome.kind === "done" ? Result({ _yay: { runId: null, ...counts } }) : Result({ _nay: outcome.nay });
+	}
+
+	const activityId = await activities_db_start(ctx, {
+		organizationId,
+		workspaceId,
+		userId: args.userAuth.id,
+		membershipId: args.membership._id,
+		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, args.membership),
+		source: { kind: "files_archive_run", id: runId, archiveKind: "purge", force: false },
+		// Keep names and paths out of the title. The requester may lose access to the items later.
+		title: "Delete files",
+		targets: [],
+		visibility: "requester",
+		// A queued job shows no card until it starts.
+		feedVisible: !blocker,
+		status: blocker ? "queued" : "running",
+		resultKind: "saved",
+		progress,
+		deadlineAt: now + (blocker ? CHOICE_TIMEOUT_MS : RUN_TIMEOUT_MS),
+		now,
+	});
+	if (outcome) await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
+	return Result({ _yay: { runId, ...counts } });
+}
+
+/**
+ * One scheduled step of an archive, restore or purge op. `files_subtree_ops.advance` checked the op.
  */
 export async function files_archive_runs_db_advance(
 	ctx: MutationCtx,
-	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "archive" | "restore" }>; now: number },
+	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "archive" | "restore" | "purge" }>; now: number },
 ) {
 	const storedRun = await ctx.db.get("files_archive_runs", args.op.archiveRunId);
 	if (!storedRun?.active) return;
@@ -2441,6 +2846,7 @@ export async function files_archive_runs_db_advance(
 		checkedScopes: new Map(),
 		writeState: { isWritten: false },
 		restoredParents: new Map(),
+		isStopping: activity.status === "stopping",
 	});
 	const outcome = isApiKeyLost && stepOutcome === MEMBERSHIP_LOST ? API_KEY_LOST : stepOutcome;
 
@@ -2461,7 +2867,7 @@ export async function files_archive_runs_db_advance(
  */
 export async function files_archive_runs_db_promote(
 	ctx: MutationCtx,
-	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "archive" | "restore" }>; now: number },
+	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "archive" | "restore" | "purge" }>; now: number },
 ) {
 	const run = (await ctx.db.get("files_archive_runs", args.op.archiveRunId))!;
 	if (run.phase === "check") {
@@ -2490,6 +2896,10 @@ export async function files_archive_runs_db_promote(
  *
  * A timeout does not stop a job that is not waiting for a choice. Archive has no Stop, so the deadline
  * only tells the recover cron to schedule the step again.
+ *
+ * Delete permanently can also be stopped, but only between nodes. While it deletes a node, a Stop marks
+ * the Activity "stopping", and the next step ends the job after that node. A step that keeps failing
+ * ends it only between nodes too.
  */
 export async function files_archive_runs_db_request_stop(
 	ctx: MutationCtx,
@@ -2506,7 +2916,9 @@ export async function files_archive_runs_db_request_stop(
 			// must go on: items it did not reach would stay active, with their links, inside the archived folder.
 			if (
 				(await files_subtree_ops_db_count_recover(ctx, { opId, activity })) &&
-				(run.phase !== "apply" || (run.kind === "archive" && run.force))
+				(run.phase !== "apply" ||
+					(run.kind === "archive" && run.force) ||
+					(run.kind === "purge" && !(await db_is_purging_node(ctx, run))))
 			) {
 				await db_finish_run({
 					ctx,
@@ -2526,6 +2938,20 @@ export async function files_archive_runs_db_request_stop(
 			await files_subtree_ops_db_recover(ctx, { opId });
 			return;
 		}
+	}
+
+	// Delete permanently stops only between nodes. While it deletes one, the next step ends the job
+	// after that node.
+	if (args.reason === "user" && run.kind === "purge" && (await db_is_purging_node(ctx, run))) {
+		const activity = await db_require_activity(ctx, run._id);
+		if (activity.status !== "stopping") {
+			await ctx.db.patch("activities", activity._id, {
+				status: "stopping",
+				stopRequestedAt: args.now,
+				updatedAt: args.now,
+			});
+		}
+		return;
 	}
 
 	// Cancel ends the whole request. End the jobs that wait behind this one first, so the end of this
@@ -2708,7 +3134,10 @@ export const list_outcomes = query({
 	),
 	handler: async (ctx, args) => {
 		const owned = await db_get_owned_run(ctx, args);
-		if (owned._nay || owned._yay.run.kind !== "archive" || !owned._yay.run.force) {
+		if (
+			owned._nay ||
+			(owned._yay.run.kind !== "purge" && (owned._yay.run.kind !== "archive" || !owned._yay.run.force))
+		) {
 			return { page: [], isDone: true, continueCursor: "" };
 		}
 		const { userAuth, membership, run } = owned._yay;
@@ -2718,7 +3147,7 @@ export const list_outcomes = query({
 			.paginate(args.paginationOpts);
 		const page = await Promise.all(
 			result.page.map(async (item) => {
-				if (item.kind !== "force_archive")
+				if (item.kind === "restore")
 					throw should_never_happen("Forced archive has a restore outcome", { itemId: item._id });
 				const node = await ctx.db.get("files_nodes", item.nodeId);
 				const readable =
@@ -2737,12 +3166,15 @@ export const list_outcomes = query({
 					order: item.order,
 					kind: readable && item.reason === "not_empty" ? ("retained_folder" as const) : ("refused" as const),
 					path: readable ? node.path : null,
-					message:
-						!readable || item.reason === "permission"
-							? "Permission denied"
-							: item.reason === "changed"
-								? "This item moved or changed. Try again from its current folder."
-								: "This folder still contains items. Review the skipped items, then try again.",
+					message: !readable
+						? "Permission denied"
+						: item.kind === "purge"
+							? PURGE_KEPT_MESSAGES[item.reason]
+							: item.reason === "permission"
+								? "Permission denied"
+								: item.reason === "changed"
+									? "This item moved or changed. Try again from its current folder."
+									: "This folder still contains items. Review the skipped items, then try again.",
 				};
 			}),
 		);
@@ -2821,8 +3253,19 @@ export async function files_archive_runs_db_delete_run_batch(
 	const run = await ctx.db.get("files_archive_runs", args.runId);
 	if (!run) return { done: true, deletedCount: 0 };
 
-	// Stop first, so a step that is already scheduled writes nothing.
+	// Stop first, so a step that is already scheduled writes nothing. A purge that deletes a node does
+	// not stop at once, and this deletion cannot wait, so end it here.
 	await files_archive_runs_db_request_stop(ctx, { runId: run._id, reason: "user", now: Date.now() });
+	if ((await ctx.db.get("files_archive_runs", run._id))?.active) {
+		await db_finish_run({
+			ctx,
+			runId: run._id,
+			status: "canceled",
+			errorMessage: null,
+			errorCode: "canceled",
+			now: Date.now(),
+		});
+	}
 	// A restore can list many renamed or skipped items, so delete them 50 per call.
 	const items = await ctx.db
 		.query("files_archive_run_items")

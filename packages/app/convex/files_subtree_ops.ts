@@ -113,7 +113,8 @@ export const advance = internalMutation({
 				return null;
 			}
 			case "archive":
-			case "restore": {
+			case "restore":
+			case "purge": {
 				if (await files_subtree_ops_db_pause_for_move(ctx, op)) return null;
 				await files_archive_runs_db_advance(ctx, { op, now });
 				return null;
@@ -139,7 +140,8 @@ export const promote = internalMutation({
 
 		const now = Date.now();
 		switch (op.kind) {
-			case "restore": {
+			case "restore":
+			case "purge": {
 				await files_archive_runs_db_promote(ctx, { op, now });
 				return null;
 			}

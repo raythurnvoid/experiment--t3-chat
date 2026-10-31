@@ -2337,11 +2337,15 @@ async function db_drain_user_write_policy_runs_batch(ctx: MutationCtx, args: { u
  * Public links end only when the job stamps each file, so a stop there would leave files inside an
  * archived folder public. The stamps do not need the user, and the expired Activity deletes the run
  * later. Move and scope jobs keep running the same way.
+ *
+ * A Delete permanently job is left too. It may be halfway through one file, and it ends on its own
+ * after that file once the user's membership is gone.
  */
 async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId: Id<"users"> }) {
 	// Skip the stamping archives, so the user's other jobs behind them are still found.
 	for await (const run of ctx.db.query("files_archive_runs").withIndex("by_user", (q) => q.eq("userId", args.userId))) {
 		if (run.active && run.kind === "archive" && run.phase === "apply" && !run.force) continue;
+		if (run.active && run.kind === "purge") continue;
 		const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: run._id });
 		return purged.deletedCount;
 	}

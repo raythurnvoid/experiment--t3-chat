@@ -6805,7 +6805,10 @@ const app_convex_schema = defineSchema({
 		 * checks once the key is revoked or loses `files:write`, like it does when the person leaves.
 		 */
 		credentialId: v.optional(v.id("api_credentials")),
-		kind: v.union(v.literal("archive"), v.literal("restore")),
+		/**
+		 * Purge: Delete permanently. It deletes archived items and everything inside them for good.
+		 */
+		kind: v.union(v.literal("archive"), v.literal("restore"), v.literal("purge")),
 		force: v.boolean(),
 		/**
 		 * Archive: the operation id this job writes. Restore: the operation id this job brings back.
@@ -6962,6 +6965,22 @@ const app_convex_schema = defineSchema({
 				nodeId: v.id("files_nodes"),
 				reason: v.union(v.literal("permission"), v.literal("changed"), v.literal("not_empty")),
 			}),
+			/**
+			 * One item that Delete permanently kept, and why.
+			 */
+			v.object({
+				runId: v.id("files_archive_runs"),
+				order: v.number(),
+				kind: v.literal("purge"),
+				nodeId: v.id("files_nodes"),
+				reason: v.union(
+					v.literal("permission"),
+					v.literal("read_only"),
+					v.literal("busy"),
+					v.literal("changed"),
+					v.literal("not_empty"),
+				),
+			}),
 		),
 	).index("by_run_order", ["runId", "order"]),
 	// #endregion files archive runs
@@ -6989,7 +7008,7 @@ const app_convex_schema = defineSchema({
 			}),
 			v.object({
 				...files_subtree_op_shared_fields,
-				kind: v.union(v.literal("archive"), v.literal("restore")),
+				kind: v.union(v.literal("archive"), v.literal("restore"), v.literal("purge")),
 				archiveRunId: v.id("files_archive_runs"),
 			}),
 			v.object({ ...files_subtree_op_shared_fields, kind: v.literal("scope") }),
@@ -7052,6 +7071,19 @@ const app_convex_schema = defineSchema({
 		sequence: v.number(),
 		nodeId: v.id("files_nodes"),
 		nodeDone: v.boolean(),
+		/**
+		 * Purge: the named item this row is inside, as the job saw it when it queued the row. When the
+		 * named item was restored, archived again or moved since, the job keeps this row's node. Missing
+		 * on rows of other kinds.
+		 */
+		purge: v.optional(
+			v.object({
+				rootNodeId: v.id("files_nodes"),
+				rootTreePath: v.string(),
+				rootOperationId: v.string(),
+				parentId: v.union(v.id("files_nodes"), v.literal("root")),
+			}),
+		),
 		forceArchive: v.optional(
 			v.object({
 				rootNodeId: v.id("files_nodes"),
@@ -9081,7 +9113,7 @@ const app_convex_schema = defineSchema({
 			v.object({
 				kind: v.literal("files_archive_run"),
 				id: v.id("files_archive_runs"),
-				archiveKind: v.union(v.literal("archive"), v.literal("restore")),
+				archiveKind: v.union(v.literal("archive"), v.literal("restore"), v.literal("purge")),
 				force: v.optional(v.boolean()),
 			}),
 			/**

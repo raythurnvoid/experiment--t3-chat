@@ -185,6 +185,7 @@ import {
 import {
 	files_archive_runs_db_check_fast,
 	files_archive_runs_db_start,
+	files_archive_runs_db_start_purge,
 	files_archive_runs_get_all_refused_nay,
 } from "./files_archive_runs.ts";
 import { files_transfer_db_start_rename } from "./files_transfer.ts";
@@ -3778,6 +3779,125 @@ export const unarchive_nodes = mutation({
 		}
 		const firstJob = restored.jobs[0] ?? null;
 		return Result({ _yay: firstJob && { runId: firstJob.runId, activityId: firstJob.activityId } });
+	},
+});
+
+/**
+ * Delete archived items permanently, with everything inside them. It needs Can manage on each item.
+ * One refused item refuses the whole request, because this cannot be undone.
+ */
+export const purge_nodes = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeIds: v.array(v.string()),
+	},
+	returns: v_result({
+		_yay: v.object({
+			/**
+			 * Null when every item was deleted inside the request. Otherwise the job that goes on.
+			 */
+			runId: v.union(v.id("files_archive_runs"), v.null()),
+			/**
+			 * Counts of named items only, not of the items inside them.
+			 */
+			itemCount: v.number(),
+			deletedCount: v.number(),
+			keptCount: v.number(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		if (args.nodeIds.length > MAX_ARCHIVE_NAMED_NODES) {
+			return Result({ _nay: { message: `Delete at most ${MAX_ARCHIVE_NAMED_NODES} items at once.` } });
+		}
+
+		const nodes: Doc<"files_nodes">[] = [];
+		for (const maybeNodeId of new Set(args.nodeIds)) {
+			const nodeId = ctx.db.normalizeId("files_nodes", maybeNodeId);
+			const node = nodeId && (await ctx.db.get("files_nodes", nodeId));
+			if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+			// A locked item answers like a missing one, so the refusal tells nothing about it.
+			const readable = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.read",
+				fileNode: node,
+			});
+			if (readable._nay) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+			if (node.archiveOperationId === null) {
+				return Result({ _nay: { message: `${node.path} is not archived. Archive it first.` } });
+			}
+			const manageable = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.permissions.manage",
+				fileNode: node,
+			});
+			if (manageable._nay) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			// An archive that still stamps the items inside, or a restore that brings them back, must end first.
+			const archiveRun = await ctx.db
+				.query("files_archive_runs")
+				.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("archiveOperationId", node.archiveOperationId!)
+						.eq("active", true),
+				)
+				.first();
+			if (archiveRun) {
+				return Result({
+					_nay: {
+						name: "busy",
+						message:
+							archiveRun.kind === "archive"
+								? "These items are being archived. Wait for it to finish."
+								: "These items are being restored. Wait for it to finish.",
+					},
+				});
+			}
+			nodes.push(node);
+		}
+
+		// A named item inside another named item goes with it. Archived items can share a path, so a path
+		// match is only a hint, and the parent chain decides.
+		const nodeIds = new Set(nodes.map((node) => node._id));
+		const folderTreePaths = nodes.filter((node) => node.kind === "folder").map((node) => node.treePath);
+		const topNodes = [];
+		for (const node of nodes) {
+			let parentId = node.parentId;
+			if (folderTreePaths.some((treePath) => treePath !== node.treePath && node.treePath.startsWith(treePath))) {
+				while (parentId !== files_ROOT_ID && !nodeIds.has(parentId)) {
+					parentId = (await ctx.db.get("files_nodes", parentId))?.parentId ?? files_ROOT_ID;
+				}
+			}
+			if (parentId === files_ROOT_ID || !nodeIds.has(parentId)) topNodes.push(node);
+		}
+
+		return await files_archive_runs_db_start_purge(ctx, { userAuth, membership, nodes: topNodes });
 	},
 });
 

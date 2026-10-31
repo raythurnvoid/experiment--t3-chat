@@ -37,10 +37,12 @@ export function activities_get_controls(activity: Doc<"activities">, userId: Id<
 			activity.status !== "stopping" &&
 			// The files of a stuck Move repair are already moved. Stop cannot undo that.
 			activity.errorCode !== files_MOVE_REPAIR_STUCK_CODE &&
-			// Forced archive keeps parents active until their children finish, so Stop is safe.
+			// Forced archive keeps parents active until their children finish, so Stop is safe. Delete
+			// permanently stops between nodes, and what it did not reach stays archived.
 			activity.source.kind !== "files_subtree_op" &&
 			(activity.source.kind !== "files_archive_run" ||
 				(activity.source.archiveKind === "archive" && activity.source.force === true) ||
+				activity.source.archiveKind === "purge" ||
 				(activity.source.archiveKind === "restore" && activity.status === "awaiting_input")),
 		// A null total means the transfer stopped before it found all its files. Retry reuses that
 		// partial list and never lists folders again, so it would make a partial folder copy.

@@ -113,7 +113,7 @@ export async function files_purge_db_delete_asset(
  *
  * - `more`: something was deleted. Call again.
  * - `busy`: other work still uses the node. Nothing more was deleted. Try again later.
- * - `not_empty`: the folder still has a child. The run keeps the folder.
+ * - `not_empty`: the folder still has a child. Nothing was changed, and the run keeps the folder.
  * - `deleted`: the node doc and everything in it are gone.
  *
  * The first call that passes the busy checks sets `purgeRunId`. From then on no write can land on
@@ -130,6 +130,24 @@ export async function files_purge_db_drain_node_batch(
 ) {
 	const { organizationId, workspaceId, node, runId } = args;
 	const nodeId = node._id;
+
+	// A folder goes only after everything inside it, and the purge run deletes the children first. So a
+	// child that is still here was kept. Check this before any write, so a kept folder keeps its grants
+	// and stays writable. Drafts that move live files into the folder are not children. They stay, and
+	// saving one answers "Not found" once the folder is gone.
+	if (node.kind === "folder") {
+		const child = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("parentId", nodeId),
+			)
+			.first();
+		if (child) return { kind: "not_empty" as const };
+	}
 
 	// Busy: a Move, a transfer, an API save or a plugin upload is still working on the node. These
 	// end on their own, so the run tries the node again later.
@@ -426,22 +444,6 @@ export async function files_purge_db_drain_node_batch(
 	if (channel) {
 		await channels_db_purge_channel_batch(ctx, { channel, batchSize: DRAIN_BATCH_SIZE });
 		return { kind: "more" as const };
-	}
-
-	// Drafts that move live files into the folder are not deleted. Saving one answers "Not found"
-	// once the folder is gone.
-	if (node.kind === "folder") {
-		const child = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name", (q) =>
-				q
-					.eq("organizationId", organizationId)
-					.eq("workspaceId", workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("parentId", nodeId),
-			)
-			.first();
-		if (child) return { kind: "not_empty" as const };
 	}
 
 	// An index run still reads the file's heads, which the last call below retires. Runs are short.
