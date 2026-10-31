@@ -202,6 +202,9 @@ Tree-item components:
     active row sits before the old archived rows), but only when focus is still in the group or on the
     page body.
   - A member with no tree rows sees "No files yet." only when the group is done and empty too.
+- While the root rows load, the tree shows skeleton rows with `aria-busy="true"`. Each skeleton row
+  has the height and icon indent of a real root row, and the skeleton fills the panel without a
+  scrollbar, so the real rows replace it without moving.
 - Every folder has a chevron, because an unopened folder's children are unknown. An open empty folder
   shows "No files inside"; a loading one shows "Loading…" and sets `aria-busy` on its row.
 - A locked row (`data-file-locked="on"`, class `FilesSidebarTreeItem-content-locked`) shows the

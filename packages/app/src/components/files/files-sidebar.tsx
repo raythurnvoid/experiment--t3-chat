@@ -91,6 +91,7 @@ import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputHelperText 
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySidebarHeader, MySidebarTitle } from "@/components/my-sidebar.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { MyButton } from "@/components/my-button.tsx";
@@ -3115,11 +3116,20 @@ function get_tree_drag_hover_state(args: {
 
 const FilesSidebarTree_COMPACT_ACTIONS_MAX_WIDTH = 300;
 
+/**
+ * Enough skeleton rows to fill a tall panel. The skeleton clips the rows that do not fit.
+ */
+const FilesSidebarTree_SKELETON_ROW_COUNT = 24;
+
 type FilesSidebarTree_ClassNames =
 	| "FilesSidebarTree"
 	| "FilesSidebarTree-row"
 	| "FilesSidebarTree-dragging"
 	| "FilesSidebarTree-empty-state"
+	| "FilesSidebarTree-skeleton"
+	| "FilesSidebarTree-skeleton-row"
+	| "FilesSidebarTree-skeleton-icon"
+	| "FilesSidebarTree-skeleton-name"
 	| "FilesSidebarTree-folder-actions-expanded"
 	| "FilesSidebarTree-menus";
 
@@ -3518,6 +3528,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 				// Let a click on empty tree space focus the tree itself, with no row focused, like the VS Code
 				// explorer. Mod+V then pastes into the root. It stays out of the Tab order: rows own the tab stop.
 				tabIndex={-1}
+				aria-busy={isTreeLoading || undefined}
 				style={{ ...treeContainerProps.style, height: virtualizer.getTotalSize() }}
 				onDragStartCapture={handleDragStartCapture}
 				onDragEnterCapture={handleDragEnterCapture}
@@ -3526,9 +3537,16 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 				onDragEndCapture={handleDragEndCapture}
 				onDropCapture={handleDropCapture}
 			>
+				{/* Skeleton rows have the size and indent of real root rows, so the real rows replace them
+				    without moving. The tree's aria-busy tells that rows load. */}
 				{isTreeLoading ? (
-					<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>
-						Loading files...
+					<div className={"FilesSidebarTree-skeleton" satisfies FilesSidebarTree_ClassNames} aria-hidden="true">
+						{Array.from({ length: FilesSidebarTree_SKELETON_ROW_COUNT }, (_, index) => (
+							<div key={index} className={"FilesSidebarTree-skeleton-row" satisfies FilesSidebarTree_ClassNames}>
+								<MySkeleton className={"FilesSidebarTree-skeleton-icon" satisfies FilesSidebarTree_ClassNames} />
+								<MySkeleton className={"FilesSidebarTree-skeleton-name" satisfies FilesSidebarTree_ClassNames} />
+							</div>
+						))}
 					</div>
 				) : (
 					<>

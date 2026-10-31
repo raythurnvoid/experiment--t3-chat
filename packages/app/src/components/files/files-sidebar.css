@@ -387,6 +387,49 @@
 		contain: content;
 	}
 
+	/* Fill the tree and clip the rows below the panel, so the skeleton never adds a scrollbar. */
+	.FilesSidebarTree-skeleton {
+		flex: 1 1 0;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.FilesSidebarTree-skeleton-row {
+		display: flex;
+		align-items: center;
+		/* Keep this equal to the real row's 1px content gap plus the title input's 3px inline padding. */
+		gap: 4px;
+
+		height: 45px;
+		/* Start where a root row's icon starts: after the 44px arrow column. */
+		padding-left: 44px;
+		padding-right: 16px;
+	}
+
+	.FilesSidebarTree-skeleton-icon {
+		width: 16px;
+		height: 16px;
+		flex: 0 0 auto;
+
+		border-radius: 4px;
+	}
+
+	.FilesSidebarTree-skeleton-name {
+		width: 45%;
+		height: 12px;
+
+		border-radius: 4px;
+
+		/* Vary the name widths a little, so the rows look like names and not like one block. */
+		.FilesSidebarTree-skeleton-row:nth-child(3n + 2) & {
+			width: 30%;
+		}
+
+		.FilesSidebarTree-skeleton-row:nth-child(3n) & {
+			width: 60%;
+		}
+	}
+
 	.FilesSidebarTree:not(:has(.FilesSidebarTreeItemTitle-input:focus)) {
 		.FilesSidebarTreeItem.FilesSidebarTreeItem-content-navigated {
 			color: var(--color-fg-11);
