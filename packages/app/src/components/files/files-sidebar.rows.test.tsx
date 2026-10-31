@@ -246,6 +246,7 @@ vi.mock("@/lib/files-tree-context.tsx", async (importOriginal) => {
 	return {
 		files_tree_stream_args,
 		FilesTreeProvider: {
+			useLiveFolderIds: () => new Set<string>(),
 			// Serve every fixture row as loaded. A row whose parent is not in the fixture is pinned under a
 			// hidden folder, so the store would show it at the top.
 			useFolders: function useFolders(request: { folderIds: string[] }) {

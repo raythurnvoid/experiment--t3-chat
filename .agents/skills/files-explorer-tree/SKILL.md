@@ -1188,7 +1188,12 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   the tree renders its row or a row inside it (`FilesSidebarTree_Props.onShowFolders`, kept in
   `shownFolderIds`). Until then it stays expanded (`aria-expanded="true"`) and shows "Loading…". Once it
   loads, it keeps loading until it closes, even when it scrolls away: dropping its rows would change the
-  height above the screen and make the visible rows jump. Closing a folder forgets it.
+  height above the screen and make the visible rows jump. Closing a folder forgets that it was shown.
+- A closed folder keeps loading for 5 minutes, like the query cache in `main.tsx`
+  (`FILES_TREE_CLOSED_FOLDER_KEEP_MS` in `files-tree-context.tsx`). Its rows stay live, so opening it
+  again in that time shows every page it had at once, with no "Loading…". The sidebar asks for such a
+  folder (`FilesTreeProvider.useLiveFolderIds`) without waiting for its row. After 5 minutes its queries
+  stop, and the next open loads again.
 - A normal row is 45 px. An expanded empty folder owns its extra 45 px placeholder in the same
   virtual row. Keep the row keys tied to the row model so changed
   placeholders refresh heights even when they are offscreen. The tree has 2 px padding at each end.

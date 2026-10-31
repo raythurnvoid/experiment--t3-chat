@@ -42,6 +42,10 @@ type FilesTreeFoldersRequest = {
 
 const FILES_TREE_PAGE_SIZE = 200;
 const FILES_TREE_SHARED_ROOTS_PAGE_SIZE = 50;
+/**
+ * How long a closed folder keeps loading. It matches the 5 minutes of the query cache in `main.tsx`.
+ */
+const FILES_TREE_CLOSED_FOLDER_KEEP_MS = 5 * 60_000;
 const FILES_TREE_NO_HOISTED_IDS: ReadonlySet<string> = new Set();
 
 function folder_key(folderId: FilesTreeFolderId, archived: boolean) {
@@ -161,6 +165,7 @@ const FilesTreeContext = createContext<{
 	folderResults: Map<string, FilesTreeFolderResult>;
 	pinResults: Map<string, FilesTreePinResult>;
 	sharedRoots: { active: FilesTreeFolderResult; archived: FilesTreeFolderResult };
+	liveFolderIds: ReadonlySet<string>;
 	isOwner: boolean | null;
 	registerFolders: (ownerId: string, request: FilesTreeFoldersRequest) => () => void;
 } | null>(null);
@@ -170,7 +175,9 @@ type FilesTreeFolderPager_Props = {
 	folderKey: string;
 	folderId: FilesTreeFolderId;
 	archived: boolean;
+	open: boolean;
 	onResult: (folderKey: string, result: FilesTreeFolderResult | "loading" | null) => void;
+	onExpire: (folderKey: string) => void;
 };
 
 /**
@@ -209,7 +216,7 @@ function useFilesTreeKindStreams(
  * Page one folder: its subfolders and its files, each in the server's name order.
  */
 const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTreeFolderPager_Props) {
-	const { membershipId, folderKey, folderId, archived, onResult } = props;
+	const { membershipId, folderKey, folderId, archived, open, onResult, onExpire } = props;
 	const wantedScope = JSON.stringify([membershipId, folderKey]);
 	// Show the first available rows. Remember their merged count once they settle.
 	const [wanted, setWanted] = useState({ wantedScope, count: 0 });
@@ -252,6 +259,15 @@ const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTree
 			loadMore: () => setWanted({ wantedScope, count: rows.length + FILES_TREE_PAGE_SIZE }),
 		});
 	}, [folderKey, folders, files, onResult, wantedScope, wanted, wantedCount]);
+
+	// Stop a closed folder only after a while. Opening it again before then clears the timer.
+	useEffect(() => {
+		if (open) {
+			return;
+		}
+		const timer = setTimeout(() => onExpire(folderKey), FILES_TREE_CLOSED_FOLDER_KEEP_MS);
+		return () => clearTimeout(timer);
+	}, [open, folderKey, onExpire]);
 
 	useEffect(() => () => onResult(folderKey, null), [folderKey, onResult]);
 
@@ -414,6 +430,23 @@ const FilesTreeProvider = Object.assign(
 			}
 		}
 
+		// Keep the pager of a closed folder for a while. Its rows stay live, so opening the folder again
+		// shows them at once, without "Loading…". Each closed pager removes itself when its time ends.
+		const [pagerFolders, setPagerFolders] = useState(openFolders);
+		if ([...openFolders.keys()].some((folderKey) => !pagerFolders.has(folderKey))) {
+			setPagerFolders(new Map([...pagerFolders, ...openFolders]));
+		}
+		const handleFolderExpire = useCallback<FilesTreeFolderPager_Props["onExpire"]>((folderKey) => {
+			setPagerFolders((current) => {
+				const next = new Map(current);
+				next.delete(folderKey);
+				return next;
+			});
+		}, []);
+		const liveFolderIds = new Set(
+			[...pagerFolders.values()].map((folder) => folder.folderId).filter((folderId) => folderId !== files_ROOT_ID),
+		);
+
 		// Every share of a member, for the "Shared with you" group. Its pagers report like a folder pager,
 		// so the group keeps its rows through a page split like a folder. The owner has no shares to read.
 		const get_shared_roots = (archived: boolean): FilesTreeFolderResult =>
@@ -427,18 +460,21 @@ const FilesTreeProvider = Object.assign(
 					folderResults,
 					pinResults,
 					sharedRoots: { active: get_shared_roots(false), archived: get_shared_roots(true) },
+					liveFolderIds,
 					isOwner,
 					registerFolders,
 				}}
 			>
-				{[...openFolders].map(([folderKey, folder]) => (
+				{[...pagerFolders].map(([folderKey, folder]) => (
 					<FilesTreeFolderPager
 						key={folderKey}
 						membershipId={membershipId}
 						folderKey={folderKey}
 						folderId={folder.folderId}
 						archived={folder.archived}
+						open={openFolders.has(folderKey)}
 						onResult={handleFolderResult}
+						onExpire={handleFolderExpire}
 					/>
 				))}
 				{isOwner !== true && folderRequests.size > 0 && (
@@ -592,7 +628,19 @@ const FilesTreeProvider = Object.assign(
 		},
 
 		/**
-		 * The node's row when any open folder has loaded it, else undefined. Every consumer's folders
+		 * The folders that load now, besides the root: every open folder, and every folder that closed in
+		 * the last 5 minutes. A consumer can ask for one of them and get its rows at once.
+		 */
+		useLiveFolderIds: function useLiveFolderIds() {
+			const value = use(FilesTreeContext);
+			if (!value) {
+				throw new Error("FilesTreeProvider.useLiveFolderIds must be used within FilesTreeProvider");
+			}
+			return value.liveFolderIds;
+		},
+
+		/**
+		 * The node's row when any loading folder has loaded it, else undefined. Every consumer's folders
 		 * count, so a row the sidebar shows is found even when the caller did not ask for its folder.
 		 */
 		useLoadedNode: function useLoadedNode(nodeId: string | undefined) {

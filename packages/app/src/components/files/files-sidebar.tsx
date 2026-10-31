@@ -5230,11 +5230,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	 * and the rows on screen would jump when the folder is above them.
 	 */
 	const [shownFolderIds, setShownFolderIds] = useState<ReadonlySet<string>>(new Set());
+	const liveFolderIds = FilesTreeProvider.useLiveFolderIds();
 
 	// Load only the root and the open folders. The whole workspace can hold many thousands of nodes.
 	const treeFolders = FilesTreeProvider.useFolders({
-		// Expanded items are always tree rows, and the shown folders never hold the root, so every id is a node id.
-		folderIds: expandedItems.filter((itemId) => shownFolderIds.has(itemId)) as app_convex_Id<"files_nodes">[],
+		// Expanded items are always tree rows, and neither set holds the root, so every id is a node id.
+		// A folder that still loads (it closed a short time ago) needs no wait for its row: its rows are ready.
+		folderIds: expandedItems.filter(
+			(itemId) => shownFolderIds.has(itemId) || liveFolderIds.has(itemId),
+		) as app_convex_Id<"files_nodes">[],
 		archived: showArchived,
 		// The open node is pinned, so a node opened from the search shows in the tree once the search
 		// closes, with the folders above it.

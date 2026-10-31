@@ -203,6 +203,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+	vi.useRealTimers();
 	cleanup();
 	await client.close();
 	vi.restoreAllMocks();
@@ -349,7 +350,7 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done");
 	});
 
-	test("pages an open folder on demand and closes its pagers when it closes", () => {
+	test("pages an open folder on demand and closes its pagers 5 minutes after it closes", () => {
 		const view = render(
 			<TestWorkspace membershipId="membership_1">
 				<FoldersConsumer folderIds={["people"]} />
@@ -393,13 +394,31 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(screen.getByLabelText("Rows").textContent).toBe("people,ann.md,bob.md");
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done,people:done");
 
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const closeFolder = () =>
+			view.rerender(
+				<TestWorkspace membershipId="membership_1">
+					<FoldersConsumer folderIds={[]} />
+				</TestWorkspace>,
+			);
+		closeFolder();
+		expect(screen.getByLabelText("Rows").textContent).toBe("people");
+
+		// A folder opened again within 5 minutes shows every page it had, with no new load.
 		view.rerender(
 			<TestWorkspace membershipId="membership_1">
-				<FoldersConsumer folderIds={[]} />
+				<FoldersConsumer folderIds={["people"]} />
 			</TestWorkspace>,
 		);
+		expect(screen.getByLabelText("Rows").textContent).toBe("people,ann.md,bob.md");
+		expect(screen.getByLabelText("Status").textContent).toBe("root:done,people:done");
+
+		closeFolder();
+		act(() => vi.advanceTimersByTime(5 * 60_000 - 1));
+		expect(listeners.get(children_key({ parentId: "people", kind: "file", cursor: "ann" }))?.size).toBe(1);
+		act(() => vi.advanceTimersByTime(1));
 		expect(listeners.get(children_key({ parentId: "people", kind: "file", cursor: null }))?.size).toBe(0);
-		expect(screen.getByLabelText("Rows").textContent).toBe("people");
+		expect(listeners.get(children_key({ parentId: "people", kind: "file", cursor: "ann" }))?.size).toBe(0);
 	});
 
 	test("keeps a folder's rows while Convex splits one of its pages", () => {
