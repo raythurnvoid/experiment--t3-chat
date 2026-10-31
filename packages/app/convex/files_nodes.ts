@@ -1655,6 +1655,9 @@ export async function files_nodes_db_handoff_yjs_cleanup_task(ctx: MutationCtx, 
 
 /**
  * Remove a failed file creation and its linked content, proposals, and assets.
+ *
+ * Delete permanently has its own batched list of the same docs, in `files_purge_db.ts`. When a node
+ * gets a new kind of doc, add it to both.
  */
 export async function files_nodes_db_hard_delete_node(
 	ctx: MutationCtx,

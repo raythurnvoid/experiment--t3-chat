@@ -5278,7 +5278,8 @@ const app_convex_schema = defineSchema({
 		readOnlyDecisionId: v.union(v.string(), v.null()),
 		// Lifecycle and authorship
 		/**
-		 * Archive operation UUID, or null for an active node.
+		 * Archive operation id, or null for an active node. A new id starts with the archive time
+		 * (`files_archive_operation_id_new`). An older id is a plain UUID.
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
 		/**
@@ -5287,6 +5288,12 @@ const app_convex_schema = defineSchema({
 		 * allowance even if its folder's Restore gives it a longer path.
 		 */
 		archivedPathLength: v.optional(v.number()),
+		/**
+		 * The purge run that is deleting this node for good. Set in its first delete step, and the
+		 * node doc goes away with it. Missing: no purge has started on the node. Every write refuses
+		 * a node that has it (`files_nodes_db_require_writable`).
+		 */
+		purgeRunId: v.optional(v.id("files_archive_runs")),
 		/**
 		 * Created by user ID. SYSTEM writes read-only external content.
 		 */
@@ -6336,6 +6343,12 @@ const app_convex_schema = defineSchema({
 		 */
 		uploadBillingExempt: v.optional(v.literal(true)),
 		/**
+		 * The bytes this asset added to the workspace `stored_file_bytes` counter. A permanent delete
+		 * takes the same bytes off. Missing: the asset added nothing, or it settled before this field
+		 * existed, and a delete gives nothing back.
+		 */
+		storedFileBytes: v.optional(v.number()),
+		/**
 		 * Upload processing state. Undefined means not started. A work id means running.
 		 * Null means finished.
 		 **/
@@ -6387,6 +6400,7 @@ const app_convex_schema = defineSchema({
 			v.literal("discarded_replacement"),
 			v.literal("chat_output"),
 			v.literal("bash_input"),
+			v.literal("permanent_delete"),
 		),
 		assetId: v.optional(v.id("files_r2_assets")),
 		privateStorageReservationId: v.optional(v.id("files_private_storage_reservations")),
@@ -9454,6 +9468,8 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_message_emoji_user", ["messageId", "emoji", "userId"])
 		.index("by_message", ["messageId"])
+		// Delete permanently drains one file channel's reactions through this range.
+		.index("by_channel", ["channelId"])
 		.index("by_organization_user", ["organizationId", "userId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
@@ -9574,6 +9590,7 @@ const app_convex_schema = defineSchema({
 		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
 	})
 		.index("by_thread", ["threadId"])
+		.index("by_channel", ["channelId"])
 		.index("by_dueAt", ["dueAt"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
@@ -9591,6 +9608,7 @@ const app_convex_schema = defineSchema({
 		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
 	})
 		.index("by_workspaceMembership", ["workspaceMembershipId"])
+		.index("by_channel", ["channelId"])
 		.index("by_dueAt", ["dueAt"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 

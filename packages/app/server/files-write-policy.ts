@@ -81,6 +81,10 @@ export async function files_nodes_db_require_writable(
 	}
 
 	const node = args.target.kind === "node" ? args.target.node : args.target.parentNode;
+	// A purge is deleting the node and what is inside it. No write may land there, not even a forced one.
+	if (node?.purgeRunId) {
+		return Result({ _nay: { name: "deleting", message: "This item is being deleted." } });
+	}
 	if (node?.readOnly && !args.writeContext.force) {
 		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	}

@@ -122,6 +122,8 @@ export async function files_stored_uploads_db_settle(
 	}
 	// Accepted bytes may settle after another upload fills the cap.
 	await ctx.db.patch("quotas", quotaId, { usedCount: quota.usedCount + args.actualBytes, updatedAt: now });
+	// A permanent delete gives these bytes back.
+	await ctx.db.patch("files_r2_assets", args.assetId, { storedFileBytes: args.actualBytes });
 	await billing_db_emit_file_upload(ctx, {
 		billedUser,
 		actorUserId: args.actorUserId,

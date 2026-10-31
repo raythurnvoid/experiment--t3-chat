@@ -124,6 +124,7 @@ export function files_tree_db_get_public_node_fields(
 		contentTypeEssence: _contentTypeEssence,
 		contentTypeFamily: _contentTypeFamily,
 		archivedPathLength: _archivedPathLength,
+		purgeRunId: _purgeRunId,
 		...fields
 	} = fileNode;
 	// Leave `ancestor1..12` out too. Only the name search index reads them.

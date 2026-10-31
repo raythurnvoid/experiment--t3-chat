@@ -137,6 +137,7 @@ function placement_header(node: Doc<"files_nodes">) {
 		readOnlyDecisionId: _readOnlyDecisionId,
 		moveCohortId: _moveCohortId,
 		scopeOpId: _scopeOpId,
+		purgeRunId: _purgeRunId,
 		...header
 	} = node;
 	return header;

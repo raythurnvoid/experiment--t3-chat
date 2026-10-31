@@ -756,6 +756,10 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: files
 		}
 		await ctx.db.patch("files_move_cohort_items", item._id, { billingState: billedUser ? "sent" : "payer_missing" });
 	}
+	// The view switch added these bytes to `stored_file_bytes`. A permanent delete gives them back.
+	if (content.storedUpload && content.afterAssetId) {
+		await ctx.db.patch("files_r2_assets", content.afterAssetId, { storedFileBytes: content.storedByteDelta });
+	}
 	await db_finish_resources(ctx, content, "finish");
 	await ctx.db.patch("files_move_cohort_content", content._id, { phaseCursor: "finish:done" });
 	return Result({ _yay: { done: true, paged: cleaned.paged } });

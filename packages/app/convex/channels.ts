@@ -13,6 +13,7 @@ import { access_control_db_authorize_membership, access_control_db_authorize_nod
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { channels_LIMITS, channels_normalize_name } from "../shared/channels.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_purge_db_delete_asset } from "./files_purge_db.ts";
 import {
 	channels_notifications_db_ensure_summary,
 	channels_notifications_db_apply,
@@ -1506,4 +1507,105 @@ export async function channels_db_purge_workspace_batch(
 		.take(batchSize);
 	await Promise.all(channels.map((channel) => ctx.db.delete("channels", channel._id)));
 	return channels.length;
+}
+
+/**
+ * Delete permanently: delete one file channel and everything in it, children before parents, in
+ * the same order as the workspace purge. Each call deletes about `batchSize` docs of one table.
+ * The call that finds nothing left deletes the channel doc and returns `done: true`.
+ */
+export async function channels_db_purge_channel_batch(
+	ctx: MutationCtx,
+	args: { channel: Doc<"channels">; batchSize: number },
+) {
+	const { channel, batchSize } = args;
+	const { organizationId, workspaceId } = channel;
+
+	for (const table of [
+		"channels_reactions",
+		"channels_inbox",
+		"channels_thread_followers",
+		"channels_uploads",
+	] as const) {
+		const rows = await ctx.db
+			.query(table)
+			.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+			.take(batchSize);
+		if (rows.length) {
+			for (const row of rows) {
+				if ("countedUnread" in row) await channels_notifications_db_delete_source(ctx, row);
+				else {
+					await ctx.db.delete(table, row._id);
+					// Delete the upload's R2 file and give back its bytes in the same transaction.
+					if ("assetId" in row)
+						await files_purge_db_delete_asset(ctx, { organizationId, workspaceId, assetId: row.assetId });
+				}
+			}
+			return { done: false };
+		}
+	}
+
+	const threads = await ctx.db
+		.query("channels_threads")
+		.withIndex("by_channel_lastActivityAt", (q) => q.eq("channelId", channel._id))
+		.take(batchSize);
+	if (threads.length) {
+		await Promise.all(threads.map((thread) => ctx.db.delete("channels_threads", thread._id)));
+		return { done: false };
+	}
+
+	const messages = await ctx.db
+		.query("channels_messages")
+		.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+		.take(batchSize);
+	if (messages.length) {
+		let deleted = 0;
+		for (const message of messages) {
+			if (deleted >= batchSize) break;
+			// Reaction counts have no channel field. A message has at most `channels_LIMITS.emoji`
+			// of them, a limit enforced on write, so they go with their message.
+			const counts = await ctx.db
+				.query("channels_reaction_counts")
+				.withIndex("by_message_emoji", (q) => q.eq("messageId", message._id))
+				.take(channels_LIMITS.emoji);
+			await Promise.all(counts.map((count) => ctx.db.delete("channels_reaction_counts", count._id)));
+			await ctx.db.delete("channels_messages", message._id);
+			deleted += counts.length + 1;
+		}
+		return { done: false };
+	}
+
+	// Durable jobs return early once their doc is gone, so deleting a pending job is safe.
+	for (const table of [
+		"channels_read_states",
+		"channels_sidebar_jobs",
+		"channels_thread_jobs",
+		"channels_inbox_jobs",
+	] as const) {
+		const rows = await ctx.db
+			.query(table)
+			.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+			.take(batchSize);
+		if (rows.length) {
+			await Promise.all(rows.map((row) => ctx.db.delete(table, row._id)));
+			return { done: false };
+		}
+	}
+
+	const members = await ctx.db
+		.query("channels_members")
+		.withIndex("by_channel_user", (q) => q.eq("channelId", channel._id))
+		.take(batchSize);
+	if (members.length) {
+		for (const member of members) await channels_notifications_db_delete_source(ctx, member);
+		return { done: false };
+	}
+
+	const activity = await ctx.db
+		.query("channels_activity")
+		.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+		.unique();
+	if (activity) await ctx.db.delete("channels_activity", activity._id);
+	await ctx.db.delete("channels", channel._id);
+	return { done: true };
 }
