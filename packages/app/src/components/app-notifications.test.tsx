@@ -6,10 +6,34 @@ import { toast } from "sonner";
 import type { ComponentPropsWithRef, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { mutationMock, useQueriesMock, useQueryMock, usePaginatedQueryMock, openRunMock, channelContextMock } =
-	vi.hoisted(() => ({
+const {
+	mutationMock,
+	useQueriesMock,
+	queriesUpdate,
+	useQueryMock,
+	usePaginatedQueryMock,
+	openRunMock,
+	channelContextMock,
+} = vi.hoisted(() => {
+	const listeners = new Set<() => void>();
+	// Lets a test render the mounted component again, like a live `useQueries` update does.
+	const queriesUpdate = {
+		version: 0,
+		subscribe: (listener: () => void) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+		notify: () => {
+			queriesUpdate.version += 1;
+			listeners.forEach((listener) => listener());
+		},
+	};
+	return {
 		mutationMock: vi.fn(),
 		useQueriesMock: vi.fn(),
+		queriesUpdate,
 		useQueryMock: vi.fn(),
 		usePaginatedQueryMock: vi.fn(),
 		openRunMock: vi.fn(),
@@ -18,12 +42,15 @@ const { mutationMock, useQueriesMock, useQueryMock, usePaginatedQueryMock, openR
 			status: "delayed",
 			retrySummary: vi.fn(),
 		})),
-	}));
+	};
+});
 
 vi.mock("@/lib/app-channels-context.tsx", () => ({ AppChannelsProvider: { useContext: () => channelContextMock() } }));
 vi.mock("@/components/channels/channels-feed.tsx", () => ({
-	ChannelsActivity: (props: { onOpen?: () => void }) => <button onClick={props.onOpen}>Open message context</button>,
+	ChannelsFeedMessage: (props: { onOpen?: () => void }) => <button onClick={props.onOpen}>Open message context</button>,
 }));
+vi.mock("@/components/channels/channels-people.ts", () => ({ useChannelsProfiles: () => [] }));
+vi.mock("@/components/app-auth.tsx", () => ({ AppAuthProvider: { useAuthenticated: () => ({ userId: "viewer" }) } }));
 
 vi.mock("@/components/files/files-clipboard.tsx", () => ({
 	FilesClipboardProvider: {
@@ -50,13 +77,24 @@ vi.mock("@/components/files/files-archive-modal.tsx", () => ({
 
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => vi.fn(),
+	Link: (props: { children?: ReactNode; onClick?: () => void }) => (
+		<a href="#messages" onClick={props.onClick}>
+			{props.children}
+		</a>
+	),
 }));
 
-vi.mock("convex/react", () => ({
-	useQueries: (...args: unknown[]) => useQueriesMock(...args),
-	useQuery: (...args: unknown[]) => useQueryMock(...args),
-	usePaginatedQuery: (...args: unknown[]) => usePaginatedQueryMock(...args),
-}));
+vi.mock("convex/react", async () => {
+	const { useSyncExternalStore } = await import("react");
+	return {
+		useQueries: (...args: unknown[]) => {
+			useSyncExternalStore(queriesUpdate.subscribe, () => queriesUpdate.version);
+			return useQueriesMock(...args);
+		},
+		useQuery: (...args: unknown[]) => useQueryMock(...args),
+		usePaginatedQuery: (...args: unknown[]) => usePaginatedQueryMock(...args),
+	};
+});
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
@@ -101,6 +139,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		users: {
 			get_anagraphic: "users.get_anagraphic",
 		},
+		channels_messages: { list_my_inbox: "channels_messages.list_my_inbox" },
+		channels: { get_channel: "channels.get_channel" },
 	},
 }));
 
@@ -207,7 +247,16 @@ function ReviewControl(props: {
 
 describe("AppNotifications", () => {
 	beforeEach(() => {
-		useQueriesMock.mockReturnValue({});
+		// Use a lasting return value: the popover renders twice on mount when its first load ends.
+		channelContextMock.mockReturnValue({ inboxUnreadCount: 0, status: "delayed", retrySummary: vi.fn() });
+		useQueriesMock.mockImplementation((queries: Record<string, { query: string }>) =>
+			Object.fromEntries(
+				Object.entries(queries).map(([key, { query }]) => [
+					key,
+					query === "channels_messages.list_my_inbox" ? { page: [], isDone: true, continueCursor: "" } : undefined,
+				]),
+			),
+		);
 		useQueryMock.mockImplementation((query: unknown) => {
 			if (query === "notifications.list_current_notifications") return [];
 			if (query === "organizations.list") return { organizations: [], organizationIdsWorkspacesDict: {} };
@@ -244,12 +293,51 @@ describe("AppNotifications", () => {
 	});
 
 	test("uses saved Messages totals and keeps their open action separate from dismiss", () => {
-		channelContextMock.mockReturnValueOnce({ inboxUnreadCount: 750, status: "delayed", retrySummary: vi.fn() });
+		channelContextMock.mockReturnValue({ inboxUnreadCount: 750, status: "delayed", retrySummary: vi.fn() });
 		render(<TestNotifications />);
 		expect(screen.getByText("750")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Dismiss jobs and invites" })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "Open message context" })).toBeNull();
 		expect(mutationMock, "opening channel context must not archive invitations or jobs").not.toHaveBeenCalled();
+	});
+
+	test("shows a skeleton until every row is ready, then every row at once", () => {
+		const inboxEntry = (channelId: string) => ({
+			state: "readable",
+			item: { _id: `inbox_${channelId}`, channelId, kind: "mention", threadRootId: null },
+			message: {},
+			unread: true,
+		});
+		let inboxPage = [inboxEntry("channel_1")];
+		const channels: Record<string, unknown> = {};
+		useQueriesMock.mockImplementation((queries: Record<string, { query: string }>) =>
+			Object.fromEntries(
+				Object.entries(queries).map(([key, { query }]) => [
+					key,
+					query === "channels_messages.list_my_inbox"
+						? { page: inboxPage, isDone: true, continueCursor: "" }
+						: query === "channels.get_channel"
+							? channels[key]
+							: undefined,
+				]),
+			),
+		);
+		render(<TestNotifications />);
+		expect(screen.getByRole("status", { name: "Loading notifications" })).toBeTruthy();
+		expect(screen.queryByText("Export report"), "the jobs wait until the message rows are ready too").toBeNull();
+
+		channels.channel_1 = { channel: { kind: "public", name: "general" } };
+		act(() => queriesUpdate.notify());
+		expect(screen.queryByRole("status", { name: "Loading notifications" })).toBeNull();
+		expect(screen.getByText("Export report")).toBeTruthy();
+		expect(screen.getAllByRole("button", { name: "Open message context" })).toHaveLength(1);
+
+		// A message from a channel that is still loading waits, and the rows on screen stay.
+		inboxPage = [inboxEntry("channel_2"), inboxEntry("channel_1")];
+		act(() => queriesUpdate.notify());
+		expect(screen.queryByRole("status", { name: "Loading notifications" })).toBeNull();
+		expect(screen.getByText("Export report")).toBeTruthy();
+		expect(screen.getAllByRole("button", { name: "Open message context" })).toHaveLength(1);
 	});
 
 	test("names the popover dialog after its visible title", () => {
@@ -258,7 +346,7 @@ describe("AppNotifications", () => {
 		expect(screen.getByRole("dialog", { name: "Notifications" })).toBeTruthy();
 	});
 	test.each(["updating", "error"])("keeps jobs usable without a stale Messages badge during %s", async (status) => {
-		channelContextMock.mockReturnValueOnce({ inboxUnreadCount: null, status, retrySummary: vi.fn() });
+		channelContextMock.mockReturnValue({ inboxUnreadCount: null, status, retrySummary: vi.fn() });
 		const view = render(<TestNotifications />);
 		expect(view.container.querySelector(".AppNotifications-badge")).toBeNull();
 		expect(screen.getByText("Export report")).toBeTruthy();

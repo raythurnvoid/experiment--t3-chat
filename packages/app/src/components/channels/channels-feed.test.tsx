@@ -1,25 +1,49 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ChannelsActivity, ChannelsFeedMessage, ChannelsThreads } from "./channels-feed.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { getFunctionName } from "convex/server";
 
-const mocks = vi.hoisted(() => ({
-	channel: null as unknown,
-	reads: vi.fn(),
-	inbox: { results: [] as unknown[], status: "Exhausted", loadMore: vi.fn() },
-	threads: { results: [] as unknown[], status: "Exhausted", loadMore: vi.fn() },
-}));
-vi.mock("convex/react", async (importOriginal) => ({
-	...(await importOriginal<typeof import("convex/react")>()),
-	useQuery: () => {
-		mocks.reads();
-		return mocks.channel;
-	},
-	usePaginatedQuery: (query: Parameters<typeof getFunctionName>[0]) =>
-		getFunctionName(query).includes("list_my_inbox") ? mocks.inbox : mocks.threads,
-}));
+const mocks = vi.hoisted(() => {
+	const listeners = new Set<() => void>();
+	return {
+		channel: null as unknown,
+		reads: vi.fn(),
+		inbox: { results: [] as unknown[], status: "Exhausted", loadMore: vi.fn() },
+		threads: { results: [] as unknown[], status: "Exhausted", loadMore: vi.fn() },
+		inboxVersion: 0,
+		listeners,
+		subscribe: (listener: () => void) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+	};
+});
+vi.mock("convex/react", async (importOriginal) => {
+	const { useSyncExternalStore } = await import("react");
+	return {
+		...(await importOriginal<typeof import("convex/react")>()),
+		useQuery: () => {
+			mocks.reads();
+			return mocks.channel;
+		},
+		usePaginatedQuery: (query: Parameters<typeof getFunctionName>[0]) => {
+			// Subscribe like a live query, so `set_inbox_results` renders the mounted feed again.
+			useSyncExternalStore(mocks.subscribe, () => mocks.inboxVersion);
+			return getFunctionName(query).includes("list_my_inbox") ? mocks.inbox : mocks.threads;
+		},
+	};
+});
+
+function set_inbox_results(results: unknown[]) {
+	mocks.inbox.results = results;
+	mocks.inboxVersion += 1;
+	act(() => mocks.listeners.forEach((listener) => listener()));
+}
+
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => ({ membershipId: "member", organizationName: "team", workspaceName: "home" }),
@@ -130,23 +154,21 @@ describe("ChannelsActivity", () => {
 				unread: true,
 			},
 		];
-		const view = render(<ChannelsActivity />);
+		render(<ChannelsActivity />);
 		screen.getByRole("link", { name: "Open context" }).focus();
 		expect(mocks.reads).toHaveBeenCalledTimes(1);
-		mocks.inbox.results = [{ state: "locked", inboxId: "receipt", kind: "mention" }];
-		view.rerender(<ChannelsActivity compact />);
+		set_inbox_results([{ state: "locked", inboxId: "receipt", kind: "mention" }]);
 		expect(screen.queryByText("Checked preview")).toBeNull();
 		expect(screen.queryByRole("link", { name: "Open context" })).toBeNull();
 		expect(mocks.reads).toHaveBeenCalledTimes(1);
 		expect(document.activeElement).toBe(screen.getByRole("button", { name: "No access" }));
-		mocks.inbox.results = [{ state: "unavailable", inboxId: "receipt", kind: "mention" }];
-		view.rerender(<ChannelsActivity />);
+		set_inbox_results([{ state: "unavailable", inboxId: "receipt", kind: "mention" }]);
 		expect(screen.getByRole("button", { name: "Unavailable" })).toBeTruthy();
 		expect(mocks.reads).toHaveBeenCalledTimes(1);
 	});
 	test("continues an empty readable page and uses its inbox root in the context link", () => {
 		mocks.inbox.status = "CanLoadMore";
-		const view = render(<ChannelsActivity compact />);
+		const view = render(<ChannelsActivity />);
 		fireEvent.click(screen.getByRole("button", { name: "Show more activity" }));
 		expect(mocks.inbox.loadMore).toHaveBeenCalledWith(50);
 		mocks.inbox.results = [
@@ -157,7 +179,7 @@ describe("ChannelsActivity", () => {
 				unread: true,
 			},
 		];
-		view.rerender(<ChannelsActivity compact key="loaded" />);
+		view.rerender(<ChannelsActivity key="loaded" />);
 		expect(screen.getByRole("link", { name: "Open context" }).getAttribute("href")).toContain("thread=post");
 		expect(screen.getByText("Mention")).toBeTruthy();
 	});

@@ -1,5 +1,5 @@
 import "./channels-feed.css";
-import { memo, useLayoutEffect, useRef, type ReactNode, type ComponentProps } from "react";
+import { memo, useLayoutEffect, useRef, type ReactNode } from "react";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { toast } from "sonner";
@@ -104,7 +104,6 @@ export const ChannelsFeedMessage = memo(function ChannelsFeedMessage(props: {
 });
 
 type ChannelsActivity_ClassNames = "ChannelsActivity" | "ChannelsActivity-list";
-type ChannelsActivity_CustomAttributes = { "data-compact": string };
 
 const ChannelsFeedError = memo(function ChannelsFeedError(props: ErrorComponentProps) {
 	return (
@@ -115,19 +114,18 @@ const ChannelsFeedError = memo(function ChannelsFeedError(props: ErrorComponentP
 	);
 });
 
-export const ChannelsActivity = memo(function ChannelsActivity(props: ComponentProps<typeof ChannelsActivityPage>) {
+export const ChannelsActivity = memo(function ChannelsActivity() {
 	const { membershipId } = AppTenantProvider.useContext();
 	return (
 		<CatchBoundary getResetKey={() => membershipId} errorComponent={ChannelsFeedError}>
-			<ChannelsActivityPage {...props} />
+			<ChannelsActivityPage />
 		</CatchBoundary>
 	);
 });
 
-const ChannelsActivityPage = memo(function ChannelsActivityPage(props: { compact?: boolean; onOpen?: () => void }) {
-	const { compact = false, onOpen } = props;
+const ChannelsActivityPage = memo(function ChannelsActivityPage() {
 	const { inboxUnreadCount, status } = AppChannelsProvider.useContext();
-	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
 	const inbox = usePaginatedQuery(
 		app_convex_api.channels_messages.list_my_inbox,
 		{ membershipId },
@@ -135,23 +133,13 @@ const ChannelsActivityPage = memo(function ChannelsActivityPage(props: { compact
 	);
 	const focus = useFeedFocus();
 
-	// Hide the compact popover block when there is nothing to show or load.
-	if (compact && inbox.results.length === 0 && inbox.status === "Exhausted") {
-		return null;
-	}
-
 	return (
 		<section
 			{...focus}
 			tabIndex={-1}
-			className={cn(
-				"ChannelsActivity" satisfies ChannelsActivity_ClassNames,
-				!compact && ("app-scrollable" satisfies AppClassName),
-			)}
-			aria-label={compact ? "Message activity" : "Activity"}
-			{...({ "data-compact": String(compact) } satisfies ChannelsActivity_CustomAttributes)}
+			className={cn("ChannelsActivity" satisfies ChannelsActivity_ClassNames, "app-scrollable" satisfies AppClassName)}
+			aria-label="Activity"
 		>
-			{compact && <h2>Messages</h2>}
 			<p data-messages-status={status}>
 				{inboxUnreadCount !== null
 					? `Unread: ${inboxUnreadCount} · Counts may be delayed`
@@ -163,15 +151,6 @@ const ChannelsActivityPage = memo(function ChannelsActivityPage(props: { compact
 								? "Messages unavailable"
 								: "Loading Messages counts…"}
 			</p>
-			{compact && (
-				<Link
-					to="/w/$organizationName/$workspaceName/messages/activity"
-					params={{ organizationName, workspaceName }}
-					onClick={onOpen}
-				>
-					View Activity
-				</Link>
-			)}
 			<div className={"ChannelsActivity-list" satisfies ChannelsActivity_ClassNames}>
 				{inbox.results.map((entry) => (
 					<div
@@ -185,7 +164,6 @@ const ChannelsActivityPage = memo(function ChannelsActivityPage(props: { compact
 								label={entry.item.kind === "mention" ? "Mention" : "Reply"}
 								unread={entry.unread}
 								threadRootId={entry.item.threadRootId}
-								onOpen={onOpen}
 							/>
 						) : (
 							<article key={entry.inboxId} data-inbox-id={entry.inboxId} data-channel-access={entry.state}>

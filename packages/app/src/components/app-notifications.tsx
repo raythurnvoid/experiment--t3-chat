@@ -1,22 +1,25 @@
 import "./app-notifications.css";
 
 import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { Bell, FileText, Mail, X } from "lucide-react";
 import { memo, useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { FilesClipboardProvider } from "@/components/files/files-clipboard.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyPopover, MyPopoverContent, MyPopoverTrigger } from "@/components/my-popover.tsx";
 import { MyProgressBar } from "@/components/my-progress-bar.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import { AppChannelsProvider } from "@/lib/app-channels-context.tsx";
-import { ChannelsActivity } from "@/components/channels/channels-feed.tsx";
+import { ChannelsFeedMessage } from "@/components/channels/channels-feed.tsx";
+import { useChannelsProfiles } from "@/components/channels/channels-people.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
 	app_convex,
@@ -41,14 +44,11 @@ type AppNotificationsListItem_ClassNames =
 
 type AppNotificationsListItem_Props = {
 	notification: app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>[number];
-	organization: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list>["organizations"][number] | null;
-	workspace:
-		| app_convex_FunctionReturnType<
-				typeof app_convex_api.organizations.list
-		  >["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">][number]
-		| null;
+	organization: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list>["organizations"][number];
+	workspace: app_convex_FunctionReturnType<
+		typeof app_convex_api.organizations.list
+	>["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">][number];
 	actorName: string;
-	targetLoading: boolean;
 	onArchive: (notificationId: app_convex_Id<"notifications">) => void;
 	onOpenWorkspace: (args: {
 		notification: app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>[number];
@@ -60,12 +60,9 @@ type AppNotificationsListItem_Props = {
 };
 
 const AppNotificationsListItem = memo(function AppNotificationsListItem(props: AppNotificationsListItem_Props) {
-	const { notification, organization, workspace, actorName, targetLoading, onArchive, onOpenWorkspace } = props;
+	const { notification, organization, workspace, actorName, onArchive, onOpenWorkspace } = props;
 
-	const title =
-		targetLoading || !organization || !workspace
-			? "Loading invitation..."
-			: `${actorName} invited you to ${organization.name} / ${workspace.name}`;
+	const title = `${actorName} invited you to ${organization.name} / ${workspace.name}`;
 
 	return (
 		<article className={"AppNotificationsListItem" satisfies AppNotificationsListItem_ClassNames}>
@@ -78,14 +75,7 @@ const AppNotificationsListItem = memo(function AppNotificationsListItem(props: A
 				{format_relative_time(notification._creationTime)}
 			</p>
 			<div className={"AppNotificationsListItem-actions" satisfies AppNotificationsListItem_ClassNames}>
-				<MyButton
-					variant="secondary"
-					disabled={targetLoading}
-					onClick={() => {
-						if (!organization || !workspace) return;
-						onOpenWorkspace({ notification, organization, workspace });
-					}}
-				>
+				<MyButton variant="secondary" onClick={() => onOpenWorkspace({ notification, organization, workspace })}>
 					Open
 				</MyButton>
 				<MyButton variant="ghost" onClick={() => onArchive(notification._id)}>
@@ -101,11 +91,13 @@ const AppNotificationsListItem = memo(function AppNotificationsListItem(props: A
 type AppNotificationsList_ClassNames = "AppNotificationsList" | "AppNotificationsList-empty";
 
 type AppNotificationsList_Props = {
-	notifications:
-		| app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>
-		| undefined;
-	activities: app_convex_FunctionReturnType<typeof app_convex_api.activities_feed.list_page>["page"] | undefined;
-	organizationList: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list> | undefined;
+	notifications: app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>;
+	activities: app_convex_FunctionReturnType<typeof app_convex_api.activities_feed.list_page>["page"];
+	organizationList: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list>;
+	actorAnagraphicQueryResults: Record<
+		string,
+		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | Error | undefined
+	>;
 	onArchiveNotification: (notificationId: app_convex_Id<"notifications">) => void;
 	onOpenWorkspace: (args: {
 		notification: app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>[number];
@@ -123,39 +115,17 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 		notifications,
 		activities,
 		organizationList,
+		actorAnagraphicQueryResults,
 		onArchiveNotification,
 		onOpenWorkspace,
 		onOpenFile,
 		onArchiveActivity,
 	} = props;
 
-	const notificationItems = notifications ?? [];
-
-	const actorAnagraphicQueryResults = useQueries(
-		// Memoized because useQueries re-subscribes with a render-phase setState whenever the
-		// queries object identity changes; an inline object here re-render-loops the component.
-		useMemo(
-			() =>
-				Object.fromEntries(
-					(notifications ?? []).map(
-						(notification) =>
-							[
-								notification.actorUserId,
-								{
-									query: app_convex_api.users.get_anagraphic,
-									args: { userId: notification.actorUserId },
-								},
-							] as const,
-					),
-				),
-			[notifications],
-		),
-	);
-
 	// Keep active job controls before recent invitations and finished work.
 	const feedItems = [
-		...notificationItems.map((notification) => ({ kind: "invite" as const, notification })),
-		...(activities ?? []).map((activity) => ({ kind: "activity" as const, activity })),
+		...notifications.map((notification) => ({ kind: "invite" as const, notification })),
+		...activities.map((activity) => ({ kind: "activity" as const, activity })),
 	].sort((a, b) => {
 		const aActive = a.kind === "activity" && a.activity.finishedAt === undefined;
 		const bActive = b.kind === "activity" && b.activity.finishedAt === undefined;
@@ -167,9 +137,7 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 
 	return (
 		<div className={"AppNotificationsList" satisfies AppNotificationsList_ClassNames}>
-			{notifications === undefined && activities === undefined ? (
-				<div className={"AppNotificationsList-empty" satisfies AppNotificationsList_ClassNames}>Loading...</div>
-			) : feedItems.length === 0 ? (
+			{feedItems.length === 0 ? (
 				<div className={"AppNotificationsList-empty" satisfies AppNotificationsList_ClassNames}>
 					No jobs or invitations
 				</div>
@@ -188,10 +156,10 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 
 					const notification = item.notification;
 					const organization =
-						organizationList?.organizations.find((organization) => organization._id === notification.organizationId) ??
+						organizationList.organizations.find((organization) => organization._id === notification.organizationId) ??
 						null;
 					const invitedWorkspace =
-						organizationList?.organizationIdsWorkspacesDict[notification.organizationId]?.find(
+						organizationList.organizationIdsWorkspacesDict[notification.organizationId]?.find(
 							(workspace) => workspace._id === notification.workspaceId,
 						) ?? null;
 					const defaultWorkspaceOfInvitedOrganization =
@@ -199,7 +167,7 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 						organization
 							? app_tenant_primary_workspace_for_organization({
 									organization,
-									workspaces: organizationList?.organizationIdsWorkspacesDict[notification.organizationId] ?? [],
+									workspaces: organizationList.organizationIdsWorkspacesDict[notification.organizationId] ?? [],
 								})
 							: null;
 					const workspace = invitedWorkspace ?? defaultWorkspaceOfInvitedOrganization;
@@ -208,10 +176,9 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 						actorAnagraphicQueryResult === undefined || actorAnagraphicQueryResult instanceof Error
 							? null
 							: actorAnagraphicQueryResult;
-					const targetLoading = organizationList === undefined;
 					const actorName = actorAnagraphic?.displayName?.trim() || "Someone";
 
-					if (!targetLoading && (!organization || !workspace)) {
+					if (!organization || !workspace) {
 						return null;
 					}
 
@@ -222,7 +189,6 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 							organization={organization}
 							workspace={workspace}
 							actorName={actorName}
-							targetLoading={targetLoading}
 							onArchive={onArchiveNotification}
 							onOpenWorkspace={onOpenWorkspace}
 						/>
@@ -233,6 +199,106 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 	);
 });
 // #endregion list
+
+// #region messages
+type AppNotificationsMessages_ClassNames =
+	| "AppNotificationsMessages"
+	| "AppNotificationsMessages-header"
+	| "AppNotificationsMessages-title"
+	| "AppNotificationsMessages-unread"
+	| "AppNotificationsMessages-list";
+
+type AppNotificationsMessages_Props = {
+	entries: app_convex_FunctionReturnType<typeof app_convex_api.channels_messages.list_my_inbox>["page"];
+	unreadCount: number | null;
+	onOpen: () => void;
+};
+
+const AppNotificationsMessages = memo(function AppNotificationsMessages(props: AppNotificationsMessages_Props) {
+	const { entries, unreadCount, onOpen } = props;
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+
+	return (
+		<section className={"AppNotificationsMessages" satisfies AppNotificationsMessages_ClassNames} aria-label="Messages">
+			<header className={"AppNotificationsMessages-header" satisfies AppNotificationsMessages_ClassNames}>
+				<h3 className={"AppNotificationsMessages-title" satisfies AppNotificationsMessages_ClassNames}>Messages</h3>
+				{unreadCount ? (
+					<span className={"AppNotificationsMessages-unread" satisfies AppNotificationsMessages_ClassNames}>
+						{unreadCount} unread
+					</span>
+				) : null}
+				<Link
+					to="/w/$organizationName/$workspaceName/messages/activity"
+					params={{ organizationName, workspaceName }}
+					onClick={onOpen}
+				>
+					View all
+				</Link>
+			</header>
+			<div className={"AppNotificationsMessages-list" satisfies AppNotificationsMessages_ClassNames}>
+				{entries.map((entry) =>
+					entry.state === "readable" ? (
+						<ChannelsFeedMessage
+							key={entry.item._id}
+							row={entry.message}
+							label={entry.item.kind === "mention" ? "Mention" : "Reply"}
+							unread={entry.unread}
+							threadRootId={entry.item.threadRootId}
+							onOpen={onOpen}
+						/>
+					) : (
+						<article key={entry.inboxId} data-inbox-id={entry.inboxId} data-channel-access={entry.state}>
+							<MyButton
+								onClick={() => toast.error(entry.state === "locked" ? "Permission denied" : "Message unavailable")}
+							>
+								{entry.state === "locked" ? "No access" : "Unavailable"}
+							</MyButton>
+						</article>
+					),
+				)}
+			</div>
+		</section>
+	);
+});
+// #endregion messages
+
+// #region skeleton
+type AppNotificationsSkeleton_ClassNames =
+	| "AppNotificationsSkeleton"
+	| "AppNotificationsSkeleton-icon"
+	| "AppNotificationsSkeleton-title"
+	| "AppNotificationsSkeleton-meta";
+
+/**
+ * One job card made of skeleton bars. It has the height of a real card header, so the popover only
+ * grows when the real rows arrive.
+ */
+const AppNotificationsSkeleton = memo(function AppNotificationsSkeleton() {
+	return (
+		<div
+			role="status"
+			aria-label="Loading notifications"
+			aria-busy="true"
+			className={"AppNotificationsList" satisfies AppNotificationsList_ClassNames}
+		>
+			<div
+				className={cn(
+					"AppNotificationsSkeleton" satisfies AppNotificationsSkeleton_ClassNames,
+					"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames,
+				)}
+			>
+				<div className={"AppNotificationsActivityItem-header" satisfies AppNotificationsActivityItem_ClassNames}>
+					<MySkeleton className={"AppNotificationsSkeleton-icon" satisfies AppNotificationsSkeleton_ClassNames} />
+					<div className={"AppNotificationsActivityItem-title-group" satisfies AppNotificationsActivityItem_ClassNames}>
+						<MySkeleton className={"AppNotificationsSkeleton-title" satisfies AppNotificationsSkeleton_ClassNames} />
+						<MySkeleton className={"AppNotificationsSkeleton-meta" satisfies AppNotificationsSkeleton_ClassNames} />
+					</div>
+				</div>
+			</div>
+		</div>
+	);
+});
+// #endregion skeleton
 
 // #region activity item
 type AppNotificationsActivityItem_ClassNames =
@@ -521,12 +587,21 @@ type AppNotifications_ClassNames =
 	| "AppNotifications-popover"
 	| "AppNotifications-header"
 	| "AppNotifications-content"
-	| "AppNotifications-title";
+	| "AppNotifications-title"
+	| "AppNotifications-alert";
 
 export const AppNotifications = memo(function AppNotifications() {
 	const navigate = useNavigate();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { userId } = AppAuthProvider.useAuthenticated();
 	const { inboxUnreadCount, status: messagesStatus, retrySummary } = AppChannelsProvider.useContext();
+
+	// Load everything the popover shows here, in the header that is always mounted, and not inside the
+	// popover. So closing and opening the popover shows its rows at once. The rows inside the popover
+	// ask for the same queries, and Convex answers them from these subscriptions without a new request.
+	//
+	// `useQueries` returns an error as a value, so a failing query does not break the whole header.
+	// Each queries object is memoized because `useQueries` subscribes again when its identity changes.
 
 	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
 	const activeActivities = usePaginatedQuery(
@@ -541,6 +616,81 @@ export const AppNotifications = memo(function AppNotifications() {
 	);
 	const activities = [...activeActivities.results, ...activityHistory.results];
 	const organizationList = useQuery(app_convex_api.organizations.list);
+	const actorAnagraphicQueryResults = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					(notifications ?? []).map((notification) => [
+						notification.actorUserId,
+						{ query: app_convex_api.users.get_anagraphic, args: { userId: notification.actorUserId } },
+					]),
+				),
+			[notifications],
+		),
+	) as AppNotificationsList_Props["actorAnagraphicQueryResults"];
+
+	// The popover shows only the newest Messages. "View all" opens the full Activity page.
+	const inbox = useQueries(
+		useMemo(
+			() => ({
+				inbox: {
+					query: app_convex_api.channels_messages.list_my_inbox,
+					args: { membershipId, paginationOpts: { numItems: 5, cursor: null } },
+				},
+			}),
+			[membershipId],
+		),
+	).inbox as app_convex_FunctionReturnType<typeof app_convex_api.channels_messages.list_my_inbox> | Error | undefined;
+	const inboxEntries = inbox === undefined || inbox instanceof Error ? [] : inbox.page;
+	// Join the ids as text, so a new inbox page with the same channels keeps the same queries object.
+	const inboxChannelIdsText = [
+		...new Set(inboxEntries.flatMap((entry) => (entry.state === "readable" ? [entry.item.channelId] : []))),
+	].join(",");
+	const inboxChannelQueryResults = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					(inboxChannelIdsText ? inboxChannelIdsText.split(",") : []).map((channelId) => [
+						channelId,
+						{
+							query: app_convex_api.channels.get_channel,
+							args: { membershipId, channelId: channelId as app_convex_Id<"channels"> },
+						},
+					]),
+				),
+			[inboxChannelIdsText, membershipId],
+		),
+	) as Record<string, app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel> | Error | undefined>;
+	// A direct message row shows the names of the other people, so load those names here too.
+	const directProfiles = useChannelsProfiles([
+		...new Set(
+			Object.values(inboxChannelQueryResults).flatMap((result) =>
+				result && !(result instanceof Error) && result.channel.kind === "direct"
+					? result.channel.participantUserIds.filter((participantUserId) => participantUserId !== userId)
+					: [],
+			),
+		),
+	]);
+
+	// All or nothing: show the skeleton until every row of the popover is ready, then show all rows at once.
+	const isFirstLoad =
+		notifications === undefined ||
+		activeActivities.status === "LoadingFirstPage" ||
+		activityHistory.status === "LoadingFirstPage" ||
+		organizationList === undefined ||
+		Object.values(actorAnagraphicQueryResults).includes(undefined) ||
+		inbox === undefined ||
+		Object.values(inboxChannelQueryResults).includes(undefined) ||
+		directProfiles.includes(undefined);
+	// Show the skeleton only before the first full load of this workspace. Rows on screen must not
+	// turn back into a skeleton when a new row arrives. A new message waits until its channel loads.
+	const [loadedMembershipId, setLoadedMembershipId] = useState<typeof membershipId | null>(null);
+	if (!isFirstLoad && loadedMembershipId !== membershipId) {
+		setLoadedMembershipId(membershipId);
+	}
+	const readyInboxEntries = inboxEntries.filter(
+		(entry) => entry.state !== "readable" || inboxChannelQueryResults[entry.item.channelId] !== undefined,
+	);
 
 	const [open, setOpen] = useState(false);
 	const [dismissing, setDismissing] = useState(false);
@@ -645,6 +795,8 @@ export const AppNotifications = memo(function AppNotifications() {
 			});
 	});
 
+	const handleClose = useFn(() => setOpen(false));
+
 	const handleOpenFile = useFn((fileNodeId: app_convex_Id<"files_nodes">) => {
 		setOpen(false);
 		navigate({
@@ -718,28 +870,43 @@ export const AppNotifications = memo(function AppNotifications() {
 						"app-scrollable" satisfies AppClassName,
 					)}
 				>
-					<p data-messages-status={messagesStatus}>
-						{messagesStatus === "delayed"
-							? "Messages counts may be delayed"
-							: messagesStatus === "updating"
-								? "Messages Updating…"
-								: messagesStatus === "error"
-									? "Could not load Messages counts"
-									: messagesStatus === "unavailable"
-										? "Messages unavailable"
-										: "Loading Messages counts…"}
-					</p>
-					{messagesStatus === "error" && <MyButton onClick={retrySummary}>Retry Messages counts</MyButton>}
-					{open && <ChannelsActivity compact onOpen={() => setOpen(false)} />}
-					<AppNotificationsList
-						notifications={notifications}
-						activities={activities}
-						organizationList={organizationList}
-						onArchiveNotification={onArchiveNotification}
-						onOpenWorkspace={handleOpenWorkspace}
-						onOpenFile={handleOpenFile}
-						onArchiveActivity={onArchiveActivity}
-					/>
+					{/* Show only problems here. The normal "counts may be delayed" state stays in the bell tooltip. */}
+					{messagesStatus === "error" ? (
+						<div role="alert" className={"AppNotifications-alert" satisfies AppNotifications_ClassNames}>
+							<p>Could not load Messages counts.</p>
+							<MyButton variant="secondary" onClick={retrySummary}>
+								Retry
+							</MyButton>
+						</div>
+					) : null}
+					{inbox instanceof Error ? (
+						<div role="alert" className={"AppNotifications-alert" satisfies AppNotifications_ClassNames}>
+							<p>Could not load Messages.</p>
+						</div>
+					) : null}
+					{loadedMembershipId !== membershipId || notifications === undefined || organizationList === undefined ? (
+						<AppNotificationsSkeleton />
+					) : (
+						<>
+							{readyInboxEntries.length > 0 ? (
+								<AppNotificationsMessages
+									entries={readyInboxEntries}
+									unreadCount={inboxUnreadCount}
+									onOpen={handleClose}
+								/>
+							) : null}
+							<AppNotificationsList
+								notifications={notifications}
+								activities={activities}
+								organizationList={organizationList}
+								actorAnagraphicQueryResults={actorAnagraphicQueryResults}
+								onArchiveNotification={onArchiveNotification}
+								onOpenWorkspace={handleOpenWorkspace}
+								onOpenFile={handleOpenFile}
+								onArchiveActivity={onArchiveActivity}
+							/>
+						</>
+					)}
 					{activeActivities.status === "CanLoadMore" || activeActivities.status === "LoadingMore" ? (
 						<MyButton
 							variant="ghost"

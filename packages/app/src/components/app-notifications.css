@@ -61,6 +61,27 @@
 			margin: 0 8px 8px;
 		}
 	}
+
+	.AppNotifications-alert {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
+		margin: 8px 8px 0;
+		padding: 8px 8px 8px 12px;
+		border: 1px solid var(--color-red-07);
+		border-radius: 8px;
+
+		color: var(--color-red-11);
+
+		font-size: 15px;
+		line-height: 1.4;
+
+		& > p {
+			margin: 0;
+		}
+	}
 	/* #endregion root */
 
 	/* #region list */
@@ -84,6 +105,105 @@
 		color: var(--color-fg-08);
 	}
 	/* #endregion list */
+
+	/* #region messages */
+	.AppNotificationsMessages {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+
+		padding: 8px 8px 0;
+	}
+
+	.AppNotificationsMessages-header {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+
+		padding: 0 4px;
+
+		& > a {
+			margin-left: auto;
+
+			color: var(--color-fg-08);
+
+			font-size: 13px;
+			text-decoration: none;
+
+			&:hover {
+				color: var(--color-fg-11);
+				text-decoration: underline;
+			}
+
+			&:focus-visible {
+				outline: 2px solid var(--color-fg-12);
+				outline-offset: 2px;
+				border-radius: 4px;
+			}
+		}
+	}
+
+	.AppNotificationsMessages-title {
+		margin: 0;
+
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.AppNotificationsMessages-unread {
+		font-size: 13px;
+		color: var(--color-fg-08);
+	}
+
+	.AppNotificationsMessages-list {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	/* Show each message as a card like the job cards below it, with a shorter preview than the
+	   full Activity page. */
+	.AppNotificationsMessages-list > .ChannelsFeedMessage {
+		padding: 10px 12px;
+		border: 1px solid var(--color-base-alt-1-08);
+		border-radius: 8px;
+
+		background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+		box-shadow:
+			inset 0 1px 2px oklch(1 0 0 / 0.16),
+			0 2px 4px oklch(0 0 0 / 0.28);
+
+		& .ChannelsFeedMessage-preview {
+			-webkit-line-clamp: 2;
+			max-height: 48px;
+		}
+	}
+	/* #endregion messages */
+
+	/* #region skeleton */
+	/* The bars sit inside the real card header, so each bar keeps the line height of the text it
+	   stands for. */
+	.AppNotificationsSkeleton-icon {
+		width: 16px;
+		height: 16px;
+		flex: 0 0 auto;
+
+		border-radius: 999px;
+	}
+
+	.AppNotificationsSkeleton-title {
+		width: 60%;
+		height: 14px;
+		margin: 3px 0;
+	}
+
+	.AppNotificationsSkeleton-meta {
+		width: 35%;
+		height: 12px;
+		margin: 2px 0;
+	}
+	/* #endregion skeleton */
 
 	/* #region activity item */
 	/* The cards sit on top of the cool popover surface. So they use the cool alt grays, one step

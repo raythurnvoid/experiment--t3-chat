@@ -28,11 +28,6 @@
 			color: var(--color-fg-08);
 		}
 	}
-	.ChannelsActivity[data-compact="true"] {
-		height: auto;
-		padding: 8px;
-		overflow: visible;
-	}
 	.ChannelsActivity-list,
 	.ChannelsThreads-list {
 		display: grid;

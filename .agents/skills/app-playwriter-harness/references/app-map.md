@@ -95,9 +95,14 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
   Threads use global saved totals. Ready counts say `Counts may be delayed`. An access repair says
   `Messages Updating…` and hides counts/dots until its permission check is current. The bell hides
   its whole combined total during that repair, but jobs and invites remain usable.
-- Notifications has a Message activity section and View Activity. It uses the same inbox as the
-  Activity route, subscribed only while the popover is open. Open context closes the bell and opens the real channel/thread; normal visible
-  content advances read positions. Dismiss jobs and invites does not clear message items.
+- Notifications has a `Messages` region (the 5 newest inbox items, `N unread`, and a `View all` link
+  to Activity). It is hidden when the inbox is empty. The header subscribes to everything the popover
+  shows, also while it is closed, so reopening shows rows at once. Only the first open after a page
+  load can show the skeleton, `role="status"` named `Loading notifications`; real rows replace it in
+  one step. Open context closes the bell and opens the real channel/thread; normal visible content
+  advances read positions. Dismiss jobs and invites does not clear message items. In page code, find
+  the popover by `.AppNotifications-popover`, not `[role=dialog][aria-labelledby]`: the header keeps
+  several closed modal dialogs mounted, and that selector can match one of them first.
 - Starred, Channels, Direct messages and Files each request pages of 50 and have their own Show more.
   Scope that button to its named section. Its accessible name is `Show more starred`, `Show more channels`,
   `Show more direct messages`, or `Show more files`. Collapsed sections, a hidden sidebar and closed drawer

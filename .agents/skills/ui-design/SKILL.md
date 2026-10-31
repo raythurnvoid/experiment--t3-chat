@@ -67,6 +67,9 @@ are held. The Columns menu, the folder filter bar and the files search box follo
 also keep their first page in the query cache, so closing and opening a menu again shows its rows
 at once, with no skeleton, also with text left in the box.
 
+The Notifications popover follows it too. Its header, which is always mounted, subscribes to every
+query the popover shows, so only the first open after a page load can show the skeleton.
+
 ## Phone layout
 
 Only the agent chat has a phone layout. Other pages keep the desktop layout on a phone (see "Phone Layout" in the `ai-chat-agent` skill).
