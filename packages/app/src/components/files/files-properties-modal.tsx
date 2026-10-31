@@ -4,7 +4,7 @@ import type { EditorProps } from "@monaco-editor/react";
 import { Check, CircleHelp, X } from "lucide-react";
 import { useQuery } from "convex/react";
 import { editor as monaco_editor } from "monaco-editor";
-import { Fragment, memo, useEffect, useId, useRef, useState, type RefObject } from "react";
+import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { toast } from "sonner";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -27,6 +27,7 @@ import {
 } from "@/components/my-modal.tsx";
 import { MyModalMonacoEditor } from "@/components/my-modal-monaco-editor.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
@@ -257,11 +258,68 @@ const FilesPropertiesModalLockedFacts = memo(function FilesPropertiesModalLocked
 });
 // #endregion facts
 
+// #region setting
+type FilesPropertiesModalSetting_ClassNames = "FilesPropertiesModalSetting" | "FilesPropertiesModalSetting-info";
+
+type FilesPropertiesModalSetting_Props = {
+	/** The setting name. The help button is named "About <label>". */
+	label: string;
+	/** The id of the tooltip text. The checkbox lists it in `aria-describedby` too. */
+	infoId: string;
+	info: string;
+	/** The `MyCheckboxButton` of the setting. */
+	children: ReactNode;
+};
+
+/**
+ * A setting box with a help button in its top-right corner. Hover or keyboard focus on the button
+ * shows the extra text in a tooltip. A click or a tap shows it at once. The tooltip itself never opens
+ * on touch, so without the click a phone could not read the text. It closes when the pointer leaves,
+ * on Escape, and on a click elsewhere.
+ *
+ * The button sits outside the checkbox `<label>`. A focusable element inside a label is invalid HTML,
+ * and a click on it would toggle the checkbox. It is placed over the label line, so the box keeps its
+ * size.
+ */
+const FilesPropertiesModalSetting = memo(function FilesPropertiesModalSetting(
+	props: FilesPropertiesModalSetting_Props,
+) {
+	const { label, infoId, info, children } = props;
+
+	const [infoOpen, setInfoOpen] = useState(false);
+
+	return (
+		<div className={"FilesPropertiesModalSetting" satisfies FilesPropertiesModalSetting_ClassNames}>
+			{children}
+			<MyTooltip open={infoOpen} setOpen={setInfoOpen}>
+				<MyTooltipTrigger>
+					<MyIconButton
+						variant="ghost"
+						className={"FilesPropertiesModalSetting-info" satisfies FilesPropertiesModalSetting_ClassNames}
+						aria-label={`About ${label}`}
+						aria-describedby={infoId}
+						// Only open. A click that closed it would hide the text the hover has just shown.
+						onClick={() => setInfoOpen(true)}
+					>
+						<MyIconButtonIcon>
+							<CircleHelp />
+						</MyIconButtonIcon>
+					</MyIconButton>
+				</MyTooltipTrigger>
+				{/* Keep the text mounted while hidden, so `aria-describedby` and Playwriter can read it. */}
+				<MyTooltipContent id={infoId} unmountOnHide={false}>
+					<>{info}</>
+				</MyTooltipContent>
+			</MyTooltip>
+		</div>
+	);
+});
+// #endregion setting
+
 // #region read-only
 type FilesPropertiesModalReadOnly_ClassNames =
 	| "FilesPropertiesModalReadOnly"
 	| "FilesPropertiesModalReadOnly-checkbox"
-	| "FilesPropertiesModalReadOnly-description"
 	| "FilesPropertiesModalReadOnly-error"
 	| "FilesPropertiesModalReadOnly-actions";
 
@@ -286,6 +344,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 	const cancelBulkRef = useRef<HTMLButtonElement>(null);
 	const labelId = useId();
 	const descriptionId = useId();
+	const infoId = useId();
 	const readOnly = draft ?? state?.readOnly ?? false;
 	const dirty = state !== undefined && state !== null && readOnly !== state.readOnly;
 	const canEdit = state?.canEdit === true;
@@ -346,43 +405,49 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 			.finally(() => setStartingBulk(false));
 	});
 
+	// Say first why the box is off, when it is.
+	const info = [
+		canEdit
+			? null
+			: state === null
+				? "This setting is not available for this item."
+				: "You need Can edit permission to change this.",
+		"Plugins and API keys with the Manage Read-only permission can still make changes. Changes already in progress may still finish.",
+	]
+		.filter((sentence) => sentence !== null)
+		.join(" ");
+
 	return (
 		<div className={"FilesPropertiesModalReadOnly" satisfies FilesPropertiesModalReadOnly_ClassNames}>
-			<MyCheckboxButton
-				className={"FilesPropertiesModalReadOnly-checkbox" satisfies FilesPropertiesModalReadOnly_ClassNames}
-				variant="outline"
-				checked={readOnly}
-				disabled={!canEdit}
-				aria-labelledby={labelId}
-				aria-describedby={descriptionId}
-				aria-busy={saving || undefined}
-				onCheckedChange={(checked) => {
-					// Keep the focused input enabled while saving, but ignore another change.
-					if (saving) return;
-					setDraft(checked);
-					setError(null);
-				}}
-			>
-				<MyCheckboxButtonContent>
-					<MyCheckboxButtonLabel id={labelId}>Read-only</MyCheckboxButtonLabel>
-					<MyCheckboxButtonDescription id={descriptionId}>
-						{nodeKind === "folder"
-							? "Stops normal changes to this folder and its direct list of items. Files inside keep their own settings."
-							: "Stops normal changes to this file."}
-						{" Anyone with Can edit can turn this off."}
-					</MyCheckboxButtonDescription>
-				</MyCheckboxButtonContent>
-			</MyCheckboxButton>
-			<p className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}>
-				An API key or plugin with Manage Read-only permission can still make changes. Work accepted earlier may finish.
-			</p>
-			{!canEdit ? (
-				<p className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}>
-					{state === null
-						? "This setting is not available for this item."
-						: "You need Can edit permission to change this setting."}
-				</p>
-			) : null}
+			{/* The description never changes. Why the box is off, and the details few people need, go in
+			    the help tooltip. */}
+			<FilesPropertiesModalSetting label="Read-only" infoId={infoId} info={info}>
+				<MyCheckboxButton
+					className={"FilesPropertiesModalReadOnly-checkbox" satisfies FilesPropertiesModalReadOnly_ClassNames}
+					variant="outline"
+					checked={readOnly}
+					disabled={!canEdit}
+					aria-labelledby={labelId}
+					aria-describedby={`${descriptionId} ${infoId}`}
+					aria-busy={saving || undefined}
+					onCheckedChange={(checked) => {
+						// Keep the focused input enabled while saving, but ignore another change.
+						if (saving) return;
+						setDraft(checked);
+						setError(null);
+					}}
+				>
+					<MyCheckboxButtonContent>
+						<MyCheckboxButtonLabel id={labelId}>Read-only</MyCheckboxButtonLabel>
+						<MyCheckboxButtonDescription id={descriptionId}>
+							{nodeKind === "folder"
+								? "Stops normal changes to this folder, like adding or removing items in it. Items inside keep their own setting."
+								: "Stops normal changes to this file."}
+							{" Anyone with Can edit can turn this off."}
+						</MyCheckboxButtonDescription>
+					</MyCheckboxButtonContent>
+				</MyCheckboxButton>
+			</FilesPropertiesModalSetting>
 			{nodeKind === "folder" ? (
 				<div className={"FilesPropertiesModalReadOnly-actions" satisfies FilesPropertiesModalReadOnly_ClassNames}>
 					<MyButton variant="outline" disabled={!canEdit || startingBulk} onClick={() => setBulkTarget(true)}>
@@ -444,6 +509,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 // #region collaboration
 type FilesPropertiesModalCollaboration_ClassNames =
 	| "FilesPropertiesModalCollaboration"
+	| "FilesPropertiesModalCollaboration-setting"
 	| "FilesPropertiesModalCollaboration-checkbox"
 	| "FilesPropertiesModalCollaboration-description"
 	| "FilesPropertiesModalCollaboration-confirm-modal"
@@ -476,7 +542,9 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 	const { nodeId } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const labelId = useId();
 	const descriptionId = useId();
+	const reasonId = useId();
 	const confirmTextId = useId();
 	const checkboxRef = useRef<HTMLInputElement>(null);
 	const cancelOffRef = useRef<HTMLButtonElement>(null);
@@ -498,8 +566,8 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 	const blockedReason =
 		canWrite === false
 			? node?.writeBlockedReason === "read_only"
-				? "This file is read-only."
-				: "You don't have permission to edit this file."
+				? "Turn off Read-only to change this."
+				: "You need Can edit permission to change this."
 			: null;
 	const canToggle = canWrite === true;
 
@@ -580,10 +648,6 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 		return null;
 	}
 
-	const description = isCollaborative
-		? "Changes show up in real time, and your edits are saved as you type. You can see what your teammates are editing."
-		: "Turn this on to see changes in real time and what your teammates are editing.";
-
 	return (
 		<section
 			aria-label="Collaboration"
@@ -592,27 +656,46 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				"FilesPropertiesModalCollaboration" satisfies FilesPropertiesModalCollaboration_ClassNames,
 			)}
 		>
-			<MyCheckboxButton
-				ref={checkboxRef}
-				className={"FilesPropertiesModalCollaboration-checkbox" satisfies FilesPropertiesModalCollaboration_ClassNames}
-				variant="outline"
-				checked={isCollaborative}
-				// Do not disable this while the write runs, or the
-				// browser throws a keyboard user out of the dialog. `handleCheckedChange` ignores a second
-				// press instead.
-				disabled={!canToggle}
-				aria-describedby={descriptionId}
-				aria-busy={isRunning || undefined}
-				onCheckedChange={handleCheckedChange}
-			>
-				<MyCheckboxButtonContent>
-					<MyCheckboxButtonLabel>Collaborative editing</MyCheckboxButtonLabel>
-					<MyCheckboxButtonDescription id={descriptionId}>
-						{description}
-						{blockedReason ? ` ${blockedReason}` : null}
-					</MyCheckboxButtonDescription>
-				</MyCheckboxButtonContent>
-			</MyCheckboxButton>
+			{/* The description never changes. While the box is off, hovering it shows why, like the billing
+			    tooltips in the header. The tooltip sits on a wrapper, because `MyCheckboxButton` passes its
+			    props to the hidden input. */}
+			<MyTooltip open={blockedReason ? undefined : false}>
+				<MyTooltipTrigger disabled={!blockedReason}>
+					<div
+						className={
+							"FilesPropertiesModalCollaboration-setting" satisfies FilesPropertiesModalCollaboration_ClassNames
+						}
+					>
+						<MyCheckboxButton
+							ref={checkboxRef}
+							className={
+								"FilesPropertiesModalCollaboration-checkbox" satisfies FilesPropertiesModalCollaboration_ClassNames
+							}
+							variant="outline"
+							checked={isCollaborative}
+							// Do not disable this while the write runs, or the
+							// browser throws a keyboard user out of the dialog. `handleCheckedChange` ignores a second
+							// press instead.
+							disabled={!canToggle}
+							aria-labelledby={labelId}
+							aria-describedby={blockedReason ? `${descriptionId} ${reasonId}` : descriptionId}
+							aria-busy={isRunning || undefined}
+							onCheckedChange={handleCheckedChange}
+						>
+							<MyCheckboxButtonContent>
+								<MyCheckboxButtonLabel id={labelId}>Collaborative editing</MyCheckboxButtonLabel>
+								<MyCheckboxButtonDescription id={descriptionId}>
+									Edit with your teammates in real time and see what they are editing.
+								</MyCheckboxButtonDescription>
+							</MyCheckboxButtonContent>
+						</MyCheckboxButton>
+					</div>
+				</MyTooltipTrigger>
+				{/* Keep the reason mounted while hidden, so `aria-describedby` and Playwriter can read it. */}
+				<MyTooltipContent id={reasonId} unmountOnHide={false}>
+					<>{blockedReason}</>
+				</MyTooltipContent>
+			</MyTooltip>
 
 			{cleanupBlocksCollaboration === true ? (
 				<p

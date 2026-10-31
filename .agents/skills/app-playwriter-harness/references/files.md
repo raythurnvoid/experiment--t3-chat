@@ -1463,9 +1463,19 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   state until the write lands, so do not read "still checked" as a missed click. The confirm's
   `locator.click()` can also land nowhere: on 2026-09-05 the description stayed unchanged and no
   toast appeared after it, while `confirm.focus()` + `keyboard.press("Enter")` toggled both
-  directions every time. Use the keyboard for the confirm button. Read the state from
-  `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
-  the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
+  directions every time. Use the keyboard for the confirm button. The description text is the same
+  in every state, so read the state from the checkbox (`isChecked()`) after the write lands.
+- The Read-only box has a `?` help button in its top-right corner, `About Read-only`. Hover, focus,
+  or a click opens its tooltip. A click does not toggle the checkbox. The tooltip stays in the DOM
+  while hidden; read it through the button's `aria-describedby` id. It holds the disabled reason
+  ("You need Can edit permission to change this.") and the plugin note.
+- The Collaborative editing box has no help button. While it is blocked, hovering the box shows the
+  reason ("Turn off Read-only to change this." or "You need Can edit permission to change this.").
+  The box lists that tooltip in its `aria-describedby`. Verified 2026-10-31.
+- While another agent edits many files, hot reload can leave the page busy or on the "Something went
+  wrong" screen (`AppTenantProvider.useContext` from the header). Locator clicks then hang in
+  "performing click action". Reload, poll until the tree has rows, and use `el.click()` through
+  `evaluate` for menu items and the footer `Save` (seen 2026-10-31).
 - Read-only checkbox verified natively 2026-10-29: scope to `.FilesPropertiesModalReadOnly`.
   The single checkbox is `Read-only`; click its visible label and footer `Save`.
   `files_nodes.read_only_get({ membershipId, nodeId })` returns `readOnly` and `canEdit`.

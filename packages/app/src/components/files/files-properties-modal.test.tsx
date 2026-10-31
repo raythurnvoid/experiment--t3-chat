@@ -406,6 +406,19 @@ describe("FilesPropertiesModalReadOnly", () => {
 		expect((screen.getByRole("checkbox", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(true);
 	});
 
+	// The help button sits outside the checkbox label. Inside it, a click would toggle the setting.
+	// The tooltip never opens on touch, so the click must open it.
+	test("a click on the help button shows the help and does not toggle Read-only", () => {
+		mockQueries({ entries: [], canWrite: true });
+		renderModal();
+		const helpButton = screen.getByRole("button", { name: "About Read-only" });
+		fireEvent.click(helpButton);
+		expect((screen.getByRole("checkbox", { name: "Read-only" }) as HTMLInputElement).checked).toBe(false);
+		expect(document.getElementById(helpButton.getAttribute("aria-describedby") ?? "")?.hasAttribute("data-open")).toBe(
+			true,
+		);
+	});
+
 	test("keeps a refused flag draft open", async () => {
 		mockQueries({ entries: [], canWrite: true });
 		mutationMock.mockResolvedValue({ _nay: { message: "Permission denied" } });
@@ -584,8 +597,8 @@ describe("FilesPropertiesModalCollaboration", () => {
 	// The server asks for the write permission and refuses a locked file, so the box must not offer
 	// a write that is going to be refused.
 	test.each([
-		[{ canWrite: false, locked: false }, "You don't have permission to edit this file."],
-		[{ canWrite: false, locked: true }, "This file is read-only."],
+		[{ canWrite: false, locked: false }, "You need Can edit permission to change this."],
+		[{ canWrite: false, locked: true }, "Turn off Read-only to change this."],
 	] as const)("disables the box and says why when the server would refuse", (blocked, expectedText) => {
 		mockQueries({
 			node: { ...TEXT_NODE, writeBlockedReason: blocked.locked ? "read_only" : "permission" },
@@ -596,9 +609,9 @@ describe("FilesPropertiesModalCollaboration", () => {
 		renderModal();
 
 		expect(collaborationCheckbox().disabled).toBe(true);
-		// Read the collaboration section's own reason through the box's description.
-		const descriptionId = collaborationCheckbox().getAttribute("aria-describedby") ?? "";
-		expect(document.getElementById(descriptionId)?.textContent).toContain(expectedText);
+		// The reason is in the box's hover tooltip, which the box lists in `aria-describedby`.
+		const describedByIds = collaborationCheckbox().getAttribute("aria-describedby")?.split(" ") ?? [];
+		expect(describedByIds.map((id) => document.getElementById(id)?.textContent)).toContain(expectedText);
 		fireEvent.click(collaborationCheckbox());
 		expect(mutationMock).not.toHaveBeenCalled();
 	});

@@ -352,7 +352,7 @@ Public `files/read` serves the selected saved version asset through byte pages. 
 Creation, Properties, and whole-file replacement choose the mode:
 
 - `POST /api/v1/files/write` and `/write-many` accept an optional `nonCollaborative` boolean in the body. It is read only when the write CREATES the file; a write over a file that already exists keeps the mode that file has. See the `public-api` skill.
-- The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Turning it ON has no confirm step. Turning it OFF asks first and names the deleted history and comments. The checkbox text says in plain words what the mode gives: changes show in real time, edits save as you type, and you see what teammates edit. A proposal review can stay mounted across the toggle, so it must block old pane writes and reload the prepared branches.
+- The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Turning it ON has no confirm step. Turning it OFF asks first and names the deleted history and comments. The checkbox text says in plain words what the mode gives: you edit with teammates in real time and see what they edit. It is the same in every state. While the box is disabled, hovering it shows why in a tooltip. A proposal review can stay mounted across the toggle, so it must block old pane writes and reload the prepared branches.
 - A sealed service `create-target` request with required `nonCollaborative: true`. The declared
   `contentType` must be an editable text type, or the request is refused. The choice stays on the
   service target while the empty placeholder is a blob, then successful conversion publishes the flag.

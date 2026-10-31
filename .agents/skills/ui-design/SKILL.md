@@ -46,6 +46,24 @@ Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a descri
 - Use `MyRadioButtonLabel` and `MyRadioButtonDescription`, or `MyCheckboxButtonContent`, `MyCheckboxButtonLabel` and `MyCheckboxButtonDescription`. Do not write a local label class for them.
 - A disabled button dims its label and description with the rest of the button.
 
+## Setting text stays fixed
+
+The label and the description of a setting say what it does. They do not change when the setting
+is turned on or off, or when it is blocked. This is a product rule, decided by the user.
+
+- Keep the description short and free of technical details.
+- Add a help button only when the setting needs extra text (plugin and API key rules, for example).
+  Use the `CircleHelp` (`?`) icon, like the help in the header and the Metadata help button.
+- The help opens on hover, on keyboard focus, and on a click or tap. A click only opens it, so it
+  never hides text the hover has just shown. Touch never opens a tooltip, so without the click a
+  phone could not read it. Clicking the icon does not change the setting.
+- The icon must not change the size or layout of the setting. Place it in a corner of the box,
+  outside the clickable label, on a line that already has room.
+- A setting with no extra text gets no icon. When it is blocked, hovering the box shows why
+  (`open={reason ? undefined : false}`, like the billing tooltips in the header).
+
+`FilesPropertiesModalSetting` in the Properties modal is the reference.
+
 ## Button labels stay fixed while the action runs
 
 A button keeps its label while its action runs. Do not swap "Archive" for "Archiving...". This is

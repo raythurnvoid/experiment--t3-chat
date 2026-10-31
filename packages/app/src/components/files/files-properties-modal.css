@@ -129,6 +129,31 @@
 	}
 	/* #endregion skeleton */
 
+	/* #region setting */
+	/* A flex column, like the section around it, so the box still stretches to the full width. */
+	.FilesPropertiesModalSetting {
+		position: relative;
+
+		display: flex;
+		flex-direction: column;
+	}
+
+	/* Sit on the box's label line: the box has 12px padding and the label line is 24px tall. At 28px
+	   the button stays between 10px and 38px from the top. The description starts at 40px, so the
+	   box keeps its size and the button covers no text. `z-index: 2` keeps it above the box, which
+	   takes `z-index: 1` on hover. */
+	.FilesPropertiesModalSetting-info {
+		position: absolute;
+		top: 10px;
+		right: 8px;
+		z-index: 2;
+
+		width: 28px;
+		height: 28px;
+		padding: 6px;
+	}
+	/* #endregion setting */
+
 	/* #region read-only */
 	.FilesPropertiesModalReadOnly {
 		display: flex;
@@ -142,13 +167,6 @@
 		padding: 12px;
 		white-space: normal;
 		text-align: start;
-	}
-
-	.FilesPropertiesModalReadOnly-description {
-		margin: 0;
-		font-size: 15px;
-		line-height: 1.4;
-		color: var(--color-fg-08);
 	}
 
 	.FilesPropertiesModalReadOnly-error {
@@ -169,6 +187,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+	}
+
+	/* The tooltip anchor around the box. A flex column, like the section around it, so the box still
+	   stretches to the full width. */
+	.FilesPropertiesModalCollaboration-setting {
+		display: flex;
+		flex-direction: column;
 	}
 
 	/* `.MyButton` expects a short centered label. This checkbox carries a sentence, so let it wrap. */

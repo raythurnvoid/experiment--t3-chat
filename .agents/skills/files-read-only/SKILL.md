@@ -326,8 +326,11 @@ Public views return `readOnly`, `canWrite`, and `writeBlockedReason` (null, perm
 Missing Can edit is shown as View only. Sharing and Read-only remain separate.
 
 Properties has one native Read-only checkbox. It uses underlying Can edit, so a person can clear
-the flag even while content writes are blocked. Explain the direct-child rule for folders and that
-a machine with Manage Read-only can force changes. Work accepted earlier may finish.
+the flag even while content writes are blocked. Its description says in plain words what the flag
+stops (for a folder: adding or removing items in it, not the items inside). It never changes with
+the state. The help button's tooltip says why the box is disabled, that a machine with Manage
+Read-only can still make changes, and that work accepted earlier may finish. See "Setting text
+stays fixed" in the `ui-design` skill.
 
 When enabling Read-only with dirty metadata, save metadata first and then the flag. When clearing
 it, save the flag first and then metadata. If the second part fails, keep that draft and say which
