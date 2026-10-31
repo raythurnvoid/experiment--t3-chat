@@ -109,6 +109,10 @@ fence. Frontmatter that is not the first block, or that holds a `---` line, is s
 `<pre data-frontmatter>` HTML (`files_frontmatter_node`). The frontmatter tokenizer has no `start`,
 because a `start` made marked split `\---` into a lone `\` and a divider.
 
+Users add front matter in the rich editor with the `/Front matter` slash command. Typing `---` makes a
+divider, not front matter. The command always puts the block first, because only the first block saves
+as a `---` fence. If the file already has front matter, the command moves the caret to its end instead.
+
 Upstream now owns the drag-handle portal fix. The rich editor sets `pluginKey="bubbleMenu"`
 to match its visibility and position requests; upstream otherwise creates a key per instance.
 React node views flush when they are created. Shared-page content updates run in a cancellable

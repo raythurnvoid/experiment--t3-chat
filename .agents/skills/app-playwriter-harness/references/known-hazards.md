@@ -1287,6 +1287,14 @@ If the main sidebar looks visible but its links are not clickable, inspect `.Mai
 
 `locator.click()` on `.ProseMirror.FileEditorRichText-editor-content` (the class sits on the `.ProseMirror` element itself, so a descendant selector finds nothing) can burn the whole CLI timeout on a long document: the element is thousands of pixels tall, and Playwright's scroll-into-view plus actionability check on it stalls. To focus the editor, `mouse.click(x, y)` on a visible point inside the document column instead (compute the point from `.FileNodeView-editor-area` and the agent panel rects). Verified 2026-08-02. Related: the chat thread's auto-scroll can revert `scrollIntoView()` on a message element right after it runs — set `thread.scrollTop` directly and re-read the rect before hovering.
 
+## A click into the rich editor in a background tab can leave the caret at the document start
+
+On 2026-10-31 a `click()` on a paragraph of `.FileEditorRichText-editor-content` in a background tab put the
+caret at the start of the first heading, and `keyboard.press("End")` did not move it. So `Enter` and the typed
+text landed above the heading. To place the caret, use the Tiptap editor that sits on the DOM node:
+`document.querySelector(".FileEditorRichText-editor-content").editor.commands.focus("end")`. Then type with
+`keyboard.type`. Read `editor.state.doc` and `editor.getMarkdown()` to check the result.
+
 ## Node's stack limit is not the Convex runtime's
 
 A fixture sized to blow the JS stack in a unit test can parse fine in a deployed Convex function.

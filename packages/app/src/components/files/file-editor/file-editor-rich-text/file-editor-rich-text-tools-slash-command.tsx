@@ -16,6 +16,7 @@ import {
 	List,
 	ListOrdered,
 	Table,
+	Tags,
 	Text,
 	TextQuote,
 	Twitter,
@@ -156,6 +157,25 @@ const suggestionItems = createSuggestionItems([
 		searchTerms: ["codeblock"],
 		icon: <Code size={18} />,
 		command: ({ editor, range }) => editor.chain().focus().deleteRange(range).toggleCodeBlock().run(),
+	},
+	{
+		title: "Front matter",
+		description: "Add YAML properties at the top of the file.",
+		searchTerms: ["frontmatter", "yaml", "properties", "metadata"],
+		icon: <Tags size={18} />,
+		command: ({ editor, range }) => {
+			editor.chain().focus().deleteRange(range).run();
+
+			// Front matter reads back as front matter only when it is the first block. So add it at the
+			// top, or move the caret to the end of the one the file already has.
+			const firstNode = editor.state.doc.firstChild;
+			if (firstNode?.type.name === "frontmatter") {
+				editor.commands.setTextSelection(firstNode.nodeSize - 1);
+				return;
+			}
+
+			editor.chain().insertContentAt(0, { type: "frontmatter" }).setTextSelection(1).run();
+		},
 	},
 	{
 		title: "Table",
