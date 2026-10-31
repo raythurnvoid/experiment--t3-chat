@@ -16,7 +16,7 @@ description: Use the image model for UI/UX design ideation in this app, includin
 
 # Image Backend
 
-Use a callable direct image-generation tool when available. Its generated image is the only turn output, and it does not guarantee a local artifact path. If no direct tool is callable, read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its continuation-capable browser fallback, including current browser discovery, explicit ChatGPT image mode, download, and inspection. Save browser-fallback images, screenshots, and runners under `../t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/`.
+Use a callable direct image-generation tool when available. Its generated image is the only turn output, and it does not guarantee a local artifact path. If no direct tool is callable, read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its continuation-capable browser fallback, including current browser discovery, explicit ChatGPT image mode, download, and inspection. Save browser-fallback images, screenshots, and runners under `../experiment--t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/`.
 
 # Core Workflow
 

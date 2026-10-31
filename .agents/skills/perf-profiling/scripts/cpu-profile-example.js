@@ -1,10 +1,10 @@
 // Playwriter script — TEMPLATE. Records a CDP CPU profile around one interaction.
 // Before running, set state.perfProfilePath to an absolute .cpuprofile path under
-// ../t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/ and create that folder in PowerShell.
+// ../experiment--t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/ and create that folder in PowerShell.
 // Analyze the saved .cpuprofile with analyze-cpu-profile.mjs (same folder).
 if (typeof state.perfProfilePath !== "string") {
 	throw new Error(
-		"Set state.perfProfilePath to an absolute .cpuprofile path under ../t3-chat-+personal/+ai/",
+		"Set state.perfProfilePath to an absolute .cpuprofile path under ../experiment--t3-chat-+personal/+ai/",
 	);
 }
 

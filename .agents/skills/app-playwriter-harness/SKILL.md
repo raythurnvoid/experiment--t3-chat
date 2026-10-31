@@ -88,12 +88,12 @@ Use the playbooks in `references/` for manual but repeatable QA when changing li
 - Use dynamic run ids in temporary comment, folder, and file names.
 - Prefer accessible locators and normal clicks. If actionability fails, inspect and hit-test the blocker; do not use forced clicks or DOM-dispatched clicks.
 - Reopen comment threads after refresh before asserting that replies are missing.
-- Keep snippets small and debuggable. Write runners and output only under `../t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/`.
+- Keep snippets small and debuggable. Write runners and output only under `../experiment--t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/`.
 - Treat `references/r2-file-content-regression.md` as the currently maintained deep regression playbook. Treat the other playbooks as historical recipes until a focused task revalidates their routes, selectors, and command wrappers.
 
 # Output Artifacts
 
-Write every runner script, screenshot, CPU profile artifact, and scratch file to `../t3-chat-+personal/+ai/` under a descriptive `<topic>-YYYY-MM-DD` folder. The Playwriter CLI reads an `-f` runner before sandboxed code runs, so the runner may stay in the personal AI folder even though sandboxed `fs` cannot read sibling paths. Embed dynamic input in that runner or assign it to `state` in a short separate call. Do not create a second input file in the repository or OS temp directory. Use absolute personal-AI paths for Playwright output APIs. If the host cannot write to the personal AI folder, request approval. Promote a runner into `scripts/` only when it becomes a broadly reusable primitive.
+Write every runner script, screenshot, CPU profile artifact, and scratch file to `../experiment--t3-chat-+personal/+ai/` under a descriptive `<topic>-YYYY-MM-DD` folder. The Playwriter CLI reads an `-f` runner before sandboxed code runs, so the runner may stay in the personal AI folder even though sandboxed `fs` cannot read sibling paths. Embed dynamic input in that runner or assign it to `state` in a short separate call. Do not create a second input file in the repository or OS temp directory. Use absolute personal-AI paths for Playwright output APIs. If the host cannot write to the personal AI folder, request approval. Promote a runner into `scripts/` only when it becomes a broadly reusable primitive.
 
 # Memories
 

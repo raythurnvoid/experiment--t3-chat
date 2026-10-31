@@ -17,7 +17,7 @@ When using the ChatGPT fallback:
 - Open the composer plus menu and select `Create image` before submitting. This is mandatory — without it ChatGPT returns a text comparison instead of a generated report image, which is an invalid verifier run.
 - Prepend `Generate an image:` to the prompt template below, and end the prompt with `Do not answer with only text. The required output is a generated image report.`
 - Repeat the role labels in the prompt text because ChatGPT can invert `REFERENCE` and `CURRENT IMPLEMENTATION`. If the downloaded report inverts the roles or the text is unreadable, start a fresh ChatGPT tab, re-select `Create image`, and regenerate.
-- Save the report, screenshots, and runners under `../t3-chat-+personal/+ai/visual-verification-YYYY-MM-DD/`, then open the report with your image-view tool before translating it into code.
+- Save the report, screenshots, and runners under `../experiment--t3-chat-+personal/+ai/visual-verification-YYYY-MM-DD/`, then open the report with your image-view tool before translating it into code.
 - If the generator cannot run (login wall, captcha, Playwriter unavailable), say so plainly instead of inventing a verdict.
 
 # Core Workflow

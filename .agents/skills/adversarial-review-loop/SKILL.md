@@ -1,6 +1,6 @@
 ---
 name: adversarial-review-loop
-description: How to run a multi-round, multi-reviewer adversarial review loop over a large feature with subagents. Use when the user asks for a deep review loop, an exhaustive audit with fixes, or a "review until clean" pass over a feature area. Covers reviewer briefing, triage, red-first fix proofs, mutant checks, gates, the ledger, and the stop condition. Findings must be user-reachable: a defect only a test harness can produce is test debt, not a product finding. Distilled from the 18-round Council review loop (evidence trail in t3-chat-+personal/+ai/council-production-room-2026-08-22/loop-review-log.md).
+description: How to run a multi-round, multi-reviewer adversarial review loop over a large feature with subagents. Use when the user asks for a deep review loop, an exhaustive audit with fixes, or a "review until clean" pass over a feature area. Covers reviewer briefing, triage, red-first fix proofs, mutant checks, gates, the ledger, and the stop condition. Findings must be user-reachable: a defect only a test harness can produce is test debt, not a product finding. Distilled from the 18-round Council review loop (evidence trail in experiment--t3-chat-+personal/+ai/council-production-room-2026-08-22/loop-review-log.md).
 ---
 
 # Adversarial Review Loop

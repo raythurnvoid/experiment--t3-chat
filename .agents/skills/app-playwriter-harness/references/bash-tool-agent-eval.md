@@ -139,7 +139,7 @@ evidence capture may use up to 30 seconds. If the agent is still streaming, wait
 Playwriter in small increments, then run the capture snippet again. Do not bake long sleeps
 into JavaScript.
 
-Treat `../t3-chat-+personal/+ai/bash-live-eval-runner.js` as historical scratch evidence, not future infrastructure.
+Treat `../experiment--t3-chat-+personal/+ai/bash-live-eval-runner.js` as historical scratch evidence, not future infrastructure.
 
 ### Batched scenario runner (once the flow is stable)
 
@@ -163,7 +163,7 @@ Rules that keep a batched runner honest:
 - Log per-scenario progress from the calling script; `console.log` inside an installed
   helper is lost between playwriter runs.
 
-A working runner and viewer live in `../t3-chat-+personal/+ai/bash-eval-2026-07-25/`
+A working runner and viewer live in `../experiment--t3-chat-+personal/+ai/bash-eval-2026-07-25/`
 (`install-eval-runner.js`, `scenarios.js`, `view.mjs`).
 
 ### Fair-comparison hygiene between phases
@@ -388,7 +388,7 @@ For each attempt, record:
 Save attempt patches outside the repo when useful, for example:
 
 ```powershell
-git diff -- packages/app/convex/bash.ts packages/app/server/server-ai-tools.ts > ..\t3-chat-+personal\+ai\bash-tool-attempt-<n>.patch
+git diff -- packages/app/convex/bash.ts packages/app/server/server-ai-tools.ts > ..\experiment--t3-chat-+personal\+ai\bash-tool-attempt-<n>.patch
 ```
 
 Do not use `git reset --hard`, `git checkout --`, or staging-index changes as part of this workflow. Revert only the attempt's own patch, never unrelated user changes.
@@ -687,7 +687,7 @@ After verification:
 - run affected Playwriter scenarios first;
 - run the three canaries;
 - if accepted, run the full matrix;
-- update `../t3-chat-+personal/+ai/bash-tool-smoothness-eval.md` with before/after tables and the final decision.
+- update `../experiment--t3-chat-+personal/+ai/bash-tool-smoothness-eval.md` with before/after tables and the final decision.
 - include `/tmp` hydration/flush/cache-hit observations for persistence scenarios in the ledger notes.
 
 ## Final Report Format

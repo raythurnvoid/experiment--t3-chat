@@ -21,11 +21,11 @@ Reset disposable dev data while preserving Clerk-backed accounts and any shared 
 # Preflight
 
 1. Confirm the target from `packages/app/.env.local` (`CONVEX_DEPLOYMENT`, currently `dev:grand-finch-267`). Dev only — never `--prod`.
-2. **Back up before wiping.** Export the database snapshot under `../t3-chat-+personal/+ai/dev-data-reset-YYYY-MM-DD-HHmmss/`, not inside the repository or the OS temp directory. Run this from the repository root and check that the command exits successfully:
+2. **Back up before wiping.** Export the database snapshot under `../experiment--t3-chat-+personal/+ai/dev-data-reset-YYYY-MM-DD-HHmmss/`, not inside the repository or the OS temp directory. Run this from the repository root and check that the command exits successfully:
 
    ```powershell
    $runStamp = Get-Date -Format "yyyy-MM-dd-HHmmss"
-   $backupDirectory = [IO.Path]::GetFullPath((Join-Path (Get-Location) "../t3-chat-+personal/+ai/dev-data-reset-$runStamp"))
+   $backupDirectory = [IO.Path]::GetFullPath((Join-Path (Get-Location) "../experiment--t3-chat-+personal/+ai/dev-data-reset-$runStamp"))
    New-Item -ItemType Directory -Force -Path $backupDirectory | Out-Null
    $backupPath = Join-Path $backupDirectory "convex-export.zip"
 

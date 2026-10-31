@@ -189,7 +189,7 @@ Plain-text document QA fixtures (plain-text-docs §11.5). Upload them in the thr
 | `qa-frontmatter-overcap.md`        | Markdown with 129 frontmatter keys — one over `files_metadata_MAX_FRONTMATTER_FIELDS` (128); token `BONOBO_QA_FRONTMATTER_OVERCAP_2026`.                                                                      | 2418  | 135   | `8cb33857771b68cee0dfce80ca73a28214ed3af89f134a0f24db429c28d4d599` |
 | `qa-frontmatter-values-overcap.md` | Markdown with one `tags` array of 600 unique values — over `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS` (512); token `BONOBO_QA_FRONTMATTER_VALUES_OVERCAP_2026`.                                         | 7295  | 607   | `c3cd45983e3432693a91a9b9270f1a70e8add08c2e6a39948436db3ad3c855aa` |
 
-Generator (records the exact bytes): `../t3-chat-+personal/+ai/plain-text-docs-2026-08-09/generate-qa-fixtures.mjs`.
+Generator (records the exact bytes): `../experiment--t3-chat-+personal/+ai/plain-text-docs-2026-08-09/generate-qa-fixtures.mjs`.
 
 `qa-plain-invalid-utf8.txt` is not in that generator. Regenerate it with this one-liner from the repo root (a Buffer write, because a text editor would replace the invalid byte):
 
@@ -200,7 +200,7 @@ vp env exec node -e "require('node:fs').writeFileSync('.agents/skills/app-playwr
 Do not commit an over-cap text fixture. When a flow needs one, generate it into the personal scratch folder and delete it after the run:
 
 ```powershell
-vp env exec node -e "require('node:fs').writeFileSync('../t3-chat-+personal/+ai/<task-folder>/qa-plain-overcap.txt', 'over-cap filler BONOBO_QA_OVERCAP_2026\n'.repeat(140000))"
+vp env exec node -e "require('node:fs').writeFileSync('../experiment--t3-chat-+personal/+ai/<task-folder>/qa-plain-overcap.txt', 'over-cap filler BONOBO_QA_OVERCAP_2026\n'.repeat(140000))"
 ```
 
 That is ~5.4 MB. Any text upload over `files_MAX_TEXT_CONTENT_BYTES` (900,000 bytes) keeps the stored blob: the conversion checks the declared asset size before its GET, so it settles without fetching the bucket bytes at all.
@@ -2256,7 +2256,7 @@ download their uploads. A failed mark save must keep local files for Retry with 
 For anything longer than a one-liner, keep the runner in a dated personal AI folder:
 
 ```powershell
-$runDirectory = "../t3-chat-+personal/+ai/files-qa-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
+$runDirectory = "../experiment--t3-chat-+personal/+ai/files-qa-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 $scriptPath = Join-Path $runDirectory "playwriter-files-check.js"
 # Create this runner with the agent's targeted edit tool. Do not write it with a shell rewrite.

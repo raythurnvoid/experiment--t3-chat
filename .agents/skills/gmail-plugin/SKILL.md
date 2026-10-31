@@ -13,7 +13,7 @@ Load `../plugin-system/SKILL.md` for publishing, and `../convex/SKILL.md` before
 
 ## Private notes
 
-Setup values (Google project id, topic, subscription, accounts) are private. Do not commit them, here or in the plugin repo. They are in `../t3-chat-+personal/+ai/gmail-push-setup-2026-10-22/setup-steps.md` (path from the repo root), outside the repo. That file also has the full Cloud Console click path with every field value. Update it when the setup changes.
+Setup values (Google project id, topic, subscription, accounts) are private. Do not commit them, here or in the plugin repo. They are in `../experiment--t3-chat-+personal/+ai/gmail-push-setup-2026-10-22/setup-steps.md` (path from the repo root), outside the repo. That file also has the full Cloud Console click path with every field value. Update it when the setup changes.
 
 ## Secrets
 

@@ -172,11 +172,11 @@ Treat Tiptap and Novel as source-level infrastructure that must follow the app's
 
 - [references-submodules/](references-submodules) - Read-only repositories for docs, examples, and source inspection
 
-- [../t3-chat-+personal/](../t3-chat-+personal) - DOCUMENTATION & RESEARCH FOLDER
-  - [../t3-chat-+personal/+ai/](../t3-chat-+personal/+ai) - Writable subfolder for AI-generated content and scratch artifacts. Write ALL throwaway output here — temp/runner scripts, ideation screenshots, eval output, scratch plans — grouped under a descriptive `<topic>-YYYY-MM-DD` subfolder.
+- [../experiment--t3-chat-+personal/](../experiment--t3-chat-+personal) - DOCUMENTATION & RESEARCH FOLDER
+  - [../experiment--t3-chat-+personal/+ai/](../experiment--t3-chat-+personal/+ai) - Writable subfolder for AI-generated content and scratch artifacts. Write ALL throwaway output here — temp/runner scripts, ideation screenshots, eval output, scratch plans — grouped under a descriptive `<topic>-YYYY-MM-DD` subfolder.
   - Do not write scratch files to the repo or the OS temp directory. If the sandbox cannot write to the personal AI folder, request approval instead of silently using another location. Reusable browser-QA helpers or recipes belong in the Playwriter harness ([.agents/skills/app-playwriter-harness/](.agents/skills/app-playwriter-harness)).
-  - [../t3-chat-+personal/sources/](../t3-chat-+personal/sources) - Read-only third-party code and docs. Read its [README](../t3-chat-+personal/sources/README.md) first. Modify it only when the user explicitly asks.
-  - Do not modify any other path under `../t3-chat-+personal/` unless the user explicitly asks.
+  - [../experiment--t3-chat-+personal/sources/](../experiment--t3-chat-+personal/sources) - Read-only third-party code and docs. Read its [README](../experiment--t3-chat-+personal/sources/README.md) first. Modify it only when the user explicitly asks.
+  - Do not modify any other path under `../experiment--t3-chat-+personal/` unless the user explicitly asks.
 
 ## Vendored and reference repositories
 
@@ -199,7 +199,7 @@ When users ask about 3rd party libraries or request implementations using extern
 
 Use sources in this order:
 
-1. Read [../t3-chat-+personal/sources/README.md](../t3-chat-+personal/sources/README.md) before using the local source mirror.
+1. Read [../experiment--t3-chat-+personal/sources/README.md](../experiment--t3-chat-+personal/sources/README.md) before using the local source mirror.
 2. Use the vendored or reference repository when it contains the relevant version and docs.
 3. Use official web documentation when local material is missing or version-sensitive.
 

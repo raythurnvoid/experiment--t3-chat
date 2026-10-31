@@ -714,7 +714,7 @@ report the wrong element. Before driving, install a capture-phase `focusin` list
 record the resolve timestamp on `window` when it settles. Drive the flow, wait until that timestamp
 exists, then compare the trail against it — the entries after the resolve time are the focus moves the
 settle caused. Working runner: `r15-1-delete-focus-trail.js` in
-`t3-chat-+personal/+ai/r15-1-2026-08-23/`.
+`experiment--t3-chat-+personal/+ai/r15-1-2026-08-23/`.
 
 For a walk-away check, make the stub delay much longer than the walk-away clicks — 4 seconds, not 1.5.
 Playwright's actionability retries can spend more than a second per click, so with a short delay the
@@ -993,7 +993,7 @@ should. It is `snapshot()` that reads the wrong surface. Use `getCleanHTML` for 
 
 Three probes written for the round-6 review that answered questions a plain look at the page could
 not. All three are saved as runnable files under
-`t3-chat-+personal/+ai/council-production-room-2026-08-22/r6-reviewer1/`. Reuse them rather than
+`experiment--t3-chat-+personal/+ai/council-production-room-2026-08-22/r6-reviewer1/`. Reuse them rather than
 writing your own — each one exists because the obvious approach gave a wrong answer first.
 
 **Fake SDK that mimics the pinned RealtimeKit 2.0.1 device failure** (`room-nomic.js`). This is the
@@ -1022,7 +1022,7 @@ turns "the ring looks wrong" into "this element is not in the rule".
 
 **Focus-loss trail on the room's own controls** (`07-focus-ticks.js`, `08-broadcast-focus.js` and the
 browser calibration `09-calibrate-blur.js`, under
-`t3-chat-+personal/+ai/council-room-doc-fixerbc-2026-08-23/`). Reading `document.activeElement`
+`experiment--t3-chat-+personal/+ai/council-room-doc-fixerbc-2026-08-23/`). Reading `document.activeElement`
 once after an action tells you where focus ended up. It does not tell you whether focus was ever
 lost. The room loses focus and puts it back on purpose — `catchFocusOnCallNotice` in `client.ts` runs
 on every path that can close the recording control under the host — so "never lost it" and "lost it
@@ -1094,7 +1094,7 @@ re-measured on `council-room-r23`:
   the host on the invisible heading even while the pill was lit — same problem class as the rescue
   above, through a different door. The stop edge is unchanged: the pill hides and focus falls
   through to `#call-heading`. Runner: `02-status-line-landing.js` under
-  `t3-chat-+personal/+ai/fixer-bs-2026-08-23/`, on top of that folder's `01-boot-and-join.js`.
+  `experiment--t3-chat-+personal/+ai/fixer-bs-2026-08-23/`, on top of that folder's `01-boot-and-join.js`.
 
 Sample out to the second animation frame and the timeout anyway. It costs nothing, and it is what
 proves the value settled rather than proving only that you read it early. **Take the measurement in
@@ -1104,8 +1104,8 @@ headless doing the opposite — leaving `activeElement` on the button until the 
 there would describe a browser the user does not run.
 
 **Hold a route answer open so the provider broadcast wins the race**
-(`06-broadcast-beats-answer.js` under `t3-chat-+personal/+ai/fixer-bk-2026-08-23/`, re-run as
-`05-broadcast-beats-answer.js` under `t3-chat-+personal/+ai/fixer-bn-2026-08-23/`). The room's start
+(`06-broadcast-beats-answer.js` under `experiment--t3-chat-+personal/+ai/fixer-bk-2026-08-23/`, re-run as
+`05-broadcast-beats-answer.js` under `experiment--t3-chat-+personal/+ai/fixer-bn-2026-08-23/`). The room's start
 button has two things racing for it: this browser's own answer from `POST /room/api/host/start-recording`,
 and the provider's `recordingUpdate` broadcast. Both close the control, and each one puts the host's
 focus back in a different place. You cannot test the order that matters by emitting faster, because a
@@ -1402,7 +1402,7 @@ gradient through, so the same button measures a slightly different ratio dependi
 Phrase a comment as "stays above X anywhere on the gradient" — that survives a re-measure, and it is
 the fact that matters.
 
-Runners: `t3-chat-+personal/+ai/fixer-av-2026-08-23/fixer-av-verify-after.js` measures room and
+Runners: `experiment--t3-chat-+personal/+ai/fixer-av-2026-08-23/fixer-av-verify-after.js` measures room and
 dashboard in one pass with both calibration samples inline.
 
 ## Matching `.host-error` to the floating control bar

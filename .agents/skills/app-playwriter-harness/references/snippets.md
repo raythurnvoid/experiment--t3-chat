@@ -199,7 +199,7 @@ See the Files Folder Create QA recipe in `references/files.md`. Keep the full fl
 Use one runner in a dated personal AI folder for generated PDF sibling QA or any flow with many assertions. This avoids PowerShell quote parsing issues, especially with selectors containing quotes or JavaScript regexes.
 
 ```powershell
-$runDirectory = "../t3-chat-+personal/+ai/generated-pdf-qa-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
+$runDirectory = "../experiment--t3-chat-+personal/+ai/generated-pdf-qa-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 $scriptPath = Join-Path $runDirectory "playwriter-generated-pdf-qa.js"
 # Create this runner with the agent's targeted edit tool. Do not write it with a shell rewrite.

@@ -294,7 +294,7 @@ Convex limits returned arrays to 8,192 items. Do not keep increasing `--limit` p
 
 # Export And Import Recovery Snapshots
 
-Use an export only when the user or operator has approved the snapshot and confirmed the exact deployment. Store it in a dated folder under `../t3-chat-+personal/+ai/`, never in the repository. Treat the ZIP as sensitive user data: do not commit it, paste its contents into reports, or upload it elsewhere.
+Use an export only when the user or operator has approved the snapshot and confirmed the exact deployment. Store it in a dated folder under `../experiment--t3-chat-+personal/+ai/`, never in the repository. Treat the ZIP as sensitive user data: do not commit it, paste its contents into reports, or upload it elsewhere.
 
 From `packages/app`, export to a new path and name the operation in the file:
 

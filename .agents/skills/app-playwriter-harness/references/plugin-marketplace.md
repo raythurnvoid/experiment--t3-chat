@@ -171,7 +171,7 @@ bundle again with the fix's own line reverted and watch the notice disappear whi
 unchanged.
 
 A working runner lives at
-`t3-chat-+personal/+ai/chitchat-slack-planning-2026-08-23/runners/swap-plugin-bundle-v3.js`. Its v1
+`experiment--t3-chat-+personal/+ai/chitchat-slack-planning-2026-08-23/runners/swap-plugin-bundle-v3.js`. Its v1
 and v2 siblings are the versions that served the published bundle without saying so — keep them
 only as the record of that failure.
 
@@ -718,7 +718,7 @@ click provably does nothing, not before.
   recording. Chrome's floating Stop sharing bar ends the capture without clicking Share. After that
   stop, `#share-button` must have `aria-pressed="false"` even though `toggleScreenShare` did not
   run. A failed in-app stop must not say to check the screen-share permission. `assets/files/speakers.wav` is documented but may be absent; generate a short speech
-  WAV into `../t3-chat-+personal/+ai/` with Windows SAPI. Files toolbar Download of `recording.mp4`
+  WAV into `../experiment--t3-chat-+personal/+ai/` with Windows SAPI. Files toolbar Download of `recording.mp4`
   lands in the QA Edge Downloads folder. Playwriter `download.saveAs` fails here because the relay
   artifact path is already gone. Do not call `window.getScreenDetails()` from the fixture; it opens
   a "Manage windows on all your displays" prompt on the captured screen.
@@ -1172,7 +1172,7 @@ theme` — so the fastest live check for a 0.13.0 frame is that `data`, `members
 `client.convex.query(client.api.plugins_data.list_members, { limit: 5 })` answered the one QA member,
 and `client.convex.query(client.api.plugins_data.watch_documents_page, { collection: "channels",
 paginationOpts: { numItems: 3, cursor: null } })` answered 3 documents with `isDone: false`. The
-runner is `t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/probe-frame.js`.
+runner is `experiment--t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/probe-frame.js`.
 
 ```js
 const frame = state.page
@@ -1314,7 +1314,7 @@ Measured 2026-09-02 on Chitchat 0.7.0, a 103-message channel: one press moved th
 103 rows, removed the "Load older" button, left the `/plugin-data/list` count at 4, and left three
 live `plugins_data:watch_documents_page` subscriptions on the same collection and `keyPrefix`
 (`numItems: 100`, one at `cursor: null`, two at stored cursors). Runners: `load-older.js` and
-`query-set.js` in `t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/`.
+`query-set.js` in `experiment--t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/`.
 
 ## Reading a table count without fooling yourself
 

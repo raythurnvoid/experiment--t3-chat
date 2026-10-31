@@ -34,7 +34,7 @@ if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() 
 In PowerShell, do not pass nontrivial JavaScript through `-e`. Put the runner in the required sibling personal-AI run folder and run it with `-f`. Create or edit the runner with the agent's targeted file-edit tool, not an ad hoc shell rewrite:
 
 ```powershell
-$runDirectory = "../t3-chat-+personal/+ai/chatgpt-image-YYYY-MM-DD"
+$runDirectory = "../experiment--t3-chat-+personal/+ai/chatgpt-image-YYYY-MM-DD"
 $scriptPath = Join-Path $runDirectory "chatgpt-image-step.js"
 vp env exec pnpx playwriter -s $session -f $scriptPath --timeout 200000
 ```
@@ -199,7 +199,7 @@ The `Save` button route, for a relay where `saveAs` does work:
 
 ```js
 const path = require('node:path')
-const outPath = path.resolve('../t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/generated-image.png')
+const outPath = path.resolve('../experiment--t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/generated-image.png')
 const [download] = await Promise.all([
   state.page.waitForEvent('download', { timeout: 30000 }),
   state.page.getByRole('button', { name: 'Save' }).click(),
@@ -211,7 +211,7 @@ If the normal Save download fails because the relay file disappeared, fetch the 
 
 ```js
 const path = require('node:path')
-const outPath = path.resolve('../t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/generated-image.png')
+const outPath = path.resolve('../experiment--t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/generated-image.png')
 
 const [download, imageInfo] = await Promise.all([
   state.page.waitForEvent('download', { timeout: 30000 }),
@@ -242,7 +242,7 @@ await download.saveAs(outPath)
 console.log(imageInfo)
 ```
 
-Create a descriptive dated run folder under `../t3-chat-+personal/+ai/` before running the download. Use folders such as `image-ideation-YYYY-MM-DD` or `visual-verification-YYYY-MM-DD`. Playwriter `download.saveAs()` needs an absolute destination, so resolve the sibling path from the repo root. Never use the repository's `tmp/`, a repo-root artifacts folder, `$env:TEMP`, or another OS-temp directory.
+Create a descriptive dated run folder under `../experiment--t3-chat-+personal/+ai/` before running the download. Use folders such as `image-ideation-YYYY-MM-DD` or `visual-verification-YYYY-MM-DD`. Playwriter `download.saveAs()` needs an absolute destination, so resolve the sibling path from the repo root. Never use the repository's `tmp/`, a repo-root artifacts folder, `$env:TEMP`, or another OS-temp directory.
 
 # Inspect And Reuse
 

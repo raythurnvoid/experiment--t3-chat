@@ -9,7 +9,7 @@ Polar is intended to be the billing source of truth for products, customers, sub
 
 The app mirrors enough billing state locally to drive UI and app behavior. In practice, the repo stores a synced product catalog, synced customers and subscriptions through the vendored Polar component, and a local usage snapshot derived from Polar customer state.
 
-For Polar platform behavior that is not clear from the vendored component or public docs, inspect the local Polar source mirror at [polar-main](../../../../t3-chat-+personal/sources/polar-main). The dashboard UI lives under `clients/apps/web`, docs under `docs`, and backend billing/meter logic under `server/polar`.
+For Polar platform behavior that is not clear from the vendored component or public docs, inspect the local Polar source mirror at [polar-main](../../../../experiment--t3-chat-+personal/sources/polar-main). The dashboard UI lives under `clients/apps/web`, docs under `docs`, and backend billing/meter logic under `server/polar`.
 
 Subscription lifecycle webhooks are the authoritative sync path for the local subscription mirror. `customer.state_changed` is deliberately narrower: it owns the local usage snapshot and is the production webhook trigger for recurring monthly-credit enqueueing, but it does not infer scheduled plan changes such as `pendingUpdate`. The admin refresh action can replay the same customer-state path on demand.
 

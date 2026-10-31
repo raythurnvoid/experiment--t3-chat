@@ -442,12 +442,12 @@ Same run, after the press: 12 subscriptions in total —
 **A re-run of a loaded page carries an end cursor, and that run has no row bound at all.** Measured 2026-09-02 on published 0.7.1 in `#deephist`: before the press the two paginated subscriptions both carried `endCursor`, and after it the three were one at `cursor: null` with `endCursor` set, one at a stored cursor with `endCursor` set, and one at a stored cursor with no `endCursor` (the newest page, still growing). Those end cursors are the ones the hook itself put in the args, not ones the press created: `splitQuery` is the only place `usePaginatedQuery` sets `endCursor`, so a page shows one in its args only after the hook split it, and then keeps it. That is why two of the three show it before any press. The args are not the whole story, though. Convex's query journal stores the end of every page it has run and hands it back on the next run of the same subscription, so a page with no `endCursor` in its args still re-runs with one. Only the very first run of a page has none. On a run that carries an end cursor Convex ignores `numItems`, reads to that cursor, and also stops enforcing `maximumRowsRead`, because the whole interval has to come back for the answer to be correct. So such a page can hold more than 100 documents, and it can never come back `SplitRequired` from the row cap. What survives there is the soft limit of 75 rows, which flags `SplitRecommended`. Do not expect a `SplitRequired` from this door in the browser.
 
 The runner that does all of this in one call is
-`t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/load-older.js` (row counts, button state,
+`experiment--t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/load-older.js` (row counts, button state,
 resource count) with `query-set.js` beside it for the subscription read.
 
 **0.5.1 swap runner.** After Chitchat 0.5.1 is published, the asset prefix is
 `/plugins-ui/hn7j9kpdh4h76he1njpf33dny18d4q1v/`. The working-tree swap for that version lives at
-`t3-chat-+personal/+ai/chitchat-change-feed-research-2026-08-25/runners/swap-plugin-bundle-051.js`.
+`experiment--t3-chat-+personal/+ai/chitchat-change-feed-research-2026-08-25/runners/swap-plugin-bundle-051.js`.
 Set `state.patchVariant` before the first plugin navigation on that page: `smallwindow` shrinks
 the messages window page size to 2 and the HTTP page to 3; `smallwindow-nofeed` does the same and
 also skips `apply_window` on the messages `watchChanges` callback (the break-on-purpose for frozen
@@ -457,7 +457,7 @@ constant in that runner the same way as v3.
 **0.5.2 swap runner.** Published 0.5.2 is `hn7r8whxym0xsbnn0e74dqak2d8d70be` (asset prefix
 `/plugins-ui/hn7r8whxym0xsbnn0e74dqak2d8d70be/`). Do not reuse the 051 file: the 0.5.2 minified
 anchors are `uo(u.key)` and `var Do = 55,\n\tco = 100;` (051 had `lo` and `fo`). The 0.5.2 runner
-is `t3-chat-+personal/+ai/chitchat-change-feed-research-2026-08-25/runners/swap-plugin-bundle-052.js`.
+is `experiment--t3-chat-+personal/+ai/chitchat-change-feed-research-2026-08-25/runners/swap-plugin-bundle-052.js`.
 Same `patchVariant` values as 051. Prove the published frame first (frame URL contains that id,
 and the detail page shows `Version 0.5.2` with only `Uninstall`); then install the swap **before**
 that tab's next plugin navigation. A frozen-row smoke can edit from the published tab (page size
@@ -468,7 +468,7 @@ that tab's next plugin navigation. A frozen-row smoke can edit from the publishe
 the 052 file. The 0.5.3 minified anchors are `so(u.key)` and `var Lo = 55,\n\tho = 100,` — that
 `ho` line ends with a comma, not a semicolon, because companion backoff (`qd = 1e3`, `NM = 3e4`)
 shares the same `var`. The 0.5.3 runner is
-`t3-chat-+personal/+ai/chitchat-cap-retry-2026-08-26/runners/swap-053-smallwindow.js`. It fetches
+`experiment--t3-chat-+personal/+ai/chitchat-cap-retry-2026-08-26/runners/swap-053-smallwindow.js`. It fetches
 the published JS/CSS from the registry (no local static server). Prove the published frame first
 (frame URL contains that id, detail page `Version 0.5.3` with only `Uninstall`, served JS sha256
 `b1ca9b230749bd989b7f67789562e182eacefc2e16d3859ef94b5b419921694a`). This bundle still has SDK

@@ -65,7 +65,7 @@ vp env exec pnpm --dir packages/app exec convex logs --deployment "<deployment-n
 ```powershell
 $runStamp = Get-Date -Format "yyyy-MM-dd-HHmmss"
 $marker = "<unique-marker>"
-$logDirectory = "../t3-chat-+personal/+ai/troubleshooting-$runStamp"
+$logDirectory = "../experiment--t3-chat-+personal/+ai/troubleshooting-$runStamp"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 $stdoutPath = Join-Path $logDirectory "convex-logs.out.jsonl"
 $stderrPath = Join-Path $logDirectory "convex-logs.err.log"
@@ -194,7 +194,7 @@ For a reproducible test, redirect tail output to files and stop it after the asy
 ```powershell
 $runStamp = Get-Date -Format "yyyy-MM-dd-HHmmss"
 $marker = "<unique-marker>"
-$tailDirectory = "../t3-chat-+personal/+ai/troubleshooting-$runStamp"
+$tailDirectory = "../experiment--t3-chat-+personal/+ai/troubleshooting-$runStamp"
 New-Item -ItemType Directory -Force -Path $tailDirectory | Out-Null
 $out = Join-Path $tailDirectory ("worker-tail-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ".out.log")
 $err = Join-Path $tailDirectory ("worker-tail-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + ".err.log")
