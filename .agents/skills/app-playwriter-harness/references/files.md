@@ -987,6 +987,19 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 - The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant on the folder. Get that member without any sign-in by following `references/second-user-fixtures.md`: an anonymous user in a scratch browser, invited by `userIdToAdd` into a throwaway non-default org. Verified end to end — a `member` with only `write` archives the folder fine, is refused on restoring the child alone with `You need Can manage on the shared folder to move this out of it.`, and still restores the scope-carrying folder itself.
 - A `write`-only member **can** archive the restricted folder. The hole this guards is the pair: archive the folder, then restore one file out of it. With the leaving check removed, that same click succeeds and clears the child's `restrictedScopeNodeId` to `null` at root — the file becomes readable by the whole workspace. Count that pointer, not the toast, when proving the guard.
 
+### Archive View, Delete Permanently, Empty Archive
+
+Use this after changing `files-sidebar-archive.tsx`, `files-purge-modal.tsx`, `files_nodes.purge_nodes` / `empty_archive`, or `files_tree.list_archive_areas` / `list_archived_tops`. Spec: "Archive view and Delete permanently" in the `files-explorer-tree` skill and "Delete Permanently" in the `data-deletion` skill. Verified 2026-10-31.
+
+- Open it with the sidebar header `More options` → menu item `Open archive`. The view replaces the tree inside `section.FilesSidebarArchive` (named `Archive` by its heading). Leave with the `Back to files` button or Escape.
+- Rows are `[data-archive-row-id]` buttons, newest archive first. Their `aria-label` is `<name> in <parent path>`, plus `, you don't have access` for a locked row. Items archived before the time-prefixed op ids show `Archived before Oct 31, 2026` and sort last.
+- The area picker is the select named `Archive of <area>`. `Workspace` is the open part; each restricted folder you can open is its own area. The row menu (`More actions for <name>`) has `Restore`, `Delete permanently…` and `Copy path`.
+- Escape works one layer at a time: an open tooltip, menu, or the area picker closes first and the view stays. Only an Escape nobody handled leaves the view and focuses the tree. native-popovers marks a handled Escape with `preventDefault` on the native event, and React's `event.defaultPrevented` does not see that, so the view reads `event.nativeEvent.defaultPrevented`.
+- `Empty archive…` opens `Empty archive?`; its confirm button is `Empty archive`. The call can take more than 2 seconds before the dialog closes. Then the job toast `Emptying the archive…` shows with `View`. Only items archived before the confirm are deleted; items archived later stay.
+- Follow the job with `convex data files_archive_runs --limit 1 --order desc` (kind `purge`, `emptyArchive` set). `foundCount` grows by pages of 50, so do not read it as the total. A large archive takes minutes. Done when `active` is `false`. A Read-only item is kept and counted in `keptCount`.
+- Check freed bytes with the `stored_file_bytes` quota of the workspace before and after. Only assets with `storedFileBytes` give bytes back, so old uploads may free little.
+- Delete permanently is not undoable and costs real data. Use it only on archived QA items, or on archives the user asked to empty.
+
 ### File And Folder Read-only
 
 Native subset verified 2026-10-29 with the signed-in owner and an authorized isolated member.
