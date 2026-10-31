@@ -4646,6 +4646,11 @@ const app_convex_schema = defineSchema({
 		lowercaseExtension: v.union(v.string(), v.null()),
 		contentByteSize: v.union(v.number(), v.null()),
 		/**
+		 * Copy of the node's flag. True for a restricted root, false for an extended root.
+		 * TODO(migration): optional only until `backfill_files_share_rows_isRestrictedScopeRoot` has run.
+		 */
+		isRestrictedScopeRoot: v.optional(v.boolean()),
+		/**
 		 * The node's `_creationTime`, so the created sort follows the node, not the share.
 		 */
 		nodeCreationTime: v.number(),
@@ -4679,6 +4684,17 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"sortName",
 			"name",
+		])
+		// The Archived view's area picker: the restricted folders one principal can open, by path.
+		.index("by_org_ws_principal_restricted_archive_treePath", [
+			"organizationId",
+			"workspaceId",
+			"principalKey",
+			"moveView.cohortId",
+			"moveView.view",
+			"isRestrictedScopeRoot",
+			"archiveOperationId",
+			"treePath",
 		])
 		.index("by_node", ["nodeId", "moveView.cohortId", "moveView.view"])
 		.index("by_grant", ["grantId", "moveView.cohortId", "moveView.view"]),
