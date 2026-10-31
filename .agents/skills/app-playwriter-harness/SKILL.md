@@ -46,6 +46,8 @@ vp env exec pnpx playwriter -s $session --timeout 5000 -f "<absolute repo root>/
 vp env exec pnpx playwriter -s $session --timeout 5000 -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/w/personal/home/files" });'
 ```
 
+Keep `-e` for one line. Put code with more than one line in a `-f` file with an absolute path. A multi-line `-e` runs only its first line, and `-e "$(cat file.js)"` fails with `batch file arguments are invalid`.
+
 # Workflow
 
 - Before a run creates any data (files, drafts, uploads, chats, users, workspaces), load the `qa-data` skill and test with the existing files in its catalog. Create new data only when nothing fits, and add it to the catalog.
