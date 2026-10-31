@@ -10,7 +10,7 @@
 	.FilesSidebarArchiveRow-primary {
 		width: 100%;
 		height: auto;
-		min-height: 44px;
+		min-height: 36px;
 		min-width: 0;
 
 		display: flex;
@@ -43,7 +43,7 @@
 	}
 
 	.FilesSidebarArchiveRow-details {
-		font-size: 0.8125rem;
+		font-size: 0.9375rem;
 		color: var(--color-fg-08);
 	}
 
@@ -68,7 +68,7 @@
 
 		padding: 8px;
 
-		border-bottom: 1px solid var(--color-fg-04);
+		border-bottom: 1px solid var(--color-fg-02);
 	}
 
 	.FilesSidebarArchive-title-row {
@@ -119,6 +119,7 @@
 		margin: 0;
 		padding: 8px;
 
+		font-size: 0.9375rem;
 		color: var(--color-fg-08);
 	}
 

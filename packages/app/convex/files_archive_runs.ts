@@ -940,7 +940,7 @@ async function db_check_purge_node(
 ): Promise<PurgeKeptReason | null> {
 	const { frame, node } = args;
 
-	// The person picked the named item in the Archived view. When it was restored, archived again or
+	// The person picked the named item in the Archive view. When it was restored, archived again or
 	// moved since, they did not pick what is there now.
 	const root = node._id === frame.rootNodeId ? node : await ctx.db.get("files_nodes", frame.rootNodeId);
 	if (

@@ -91,7 +91,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - The first-party PDF plugin writes `<source-name>.md`; the image plugin writes `<source-name>.description.md`; the video/audio plugin writes a transcript and, for video, a summary. Outputs exist only when the matching plugin is installed, enabled, configured with required secrets, and completes the relevant write.
 - Plugin `files/write` or `files/touch` calls create ordinary Markdown sibling files. Image and video flows may touch an empty output before filling it.
 - Rename, move, archive, and unarchive treat source and output nodes independently. Plugin writes derive target paths from `source.path`; do not claim the host finalizes a pre-created output by node id.
-- Archiving a source upload should keep the original R2 object; permanent tenant purge deletes R2 objects for every `files_r2_assets` row before deleting the rows.
+- Archiving a source upload should keep the original R2 object. Delete permanently (see "Archive view and Delete permanently") and the tenant purge delete the R2 object of every `files_r2_assets` row they remove.
 - Browser-side source uploads try to compress static JPEG/PNG/WebP images before `files_nodes.create_upload_node` (`files_prepare_image_upload_file` in `packages/app/src/lib/files-image-compression.ts`, shared with the rich-text editor's paste/drop upload); keep the original file when compression fails or is not smaller. Animated GIFs must keep the original blob so animation is not destroyed, but still use the image-description generation path.
 - If a plugin fails, the source stays. Outputs already touched or written also stay; a missing-secret failure before the first write creates no output.
 - Manual plugin reruns are supported. Keep detailed plugin execution, permissions, services, and release behavior in `../plugin-system/SKILL.md` and the individual plugin README files.
@@ -1100,9 +1100,43 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`. Archive always asks first in the shared `FilesArchiveModal` (`files-archive-modal.tsx`). The sidebar row menu, the toolbar Archive-selected button, the folder explorer row menu and the breadcrumb menu open it with the nodes to archive; the modal owns the mutation, shows a refusal inline in the dialog (`role="alert"`), and reports success to its host. The row menu of a row outside the selection enables Archive from that row alone. On a selected row it acts on the whole selection, like the header Archive-selected action: Archive is enabled when at least one selected row is writable and has no visible protected descendant, even when the clicked row is read-only. The dialog lists every selected row, read-only ones too, one name per line in a read-only `TextMonospaceBlock` (`Items to archive`). Ctrl+A in it selects only the names. It shows 6 lines. With more than 6 names, a Show more button (`aria-expanded`) grows it to 16 lines. A click in the list does not grow it, so the text does not move under a selection. The server refuses each selected item it cannot change, with everything inside it, and archives the rest. When the archive ended in the request but refused items, the dialog closes with a warning toast whose View opens the job (`"<name>" was not archived: <reason>.` for one refused item, `N items were not archived. See Activity.` for several); the Activity card counts them in its result line ("Archived 45 of 46 items."), still as Completed, and the job dialog lists the archived names under `Archived items` and the refused ones under "Not archived (N)" (see `../activities/SKILL.md` Feed cards). `onArchived` gets only the ids the server did not report as refused (`notArchivedNodeIds`) or still waiting for a stamp (`waitingNodeIds`). A background job can refuse more later. When the request's own check or its index reads refuse every item, the dialog shows the refusal inline and stays open. After a sidebar confirm, keyboard focus moves to the first row after the archived rows, or to the last row before them. The sidebar picks that row while the archived rows are still in the tree (Convex resolves the mutation in the same task as the tree update) and moves DOM focus from an effect once the dialog has closed, because the sidebar is inert while the dialog is open and the closing dialog first gives focus back to the button that opened it. A multi-select archive also clears the selection. Cancel puts focus back on the first row of the request. Restore is still direct.
 - A big archive or restore goes on as a background job (rules in `../files-read-only/SKILL.md`). The job stamps every named item first: the request stamps at most 10 and a background step at most 30, so with more named items some stay in the tree until a later step. When the indexes cannot clear a named item, the whole archive is checked first, and every named item stays in the tree until the check passes (`isChecking`). The Archive dialog then says `Checking N items before archiving. They stay in the list until the check ends. See Activity.` (it names the item when there is one), closes, and passes the host only the ids the request stamped. Then it stamps the items inside them, the first named item's folder first. Restore first finds every top item of its archive operation by creation order and keeps at most 64 folder paths that hold them (up to `/`). It checks those paths against running jobs. Then it finds the top items again one page at a time while it brings them back. A name clash inside a restored folder asks like a clash of a top item. A copy during a restore copies only the items already back (see `references/transfer.md`). A blocked restore waits hidden and checks access again after promotion. The job dialog `FilesArchiveRunModal` shows Stop only when the server returns `controls.canStop`: ordinary archive never has it, forced API/plugin archive can have it, and a restore has it only while it waits for a name clash choice. Forced archive retains blocked items and their folders. Its Activity stays Partly completed and pages through current-access-filtered outcomes. This adds no app force control. A restore clash offers Keep both, Replace, or Skip, with no Merge.
 - The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.
-- TODO: archived nodes are never purged. They stay until the whole workspace is deleted. Add a
-  retention purge that permanently deletes an archive operation some time after it was archived, like
-  the 30-day trash of Google Drive, Dropbox and OneDrive. Decide the retention period first.
+
+### Archive view and Delete permanently
+
+- An archive operation id starts with its time: `t<15-digit ms>-<uuid>`
+  (`files_archive_operation_id_new` in `shared/files.ts`). Every writer of `archiveOperationId` uses
+  it. A Move cohort archives with `t<operationTime>-<cohort._id>`. Ids from before this format are
+  plain UUIDs. They have no time, sort last, and show "Archived before Oct 31, 2026". No table lists
+  archived items: the time in the id is the sort key.
+- The Archive view (`files-sidebar-archive.tsx`) replaces the tree. Open it from "Open archive" in
+  the top More menu, beside "Show archived items". It is sidebar state, not a route or search param.
+  An active search wins over it. Back to files and Escape (inside the view) close it.
+- It shows one area at a time, like Google Drive (one Trash per shared drive) and SharePoint (one bin
+  per site). An area is the open part of the workspace (`Workspace`) or one restricted folder the
+  person can open. One rule for everybody: the picker reads `files_tree.list_archive_areas`. The
+  owner pages restricted roots by `by_archive_restricted_tree`; a member pages their share rows by
+  `isRestrictedScopeRoot`. Guests get no areas and an empty list. A gone area falls back to
+  `Workspace`.
+- The list (`files_tree.list_archived_tops`) shows the top items of each archive operation in the
+  area, newest archived first, then by path. A top item that is a restricted folder shows in its
+  parent's area, as a locked row when the person cannot open it. The query reads two streams (items
+  and folders) and skips a whole archived subtree in one read, so its cost grows with the rows it
+  returns. The client merges the normal and the Move streams like "Shared with you", and pins each
+  page's end (`pinPageEnds` in `useFilesPaginatedQuery`), so a new archive cannot open a gap.
+- A row shows the name, its folder, the archive date and "Changed by" (`updatedBy`). Its menu:
+  Restore (the whole archive operation), Delete permanently…, Copy path. A locked row offers nothing.
+- Delete permanently and Empty archive need `content.permissions.manage`: on the workspace for the
+  open part, or on the restricted folder. The tree row menu of an archived row also has Delete
+  permanently…, and a selection with archived rows offers "Delete N archived items permanently…".
+  The shared `FilesPurgeModal` asks first and shows a refusal inline. Empty archive deletes every item
+  archived in the shown area before the click (`files_nodes.empty_archive`). Only one runs per
+  workspace at a time.
+- Both run as a `files_archive_runs` job of kind "purge" (rules in `../data-deletion/SKILL.md`). A
+  small delete ends in the request with a toast. A bigger one shows a job toast
+  (`AppActivitiesProvider.watchArchiveRun`). After a delete in the Archive view, focus moves to the
+  next row, the row before, or Back to files.
+- Follow-ups: a retention purge some days after archiving (like the 30-day trash of Google Drive,
+  Dropbox and OneDrive; it can reuse the purge job), archived search, and an agent tool.
 
 ## Content Type Checks
 

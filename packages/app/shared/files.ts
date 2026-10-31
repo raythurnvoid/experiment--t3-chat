@@ -135,7 +135,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 
 /**
  * A new archive operation id. It starts with the time, so ids sort by when the items were archived.
- * The Archived view lists the newest first, and Empty archive deletes only ids from before it started.
+ * The Archive view lists the newest first, and Empty archive deletes only ids from before it started.
  *
  * Ids made before this format are plain UUIDs. They sort below every new id, so they read as the oldest.
  */

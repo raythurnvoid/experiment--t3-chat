@@ -386,6 +386,11 @@ the same transaction. Workspace purge also drains authority clocks, Move proofs 
 Messages jobs before deleting parents through tenant indexes.
 See [Data deletion](../data-deletion/SKILL.md) and [Tenancy](../organizations-tenancy/SKILL.md).
 
+Delete permanently of an archived file deletes its comment channel too, with every message, reply,
+reaction, member, read position, follower, inbox row, Messages job and upload in it (`channels_db_purge_channel_batch`). It deletes
+one table at a time, children before parents, in the workspace purge order, and the channel doc goes
+last. Only this path deletes a single channel. Archiving a file keeps its channel.
+
 Focused tests live in `convex/channels.test.ts`, `convex/channels_notifications.test.ts` and
 `convex/channels_uploads.test.ts`. Run through Vite Plus:
 

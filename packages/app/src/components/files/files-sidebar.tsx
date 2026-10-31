@@ -1414,6 +1414,10 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	canRename: boolean;
 	canShare: boolean;
 	canArchive: boolean;
+	/**
+	 * Shown for an archived node only. Needs Can manage on the node, like the server.
+	 */
+	canDeletePermanently: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
@@ -1431,10 +1435,6 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	onCollapseSubtree: () => void;
 	onArchive: () => void;
 	onUnarchive: () => void;
-	/**
-	 * Shown for an archived node only. Needs Can manage on the node, like the server.
-	 */
-	canDeletePermanently: boolean;
 	onDeletePermanently: () => void;
 };
 
@@ -1450,6 +1450,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		canRename,
 		canShare,
 		canArchive,
+		canDeletePermanently,
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
@@ -1467,7 +1468,6 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		onCollapseSubtree,
 		onArchive,
 		onUnarchive,
-		canDeletePermanently,
 		onDeletePermanently,
 	} = props;
 	const isArchived = archiveOperationId !== null;
@@ -2903,6 +2903,7 @@ const FilesSidebarTreeRow = memo(
 						canRename={canRename}
 						canShare={canShare}
 						canArchive={isArchived ? canUnarchive : canArchiveItems}
+						canDeletePermanently={canDeletePermanently}
 						canExpandSubtree={canExpandSubtree}
 						canCollapseSubtree={canCollapseSubtree}
 						expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -2929,7 +2930,6 @@ const FilesSidebarTreeRow = memo(
 						onCollapseSubtree={handleCollapseSubtreeClick}
 						onArchive={handleArchiveClick}
 						onUnarchive={handleUnarchiveClick}
-						canDeletePermanently={canDeletePermanently}
 						onDeletePermanently={handleDeletePermanentlyClick}
 					/>
 				</MyContextMenu>
@@ -4543,13 +4543,13 @@ type FilesSidebarSharedGroup_Row = Pick<
 type FilesSidebarSharedGroupRow_Props = {
 	row: FilesSidebarSharedGroup_Row;
 	isCurrent: boolean;
+	canDeletePermanently: boolean;
 	menusPortalHost: HTMLElement | null;
 	onOpen: (nodeId: string, kind: string) => void;
 	onShare: (nodeId: string) => void;
 	onProperties: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
 	onArchive: (row: FilesSidebarSharedGroup_Row, rowElement: HTMLElement | null) => void;
 	onUnarchive: (nodeId: string) => void;
-	canDeletePermanently: boolean;
 	onDeletePermanently: (row: FilesSidebarSharedGroup_Row, rowElement: HTMLElement | null) => void;
 };
 
@@ -4563,16 +4563,16 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 	const {
 		row,
 		isCurrent,
+		canDeletePermanently,
 		menusPortalHost,
 		onOpen,
 		onShare,
 		onProperties,
 		onArchive,
 		onUnarchive,
-		canDeletePermanently,
 		onDeletePermanently,
 	} = props;
-	const { organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const buttonRef = useRef<HTMLButtonElement | null>(null);
 	const isArchived = row.archiveOperationId !== null;
 
@@ -4584,6 +4584,13 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 	});
 	// A share can sit on a restricted folder or on an item with added people. Only the first is restricted.
 	const isRestricted = row.restrictedScopeNodeId === row._id;
+	// A restricted folder in this group is often outside the tree, where the sidebar has no share state.
+	// So the row reads its own, like a row of the Archive view.
+	const ownShareState = useQuery(
+		app_convex_api.files_sharing.get_node_share_state,
+		isArchived && isRestricted && !canDeletePermanently ? { membershipId, nodeId: row._id } : "skip",
+	);
+	const canDeletePermanentlyRow = canDeletePermanently || ownShareState?.canManage === true;
 	const label = `${row.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
 
 	const handleOpenClick = useFn(() => {
@@ -4668,6 +4675,7 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 					canShare
 					// The parent is hidden, so the server checks the rest.
 					canArchive={row.canWrite || (isArchived && row.writeBlockedReason === "read_only")}
+					canDeletePermanently={canDeletePermanentlyRow}
 					canExpandSubtree={false}
 					canCollapseSubtree={false}
 					expandedFolderActionsVisible={false}
@@ -4695,7 +4703,6 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 					onCollapseSubtree={handleNoAction}
 					onArchive={handleArchiveClick}
 					onUnarchive={handleUnarchiveClick}
-					canDeletePermanently={canDeletePermanently}
 					onDeletePermanently={handleDeletePermanentlyClick}
 				/>
 			</MyContextMenu>
@@ -4707,13 +4714,13 @@ type FilesSidebarSharedGroup_Props = {
 	rows: FilesSidebarSharedGroup_Row[];
 	status: "loading" | "more" | "done";
 	selectedNodeId: string | null;
+	canDeletePermanentlyRow: (row: FilesSidebarSharedGroup_Row) => boolean;
 	onOpen: FilesSidebarSharedGroupRow_Props["onOpen"];
 	onLoadMore: () => void;
 	onShare: FilesSidebarSharedGroupRow_Props["onShare"];
 	onProperties: FilesSidebarSharedGroupRow_Props["onProperties"];
 	onArchive: FilesSidebarSharedGroupRow_Props["onArchive"];
 	onUnarchive: FilesSidebarSharedGroupRow_Props["onUnarchive"];
-	canDeletePermanentlyRow: (row: FilesSidebarSharedGroup_Row) => boolean;
 	onDeletePermanently: FilesSidebarSharedGroupRow_Props["onDeletePermanently"];
 };
 
@@ -4726,13 +4733,13 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 		rows,
 		status,
 		selectedNodeId,
+		canDeletePermanentlyRow,
 		onOpen,
 		onLoadMore,
 		onShare,
 		onProperties,
 		onArchive,
 		onUnarchive,
-		canDeletePermanentlyRow,
 		onDeletePermanently,
 	} = props;
 	const titleId = useId();
@@ -4798,13 +4805,13 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 						key={`shared:${row._id}`}
 						row={row}
 						isCurrent={row._id === selectedNodeId}
+						canDeletePermanently={canDeletePermanentlyRow(row)}
 						menusPortalHost={menusPortalHost}
 						onOpen={onOpen}
 						onShare={onShare}
 						onProperties={onProperties}
 						onArchive={onArchive}
 						onUnarchive={onUnarchive}
-						canDeletePermanently={canDeletePermanentlyRow(row)}
 						onDeletePermanently={onDeletePermanently}
 					/>
 				))}
@@ -4966,6 +4973,7 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 					canRename={false}
 					canShare
 					canArchive={canWrite}
+					canDeletePermanently={false}
 					canExpandSubtree={false}
 					canCollapseSubtree={false}
 					expandedFolderActionsVisible={false}
@@ -4992,7 +5000,6 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 					onCollapseSubtree={handleNoAction}
 					onArchive={handleArchiveClick}
 					onUnarchive={handleNoAction}
-					canDeletePermanently={false}
 					onDeletePermanently={handleNoAction}
 				/>
 			</MyContextMenu>
@@ -5401,7 +5408,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const [showArchived, setShowArchived] = useState(false);
 	/**
-	 * The Archived view shows in place of the tree. A search still wins: it shows while the box has text.
+	 * The Archive view shows in place of the tree. A search still wins: it shows while the box has text.
 	 */
 	const [isArchiveViewOpen, setIsArchiveViewOpen] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<string[]>([]);
@@ -5486,8 +5493,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	/** The archived items whose Delete permanently dialog is open, or `null` when it is closed. */
 	const [purgeRequest, setPurgeRequest] = useState<FilesPurgeModal_Request | null>(null);
 	const purgeReturnFocusRef = useRef<HTMLElement | null>(null);
-	/** Set when the tree takes focus once the Delete permanently dialog or the Archived view has closed. */
+	/** Set when the tree takes focus once the Delete permanently dialog or the Archive view has closed. */
 	const focusTreeAfterCloseRef = useRef(false);
+	/** Set by `handlePurged` for a delete from the "Shared with you" group. The same effect clears it. */
+	const focusGroupElementAfterPurgeRef = useRef<HTMLElement | null>(null);
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const propertiesReturnFocusRef = useRef<HTMLElement | null>(null);
 	const isImportingFiles = useFilesImportStore((state) => state.phase !== "idle");
@@ -5595,6 +5604,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const shareState = restrictedScopeShareStates[scopeNodeId];
 		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
 	});
+	// Render-time twin of `canManageRestrictedScope`, for the same reason as `canWriteItemInRender`.
+	const canManageRestrictedScopeInRender = (scopeNodeId: app_convex_Id<"files_nodes">) => {
+		const shareState = restrictedScopeShareStates[scopeNodeId];
+		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
+	};
 
 	// Resolve updater ids through shared anagraphic queries. Memoize by hand like the
 	// restricted-scope queries above: Convex `useQueries` re-subscribes with a render-phase
@@ -6746,8 +6760,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			const item = treeItems?.itemById.get(itemId);
 			return item != null && canWriteItemInRender(item);
 		});
-	// Read the share states here, not through the stable `canManageRestrictedScope`, so the React Compiler
-	// sees them change, like `canWriteItemInRender`.
 	const purgeSelectionCount = [...selectedNodeIds].filter((itemId) => {
 		const item = treeItems?.itemById.get(itemId);
 		return (
@@ -6756,10 +6768,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			can_delete_permanently_item({
 				item,
 				workspaceManagePermission,
-				canManageRestrictedScope: (scopeNodeId) => {
-					const shareState = restrictedScopeShareStates[scopeNodeId];
-					return shareState != null && !(shareState instanceof Error) && shareState.canManage;
-				},
+				canManageRestrictedScope: canManageRestrictedScopeInRender,
 			})
 		);
 	}).length;
@@ -7206,6 +7215,27 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		setArchiveNodes(null);
 	});
 
+	// The removed rows are still in the tree here: Convex resolves the mutation in the same task that
+	// delivers the tree update, and React renders that update later. Keep keyboard focus in the tree:
+	// focus the first row after the removed rows, or the last row before them. The sidebar is inert
+	// while a dialog is open, so this only marks the row. An effect moves DOM focus after the dialog closes.
+	const focusTreeRowAfter = (removedNodeIds: string[]) => {
+		const removedNodeIdSet = new Set<string>(removedNodeIds);
+		const rows = tree().getItems();
+		const leavesTree = (row: FilesSidebarTreeItem_Instance) => {
+			for (let current: FilesSidebarTreeItem_Instance | undefined = row; current; current = current.getParent()) {
+				if (removedNodeIdSet.has(current.getId())) return true;
+			}
+			return false;
+		};
+		const lastRemovedIndex = rows.findLastIndex(leavesTree);
+		const nextRow =
+			rows.slice(lastRemovedIndex + 1).find((row) => !leavesTree(row)) ??
+			rows.slice(0, lastRemovedIndex).findLast((row) => !leavesTree(row));
+		nextRow?.setFocused();
+		return nextRow !== undefined;
+	};
+
 	const handleArchived = useFn<FilesArchiveModal_Props["onArchived"]>((nodeIds) => {
 		setArchiveNodes(null);
 		// Read the request, not `nodeIds`: the ids of refused items are left out of `nodeIds`.
@@ -7255,27 +7285,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		// The archived rows are still in the tree here: Convex resolves the mutation in the same task
-		// that delivers the tree update, and React renders that update later. Keep keyboard focus in
-		// the tree: focus the first row after the archived rows, or the last row before them.
-		const archivedNodeIdSet = new Set<string>(nodeIds);
-		const rows = tree().getItems();
-		const leavesTree = (row: FilesSidebarTreeItem_Instance) => {
-			for (let current: FilesSidebarTreeItem_Instance | undefined = row; current; current = current.getParent()) {
-				if (archivedNodeIdSet.has(current.getId())) return true;
-			}
-			return false;
-		};
-		const lastArchivedIndex = rows.findLastIndex(leavesTree);
-		const nextRow =
-			rows.slice(lastArchivedIndex + 1).find((row) => !leavesTree(row)) ??
-			rows.slice(0, lastArchivedIndex).findLast((row) => !leavesTree(row));
-		if (nextRow) {
-			nextRow.setFocused();
-			// The sidebar is inert while the dialog is open, so the row cannot take DOM focus here. The
-			// effect below moves it after the dialog has closed.
-			focusRowAfterArchiveRef.current = true;
-		}
+		focusRowAfterArchiveRef.current = focusTreeRowAfter(nodeIds);
 	});
 
 	const handleArchiveSelectionClick = useFn(() => {
@@ -7364,11 +7374,47 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handlePurged = useFn<FilesPurgeModal_Props["onDeleted"]>(() => {
-		if (purgeRequest?.kind === "items" && purgeRequest.nodes.length > 1) {
+		const deletedNodeIds: string[] = purgeRequest?.kind === "items" ? purgeRequest.nodes.map((node) => node._id) : [];
+		if (deletedNodeIds.length > 1) {
 			tree().setSelectedItems([]);
 		}
-		focusTreeAfterCloseRef.current = !purgeReturnFocusRef.current;
+		// Leave the open file when it is deleted, like after an archive.
+		if (selectedNodeId && deletedNodeIds.includes(selectedNodeId)) {
+			onArchive(selectedNodeId);
+		}
+
+		// Like after an archive: a delete from the "Shared with you" group keeps focus in the group (the
+		// next row, the row before it, or Show more). A tree row, or a group with no row left, gives focus
+		// to the tree.
+		const groupRow = purgeReturnFocusRef.current;
+		const groupRows = Array.from(
+			groupRow
+				?.closest("ul")
+				?.querySelectorAll<HTMLElement>(
+					`[${"data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes}]`,
+				) ?? [],
+		);
+		const groupRowIndex = groupRow ? groupRows.indexOf(groupRow) : -1;
+		focusGroupElementAfterPurgeRef.current =
+			groupRows[groupRowIndex + 1] ??
+			groupRows[groupRowIndex - 1] ??
+			groupRow
+				?.closest("section")
+				?.querySelector<HTMLElement>(
+					`.${"FilesSidebarSharedGroup-more" satisfies FilesSidebarSharedGroup_ClassNames}`,
+				) ??
+			null;
+		if (focusGroupElementAfterPurgeRef.current === null) {
+			focusTreeRowAfter(deletedNodeIds);
+			focusTreeAfterCloseRef.current = true;
+		}
 		setPurgeRequest(null);
+	});
+
+	const handleArchiveViewDeleted = useFn((nodeIds: string[]) => {
+		if (selectedNodeId && nodeIds.includes(selectedNodeId)) {
+			onArchive(selectedNodeId);
+		}
 	});
 
 	const handleOpenArchiveClick = useFn(() => {
@@ -7662,9 +7708,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		tree().updateDomFocus();
 	}, [archiveNodes]);
 
-	// Focus the tree once the Delete permanently dialog or the Archived view has closed, like the effect above.
+	// Focus the tree once the Delete permanently dialog or the Archive view has closed, like the effect above.
 	useEffect(() => {
-		if (purgeRequest !== null || isArchiveViewOpen || !focusTreeAfterCloseRef.current) return;
+		if (purgeRequest !== null || isArchiveViewOpen) return;
+		focusGroupElementAfterPurgeRef.current?.focus();
+		focusGroupElementAfterPurgeRef.current = null;
+		if (!focusTreeAfterCloseRef.current) return;
 		focusTreeAfterCloseRef.current = false;
 		tree().updateDomFocus();
 	}, [purgeRequest, isArchiveViewOpen]);
@@ -7690,7 +7739,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	// Finish a reveal once its row is in the tree. State, not a ref: when the row is already visible
 	// and expanded nothing else changes, and a ref alone would never re-run this effect.
 	useLayoutEffect(() => {
-		// The search list and the Archived view hide the tree, so the reveal waits until they close.
+		// The search list and the Archive view hide the tree, so the reveal waits until they close.
 		if (!revealRequest || isSearchActive || isArchiveViewOpen || !visibleFileIds.has(revealRequest.nodeId)) return;
 		const currentTree = tree();
 		// Hidden rows have index -1 until the expanded set reaches the tree.
@@ -7776,29 +7825,31 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onImportFolderClick={handleImportFolderClick}
 			/>
 
-			{/* The search list finds shares too, so the group hides with the tree. */}
+			{/* The search list finds shares too, so the group hides with the tree. The Archive view replaces
+			    both. */}
 			{!isSearchActive && !isArchiveViewOpen && (
 				<FilesSidebarSharedGroup
 					rows={sharedRootRows}
 					status={treeFolders.sharedRoots.status}
 					selectedNodeId={selectedNodeId}
+					canDeletePermanentlyRow={canDeletePermanentlySharedRow}
 					onOpen={onPrimaryAction}
 					onLoadMore={treeFolders.sharedRoots.loadMore}
 					onShare={handleSharedGroupShare}
 					onProperties={handleProperties}
 					onArchive={handleSharedGroupArchive}
 					onUnarchive={handleUnarchive}
-					canDeletePermanentlyRow={canDeletePermanentlySharedRow}
 					onDeletePermanently={handleSharedGroupDeletePermanently}
 				/>
 			)}
 
-			{/* The Archived view has its own scroll area. A search still wins over it. */}
+			{/* The Archive view has its own scroll area. A search still wins over it. */}
 			{isArchiveViewOpen && !isSearchActive ? (
 				<FilesSidebarArchive
 					selectedNodeId={selectedNodeId}
 					onOpen={onPrimaryAction}
 					onRestore={handleUnarchive}
+					onDeleted={handleArchiveViewDeleted}
 					onExit={handleArchiveViewExit}
 				/>
 			) : (

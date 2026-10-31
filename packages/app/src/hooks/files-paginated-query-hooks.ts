@@ -135,7 +135,7 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 		cacheSavedStreamFirstPage?: boolean;
 		/**
 		 * Pin the end of the last page when the next page loads. Pass it for a query with its own cursor,
-		 * like the Archived view. Convex pins the end of a native page by itself, but not of such a page.
+		 * like the Archive view. Convex pins the end of a native page by itself, but not of such a page.
 		 * Without the pin, a row added near the top pushes the page's last row out of it, and the next
 		 * page starts after that row, so the row would not show.
 		 */

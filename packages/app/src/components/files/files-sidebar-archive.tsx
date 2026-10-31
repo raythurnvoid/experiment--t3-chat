@@ -1,24 +1,27 @@
 import "./files-sidebar-archive.css";
 
-import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery, type UsePaginatedQueryResult } from "convex/react";
 import { compareValues } from "convex/values";
 import { ArchiveRestore, ArrowLeft, EllipsisVertical, FileText, Folder, Lock, Route, Trash2 } from "lucide-react";
 
 import { FilesPurgeModal, type FilesPurgeModal_Request } from "./files-purge-modal.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import {
+	MyContextMenu,
+	MyContextMenuButtonTrigger,
+	MyContextMenuPopover,
+	MyContextMenuTrigger,
+} from "@/components/my-context-menu.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
-	MyMenu,
 	MyMenuItem,
 	MyMenuItemContent,
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
 	MyMenuItemContentSecondary,
 	MyMenuItemsGroup,
-	MyMenuPopover,
 	MyMenuPopoverContent,
-	MyMenuTrigger,
 } from "@/components/my-menu.tsx";
 import {
 	MySelect,
@@ -41,7 +44,11 @@ import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id 
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_time } from "@/lib/date.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
-import { files_archive_operation_id_time, type files_SavedStream } from "@/lib/files.ts";
+import {
+	files_archive_operation_id_time,
+	files_derive_tree_path_for_file_node,
+	type files_SavedStream,
+} from "@/lib/files.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import { cn, copy_to_clipboard } from "@/lib/utils.ts";
 
@@ -115,7 +122,9 @@ type FilesSidebarArchiveRow_CustomAttributes = {
 type FilesSidebarArchiveRow_Props = {
 	row: FilesSidebarArchive_TopRow;
 	isCurrent: boolean;
-	/** Whether the person has Can manage on the shown area. */
+	/**
+	 * Whether the person has Can manage on the shown area.
+	 */
 	canManageArea: boolean;
 	onOpen: (nodeId: string, kind: string) => void;
 	onRestore: (nodeId: string) => void;
@@ -186,31 +195,24 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 				row.locked && ("FilesSidebarArchiveRow-locked" satisfies FilesSidebarArchiveRow_ClassNames),
 			)}
 		>
-			{/* A locked row cannot open, so it is text, not a button. */}
-			{row.locked ? (
-				<div
-					className={"FilesSidebarArchiveRow-primary" satisfies FilesSidebarArchiveRow_ClassNames}
-					title="You don't have access"
-					{...({ "data-archive-row-id": row._id } satisfies FilesSidebarArchiveRow_CustomAttributes)}
-				>
-					<MyButtonIcon aria-hidden>{icon}</MyButtonIcon>
-					{text}
-				</div>
-			) : (
-				<MyButton
-					type="button"
-					variant="ghost-highlightable"
-					className={"FilesSidebarArchiveRow-primary" satisfies FilesSidebarArchiveRow_ClassNames}
-					aria-current={isCurrent ? "page" : undefined}
-					{...({ "data-archive-row-id": row._id } satisfies FilesSidebarArchiveRow_CustomAttributes)}
-					onClick={handleOpenClick}
-				>
-					<MyButtonIcon aria-hidden>{icon}</MyButtonIcon>
-					{text}
-				</MyButton>
-			)}
-			<MyMenu placement="bottom-end">
-				<MyMenuTrigger>
+			<MyContextMenu placement="bottom-end">
+				{/* A locked row still opens, like a locked search match: the file view says "Permission denied". */}
+				<MyContextMenuTrigger>
+					<MyButton
+						type="button"
+						variant="ghost-highlightable"
+						className={"FilesSidebarArchiveRow-primary" satisfies FilesSidebarArchiveRow_ClassNames}
+						aria-label={`${row.name} in ${parentPath}${row.locked ? ", you don't have access" : ""}`}
+						title={row.locked ? "You don't have access" : undefined}
+						aria-current={isCurrent ? "page" : undefined}
+						{...({ "data-archive-row-id": row._id } satisfies FilesSidebarArchiveRow_CustomAttributes)}
+						onClick={handleOpenClick}
+					>
+						<MyButtonIcon aria-hidden>{icon}</MyButtonIcon>
+						{text}
+					</MyButton>
+				</MyContextMenuTrigger>
+				<MyContextMenuButtonTrigger>
 					<MyIconButton
 						ref={menuButtonRef}
 						className={"FilesSidebarArchiveRow-actions" satisfies FilesSidebarArchiveRow_ClassNames}
@@ -222,8 +224,8 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 							<EllipsisVertical />
 						</MyIconButtonIcon>
 					</MyIconButton>
-				</MyMenuTrigger>
-				<MyMenuPopover unmountOnHide>
+				</MyContextMenuButtonTrigger>
+				<MyContextMenuPopover unmountOnHide>
 					<MyMenuPopoverContent>
 						{row.locked ? null : (
 							<MyMenuItemsGroup>
@@ -258,8 +260,8 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 							</MyMenuItem>
 						</MyMenuItemsGroup>
 					</MyMenuPopoverContent>
-				</MyMenuPopover>
-			</MyMenu>
+				</MyContextMenuPopover>
+			</MyContextMenu>
 		</li>
 	);
 });
@@ -279,31 +281,41 @@ type FilesSidebarArchive_ClassNames =
 	| "FilesSidebarArchive-list"
 	| "FilesSidebarArchive-more";
 
-export type FilesSidebarArchive_Props = {
+type FilesSidebarArchive_Props = {
 	selectedNodeId: string | null;
 	onOpen: (nodeId: string, kind: string) => void;
 	onRestore: (nodeId: string) => void;
+	/**
+	 * The server took a Delete permanently of these items. It may still run as a background job.
+	 */
+	onDeleted: (nodeIds: string[]) => void;
 	onExit: () => void;
 };
 
 /**
- * The Archived view: the archived top items of one area, newest first, in place of the tree. An area
+ * The Archive view: the archived top items of one area, newest first, in place of the tree. An area
  * is the open part of the workspace or one restricted folder the person can open, like one Trash per
  * shared drive in Google Drive. Escape, when no menu or dialog is open, goes back to the files.
  */
 export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: FilesSidebarArchive_Props) {
-	const { selectedNodeId, onOpen, onRestore, onExit } = props;
+	const { selectedNodeId, onOpen, onRestore, onDeleted, onExit } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const view = useFilesSavedView(membershipId);
 	const rootRef = useRef<HTMLElement | null>(null);
 	const backButtonRef = useRef<HTMLButtonElement | null>(null);
 	const emptyButtonRef = useRef<HTMLButtonElement | null>(null);
 	const purgeReturnFocusRef = useRef<HTMLElement | null>(null);
-	/** Set when a delete was sent. The effect that runs after the dialog closes focuses it and clears it. */
+	/**
+	 * Set when a delete was sent. The effect that runs after the dialog closes focuses it and clears it.
+	 */
 	const focusAfterPurgeRef = useRef<HTMLElement | null>(null);
+
+	const titleId = useId();
 
 	const [chosenArea, setChosenArea] = useState<FilesSidebarArchive_Area>(null);
 	const [purgeRequest, setPurgeRequest] = useState<FilesPurgeModal_Request | null>(null);
+	// The row ids when Show more was clicked, until its page has loaded.
+	const [loadMoreFromIds, setLoadMoreFromIds] = useState<Set<string> | null>(null);
 
 	// The areas: one stream per principal (the member, two roles, everyone), each in the normal and the
 	// Move saved stream, like the "Shared with you" group.
@@ -358,10 +370,13 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 		streams: view.normal ? [topNormal, ...(view.cohort ? [topCohort] : [])] : [],
 		isViewLoading: view.loading,
 		// The server order: newest archive operation first, then by `treePath`. A locked row has no
-		// `treePath`, so it sorts by path. That only changes the order inside one operation.
+		// `treePath`, so build it from the path the same way.
 		compare: (a, b) =>
 			compareValues(b.archiveOperationId ?? "", a.archiveOperationId ?? "") ||
-			compareValues(a.locked ? a.path : a.treePath, b.locked ? b.path : b.treePath),
+			compareValues(
+				a.locked ? files_derive_tree_path_for_file_node(a.path, a.kind) : a.treePath,
+				b.locked ? files_derive_tree_path_for_file_node(b.path, b.kind) : b.treePath,
+			),
 	});
 
 	// Delete permanently needs Can manage, like the server: on the workspace for the open part, on the
@@ -410,27 +425,54 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 				`[${"data-archive-row-id" satisfies keyof FilesSidebarArchiveRow_CustomAttributes}]`,
 			) ?? [],
 		);
-		const deletedIds = new Set<string>(
-			purgeRequest?.kind === "items" ? purgeRequest.nodes.map((node) => node._id) : [],
-		);
+		const deletedNodeIds: string[] = purgeRequest?.kind === "items" ? purgeRequest.nodes.map((node) => node._id) : [];
+		const deletedIds = new Set<string>(deletedNodeIds);
 		const index = rows.findIndex((row) => deletedIds.has(row.getAttribute("data-archive-row-id")!));
 		focusAfterPurgeRef.current =
 			index === -1 ? backButtonRef.current : (rows[index + 1] ?? rows[index - 1] ?? backButtonRef.current);
 		setPurgeRequest(null);
+		onDeleted(deletedNodeIds);
 	});
 
 	const handleLoadMoreClick = useFn(() => {
 		if (topStatus === "loading_more") return;
+		setLoadMoreFromIds(new Set(topRows.map((row) => row._id)));
 		loadMoreTops();
 	});
 
 	const handleKeyDown = useFn((event: KeyboardEvent<HTMLElement>) => {
-		// Menus, the area picker and the dialog render outside this element. Their Escape closes them only.
+		// Menus and the area picker handle their own Escape first and mark it handled. The dialog renders
+		// outside this element.
 		if (event.key === "Escape" && !event.defaultPrevented && event.currentTarget.contains(event.target as Node)) {
 			event.preventDefault();
 			onExit();
 		}
 	});
+
+	// The same focus rules as Show more in the search list: once the page has loaded, focus its first
+	// new row, unless the person has moved focus somewhere else meanwhile.
+	useEffect(() => {
+		if (
+			loadMoreFromIds === null ||
+			topStatus === "loading_more" ||
+			(topStatus === "more" && topRows.length <= loadMoreFromIds.size)
+		) {
+			return;
+		}
+		setLoadMoreFromIds(null);
+		const activeElement = document.activeElement;
+		if (topStatus === "more" || (activeElement !== document.body && !rootRef.current?.contains(activeElement))) {
+			return;
+		}
+		const firstNewRow = topRows.find((row) => !loadMoreFromIds.has(row._id)) ?? topRows.at(-1);
+		if (firstNewRow) {
+			rootRef.current
+				?.querySelector<HTMLElement>(
+					`[${"data-archive-row-id" satisfies keyof FilesSidebarArchiveRow_CustomAttributes}="${firstNewRow._id}"]`,
+				)
+				?.focus();
+		}
+	}, [topRows, topStatus, loadMoreFromIds]);
 
 	// The sidebar is inert while the dialog is open, so focus the element `handlePurged` picked only
 	// after the dialog has closed.
@@ -450,7 +492,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	return (
 		<section
 			ref={rootRef}
-			aria-label="Archive"
+			aria-labelledby={titleId}
 			className={"FilesSidebarArchive" satisfies FilesSidebarArchive_ClassNames}
 			onKeyDown={handleKeyDown}
 		>
@@ -462,7 +504,9 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 						</MyButtonIcon>
 						Back to files
 					</MyButton>
-					<h2 className={"FilesSidebarArchive-title" satisfies FilesSidebarArchive_ClassNames}>Archive</h2>
+					<h2 id={titleId} className={"FilesSidebarArchive-title" satisfies FilesSidebarArchive_ClassNames}>
+						Archive
+					</h2>
 				</div>
 				<div className={"FilesSidebarArchive-toolbar" satisfies FilesSidebarArchive_ClassNames}>
 					<MySelect value={area?.id ?? ""} setValue={handleAreaChange}>

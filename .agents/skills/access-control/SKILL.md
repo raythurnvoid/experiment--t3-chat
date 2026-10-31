@@ -781,6 +781,11 @@ product decision, so record the answer here before changing the behaviour. An en
   and the sidebar has a "Show archived items" toggle whose rows carry a Restore action. Known property, not a bug: while
   the folder sits in the archive nobody can open its share dialog, so restore it first to manage
   sharing.
+- **Decided: Delete permanently needs `content.permissions.manage`.** Archiving can be undone, so it
+  stays at `content.write`. A permanent delete cannot, so it needs manage: on the workspace for the
+  open part, or on the restricted folder the item sits in (or is). OpenViking asks for manage too.
+  The job checks it again for each node, and keeps a node the person can no longer manage. A guest
+  with an explicit Can manage share can delete inside that folder. See `../data-deletion/SKILL.md`.
 - **Removing a member drains direct grants in bounded passes.** `remove_user_from_organization`
   deletes the first indexed batch and writes `pendingOrganizationRemoval: true` while making the
   member's memberships inactive when more grants remain. A scheduled continuation drains the rest
@@ -1310,6 +1315,10 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
   you" (`list_tree_shared_roots`) lists both kinds, but not workspace rows; the custom-field filter
   streams (`list_tree_children_shared`) list restricted roots only, by name
   (`by_org_ws_principal_parent_kind_archive_sortName_name`).
+- A row also stores `isRestrictedScopeRoot`. The Archive view's area picker
+  (`list_archive_areas`) pages a member's restricted folders by it
+  (`by_org_ws_principal_restricted_archive_treePath`). The owner reads the restricted folders from
+  `files_nodes` instead.
 - `principalKey` is `user:<userId>`, `role:<role>`, `service_account:<serviceAccountId>` or
   `workspace:<workspaceId>`. A role share is one row, not one row per member, and so is a workspace
   share.

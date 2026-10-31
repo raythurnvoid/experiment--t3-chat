@@ -48,10 +48,7 @@ type WatchedReviewRun = {
 
 type WatchedArchiveRun = {
 	runId: app_convex_Id<"files_archive_runs">;
-	/**
-	 * The verb in three forms, for example `["delete", "Deleting", "Deleted"]`.
-	 */
-	verbs: readonly [string, string, string];
+	kind: keyof typeof ARCHIVE_VERBS;
 	/**
 	 * What the job acts on, for example `3 items`.
 	 */
@@ -61,6 +58,11 @@ type WatchedArchiveRun = {
 const REVIEW_VERBS = {
 	accept: ["save", "Saving", "Saved"],
 	discard: ["discard", "Discarding", "Discarded"],
+} as const;
+
+const ARCHIVE_VERBS = {
+	purge: ["delete", "Deleting", "Deleted"],
+	empty_archive: ["empty", "Emptying", "Emptied"],
 } as const;
 
 const AppActivitiesProvider = Object.assign(
@@ -217,7 +219,7 @@ const AppActivitiesProvider = Object.assign(
 						key={item.runId}
 						membershipId={membershipId}
 						job={{ kind: "files_archive_run", id: item.runId }}
-						verbs={item.verbs}
+						verbs={ARCHIVE_VERBS[item.kind]}
 						subject={item.subject}
 						onOpen={() => openArchiveRun(item.runId)}
 						onNeedsInput={null}

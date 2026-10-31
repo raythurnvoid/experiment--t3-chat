@@ -118,6 +118,10 @@ continuation and follow `isDone`; an empty visible page does not prove the feed 
 - Forced archive has Stop. It visits children before their parent and keeps denied branches active.
   Stop, a revoked key, or a lost Read-only grant keeps completed changes and leaves unfinished parents
   active. Its paged results keep a generic row when current access no longer allows the item's path.
+- Delete permanently (`files_archive_runs` with `archiveKind: "purge"`, title `Delete files` or
+  `Empty archive`) has Stop. It stops between nodes: a node it started deleting always finishes, and
+  what it did not reach stays archived. A purge that kept items (Read-only, no manage, busy) ends
+  `Partly completed`, not `Completed`, and its job dialog lists them under `Not deleted (N)`.
 - Dismiss applies only to finished work. `activities_user_states` stores one dismissal per viewer
   and Activity. It does not change another viewer's feed or stop execution. Bulk dismiss is paged.
 - `AppActivitiesProvider` keeps pending Stop requests across dialog and bell changes. Different
@@ -177,6 +181,9 @@ Dropbox show no dialog for work that needs nothing from the person.
   to wait for a conflict choice, the toast goes away and the dialog opens.
 - Save and Discard reviews use it through `AppActivitiesProvider.watchReviewRun`. They never ask, so
   their dialog never opens by itself.
+- Delete permanently and Empty archive use it through `AppActivitiesProvider.watchArchiveRun`, with
+  `Deleting` / `Deleted` (or `Emptying` / `Emptied`). A delete that ends inside the request shows a
+  plain toast instead.
 - When a job's buttons go away with the rows they acted on, give focus to the panel, so a keyboard
   user keeps their place. The dialog no longer does this.
 

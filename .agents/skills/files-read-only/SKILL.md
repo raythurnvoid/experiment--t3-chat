@@ -213,6 +213,17 @@ Reviewed pending Delete uses the Save cohort. It checks active descendants befor
 already archived descendants keep their stamps and do not block it. Stop before the switch keeps
 saved files and proposals; after the switch, required repair finishes.
 
+## Delete permanently
+
+Delete permanently and Empty archive never delete a Read-only item. The job keeps it with the
+reason `read_only`, and keeps its folders too, because a folder goes only when it is empty. There is
+no force for a permanent delete. Details: `../data-deletion/SKILL.md` ("Delete Permanently").
+
+Once a purge job starts deleting a node, it sets `purgeRunId`. Then the write check refuses every
+write to the node, and every create inside it, with `name: "deleting"` ("This item is being
+deleted."), even a forced one. Restore does not use this check for the archive operation's own
+items. The purge's busy paths keep a Restore of the same items waiting instead.
+
 ## Plugin and service partial deletion
 
 Bounded plugin/service archive keeps its existing synchronous size limit. It returns an exact

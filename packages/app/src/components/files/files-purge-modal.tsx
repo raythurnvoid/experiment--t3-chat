@@ -29,7 +29,7 @@ type FilesPurgeModal_ClassNames =
 
 /**
  * What to delete forever: archived items the person picked, or every item archived in one area of
- * the Archived view before now (Empty archive).
+ * the Archive view before now (Empty archive).
  */
 export type FilesPurgeModal_Request =
 	| { kind: "items"; nodes: FilesArchiveModal_Node[] }
@@ -109,9 +109,6 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 		setError(null);
 
 		const isEmptyArchive = request.kind === "empty_archive";
-		const verbs = isEmptyArchive
-			? (["empty", "Emptying", "Emptied"] as const)
-			: (["delete", "Deleting", "Deleted"] as const);
 		const subject = isEmptyArchive
 			? "the archive"
 			: request.nodes.length === 1
@@ -138,12 +135,12 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 				const { runId, itemCount, deletedCount } = result._yay;
 				// A job keeps going in the background. Its toast says how it ends.
 				if (runId !== null) {
-					watchArchiveRun({ runId, verbs, subject });
+					watchArchiveRun({ runId, kind: request.kind === "items" ? "purge" : "empty_archive", subject });
 				} else if (itemCount === 0) {
 					toast.info("Nothing archived here to delete.");
 				} else {
 					toast.success(
-						`${verbs[2]} ${isEmptyArchive ? `${deletedCount} ${deletedCount === 1 ? "item" : "items"}` : subject}.`,
+						`${isEmptyArchive ? "Emptied" : "Deleted"} ${isEmptyArchive ? `${deletedCount} ${deletedCount === 1 ? "item" : "items"}` : subject}.`,
 					);
 				}
 				setError(null);

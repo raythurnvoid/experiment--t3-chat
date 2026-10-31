@@ -486,7 +486,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 										</p>
 										{group.paths.length > 0 ? (
 											<TextMonospaceBlock
-												aria-label={`Not archived: ${group.message}`}
+												aria-label={`${run.kind === "purge" ? "Not deleted" : "Not archived"}: ${group.message}`}
 												text={group.paths.join("\n")}
 												maxHeight="8lh"
 											/>

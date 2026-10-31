@@ -3891,7 +3891,7 @@ export const purge_nodes = mutation({
 });
 
 /**
- * Delete permanently every top item of one area of the Archived view that was archived before now.
+ * Delete permanently every top item of one area of the Archive view that was archived before now.
  * `area` is null for the open part of the workspace, or a restricted folder. It needs Can manage on
  * the area. The job keeps the items inside that the person may not delete.
  */
@@ -3933,7 +3933,7 @@ export const empty_archive = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		// The area is an active restricted folder the person can open, like in the Archived view.
+		// The area is an active restricted folder the person can open, like in the Archive view.
 		const areaNode = args.area && (await ctx.db.get("files_nodes", args.area));
 		if (args.area !== null) {
 			const readable =

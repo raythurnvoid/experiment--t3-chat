@@ -115,7 +115,7 @@ const TREE_COHORT_RESTRICTED_OWNER_SPLIT_GUARD = 428;
 const TREE_METADATA_OPEN_SPLIT_GUARD = 166;
 const TREE_METADATA_RESTRICTED_SPLIT_GUARD = 428;
 
-// The page cap of the Archived view, and the index ranges each of its rows may still read after the
+// The page cap of the Archive view, and the index ranges each of its rows may still read after the
 // walk: a published Move file in a restricted area costs 18, like a share row.
 const ARCHIVED_TOPS_PAGE_MAX_ITEMS = 50;
 const ARCHIVED_TOPS_ROW_RANGES = 18;
@@ -1572,13 +1572,13 @@ export const list_tree_shared_roots = query({
 });
 
 /**
- * The area picker of the Archived view: every active restricted folder the caller can open, by
+ * The area picker of the Archive view: every active restricted folder the caller can open, by
  * `treePath`. The open part of the workspace is the picker's first choice and has no row.
  *
  * One page of one principal, like `list_tree_children_shared`. Members read their share rows. The
  * owner can open every folder, so the owner reads all restricted folders on principal 0 and gets
  * empty pages for 1 to 3. The client merges the streams by `treePath` and drops a node it already
- * has. Saved rows only. A guest has no Archived view and gets nothing.
+ * has. Saved rows only. A guest has no Archive view and gets nothing.
  */
 export const list_archive_areas = query({
 	args: {
@@ -1659,7 +1659,7 @@ export const list_archive_areas = query({
 });
 
 /**
- * Where one stream of the Archived view goes on: null before its first row, "done" after its last,
+ * Where one stream of the Archive view goes on: null before its first row, "done" after its last,
  * or inside archive operation `op` at `start` in `treePath` order. Every newer operation is behind it.
  */
 const archived_tops_stream_position_validator = v.union(
@@ -1678,7 +1678,7 @@ type ArchivedTopsStreamPosition = Infer<typeof archived_tops_stream_position_val
 export type files_tree_ArchivedTopsCursor = Infer<typeof archived_tops_cursor_validator>;
 
 /**
- * The Archived view's order: newest archive operation first, then by `treePath`.
+ * The Archive view's order: newest archive operation first, then by `treePath`.
  */
 function archived_tops_compare(a: Doc<"files_nodes">, b: Doc<"files_nodes">) {
 	return compareValues(b.archiveOperationId!, a.archiveOperationId!) || compareValues(a.treePath, b.treePath);
@@ -1708,14 +1708,14 @@ function archived_tops_position_after(node: Doc<"files_nodes">) {
 export function files_tree_archived_tops_parse_cursor(cursor: string) {
 	const parsed: unknown = JSON.parse(cursor);
 	if (!validate(archived_tops_cursor_validator, parsed)) {
-		throw convex_invalid_cursor_error("The Archived view cursor is invalid.");
+		throw convex_invalid_cursor_error("The Archive view cursor is invalid.");
 	}
 	return parsed;
 }
 
 /**
- * Read the top items of one area of the Archived view from `positions` on: the merge of its two
- * streams, described at `list_archived_tops`. The Archived view and Empty archive both read it.
+ * Read the top items of one area of the Archive view from `positions` on: the merge of its two
+ * streams, described at `list_archived_tops`. The Archive view and Empty archive both read it.
  * `over_budget` says when the call must stop reading. Then `stopped` is true, and `positions`
  * holds where each stream got to. `positions` is changed in place.
  */
@@ -1860,7 +1860,7 @@ export async function files_tree_db_read_archived_tops(
 }
 
 /**
- * The Archived view: the archived top items of one area, newest archive operation first, then by
+ * The Archive view: the archived top items of one area, newest archive operation first, then by
  * `treePath`. A top item is an archived item whose parent is the root, active, or archived by
  * another operation. What is archived inside it never shows here.
  *
@@ -1895,7 +1895,7 @@ export const list_archived_tops = query({
 		const refused = { page: [], isDone: true, continueCursor: JSON.stringify({ items: "done", folders: "done" }) };
 
 		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
-		// A guest has no Archived view.
+		// A guest has no Archive view.
 		if (!reader || !reader.hasWorkspaceRead) {
 			return refused;
 		}

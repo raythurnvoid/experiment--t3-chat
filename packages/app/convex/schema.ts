@@ -4684,7 +4684,7 @@ const app_convex_schema = defineSchema({
 			"sortName",
 			"name",
 		])
-		// The Archived view's area picker: the restricted folders one principal can open, by path.
+		// The Archive view's area picker: the restricted folders one principal can open, by path.
 		.index("by_org_ws_principal_restricted_archive_treePath", [
 			"organizationId",
 			"workspaceId",
@@ -6912,7 +6912,7 @@ const app_convex_schema = defineSchema({
 		 * Set only on an Empty archive job: a purge of every top item of one area that was archived before
 		 * the job started. `area` is null for the open part of the workspace. `cutoff` is
 		 * `files_archive_operation_id_cutoff` of the start time; only operation ids below it are deleted.
-		 * `cursor` is where the Archived view reader goes on (`files_tree_db_read_archived_tops`). The
+		 * `cursor` is where the Archive view reader goes on (`files_tree_db_read_archived_tops`). The
 		 * counts are of top items: found so far, deleted, and kept.
 		 */
 		emptyArchive: v.optional(

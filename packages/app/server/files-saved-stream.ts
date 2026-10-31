@@ -147,7 +147,7 @@ function create_stream(
 				: db.query("files_nodes").withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		// The restricted folders of the workspace by path, for the owner's Archived view area picker.
+		// The restricted folders of the workspace by path, for the owner's Archive view area picker.
 		by_archive_restricted_tree: (range: (q: SavedRange<["archiveOperationId", "isRestrictedScopeRoot", "treePath"]>) => IndexRange) =>
 			fixedView
 				? db.query("files_saved_places").withIndex("by_view_archive_restricted_tree", (q) =>

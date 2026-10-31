@@ -19,7 +19,7 @@ description: Persisted per-user, per-organization, and per-workspace quota count
 	- each user gets `personal` plus at most **2** extra organizations (**3** total organizations)
 	- each organization gets `home` plus at most **5** extra workspaces (**6** total workspaces)
 	- each user can have at most **20** active API keys in one workspace
-	- `stored_file_bytes` starts at **10 GiB** per workspace. It is a safety cap. Raise it step by step as needed. Deleting or archiving files gives no bytes back.
+	- `stored_file_bytes` starts at **10 GiB** per workspace. It is a safety cap. Raise it step by step as needed. Archiving gives no bytes back. Delete permanently gives back each deleted asset's `storedFileBytes`; assets settled before that field existed give nothing back.
 	- private prepared content has **1 GiB** per user/workspace and **5 GiB** per workspace; each user/workspace also has **10,000** private new-node slots. These are live capacity counters. Saving or confirmed deletion returns capacity.
 - Default entities do **not** consume quota usage:
 	- default organization `personal`

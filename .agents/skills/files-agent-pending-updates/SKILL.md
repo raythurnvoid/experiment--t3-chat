@@ -30,6 +30,10 @@ users' hides. Copied dates and metadata on private places refresh in background 
 is current at once, and the refresh never changes anyone's draft (see "Saved place refresh").
 Version-history Restore stays in its current request flow. It does not need a new background job
 to handle drafts. Unarchive uses its existing job and is a separate operation.
+Delete permanently of an archived node discards every user's drafts on it, not only the caller's.
+Private draft nodes under it are discarded like expired ones (`files_pending_nodes_db_discard`), and
+saved targets through `files_pending_updates_db_discard_saved`. Both free the owners' private
+storage. A pending hold keeps the node until it ends (`../data-deletion/SKILL.md`).
 
 Saved content belongs to `files_saved_content_heads`. The file points to its current head.
 Review prepares a separate head, even when it accepts unchanged text. Publication selects that

@@ -37,13 +37,13 @@ Load each companion skill that owns the affected boundary:
 - Tenant, workspace, and account purge are named file-policy exceptions. These flows delete the whole
   lifecycle scope, so they do not call normal writable guards. They delete protected subtrees like other
   content. See [files-read-only](../files-read-only/SKILL.md).
-- Only these flows hard-delete a member's real file. Everywhere else "delete a file" means archive:
-  the UI delete, and the Council delete-meeting workflow, which archives the meeting folder through
-  `/api/v1/files/service-uploads/archive-destination` instead of removing its files.
-  `files_nodes_db_hard_delete_node` outside these purges only ever removes a node that never became
-  real content — a rejected agent create proposal, or an upload placeholder that was canceled or
-  never finished. An archived file keeps its R2 object and its quota bytes, so archiving frees no
-  storage.
+- Only these flows and Delete permanently (below) hard-delete a member's real file. Everywhere else
+  "delete a file" means archive: the UI delete, the agent, and the Council delete-meeting workflow,
+  which archives the meeting folder through `/api/v1/files/service-uploads/archive-destination`
+  instead of removing its files. `files_nodes_db_hard_delete_node` outside these purges only ever
+  removes a node that never became real content — a rejected agent create proposal, or an upload
+  placeholder that was canceled or never finished. An archived file keeps its R2 object and its quota
+  bytes, so archiving frees no storage.
 - A member deletes one of their own MCP servers with `mcp_custom_servers.remove`. It deletes the
   server and its secrets at once, revokes the member's sign-in for it through
   `plugins_mcp_db_revoke_grant`, deletes its running sign-ins, and schedules `drain_removed_server`,
@@ -80,6 +80,48 @@ Load each companion skill that owns the affected boundary:
   failed tries. A paused receiver is deleted at once. The registry hard delete deletes it directly,
   because that path writes no `revoked` feed doc.
 - `billing_usage_event_rejected` holds usage events Polar refused (422), with Polar's trimmed error text. No deletion path touches it either, for the same reason: each doc is a charge for work that already happened and waits for a resend after a fix. Unlike the outbox, a doc can stay until an operator acts, but it still holds only ids, amounts, and Polar's validation message, no names, paths, or content. So no purge pass is needed; the operator resends or deletes the docs.
+
+# Delete Permanently (Archived Items)
+
+A person deletes archived items for good from the Files UI (`files_nodes.purge_nodes` for named
+items, `files_nodes.empty_archive` for one area of the Archive view). The UI is in
+`../files-explorer-tree/SKILL.md` ("Archive view and Delete permanently"). No agent tool, public
+API or plugin door can do it yet.
+
+- Only archived items. The caller needs `content.permissions.manage` on the workspace for the open
+  part, or on the restricted folder. The request refuses the whole list when one named item is
+  missing, not archived, not allowed, or still in a running archive operation, like Restore.
+- It runs as a `files_archive_runs` job of kind "purge", with its own new operation id. Its busy
+  paths are the named items' paths, so a Move, scope change or Restore on the same paths waits
+  behind it, and it waits behind them (`files_subtree_ops_db_find_blocker`). The first step runs in
+  the request. A small delete ends there; the result `runId` is then null.
+- The walk visits children before their parent, like a forced archive. It reads children with
+  `files_subtree_ops_db_next_children`, because archived siblings can share a name.
+- Each node is deleted by `files_purge_db_drain_node_batch` in `convex/files_purge_db.ts`, one small
+  batch of one family per call: content heads (the last call retires older heads and schedules their
+  discard), Yjs states, chunks, versions, metadata, grants, share links, the comment channel
+  (`channels_db_purge_channel_batch`), plugin access and bindings, every user's drafts on the node
+  (discarded like an expired draft, which frees their private storage), and the R2 assets (one R2
+  delete job per asset, after the PUT may-arrive margin). The node doc goes last, only when no child
+  is left.
+- The first drain call sets `files_nodes.purgeRunId`. From then on every write refuses the node with
+  "This item is being deleted." (`files_write_policy`), even a forced one. A started node always
+  finishes: Stop, a lost membership or the deadline end the job only between nodes. A later run takes
+  over a `purgeRunId` left by an ended run.
+- Kept, never deleted: a Read-only item, an item the person may no longer manage, and an item still
+  busy before its first delete (a running Move, a pending hold, a save request, a plugin storage
+  target, an index run). A kept item keeps its folders too. The job ends "Partly completed" and the
+  dialog lists the kept names under "Not deleted (N)".
+- Deleting a stored asset takes its `storedFileBytes` off the workspace `stored_file_bytes` counter.
+  Assets settled before that field existed give nothing back. Credits are never refunded.
+- Empty archive deletes every top item archived in the area strictly before the request's millisecond
+  (`emptyArchive.cutoff`, a `t<ms>` prefix of the operation id). It skips ids with no time, except
+  plain old UUIDs, and skips items whose archive job was still running or ended after the start. It
+  reads one page of top items at a time and keeps only counts (`foundCount`, `deletedCount`,
+  `keptCount`), never a list. Only one Empty archive runs per workspace. It refuses while a Move
+  view is selected.
+- Workspace deletion force-finishes a running purge job. A member's account drain skips it; the job
+  ends by itself on the lost membership.
 
 # Primary Files
 
