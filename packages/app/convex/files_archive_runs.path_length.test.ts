@@ -70,11 +70,12 @@ describe("unarchive_nodes path limit", () => {
 		// Three folders of 1,021 to 1,023 characters. A name 7 characters longer pushes them over.
 		for (const name of ["d".repeat(250), "e".repeat(251), "f".repeat(252)]) await folder(f, `${chain}/${name}`);
 		const top = await find_node(f, `/p/${NAMES[0]}`);
+		const selectedChild = await find_node(f, `${chain}/${"f".repeat(252)}`);
 		await archive_to_end(f, top._id);
 		await rename_directly(f, { path: "/p", name: "pppppppp" });
 		const nodesBefore = (await read_state(f)).nodes;
 
-		expect(await restore(f, [top._id])).toEqual({
+		expect(await restore(f, [top._id, selectedChild._id]), "overlapping selections keep the path check").toEqual({
 			_nay: {
 				name: "path_too_long",
 				message: `Can't restore. 3 items would have paths over 1,024 characters, like …/${"f".repeat(252)} (1,030). Shorten a folder name, then restore again.`,
@@ -224,7 +225,7 @@ describe("unarchive_nodes path limit", () => {
 		const archived = (await archive(f, [first, top._id]))._yay!;
 		expect((await run_to_end(f, archived)).activity.status).toBe("succeeded");
 		await folder(f, "/first");
-		const job = (await restore(f, [top._id]))._yay!;
+		const job = (await restore(f, [first, top._id]))._yay!;
 		expect((await read_activity(f, job.activityId)).status).toBe("awaiting_input");
 		await rename_directly(f, { path: "/p", name: "pppppppp" });
 		return { first, deepest, short, job };

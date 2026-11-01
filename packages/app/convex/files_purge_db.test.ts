@@ -39,6 +39,7 @@ async function fixture() {
 			kind: "archive",
 			archiveOperationId: files_archive_operation_id_new(Date.now()),
 			rootNodeIds: [],
+			restoreRoots: [],
 			phase: "apply",
 			checkCursor: { rootIndex: 0, treePath: "" },
 			discoverTreePaths: [],

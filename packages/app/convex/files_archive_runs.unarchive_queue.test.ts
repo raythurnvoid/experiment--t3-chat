@@ -85,7 +85,7 @@ describe("unarchive_nodes", () => {
 		const tree = await seed_tree(f, { name: "behind", folderCount: 2, filesPerFolder: 100 });
 		await archive_to_end(f, tree.topId);
 
-		const restored = await restore(f, [clash.fileIds[0]!, tree.topId]);
+		const restored = await restore(f, [...clash.fileIds, tree.topId]);
 		expect(restored._nay).toBeUndefined();
 		const [ahead, queued] = (await f.t.run((ctx) => ctx.db.query("activities").collect())).flatMap((activity) =>
 			activity.source.kind === "files_archive_run" && activity.source.archiveKind === "restore"
@@ -121,7 +121,7 @@ describe("unarchive_nodes", () => {
 		await archive_to_end(f, tree.folderIds[0]!);
 		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
 
-		expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
+		expect(await restore(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
 
 		expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ parentId: "root", path: "/d0" });
 		expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/d0/f000.md" });
@@ -135,21 +135,21 @@ describe("unarchive_nodes", () => {
 		await archive_to_end(f, tree.folderIds[0]!);
 		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
 
-		expect(await restore(f, [tree.fileIds[0]!, tree.topId])).toEqual({ _yay: null });
+		expect(await restore(f, [tree.folderIds[0]!, tree.topId])).toEqual({ _yay: null });
 
 		expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ parentId: tree.topId, path: "/both/d0" });
 		const state = await expect_consistent(f);
 		expect(state.nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	});
 
-	test("restoring several operations starts with the top one, even when a deep item is named", async () => {
+	test("restoring several operations starts with the selected parent", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "order", folderCount: 2, filesPerFolder: 1 });
 		await archive_to_end(f, tree.folderIds[0]!);
 		await archive_to_end(f, tree.topId);
 
-		// `/order/d0/` sorts before the named `/order/d1/f000.md`, but `/order` holds `d0`.
-		expect(await restore(f, [tree.folderIds[0]!, tree.fileIds[1]!])).toEqual({ _yay: null });
+		// Name the inner folder first. Its selected parent must still come back first.
+		expect(await restore(f, [tree.folderIds[0]!, tree.fileIds[1]!, tree.topId])).toEqual({ _yay: null });
 
 		expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ parentId: tree.topId, path: "/order/d0" });
 		await expect_consistent(f);
@@ -226,7 +226,7 @@ describe("unarchive_nodes", () => {
 		if (archived._yay) await run_to_end(f, archived._yay);
 		const treePaths = tree.fileIds.map((_, index) => `/tops/d${index}/f000.md`);
 
-		const job = (await restore(f, [tree.fileIds[0]!]))._yay!;
+		const job = (await restore(f, tree.fileIds))._yay!;
 		for (let count = 0; count < 100; count++) {
 			const { op, queued } = await f.t.run(async (ctx) => {
 				const op = await ctx.db
@@ -252,13 +252,12 @@ describe("unarchive_nodes", () => {
 		expect((await read_state(f)).nodes.filter((node) => node.archiveOperationId !== null)).toEqual([]);
 	}, 120_000);
 
-	test("a restore pull queues one page of top items", async () => {
+	test("a conflicting selected file keeps unrelated top items out of its queue", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "tops", folderCount: 200, filesPerFolder: 1 });
 		const archived = await archive(f, tree.fileIds);
 		if (archived._yay) await run_to_end(f, archived._yay);
-		// The first top item a pull queues runs first. A clash on it pauses the step before any item lands,
-		// so the queue then holds exactly what one pull queued.
+		// A clash pauses the step before the selected file lands.
 		const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
 		expect(
 			await test_move_nodes(f.t, f.asOwner, {
@@ -279,7 +278,7 @@ describe("unarchive_nodes", () => {
 				.unique())!._id,
 		}));
 		expect(run.conflict?.nodeId).toBe(tree.fileIds[0]);
-		expect(await count_queue(f, opId)).toBe(50);
+		expect(await count_queue(f, opId)).toBe(1);
 	}, 120_000);
 
 	describe("read-only folders", () => {

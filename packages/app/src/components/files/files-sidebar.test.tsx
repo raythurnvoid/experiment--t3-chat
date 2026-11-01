@@ -155,12 +155,24 @@ vi.mock("convex/react", async (importOriginal) => {
 			if (getFunctionName(query) === "files_tree:get_workspace_move_view")
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
+			if (getFunctionName(query) === "files_tree:get_archived_tops_ready") return true;
+			if (getFunctionName(query) === "users:get_anagraphic") return null;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
 		},
 		useQueries: () => queryResults,
 		usePaginatedQuery: (query: FunctionReference<"query">, args: { clause?: unknown } | "skip") => {
 			useSyncExternalStore(subscribeSaved, () => savedState.revision);
 			if (args === "skip") return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
+			if (getFunctionName(query) === "files_tree:list_archived_tops") {
+				return {
+					results: treeState.nodes
+						.filter((node) => node.archiveOperationId !== null)
+						.map((node) => ({ ...node, locked: false })),
+					status: "Exhausted",
+					isLoading: false,
+					loadMore: () => {},
+				};
+			}
 			if (getFunctionName(query) === "files_nodes:search_saved") {
 				const key = JSON.stringify(args.clause);
 				const answer = savedState.answers.has(key) ? savedState.answers.get(key) : { rows: [], isDone: true };
@@ -1049,7 +1061,8 @@ describe("FilesSidebar", () => {
 		{ surface: "tree", reason: "permission", allowed: false },
 		{ surface: "shared", reason: "read_only", allowed: true },
 		{ surface: "shared", reason: "permission", allowed: false },
-	] as const)("Restore keeps the own flag and ACL check in the $surface menu: $reason", async ({ surface, reason, allowed }) => {
+		{ surface: "trash", reason: "read_only", allowed: true },
+	] as const)("Restore in the $surface menu keeps $reason", async ({ surface, reason, allowed }) => {
 		createNode.mockResolvedValue({ _yay: null });
 		treeState.nodes = treeState.nodes.map((node) =>
 			node._id === "alpha"
@@ -1060,26 +1073,32 @@ describe("FilesSidebar", () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
 		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
-		fireEvent.click(showArchived);
-		fireEvent.keyDown(showArchived, { key: "Escape" });
+		if (surface === "trash") {
+			fireEvent.click(await view.findByRole("menuitem", { name: "Open Trash" }));
+		} else {
+			const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
+			fireEvent.click(showArchived);
+			fireEvent.keyDown(showArchived, { key: "Escape" });
+		}
 		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 
 		const row =
-			surface === "tree"
-				? await view.findByRole("treeitem", { name: "alpha, Read-only in Trash" })
-				: within(view.getByRole("region", { name: "Shared with you" })).getByRole("button", {
-						name: "secret restricted, Read-only in Trash",
-					});
+			surface === "trash"
+				? await view.findByRole("button", { name: "alpha in /" })
+				: surface === "tree"
+					? await view.findByRole("treeitem", { name: "alpha, Read-only in Trash" })
+					: within(view.getByRole("region", { name: "Shared with you" })).getByRole("button", {
+							name: "secret restricted, Read-only in Trash",
+						});
 		fireEvent.contextMenu(row);
-		const restore = await view.findByRole("menuitem", { name: "Restore" });
+		const restore = await view.findByRole("menuitem", { name: /^Restore/ });
 		expect(restore.matches("[aria-disabled='true']")).toBe(!allowed);
 		fireEvent.click(restore);
 		if (allowed) {
 			await waitFor(() =>
 				expect(createNode).toHaveBeenCalledWith(app_convex_api.files_nodes.unarchive_nodes, {
 					membershipId: "membership",
-					nodeIds: [surface === "tree" ? "alpha" : "secret"],
+					nodeIds: [surface === "shared" ? "secret" : "alpha"],
 				}),
 			);
 		} else {

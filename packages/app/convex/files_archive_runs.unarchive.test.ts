@@ -60,7 +60,7 @@ describe("unarchive_nodes", () => {
 			}),
 		);
 
-		const restored = await restore(f, [first.fileIds[0]!]);
+		const restored = await restore(f, [first.fileIds[0]!, second.fileIds[0]!]);
 		expect(restored._nay).toBeUndefined();
 		expect(restored._yay).not.toBeNull();
 		const op = await f.t.run((ctx) =>
@@ -81,13 +81,13 @@ describe("unarchive_nodes", () => {
 		expect((await read_node(f, second.fileIds[0]!)).archiveOperationId).toBeNull();
 	});
 
-	test("discovery finds a stored-path change before its cursor", async () => {
+	test("discovery refreshes a selected item's path before checking blockers", async () => {
 		const f = await fixture();
 		const archived = await seed_same_path(f, { name: "cursor", count: 51, archiveOperationId: crypto.randomUUID() });
-		const restored = await restore(f, [archived.fileIds[0]!]);
+		const restored = await restore(f, archived.fileIds);
 		expect(restored._nay).toBeUndefined();
 		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", restored._yay!.runId)))?.phase).toBe("discover");
-		// Cursor seam only. Public Rename waits for Restore.
+		// Change the stored path before discovery reaches this selected id. Public Rename waits for Restore.
 		await f.t.run((ctx) =>
 			ctx.db.patch("files_nodes", archived.fileIds.at(-1)!, {
 				name: "a.md",
@@ -143,7 +143,7 @@ describe("unarchive_nodes", () => {
 					now: Date.now(),
 				}),
 			);
-		const restored = await restore(f, [archived.fileIds[0]!]);
+		const restored = await restore(f, archived.fileIds);
 		expect(restored._nay).toBeUndefined();
 		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", restored._yay!.runId)))?.phase).toBe("discover");
 		const firstBlockerId = await blocker("/queued/same.md");
@@ -159,7 +159,7 @@ describe("unarchive_nodes", () => {
 			status: "queued",
 			blockedByOpId: firstBlockerId,
 		});
-		// Cursor seam only. Public Rename waits for the scope blocker.
+		// Change the stored path while this job waits. Public Rename waits for the scope blocker.
 		await f.t.run((ctx) =>
 			ctx.db.patch("files_nodes", archived.fileIds[1]!, {
 				name: "a.md",
@@ -191,7 +191,7 @@ describe("unarchive_nodes", () => {
 		const tree = await seed_tree(f, { name: "back", folderCount: 6, filesPerFolder: 20 });
 		await archive_to_end(f, tree.topId);
 
-		const restored = await restore(f, [tree.fileIds[50]!]);
+		const restored = await restore(f, [tree.topId]);
 		expect(restored._nay).toBeUndefined();
 		const ended = await run_to_end(f, restored._yay!);
 

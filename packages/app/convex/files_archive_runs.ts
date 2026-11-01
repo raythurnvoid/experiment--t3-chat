@@ -13,8 +13,8 @@
 // out only the named item it is in, with everything inside it. Then the archive stamps every named item
 // that passed, then the active children of each stamped folder, the first named item's folder
 // first. A child that somebody moved out, or archived on their own, is not reached or keeps its own
-// stamp. Restore finds the top items of the operation one page at a time, lands each one, then
-// restores the items of the operation inside it. The other items inside get the new path and scope
+// stamp. Restore lands only the selected roots, then the items inside them that were moved to Trash with them.
+// Other items of the operation stay in Trash. Items inside from other deletes get the new path and scope
 // and keep their own stamp.
 //
 // A fast archive skips the check. The request first reads a few indexes for each named item
@@ -1410,63 +1410,24 @@ function add_discover_tree_path(run: Pick<RunFields, "discoverTreePaths">, treeP
 }
 
 /**
- * Find every top item before restore checks access or writes nodes. Different top items in one
- * archive operation can sit under different folders, so all of their paths must join the busy check.
+ * Refresh the selected roots before checking access or writing nodes. A queued Move may have
+ * changed their paths. The worker waits for Move repair before it reads these node docs.
  */
 async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run } = args;
-	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
-	if (args.budget.checkNodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx))) return { kind: "continue" };
-	// This index keeps its order when an archived item is renamed or moved.
-	// Convex allows one paginated query per mutation. Small restores use `take` so several operations
-	// can still finish in one request. Larger ones read one page per step. A page is as big as the check
-	// budget left, because each step costs about one second of scheduler wait. 50 items per page made a
-	// 416-item restore spend 9 steps here.
-	const pageSize = args.budget.checkNodes;
-	const firstPage = run.checkCursor.treePath
-		? null
-		: await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_archiveOperation", (q) =>
-					q
-						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("archiveOperationId", run.archiveOperationId),
-				)
-				.take(pageSize + 1);
-	if (!(firstPage && firstPage.length <= pageSize)) {
-		if (args.budget.hasPaginated) return { kind: "continue" };
-		args.budget.hasPaginated = true;
-	}
-	const page =
-		firstPage && firstPage.length <= pageSize
-			? { page: firstPage, isDone: true, continueCursor: "" }
-			: await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_archiveOperation", (q) =>
-						q
-							.eq("organizationId", run.organizationId)
-							.eq("workspaceId", run.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("archiveOperationId", run.archiveOperationId),
-					)
-					.paginate({ cursor: run.checkCursor.treePath || null, numItems: pageSize });
-	args.budget.checkNodes -= page.page.length;
-	for (const node of page.page) {
-		const parentId = node.parentId;
-		let parent = parentId === files_ROOT_ID ? null : parents.get(parentId);
-		if (parent === undefined && parentId !== files_ROOT_ID) {
-			parent = await ctx.db.get("files_nodes", parentId);
-			parents.set(parentId, parent);
+	while (run.checkCursor.rootIndex < run.restoreRoots.length) {
+		if (args.budget.checkNodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx))) return { kind: "continue" };
+		const root = run.restoreRoots[run.checkCursor.rootIndex]!;
+		const node = await ctx.db.get("files_nodes", root.nodeId);
+		args.budget.checkNodes -= 1;
+		if (node && node.archiveOperationId === run.archiveOperationId) {
+			root.treePath = node.treePath;
+			add_discover_tree_path(run, node.treePath);
 		}
-		if (!parent || parent.archiveOperationId !== run.archiveOperationId) add_discover_tree_path(run, node.treePath);
-	}
-	if (!page.isDone) {
-		run.checkCursor = { ...run.checkCursor, treePath: page.continueCursor };
-		return { kind: "continue" };
+		run.checkCursor.rootIndex += 1;
 	}
 
+	run.restoreRoots.sort((a, b) => (a.treePath < b.treePath ? -1 : a.treePath > b.treePath ? 1 : 0));
 	const op = await ctx.db.get("files_subtree_ops", args.opId);
 	if (!op || op.kind !== "restore") throw should_never_happen("Restore is missing its subtree op", { opId: args.opId });
 	const blocker = await files_subtree_ops_db_find_blocker(ctx, {
@@ -1496,6 +1457,22 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 }
 
 /**
+ * Say whether this item is selected or inside a selected folder.
+ * An item with the same path as a selected folder is not inside it. Two folders can share a path,
+ * and only the selected id counts.
+ */
+function is_in_restore_selection(
+	run: Pick<RunFields, "restoreRoots">,
+	node: Pick<Doc<"files_nodes">, "_id" | "treePath">,
+) {
+	return run.restoreRoots.some(
+		(root) =>
+			root.nodeId === node._id ||
+			(root.treePath.endsWith("/") && node.treePath > root.treePath && node.treePath.startsWith(root.treePath)),
+	);
+}
+
+/**
  * How many characters longer an item's path gets when the restore lands it, and its top item. A top
  * item lands in its active parent, or at the workspace root when `rootNodeIds` has it. An item inside
  * follows its top item. `landings` keeps the answers, so each folder is read once per step.
@@ -1520,7 +1497,7 @@ async function db_get_restore_landing(
 		parents.set(parentId, parent);
 	}
 	const landing =
-		parent && parent.archiveOperationId === run.archiveOperationId
+		parent && parent.archiveOperationId === run.archiveOperationId && is_in_restore_selection(run, parent)
 			? await db_get_restore_landing(ctx, { ...args, node: parent })
 			: {
 					growth: !parent
@@ -1572,10 +1549,9 @@ function get_long_paths_end_text(run: Pick<RunFields, "longPaths" | "longPathOpe
 }
 
 /**
- * Check every node of the operation before the restore writes anything. Also check each top item: an
- * item whose parent is not in the operation. Keep the top items whose folder is archived by another
- * operation in `rootNodeIds`. They land at the workspace root. This list is fixed here. A folder
- * archived later, during the job, keeps its restored items inside.
+ * Check the selected roots and the items inside them that were moved to Trash with them. Keep top items
+ * whose archived parent is outside this restore in `rootNodeIds`. They land at workspace root.
+ * This list stays fixed during the job. A folder archived later keeps its restored items inside.
  * A restore that would make any path too long is refused here, so the person can fix it before any write.
  */
 async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
@@ -1588,28 +1564,43 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			return { kind: "continue" };
 		}
 
-		const cursorTreePath = run.checkCursor.treePath;
-		const page = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-				q
-					.eq("organizationId", run.organizationId)
-					.eq("workspaceId", run.workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("archiveOperationId", run.archiveOperationId)
-					.gt("treePath", cursorTreePath),
-			)
-			.take(PAGE_SIZE);
-		const isLastPage = page.length < PAGE_SIZE;
-		const lastNode = page.at(-1);
-		// Nodes archived together can share a `treePath`: a file made during the archive job with the name
-		// of one it already archived. The next page starts after this `treePath`, so read the rest of the
-		// last group now. Two nodes can have the same `_creationTime`, so read from that time on and skip
-		// the nodes the page already has.
-		if (!isLastPage && lastNode) {
-			const pageIds = new Set(page.map((node) => node._id));
-			const sameTreePath = (
-				await ctx.db
+		const root = run.restoreRoots[run.checkCursor.rootIndex];
+		if (!root) {
+			if (run.longPaths) {
+				return {
+					kind: "failed",
+					nay: {
+						name: "path_too_long",
+						message: `Can't restore. ${get_long_paths_text(run.longPaths)}. Shorten a folder name, then restore again.`,
+					},
+				};
+			}
+			return { kind: "done" };
+		}
+		const rootWasChecked = is_in_restore_selection(
+			{ restoreRoots: run.restoreRoots.slice(0, run.checkCursor.rootIndex) },
+			{ _id: root.nodeId, treePath: root.treePath },
+		);
+		if (rootWasChecked) {
+			run.checkCursor = { rootIndex: run.checkCursor.rootIndex + 1, treePath: "" };
+			continue;
+		}
+		const rootNode = await ctx.db.get("files_nodes", root.nodeId);
+		if (!rootNode || rootNode.archiveOperationId !== run.archiveOperationId) {
+			run.checkCursor = { rootIndex: run.checkCursor.rootIndex + 1, treePath: "" };
+			continue;
+		}
+		const page = run.checkCursor.treePath ? [] : [rootNode];
+		let isLastPage = true;
+		let nextCursor = "";
+		// Equal-path selected folders share one descendant range, but each root counts once.
+		const rangeWasChecked = run.restoreRoots.some(
+			(other, index) => index < run.checkCursor.rootIndex && other.treePath === root.treePath,
+		);
+		if (rootNode.kind === "folder" && !rangeWasChecked) {
+			// Exclude equal-path roots. Native pagination keeps ties between descendant paths.
+			const query = () =>
+				ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 						q
@@ -1617,14 +1608,22 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 							.eq("workspaceId", run.workspaceId)
 							.eq("moveCohortId", undefined)
 							.eq("archiveOperationId", run.archiveOperationId)
-							.eq("treePath", lastNode.treePath)
-							.gte("_creationTime", lastNode._creationTime),
-					)
-					.take(files_archive_runs_CHECK_STEP_MAX_NODES + 1 + pageIds.size)
-			).filter((node) => !pageIds.has(node._id));
-			if (sameTreePath.length > files_archive_runs_CHECK_STEP_MAX_NODES)
-				return { kind: "failed", nay: { message: "Too many items in Trash share one path." } };
-			page.push(...sameTreePath);
+							.gt("treePath", root.treePath)
+							.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
+					);
+			// Small folders leave the native page free for another selected root in this request.
+			const firstPage = run.checkCursor.treePath ? null : await query().take(PAGE_SIZE + 1);
+			if (!(firstPage && firstPage.length <= PAGE_SIZE)) {
+				if (args.budget.hasPaginated) return { kind: "continue" };
+				args.budget.hasPaginated = true;
+			}
+			const descendants =
+				firstPage && firstPage.length <= PAGE_SIZE
+					? { page: firstPage, isDone: true, continueCursor: "" }
+					: await query().paginate({ cursor: run.checkCursor.treePath || null, numItems: PAGE_SIZE });
+			page.push(...descendants.page);
+			isLastPage = descendants.isDone;
+			nextCursor = descendants.continueCursor;
 		}
 		args.budget.checkNodes -= page.length;
 
@@ -1641,7 +1640,8 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				parents.set(parentId, parent);
 			}
 			// A folder of the same operation brings this item back when the walk reaches it.
-			if (parent && parent.archiveOperationId === run.archiveOperationId) continue;
+			if (parent && parent.archiveOperationId === run.archiveOperationId && is_in_restore_selection(run, parent))
+				continue;
 			if (!parent) continue;
 
 			const folderRefusal = await db_check_restore_folder({ ctx, ...args, folder: parent });
@@ -1669,7 +1669,12 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 					nay: { name: "busy", message: "These items are being moved to Trash. Wait for it to finish." },
 				};
 			}
-			if (parentOperationId !== null && !parentRun) {
+			const parentIsRestoring =
+				parentRun &&
+				parentRun._id !== args.runId &&
+				parentRun.kind === "restore" &&
+				is_in_restore_selection(parentRun, parent);
+			if (parentOperationId !== null && !parentIsRestoring) {
 				const moveRefusal = await db_check_restore_move({ ctx, ...args, node });
 				if (moveRefusal) return moveRefusal;
 				if (run.rootNodeIds.length >= MAX_ROOT_LANDINGS) {
@@ -1697,17 +1702,9 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			}
 		}
 
-		if (isLastPage && run.longPaths) {
-			return {
-				kind: "failed",
-				nay: {
-					name: "path_too_long",
-					message: `Can't restore. ${get_long_paths_text(run.longPaths)}. Shorten a folder name, then restore again.`,
-				},
-			};
-		}
-		if (isLastPage) return { kind: "done" };
-		run.checkCursor = { ...run.checkCursor, treePath: page.at(-1)!.treePath };
+		run.checkCursor = isLastPage
+			? { rootIndex: run.checkCursor.rootIndex + 1, treePath: "" }
+			: { ...run.checkCursor, treePath: nextCursor };
 	}
 }
 
@@ -2014,13 +2011,87 @@ async function db_land_node(
 }
 
 /**
- * Pull the top items of the operation, at most one page at a time, and land each one. Then walk each
+ * Read only unfinished items inside one selected root. A file uses its id. A folder uses the
+ * operation and tree path index, so unrelated items of the same delete never enter the job.
+ */
+async function db_get_restore_left(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		run: Pick<RunFields, "organizationId" | "workspaceId" | "archiveOperationId">;
+		root: RunFields["restoreRoots"][number];
+		numItems: number;
+	},
+) {
+	const { run, root } = args;
+	const node = await ctx.db.get("files_nodes", root.nodeId);
+	if (node?.archiveOperationId === run.archiveOperationId) return [node];
+	if (!root.treePath.endsWith("/")) return [];
+	return await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
+			q
+				.eq("organizationId", run.organizationId)
+				.eq("workspaceId", run.workspaceId)
+				.eq("moveCohortId", undefined)
+				.eq("archiveOperationId", run.archiveOperationId)
+				.gt("treePath", root.treePath)
+				.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
+		)
+		.take(args.numItems);
+}
+
+/**
+ * Find one unfinished item under a selected id at its current saved path. A later Move can reuse
+ * the old path for unrelated items. Job history must never name those items as unfinished work.
+ */
+export async function files_archive_runs_db_find_saved_restore_left_node(
+	ctx: QueryCtx,
+	args: {
+		run: Pick<RunFields, "organizationId" | "workspaceId" | "archiveOperationId">;
+		root: RunFields["restoreRoots"][number];
+	},
+) {
+	const { run } = args;
+	const root = await files_saved_placement_db_get_node(ctx.db, args.root.nodeId);
+	if (!root) return null;
+	if (root.archiveOperationId === run.archiveOperationId) return root;
+	if (root.kind !== "folder") return null;
+	const node = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
+			q
+				.eq("organizationId", run.organizationId)
+				.eq("workspaceId", run.workspaceId)
+				.eq("moveCohortId", undefined)
+				.eq("archiveOperationId", run.archiveOperationId)
+				.gt("treePath", root.treePath)
+				.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
+		)
+		.first();
+	if (node) return node;
+	const view = await files_saved_placement_db_get_view(ctx.db, run);
+	if (!view.cohortId || !view.view) return null;
+	const place = await ctx.db
+		.query("files_saved_places")
+		.withIndex("by_view_archive_tree", (q) =>
+			q
+				.eq("cohortId", view.cohortId!)
+				.eq("view", view.view!)
+				.eq("archiveOperationId", run.archiveOperationId)
+				.gt("treePath", root.treePath)
+				.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
+		)
+		.first();
+	return place ? await files_saved_placement_db_get_node(ctx.db, place.nodeId) : null;
+}
+
+/**
+ * Pull the selected roots' unfinished items, at most one page at a time, and land each one. Walk each
  * folder by `parentId`. A child of the operation comes back when its folder is active, or joins its
  * folder's archive when the folder was skipped. A name clash in an active folder asks, like a clash of
  * a top item. Every other child keeps its stamp and gets the new path and scope.
  *
- * The walk is done when no node of the operation is left. A node renamed to a name before the cursor
- * during the walk is still there, so the next pull finds it.
+ * The walk ends when no matching item is left inside any selected root.
  */
 async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run, progress } = args;
@@ -2034,17 +2105,14 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
 		if (!row) {
-			const left = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-					q
-						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("archiveOperationId", run.archiveOperationId),
-				)
-				.take(PAGE_SIZE);
-			if (left.length === 0) return { kind: "done" };
+			const selectedRoot = run.restoreRoots[run.applyRootIndex];
+			if (!selectedRoot) return { kind: "done" };
+			const left = await db_get_restore_left(ctx, { run, root: selectedRoot, numItems: PAGE_SIZE });
+			if (left.length === 0) {
+				run.applyRootIndex += 1;
+				lastPullTopIds = new Set();
+				continue;
+			}
 
 			// Queue the top item of each node that is left. Its folder may be of the operation too. Keep the
 			// folders read for this pull only: a later pull in this step may run after some came back.
@@ -2052,13 +2120,14 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			const topIds = new Set<Id<"files_nodes">>();
 			for (const node of left) {
 				let top = node;
-				while (top.parentId !== files_ROOT_ID) {
+				while (top.parentId !== files_ROOT_ID && top._id !== selectedRoot.nodeId) {
 					let parent = parents.get(top.parentId);
 					if (parent === undefined) {
 						parent = await ctx.db.get("files_nodes", top.parentId);
 						parents.set(top.parentId, parent);
 					}
-					if (!parent || parent.archiveOperationId !== run.archiveOperationId) break;
+					if (!parent || parent.archiveOperationId !== run.archiveOperationId || !is_in_restore_selection(run, parent))
+						break;
 					top = parent;
 				}
 				topIds.add(top._id);
@@ -2400,8 +2469,7 @@ async function db_settle_step(
 			return;
 		}
 		case "failed": {
-			// Nothing changed while the job was still checking. After that, the changed items keep the
-			// job's operation id, so one Restore or Archive brings them back.
+			// A failed check changed nothing. A later failure keeps the items already changed.
 			const isPartway = args.progress.completed + args.progress.skipped > 0;
 			await db_finish_run({
 				ctx,
@@ -2616,6 +2684,10 @@ export async function files_archive_runs_db_start(
 		 */
 		rootNodeIds: Array<Id<"files_nodes">>;
 		/**
+		 * Restore: the selected items and paths. Archive keeps this empty.
+		 */
+		restoreRoots: RunFields["restoreRoots"];
+		/**
 		 * Archive: named ids refused before the job: "Not found" for a missing id or one in another
 		 * workspace, "Permission denied" for one the person cannot change, and the refusals of
 		 * `files_archive_runs_db_check_fast`. The job lists each one, like `rm` does, and archives the
@@ -2632,7 +2704,7 @@ export async function files_archive_runs_db_start(
 		 */
 		waitForPathIndex?: boolean;
 		/**
-		 * Where readers see the items now. Restore passes its top item, because it has no named items yet.
+		 * Where readers see the selected items now.
 		 */
 		treePaths: string[];
 		budget: StepArgs["budget"];
@@ -2712,6 +2784,7 @@ export async function files_archive_runs_db_start(
 		kind: args.kind,
 		archiveOperationId: args.archiveOperationId,
 		rootNodeIds: args.kind === "archive" ? args.rootNodeIds : [],
+		restoreRoots: args.restoreRoots,
 		phase:
 			args.kind === "restore"
 				? "discover"
@@ -2924,6 +2997,7 @@ export async function files_archive_runs_db_start_purge(
 		// the restore busy check never refuses because of this job. Restore waits for the paths instead.
 		archiveOperationId: files_archive_operation_id_new(now),
 		rootNodeIds: args.nodes.map((node) => node._id),
+		restoreRoots: [],
 		phase: "apply",
 		checkCursor: { rootIndex: 0, treePath: "" },
 		discoverTreePaths: [],

@@ -40,32 +40,29 @@ describe("unarchive_nodes", () => {
 	);
 
 	test(
-		"the check reads up to 500 more items of the operation with the path where a page ends",
+		"the check reads tied descendant paths across the full-size page limit",
 		{ tags: ["full-size"], timeout: 300_000 },
 		async () => {
 			const f = await fixture();
-			const fits = await seed_same_path(f, { name: "fits", count: 550, archiveOperationId: crypto.randomUUID() });
-			const tooMany = await seed_same_path(f, {
-				name: "too-many",
+			const archiveOperationId = crypto.randomUUID();
+			const tree = await seed_same_path(f, {
+				name: "ties",
 				count: 551,
-				archiveOperationId: crypto.randomUUID(),
+				archiveOperationId,
 			});
+			await f.t.run((ctx) => ctx.db.patch("files_nodes", tree.topId, { archiveOperationId }));
 
 			// The files share one name, so after the first one the job waits for a clash choice. The check
 			// has passed by then.
-			const restored = await restore(f, [fits.fileIds[0]!]);
+			const restored = await restore(f, [tree.topId]);
 			expect(restored._nay).toBeUndefined();
 			const ended = await run_to_end(f, restored._yay!);
-			expect(ended.activity.status).toBe("awaiting_input");
-
-			const refused = await restore(f, [tooMany.fileIds[0]!]);
-			expect(refused._nay).toBeUndefined();
-			const failed = await run_to_end(f, refused._yay!);
-			expect(failed.activity).toMatchObject({
-				status: "failed",
-				errorMessage: "Too many items in Trash share one path.",
+			expect(ended.activity.progress, "all full-size tied descendants are checked").toMatchObject({
+				total: 552,
+				completed: 2,
 			});
-			expect((await read_node(f, tooMany.fileIds[0]!)).archiveOperationId).not.toBeNull();
+			expect(ended.activity.status).toBe("awaiting_input");
+			expect((await read_node(f, tree.fileIds[1]!)).archiveOperationId).toBe(archiveOperationId);
 		},
 	);
 });

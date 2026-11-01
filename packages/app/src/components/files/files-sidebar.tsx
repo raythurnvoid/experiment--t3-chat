@@ -281,11 +281,11 @@ function can_rename_item(args: {
 }
 
 /**
- * Mirror the `unarchive_nodes` plan. Restore brings back the item's whole archive operation, so
- * check where the operation's top item lands. When its parent is missing or in another archived
- * operation, it lands at the root. That is a move, so it also needs workspace write at the root plus
- * permission to leave the item's restricted scope. Without this gate a write-only sharee sees an
- * enabled Restore that the backend always refuses.
+ * Mirror `unarchive_nodes` for this selected item. An active direct parent keeps it in place.
+ * An archived parent sends it to the workspace root, which needs root write and
+ * permission to leave its restricted scope. A live Read-only parent blocks the landing.
+ * A parent the sidebar has not loaded is left to the backend.
+ * Without this gate a write-only sharee sees an enabled Restore that the backend always refuses.
  */
 function can_unarchive_item(args: {
 	item: FilesSidebarItem;
@@ -299,40 +299,36 @@ function can_unarchive_item(args: {
 		return false;
 	}
 
-	let topItem = args.item;
-	for (
-		let parentItem = args.itemById?.get(topItem.parentId);
-		parentItem != null && is_open_node(parentItem) && parentItem.archiveOperationId === topItem.archiveOperationId;
-		parentItem = args.itemById?.get(topItem.parentId)
-	) {
-		topItem = parentItem;
-	}
-
-	// An active parent (or the root itself) means the restore stays in place, and writing the
-	// node was already answered above.
-	if (topItem.parentId === files_ROOT_ID) {
+	if (args.item.parentId === files_ROOT_ID) {
 		return true;
 	}
-	const parentItem = args.itemById?.get(topItem.parentId);
-	// A read-only old folder refuses the restore, even when the item would land at the root.
-	if (parentItem != null && is_open_node(parentItem) && parentItem.writeBlockedReason === "read_only") {
-		return false;
-	}
-	if (parentItem != null && is_open_node(parentItem) && parentItem.archiveOperationId === null) {
+	const parentItem = args.itemById?.get(args.item.parentId);
+	if (parentItem != null) {
+		if (!is_open_node(parentItem)) {
+			return false;
+		}
+		if (parentItem.archiveOperationId === null) {
+			return parentItem.writeBlockedReason !== "read_only" && args.canWriteItem(parentItem);
+		}
+		// An archived parent has no live child list. Its own Read-only flag does not block Restore.
+		if (!args.canWriteItem(parentItem) && parentItem.writeBlockedReason !== "read_only") {
+			return false;
+		}
+	} else {
 		return true;
 	}
 
 	// A node that carries its own restriction keeps it wherever it lands, so the backend skips
 	// the destination and scope-leave checks for it.
-	if (topItem.restrictedScopeNodeId === topItem._id) {
+	if (args.item.restrictedScopeNodeId === args.item._id) {
 		return true;
 	}
 
 	return (
 		args.canWriteRoot &&
 		files_can_move_node_between_restricted_scopes({
-			nodeId: topItem._id,
-			sourceRestrictedScopeNodeId: topItem.restrictedScopeNodeId,
+			nodeId: args.item._id,
+			sourceRestrictedScopeNodeId: args.item.restrictedScopeNodeId,
 			targetRestrictedScopeNodeId: null,
 			canManageRestrictedScope: args.canManageRestrictedScope,
 		})
@@ -7897,6 +7893,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			{isArchiveViewOpen && !isSearchActive ? (
 				<FilesSidebarArchive
 					selectedNodeId={selectedNodeId}
+					canRestoreItem={canUnarchiveItem}
 					onOpen={onPrimaryAction}
 					onRestore={handleUnarchive}
 					onDeleted={handleArchiveViewDeleted}
@@ -8282,7 +8279,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			).toBe(true);
 		});
 
-		test("refuses while the old folder is read-only, even for a restore to the root", () => {
+		test("only a live Read-only parent blocks the restore", () => {
 			const archivedChild = test_node({
 				id: "file",
 				parentId: "folder",
@@ -8307,12 +8304,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				});
 				const lockedFolder = { ...folder, canWrite: false, writeBlockedReason: "read_only" as const };
 
-				expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, lockedFolder]]) })).toBe(false);
+				expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, lockedFolder]]) })).toBe(
+					archiveOperationId !== undefined,
+				);
 				expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, folder]]) })).toBe(true);
 			}
 		});
 
-		test("requires root write when the parent is still archived or missing", () => {
+		test("requires root write when the parent is known to be archived", () => {
 			const archivedFolder = test_node({
 				id: "folder",
 				parentId: files_ROOT_ID,
@@ -8336,11 +8335,66 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(can_unarchive_item({ ...args, canWriteRoot: false })).toBe(false);
 			expect(can_unarchive_item({ ...args, canWriteRoot: true })).toBe(true);
-			expect(can_unarchive_item({ ...args, itemById: new Map(), canWriteRoot: false })).toBe(false);
 
-			// A child of the same operation comes back with its parent, which lands in place.
+			// Selecting the child alone leaves its parent in Trash, even with the same operation id.
 			const sameOperationChild = { ...archivedChild, archiveOperationId: "archive-operation" };
-			expect(can_unarchive_item({ ...args, item: sameOperationChild, canWriteRoot: false })).toBe(true);
+
+			expect(can_unarchive_item({ ...args, item: sameOperationChild, canWriteRoot: false })).toBe(false);
+		});
+
+		test("allows Restore when the Trash item's parent is not loaded", () => {
+			const item = test_node({
+				id: "file",
+				parentId: "folder",
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "archive-operation",
+			});
+
+			expect(
+				can_unarchive_item({
+					item,
+					itemById: new Map(),
+					canWriteItem: () => true,
+					canWriteRoot: false,
+					canManageRestrictedScope: () => false,
+				}),
+			).toBe(true);
+		});
+
+		test("allows a selected child at root when its unselected grandparent is Read-only", () => {
+			const live = {
+				...test_node({ id: "live", parentId: files_ROOT_ID, kind: "folder", name: "live" }),
+				canWrite: false,
+				writeBlockedReason: "read_only" as const,
+			};
+			const folder = test_node({
+				id: "folder",
+				parentId: "live",
+				kind: "folder",
+				name: "folder",
+				archiveOperationId: "operation",
+			});
+			const child = test_node({
+				id: "file",
+				parentId: "folder",
+				kind: "file",
+				name: "file.md",
+				archiveOperationId: "operation",
+			});
+
+			expect(
+				can_unarchive_item({
+					item: child,
+					itemById: new Map([
+						[folder._id, folder],
+						[live._id, live],
+					]),
+					canWriteItem: (item) => is_open_node(item) && item.canWrite,
+					canWriteRoot: true,
+					canManageRestrictedScope: () => true,
+				}),
+			).toBe(true);
 		});
 
 		test("requires scope manage when the restore-to-root leaves a restricted scope", () => {

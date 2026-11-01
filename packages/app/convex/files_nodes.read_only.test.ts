@@ -1013,7 +1013,7 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeNull();
 });
 
-test("unarchive_nodes restores the whole archive operation of a named child", async () => {
+test("unarchive_nodes restores a named child folder and keeps its parent in Trash", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -1034,17 +1034,17 @@ test("unarchive_nodes restores the whole archive operation of a named child", as
 	});
 	expect(unarchiveResult).toEqual({ _yay: null });
 
-	// The folder and the child were archived together, so naming the child brings both back in place.
+	// The parent stays in Trash. The selected folder brings back the child moved to Trash with it.
 	await t.run(async (ctx) => {
 		const fileRoot1 = await ctx.db.get("files_nodes", db.files.file_root_1._id);
 		const fileRoot1Child1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1._id);
 		const fileRoot1Child1Deep1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id);
 
-		expect(fileRoot1?.archiveOperationId).toBeNull();
+		expect(fileRoot1?.archiveOperationId, "the unselected parent stays in Trash").not.toBeNull();
 		expect(fileRoot1Child1?.archiveOperationId).toBeNull();
 		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeNull();
-		expect(fileRoot1Child1?.parentId).toBe(db.files.file_root_1._id);
-		expect(fileRoot1Child1?.path).toBe(`/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`);
+		expect(fileRoot1Child1?.parentId).toBe("root");
+		expect(fileRoot1Child1?.path).toBe(`/${db.files.file_root_1_child_1.name}`);
 		expect(fileRoot1Child1Deep1?.parentId).toBe(db.files.file_root_1_child_1._id);
 	});
 });

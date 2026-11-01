@@ -3427,6 +3427,7 @@ export async function files_nodes_db_archive_named_nodes(
 		credentialId: args.credentialId,
 		archiveOperationId: files_archive_operation_id_new(Date.now()),
 		rootNodeIds: jobFileNodes.map((node) => node._id),
+		restoreRoots: [],
 		refusedNodes: refusedItems,
 		isFast: fastCheck.isFast,
 		waitForPathIndex: fastCheck.indexPending,
@@ -3866,9 +3867,9 @@ export const empty_archive = mutation({
 });
 
 /**
- * Restore the archive operation of each named node through the job. Restore brings back every item
- * archived together with a named item. The caller checked the membership, the rate limit, the item
- * count, and write access on each node. `credentialId` is the API key that asked, or null for the app.
+ * Restore each named node and the items inside it that were moved to Trash with it.
+ * The caller checked the membership, the rate limit, the item count, and write access on each node.
+ * `credentialId` is the API key that asked, or null for the app.
  *
  * Each operation is one unit. A refused operation keeps the operations restored before it. With
  * `stopAtRefusal` the rest are not started. Without it they are, like `rm` with several files.
@@ -3887,27 +3888,18 @@ export async function files_nodes_db_restore_named_nodes(
 ) {
 	const { membership } = args;
 
-	// Take the operations parents first, so a later operation can land in a folder an earlier one
-	// restored. Order them by each operation's top item, not by the named item, which can sit deep
-	// inside its operation. The operations share one budget, so the first ones run inside this request.
-	// After the first job, each job waits for the job before it, so their steps do not write the same
-	// docs at the same time.
-	const topTreePathByOperationId = new Map<string, string>();
-	for (const fileNode of args.nodes) {
+	// Keep every selected id. Move may change which selections overlap before the job starts.
+	// The input has at most 500 items, so this list is bounded.
+	const rootsByOperationId = new Map<string, Doc<"files_archive_runs">["restoreRoots"]>();
+	for (const fileNode of args.nodes.toSorted((a, b) =>
+		a.treePath < b.treePath ? -1 : a.treePath > b.treePath ? 1 : 0,
+	)) {
 		const archiveOperationId = fileNode.archiveOperationId;
-		if (archiveOperationId === null || topTreePathByOperationId.has(archiveOperationId)) continue;
-		const topNode = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("archiveOperationId", archiveOperationId),
-			)
-			.first();
-		// The query always finds at least `fileNode`. The fallback only satisfies the type.
-		topTreePathByOperationId.set(archiveOperationId, (topNode ?? fileNode).treePath);
+		if (archiveOperationId === null) continue;
+		const roots = rootsByOperationId.get(archiveOperationId) ?? [];
+		if (roots.some((root) => root.nodeId === fileNode._id)) continue;
+		roots.push({ nodeId: fileNode._id, treePath: fileNode.treePath });
+		rootsByOperationId.set(archiveOperationId, roots);
 	}
 
 	const budget = {
@@ -3918,8 +3910,9 @@ export async function files_nodes_db_restore_named_nodes(
 	const jobs = [];
 	const refusals = [];
 	let previousJob = null;
-	for (const [archiveOperationId, topTreePath] of [...topTreePathByOperationId].toSorted((a, b) =>
-		a[1] < b[1] ? -1 : 1,
+	// Sort by path so parent selections start first. Later jobs wait, so their writes cannot overlap.
+	for (const [archiveOperationId, restoreRoots] of [...rootsByOperationId].toSorted((a, b) =>
+		a[1][0]!.treePath < b[1][0]!.treePath ? -1 : a[1][0]!.treePath > b[1][0]!.treePath ? 1 : 0,
 	)) {
 		const started = await files_archive_runs_db_start(ctx, {
 			kind: "restore",
@@ -3929,9 +3922,10 @@ export async function files_nodes_db_restore_named_nodes(
 			credentialId: args.credentialId,
 			archiveOperationId,
 			rootNodeIds: [],
+			restoreRoots,
 			refusedNodes: [],
 			isFast: false,
-			treePaths: [topTreePath],
+			treePaths: restoreRoots.map((root) => root.treePath),
 			budget,
 			previousRunId: previousJob?.runId ?? null,
 			applyToRemaining: args.applyToRemaining,

@@ -430,8 +430,8 @@ describe("files_nodes.purge_nodes", () => {
 		expect(archived).toEqual({ _yay: null });
 
 		const purgeJob = await purge_job(f, (await purge(f, [purgedId])).runId);
-		// Restore brings back the whole archive operation, so it reaches the file being deleted.
-		const restored = await restore(f, [restoredId]);
+		// Select the file being deleted too, so Restore overlaps the running purge.
+		const restored = await restore(f, [purgedId, restoredId]);
 		if (restored._nay || !restored._yay) throw new Error("Expected a restore job");
 		expect((await read_activity(f, restored._yay.activityId)).status).toBe("queued");
 

@@ -226,6 +226,38 @@ Force waits for overlapping Move, scope, or running Restore work. A Restore queu
 delete does not make it wait in a cycle. Outcomes are stored and paged, with current read checks
 when shown. A retained parent is not counted as trashed. Activity shows partial results.
 
+Restore brings back each selected item and the items inside it that were moved to Trash with it.
+Inside means a strict `treePath` prefix under the selected folder, with the same `archiveOperationId`.
+A file comes back alone. Unselected siblings and descendants from other deletes stay in Trash.
+The shared id groups a folder with what was moved to Trash with it. It does not widen a selection.
+Overlapping selections restore each item once. Access and Read-only checks cover that selection.
+
+Check the selected item and its direct parent, not an unselected ancestor from the same delete.
+An active parent keeps the item in place and needs Can edit; a live Read-only parent blocks it.
+An archived parent's own Read-only flag does not block Restore, but its access checks still apply.
+An archived or missing parent sends the selected item to workspace root. That landing needs root
+write and permission to leave its restricted scope. An item with its own restriction keeps it and
+needs no root or scope-leave check. An item already at root stays in place.
+
+The job stores every selected id and path in required `restoreRoots`, separate from `rootNodeIds`,
+the root landing list. After the Move job fixes stored paths, discovery reads those ids again and
+refreshes their paths. When a selected folder contains another selected item, the check visits that
+item only once. Folder ids stay separate even when they have the same path. Each operation is
+one job; jobs in a request run one at a time. A refusal names every original selection of that
+operation, even a covered child. Other operations may start in the API; the app stops at the first
+refusal. Retrying keeps the original selection and answer.
+
+Worker descendants use `by_organization_workspace_archiveOperation_treePath`: exact organization,
+workspace, `moveCohortId: undefined`, and operation id, with `treePath > root.treePath` and
+`< path_tree_prefix_upper_bound(root.treePath)`. Convex pagination cursors keep each item when
+several items inside the folder have the same path, including across pages.
+The worker waits until the Move job fixes stored paths. Recovery readback instead follows each
+selected id's current saved path. It checks that bounded range in `files_nodes` and the same range
+in the published Move view (`files_saved_places` index `by_view_archive_tree`), with exact cohort,
+visible view, and operation id. Successful jobs need no recovery lookup. A stopped job
+names one item still inside the current selection, subject to current read access. Other selected
+roots may need separate restores. Reusing an old path never adds an item to that job.
+
 Restore preserves an item's own flag and decision ID. A Read-only live parent normally blocks
 landing. The narrow exception is a parent restored by this same run with the exact recorded
 decision ID, including null. Repair-only docs grant no exception. Clearing and setting again breaks

@@ -43,32 +43,26 @@ describe("unarchive_nodes", () => {
 		expect((await read_state(f)).nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	}, 120_000);
 
-	test("the check reads up to 100 more items of the operation with the path where a page ends", async () => {
+	test("the check pages tied descendant paths without a fixed group limit", async () => {
 		const f = await fixture();
-		// A page of 50, then up to 100 more with the same path.
-		const fits = await seed_same_path(f, { name: "fits", count: 150, archiveOperationId: crypto.randomUUID() });
-		const tooMany = await seed_same_path(f, { name: "too-many", count: 151, archiveOperationId: crypto.randomUUID() });
+		const archiveOperationId = crypto.randomUUID();
+		const tree = await seed_same_path(f, { name: "ties", count: 151, archiveOperationId });
+		await f.t.run((ctx) => ctx.db.patch("files_nodes", tree.topId, { archiveOperationId }));
 
 		// The files share one name, so after the first one the job waits for a clash choice. The check
 		// has passed by then.
-		const restored = await restore(f, [fits.fileIds[0]!]);
+		const restored = await restore(f, [tree.topId]);
 		expect(restored._nay).toBeUndefined();
 		const ended = await run_to_end(f, restored._yay!);
 		expect(ended.activity.status).toBe("awaiting_input");
 
-		const refused = await restore(f, [tooMany.fileIds[0]!]);
-		expect(refused._nay).toBeUndefined();
-		const failed = await run_to_end(f, refused._yay!);
-		expect(failed.activity).toMatchObject({
-			status: "failed",
-			errorMessage: "Too many items in Trash share one path.",
-		});
-		expect((await read_node(f, tooMany.fileIds[0]!)).archiveOperationId).not.toBeNull();
+		expect(ended.activity.progress, "all tied descendants are checked").toMatchObject({ total: 152, completed: 2 });
+		expect((await read_node(f, tree.fileIds[1]!)).archiveOperationId).toBe(archiveOperationId);
 	});
 
-	test("a step that already read a page of its discovery leaves a group with one name and time to the next step", async () => {
+	test("restore keeps older deletes with the same name and creation time in Trash", async () => {
 		const f = await fixture();
-		// The operation has 62 items, so discovery needs a second page in the first scheduled step.
+		// The folder has 62 items, so the check needs more than the request's first step.
 		const tree = await seed_tree(f, { name: "tie", folderCount: 1, filesPerFolder: 60 });
 		const folderPath = "/tie/d0";
 		// Somebody replaced `old.md` 120 times, and each old one kept its own archive. All of them got one

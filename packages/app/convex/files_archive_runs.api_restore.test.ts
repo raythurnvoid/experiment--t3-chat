@@ -5,7 +5,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { restore_items } from "./public_api_files_organize.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_db_hold_move_slot, test_mocks, test_spy_handler } from "./setup.test.ts";
+import { test_db_hold_move_slot, test_mocks, test_rename_node, test_spy_handler } from "./setup.test.ts";
 import { files_archive_operation_id_new } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -17,9 +17,11 @@ import {
 	seed_same_path,
 	read_activity,
 	run_to_end,
+	archive,
 	archive_to_end,
 	folder,
 	read_node,
+	restore,
 	type Fixture,
 } from "./files_archive_runs.setup.test.ts";
 
@@ -89,6 +91,247 @@ async function insert_root_file(f: Fixture, args: { name: string; archiveOperati
 }
 
 describe("files/restore", () => {
+	test.each(["app", "paths", "nodes"] as const)("%s restores only the selected file from one delete", async (mode) => {
+		const f = await fixture();
+		const key = mode === "app" ? null : await create_owner_key(f);
+		const ids = [];
+		for (const name of ["a.md", "b.md", "c.md"]) {
+			ids.push(await insert_root_file(f, { name, archiveOperationId: null }));
+		}
+		expect(await archive(f, ids)).toEqual({ _yay: null });
+		const operationId = (await read_node(f, ids[1]!)).archiveOperationId!;
+		const body = {
+			...(mode === "nodes" ? { nodes: [{ nodeId: ids[1], archiveOperationId: operationId }] } : { paths: ["/b.md"] }),
+			requestId: "one-file",
+		};
+		const result = key ? await post(f, "/api/v1/files/restore", key.credential, body) : null;
+		if (!key) await restore(f, [ids[1]!]);
+
+		expect(
+			await Promise.all(ids.map(async (id) => (await read_node(f, id)).archiveOperationId)),
+			"only the selected file comes back",
+		).toEqual([operationId, null, operationId]);
+		if (key && result) {
+			expect(await post(f, "/api/v1/files/restore", key.credential, body)).toEqual(result);
+			expect(
+				await post(f, "/api/v1/files/jobs/get", key.credential, { jobId: (result.body.jobIds as string[])[0] }),
+			).toMatchObject({
+				status: 200,
+				body: { status: "succeeded", progress: { completed: 1 }, refused: [] },
+			});
+		}
+	});
+
+	test.each(["app", "paths", "nodes"] as const)(
+		"%s restores only the selected folder and merges overlapping roots",
+		async (mode) => {
+			const f = await fixture();
+			const key = mode === "app" ? null : await create_owner_key(f);
+			const tree = await seed_tree(f, { name: "selected", folderCount: 2, filesPerFolder: 55 });
+			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
+			const olderOperation = (await read_node(f, tree.fileIds[0]!)).archiveOperationId;
+			await archive_to_end(f, tree.topId);
+			const operationId = (await read_node(f, tree.topId)).archiveOperationId!;
+			const selectedIds = [tree.fileIds[1]!, tree.folderIds[0]!];
+			let job: { runId: Id<"files_archive_runs">; activityId: Id<"activities"> };
+			if (key) {
+				const body = {
+					...(mode === "nodes"
+						? { nodes: selectedIds.map((nodeId) => ({ nodeId, archiveOperationId: operationId })) }
+						: { paths: ["/selected/d0/f001.md", "/selected/d0"] }),
+					requestId: "one-folder",
+				};
+				const response = await post(f, "/api/v1/files/restore", key.credential, body);
+				expect(response).toMatchObject({ status: 200, body: { isDone: false, refused: [] } });
+				expect(await post(f, "/api/v1/files/restore", key.credential, body)).toEqual(response);
+				const activityId = (response.body.jobIds as Array<Id<"activities">>)[0]!;
+				job = { runId: (await read_activity(f, activityId)).source.id as Id<"files_archive_runs">, activityId };
+			} else {
+				const response = await restore(f, selectedIds);
+				expect(response._nay).toBeUndefined();
+				job = response._yay!;
+			}
+			const ended = await run_to_end(f, job);
+			expect((await read_node(f, tree.topId)).archiveOperationId, "unselected parent stays in Trash").toBe(operationId);
+			expect((await read_node(f, tree.folderIds[1]!)).archiveOperationId).toBe(operationId);
+			expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBe(operationId);
+			expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({
+				archiveOperationId: null,
+				path: "/d0",
+				parentId: "root",
+			});
+			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBe(olderOperation);
+			expect((await read_node(f, tree.fileIds[54]!)).archiveOperationId).toBeNull();
+			expect(ended.activity.progress).toMatchObject({ total: 55, completed: 55 });
+		},
+	);
+
+	test.each([false, true])("equal-path folder selections keep their root ids (both: %s)", async (both) => {
+		const f = await fixture();
+		const key = await create_owner_key(f);
+		const operationId = crypto.randomUUID();
+		const roots = [];
+		const children = [];
+		for (const name of ["first.md", "second.md"]) {
+			const rootId = await insert_root_file(f, { name: "same", archiveOperationId: operationId });
+			const childId = await insert_root_file(f, { name, archiveOperationId: operationId });
+			await test_run_with_flush(f.t, async (ctx) => {
+				await ctx.db.patch("files_nodes", rootId, { kind: "folder", treePath: "/same/" });
+				await ctx.db.patch("files_nodes", childId, {
+					parentId: rootId,
+					path: `/same/${name}`,
+					treePath: `/same/${name}`,
+					pathDepth: 2,
+				});
+			});
+			roots.push(rootId);
+			children.push(childId);
+		}
+		const selected = both ? roots : [roots[0]!];
+		const response = await post(f, "/api/v1/files/restore", key.credential, {
+			nodes: selected.map((nodeId) => ({ nodeId, archiveOperationId: operationId })),
+			requestId: "equal-folders",
+		});
+		expect((await read_node(f, roots[1]!)).archiveOperationId, "only selected folder ids come back").toBe(
+			both ? null : operationId,
+		);
+		const jobId = (response.body.jobIds as string[])[0]!;
+		expect(
+			await post(f, "/api/v1/files/jobs/get", key.credential, { jobId }),
+			"overlapping folder ranges count each item once",
+		).toMatchObject({
+			status: 200,
+			body: { status: "succeeded", progress: { total: both ? 4 : 3, completed: both ? 4 : 3 }, refused: [] },
+		});
+		expect((await read_node(f, roots[0]!)).archiveOperationId).toBeNull();
+		expect(await Promise.all(children.map(async (id) => (await read_node(f, id)).archiveOperationId))).toEqual([
+			null,
+			null,
+		]);
+	});
+
+	test.each(["paths", "nodes"] as const)("%s previews only the selected item", async (mode) => {
+		const f = await fixture();
+		const key = await create_owner_key(f);
+		const operationId = crypto.randomUUID();
+		const selectedId = await insert_root_file(f, { name: "a.md", archiveOperationId: operationId });
+		await insert_root_file(f, { name: "b.md", archiveOperationId: operationId });
+		const selection =
+			mode === "nodes" ? { nodes: [{ nodeId: selectedId, archiveOperationId: operationId }] } : { paths: ["/a.md"] };
+		const preview = await post(f, "/api/v1/files/restore", key.credential, { ...selection, dryRun: true });
+		expect(preview, "the preview counts only the selected item").toMatchObject({
+			status: 200,
+			body: {
+				dryRun: true,
+				complete: true,
+				jobs: [
+					expect.objectContaining({
+						status: "succeeded",
+						progress: expect.objectContaining({ total: 1, completed: 1 }),
+					}),
+				],
+			},
+		});
+	});
+
+	test.each(["succeeded", "failed"] as const)(
+		"a %s restore does not report an unselected item after later renames",
+		async (status) => {
+			const f = await fixture();
+			const key = await create_owner_key(f);
+			const selected = await seed_tree(f, { name: "old", folderCount: 1, filesPerFolder: 1 });
+			const other = await seed_tree(f, { name: "other", folderCount: 1, filesPerFolder: 1 });
+			const archived = await archive(f, [selected.folderIds[0]!, other.fileIds[0]!]);
+			if (archived._yay) await run_to_end(f, archived._yay);
+			const restored = await post(f, "/api/v1/files/restore", key.credential, {
+				paths: ["/old/d0"],
+				requestId: "renamed-selection",
+			});
+			const jobId = (restored.body.jobIds as Array<Id<"activities">>)[0]!;
+			if (status === "failed") {
+				// A stopped job can already have restored its selected folder.
+				await f.t.run((ctx) => ctx.db.patch("activities", jobId, { status }));
+			}
+			for (const [nodeId, path] of [
+				[selected.folderIds[0]!, "/done"],
+				[other.topId, "/old/d0"],
+			] as const) {
+				expect(
+					(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId, path }))._nay,
+				).toBeUndefined();
+			}
+			expect((await read_node(f, other.fileIds[0]!)).path).toBe("/old/d0/d0/f000.md");
+			expect(
+				await post(f, "/api/v1/files/jobs/get", key.credential, { jobId }),
+				"later renames never add an unselected item to the job",
+			).toMatchObject({ status: 200, body: { status, refused: [] } });
+		},
+	);
+
+	test("jobs/get finds an unfinished selected child in the published Move view", async () => {
+		const f = await fixture();
+		const key = await create_owner_key(f);
+		const tree = await seed_tree(f, { name: "old", folderCount: 1, filesPerFolder: 1 });
+		await archive_to_end(f, tree.topId);
+		const archiveOperationId = (await read_node(f, tree.topId)).archiveOperationId!;
+		const restored = await post(f, "/api/v1/files/restore", key.credential, {
+			paths: ["/old/d0"],
+			requestId: "moved-recovery",
+		});
+		const jobId = (restored.body.jobIds as Array<Id<"activities">>)[0]!;
+		// Keep a child in Trash, as when a job stops after landing its folder.
+		await test_run_with_flush(f.t, async (ctx) => {
+			await ctx.db.patch("activities", jobId, { status: "failed" });
+			await ctx.db.patch("files_nodes", tree.fileIds[0]!, { archiveOperationId });
+		});
+		await f.t.run(async (ctx) => {
+			const cohortId = await test_db_hold_move_slot(ctx, f.db);
+			for (const nodeId of [tree.folderIds[0]!, tree.fileIds[0]!]) {
+				const {
+					_id,
+					_creationTime,
+					createdBy: _createdBy,
+					readOnly: _readOnly,
+					readOnlyDecisionId: _readOnlyDecisionId,
+					moveCohortId: _moveCohortId,
+					scopeOpId: _scopeOpId,
+					...header
+				} = (await ctx.db.get("files_nodes", nodeId))!;
+				const place = {
+					...header,
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					cohortId,
+					nodeId,
+					nodeCreationTime: _creationTime,
+					contentId: null,
+				};
+				await ctx.db.insert("files_saved_places", { ...place, view: "before" });
+				await ctx.db.insert("files_saved_places", {
+					...place,
+					view: "after",
+					path: header.path.replace("/d0", "/done"),
+					treePath: header.treePath.replace("/d0/", "/done/"),
+					name: header.kind === "folder" ? "done" : header.name,
+					sortName: files_sort_text_key(header.kind === "folder" ? "done" : header.name),
+				});
+				await ctx.db.patch("files_nodes", nodeId, { moveCohortId: cohortId });
+			}
+			await ctx.db.patch("files_move_cohorts", cohortId, { visibleView: "after", publishedAt: Date.now() });
+			const slot = (await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique())!;
+			await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView: "after" });
+		});
+		expect(
+			await post(f, "/api/v1/files/jobs/get", key.credential, { jobId }),
+			"recovery names the selected child at its published Move path",
+		).toMatchObject({ status: 200, body: { status: "failed", refused: [{ path: "/done/f000.md" }] } });
+	});
+
 	test("restores what it can and refuses each bad path alone", async () => {
 		const f = await fixture();
 		const ownerKey = await create_owner_key(f);
@@ -285,16 +528,18 @@ describe("files/restore", () => {
 	test("jobs/get names each item that Keep both renamed or Skip left in the Trash", async () => {
 		const f = await fixture();
 		const ownerKey = await create_owner_key(f);
-		// One delete with more clashing files than one jobs/get page.
+		// A full jobs/get page still needs its final empty continuation.
 		const archiveOperationId = crypto.randomUUID();
-		for (let index = 0; index < 101; index++) {
+		const paths = [];
+		for (let index = 0; index < 100; index++) {
 			const name = `c${String(index).padStart(3, "0")}.md`;
 			await insert_root_file(f, { name, archiveOperationId });
 			await insert_root_file(f, { name, archiveOperationId: null });
+			paths.push(`/${name}`);
 		}
 
 		const response = await post(f, "/api/v1/files/restore", ownerKey.credential, {
-			paths: ["/c000.md"],
+			paths,
 			requestId: "renamed",
 		});
 		const jobId = (response.body.jobIds as Array<Id<"activities">>)[0]!;
@@ -313,9 +558,9 @@ describe("files/restore", () => {
 		});
 		expect(secondPage).toMatchObject({ status: 200, body: { refused: [], refusedCursor: null } });
 		const renamed = [...(firstPage.body.renamed as unknown[]), ...(secondPage.body.renamed as unknown[])];
-		expect(renamed).toHaveLength(101);
-		expect(new Set(renamed.map((item) => JSON.stringify(item))).size).toBe(101);
-		expect(renamed).toContainEqual({ path: "/c100.md", newPath: "/c100-2.md" });
+		expect(renamed).toHaveLength(100);
+		expect(new Set(renamed.map((item) => JSON.stringify(item))).size).toBe(100);
+		expect(renamed).toContainEqual({ path: "/c099.md", newPath: "/c099-2.md" });
 
 		// Skip leaves the item in the Trash, and the job names the path it keeps there. Its folder is gone, so it
 		// would land at the root, next to an item with its name.
@@ -383,14 +628,14 @@ describe("files/restore", () => {
 			takenIds.push(await insert_root_file(f, { name: `clash-${counter}.md`, archiveOperationId: null }));
 		}
 
-		const body = { paths: ["/a.md"], requestId: "partway" };
+		const body = { paths: ["/a.md", "/clash.md"], requestId: "partway" };
 		const response = await post(f, "/api/v1/files/restore", ownerKey.credential, body);
 		expect(response).toMatchObject({
 			status: 200,
 			body: {
 				jobIds: [expect.any(String)],
 				isDone: true,
-				refused: [{ path: "/a.md", message: expect.stringMatching(/^Stopped partway: /u) }],
+				refused: body.paths.map((path) => ({ path, message: expect.stringMatching(/^Stopped partway: /u) })),
 			},
 		});
 		expect((await read_node(f, restoredId)).archiveOperationId).toBeNull();
@@ -404,10 +649,11 @@ describe("files/restore", () => {
 				status: "failed",
 				refused: [
 					{ path: "/a.md", message: expect.stringMatching(/^Stopped partway: /u) },
+					{ path: "/clash.md", message: expect.stringMatching(/^Stopped partway: /u) },
 					{
 						path: "/clash.md",
 						message:
-							"This item and the rest of its delete are still in the Trash. Restore this path to bring them back.",
+							"This item is still in the Trash. Restore it to bring it back with the items inside it that were moved to Trash with it.",
 					},
 				],
 			},
@@ -496,6 +742,7 @@ describe("files/restore", () => {
 		const secondDelete = crypto.randomUUID();
 		const firstId = await insert_root_file(f, { name: "same.md", archiveOperationId: firstDelete });
 		const secondId = await insert_root_file(f, { name: "same.md", archiveOperationId: secondDelete });
+		const siblingId = await insert_root_file(f, { name: "same.md", archiveOperationId: firstDelete });
 
 		expect(
 			await post(f, "/api/v1/files/restore", ownerKey.credential, {
@@ -524,6 +771,10 @@ describe("files/restore", () => {
 		});
 		expect((await read_node(f, firstId)).archiveOperationId).toBeNull();
 		expect((await read_node(f, secondId)).archiveOperationId).toBe(secondDelete);
+		expect(
+			(await read_node(f, siblingId)).archiveOperationId,
+			"an equal-path sibling from the same delete stays in Trash",
+		).toBe(firstDelete);
 
 		const nodes = [{ nodeId: secondId, archiveOperationId: secondDelete }];
 		expect(

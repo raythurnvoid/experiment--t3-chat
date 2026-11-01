@@ -38,7 +38,7 @@ describe("unarchive_nodes", () => {
 	describe("name clashes", () => {
 		/**
 		 * Archive two files in `/clash/d0`, move two new files with the same names into that folder, and
-		 * start restoring the first file. The restore waits on the first clash.
+		 * restore both files. The restore waits on the first clash.
 		 */
 		async function seed_clash(f: Fixture) {
 			const tree = await seed_tree(f, { name: "clash", folderCount: 1, filesPerFolder: 2 });
@@ -52,7 +52,7 @@ describe("unarchive_nodes", () => {
 					targetParentId: tree.folderIds[0]!,
 				}),
 			).toEqual({ _yay: null });
-			const restored = await restore(f, [tree.fileIds[0]!]);
+			const restored = await restore(f, tree.fileIds);
 			expect(restored._nay).toBeUndefined();
 			return { tree, occupants, job: restored._yay! };
 		}
@@ -351,7 +351,7 @@ describe("unarchive_nodes", () => {
 				}
 			});
 			await expect_consistent(f);
-			const restored = await restore(f, [tree.fileIds[0]!]);
+			const restored = await restore(f, tree.fileIds);
 			const job = restored._yay!;
 
 			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");

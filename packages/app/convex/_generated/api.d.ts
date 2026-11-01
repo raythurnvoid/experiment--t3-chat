@@ -43,7 +43,6 @@ import type * as data_deletion_requests from "../data_deletion_requests.js";
 import type * as data_import from "../data_import.js";
 import type * as file_quotes from "../file_quotes.js";
 import type * as files_archive_runs from "../files_archive_runs.js";
-import type * as files_archive_runs_cleanup from "../files_archive_runs_cleanup.js";
 import type * as files_browser from "../files_browser.js";
 import type * as files_content_saves from "../files_content_saves.js";
 import type * as files_content_sources from "../files_content_sources.js";
@@ -233,7 +232,6 @@ declare const fullApi: ApiFromModules<{
   data_import: typeof data_import;
   file_quotes: typeof file_quotes;
   files_archive_runs: typeof files_archive_runs;
-  files_archive_runs_cleanup: typeof files_archive_runs_cleanup;
   files_browser: typeof files_browser;
   files_content_saves: typeof files_content_saves;
   files_content_sources: typeof files_content_sources;

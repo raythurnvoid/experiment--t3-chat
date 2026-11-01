@@ -2926,6 +2926,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
 		.index("by_cohort_view_node", ["cohortId", "view", "nodeId"])
+		.index("by_view_archive_tree", ["cohortId", "view", "archiveOperationId", "treePath"])
 		.index("by_view_archiveTopScope_archiveTopOrder_treePath", [
 			"cohortId",
 			"view",
@@ -6858,16 +6859,22 @@ const app_convex_schema = defineSchema({
 		kind: v.union(v.literal("archive"), v.literal("restore"), v.literal("purge")),
 		force: v.boolean(),
 		/**
-		 * Archive: the operation id this job writes. Restore: the operation id this job brings back.
+		 * Archive: the operation id this job writes. Restore: only selected items with this id come back.
 		 */
 		archiveOperationId: v.string(),
 		/**
 		 * Archive: the named items. The job stamps them first. Restore: the items that land at the workspace root
-		 * because their parent was archived by another operation when the check ran.
+		 * because their archived parent is outside this restore when the check ran.
 		 */
 		rootNodeIds: v.array(v.id("files_nodes")),
 		/**
-		 * Restore discovers every top root before checking overlaps. `check` walks everything before
+		 * Restore: the items the person selected, with their paths. A Move can change a path, so discovery
+		 * reads it again. Archive and purge keep this empty. rootNodeIds is a different list: the items
+		 * that land at the workspace root.
+		 */
+		restoreRoots: v.array(v.object({ nodeId: v.id("files_nodes"), treePath: v.string() })),
+		/**
+		 * Restore finds each selected root before checking overlaps. `check` walks everything before
 		 * `apply` changes the nodes. A fast archive starts in `apply`, because its request proved with
 		 * index reads that the check would pass. `fast_check` retries that proof after op paths catch up.
 		 */
@@ -6877,18 +6884,18 @@ const app_convex_schema = defineSchema({
 		 */
 		pathIndexWaiting: v.optional(v.boolean()),
 		/**
-		 * Where the walk goes on. During restore discovery, `treePath` holds the page cursor.
-		 * During check it holds the last tree path. It is "" at the start of either walk.
+		 * Restore: `rootIndex` picks the selected root. During check, `treePath` holds its native
+		 * descendant page cursor, or "" before its root and first page are checked.
 		 */
 		checkCursor: v.object({ rootIndex: v.number(), treePath: v.string() }),
 		/**
-		 * Restore discovery: at most 64 paths that hold every top item found so far. The op gets them for
+		 * Restore discovery: at most 64 paths that hold the selected roots. The op gets them for
 		 * its overlap checks when discovery ends.
 		 */
 		discoverTreePaths: v.array(v.string()),
 		/**
 		 * Archive: how many named items the apply phase has handled. The walk inside them starts only
-		 * after all of them left the tree.
+		 * after all of them left the tree. Restore: the selected root whose items the apply is handling.
 		 */
 		applyRootIndex: v.number(),
 		/**

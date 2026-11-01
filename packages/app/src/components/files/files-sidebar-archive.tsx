@@ -126,6 +126,7 @@ type FilesSidebarArchiveRow_Props = {
 	 * Whether the person has Can manage on the shown area.
 	 */
 	canManageArea: boolean;
+	canRestoreItem: (row: FilesSidebarArchive_TopRow) => boolean;
 	onOpen: (nodeId: string, kind: string) => void;
 	onRestore: (nodeId: string) => void;
 	onDelete: (row: FilesSidebarArchive_TopRow, returnFocusElement: HTMLElement | null) => void;
@@ -136,7 +137,7 @@ type FilesSidebarArchiveRow_Props = {
  * only its name and dates, and its menu only copies its path.
  */
 const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: FilesSidebarArchiveRow_Props) {
-	const { row, isCurrent, canManageArea, onOpen, onRestore, onDelete } = props;
+	const { row, isCurrent, canManageArea, canRestoreItem, onOpen, onRestore, onDelete } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -150,7 +151,7 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 		isRestrictedRoot ? { membershipId, nodeId: row._id } : "skip",
 	);
 	const canDelete = !row.locked && (isRestrictedRoot ? ownShareState?.canManage === true : canManageArea);
-	const canRestore = !row.locked && row.canWrite;
+	const canRestore = !row.locked && canRestoreItem(row);
 
 	const parentPath = row.path.slice(0, row.path.lastIndexOf("/")) || "/";
 	const archivedAt = files_archive_operation_id_time(row.archiveOperationId ?? "");
@@ -235,8 +236,11 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 											<ArchiveRestore />
 										</MyMenuItemContentIcon>
 										<MyMenuItemContentPrimary>Restore</MyMenuItemContentPrimary>
-										{/* Restore brings back the item's whole archive operation. */}
-										<MyMenuItemContentSecondary>With everything moved to Trash with it</MyMenuItemContentSecondary>
+										{row.kind === "folder" && (
+											<MyMenuItemContentSecondary>
+												With the items inside it from the same delete
+											</MyMenuItemContentSecondary>
+										)}
 									</MyMenuItemContent>
 								</MyMenuItem>
 								<MyMenuItem variant="destructive" disabled={!canDelete} hideOnClick onClick={handleDeleteClick}>
@@ -283,6 +287,7 @@ type FilesSidebarArchive_ClassNames =
 
 type FilesSidebarArchive_Props = {
 	selectedNodeId: string | null;
+	canRestoreItem: FilesSidebarArchiveRow_Props["canRestoreItem"];
 	onOpen: (nodeId: string, kind: string) => void;
 	onRestore: (nodeId: string) => void;
 	/**
@@ -298,7 +303,7 @@ type FilesSidebarArchive_Props = {
  * shared drive in Google Drive. Escape, when no menu or dialog is open, goes back to the files.
  */
 export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: FilesSidebarArchive_Props) {
-	const { selectedNodeId, onOpen, onRestore, onDeleted, onExit } = props;
+	const { selectedNodeId, canRestoreItem, onOpen, onRestore, onDeleted, onExit } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const view = useFilesSavedView(membershipId);
 	const topsReady = useQuery(app_convex_api.files_tree.get_archived_tops_ready, { membershipId });
@@ -600,6 +605,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 								row={row}
 								isCurrent={row._id === selectedNodeId}
 								canManageArea={canManageArea}
+								canRestoreItem={canRestoreItem}
 								onOpen={onOpen}
 								onRestore={onRestore}
 								onDelete={handleDelete}

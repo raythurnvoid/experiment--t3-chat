@@ -22,6 +22,7 @@ import {
 	access_control_subject_validator,
 } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
+import { files_archive_runs_db_find_saved_restore_left_node } from "./files_archive_runs.ts";
 import { files_nodes_db_archive_named_nodes, files_nodes_db_restore_named_nodes } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_transfer_db_start_for_api } from "./files_transfer.ts";
@@ -1099,8 +1100,8 @@ const restore_failure_validator = z.object({
 /**
  * Restore the named items from the Trash with the app's restore job. Each path names the archived item
  * at that path. Each node names one archived item by id, with the `archiveOperationId` the caller saw
- * in `files/trash/list`. Like Restore in the app, the job brings back everything the same delete
- * archived with it, one job per delete. An item that is missing, locked, or not archived is refused
+ * in `files/trash/list`. The job brings back only each selected item and its descendants with the
+ * same delete id, one job per delete. An item that is missing, locked, or not archived is refused
  * alone, and the other items are still restored.
  */
 export const restore_items = internalMutation({
@@ -2055,22 +2056,19 @@ export const get_job = internalQuery({
 		const nodes = (
 			await Promise.all(run.refusedItems.map((refusedItem) => ctx.db.get("files_nodes", refusedItem.nodeId)))
 		).flatMap((node) => (node && node.workspaceId === run.workspaceId ? [node] : []));
-		// A restore that ended before it brought back its whole delete leaves the rest in the Trash under the
-		// delete's operation id. Name one of those items, because a restore of any item of a delete brings
-		// back the whole delete. One index read, however many items are left.
-		const leftNode =
-			run.kind === "restore" && !args.cursor && !activities_is_active(activity.status)
-				? await ctx.db
-						.query("files_nodes")
-						.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-							q
-								.eq("organizationId", run.organizationId)
-								.eq("workspaceId", run.workspaceId)
-								.eq("moveCohortId", undefined)
-								.eq("archiveOperationId", run.archiveOperationId),
-						)
-						.first()
-				: null;
+		// Only a stopped job needs a recovery item. Read each selected id at its current saved path.
+		let leftNode = null;
+		if (
+			run.kind === "restore" &&
+			!args.cursor &&
+			activity.status !== "succeeded" &&
+			!activities_is_active(activity.status)
+		) {
+			for (const root of run.restoreRoots) {
+				leftNode = await files_archive_runs_db_find_saved_restore_left_node(ctx, { run, root });
+				if (leftNode) break;
+			}
+		}
 		if (leftNode) nodes.push(leftNode);
 		// Name an item only while the key may still read it, like the app's job card.
 		const writeContext = await public_api_credentials_db_get_write_context(ctx, {
@@ -2139,7 +2137,7 @@ export const get_job = internalQuery({
 							{
 								path: pathByNodeId.get(leftNode._id)!,
 								message:
-									"This item and the rest of its delete are still in the Trash. Restore this path to bring them back.",
+									"This item is still in the Trash. Restore it to bring it back with the items inside it that were moved to Trash with it.",
 							},
 						]
 					: []),
