@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
-import { restore_paths } from "./public_api_files_organize.ts";
+import { restore_items } from "./public_api_files_organize.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_mocks, test_spy_handler } from "./setup.test.ts";
+import { test_db_hold_move_slot, test_mocks, test_spy_handler } from "./setup.test.ts";
+import { files_archive_operation_id_new } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { test_run_with_flush } from "./setup.test.ts";
@@ -112,7 +113,8 @@ describe("files/restore", () => {
 				refused: [
 					{
 						path: "/twice/same.md",
-						message: "Several deleted items have this path. Restore the one you want in the app.",
+						message:
+							"Several deleted items have this path. Find the one you want in files/trash/list and restore it by nodes.",
 					},
 					{ path: "/active", message: "Not in the Trash" },
 					{ path: "/missing.md", message: "Not found" },
@@ -126,10 +128,10 @@ describe("files/restore", () => {
 		// Restricted files that a member cannot open are locked for the member's key. There are two, so a
 		// locked path must not tell that several deleted items have it.
 		for (let index = 0; index < 2; index++) {
-			const hiddenId = await insert_root_file(f, { name: "hidden.md", archiveOperationId: crypto.randomUUID() });
+			const lockedId = await insert_root_file(f, { name: "hidden.md", archiveOperationId: crypto.randomUUID() });
 			await f.t.run((ctx) =>
-				ctx.db.patch("files_nodes", hiddenId, {
-					restrictedScopeNodeId: hiddenId,
+				ctx.db.patch("files_nodes", lockedId, {
+					restrictedScopeNodeId: lockedId,
 					isRestrictedScopeRoot: true,
 					parentScopeNodeId: null,
 				}),
@@ -160,7 +162,11 @@ describe("files/restore", () => {
 			status: 200,
 			body: {
 				refused: [
-					{ path: "/hidden.md", message: "Several deleted items have this path. Restore the one you want in the app." },
+					{
+						path: "/hidden.md",
+						message:
+							"Several deleted items have this path. Find the one you want in files/trash/list and restore it by nodes.",
+					},
 				],
 			},
 		});
@@ -462,11 +468,11 @@ describe("files/restore", () => {
 
 		expect(await post(f, "/api/v1/files/restore", memberKey.credential, { paths, requestId: "too-many" })).toEqual({
 			status: 400,
-			body: { message: "Restore at most 100 paths at once. Split the list into several calls." },
+			body: { message: "Restore at most 100 items at once. Split the list into several calls." },
 		});
 
 		let databaseQueries = 0;
-		test_spy_handler(restore_paths, async (handler, ctx, args) => {
+		test_spy_handler(restore_items, async (handler, ctx, args) => {
 			const result = await handler(ctx, args);
 			databaseQueries = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
 			return result;
@@ -481,5 +487,342 @@ describe("files/restore", () => {
 		// Restricted folders cost more access reads per path, so keep half of the 4,096 query limit free.
 		expect(databaseQueries).toBeGreaterThan(0);
 		expect(databaseQueries).toBeLessThan(4096 / 2);
+	});
+
+	test("restores one of several deleted items at one path by its node id", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const firstDelete = crypto.randomUUID();
+		const secondDelete = crypto.randomUUID();
+		const firstId = await insert_root_file(f, { name: "same.md", archiveOperationId: firstDelete });
+		const secondId = await insert_root_file(f, { name: "same.md", archiveOperationId: secondDelete });
+
+		expect(
+			await post(f, "/api/v1/files/restore", ownerKey.credential, {
+				nodes: [
+					{ nodeId: firstId, archiveOperationId: firstDelete },
+					// Listed before a later delete or restore changed it.
+					{ nodeId: secondId, archiveOperationId: firstDelete },
+					{ nodeId: "missing", archiveOperationId: firstDelete },
+				],
+				requestId: "by-id",
+			}),
+		).toEqual({
+			status: 200,
+			body: {
+				jobIds: [expect.any(String)],
+				isDone: true,
+				refused: [
+					{
+						nodeId: secondId,
+						path: "/same.md",
+						message: "This Trash item changed. List the Trash and pick it again.",
+					},
+					{ nodeId: "missing", path: null, message: "Not found" },
+				],
+			},
+		});
+		expect((await read_node(f, firstId)).archiveOperationId).toBeNull();
+		expect((await read_node(f, secondId)).archiveOperationId).toBe(secondDelete);
+
+		const nodes = [{ nodeId: secondId, archiveOperationId: secondDelete }];
+		expect(
+			await post(f, "/api/v1/files/restore", ownerKey.credential, { nodes: [...nodes, ...nodes], requestId: "twice" }),
+		).toEqual({ status: 400, body: { message: "Duplicate node in batch", nodeId: secondId } });
+		expect(
+			await post(f, "/api/v1/files/restore", ownerKey.credential, { paths: ["/same.md"], nodes, requestId: "both" }),
+		).toEqual({ status: 400, body: { message: "Send either paths or nodes." } });
+	});
+
+	test("a locked node answers Permission denied whether its Trash stamp changed or not", async () => {
+		const f = await fixture();
+		const archiveOperationId = crypto.randomUUID();
+		const lockedIds = [];
+		for (const name of ["a.md", "b.md"]) {
+			const lockedId = await insert_root_file(f, { name, archiveOperationId });
+			await f.t.run((ctx) =>
+				ctx.db.patch("files_nodes", lockedId, {
+					restrictedScopeNodeId: lockedId,
+					isRestrictedScopeRoot: true,
+					parentScopeNodeId: null,
+				}),
+			);
+			lockedIds.push(lockedId);
+		}
+		const member = await add_member(f);
+		await f.t.run((ctx) =>
+			quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId: member.userId,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				now: Date.now(),
+			}),
+		);
+		const memberKey = await create_key({ asUser: member.asUser, membershipId: member.membershipId });
+
+		expect(
+			await post(f, "/api/v1/files/restore", memberKey.credential, {
+				nodes: [
+					{ nodeId: lockedIds[0], archiveOperationId },
+					{ nodeId: lockedIds[1], archiveOperationId: "stale" },
+				],
+				dryRun: true,
+			}),
+		).toMatchObject({
+			status: 200,
+			body: {
+				refused: [
+					{ nodeId: lockedIds[0], path: null, message: "Permission denied" },
+					{ nodeId: lockedIds[1], path: null, message: "Permission denied" },
+				],
+				jobs: [],
+			},
+		});
+	});
+
+	test("a dry run says what the restore would do and saves nothing", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const archivedId = await insert_root_file(f, { name: "clash.md", archiveOperationId: crypto.randomUUID() });
+		await insert_root_file(f, { name: "clash.md", archiveOperationId: null });
+		const count_saved = () =>
+			f.t.run(async (ctx) => ({
+				runs: (await ctx.db.query("files_archive_runs").collect()).length,
+				activities: (await ctx.db.query("activities").collect()).length,
+			}));
+		const before = await count_saved();
+
+		const preview = await post(f, "/api/v1/files/restore", ownerKey.credential, {
+			paths: ["/clash.md", "/gone.md"],
+			dryRun: true,
+		});
+		expect(await read_node(f, archivedId)).toMatchObject({ name: "clash.md", archiveOperationId: expect.any(String) });
+		expect(await count_saved()).toEqual(before);
+		expect(preview).toEqual({
+			status: 200,
+			body: {
+				dryRun: true,
+				complete: true,
+				refused: [{ path: "/gone.md", message: "Not found" }],
+				jobs: [
+					expect.objectContaining({
+						kind: "restore",
+						status: "succeeded",
+						renamed: [{ path: "/clash.md", newPath: "/clash-2.md" }],
+						hasMoreItems: false,
+					}),
+				],
+			},
+		});
+
+		expect(
+			await post(f, "/api/v1/files/restore", ownerKey.credential, {
+				paths: ["/clash.md"],
+				dryRun: true,
+				requestId: "preview",
+			}),
+		).toEqual({ status: 400, body: { message: "A dry run takes no requestId." } });
+		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { paths: ["/clash.md"] })).toEqual({
+			status: 400,
+			body: { message: "requestId is required." },
+		});
+	});
+});
+
+describe("files/trash/list", () => {
+	/**
+	 * `/team` is a restricted folder in Trash with `/team/inside.md` from the same delete.
+	 */
+	async function insert_restricted_team(f: Fixture, archiveOperationId: string) {
+		const teamId = await insert_root_file(f, { name: "team", archiveOperationId });
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", teamId, {
+				kind: "folder",
+				treePath: "/team/",
+				restrictedScopeNodeId: teamId,
+				isRestrictedScopeRoot: true,
+				parentScopeNodeId: null,
+			});
+			await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: teamId,
+				name: "inside.md",
+				sortName: files_sort_text_key("inside.md"),
+				kind: "file",
+				path: "/team/inside.md",
+				treePath: "/team/inside.md",
+				pathDepth: 2,
+				restrictedScopeNodeId: teamId,
+				archiveOperationId,
+			});
+		});
+		return teamId;
+	}
+
+	test("lists every item in Trash of one area, newest delete first, and ends with a null cursor", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const olderDelete = files_archive_operation_id_new(1_000);
+		const newerDelete = files_archive_operation_id_new(2_000);
+		await insert_root_file(f, { name: "old.md", archiveOperationId: olderDelete });
+		// Two items of one delete at one path. The app's Trash view shows only one of them.
+		const firstSameId = await insert_root_file(f, { name: "same.md", archiveOperationId: newerDelete });
+		const secondSameId = await insert_root_file(f, { name: "same.md", archiveOperationId: newerDelete });
+		const teamId = await insert_restricted_team(f, newerDelete);
+		// Active files are in the same index, but outside the Trash range.
+		for (const name of ["a.md", "b.md", "c.md"]) await insert_root_file(f, { name, archiveOperationId: null });
+
+		const pages = [];
+		let cursor: unknown = null;
+		do {
+			const response = await post(f, "/api/v1/files/trash/list", ownerKey.credential, { limit: 2, cursor });
+			expect(response.status).toBe(200);
+			pages.push(response.body);
+			cursor = response.body.cursor;
+		} while (pages.at(-1)!.isDone === false);
+
+		expect(pages[0]!.items).toHaveLength(2);
+		expect(pages.slice(0, -1).every((page) => typeof page.cursor === "string" && page.cursor !== "")).toBe(true);
+		expect(pages.at(-1)!.cursor).toBeNull();
+		expect(pages.flatMap((page) => page.items as Array<Record<string, unknown>>)).toEqual([
+			// The restricted folder lists in the area of its parent. What is inside lists in its own area.
+			expect.objectContaining({ path: "/team", kind: "folder", locked: false, top: true, nodeId: teamId }),
+			// The same delete and path: the newer doc comes first, and a page break between them skips neither.
+			expect.objectContaining({
+				path: "/same.md",
+				nodeId: secondSameId,
+				archiveOperationId: newerDelete,
+				operationAt: 2_000,
+				changedBy: f.db.userId,
+				top: true,
+			}),
+			expect.objectContaining({ path: "/same.md", nodeId: firstSameId, archiveOperationId: newerDelete, top: true }),
+			expect.objectContaining({ path: "/old.md", archiveOperationId: olderDelete, operationAt: 1_000 }),
+		]);
+
+		expect(await post(f, "/api/v1/files/trash/list", ownerKey.credential, { areaNodeId: teamId })).toMatchObject({
+			status: 200,
+			body: {
+				// Its folder is in Trash from the same delete, so the app's Trash view does not show it.
+				items: [expect.objectContaining({ path: "/team/inside.md", top: false })],
+				cursor: null,
+				isDone: true,
+			},
+		});
+		// A cursor works only for the area it was made for.
+		for (const body of [{ cursor: "" }, { cursor: pages[0]!.cursor, areaNodeId: teamId }]) {
+			expect(await post(f, "/api/v1/files/trash/list", ownerKey.credential, body)).toEqual({
+				status: 400,
+				body: { message: "This Trash cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+			});
+		}
+		// A restricted file is not an area: it holds no other items.
+		const fileRootId = await insert_root_file(f, { name: "private.md", archiveOperationId: null });
+		await f.t.run((ctx) =>
+			ctx.db.patch("files_nodes", fileRootId, {
+				restrictedScopeNodeId: fileRootId,
+				isRestrictedScopeRoot: true,
+				parentScopeNodeId: null,
+			}),
+		);
+		expect(await post(f, "/api/v1/files/trash/list", ownerKey.credential, { areaNodeId: fileRootId })).toEqual({
+			status: 400,
+			body: { message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace." },
+		});
+	});
+
+	test("a published Move shows its new place and Trash stamp before cleanup, and restore by node accepts it", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const oldDelete = files_archive_operation_id_new(1_000);
+		const newDelete = files_archive_operation_id_new(2_000);
+		const nodeId = await insert_root_file(f, { name: "old.md", archiveOperationId: oldDelete });
+		// The Move's after view has a new path and Trash stamp. Its cleanup has not rewritten the node doc yet.
+		await f.t.run(async (ctx) => {
+			const cohortId = await test_db_hold_move_slot(ctx, f.db);
+			const {
+				_id,
+				_creationTime,
+				createdBy: _createdBy,
+				readOnly: _readOnly,
+				readOnlyDecisionId: _readOnlyDecisionId,
+				moveCohortId: _moveCohortId,
+				scopeOpId: _scopeOpId,
+				...header
+			} = (await ctx.db.get("files_nodes", nodeId))!;
+			const place = {
+				...header,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				cohortId,
+				nodeId,
+				nodeCreationTime: _creationTime,
+				contentId: null,
+			};
+			await ctx.db.insert("files_saved_places", { ...place, view: "before" });
+			await ctx.db.insert("files_saved_places", {
+				...place,
+				view: "after",
+				name: "moved.md",
+				sortName: files_sort_text_key("moved.md"),
+				path: "/moved.md",
+				treePath: "/moved.md",
+				archiveOperationId: newDelete,
+			});
+			await ctx.db.patch("files_nodes", nodeId, { moveCohortId: cohortId });
+			await ctx.db.patch("files_move_cohorts", cohortId, { visibleView: "after", publishedAt: Date.now() });
+			const slot = (await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+				)
+				.unique())!;
+			await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView: "after" });
+		});
+
+		expect(await post(f, "/api/v1/files/trash/list", ownerKey.credential, {})).toMatchObject({
+			status: 200,
+			body: { items: [expect.objectContaining({ nodeId, path: "/moved.md", archiveOperationId: newDelete })] },
+		});
+		expect(
+			await post(f, "/api/v1/files/restore", ownerKey.credential, {
+				nodes: [{ nodeId, archiveOperationId: newDelete }],
+				dryRun: true,
+			}),
+		).toMatchObject({ status: 200, body: { refused: [] } });
+	});
+
+	test("shows a restricted folder the member cannot open as a locked row", async () => {
+		const f = await fixture();
+		const teamId = await insert_restricted_team(f, files_archive_operation_id_new(1_000));
+		const member = await add_member(f);
+		await f.t.run((ctx) =>
+			quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId: member.userId,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				now: Date.now(),
+			}),
+		);
+		const memberKey = await create_key({ asUser: member.asUser, membershipId: member.membershipId });
+
+		expect(await post(f, "/api/v1/files/trash/list", memberKey.credential, {})).toMatchObject({
+			status: 200,
+			body: {
+				items: [expect.objectContaining({ path: "/team", locked: true, changedBy: null })],
+				cursor: null,
+				isDone: true,
+			},
+		});
+		expect(await post(f, "/api/v1/files/trash/list", memberKey.credential, { areaNodeId: teamId })).toEqual({
+			status: 403,
+			body: { message: "Permission denied" },
+		});
 	});
 });

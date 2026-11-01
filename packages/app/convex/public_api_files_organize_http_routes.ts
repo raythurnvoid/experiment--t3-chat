@@ -10,6 +10,7 @@ import type {
 	public_api_files_organize_http_restore_Body,
 	public_api_files_organize_http_stat_Body,
 	public_api_files_organize_http_transfer_Body,
+	public_api_files_organize_http_trash_list_Body,
 } from "./public_api_files_organize.ts";
 
 export function public_api_files_organize_http_routes(router: { route: HttpRouter["route"] }) {
@@ -200,6 +201,38 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 							body: Body;
 							response: api_schemas_BuildResponseSpecFromHandler<
 								typeof import("./public_api_files_organize.ts").public_api_files_organize_http_restore
+							>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+		...((/* iife */ path = "/api/v1/files/trash/list" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = public_api_files_organize_http_trash_list_Body;
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const { public_api_files_organize_http_trash_list } = await import("./public_api_files_organize.ts");
+								const result = await public_api_files_organize_http_trash_list({ ctx, request, path });
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<
+								typeof import("./public_api_files_organize.ts").public_api_files_organize_http_trash_list
 							>;
 						};
 					})(),

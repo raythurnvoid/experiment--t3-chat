@@ -299,3 +299,57 @@ describe("stat", () => {
 		}
 	});
 });
+
+describe("restore", () => {
+	test("sends nodes or a dry run, and exits 1 when a job leaves an item in the Trash", async () => {
+		const api = await start_api((request, response) => {
+			// Skip leaves an item in the Trash, and the job still succeeds.
+			const skipped = { path: "/skip.md", message: "An item with this name is already there." };
+			const jobRefused = (request.body.paths as string[] | undefined)?.includes("/skip.md") ? [skipped] : [];
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(
+				JSON.stringify(
+					request.route.endsWith("/files/jobs/get")
+						? { jobId: "j1", status: "succeeded", refused: [skipped], renamed: [], refusedCursor: null }
+						: request.body.dryRun
+							? { dryRun: true, complete: true, refused: [], jobs: [{ status: "succeeded", refused: jobRefused }] }
+							: { jobIds: jobRefused.length > 0 ? ["j1"] : [], isDone: true, refused: [] },
+				),
+			);
+		});
+		try {
+			const byId = await run_cli(api.origin, ["restore", "--node", "n1:t1", "--node", "n2:t2", "--request-id", "r1"]);
+			expect(byId.code, byId.stderr).toBe(0);
+			const preview = await run_cli(api.origin, ["restore", "/a.md", "--dry-run", "--on-conflict", "skip"]);
+			expect(preview.code, preview.stderr).toBe(0);
+			expect(api.requests.map((request) => request.body)).toEqual([
+				{
+					nodes: [
+						{ nodeId: "n1", archiveOperationId: "t1" },
+						{ nodeId: "n2", archiveOperationId: "t2" },
+					],
+					requestId: "r1",
+				},
+				{ paths: ["/a.md"], onConflict: "skip", dryRun: true },
+			]);
+
+			const skippedPreview = await run_cli(api.origin, ["restore", "/skip.md", "--dry-run"]);
+			expect(skippedPreview.code, skippedPreview.stderr).toBe(1);
+			const skipped = await run_cli(api.origin, ["restore", "/skip.md", "--wait", "--request-id", "r3"]);
+			expect(skipped.code, skipped.stderr).toBe(1);
+
+			for (const args of [
+				["/a.md", "--dry-run", "--wait"],
+				["/a.md", "--dry-run", "--request-id", "r2"],
+				["/a.md", "--node", "n1:t1"],
+				["--node", "n1"],
+			]) {
+				const refused = await run_cli(api.origin, ["restore", ...args]);
+				expect(refused.code, args.join(" ")).toBe(2);
+			}
+			expect(api.requests).toHaveLength(5);
+		} finally {
+			await api.close();
+		}
+	});
+});

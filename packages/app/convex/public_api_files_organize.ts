@@ -1,12 +1,14 @@
 // The public API doors that organize files: `/api/v1/files/stat`, `/api/v1/files/mkdir`,
-// `/api/v1/files/move`, `/api/v1/files/copy`, `/api/v1/files/delete`, `/api/v1/files/restore`, and
-// `/api/v1/files/jobs/get` (routes in `public_api_files_organize_http_routes.ts`).
+// `/api/v1/files/move`, `/api/v1/files/copy`, `/api/v1/files/delete`, `/api/v1/files/restore`,
+// `/api/v1/files/trash/list`, and `/api/v1/files/jobs/get` (routes in
+// `public_api_files_organize_http_routes.ts`).
 //
 // They act as the API key, with the same Locked, not hidden rules as `files/list`: a path the key
 // cannot open answers "Permission denied", never "not found".
 
-import { v, ConvexError } from "convex/values";
-import type { RegisteredMutation, RegisteredQuery } from "convex/server";
+import { compareValues, v, ConvexError, type Infer } from "convex/values";
+import type { IndexRange, RegisteredMutation, RegisteredQuery } from "convex/server";
+import { validate } from "convex-helpers/validators";
 import { z } from "zod";
 
 import { internalQuery, type ActionCtx } from "./_generated/server.js";
@@ -30,15 +32,23 @@ import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { public_api_credentials_db_get_write_context } from "./public_api_credentials_db.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
 import { rate_limiter_limit_by_key, rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
-import app_convex_schema from "./schema.ts";
+import app_convex_schema, { files_saved_stream_validator } from "./schema.ts";
 import { convex_error } from "../server/convex-utils.ts";
-import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { crypto_open_cursor, crypto_seal_cursor, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_db_create_path_lookups, files_db_get_path_access } from "../server/files.ts";
+import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
-import { files_ROOT_ID, files_TRANSFER_SELECTION_PAGE_SIZE } from "../shared/files.ts";
+import {
+	files_archive_operation_id_time,
+	files_ROOT_ID,
+	files_TRANSFER_SELECTION_PAGE_SIZE,
+	type files_SavedStream,
+} from "../shared/files.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 
 const STAT_MAX_PATHS = 100;
 
@@ -637,12 +647,449 @@ export async function public_api_files_organize_http_delete(args: {
 	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
 }
 
+const TRASH_LIST_MAX_ITEMS = 100;
+
+const trash_key_validator = v.object({
+	archiveOperationId: v.string(),
+	treePath: v.string(),
+	createdAt: v.number(),
+	nodeId: v.string(),
+});
+
 /**
- * Each path can come from its own delete, and each delete starts its own job in this one mutation. A
- * member's key used about 16 database queries per path, so 200 paths came close to the 4,096 query
- * limit. 100 leaves room for restricted folders, which cost more access reads.
+ * One page of one index stream of `files/trash/list`: the archived docs of one area below `upperKey`,
+ * newest archive operation first. `public_api_files_organize_http_trash_list` merges the streams.
+ *
+ * Every archived doc is listed, not only the top items of the app's Trash view: the app's reader can
+ * miss an item when two top items share a path (`files_tree.list_archived_tops`). Two index ranges
+ * serve an area. "items" holds the docs of the area. "folders" holds the restricted folders whose
+ * parent is in the area: a restricted folder lists in the area of its parent, locked when the
+ * caller cannot open it, and its contents list only in its own area.
  */
-const RESTORE_MAX_PATHS = 100;
+export const list_trash_page = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		subject: access_control_subject_validator,
+		savedStream: files_saved_stream_validator,
+		/**
+		 * A restricted folder, or null for the open part of the workspace. Not normalized: it comes from
+		 * the request body.
+		 */
+		areaNodeId: v.union(v.string(), v.null()),
+		stream: v.union(v.literal("items"), v.literal("folders")),
+		upperKey: v.union(trash_key_validator, v.null()),
+		phase: v.number(),
+		numItems: v.number(),
+	},
+	returns: v.union(
+		v.object({
+			status: v.union(
+				v.literal("denied"),
+				v.literal("area_not_found"),
+				v.literal("area_locked"),
+				v.literal("not_an_area"),
+			),
+		}),
+		v.object({
+			status: v.literal("page"),
+			rows: v.array(
+				v.object({
+					nodeId: v.id("files_nodes"),
+					path: v.string(),
+					name: v.string(),
+					kind: v.union(v.literal("file"), v.literal("folder")),
+					contentType: v.union(v.string(), v.null()),
+					updatedAt: v.number(),
+					updatedBy: v.union(v.string(), v.null()),
+					assetId: v.union(v.id("files_r2_assets"), v.null()),
+					archiveOperationId: v.string(),
+					treePath: v.string(),
+					createdAt: v.number(),
+					locked: v.boolean(),
+					top: v.boolean(),
+				}),
+			),
+			frontier: v.union(trash_key_validator, v.null()),
+			phaseCount: v.number(),
+			isDone: v.boolean(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!membership) return { status: "denied" as const };
+		// A guest has no Trash view, like in the app (`files_tree.list_archived_tops`).
+		const workspaceRead = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		if (workspaceRead._nay) return { status: "denied" as const };
+		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
+
+		// Check the area on every page, so an area the caller lost access to between pages answers 403.
+		let area: Id<"files_nodes"> | null = null;
+		if (args.areaNodeId !== null) {
+			const areaId = ctx.db.normalizeId("files_nodes", args.areaNodeId);
+			const areaNode = areaId ? await files_saved_placement_db_get_node(ctx.db, areaId, saved.tag) : null;
+			if (!areaNode || areaNode.organizationId !== args.organizationId || areaNode.workspaceId !== args.workspaceId) {
+				return { status: "area_not_found" as const };
+			}
+			if (
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					...args,
+					fileNode: areaNode,
+					permission: "content.read",
+				}))
+			) {
+				return { status: "area_locked" as const };
+			}
+			// A file can be a restricted root too, but it holds no other items.
+			if (!areaNode.isRestrictedScopeRoot || areaNode.kind !== "folder") return { status: "not_an_area" as const };
+			area = areaNode._id;
+		}
+
+		const phases = files_index_range_phases({
+			fields: [
+				"archiveOperationId",
+				"treePath",
+				...(args.savedStream.kind === "cohort" ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"]),
+			],
+			order: "desc",
+			// An active doc has a null `archiveOperationId`, so this range holds the archived docs only.
+			start: [null],
+			startInclusive: false,
+			end: args.upperKey
+				? [args.upperKey.archiveOperationId, args.upperKey.treePath, args.upperKey.createdAt, args.upperKey.nodeId]
+				: [],
+			endInclusive: false,
+		});
+		const phase = phases[args.phase];
+		if (!phase) return { status: "page" as const, rows: [], frontier: null, phaseCount: phases.length, isDone: true };
+		const range = (q: IndexRange) => files_index_range_apply(q, phase);
+		const result = await (
+			args.stream === "items"
+				? saved.queries.by_scope_archive_tree((q) => range(q.eq("restrictedScopeNodeId", area)))
+				: saved.queries.by_parent_scope_archive_tree((q) => range(q.eq("parentScopeNodeId", area)))
+		)
+			.order("desc")
+			.paginate({ cursor: null, numItems: args.numItems });
+
+		// The frontier is read before the docs are dropped below. It can name a doc the caller cannot
+		// open, so the HTTP action seals it inside the public cursor.
+		const last = result.page.at(-1);
+		const frontier = last
+			? {
+					archiveOperationId: last.archiveOperationId!,
+					treePath: last.treePath,
+					createdAt: "nodeId" in last ? last.nodeCreationTime : last._creationTime,
+					nodeId: "nodeId" in last ? last.nodeId : last._id,
+				}
+			: null;
+		// "items" drops the area's own folder: it lists in its parent area. "folders" drops a folder that
+		// stopped being restricted: it keeps `parentScopeNodeId` only while its scope job runs, so few
+		// docs are dropped.
+		const nodes = (await saved.read_nodes(result.page)).filter(
+			(node) => node.isRestrictedScopeRoot === (args.stream === "folders"),
+		);
+		const readable = new Set(
+			(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					subject: args.subject,
+					nodes,
+				})
+			).map((node) => node._id),
+		);
+		const rows = await Promise.all(
+			nodes.map(async (node) => {
+				// A top item is what the app's Trash view lists: its parent is the root, active, or archived by
+				// another delete. One parent read per doc.
+				const parent =
+					node.parentId === files_ROOT_ID
+						? null
+						: await files_saved_placement_db_get_node(ctx.db, node.parentId, saved.tag);
+				const locked = !readable.has(node._id);
+				return {
+					nodeId: node._id,
+					path: node.path,
+					name: node.name,
+					kind: node.kind,
+					contentType: node.contentType,
+					updatedAt: node.updatedAt,
+					// Locked, not hidden: a locked row shows name, type, size and dates only.
+					updatedBy: locked ? null : node.updatedBy,
+					assetId: node.assetId,
+					archiveOperationId: node.archiveOperationId!,
+					treePath: node.treePath,
+					createdAt: node._creationTime,
+					locked,
+					top: parent?.archiveOperationId !== node.archiveOperationId,
+				};
+			}),
+		);
+		return { status: "page" as const, rows, frontier, phaseCount: phases.length, isDone: result.isDone };
+	},
+});
+
+type list_trash_page_Result =
+	typeof list_trash_page extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+type TrashKey = Infer<typeof trash_key_validator>;
+
+function compare_trash_keys(a: TrashKey, b: TrashKey) {
+	return compareValues(
+		[a.archiveOperationId, a.treePath, a.createdAt, a.nodeId],
+		[b.archiveOperationId, b.treePath, b.createdAt, b.nodeId],
+	);
+}
+
+const trash_list_body_validator = z
+	.object({
+		areaNodeId: z.string().min(1).max(64).nullable().optional(),
+		// A real cursor is about 1.4 KB. The cap stops a huge string before the server decodes it.
+		cursor: z.string().max(16384).nullable().optional(),
+		limit: z.number().int().min(1).max(TRASH_LIST_MAX_ITEMS).optional(),
+	})
+	.strict();
+
+export type public_api_files_organize_http_trash_list_Body = z.infer<typeof trash_list_body_validator>;
+
+/**
+ * `files/trash/list`: every archived item of one area, newest delete first. Each page merges the
+ * "items" and "folders" streams of `list_trash_page` for the normal saved stream and, during a Move,
+ * the Move view, like `files_saved_list_page` does for a folder list.
+ */
+export async function public_api_files_organize_http_trash_list(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/trash/list";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
+		requiredScope: "files:list" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+	// The Trash view checks areas as a person with a membership, like restore does.
+	if (principal.subject.kind !== "user") {
+		return { status: 403, body: { message: "Keys bound to a service account cannot list the Trash yet." } } as const;
+	}
+
+	const body = await server_request_json_parse_and_validate(request, trash_list_body_validator);
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	const numItems = body._yay.limit ?? TRASH_LIST_MAX_ITEMS;
+	const areaNodeId = body._yay.areaNodeId ?? null;
+
+	const viewArgs = {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		visibilityUserId: principal.userId,
+		subject: principal.subject,
+		folderPath: "/",
+	};
+	const memberArgs = {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: principal.userId,
+	};
+	const [view, membership] = await Promise.all([
+		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+	]);
+	if (!view || !membership) {
+		return { status: 403, body: { message: "Permission denied" } } as const;
+	}
+	const sources: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
+	if (view.cohortId !== null && view.view !== null) {
+		sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
+	}
+	// Source order follows migration. A doc moved between these reads is seen at least once.
+	if (view.migrationDirection === "to_normal") sources.reverse();
+
+	// The area is in the scope, so a cursor works only for the area it was made for.
+	const scope = JSON.stringify([principal.principalKey, principal.subject, membership, areaNodeId, sources]);
+	// Like `files/list`, only this error has a code: clients restart with `cursor: null` on it.
+	const invalid_cursor = {
+		status: 400,
+		body: { message: "This Trash cursor changed. Start a new page.", errorCode: "invalid_cursor" as const },
+	} as const;
+	let upperKey: TrashKey | null = null;
+	if (body._yay.cursor != null) {
+		let opened: unknown;
+		try {
+			opened = await crypto_open_cursor({ purpose: "files_trash_list", scope, cursor: body._yay.cursor });
+		} catch (error) {
+			if (!(error instanceof ConvexError)) throw error;
+			return invalid_cursor;
+		}
+		if (!validate(v.object({ upperKey: trash_key_validator }), opened)) return invalid_cursor;
+		upperKey = opened.upperKey;
+	}
+
+	type Row = Extract<list_trash_page_Result, { status: "page" }>["rows"][number];
+	const key_of = (row: Row): TrashKey => ({
+		archiveOperationId: row.archiveOperationId,
+		treePath: row.treePath,
+		createdAt: row.createdAt,
+		nodeId: row.nodeId,
+	});
+	const page: Row[] = [];
+	let isDone = false;
+	// A page can be short with a cursor: rows past the first unfinished stream wait for the next round.
+	for (let round = 0; round < 8 && page.length < numItems; round++) {
+		const batches: Array<{ rows: Row[]; frontier: TrashKey | null; done: boolean }> = [];
+		for (const source of sources) {
+			for (const stream of ["items", "folders"] as const) {
+				for (let phase = 0; ; phase++) {
+					let result: list_trash_page_Result;
+					try {
+						result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_page, {
+							organizationId: principal.organizationId,
+							workspaceId: principal.workspaceId,
+							userId: principal.userId,
+							subject: principal.subject,
+							savedStream: source,
+							areaNodeId,
+							stream,
+							upperKey,
+							phase,
+							numItems: numItems - page.length,
+						})) as list_trash_page_Result;
+					} catch (error) {
+						if (
+							!(error instanceof ConvexError) ||
+							!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+						)
+							throw error;
+						return invalid_cursor;
+					}
+					if (result.status === "area_not_found") {
+						return { status: 404, body: { message: "Area not found" } } as const;
+					}
+					if (result.status === "denied" || result.status === "area_locked") {
+						return { status: 403, body: { message: "Permission denied" } } as const;
+					}
+					if (result.status === "not_an_area") {
+						return {
+							status: 400,
+							body: { message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace." },
+						} as const;
+					}
+					const done = result.isDone && phase + 1 >= result.phaseCount;
+					if (result.frontier || done) {
+						batches.push({ rows: result.rows, frontier: done ? null : result.frontier, done });
+						break;
+					}
+				}
+			}
+		}
+		// Keep only rows above the highest unfinished frontier: a stream may still hold rows before it.
+		const frontiers = batches.flatMap((batch) => (!batch.done && batch.frontier ? [batch.frontier] : []));
+		frontiers.sort((a, b) => compare_trash_keys(b, a));
+		const windowEnd = frontiers[0] ?? null;
+		const rows = batches
+			.flatMap((batch) => batch.rows)
+			.filter((row) => windowEnd === null || compare_trash_keys(key_of(row), windowEnd) >= 0)
+			.sort((a, b) => compare_trash_keys(key_of(b), key_of(a)));
+		// Staging or cleanup may expose the same node in both sources.
+		const seen = new Set<Id<"files_nodes">>(page.map((row) => row.nodeId));
+		const unique = rows.filter((row) => {
+			if (seen.has(row.nodeId)) return false;
+			seen.add(row.nodeId);
+			return true;
+		});
+		const remaining = numItems - page.length;
+		if (unique.length > remaining) {
+			page.push(...unique.slice(0, remaining));
+			upperKey = key_of(page.at(-1)!);
+			break;
+		}
+		page.push(...unique);
+		isDone = batches.every((batch) => batch.done);
+		upperKey = windowEnd ?? (page.length > 0 ? key_of(page.at(-1)!) : upperKey);
+		if (isDone) break;
+	}
+
+	// A Move that started or ended during the page changes the sources, so the page could miss rows.
+	const [currentView, currentMembership] = await Promise.all([
+		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+	]);
+	if (
+		!currentView ||
+		currentView.generation !== view.generation ||
+		currentView.cohortId !== view.cohortId ||
+		currentView.view !== view.view ||
+		currentView.migrationDirection !== view.migrationDirection ||
+		JSON.stringify(currentMembership) !== JSON.stringify(membership)
+	) {
+		return invalid_cursor;
+	}
+
+	const assetIds = page.flatMap((row) => (row.kind === "file" && row.assetId ? [row.assetId] : []));
+	const assetStates: r2_get_assets_ready_states_Result =
+		assetIds.length > 0 ? await ctx.runQuery(internal.r2.get_assets_ready_states, { assetIds }) : {};
+
+	return {
+		status: 200,
+		body: {
+			items: page.map((row) => {
+				const assetState = row.assetId ? assetStates[row.assetId] : undefined;
+				return {
+					path: row.path,
+					name: row.name,
+					kind: row.kind,
+					nodeId: row.nodeId,
+					contentType: row.contentType,
+					updatedAt: row.updatedAt,
+					size: assetState ? assetState.size : null,
+					locked: row.locked,
+					archiveOperationId: row.archiveOperationId,
+					// The time inside the archive operation id. Old ids are plain UUIDs without a time.
+					operationAt: files_archive_operation_id_time(row.archiveOperationId),
+					// The last person who changed the item, the app's "Changed by". Usually this is who deleted it.
+					// After a restore with Skip, it is who restored it, because Skip puts the item in a new delete.
+					changedBy: row.updatedBy,
+					top: row.top,
+				};
+			}),
+			// `upperKey` can name a row the caller cannot open, so the cursor hides it.
+			cursor: isDone ? null : await crypto_seal_cursor({ purpose: "files_trash_list", scope, payload: { upperKey } }),
+			isDone,
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+/**
+ * Each path or node can come from its own delete, and each delete starts its own job in this one
+ * mutation. A member's key used about 16 database queries per path, so 200 paths came close to the
+ * 4,096 query limit. 100 leaves room for restricted folders, which cost more access reads.
+ */
+const RESTORE_MAX_ITEMS = 100;
 
 const restore_failure_validator = z.object({
 	status: z.union([z.literal(401), z.literal(403), z.literal(409), z.literal(429)]),
@@ -651,27 +1098,36 @@ const restore_failure_validator = z.object({
 });
 
 /**
- * Restore the named paths from the Trash with the app's restore job. Each path names the archived item
- * at that path. Like Restore in the app, the job brings back everything the same delete archived with
- * it, one job per delete. A path that is missing, locked, or not archived is refused alone, and the
- * other paths are still restored.
+ * Restore the named items from the Trash with the app's restore job. Each path names the archived item
+ * at that path. Each node names one archived item by id, with the `archiveOperationId` the caller saw
+ * in `files/trash/list`. Like Restore in the app, the job brings back everything the same delete
+ * archived with it, one job per delete. An item that is missing, locked, or not archived is refused
+ * alone, and the other items are still restored.
  */
-export const restore_paths = internalMutation({
+export const restore_items = internalMutation({
 	args: {
 		force: v.optional(v.boolean()),
 		credentialId: v.id("api_credentials"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		/** Absolute, normalized paths, not the root. */
+		/** Absolute, normalized paths, not the root. Empty when `nodes` names the items. */
 		paths: v.array(v.string()),
+		/** Empty when `paths` names the items. Not normalized: the ids come from the request body. */
+		nodes: v.array(v.object({ nodeId: v.string(), archiveOperationId: v.string() })),
 		onConflict: v.union(v.literal("keep_both"), v.literal("skip")),
-		requestId: v.string(),
+		/** Null for a dry run (`preview_restore`), which saves no request to retry. */
+		requestId: v.union(v.string(), v.null()),
 	},
 	returns: v.object({
 		jobIds: v.array(v.id("activities")),
 		isDone: v.boolean(),
-		refused: v.array(v.object({ path: v.string(), message: v.string() })),
+		refused: v.array(
+			v.union(
+				v.object({ path: v.string(), message: v.string() }),
+				v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+			),
+		),
 	}),
 	handler: async (ctx, args) => {
 		const fail = (failArgs: z.infer<typeof restore_failure_validator> & { message: string }) =>
@@ -689,7 +1145,8 @@ export const restore_paths = internalMutation({
 			userId: args.userId,
 			principalRef: { kind: "user_api_key", credentialId: args.credentialId },
 			force: args.force === true,
-			path: args.paths[0],
+			// Each item is checked below, so a restore by nodes passes the root like `write-many` does.
+			path: args.paths[0] ?? "/",
 			eachPathChecked: true,
 			now: Date.now(),
 		});
@@ -720,19 +1177,27 @@ export const restore_paths = internalMutation({
 			throw fail({ message: "Unauthenticated", status: 401 });
 		}
 
-		// Look for an earlier run first: after a finished restore, the paths are no longer archived. The
+		// Look for an earlier run first: after a finished restore, the items are no longer archived. The
 		// key's id in the request id keeps it apart from the request ids of other keys.
-		const requestId = `api:${args.credentialId}:${args.requestId}`;
-		// Only opting into force changes the request identity.
+		const requestId = args.requestId === null ? null : `api:${args.credentialId}:${args.requestId}`;
+		// Only opting into force changes the request identity. A paths request hashes the bare paths list,
+		// and a nodes request adds a "nodes" tag, so the two can never share a hash.
 		const inputHash = await crypto_sha256_hex(
-			JSON.stringify([args.paths, args.onConflict, ...(args.force === true ? [true] : [])]),
+			JSON.stringify([
+				...(args.nodes.length > 0 ? ["nodes", args.nodes] : [args.paths]),
+				args.onConflict,
+				...(args.force === true ? [true] : []),
+			]),
 		);
-		const previous = await ctx.db
-			.query("files_archive_runs")
-			.withIndex("by_user_workspace_apiRequest", (q) =>
-				q.eq("userId", args.userId).eq("workspaceId", args.workspaceId).eq("apiRequest.requestId", requestId),
-			)
-			.unique();
+		const previous =
+			requestId === null
+				? null
+				: await ctx.db
+						.query("files_archive_runs")
+						.withIndex("by_user_workspace_apiRequest", (q) =>
+							q.eq("userId", args.userId).eq("workspaceId", args.workspaceId).eq("apiRequest.requestId", requestId),
+						)
+						.unique();
 		if (previous?.apiRequest) {
 			if (previous.apiRequest.inputHash !== inputHash) {
 				throw fail({
@@ -740,7 +1205,7 @@ export const restore_paths = internalMutation({
 					status: 409,
 				});
 			}
-			// At most one job per path, so at most 100 reads.
+			// At most one job per path or node, so at most 100 reads.
 			const activities = await Promise.all(
 				previous.apiRequest.activityIds.map((activityId) => ctx.db.get("activities", activityId)),
 			);
@@ -758,11 +1223,17 @@ export const restore_paths = internalMutation({
 			throw fail({ message: rateLimit.message, status: 429, retryAfterMs: rateLimit.retryAfterMs });
 		}
 
-		// Resolve each path to the archived item there, as the key. Locked answers "Permission denied",
-		// never "Not found". Each path costs a few index reads, never a read of a whole folder.
-		const refused: Array<{ path: string; message: string }> = [];
+		// Resolve each path or node to its archived item, as the key. Locked answers "Permission denied",
+		// never "Not found". Each item costs a few index reads, never a read of a whole folder.
+		type Selector = { path: string } | { nodeId: string; path: string | null };
+		const refused: Array<Selector & { message: string }> = [];
 		const nodes: Doc<"files_nodes">[] = [];
-		const pathsByOperationId = new Map<string, string[]>();
+		const selectorsByOperationId = new Map<string, Selector[]>();
+		const add_node = (node: Doc<"files_nodes">, selector: Selector) => {
+			nodes.push(node);
+			const selectors = selectorsByOperationId.get(node.archiveOperationId!) ?? [];
+			selectorsByOperationId.set(node.archiveOperationId!, [...selectors, selector]);
+		};
 		for (const path of args.paths) {
 			// Two reads are enough to tell one archived item from several.
 			const archived = await ctx.db
@@ -808,7 +1279,11 @@ export const restore_paths = internalMutation({
 			}
 			// The same path was archived more than once, for example after a new item took the name.
 			if (archived.length > 1) {
-				refused.push({ path, message: "Several deleted items have this path. Restore the one you want in the app." });
+				refused.push({
+					path,
+					message:
+						"Several deleted items have this path. Find the one you want in files/trash/list and restore it by nodes.",
+				});
 				continue;
 			}
 
@@ -824,9 +1299,50 @@ export const restore_paths = internalMutation({
 				refused.push({ path, message: authorized._nay.message });
 				continue;
 			}
-			nodes.push(node);
-			const operationPaths = pathsByOperationId.get(node.archiveOperationId!) ?? [];
-			pathsByOperationId.set(node.archiveOperationId!, [...operationPaths, path]);
+			add_node(node, { path });
+		}
+		for (const selector of args.nodes) {
+			const nodeId = ctx.db.normalizeId("files_nodes", selector.nodeId);
+			// Read the item where the saved view shows it, like `files/trash/list` does. A published Move
+			// shows its new place and Trash stamp before its cleanup rewrites the node doc.
+			const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
+			if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
+				refused.push({ nodeId: selector.nodeId, path: null, message: "Not found" });
+				continue;
+			}
+			// Check access before the item's state, so a locked item does not tell whether it changed.
+			if (
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					...args,
+					subject,
+					fileNode: node,
+					permission: "content.read",
+				}))
+			) {
+				refused.push({ nodeId: selector.nodeId, path: null, message: "Permission denied" });
+				continue;
+			}
+			// The item was restored, or restored and deleted again, since the caller listed it. Never restore
+			// another delete than the one the caller saw.
+			if (node.archiveOperationId !== selector.archiveOperationId) {
+				refused.push({
+					nodeId: selector.nodeId,
+					path: node.path,
+					message: "This Trash item changed. List the Trash and pick it again.",
+				});
+				continue;
+			}
+			const authorized = await access_control_db_authorize_membership(ctx, {
+				userAuth: { id: args.userId },
+				membership,
+				permission: "content.write",
+				fileNode: node,
+			});
+			if (authorized._nay) {
+				refused.push({ nodeId: selector.nodeId, path: node.path, message: authorized._nay.message });
+				continue;
+			}
+			add_node(node, { nodeId: selector.nodeId, path: node.path });
 		}
 		if (nodes.length === 0) {
 			return { jobIds: [], isDone: true, refused };
@@ -842,10 +1358,10 @@ export const restore_paths = internalMutation({
 			applyToRemaining: { file: args.onConflict, folder: args.onConflict },
 			stopAtRefusal: false,
 		});
-		// A refused delete operation refuses every path that named an item of it.
+		// A refused delete operation refuses every path or node that named an item of it.
 		for (const refusal of restored.refusals) {
-			for (const path of pathsByOperationId.get(refusal.archiveOperationId)!) {
-				refused.push({ path, message: refusal.nay.message });
+			for (const selector of selectorsByOperationId.get(refusal.archiveOperationId)!) {
+				refused.push({ ...selector, message: refusal.nay.message });
 			}
 		}
 
@@ -854,7 +1370,7 @@ export const restore_paths = internalMutation({
 		// An API restore always keeps its jobs, so one of them can hold the request for a retry. Use the
 		// last one: the jobs run one after another, so it ends last, and history cleanup deletes it last.
 		const lastJob = restored.jobs.at(-1);
-		if (lastJob) {
+		if (lastJob && requestId !== null) {
 			await ctx.db.patch("files_archive_runs", lastJob.runId, {
 				apiRequest: { requestId, inputHash, refused, activityIds: jobIds },
 			});
@@ -863,20 +1379,86 @@ export const restore_paths = internalMutation({
 	},
 });
 
-type restore_paths_Result =
-	typeof restore_paths extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+type restore_items_Result =
+	typeof restore_items extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+/**
+ * `files/restore` with `dryRun`: run the real restore, read each job like `files/jobs/get` does, then
+ * throw so Convex undoes every write of this mutation. Files, jobs, Activity and scheduled steps are
+ * never saved. The preview uses the same code as the restore, so the two cannot drift apart.
+ *
+ * The restore runs in a nested mutation, so its own end-of-mutation work runs before the reads here.
+ * Only the first step of each job runs in the request. A big delete or a job that waits for another
+ * one is not finished, and the preview says so.
+ */
+export const preview_restore = internalMutation({
+	args: {
+		force: v.optional(v.boolean()),
+		credentialId: v.id("api_credentials"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		paths: v.array(v.string()),
+		nodes: v.array(v.object({ nodeId: v.string(), archiveOperationId: v.string() })),
+		onConflict: v.union(v.literal("keep_both"), v.literal("skip")),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const restored = (await ctx.runMutation(internal.public_api_files_organize.restore_items, {
+			...args,
+			requestId: null,
+		})) as restore_items_Result;
+		const jobs = [];
+		for (const jobId of restored.jobIds) {
+			const job = (await ctx.runQuery(internal.public_api_files_organize.get_job, {
+				credentialId: args.credentialId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				jobId,
+				cursor: null,
+			})) as get_job_Result;
+			if (!job) throw should_never_happen("A restore job of this request is missing", { jobId });
+			// The job id names nothing after the rollback, so leave it out.
+			const { jobId: _jobId, refusedCursor, ...preview } = job;
+			jobs.push({ ...preview, hasMoreItems: refusedCursor !== null });
+		}
+		// Keep this throw. Returning would save the restore.
+		throw convex_error({
+			message: "Restore preview rolled back",
+			data: { kind: "restore_preview", preview: { isDone: restored.isDone, refused: restored.refused, jobs } },
+		});
+	},
+});
+
+type RestorePreview = {
+	isDone: boolean;
+	refused: restore_items_Result["refused"];
+	jobs: Array<Omit<NonNullable<get_job_Result>, "jobId" | "refusedCursor"> & { hasMoreItems: boolean }>;
+};
 
 const restore_body_validator = z
 	.object({
 		force: z.boolean().optional(),
-		paths: z.array(z.string()).min(1),
+		paths: z.array(z.string()).min(1).optional(),
+		/**
+		 * Items from `files/trash/list`, by id. Use it when several deleted items have one path.
+		 */
+		nodes: z
+			.array(z.object({ nodeId: z.string().min(1).max(64), archiveOperationId: z.string().min(1).max(64) }).strict())
+			.min(1)
+			.optional(),
 		onConflict: z.union([z.literal("keep_both"), z.literal("skip")]).optional(),
 		/**
-		 * Send the same `requestId` and body again to retry safely. The answer then names the same jobs.
+		 * Run the restore and undo it, to see what it would do. Nothing is saved.
 		 */
-		requestId: z.string().min(1).max(64),
+		dryRun: z.boolean().optional(),
+		/**
+		 * Send the same `requestId` and body again to retry safely. The answer then names the same jobs.
+		 * Required unless `dryRun` is true.
+		 */
+		requestId: z.string().min(1).max(64).optional(),
 	})
 	.strict();
 
@@ -905,16 +1487,33 @@ export async function public_api_files_organize_http_restore(args: {
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
-	// Count the paths here, not in the schema, so the answer names the limit.
-	if (body._yay.paths.length > RESTORE_MAX_PATHS) {
+	const dryRun = body._yay.dryRun === true;
+	if ((body._yay.paths === undefined) === (body._yay.nodes === undefined)) {
+		return { status: 400, body: { message: "Send either paths or nodes." } } as const;
+	}
+	// A dry run saves nothing, so there is nothing to retry.
+	if (dryRun && body._yay.requestId !== undefined) {
+		return { status: 400, body: { message: "A dry run takes no requestId." } } as const;
+	}
+	if (!dryRun && body._yay.requestId === undefined) {
+		return { status: 400, body: { message: "requestId is required." } } as const;
+	}
+	// Count the items here, not in the schema, so the answer names the limit.
+	if ((body._yay.paths ?? body._yay.nodes ?? []).length > RESTORE_MAX_ITEMS) {
 		return {
 			status: 400,
-			body: { message: `Restore at most ${RESTORE_MAX_PATHS} paths at once. Split the list into several calls.` },
+			body: { message: `Restore at most ${RESTORE_MAX_ITEMS} items at once. Split the list into several calls.` },
 		} as const;
+	}
+	const nodes = body._yay.nodes ?? [];
+	for (const [index, node] of nodes.entries()) {
+		if (nodes.findIndex((other) => other.nodeId === node.nodeId) !== index) {
+			return { status: 400, body: { message: "Duplicate node in batch", nodeId: node.nodeId } } as const;
+		}
 	}
 
 	const paths: string[] = [];
-	for (const rawPath of body._yay.paths) {
+	for (const rawPath of body._yay.paths ?? []) {
 		if (!rawPath.startsWith("/")) {
 			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
 		}
@@ -937,20 +1536,48 @@ export async function public_api_files_organize_http_restore(args: {
 		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
 	}
 
-	let result: restore_paths_Result;
+	const restoreArgs = {
+		credentialId: principal.credentialId,
+		force: body._yay.force === true,
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: principal.userId,
+		paths,
+		nodes,
+		// Keep both never loses an item, and the app asks nothing for an API job.
+		onConflict: body._yay.onConflict ?? "keep_both",
+	};
+	let result: restore_items_Result;
 	try {
-		result = (await ctx.runMutation(internal.public_api_files_organize.restore_paths, {
-			credentialId: principal.credentialId,
-			force: body._yay.force === true,
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			userId: principal.userId,
-			paths,
-			// Keep both never loses an item, and the app asks nothing for an API job.
-			onConflict: body._yay.onConflict ?? "keep_both",
-			requestId: body._yay.requestId,
-		})) as restore_paths_Result;
+		if (dryRun) {
+			await ctx.runMutation(internal.public_api_files_organize.preview_restore, restoreArgs);
+			throw should_never_happen("A restore preview returned instead of rolling back");
+		}
+		result = (await ctx.runMutation(internal.public_api_files_organize.restore_items, {
+			...restoreArgs,
+			requestId: body._yay.requestId!,
+		})) as restore_items_Result;
 	} catch (error) {
+		if (
+			dryRun &&
+			error instanceof ConvexError &&
+			z.object({ data: z.object({ kind: z.literal("restore_preview") }) }).safeParse(error.data).success
+		) {
+			// Only `preview_restore` throws this kind, and a mutation error crosses `runMutation` unchanged, so
+			// trust the `RestorePreview` shape here.
+			const { preview } = (error.data as { data: { preview: RestorePreview } }).data;
+			return {
+				status: 200,
+				body: {
+					dryRun: true as const,
+					// False when a job did not end in the first step: its later results are unknown.
+					complete: preview.isDone,
+					refused: preview.refused,
+					jobs: preview.jobs,
+				},
+				headers: { "Cache-Control": "no-store" },
+			} as const;
+		}
 		const failure =
 			error instanceof ConvexError
 				? z.object({ message: z.string(), data: restore_failure_validator }).safeParse(error.data)
@@ -1339,7 +1966,13 @@ export const get_job = internalQuery({
 			status: app_convex_schema.tables.activities.validator.fields.status,
 			progress: app_convex_schema.tables.activities.validator.fields.progress,
 			errorMessage: v.union(v.string(), v.null()),
-			refused: v.array(v.object({ path: v.union(v.string(), v.null()), message: v.string() })),
+			refused: v.array(
+				v.union(
+					v.object({ path: v.union(v.string(), v.null()), message: v.string() }),
+					// A restore that named its items by node id.
+					v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+				),
+			),
 			/**
 			 * Restore: the items that Keep both brought back under a new name. Move and copy never rename.
 			 */

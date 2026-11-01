@@ -6968,9 +6968,15 @@ const app_convex_schema = defineSchema({
 				 */
 				inputHash: v.string(),
 				/**
-				 * The paths refused before any job started.
+				 * The paths or node ids refused before any job started. A node keeps its current path, or null
+				 * when the key cannot open it or it is missing.
 				 */
-				refused: v.array(v.object({ path: v.string(), message: v.string() })),
+				refused: v.array(
+					v.union(
+						v.object({ path: v.string(), message: v.string() }),
+						v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+					),
+				),
 				/**
 				 * Every job of the request, this one last. One job per archive operation.
 				 */
