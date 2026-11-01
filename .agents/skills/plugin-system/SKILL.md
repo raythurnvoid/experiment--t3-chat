@@ -1241,7 +1241,9 @@ set in the dashboard. Every function stopped, crons too, and the two new account
 `_scheduled_functions` table shows the error on the failed slice. `convex logs` then shows nothing at
 all. `convex deployment usage-limits list` showed the cause: the 400,000 function calls a month limit
 (400,005 used), while both action compute limits were at 39%. Most of those calls came from earlier
-October versions. The deployment turns on again on 2026-11-01 at 00:00 UTC.
+October versions. The deployment turned on again on 2026-11-01 at 00:00 UTC with no action from us. By
+18:00 UTC all three accounts were `live` with hourly slices, the blocked account included, and the month
+had used 3,641 calls.
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
