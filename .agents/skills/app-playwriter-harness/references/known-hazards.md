@@ -1158,6 +1158,12 @@ rule that made this a user-only blocker no longer applies.
   `ESTABLISHED` rows for `[::1]:5173`, a grep for `LISTEN` found nothing, and a second Vite started on
   5174. `Get-NetTCPConnection -State Listen` showed the listener. Use it, or treat any `:5173` row as a
   running server.
+- A Vite on 5174 cannot run the app. The Convex auth route allows only `http://localhost:5173`, so on
+  5174 the anonymous token request fails CORS and the page stays on "Preparing organization" for good.
+  Seen 2026-11-01 with only a 5174 server left running. Reading the logs shows `blocked by CORS policy`
+  for `/api/auth/anonymous`. When 5173 is free, start Vite there with
+  `vp env exec pnpm --dir packages/app run dev -- --port 5173 --strictPort` and leave the 5174 process
+  alone.
 - Check both ports and process command lines. Reuse a running server. Do not stop it or start a
   second copy on another port. When no server is running, use
   `vp env exec pnpm --dir packages/app run dev`. Follow `AGENTS.md` for the Convex dev target too.

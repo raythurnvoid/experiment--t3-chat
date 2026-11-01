@@ -166,6 +166,7 @@ await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state
 - Save and Sync refusals surface as toasts; push refusals show the server `_nay` message verbatim, including the "This change is too large to compare safely" diff-budget message. Read `[data-sonner-toast]` in the same execute call as the click.
 - A refused content read renders a closed-editor alert instead of a fabricated empty document. Do not read a missing `.monaco-editor` as "still loading" without checking for that alert.
 - The plain text editor does not live-collaborate. Edits stay local until `Save`, and `Sync` is disabled while `workingYjsDocSequence === serverSequence` — that is, until somebody else moves the server forward.
+- Live check of the one-time loader (`files_fetch_file_yjs_state_and_text`): open a file with `view=plain_text_editor`, then append through `/api/v1/files/append`. `Sync` turns on within a few seconds. Click it: the model shows the append and `Sync` turns off again. If `Sync` stays on, the loader returned an older sequence than the document it loaded. For a rich-text file the Markdown view always ends with a newline, even when the saved bytes do not. `Save` stays off, so that alone writes nothing. Read the text with `window.__qa.monaco().plainText.getModel().getValue()`. Verified 2026-11-01.
 
 ### Non-Collaborative Save Retry QA
 
