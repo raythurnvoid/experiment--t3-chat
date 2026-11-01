@@ -953,9 +953,12 @@ denial and denied reloads. A real host and approved guest joined through the shi
 The host's Allow button and End for all flow passed. All three dashboard assets matched the
 reviewed commit. Test rooms were closed without recording; the five old artifact rows were kept.
 
-SDK 0.25.1 is not mirrored yet. It changes the generated `files/list` type to `cursor: string | null`,
-because the route now ends with `cursor: null` instead of `""`, and adds one README line. The runtime is
-unchanged. Mirror it with the next SDK release. No plugin release is needed: plugins stop on `isDone`.
+SDK 0.25.1 was mirrored on 2026-11-01 at `854e9dccca48101f6e59a0b854bdb6ce318c7447`.
+Its tree equals `e46c7af0:packages/bonobo-plugin-sdk`. Only types and docs changed: the last
+`files/list` page is `cursor: null` instead of `""`, `files/write` has optional `expectedRevision`
+and answers `revision`, `size` and `contentChanged`, `files/read` has the `X-File-Is-Latest` header,
+and the docs say "move to Trash". The runtime is unchanged. Typecheck and 51 SDK tests pass. No
+plugin release is needed: plugins stop on `isDone`. Pin this commit with the next plugin release.
 
 SDK 0.25.0 was mirrored on 2026-10-29 at `a0322669307d364a83eaff2458a8bf7445266b2a`.
 Its tree equals `0c260db7:packages/bonobo-plugin-sdk`. Host commit `c76f890f` replaces file reads

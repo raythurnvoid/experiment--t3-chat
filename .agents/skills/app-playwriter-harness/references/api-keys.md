@@ -79,3 +79,4 @@ Verified 2026-10-21 on the dev app. Run each step as a `-f` runner file from the
 
 - The key file is `~/.config/bonobo-senate/credentials.json`. It is outside `AppData`, so the user's own terminal sees the same key as the Claude desktop app.
 - `logout` deletes the key file but does not revoke the key. To revoke it, click `Revoke <name>` on the API keys page.
+- A one-off job in another workspace (for example installing the skill copy in `personal/home`) must not use `login`: it replaces the saved key, which other QA uses. Do steps 1-7, then in ONE PowerShell call check the clipboard, set `$env:T3_API_KEY` from it and `$env:T3_API_ORIGIN`, clear the clipboard, run the job, and `Remove-Item` both variables. The CLI uses `T3_API_KEY` before the key file. Then revoke the key (the dialog asks again; click `Revoke key` inside the dialog that names the key). Done 2026-11-01.
