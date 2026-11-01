@@ -4591,7 +4591,7 @@ describe("locked and missing paths", () => {
 			body: (await response.json()) as {
 				message?: string;
 				items: Array<{ path: string }>;
-				cursor: string;
+				cursor: string | null;
 				isDone: boolean;
 			},
 		};
@@ -4607,9 +4607,11 @@ describe("locked and missing paths", () => {
 				const page = await list(t, credential, { path: "/", recursive: true, limit: 1, cursor });
 				expect(page.status).toBe(200);
 				paths.push(...page.body.items.map((item) => item.path));
-				if (page.body.isDone) return { paths, cursors };
-				cursors.push(page.body.cursor);
-				cursor = page.body.cursor;
+				if (page.body.isDone) return { paths, cursors, lastCursor: page.body.cursor };
+				const next = page.body.cursor;
+				if (next === null) throw new Error("A page before the end has no cursor");
+				cursors.push(next);
+				cursor = next;
 			}
 		};
 
@@ -4617,6 +4619,8 @@ describe("locked and missing paths", () => {
 		// Locked items are listed, and the walk does not enter the locked folder, so the share inside it
 		// is not listed (it opens by path).
 		expect(member.paths).toEqual(["/b.md", "/hidden.md", "/notes", "/secret"]);
+		// The last page ends with a null cursor, like every other public paged route.
+		expect(member.lastCursor).toBeNull();
 		const cursors = member.cursors.join("\n");
 		expect(cursors, "no cursor shows a hidden path").not.toContain("/secret/h");
 		for (const id of f.hiddenIds) expect(cursors, "no cursor shows a hidden id").not.toContain(id);
@@ -4692,7 +4696,7 @@ describe("locked and missing paths", () => {
 		});
 		expect(await list(t, f.memberCredential, { path: "/notes" })).toMatchObject({
 			status: 200,
-			body: { items: [], isDone: true },
+			body: { items: [], cursor: null, isDone: true },
 		});
 		for (const body of [{}, { path: "" }, { path: "/" }]) {
 			expect((await list(t, f.memberCredential, body)).status).toBe(200);

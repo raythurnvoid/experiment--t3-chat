@@ -8,23 +8,56 @@ import { ai_chat_skills_LIMITS, ai_chat_skills_parse } from "../server/ai-chat-s
 const skillRoot = fileURLToPath(new URL("../../../.agents/skills/press-api/", import.meta.url));
 const schemaPath = fileURLToPath(new URL("../shared/api-schemas.ts", import.meta.url));
 
+/**
+ * Read a Markdown file without its fenced code blocks, so a sample inside a code block is not read as a link or a heading.
+ */
+function read_prose(file: string) {
+	return readFileSync(file, "utf8").replace(/^```[\s\S]*?^```/gmu, "");
+}
+
+/**
+ * Make the `#anchor` of every heading the way GitHub does: drop inline code and bold marks, keep letters, digits,
+ * `_`, `-` and spaces, lowercase, and turn spaces into `-`. A repeated heading gets `-1`, `-2`, and so on.
+ */
+function heading_anchors(markdown: string) {
+	const counts = new Map<string, number>();
+	return [...markdown.matchAll(/^#{1,6}\s+(.+?)\s*$/gmu)].map((match) => {
+		const slug = match[1]
+			.replace(/\[([^\]]*)\]\([^)]*\)/gu, "$1")
+			.toLowerCase()
+			.replace(/[^\p{L}\p{N}_ -]/gu, "")
+			.replaceAll(" ", "-");
+		const count = counts.get(slug) ?? 0;
+		counts.set(slug, count + 1);
+		return count === 0 ? slug : `${slug}-${count}`;
+	});
+}
+
 describe("Bonobo Senate API client skill", () => {
-	test("loads valid metadata and readable resources without links outside its folder", () => {
+	test("loads valid metadata and readable resources whose links work from their own file", () => {
 		const entry = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
 		expect(ai_chat_skills_parse(entry, "press-api")._yay?.name).toBe("press-api");
+		// The CLI prints the skill version, so a user can tell whether a copy is current.
+		const version = /^metadata:\r?\n\s+version: "([^"]+)"/mu.exec(entry)?.[1];
+		expect(version).toBeTruthy();
+		expect(readFileSync(path.join(skillRoot, "scripts/api.mjs"), "utf8")).toContain(`const VERSION = "${version}";`);
 		const files = globSync("**/*.md", { cwd: skillRoot });
 		const linked = new Set<string>();
 		for (const file of files) {
 			const text = readFileSync(path.join(skillRoot, file), "utf8");
 			expect(Buffer.byteLength(text), file).toBeLessThanOrEqual(ai_chat_skills_LIMITS.skill);
-			for (const match of text.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)) {
-				const target = match[1].split("#")[0];
-				expect(target, `${file}: ${target}`).not.toMatch(/^(?:[a-z]+:|[/\\])/iu);
-				const resolved = path.resolve(skillRoot, target);
+			for (const match of read_prose(path.join(skillRoot, file)).matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)) {
+				const [target, anchor] = match[1].split("#");
+				expect(target, `${file}: ${match[1]}`).not.toMatch(/^(?:[a-z]+:|[/\\])/iu);
+				// A link opens from the folder of the file that holds it, like on GitHub and in editors.
+				// An anchor alone points into the same file.
+				const resolved = target ? path.resolve(skillRoot, path.dirname(file), target) : path.join(skillRoot, file);
 				const relative = path.relative(skillRoot, resolved);
-				expect(relative, `${file}: ${target}`).not.toMatch(/^\.\.(?:[/\\]|$)/u);
-				expect(path.isAbsolute(relative), `${file}: ${target}`).toBe(false);
-				expect(readFileSync(resolved, "utf8").length, `${file}: ${target}`).toBeGreaterThan(0);
+				expect(relative, `${file}: ${match[1]}`).not.toMatch(/^\.\.(?:[/\\]|$)/u);
+				expect(path.isAbsolute(relative), `${file}: ${match[1]}`).toBe(false);
+				expect(readFileSync(resolved, "utf8").length, `${file}: ${match[1]}`).toBeGreaterThan(0);
+				if (anchor !== undefined)
+					expect(heading_anchors(read_prose(resolved)), `${file}: ${match[1]}`).toContain(anchor);
 				linked.add(relative);
 			}
 		}

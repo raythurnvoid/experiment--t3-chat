@@ -501,7 +501,7 @@ export type BonoboHttpApi = {
 							size: number | null;
 							locked: boolean;
 						}[];
-						cursor: string;
+						cursor: string | null;
 						isDone: boolean;
 						message?: undefined;
 					};

@@ -296,7 +296,9 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 											locked: item.locked,
 										};
 									}),
-									cursor: result.continueCursor,
+									// End with `null`, like every other public paged route. The saved list answers an
+									// empty cursor when it is done.
+									cursor: result.isDone ? null : result.continueCursor,
 									isDone: result.isDone,
 								},
 								headers: { "Cache-Control": "no-store" },
