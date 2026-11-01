@@ -741,19 +741,21 @@ Verified 2026-09-14.
 ## Walk The Files Tree From Page Context
 
 No query returns the whole tree. The sidebar loads one folder at a time, and so does this walk. It
-reads the same streams as the sidebar (`files_tree_stream_args` in `src/lib/files-tree-context.tsx`):
-for each folder and each kind, the open children, the owner's restricted children
-(`restricted: true`), and a member's 4 share streams. Each stream answers an empty, done page to
-the reader it is not for, so the walk works for the owner and for a member. A member with no
-workspace read gets no root rows from the open stream, so the walk also reads
-`list_tree_shared_roots` when it starts at the root.
+reads the same streams as the sidebar (`useFilesTreeKindStreams` in `src/lib/files-tree-context.tsx`):
+for each folder and each kind, `list_tree_children` with `stream: "normal"` and `stream: "cohort"`
+(the required `stream` arg; a call without it fails with `ArgumentValidationError`), each with the
+open children (`restricted: false`) and the restricted twin (`restricted: true`). The twin gives a
+member each child they cannot open as a locked row (`locked: true`, name, path and size only). The
+tree no longer reads `list_tree_children_shared` per folder. A member with no workspace read gets no
+root rows from the open stream, so the walk also reads `list_tree_shared_roots` when it starts at
+the root.
 
-Rows are saved nodes only, never drafts. Each row has `_id`, `kind`, `name`, `path`, `parentId`,
+Rows are saved nodes only, never drafts. Each open row has `_id`, `kind`, `name`, `path`, `parentId`,
 `archiveOperationId`, `restrictedScopeNodeId`, `contentType`, `canWrite`, `writeBlockedReason`, and
 `readOnly`. The internal decision id is not public. This field change is a source contract pending
-native QA. Pass `archived: [false, true]` to get trashed nodes too. Each folder costs about
-10 calls, so start at the smallest folder that holds your fixture. A big walk takes longer than 5 s,
-so start it in one call and read it in later calls:
+native QA. Pass `archived: [false, true]` to get trashed nodes too. Each folder costs about 8 calls,
+so start at the smallest folder that holds your fixture. A big walk takes longer than 5 s, so start
+it in one call and read it in later calls:
 
 ```js
 // Call 1: start the walk and park it on `window`. It returns at once.
@@ -796,14 +798,13 @@ await state.page.evaluate(
 				for (const kind of ["folder", "file"]) {
 					for (const a of archived) {
 						const args = { membershipId, parentId, kind, archived: a };
-						const shared = { ...args, sort: [{ field: "name", direction: "asc" }], filter: null, namePrefix: null, segment: "value" };
-						const pages = await Promise.all([
-							readAll(api.files_tree.list_tree_children, { ...args, restricted: false }),
-							readAll(api.files_tree.list_tree_children, { ...args, restricted: true }),
-							...[0, 1, 2].map((principalIndex) =>
-								readAll(api.files_tree.list_tree_children_shared, { ...shared, principalIndex }),
+						const pages = await Promise.all(
+							["normal", "cohort"].flatMap((stream) =>
+								[false, true].map((restricted) =>
+									readAll(api.files_tree.list_tree_children, { ...args, stream, restricted }),
+								),
 							),
-						]);
+						);
 						add(pages.flat());
 					}
 				}
