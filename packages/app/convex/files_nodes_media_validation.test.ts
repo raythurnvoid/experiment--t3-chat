@@ -579,20 +579,22 @@ describe("saved file media validation clocks", () => {
 			await f.asUser.mutation(api.files_nodes.unarchive_nodes, { membershipId: f.db.membershipId, nodeIds: [child] }),
 		).toEqual({ _yay: null });
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", parent)))?.archiveOperationId).toBeTruthy();
-		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", child))).toMatchObject({
-			parentId: "root",
-			path: "/child",
+		// The child comes back at its Trash path in a new, open `/parent`.
+		const restoredChild = await f.t.run((ctx) => ctx.db.get("files_nodes", child));
+		expect(restoredChild).toMatchObject({
+			path: "/parent/child",
 			restrictedScopeNodeId: null,
 			archiveOperationId: null,
 		});
+		expect(restoredChild?.parentId).not.toBe(parent);
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nested))).toMatchObject({
 			parentId: child,
-			path: "/child/nested",
+			path: "/parent/child/nested",
 			restrictedScopeNodeId: null,
 			archiveOperationId: null,
 		});
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", restricted))).toMatchObject({
-			path: "/child/restricted",
+			path: "/parent/child/restricted",
 			restrictedScopeNodeId: restricted,
 			archiveOperationId: null,
 		});

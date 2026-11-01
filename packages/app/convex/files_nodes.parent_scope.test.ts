@@ -187,7 +187,8 @@ test("restoring a restricted folder points at the area where it lands", async ()
 	await set_restricted(f, childId, true);
 	expect((await get_node(f, childId)).parentScopeNodeId).toBe(parentId);
 
-	// Archive the child first, so it can come back alone. Its parent stays archived, so it lands at the top.
+	// Archive the child first, so it can come back alone. Its parent stays archived, so it lands at its
+	// Trash path in a new, open `/p`.
 	for (const nodeId of [childId, parentId]) {
 		await reset_rate_limits(f.t, [f.db.userId]);
 		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
@@ -208,7 +209,8 @@ test("restoring a restricted folder points at the area where it lands", async ()
 
 	const node = await get_node(f, childId);
 	expect(node.archiveOperationId).toBe(null);
-	expect(node.parentId).toBe("root");
+	expect(node).toMatchObject({ path: "/p/r" });
+	expect(node.parentId).not.toBe(parentId);
 	expect(node.parentScopeNodeId).toBe(null);
 });
 

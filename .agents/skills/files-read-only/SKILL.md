@@ -233,15 +233,34 @@ The shared id groups a folder with what was moved to Trash with it. It does not 
 Overlapping selections restore each item once. Access and Read-only checks cover that selection.
 
 Check the selected item and its direct parent, not an unselected ancestor from the same delete.
-An active parent keeps the item in place and needs Can edit; a live Read-only parent blocks it.
+An active parent at the item's Trash parent path keeps the item in place and needs Can edit; a live
+Read-only parent blocks it.
 An archived parent's own Read-only flag does not block Restore, but its access checks still apply.
-An archived or missing parent sends the selected item to workspace root. That landing needs root
-write and permission to leave its restricted scope. An item with its own restriction keeps it and
-needs no root or scope-leave check. An item already at root stays in place.
+
+Restore brings a selected item back at its Trash path, like `mkdir -p` and then a move. Move to
+Trash saves the path in `archivedPath` at the first stamp. A later stamp, rename or Move above the
+item does not change it, and Restore clears it. Decided 2026-11-01: following the old parent folder
+gave too many edge cases, for example a parent that is in Trash too.
+
+- The item stays in place when its live parent still has the Trash parent path, or when it was at
+  the root and still is.
+- It joins its parent's restore when another restore brings the parent back, or when somebody moved
+  the parent to Trash during the job.
+- Otherwise the job walks the Trash parent path from the root, by parent id, through live folders.
+  It creates the missing folders in the deepest live folder it finds, at most
+  `files_NEW_FOLDER_DEPTH_MAX` (32) per step, and lands the item there. A live folder that was
+  renamed keeps its new name. An old folder in Trash stays there with its other items.
+- The new folders are open folders, made by the normal folder create. So that create needs write
+  access in the deepest live folder, which must not be Read-only. The landing also needs permission
+  to leave the item's restricted scope. An item with its own restriction keeps it and needs no
+  scope-leave check, but the create check still applies.
+- A live file where a folder of the path should be refuses the job with `file_in_the_way`. The
+  message names the file only for somebody who may read it, else "Permission denied".
+- The check phase runs these checks before any write, so a refusal changes nothing.
 
 The job stores every selected id and path in required `restoreRoots`, separate from `rootNodeIds`,
-the root landing list. After the Move job fixes stored paths, discovery reads those ids again and
-refreshes their paths. When a selected folder contains another selected item, the check visits that
+the top items that land at their Trash path in another folder. After the Move job fixes stored
+paths, discovery reads those ids again and refreshes their paths. When a selected folder contains another selected item, the check visits that
 item only once. Folder ids stay separate even when they have the same path. Each operation is
 one job; jobs in a request run one at a time. A refusal names every original selection of that
 operation, even a covered child. Other operations may start in the API; the app stops at the first
@@ -269,8 +288,8 @@ would give, and it saves nothing. See the `public-api` skill.
 
 Restore name clashes keep Keep both, Skip, and Replace. Replace always refuses a Read-only occupant,
 even for a forced request. It keeps its existing empty-folder rules and bounded checks of content in Trash.
-Separate Trash operations remain separate. Moving an item to root still needs its root and
-restricted-scope exit permissions.
+Separate Trash operations remain separate. Landing an item in another folder still needs write
+access there and restricted-scope exit permissions.
 
 Reviewed pending Delete uses the Save cohort. It checks active descendants before the group switch;
 already trashed descendants keep their stamps and do not block it. Stop before the switch keeps

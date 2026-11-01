@@ -10465,10 +10465,10 @@ describe("file sharing", () => {
 
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 
-		// Only the child comes back. Its parent is still archived, so it lands at the top of the tree,
-		// which is a move to a new parent and follows the same rule a move does: it takes the access of
-		// where it lands. Keeping the old pointer would leave it locked to a folder nobody can open the
-		// share dialog on.
+		// Only the child comes back. Its parent is still archived, so it lands at its Trash path in a new,
+		// open `/closed` folder. That is a move to a new parent and follows the same rule a move does: it
+		// takes the access of where it lands. Keeping the old pointer would leave it locked to a folder
+		// nobody can open the share dialog on.
 		const unarchived = await fixture.asOwner.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: fixture.ownerMembershipId,
 			nodeIds: [String(childId)],
@@ -10476,7 +10476,8 @@ describe("file sharing", () => {
 		expect(unarchived._nay).toBeUndefined();
 
 		const childNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", childId));
-		expect(childNode?.parentId).toBe(files_ROOT_ID);
+		expect(childNode?.parentId).not.toBe(folderId);
+		expect(childNode?.path.startsWith("/closed/")).toBe(true);
 		expect(childNode?.restrictedScopeNodeId).toBeNull();
 
 		const visible = await fixture.asMember.query(api.files_tree.get_file_node_for_membership, {
@@ -11117,7 +11118,7 @@ describe("file sharing", () => {
 		});
 		expect(granted._nay).toBeUndefined();
 
-		// The restricted folder goes first, so a restore of it lands at the root and `/outer` stays archived.
+		// The restricted folder goes first, so a restore of it alone leaves the old `/outer` in Trash.
 		for (const nodeId of [closed._yay!.nodeId, outer._yay!.nodeId]) {
 			await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 			const archived = await fixture.asOwner.mutation(api.files_nodes.archive_nodes, {
@@ -11127,11 +11128,18 @@ describe("file sharing", () => {
 			expect(archived._nay).toBeUndefined();
 		}
 
-		// The path `/closed` would land on, taken by a restricted folder this guest holds nothing on.
+		// The Trash path `/outer/closed`, in a new live `/outer`, taken by a restricted folder this guest
+		// holds nothing on.
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
-		const blocker = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+		const newOuter = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: fixture.ownerMembershipId,
 			parentId: files_ROOT_ID,
+			path: "outer",
+		});
+		expect(newOuter._nay).toBeUndefined();
+		const blocker = await fixture.asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: fixture.ownerMembershipId,
+			parentId: newOuter._yay!.nodeId,
 			path: "closed",
 		});
 		expect(blocker._nay).toBeUndefined();
@@ -11172,7 +11180,7 @@ describe("file sharing", () => {
 			membershipId: fixture.memberMembershipId,
 			runId,
 		});
-		expect(withRead?.conflict).toMatchObject({ name: "closed", occupantPath: "/closed" });
+		expect(withRead?.conflict).toMatchObject({ name: "closed", occupantPath: "/outer/closed" });
 	});
 
 	test("two restores landing on one path do not name the other node to a caller who cannot open it", async () => {

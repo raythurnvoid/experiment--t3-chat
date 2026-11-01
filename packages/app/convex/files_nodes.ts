@@ -3183,6 +3183,8 @@ export async function files_nodes_db_archive_node(
 					? args.node.path.length
 					: undefined
 				: args.node.archivedPathLength,
+		// Restore lands the item where it was when it first moved to Trash.
+		archivedPath: args.node.archiveOperationId === null ? args.node.path : args.node.archivedPath,
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
@@ -3225,6 +3227,7 @@ export async function files_nodes_db_restore_node(
 	await ctx.db.patch("files_nodes", args.node._id, {
 		archiveOperationId: null,
 		archivedPathLength: undefined,
+		archivedPath: undefined,
 		parentId,
 		name: args.name,
 		sortName: files_sort_text_key(args.name),

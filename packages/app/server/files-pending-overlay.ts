@@ -2779,9 +2779,12 @@ export async function files_pending_overlay_db_child_ancestors(
 }
 
 /**
- * Write `ancestor1..12` of the saved nodes of this round that were inserted or whose parent or
- * `treePath` changed. Parents go first (shorter `treePath`), so a child copies its parent's new
- * ancestors. The patch writes ancestor fields only, so the wrapper marks nothing.
+ * Write `ancestor1..12` of the saved nodes of this round that were inserted, came back from Trash, or
+ * whose parent or `treePath` changed. Parents go first (shorter `treePath`), so a child copies its
+ * parent's new ancestors. The patch writes ancestor fields only, so the wrapper marks nothing.
+ *
+ * A Restore can put a folder in a new folder with the same path, and the items inside keep their
+ * parent and path. So an item that comes back from Trash copies its parent's ancestors again.
  */
 async function db_flush_ancestors(
 	flush: Flush,
@@ -2791,7 +2794,13 @@ async function db_flush_ancestors(
 	const known = new Map<Id<"files_nodes">, Id<"files_nodes">[]>();
 	const moved = nodes
 		.flatMap(({ node, old }) =>
-			node && (!old || old.parentId !== node.parentId || old.treePath !== node.treePath) ? [node] : [],
+			node &&
+			(!old ||
+				old.parentId !== node.parentId ||
+				old.treePath !== node.treePath ||
+				(old.archiveOperationId !== null && node.archiveOperationId === null))
+				? [node]
+				: [],
 		)
 		.sort((a, b) => a.treePath.length - b.treePath.length);
 	for (const node of moved) {

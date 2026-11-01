@@ -86,6 +86,7 @@ async function insert_root_file(f: Fixture, args: { name: string; archiveOperati
 			treePath: `/${args.name}`,
 			pathDepth: 1,
 			archiveOperationId: args.archiveOperationId,
+			...(args.archiveOperationId !== null ? { archivedPath: `/${args.name}` } : {}),
 		}),
 	);
 }
@@ -155,11 +156,10 @@ describe("files/restore", () => {
 			expect((await read_node(f, tree.topId)).archiveOperationId, "unselected parent stays in Trash").toBe(operationId);
 			expect((await read_node(f, tree.folderIds[1]!)).archiveOperationId).toBe(operationId);
 			expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBe(operationId);
-			expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({
-				archiveOperationId: null,
-				path: "/d0",
-				parentId: "root",
-			});
+			// The folder comes back at its Trash path, in a new `/selected`.
+			const restored = await read_node(f, tree.folderIds[0]!);
+			expect(restored).toMatchObject({ archiveOperationId: null, path: "/selected/d0" });
+			expect(restored.parentId).not.toBe(tree.topId);
 			expect((await read_node(f, tree.fileIds[0]!)).archiveOperationId).toBe(olderOperation);
 			expect((await read_node(f, tree.fileIds[54]!)).archiveOperationId).toBeNull();
 			expect(ended.activity.progress).toMatchObject({ total: 55, completed: 55 });
@@ -282,7 +282,7 @@ describe("files/restore", () => {
 		// Keep a child in Trash, as when a job stops after landing its folder.
 		await test_run_with_flush(f.t, async (ctx) => {
 			await ctx.db.patch("activities", jobId, { status: "failed" });
-			await ctx.db.patch("files_nodes", tree.fileIds[0]!, { archiveOperationId });
+			await ctx.db.patch("files_nodes", tree.fileIds[0]!, { archiveOperationId, archivedPath: "/old/d0/f000.md" });
 		});
 		await f.t.run(async (ctx) => {
 			const cohortId = await test_db_hold_move_slot(ctx, f.db);
@@ -329,7 +329,7 @@ describe("files/restore", () => {
 		expect(
 			await post(f, "/api/v1/files/jobs/get", key.credential, { jobId }),
 			"recovery names the selected child at its published Move path",
-		).toMatchObject({ status: 200, body: { status: "failed", refused: [{ path: "/done/f000.md" }] } });
+		).toMatchObject({ status: 200, body: { status: "failed", refused: [{ path: "/old/done/f000.md" }] } });
 	});
 
 	test("restores what it can and refuses each bad path alone", async () => {
@@ -562,8 +562,8 @@ describe("files/restore", () => {
 		expect(new Set(renamed.map((item) => JSON.stringify(item))).size).toBe(100);
 		expect(renamed).toContainEqual({ path: "/c099.md", newPath: "/c099-2.md" });
 
-		// Skip leaves the item in the Trash, and the job names the path it keeps there. Its folder is gone, so it
-		// would land at the root, next to an item with its name.
+		// Skip leaves the item in the Trash, and the job names the path it keeps there. Its Trash path is
+		// `/kept.md`, so it would land at the root, next to an item with its name.
 		const skippedId = await insert_root_file(f, { name: "kept.md", archiveOperationId: crypto.randomUUID() });
 		const goneFolderId = await folder(f, "/gone");
 		await f.t.run(async (ctx) => {
@@ -910,6 +910,7 @@ describe("files/trash/list", () => {
 				pathDepth: 2,
 				restrictedScopeNodeId: teamId,
 				archiveOperationId,
+				archivedPath: "/team/inside.md",
 			});
 		});
 		return teamId;

@@ -1432,12 +1432,15 @@ describe("files_share_rows", () => {
 		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
 		const membershipId = f.db.membershipId;
 
-		// `s` has its own archive, so the restore of `b` only moves it. `a` stays archived, so `b` lands
-		// at the root, and the restore's job writes the new `treePath` of `s` through the flush.
-		for (const node of [s, b, a])
+		// `s` has its own archive, so the restore of `b` only moves it. `a` is renamed to `/a2`, so `b`
+		// lands at its Trash path in a new `/a`, and the restore's job writes the new `treePath` of `s`
+		// through the flush.
+		for (const node of [s, b])
 			await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [node._id] }));
+		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId, nodeId: a._id, path: "a2" }));
+		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/a2/b/s/" }]);
 		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
-		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/b/s/", archiveOperationId: expect.any(String) }]);
+		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/a/b/s/", archiveOperationId: expect.any(String) }]);
 		await f.expect_share_rows_true();
 	});
 
@@ -1790,12 +1793,15 @@ describe("files_nodes ancestors", () => {
 		const z = await f.saved(null, "z", "folder");
 		expect((await node_at(f, "/a/b/x.md")).ancestors).toEqual([a._id, b._id]);
 
-		// `b` comes back while its folder stays archived by another operation, so it lands at the root.
+		// `b` comes back while its folder stays archived by another operation, so it lands at its saved
+		// path in a new `/a`.
 		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [b._id] }));
 		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [a._id] }));
 		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
-		expect((await node_at(f, "/b")).ancestors).toEqual([]);
-		expect((await node_at(f, "/b/x.md")).ancestors).toEqual([b._id]);
+		const newA = (await node_at(f, "/a/b")).parentId;
+		expect(newA).not.toBe(a._id);
+		expect((await node_at(f, "/a/b")).ancestors).toEqual([newA]);
+		expect((await node_at(f, "/a/b/x.md")).ancestors).toEqual([newA, b._id]);
 		await expect_ancestors_true(f);
 
 		// The Accept writes the move inside its counted unit.

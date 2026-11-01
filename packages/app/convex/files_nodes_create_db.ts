@@ -356,6 +356,8 @@ function node_insert_fields(args: {
 		readOnly: args.readOnly ?? false,
 		readOnlyDecisionId: args.readOnly ? (args.preservedReadOnlyDecisionId ?? crypto.randomUUID()) : null,
 		archiveOperationId: args.archiveOperationId ?? null,
+		// A node made directly in Trash comes back at the path it was made with.
+		...(args.archiveOperationId != null ? { archivedPath: args.path } : {}),
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: args.now,

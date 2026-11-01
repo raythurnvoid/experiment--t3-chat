@@ -57,6 +57,7 @@ export async function insert_tree_node(args: {
 		lowercaseExtension: args.kind === "file" ? "md" : null,
 		restrictedScopeNodeId: args.scope && args.scope !== "self" ? args.scope : null,
 		archiveOperationId: args.archiveOperationId ?? null,
+		...(args.archiveOperationId ? { archivedPath: args.path } : {}),
 	});
 	if (args.scope === "self") {
 		await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId, isRestrictedScopeRoot: true });

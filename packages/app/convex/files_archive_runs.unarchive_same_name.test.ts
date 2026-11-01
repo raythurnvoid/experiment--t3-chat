@@ -47,7 +47,7 @@ describe("unarchive_nodes", () => {
 		const f = await fixture();
 		const archiveOperationId = crypto.randomUUID();
 		const tree = await seed_same_path(f, { name: "ties", count: 151, archiveOperationId });
-		await f.t.run((ctx) => ctx.db.patch("files_nodes", tree.topId, { archiveOperationId }));
+		await f.t.run((ctx) => ctx.db.patch("files_nodes", tree.topId, { archiveOperationId, archivedPath: "/ties" }));
 
 		// The files share one name, so after the first one the job waits for a clash choice. The check
 		// has passed by then.

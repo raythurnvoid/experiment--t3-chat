@@ -3,7 +3,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_move_nodes } from "./setup.test.ts";
+import {
+	test_finish_saved_scope_jobs,
+	test_folder_chain_path,
+	test_move_nodes,
+	test_rename_node,
+} from "./setup.test.ts";
 import {
 	fixture,
 	seed_tree,
@@ -21,6 +26,8 @@ import {
 	queue_empty_folders_first,
 	count_queue,
 	archive_to_end,
+	folder,
+	find_node,
 } from "./files_archive_runs.setup.test.ts";
 
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
@@ -115,7 +122,7 @@ describe("unarchive_nodes", () => {
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
 	});
 
-	test("an item whose old folder is still archived lands at the workspace root", async () => {
+	test("an item whose old folder is still archived comes back in a new folder at its Trash path", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "orphan", folderCount: 1, filesPerFolder: 2 });
 		await archive_to_end(f, tree.folderIds[0]!);
@@ -123,10 +130,124 @@ describe("unarchive_nodes", () => {
 
 		expect(await restore(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
 
-		expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ parentId: "root", path: "/d0" });
-		expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/d0/f000.md" });
+		const restored = await read_node(f, tree.folderIds[0]!);
+		expect(restored).toMatchObject({ path: "/orphan/d0" });
+		// Like `mkdir -p`: a new live `/orphan`. The old one stays in Trash.
+		expect(restored.parentId).not.toBe(tree.topId);
+		expect(await read_node(f, restored.parentId as Id<"files_nodes">)).toMatchObject({
+			archiveOperationId: null,
+			path: "/orphan",
+		});
+		expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({
+			archiveOperationId: null,
+			path: "/orphan/d0/f000.md",
+		});
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
 		await expect_consistent(f);
+	});
+
+	describe("Trash path", () => {
+		test("an item whose active folder was renamed comes back at its Trash path, in a new folder", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "work", folderCount: 1, filesPerFolder: 2 });
+			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
+			expect(
+				(
+					await test_rename_node(f.t, f.asOwner, {
+						membershipId: f.db.membershipId,
+						nodeId: tree.topId,
+						path: "projects",
+					})
+				)._nay,
+			).toBeUndefined();
+
+			expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
+
+			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({
+				archiveOperationId: null,
+				path: "/work/d0/f000.md",
+			});
+			expect(await read_node(f, tree.topId), "the renamed folder keeps its name").toMatchObject({ path: "/projects" });
+			expect(await read_node(f, tree.fileIds[1]!)).toMatchObject({ path: "/projects/d0/f001.md" });
+			await expect_consistent(f);
+		});
+
+		test("a file where a folder of the Trash path should be refuses the restore and makes no folder", async () => {
+			const f = await fixture();
+			const tree = await seed_tree(f, { name: "blocked", folderCount: 1, filesPerFolder: 1 });
+			await archive_to_end(f, tree.folderIds[0]!);
+			// Put an active file named `d0` where the folder was.
+			const other = await seed_tree(f, { name: "other", folderCount: 1, filesPerFolder: 1 });
+			expect(
+				(
+					await test_rename_node(f.t, f.asOwner, {
+						membershipId: f.db.membershipId,
+						nodeId: other.fileIds[0]!,
+						path: "d0",
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(
+				await test_move_nodes(f.t, f.asOwner, {
+					membershipId: f.db.membershipId,
+					itemIds: [other.fileIds[0]!],
+					targetParentId: tree.topId,
+				}),
+			).toEqual({ _yay: null });
+			const nodesBefore = (await read_state(f)).nodes;
+
+			expect(await restore(f, [tree.fileIds[0]!])).toEqual({
+				_nay: {
+					name: "file_in_the_way",
+					message:
+						'"/blocked/d0" is a file, so "f000.md" cannot come back to its folder. Rename or move that file, then restore again.',
+				},
+			});
+			expect((await read_state(f)).nodes).toEqual(nodesBefore);
+		});
+
+		test("a read-only active folder where the Trash path needs a new folder refuses the job before anything moves", async () => {
+			const f = await fixture();
+			const good = await seed_tree(f, { name: "good", folderCount: 1, filesPerFolder: 0 });
+			// An item that is its own restricted folder skips the Move checks, so only the create check
+			// sees the read-only folder.
+			const itemId = await folder(f, "/ro-path/mid/item");
+			expect(
+				(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: itemId }))
+					._nay,
+			).toBeUndefined();
+			await test_finish_saved_scope_jobs(f.t);
+			// One Trash operation, so one restore job checks both items.
+			expect(await archive(f, [good.folderIds[0]!, itemId])).toEqual({ _yay: null });
+			const midId = (await find_node(f, "/ro-path/mid"))._id;
+			expect(await archive(f, [midId])).toEqual({ _yay: null });
+			await lock({ f, nodeId: (await find_node(f, "/ro-path"))._id, locked: true });
+			const nodesBefore = (await read_state(f)).nodes;
+
+			const refused = await restore(f, [good.folderIds[0]!, itemId]);
+			expect(refused._nay?.name).toBe("read_only");
+			expect((await read_state(f)).nodes, "the good item stays in Trash too").toEqual(nodesBefore);
+		});
+
+		test("a Trash path with more missing folders than one create may make comes back over several steps", async () => {
+			const f = await fixture();
+			// 40 folders below `/deep`: more than the `files_NEW_FOLDER_DEPTH_MAX` one create may make. The
+			// fixture makes them in two creates for the same reason.
+			const chain = test_folder_chain_path("deep", 41);
+			await folder(f, test_folder_chain_path("deep", 21));
+			const itemId = await folder(f, `${chain}/item`);
+			const topId = (await find_node(f, "/deep"))._id;
+			expect(await archive(f, [itemId])).toEqual({ _yay: null });
+			await archive_to_end(f, topId);
+
+			const job = (await restore(f, [itemId]))._yay;
+			expect(job, "the restore needs a job with more than one step").not.toBeNull();
+			expect((await run_to_end(f, job!)).activity.status).toBe("succeeded");
+
+			expect(await read_node(f, itemId)).toMatchObject({ archiveOperationId: null, path: `${chain}/item` });
+			expect((await read_node(f, topId)).archiveOperationId, "the old /deep stays in Trash").not.toBeNull();
+			await expect_consistent(f);
+		});
 	});
 
 	test("restoring both operations at once puts the inner one back inside its folder", async () => {
@@ -163,14 +284,14 @@ describe("unarchive_nodes", () => {
 		await archive_to_end(f, tree.folderIds[0]!);
 		expect(await archive(f, [tree.topId])).toEqual({ _yay: null });
 
-		// `/nested` stays archived, so `d0` lands at the workspace root.
+		// `/nested` stays archived, so `d0` lands in a new `/nested`.
 		expect(await restore(f, [tree.folderIds[0]!])).toEqual({ _yay: null });
 
-		expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/d0" });
+		expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/nested/d0" });
 		expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({
 			archiveOperationId: fileOperationId,
-			path: "/d0/f000.md",
-			treePath: "/d0/f000.md",
+			path: "/nested/d0/f000.md",
+			treePath: "/nested/d0/f000.md",
 		});
 		const state = await expect_consistent(f);
 		// A small item copies its new path onto its side docs in the step, with no saved scope job. So the
@@ -191,7 +312,7 @@ describe("unarchive_nodes", () => {
 		if (restored._yay) await run_to_end(f, restored._yay);
 
 		expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).toBeNull();
-		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/d0/f000.md");
+		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/heavy/d0/f000.md");
 		await expect_consistent(f);
 	});
 
@@ -305,8 +426,13 @@ describe("unarchive_nodes", () => {
 			await lock({ f, nodeId: tree.folderIds[0]!, locked: true });
 
 			expect(await restore(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
-			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/f000.md" });
-			expect((await read_node(f, tree.folderIds[0]!)).readOnly).toBe(true);
+			// The file comes back in a new `/ro-archived/d0`. The old folder stays in Trash with its flag.
+			expect(await read_node(f, tree.fileIds[0]!)).toMatchObject({
+				archiveOperationId: null,
+				path: "/ro-archived/d0/f000.md",
+			});
+			expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ readOnly: true });
+			expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).not.toBeNull();
 		});
 
 		test("stops when a folder it restored is locked before the items inside come back", async () => {

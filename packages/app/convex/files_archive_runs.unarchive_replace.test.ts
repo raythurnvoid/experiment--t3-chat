@@ -292,7 +292,9 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const operationId = crypto.randomUUID();
 			const same = await seed_same_path(f, { name: "same", count: 3, archiveOperationId: operationId });
-			await f.t.run((ctx) => ctx.db.patch("files_nodes", same.topId, { archiveOperationId: operationId }));
+			await f.t.run((ctx) =>
+				ctx.db.patch("files_nodes", same.topId, { archiveOperationId: operationId, archivedPath: "/same" }),
+			);
 
 			const restored = await restore(f, [same.topId]);
 			await expect_consistent(f);

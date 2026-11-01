@@ -567,7 +567,8 @@ describe("Move unchanged plain chunks", () => {
 			)._nay,
 		).toBeUndefined();
 		await test_finish_saved_scope_jobs(f.t);
-		await assert_reads(f, "/target/source/note.txt");
+		// The file comes back at its Trash path in a new `/source`, not inside the moved folder.
+		await assert_reads(f, "/source/note.txt");
 	}, 120_000);
 
 	test.each([

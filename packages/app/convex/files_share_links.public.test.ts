@@ -745,13 +745,14 @@ describe("writers", () => {
 
 		await archive([openId, teamImageId]);
 		expect(await shown(f, link.token)).toEqual([false, false]);
-		// Archive the folder too, so the team image alone lands at the workspace root, an open area.
+		// Archive the folder too, so the team image alone lands at its Trash path in a new, open `/team`.
 		await archive([teamId]);
 
 		await restore([openId, teamImageId]);
 		expect(await read_node(f, openId)).toMatchObject({ archiveOperationId: null, isPublic: true });
 		const teamImage = await read_node(f, teamImageId);
-		expect(teamImage).toMatchObject({ archiveOperationId: null, path: "/a.png", restrictedScopeNodeId: null });
+		expect(teamImage).toMatchObject({ archiveOperationId: null, path: "/team/a.png", restrictedScopeNodeId: null });
+		expect(teamImage?.parentId).not.toBe(teamId);
 		expect(teamImage?.isPublic).toBeUndefined();
 		expect(await shown(f, link.token)).toEqual([true, false]);
 	});

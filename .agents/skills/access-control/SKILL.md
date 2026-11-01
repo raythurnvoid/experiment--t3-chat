@@ -533,13 +533,15 @@ Rules that are easy to miss, all of which were real holes:
   parent, then queues the shared `files_move_cohorts` worker. It checks the current and final scopes
   before publication. A name-only rename in the same saved parent
   needs the source grant. Reparenting or creating missing folders also needs destination write.
-  `unarchive_nodes` restores a node to a new parent when its own parent is still in Trash, so it is a
-  move and asks the same questions. It skips both of them for a node that is its own restricted
-  scope, and that skip is deliberate — reviewers keep reporting it. The destination there is picked
-  by this code, not by the caller, and a node carrying its own scope stays closed wherever it lands,
-  so the move opens it to nobody; refusing would strand the folder where only its share list can see
-  it. A node that only *inherits* a restriction does lose it at the root, so that one is asked both
-  questions: the destination write and the leaving check. Asking only the first was a real hole — a
+  `unarchive_nodes` restores a node to a new parent when its own parent is still in Trash, or was
+  renamed or moved after the delete: it lands at its Trash path, in open folders the restore creates.
+  So it is a move and asks the same questions. It skips both of them for a node that is its own
+  restricted scope, and that skip is deliberate — reviewers keep reporting it. The new folders still
+  need write access where they are made. The destination there is picked by this code, not by the
+  caller, and a node carrying its own scope stays closed wherever it lands, so the move opens it to
+  nobody; refusing would strand the folder where only its share list can see it. A node that only
+  *inherits* a restriction does lose it where it lands, so that one is asked both questions: the
+  destination write and the leaving check. Asking only the first was a real hole — a
   write grant on a folder was enough to move it to Trash and then restore one file out of it, which handed
   that file to the whole workspace while the shared Move core refused the identical move. Every case here has
   a test in `access_control.test.ts`.

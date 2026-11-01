@@ -850,6 +850,7 @@ test("unarchive_nodes waits for a choice when an active file already has the sam
 			archiveOperationId: "unarchive-conflict-test",
 			name: db.files.file_root_1.name,
 			path: `/${db.files.file_root_1.name}`,
+			archivedPath: `/${db.files.file_root_1.name}`,
 		}),
 	);
 
@@ -1034,7 +1035,8 @@ test("unarchive_nodes restores a named child folder and keeps its parent in Tras
 	});
 	expect(unarchiveResult).toEqual({ _yay: null });
 
-	// The parent stays in Trash. The selected folder brings back the child moved to Trash with it.
+	// The parent stays in Trash. The selected folder comes back at its Trash path in a new folder, and
+	// brings back the child moved to Trash with it.
 	await t.run(async (ctx) => {
 		const fileRoot1 = await ctx.db.get("files_nodes", db.files.file_root_1._id);
 		const fileRoot1Child1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1._id);
@@ -1043,8 +1045,8 @@ test("unarchive_nodes restores a named child folder and keeps its parent in Tras
 		expect(fileRoot1?.archiveOperationId, "the unselected parent stays in Trash").not.toBeNull();
 		expect(fileRoot1Child1?.archiveOperationId).toBeNull();
 		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeNull();
-		expect(fileRoot1Child1?.parentId).toBe("root");
-		expect(fileRoot1Child1?.path).toBe(`/${db.files.file_root_1_child_1.name}`);
+		expect(fileRoot1Child1?.parentId).not.toBe(db.files.file_root_1._id);
+		expect(fileRoot1Child1?.path).toBe(db.files.file_root_1_child_1.path);
 		expect(fileRoot1Child1Deep1?.parentId).toBe(db.files.file_root_1_child_1._id);
 	});
 });

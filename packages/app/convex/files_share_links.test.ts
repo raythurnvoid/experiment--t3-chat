@@ -1152,6 +1152,40 @@ describe("restore into a bound folder", () => {
 		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", inner.folderId)))?.archiveOperationId).not.toBeNull();
 	});
+
+	test("refuses before it makes a folder when the Trash path needs a new folder in a bound folder", async () => {
+		const f = await fixture();
+		const team = await create_restricted_folder(f, "/team");
+		const inner = await create_restricted_folder(f, "/team/sub/inner");
+		const subId = (await f.t.run((ctx) => ctx.db.get("files_nodes", inner.folderId)))!.parentId as Id<"files_nodes">;
+		for (const nodeId of [inner.folderId, subId]) {
+			await reset_rate_limits(f.t, [f.db.userId]);
+			const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+				membershipId: f.db.membershipId,
+				nodeIds: [nodeId],
+			});
+			expect(archived._nay).toBeUndefined();
+			await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		}
+		await restrict_and_bind(f, team.folderId);
+
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const started = await f.asOwner.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [inner.folderId],
+		});
+		expect(started._nay?.message).toBe(
+			"A plugin decides who can read the folder it comes back to, so a restricted item cannot be restored there.",
+		);
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		const activeSub = await f.t.run(
+			async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).find(
+					(node) => node.path === "/team/sub" && !node.archiveOperationId,
+				) ?? null,
+		);
+		expect(activeSub, "no new /team/sub").toBeNull();
+	});
 });
 
 describe("access_control_db_set_service_account_grant", () => {

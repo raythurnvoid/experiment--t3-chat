@@ -52,6 +52,17 @@ async function rename_directly(f: Fixture, args: { path: string; name: string; i
 	});
 }
 
+/**
+ * Give an archived top item a Trash path 7 characters longer than its folder has now, at
+ * `/pppppppp`. Restore takes it back to that path, so every path inside gets 7 characters longer.
+ */
+async function lengthen_trash_path(f: Fixture, nodeId: Id<"files_nodes">) {
+	await f.t.run(async (ctx) => {
+		const node = (await ctx.db.get("files_nodes", nodeId))!;
+		await ctx.db.patch("files_nodes", nodeId, { archivedPath: `/pppppppp/${node.name}` });
+	});
+}
+
 async function resolve(f: Fixture, runId: Id<"files_archive_runs">, choice: "keep_both" | "skip") {
 	const run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", runId)))!;
 	return await f.asOwner.mutation(api.files_archive_runs.resolve_conflicts, {
@@ -72,7 +83,7 @@ describe("unarchive_nodes path limit", () => {
 		const top = await find_node(f, `/p/${NAMES[0]}`);
 		const selectedChild = await find_node(f, `${chain}/${"f".repeat(252)}`);
 		await archive_to_end(f, top._id);
-		await rename_directly(f, { path: "/p", name: "pppppppp" });
+		await lengthen_trash_path(f, top._id);
 		const nodesBefore = (await read_state(f)).nodes;
 
 		expect(await restore(f, [top._id, selectedChild._id]), "overlapping selections keep the path check").toEqual({
@@ -93,7 +104,7 @@ describe("unarchive_nodes path limit", () => {
 		expect(await archive(f, [first])).toEqual({ _yay: null });
 		await archive_to_end(f, top._id);
 		await folder(f, "/first");
-		await rename_directly(f, { path: "/p", name: "pppppppp" });
+		await lengthen_trash_path(f, top._id);
 
 		const firstJob = (await restore(f, [first, top._id]))._yay!;
 		expect(await resolve(f, firstJob.runId, "skip")).toEqual({ _yay: null });
@@ -120,7 +131,7 @@ describe("unarchive_nodes path limit", () => {
 		await folder(f, `/p/${chain}`);
 		// Assume this path was stored before the normal limit. Its first Archive must keep its length.
 		await rename_directly(f, { path: "/p", name: "pppppppppp", isWholeTree: true });
-		const top = await find_node(f, `/pppppppppp/${NAMES[0]}`);
+		const top = await find_node(f, "/pppppppppp");
 		const deepest = await find_node(f, `/pppppppppp/${chain}`);
 		expect(deepest.path.length).toBe(1030);
 		await archive_to_end(f, top._id);
@@ -143,9 +154,8 @@ describe("unarchive_nodes path limit", () => {
 			(await read_node(f, deepest._id)).archivedPathLength,
 			"Restore clears the historical allowance",
 		).toBeUndefined();
-		const parent = await find_node(f, "/ppppppp");
 		expect(
-			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: parent._id, path: "p" }))._nay,
+			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: top._id, path: "p" }))._nay,
 		).toBeUndefined();
 		expect((await read_node(f, deepest._id)).path).toBe(`/p/${chain}`);
 		await archive_to_end(f, top._id);
@@ -211,13 +221,13 @@ describe("unarchive_nodes path limit", () => {
 	/**
 	 * Archive `/first` and `/p/<NAMES>/<d * 250>` (1,021 characters) with a short folder `e` next to it
 	 * as one operation, and put a new
-	 * `/first` in the way. The restore checks, then waits on the `/first` clash. Then `/p` gets a name 7
-	 * characters longer, like a rename that ran while the job waited.
+	 * `/first` in the way. The restore checks, then waits on the `/first` clash. Then the archived `/p`
+	 * gets a name 7 characters longer. It comes back at the root with that name.
 	 */
 	async function seed_late_long_path(f: Fixture) {
 		const deepestPath = `/p/${NAMES.join("/")}/${"d".repeat(250)}`;
 		await folder(f, deepestPath);
-		const top = await find_node(f, `/p/${NAMES[0]}`);
+		const top = await find_node(f, "/p");
 		const deepest = await find_node(f, deepestPath);
 		const short = await folder(f, `/p/${NAMES.join("/")}/e`);
 		// `/first` is in the same operation and comes first. Its clash pauses the job after the check.
@@ -239,7 +249,7 @@ describe("unarchive_nodes path limit", () => {
 		const ended = await run_to_end(f, job);
 		expect(ended.activity).toMatchObject({
 			status: "partial",
-			progress: { completed: 4, skipped: 2 },
+			progress: { completed: 5, skipped: 2 },
 			errorMessage: `1 item stayed in Trash because its path would be too long: …/${"d".repeat(250)} (1,028 characters). Shorten a folder name, then restore it again.`,
 		});
 		const run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
@@ -269,7 +279,7 @@ describe("unarchive_nodes path limit", () => {
 		expect(await read_node(f, short)).toMatchObject({ archiveOperationId: null, readOnly: true });
 	});
 
-	test("a child archived on its own that followed its folder past 1,024 characters cannot come back longer", async () => {
+	test("a child archived on its own that followed its folder past 1,024 characters comes back at its Trash path", async () => {
 		const f = await fixture();
 		const chain = `${NAMES.join("/")}/${"d".repeat(250)}`;
 		// 1,023 characters.
@@ -281,7 +291,7 @@ describe("unarchive_nodes path limit", () => {
 			"Archive within the limit stores no allowance",
 		).toBeUndefined();
 		await archive_to_end(f, top._id);
-		await folder(f, "/p/x");
+		const newX = await folder(f, "/p/x");
 		const job = (await restore(f, [top._id]))._yay!;
 		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
 		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
@@ -289,25 +299,17 @@ describe("unarchive_nodes path limit", () => {
 		expect(followed.archiveOperationId, "the child stays archived").not.toBeNull();
 		expect(followed.path, "the child follows its folder to 1,025 characters").toBe(`/p/x-2/${chain}`);
 
-		expect(await restore(f, [deepestId]), "the child cannot come back 2 characters longer").toEqual({
-			_nay: {
-				name: "path_too_long",
-				message: `Can't restore. 1 item would have a path over 1,024 characters: …/${"d".repeat(250)} (1,025). Shorten a folder name, then restore again.`,
-			},
-		});
-		// A real Rename makes the folder shorter. The child follows and can come back.
-		expect(
-			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: top._id, path: "y" }))._nay,
-		).toBeUndefined();
+		// The child comes back where it was deleted, inside the live `/p/x`, not inside `/p/x-2`.
 		expect(await restore(f, [deepestId])).toEqual({ _yay: null });
-		expect(await read_node(f, deepestId)).toMatchObject({ archiveOperationId: null, path: `/p/y/${chain}` });
-		expect(
-			(await read_node(f, deepestId)).archivedPathLength,
-			"an active restored child has no allowance",
-		).toBeUndefined();
+		const restored = await read_node(f, deepestId);
+		expect(restored).toMatchObject({ archiveOperationId: null, path: `/p/x/${chain}` });
+		expect((await find_node(f, `/p/x/${NAMES[0]}`)).parentId, "the missing folders are new, in the live /p/x").toBe(
+			newX,
+		);
+		expect(restored.archivedPathLength, "an active restored child has no allowance").toBeUndefined();
 	});
 
-	test("a Move replacement cannot restore its archived child past the normal path limit", async () => {
+	test("a child archived by a Move replacement comes back at its Trash path, not past the normal limit", async () => {
 		const f = await fixture();
 		const create_folder = async (parentId: Id<"files_nodes"> | "root", name: string) => {
 			const created = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
@@ -405,15 +407,8 @@ describe("unarchive_nodes path limit", () => {
 		});
 		expect(followed.path.length).toBe(1025);
 		expect(followed.archivedPathLength, "parent Restore preserves the child's missing allowance").toBeUndefined();
-		const stateBefore = await read_state(f);
-		expect(await restore(f, [childId]), "Restore refuses the archived child's growth beyond the normal limit").toEqual({
-			_nay: {
-				name: "path_too_long",
-				message: `Can't restore. 1 item would have a path over 1,024 characters: …/${name} (1,025). Shorten a folder name, then restore again.`,
-			},
-		});
-		expect(await read_state(f), "early Restore refusal leaves the full stored file state unchanged").toEqual(
-			stateBefore,
-		);
+		// The Move saved the child's Trash path, so it comes back there, within the normal limit.
+		expect(await restore(f, [childId])).toEqual({ _yay: null });
+		expect(await read_node(f, childId)).toMatchObject({ archiveOperationId: null, path: `/p/x/${chain}` });
 	});
 });

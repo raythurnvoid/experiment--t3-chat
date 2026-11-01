@@ -1598,7 +1598,10 @@ export const delete_review_source_tree = internalMutation({
 		});
 		// The drain deletes children first. Archive its root now so search cursors stop before that work.
 		if (root)
-			await ctx.db.patch("files_nodes", root._id, { archiveOperationId: files_archive_operation_id_new(Date.now()) });
+			await ctx.db.patch("files_nodes", root._id, {
+				archiveOperationId: files_archive_operation_id_new(Date.now()),
+				archivedPath: root.path,
+			});
 		const deleted = await files_nodes_db_delete_subtree_batch(ctx, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,

@@ -124,6 +124,7 @@ export function files_tree_db_get_public_node_fields(
 		contentTypeEssence: _contentTypeEssence,
 		contentTypeFamily: _contentTypeFamily,
 		archivedPathLength: _archivedPathLength,
+		archivedPath: _archivedPath,
 		archiveTopScopeNodeId: _archiveTopScopeNodeId,
 		archiveTopOrder: _archiveTopOrder,
 		purgeRunId: _purgeRunId,

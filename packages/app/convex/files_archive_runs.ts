@@ -57,6 +57,7 @@ import {
 	files_nodes_db_archive_node,
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import {
 	files_nodes_db_require_user_writable,
@@ -114,6 +115,7 @@ import {
 } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import {
+	path_extract_segments_from,
 	path_join,
 	path_tree_prefix_upper_bound,
 	server_convex_get_user_fallback_to_anonymous,
@@ -121,7 +123,9 @@ import {
 import {
 	files_archive_operation_id_new,
 	files_check_name_and_path_length,
+	files_derive_tree_path_for_file_node,
 	files_NAME_MAX_LENGTH,
+	files_NEW_FOLDER_DEPTH_MAX,
 	files_PATH_MAX_LENGTH,
 } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -150,8 +154,8 @@ const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const CHOICE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Restore puts at most this many items at the workspace root. They are items the archive named, so
- * a normal operation has far fewer.
+ * Restore lands at most this many top items at their Trash path in another folder. They are items the
+ * archive named, so a normal operation has far fewer.
  */
 const MAX_ROOT_LANDINGS = 500;
 
@@ -522,15 +526,18 @@ async function db_check_restore_folder(
 /**
  * Landing somewhere new is a move. It needs write access where the item lands and permission to
  * leave the item's restricted folder, like Move. An item that is its own restricted folder
- * keeps its scope wherever it lands, so it needs neither.
+ * keeps its scope wherever it lands, so it needs neither. `destParentId` is the folder it lands in,
+ * or the deepest active folder on its Trash path when the restore still has to create folders there.
+ * New folders take that folder's scope.
  */
 async function db_check_restore_move(
 	args: StepArgs & {
 		ctx: MutationCtx;
 		node: Doc<"files_nodes">;
+		destParentId: Doc<"files_nodes">["parentId"];
 	},
 ) {
-	const { ctx, node } = args;
+	const { ctx, node, destParentId } = args;
 
 	const membership = args.membership;
 	if (!membership) return MEMBERSHIP_LOST;
@@ -539,7 +546,7 @@ async function db_check_restore_move(
 	const authorizedTarget = await access_control_db_authorize_file_write(ctx, {
 		userAuth: args.userAuth,
 		membership,
-		nodeId: files_ROOT_ID,
+		nodeId: destParentId,
 	});
 	if (authorizedTarget._nay) return { kind: "failed", nay: authorizedTarget._nay } as const;
 
@@ -547,11 +554,37 @@ async function db_check_restore_move(
 		userAuth: args.userAuth,
 		membership,
 		fileNode: node,
-		destParentId: files_ROOT_ID,
+		destParentId,
 	});
 	if (authorizedLeaving._nay) return { kind: "failed", nay: authorizedLeaving._nay } as const;
 
 	return null;
+}
+
+/**
+ * A plugin decides who reads the whole bound area, so a restricted item cannot come back into one.
+ * `folder` is the folder the item lands in, or the folder its new folders are made in: they take its
+ * area. Null is the root.
+ */
+async function db_get_plugin_area_refusal(
+	ctx: MutationCtx,
+	args: { node: Doc<"files_nodes">; folder: Doc<"files_nodes"> | null },
+) {
+	const { node, folder } = args;
+
+	if (
+		node.restrictedScopeNodeId !== node._id ||
+		!folder?.restrictedScopeNodeId ||
+		!(await files_nodes_db_has_plugin_binding(ctx, folder.restrictedScopeNodeId))
+	)
+		return null;
+	return {
+		kind: "failed",
+		nay: {
+			message:
+				"A plugin decides who can read the folder it comes back to, so a restricted item cannot be restored there.",
+		},
+	} as const;
 }
 
 /**
@@ -1423,6 +1456,8 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 		if (node && node.archiveOperationId === run.archiveOperationId) {
 			root.treePath = node.treePath;
 			add_discover_tree_path(run, node.treePath);
+			// The item may come back at its Trash path in another folder. Keep that place busy too.
+			add_discover_tree_path(run, files_derive_tree_path_for_file_node(get_archived_path(node), node.kind));
 		}
 		run.checkCursor.rootIndex += 1;
 	}
@@ -1473,8 +1508,140 @@ function is_in_restore_selection(
 }
 
 /**
+ * The path an archived node had when it moved to Trash (`archivedPath`).
+ */
+function get_archived_path(node: Doc<"files_nodes">) {
+	if (node.archivedPath === undefined) {
+		const errorMessage = "Archived node has no Trash path";
+		const errorData = { nodeId: node._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	return node.archivedPath;
+}
+
+/**
+ * The folder a top item was in when it moved to Trash, as a path.
+ */
+function get_trash_parent_path(node: Doc<"files_nodes">) {
+	const archivedPath = get_archived_path(node);
+	return archivedPath.slice(0, archivedPath.lastIndexOf("/")) || "/";
+}
+
+/**
+ * Whether a top item comes back in the folder it is in now: that folder is active at the item's Trash
+ * parent path, or the item is at the root and was there before. An active folder that was renamed or
+ * moved after the delete does not count. The item then comes back at its Trash path instead.
+ */
+function is_restore_in_place(node: Doc<"files_nodes">, parent: Doc<"files_nodes"> | null) {
+	const trashParentPath = get_trash_parent_path(node);
+	return parent
+		? parent.archiveOperationId === null && parent.path === trashParentPath
+		: node.parentId === files_ROOT_ID && trashParentPath === "/";
+}
+
+/**
+ * Walk a top item's Trash folder path from the root through active folders, like `mkdir -p` does
+ * before it creates anything. `folder` is the deepest active folder found, or null for the root.
+ * `missingNames` are the folders the restore must create in it. `file` is set when an active file sits
+ * where a folder should be. `folders` keeps the answers by path, so a step reads each folder once.
+ *
+ * The walk goes by parent id, not by stored path. So it never finds an item inside a folder that is
+ * already in Trash while its Trash job still stamps the items inside. Restore waits for every Move,
+ * so no active folder on the way is held by one.
+ */
+async function db_find_trash_parent(
+	ctx: MutationCtx,
+	args: { run: RunFields; node: Doc<"files_nodes">; folders: Map<string, Doc<"files_nodes"> | null> },
+) {
+	const { run, node, folders } = args;
+
+	const names = path_extract_segments_from(get_trash_parent_path(node));
+	let folder: Doc<"files_nodes"> | null = null;
+	for (const [index, name] of names.entries()) {
+		const path = `/${names.slice(0, index + 1).join("/")}`;
+		let next = folders.get(path);
+		if (next === undefined) {
+			next = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", run.organizationId)
+						.eq("workspaceId", run.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("parentId", folder?._id ?? files_ROOT_ID)
+						.eq("name", name)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			folders.set(path, next);
+		}
+		if (!next || next.kind === "file") return { folder, missingNames: names.slice(index), file: next };
+		folder = next;
+	}
+	return { folder, missingNames: [], file: null };
+}
+
+/**
+ * A top item lands in `folder`, the deepest active folder on its Trash path, or the restore creates
+ * the missing folders there. `folder` is null for the root. Check write access there before the job
+ * writes anything. An item that is its own restricted folder needs it too: new folders are open items
+ * in the folder above them.
+ */
+async function db_check_restore_create(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		folder: Doc<"files_nodes"> | null;
+	},
+) {
+	const { ctx, folder } = args;
+
+	if (folder) return await db_check_restore_folder({ ...args, folder });
+	const membership = args.membership;
+	if (!membership) return MEMBERSHIP_LOST;
+
+	const authorized = await access_control_db_authorize_file_write(ctx, {
+		userAuth: args.userAuth,
+		membership,
+		nodeId: files_ROOT_ID,
+	});
+	return authorized._nay ? ({ kind: "failed", nay: authorized._nay } as const) : null;
+}
+
+/**
+ * An active file sits where an item's Trash path needs a folder. Name it only for somebody who may read it.
+ */
+async function db_get_file_in_the_way_refusal(
+	args: StepArgs & {
+		ctx: MutationCtx;
+		node: Doc<"files_nodes">;
+		file: Doc<"files_nodes">;
+	},
+) {
+	const { ctx, node, file } = args;
+
+	const membership = args.membership;
+	if (!membership) return MEMBERSHIP_LOST;
+	const readable = await access_control_db_authorize_membership(ctx, {
+		userAuth: args.userAuth,
+		membership,
+		permission: "content.read",
+		fileNode: file,
+	});
+	return {
+		kind: "failed",
+		nay: readable._nay
+			? { message: "Permission denied" }
+			: {
+					name: "file_in_the_way",
+					message: `"${file.path}" is a file, so "${node.name}" cannot come back to its folder. Rename or move that file, then restore again.`,
+				},
+	} as const;
+}
+
+/**
  * How many characters longer an item's path gets when the restore lands it, and its top item. A top
- * item lands in its active parent, or at the workspace root when `rootNodeIds` has it. An item inside
+ * item lands in its active parent, or at its Trash path when `rootNodeIds` has it. An item inside
  * follows its top item. `landings` keeps the answers, so each folder is read once per step.
  */
 async function db_get_restore_landing(
@@ -1500,14 +1667,13 @@ async function db_get_restore_landing(
 		parent && parent.archiveOperationId === run.archiveOperationId && is_in_restore_selection(run, parent)
 			? await db_get_restore_landing(ctx, { ...args, node: parent })
 			: {
-					growth: !parent
-						? 0
-						: parent.archiveOperationId === null
+					growth: run.rootNodeIds.includes(node._id)
+						? path_join(get_trash_parent_path(node), node.name).length - node.path.length
+						: parent?.archiveOperationId === null
 							? path_join(parent.path, node.name).length - node.path.length
-							: run.rootNodeIds.includes(node._id)
-								? path_join("/", node.name).length - node.path.length
-								: // The item joins the restore of its folder. The landing check catches a path that got too long.
-									0,
+							: // The item stays at the root or joins the restore of its folder. The landing check catches a
+								// path that got too long.
+								0,
 					topId: node._id,
 				};
 	landings.set(node._id, landing);
@@ -1550,14 +1716,16 @@ function get_long_paths_end_text(run: Pick<RunFields, "longPaths" | "longPathOpe
 
 /**
  * Check the selected roots and the items inside them that were moved to Trash with them. Keep top items
- * whose archived parent is outside this restore in `rootNodeIds`. They land at workspace root.
- * This list stays fixed during the job. A folder archived later keeps its restored items inside.
- * A restore that would make any path too long is refused here, so the person can fix it before any write.
+ * that do not come back in their current folder in `rootNodeIds`. They land at their Trash path, and
+ * the restore creates the missing folders there. This list stays fixed during the job. A folder
+ * archived later keeps its restored items inside. A restore that would make any path too long is
+ * refused here, so the person can fix it before any write.
  */
 async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run, progress } = args;
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
 	const landings = new Map<Id<"files_nodes">, { growth: number; topId: Id<"files_nodes"> }>();
+	const folders = new Map<string, Doc<"files_nodes"> | null>();
 
 	while (true) {
 		if (args.budget.checkNodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx))) {
@@ -1642,14 +1810,16 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			// A folder of the same operation brings this item back when the walk reaches it.
 			if (parent && parent.archiveOperationId === run.archiveOperationId && is_in_restore_selection(run, parent))
 				continue;
-			if (!parent) continue;
 
-			const folderRefusal = await db_check_restore_folder({ ctx, ...args, folder: parent });
-			if (folderRefusal) return folderRefusal;
+			// The item leaves the list of the folder it is in now, even when it lands somewhere else.
+			if (parent) {
+				const folderRefusal = await db_check_restore_folder({ ctx, ...args, folder: parent });
+				if (folderRefusal) return folderRefusal;
+			}
 
 			// When another job is restoring the old folder, the item joins that job and comes back inside
 			// the folder. A restore of several operations at once relies on this.
-			const parentOperationId = parent.archiveOperationId;
+			const parentOperationId = parent?.archiveOperationId ?? null;
 			const parentRun =
 				parentOperationId !== null &&
 				(await ctx.db
@@ -1670,18 +1840,28 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				};
 			}
 			const parentIsRestoring =
+				parent &&
 				parentRun &&
 				parentRun._id !== args.runId &&
 				parentRun.kind === "restore" &&
 				is_in_restore_selection(parentRun, parent);
-			if (parentOperationId !== null && !parentIsRestoring) {
-				const moveRefusal = await db_check_restore_move({ ctx, ...args, node });
-				if (moveRefusal) return moveRefusal;
-				if (run.rootNodeIds.length >= MAX_ROOT_LANDINGS) {
-					return { kind: "failed", nay: { message: "This delete has too many items to restore at once." } };
-				}
-				run.rootNodeIds.push(node._id);
+			if (parentIsRestoring || is_restore_in_place(node, parent ?? null)) continue;
+
+			// The item comes back at its Trash path. Check the deepest active folder there before any write:
+			// the item lands in it, or the restore creates the missing folders in it.
+			const target = await db_find_trash_parent(ctx, { run, node, folders });
+			const targetRefusal =
+				(target.file ? await db_get_file_in_the_way_refusal({ ctx, ...args, node, file: target.file }) : null) ??
+				(target.folder || target.missingNames.length > 0
+					? await db_check_restore_create({ ctx, ...args, folder: target.folder })
+					: null) ??
+				(await db_get_plugin_area_refusal(ctx, { node, folder: target.folder })) ??
+				(await db_check_restore_move({ ctx, ...args, node, destParentId: target.folder?._id ?? files_ROOT_ID }));
+			if (targetRefusal) return targetRefusal;
+			if (run.rootNodeIds.length >= MAX_ROOT_LANDINGS) {
+				return { kind: "failed", nay: { message: "This delete has too many items to restore at once." } };
 			}
+			run.rootNodeIds.push(node._id);
 		}
 
 		// The top items of this page know where they land now. A path over the normal limit needs its
@@ -1768,17 +1948,19 @@ async function db_find_free_name(args: {
 }
 
 /**
- * Bring back one top item of the operation: under its parent when the parent is active, at the
- * workspace root when the check said so, or into the parent's archive when that parent is archived
- * and not landing here. A name clash pauses the job until the person chooses.
+ * Bring back one top item of the operation: in its current folder when that folder is live at the
+ * item's Trash folder path, into the parent's archive when that parent is archived and the check did
+ * not send the item elsewhere, or else at its Trash path. A name clash pauses the job until the
+ * person chooses.
  */
 async function db_restore_top(
 	args: StepArgs & {
 		ctx: MutationCtx;
 		node: Doc<"files_nodes">;
+		folders: Map<string, Doc<"files_nodes"> | null>;
 	},
 ): Promise<StepOutcome | null> {
-	const { ctx, node, ...previousArgs } = args;
+	const { ctx, node, folders, ...previousArgs } = args;
 
 	const { run, progress } = previousArgs;
 	if (!args.membership) return MEMBERSHIP_LOST;
@@ -1787,13 +1969,56 @@ async function db_restore_top(
 	const parent = node.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", node.parentId);
 	const parentOperationId = parent?.archiveOperationId ?? null;
 	let landing: Doc<"files_nodes"> | null;
-	if (parent && parentOperationId === null) {
+	if (is_restore_in_place(node, parent)) {
 		landing = parent;
-	} else if (parentOperationId === null || run.rootNodeIds.includes(node._id)) {
-		landing = null;
 	}
-	// The parent was skipped, or somebody archived it during the job. Keep the node with it, so no
-	// active node sits inside an archived folder. The walk below it moves its items there too.
+	// The item comes back at its Trash path, like `mkdir -p` and then a move. An active folder that was
+	// renamed after the delete keeps its new name, and an old folder in Trash stays there.
+	else if (parentOperationId === null || run.rootNodeIds.includes(node._id)) {
+		const target = await db_find_trash_parent(ctx, { run, node, folders });
+		if (target.file) return await db_get_file_in_the_way_refusal({ ctx, ...previousArgs, node, file: target.file });
+		landing = target.folder;
+		if (target.missingNames.length > 0) {
+			// Check what can refuse before the first new folder, so a refused item makes no folders.
+			const refusal =
+				(await db_check_writable_nodes({ ctx, ...previousArgs, nodes: [node] })) ??
+				(parent ? await db_check_restore_folder({ ctx, ...previousArgs, folder: parent }) : null) ??
+				(await db_get_plugin_area_refusal(ctx, { node, folder: target.folder })) ??
+				(await db_check_restore_move({
+					ctx,
+					...previousArgs,
+					node,
+					destParentId: target.folder?._id ?? files_ROOT_ID,
+				}));
+			if (refusal) return refusal;
+
+			// The normal create checks write, Read-only, name and path limits, and Move reservations. New
+			// folders take nothing from an old folder in Trash.
+			const names = target.missingNames.slice(0, files_NEW_FOLDER_DEPTH_MAX);
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: args.userAuth.id,
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				parentId: target.folder?._id ?? files_ROOT_ID,
+				path: names.join("/"),
+				kind: "folder",
+				writeContext: args.writeContext,
+				now: args.now,
+			});
+			if (created._nay) return { kind: "failed", nay: created._nay };
+			args.writeState.isWritten = true;
+
+			// The walk found these paths missing. Read them again.
+			folders.clear();
+			// One create makes at most this many folders. The next step walks the path again and goes on
+			// from the deepest folder.
+			if (target.missingNames.length > names.length) return { kind: "continue" };
+			landing = await ctx.db.get("files_nodes", created._yay);
+		}
+	}
+	// The parent was skipped, or somebody archived it during the job, or another restore brings it back.
+	// Keep the node with it, so no active node sits inside an archived folder. The walk below it moves
+	// its items there too.
 	else {
 		const refusal = await db_check_writable_nodes({ ctx, ...previousArgs, nodes: [node] });
 		if (refusal) return refusal;
@@ -1814,8 +2039,12 @@ async function db_restore_top(
 	const refusal =
 		(await db_check_writable_nodes({ ctx, ...previousArgs, nodes: [node] })) ??
 		(landing ? await db_check_restore_folder({ ctx, ...previousArgs, folder: landing }) : null) ??
-		(parent && parent !== landing ? await db_check_restore_folder({ ctx, ...previousArgs, folder: parent }) : null) ??
-		(landingParentId !== node.parentId ? await db_check_restore_move({ ctx, ...previousArgs, node }) : null);
+		(parent && parent._id !== landing?._id
+			? await db_check_restore_folder({ ctx, ...previousArgs, folder: parent })
+			: null) ??
+		(landingParentId !== node.parentId
+			? await db_check_restore_move({ ctx, ...previousArgs, node, destParentId: landingParentId })
+			: null);
 	if (refusal) return refusal;
 
 	return await db_land_node({ ctx, ...previousArgs, node, landing });
@@ -1837,20 +2066,8 @@ async function db_land_node(
 
 	const { run, progress } = previousArgs;
 	const landingParentId = landing?._id ?? files_ROOT_ID;
-	// A plugin decides who reads the whole bound area, so a restricted item cannot come back into one.
-	if (
-		node.restrictedScopeNodeId === node._id &&
-		landing?.restrictedScopeNodeId &&
-		(await files_nodes_db_has_plugin_binding(ctx, landing.restrictedScopeNodeId))
-	) {
-		return {
-			kind: "failed",
-			nay: {
-				message:
-					"A plugin decides who can read the folder it comes back to, so a restricted item cannot be restored there.",
-			},
-		};
-	}
+	const pluginRefusal = await db_get_plugin_area_refusal(ctx, { node, folder: landing });
+	if (pluginRefusal) return pluginRefusal;
 
 	let name = node.name;
 	let replacedNode: Doc<"files_nodes"> | null = null;
@@ -2097,6 +2314,8 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 	const { run, progress } = args;
 	let count = 0;
 	let lastPullTopIds = new Set<Id<"files_nodes">>();
+	// The active folders on the Trash paths of top items, by path. See `db_find_trash_parent`.
+	const folders = new Map<string, Doc<"files_nodes"> | null>();
 
 	while (true) {
 		if (args.budget.nodes <= 0 || (count > 0 && (await files_subtree_ops_db_is_near_limits(ctx)))) {
@@ -2159,7 +2378,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		if (!row.nodeDone) {
 			if (node.archiveOperationId === run.archiveOperationId) {
-				const outcome = await db_restore_top({ ctx, ...args, node });
+				const outcome = await db_restore_top({ ctx, ...args, node, folders });
 				if (outcome) return outcome;
 				args.budget.nodes -= 1;
 			}
@@ -2189,7 +2408,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			count += 1;
 
 			let isWalked = child.kind === "folder";
-			// A top item that lands at the workspace root has its own row.
+			// A top item in `rootNodeIds` lands at its Trash path and has its own row.
 			if (child.archiveOperationId === run.archiveOperationId && !run.rootNodeIds.includes(child._id)) {
 				// The run may finish a folder it just restored with the same read-only decision. A later
 				// decision or changed location ends that receipt. Access is checked every time.
@@ -2680,7 +2899,8 @@ export async function files_archive_runs_db_start(
 		force?: boolean;
 		archiveOperationId: string;
 		/**
-		 * Archive: the named active items. Restore: empty; the check fills the items that land at the root.
+		 * Archive: the named active items. Restore: empty; the check fills the top items that land at
+		 * their Trash path in another folder.
 		 */
 		rootNodeIds: Array<Id<"files_nodes">>;
 		/**

@@ -552,6 +552,8 @@ const files_saved_placement_fields = {
 	archiveTopOrder: v.optional(v.string()),
 	// Missing uses the normal Restore path limit.
 	archivedPathLength: v.optional(v.number()),
+	// Same as the `files_nodes` field.
+	archivedPath: v.optional(v.string()),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
 	// Same as the `files_nodes` fields.
@@ -5329,6 +5331,12 @@ const app_convex_schema = defineSchema({
 		 */
 		archivedPathLength: v.optional(v.number()),
 		/**
+		 * The path the node had when it moved to Trash. Set on every archived node, missing on active
+		 * nodes. A node stamped again in Trash keeps it, and later renames above it do not change it.
+		 * Restore lands a top item at this path and creates its missing folders, like `mkdir -p`.
+		 */
+		archivedPath: v.optional(v.string()),
+		/**
 		 * The purge run that is deleting this node for good. Set in its first delete step, and the
 		 * node doc goes away with it. Missing: no purge has started on the node. Every write refuses
 		 * a node that has it (`files_nodes_db_require_writable`).
@@ -6863,14 +6871,14 @@ const app_convex_schema = defineSchema({
 		 */
 		archiveOperationId: v.string(),
 		/**
-		 * Archive: the named items. The job stamps them first. Restore: the items that land at the workspace root
-		 * because their archived parent is outside this restore when the check ran.
+		 * Archive: the named items. The job stamps them first. Restore: the top items that land at their saved
+		 * path in another folder when the check ran, instead of in the folder they are in now.
 		 */
 		rootNodeIds: v.array(v.id("files_nodes")),
 		/**
 		 * Restore: the items the person selected, with their paths. A Move can change a path, so discovery
 		 * reads it again. Archive and purge keep this empty. rootNodeIds is a different list: the items
-		 * that land at the workspace root.
+		 * that land at their Trash path.
 		 */
 		restoreRoots: v.array(v.object({ nodeId: v.id("files_nodes"), treePath: v.string() })),
 		/**

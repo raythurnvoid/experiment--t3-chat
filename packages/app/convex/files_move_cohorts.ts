@@ -161,6 +161,7 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 	return {
 		...header,
 		archivedPathLength: place.archivedPathLength,
+		archivedPath: place.archivedPath,
 		archiveTopScopeNodeId: place.archiveTopScopeNodeId,
 		archiveTopOrder: place.archiveTopOrder,
 		parentScopeNodeId: place.parentScopeNodeId,
@@ -1178,6 +1179,7 @@ async function db_rename_parents(
 			isRestrictedScopeRoot: false,
 			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
 			archiveOperationId: cursor.parentArchiveOperationId,
+			...(cursor.parentArchiveOperationId !== null ? { archivedPath: path } : {}),
 			readOnly: false,
 			readOnlyDecisionId: null,
 			createdBy: cohort.userId,
@@ -1819,6 +1821,8 @@ async function db_headers(
 					: path.length > files_PATH_MAX_LENGTH
 						? path.length
 						: undefined,
+		// Same rule for the Trash path: a later Move above an archived item does not change it.
+		archivedPath: afterArchive === null ? undefined : old && old.archiveOperationId !== null ? old.archivedPath : path,
 		...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
 		// Like `mv`, a Move or Rename keeps the item's modified time. An Archive or Restore here is a real
 		// change. A content change sets its own time when its content is sealed.

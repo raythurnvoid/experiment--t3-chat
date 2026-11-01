@@ -183,6 +183,7 @@ export async function seed_same_path(
 					treePath: `/${args.name}/same.md`,
 					pathDepth: 2,
 					archiveOperationId: args.archiveOperationId ?? crypto.randomUUID(),
+					archivedPath: `/${args.name}/same.md`,
 				}),
 			);
 		}
@@ -447,6 +448,7 @@ export async function queue_empty_folders_first(args: {
 					treePath: `/${name}/`,
 					pathDepth: 1,
 					archiveOperationId,
+					...(archiveOperationId !== null ? { archivedPath: `/${name}` } : {}),
 				});
 				if (isDeleted) await ctx.db.delete("files_nodes", nodeId);
 				await ctx.db.insert("files_subtree_op_nodes", {

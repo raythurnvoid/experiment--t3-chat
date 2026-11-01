@@ -709,7 +709,8 @@ test("restoring an item from an extended folder points at the area where it land
 	expect((await share_with_account(f, parentId, serviceAccountId, "read"))._nay).toBeUndefined();
 	expect((await get_node(f, childId)).extendedScopeNodeId).toBe(parentId);
 
-	// Archive the child first, so it can come back alone. Its parent stays archived, so it lands at the top.
+	// Archive the child first, so it can come back alone. Its parent stays archived, so it lands at its
+	// Trash path in a new `/p` that is shared with nobody.
 	for (const nodeId of [childId, parentId]) {
 		await reset_rate_limits(f.t, [f.db.userId]);
 		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
@@ -729,7 +730,8 @@ test("restoring an item from an extended folder points at the area where it land
 	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 
 	const node = await get_node(f, childId);
-	expect(node.parentId).toBe("root");
+	expect(node).toMatchObject({ path: "/p/c" });
+	expect(node.parentId).not.toBe(parentId);
 	expect(node.extendedScopeNodeId).toBe(null);
 });
 

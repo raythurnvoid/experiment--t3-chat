@@ -1712,8 +1712,9 @@ describe("folder metadata", () => {
 			)._nay,
 		).toBeUndefined();
 		await test_finish_saved_scope_jobs(t);
-		await assertScope(["/restored-parent/renamed", "/restored-parent/renamed/inner"], false);
-		expect((await search("/destination")).items).toEqual([]);
+		// The folder comes back at its Trash path in a new `/destination`, not in the renamed folder.
+		await assertScope(["/destination/renamed", "/destination/renamed/inner"], false);
+		expect((await search("/restored-parent")).items).toEqual([]);
 		await test_compact_metadata_catalog(t);
 		expect(
 			(
@@ -2014,7 +2015,7 @@ describe("folder table sort fields", () => {
 		]);
 	});
 
-	test("archive keeps the field docs, and a restore to the root moves their parent", async () => {
+	test("archive keeps the field docs, and a restore to a new folder moves their parent", async () => {
 		const { t, db, asOwner, create_folder, set_metadata } = await seed_sort_fields();
 		const parentId = await create_folder("/archive-parent");
 		const childId = await create_folder("/archive-parent/child");
@@ -2033,7 +2034,7 @@ describe("folder table sort fields", () => {
 			expect.objectContaining({ parentId, archiveOperationId: expect.any(String), sortValue: "open" }),
 		]);
 
-		// The parent stays archived, so the child comes back at the root.
+		// The parent stays archived, so the child comes back at its Trash path in a new `/archive-parent`.
 		const restored = await asOwner.mutation(api.files_nodes.unarchive_nodes, {
 			membershipId: db.membershipId,
 			nodeIds: [childId],
@@ -2041,8 +2042,10 @@ describe("folder table sort fields", () => {
 		expect(restored._nay).toBeUndefined();
 		await test_finish_saved_scope_jobs(t);
 		const restoredRead = await read_sort_fields(t, childId);
+		const newParentId = (await t.run((ctx) => ctx.db.get("files_nodes", childId)))!.parentId;
+		expect(newParentId).not.toBe(parentId);
 		expect(restoredRead.fields).toHaveLength(1);
-		expect(restoredRead.fields[0]).toMatchObject({ parentId: files_ROOT_ID, sortValue: "open" });
+		expect(restoredRead.fields[0]).toMatchObject({ parentId: newParentId, sortValue: "open" });
 		expect(restoredRead.fields[0]?.archiveOperationId).toBeUndefined();
 	});
 
