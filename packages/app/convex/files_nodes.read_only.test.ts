@@ -2694,7 +2694,10 @@ describe("files_nodes.rename_node read-only gates", () => {
 			nodeId: siblingId,
 			path: "sibling2",
 		});
-		expect(refused._nay?.name).toBe("read_only");
+		expect(refused._nay).toMatchObject({
+			name: "read_only",
+			message: "Its folder is read-only. Unlock it, then try again.",
+		});
 		expect((await read_lock_node(t, siblingId))?.path).toBe("/outer/sibling");
 	});
 
@@ -2768,7 +2771,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 		if (!refused._yay) throw new Error("Rename was not accepted", { cause: refused._nay });
 		expect(await t.run((ctx) => ctx.db.get("activities", refused._yay!.activityId))).toMatchObject({
 			status: "failed",
-			errorMessage: "This item is read-only.",
+			errorMessage: "A folder in the destination path is read-only. Unlock it, then try again.",
 		});
 		const sibling = await read_lock_node(t, siblingId);
 		expect(sibling?.parentId).toBe(outerId);
@@ -3755,6 +3758,46 @@ describe("apply_file_pending_move", () => {
 		});
 		expect(applied._nay).toMatchObject({ name: "read_only" });
 		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId)))?.path).toBe("/pending-src-dest.md");
+	});
+
+	test("a locked source folder refuses the apply and names the folder, not the item", async () => {
+		const t = test_convex();
+		const { db, asUser } = await seed_apply_move_file(t, "unused.md");
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "pending-src-folder",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+		const file = await asUser.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay.nodeId,
+			path: "inside.md",
+		});
+		if (file._nay) {
+			throw new Error(file._nay.message);
+		}
+		const move = await propose_move_for_test(t, {
+			...db,
+			nodeId: file._yay.nodeId,
+			destParent: { kind: "root" },
+			destName: "inside.md",
+		});
+		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId: folder._yay.nodeId });
+
+		const applied = await test_apply_file_pending_move(asUser, {
+			membershipId: db.membershipId,
+			...move,
+		});
+		expect(applied._nay).toMatchObject({
+			name: "read_only",
+			message: "The source folder is read-only. Unlock it, then try again.",
+		});
+		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", file._yay.nodeId)))?.path).toBe(
+			"/pending-src-folder/inside.md",
+		);
 	});
 
 	test("a locked replacement occupant refuses the apply and stays active", async () => {

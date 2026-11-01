@@ -103,7 +103,10 @@ import {
 } from "../server/files-archive-runs.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { files_move_reservations_db_find_blocker } from "../server/files-move-reservations.ts";
-import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
+import {
+	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_view,
+} from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import {
 	path_join,
@@ -393,9 +396,19 @@ async function db_check_archive_parent(
 	},
 ) {
 	const { organizationId, workspaceId } = args.membership;
-	const parent = args.node.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.node.parentId);
+
+	// A saved Move shows an item in its new folder before its physical cleanup rewrites the node doc.
+	// So read the item and its parent where the saved view shows them. Read the saved place only for a
+	// node a Move holds. For other nodes the helper would also read the content head, and this check
+	// does not need it.
+	const node = args.node.moveCohortId ? await files_saved_placement_db_get_node(ctx.db, args.node._id) : args.node;
+	if (!node) return Result({ _nay: { message: "Permission denied" } });
+	const physicalParent = node.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", node.parentId);
+	const parent = physicalParent?.moveCohortId
+		? await files_saved_placement_db_get_node(ctx.db, physicalParent._id)
+		: physicalParent;
 	if (
-		args.node.parentId !== files_ROOT_ID &&
+		node.parentId !== files_ROOT_ID &&
 		(!parent ||
 			parent.organizationId !== organizationId ||
 			parent.workspaceId !== workspaceId ||

@@ -1670,6 +1670,25 @@ describe("bash_run_command", () => {
 		expect((await list_pending_updates(runner)).some((row) => row.pendingArchive)).toBe(false);
 	});
 
+	test("rm of a file a draft moved out of a Read-only folder names that folder as a blocker, not as its folder", async () => {
+		const runner = await create_bash_runner();
+		const docsId = await get_seeded_node_id(runner, "/docs");
+		// A draft move takes the file out of /docs. The saved file is still inside /docs.
+		const moved = await runner.run({
+			command: `mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/moved-readme.md`,
+		});
+		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+		await runner.t.run((ctx) =>
+			ctx.db.patch("files_nodes", docsId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+		);
+
+		const removed = await runner.run({ command: `rm ${test_db_files_mount}/moved-readme.md` });
+		expect(removed.stderr).toBe(
+			`rm: cannot remove '${test_db_files_mount}/moved-readme.md': a Read-only item blocks it: '${test_db_files_mount}/docs'. Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.\n`,
+		);
+		expect((await list_pending_updates(runner)).some((row) => row.pendingArchive)).toBe(false);
+	});
+
 	test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {
 		const { run } = await create_bash_runner({
 			initialCwd: test_db_files_mount,

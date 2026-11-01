@@ -232,6 +232,17 @@ non-owner with a restricted folder inside, while any subtree job runs, or while 
 workspace. Accept's refusal of an item inside says "An item inside it is read-only." with no path:
 the review saves that text and shows it later without a new access check.
 
+A Move, Rename or reviewed delete refused because of a Read-only folder talks about that folder, not
+"This item". The review and the Activity save most of these texts, so they have no path. A Move says
+"The destination folder is read-only." or "The source folder is read-only.". A Rename that puts the
+item in another folder checks each folder on the way, so it says "A folder in the destination path
+is read-only.". A Rename refused at once because the item's folder is Read-only says "Its folder is
+read-only." with no path too. A reviewed delete says the same. Each text ends with "Unlock it, then
+try again."
+
+A Move that uses Replace on a private draft at its destination still says "This item is read-only."
+when the saved folder that holds the draft is Read-only. Known gap, not fixed yet.
+
 ## Human-approved delete exception
 
 The agent's `rm`, `rm -r` and `rm -f` refuse a Read-only item, a folder that holds one, or an item in

@@ -559,7 +559,10 @@ Rules that are easy to miss, all of which were real holes:
   new planning uses stored scopes. Access changes advance the clocks that each group checks.
   Restrict, folder protection and Move to Trash wait while any Move holds the workspace. Their walk reads
   only nodes no Move holds, so waiting is how it reaches every node. They do not poll: the Move's
-  release wakes them.
+  release wakes them. The Move to Trash fast check runs before that wait. The node doc keeps its old
+  parent until the Move's physical cleanup, so that check does not use the node doc. It reads the
+  item and its folder from their saved place, which already shows the new folder. So people added
+  to the new folder are not refused.
   A move that keeps the same parent and path does not change descendants. A
   name-only rename in the same saved parent carries nested shares without asking for write access to
   each one. Reparenting through Rename carries them the same way.

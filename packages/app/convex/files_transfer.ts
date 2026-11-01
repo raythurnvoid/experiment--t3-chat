@@ -1753,6 +1753,9 @@ export async function files_transfer_db_start_rename(
 		source.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, source.parentId);
 	if (parent) {
 		const parentWritable = await files_nodes_db_require_user_writable(ctx, { node: parent, userId: membership.userId });
+		// The refusal is about the folder, not the renamed item.
+		if (parentWritable._nay?.name === "read_only")
+			return Result({ _nay: { name: "read_only", message: "Its folder is read-only. Unlock it, then try again." } });
 		if (parentWritable._nay) return parentWritable;
 	}
 	const inputPath = files_normalize_special_node_path(source.kind, args.path);

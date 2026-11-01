@@ -1066,7 +1066,7 @@ describe("review jobs", () => {
 		});
 		expect((await finish_review(f, refused.runId))?.run).toMatchObject({ unitCount: 1 });
 		const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
-		expect(unit?.errorMessage).toBe("This item is read-only.");
+		expect(unit?.errorMessage).toBe("The destination folder is read-only. Unlock it, then try again.");
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", xId))).toMatchObject({ archiveOperationId: null });
 
 		// Once the folder is writable, the same approved delete goes through and x stays Read-only in Trash.
@@ -1082,6 +1082,45 @@ describe("review jobs", () => {
 			["/dest/x", true, true],
 			["/dest/x", false, false],
 		]);
+	});
+
+	test("a delete refused because its folder became Read-only names its folder, not a destination", async () => {
+		const f = await fixture();
+		const destId = await saved_folder(f, "dest");
+		const xId = await f.t.run((ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.scope.organizationId,
+				workspaceId: f.scope.workspaceId,
+				createdBy: f.scope.userId,
+				updatedBy: f.scope.userId,
+				parentId: destId,
+				name: "x",
+				sortName: files_sort_text_key("x"),
+				path: "/dest/x",
+				treePath: "/dest/x/",
+				pathDepth: 2,
+			}),
+		);
+		expect(
+			(
+				await f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...f.scope,
+					target: { kind: "saved", id: xId },
+				})
+			)._nay,
+		).toBeUndefined();
+		await set_pending_test_read_only({ asUser: f.asUser, membershipId: f.db.membershipId, nodeId: destId });
+
+		const refused = await start_review({
+			f,
+			kind: "accept",
+			proposals: await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect()),
+		});
+		await finish_review(f, refused.runId);
+		const unit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units").first());
+		expect(unit?.errorMessage).toBe("Its folder is read-only. Unlock it, then try again.");
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", xId))).toMatchObject({ archiveOperationId: null });
 	});
 
 	test("a reviewed folder delete archives its files and metadata docs within the unit budget", async () => {

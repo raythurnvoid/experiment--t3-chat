@@ -1079,6 +1079,12 @@ async function db_rename_parents(
 		return Result({ _yay: { done: true } });
 	}
 	const access = await db_authorize_node(ctx, cohort, actor, parent);
+	// The Activity shows this text for the renamed item, so do not say "This item". The walk checks each
+	// folder of the new path, starting with the item's own folder, so do not say "The destination folder".
+	if (access._nay?.name === "read_only")
+		return Result({
+			_nay: { name: "read_only", message: "A folder in the destination path is read-only. Unlock it, then try again." },
+		});
 	if (access._nay) return access;
 	const name = names[cursor.segmentIndex]!;
 	if (cursor.parentId === run.rename.source.parentId && name === run.rename.source.name)
@@ -1112,6 +1118,13 @@ async function db_rename_parents(
 		if (selected || folder.kind !== "folder")
 			return Result({ _nay: { name: "destination_changed", message: "This folder already exists." } });
 		const allowed = await db_authorize_node(ctx, cohort, actor, folder);
+		if (allowed._nay?.name === "read_only")
+			return Result({
+				_nay: {
+					name: "read_only",
+					message: "A folder in the destination path is read-only. Unlock it, then try again.",
+				},
+			});
 		if (allowed._nay) return allowed;
 		const reserved = await db_reserve_saved(ctx, cohort, { node: folder, role: "anchor" });
 		if (reserved._nay) return reserved;
@@ -1528,6 +1541,17 @@ async function db_headers(
 			const privateSource =
 				item?.target.kind === "private" ? (await ctx.db.get("files_pending_nodes", item.target.id))! : undefined;
 			const access = await db_authorize_node(ctx, cohort, recordActor, parent, privateSource);
+			// The review or the Activity shows this text on the moved or deleted item, so do not say "This item".
+			// Leave the path out. The text is saved and shown later without a new access check.
+			if (access._nay?.name === "read_only")
+				return Result({
+					_nay: {
+						name: "read_only",
+						message: proposal?.pendingArchive
+							? "Its folder is read-only. Unlock it, then try again."
+							: "The destination folder is read-only. Unlock it, then try again.",
+					},
+				});
 			if (access._nay) return access;
 		}
 		if (old && old.parentId !== "root") {
@@ -1543,6 +1567,10 @@ async function db_headers(
 							writeContext: recordActor.writeContext,
 							target: { kind: "node", node: sourceParent },
 						});
+				if (writable._nay?.name === "read_only")
+					return Result({
+						_nay: { name: "read_only", message: "The source folder is read-only. Unlock it, then try again." },
+					});
 				if (writable._nay) return writable;
 			}
 		}
