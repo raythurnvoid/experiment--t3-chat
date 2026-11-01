@@ -510,8 +510,16 @@ Use normal file tools and pending review. HTML stays `plain_text` source, and `.
   inside to Trash. Its stdout says `pending delete created: <path> — moves the file to Trash when accepted; review in Files`
   (or `moves the folder and its contents to Trash when accepted; review in Files`). Keep help and
   prompt text aligned with this review step. `rm` never deletes a saved file permanently.
-- `rm`, `rm -r` and `rm -f` refuse a Read-only item, or a folder that holds one:
+- `rm`, `rm -r` and `rm -f` refuse a Read-only item, a folder that holds one, or an item in a
+  Read-only folder:
   `rm: cannot remove 'X': Read-only. Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.`
+  When the blocker is another item the person may read, `Read-only.` becomes
+  `Read-only item inside: 'Y'.`, `Read-only items inside, for example 'Y'.` or
+  `its folder 'Y' is Read-only.`, with `Y` as the shell path the agent sees (drafts applied). When a
+  draft moved `X` away from its saved folder `Y`, it says `a Read-only item blocks it: 'Y'.` instead. So the agent does not blame `X` for a
+  Read-only file deep inside it. The early check reads indexes only. When it cannot decide (a
+  restricted folder inside, a running subtree job, a Move), `rm` makes the proposal and Accept
+  refuses it if a Read-only item is still inside.
   `rm --ignore-read-only` (long flag only, never given to the `/tmp` builtin) asks for a delete that
   ignores Read-only. Its stdout says `... when accepted, ignoring Read-only; the user must accept it in
   Files, and restored items stay Read-only`. The tool doc tells the model to use it only when the user

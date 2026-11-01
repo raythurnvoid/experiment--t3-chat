@@ -7,6 +7,7 @@ import {
 	bash_create_glob_syntax_unsupported_message,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_resolve_db_files_shell_path,
+	bash_is_path_under,
 	bash_is_path_under_read_only_mounts,
 	bash_resolve_path,
 	bash_read_only_mount_error,
@@ -231,11 +232,29 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				if (force && proposed._nay.message === "Not found") {
 					continue;
 				}
-				// Tell the model what to do next, so it neither retries with the flag on its own nor stops
-				// without telling the user.
+				// Name the Read-only item that blocks the delete, so the model does not blame the operand. Then
+				// tell it what to do next, so it neither retries with the flag on its own nor stops without
+				// telling the user.
+				const blocker = proposed._nay.data;
+				const blockerPath = blocker ? target.renderShellPath(blocker.path) : null;
+				// The check reads the saved tree, and the agent's drafts can move the blocker away from the
+				// operand. Say "inside" or "its folder" only when the agent's view agrees.
+				const isInside =
+					blocker?.place === "inside" && blocker.path !== dbFilesPath && bash_is_path_under(dbFilesPath, blocker.path);
+				const isParent =
+					blocker?.place === "parent" && dbFilesPath.slice(0, dbFilesPath.lastIndexOf("/")) === blocker.path;
+				const readOnlyReason = !blocker
+					? "Read-only."
+					: isParent
+						? `its folder '${blockerPath}' is Read-only.`
+						: !isInside
+							? `a Read-only item blocks it: '${blockerPath}'.`
+							: blocker.hasMore
+								? `Read-only items inside, for example '${blockerPath}'.`
+								: `Read-only item inside: '${blockerPath}'.`;
 				stderr +=
 					proposed._nay.name === "read_only"
-						? `rm: cannot remove '${operand}': Read-only. Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.\n`
+						? `rm: cannot remove '${operand}': ${readOnlyReason} Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.\n`
 						: `rm: cannot remove '${operand}': ${proposed._nay.message.toLowerCase()}\n`;
 				exitCode = bash_COMMAND_EXIT_FAILURE;
 				continue;

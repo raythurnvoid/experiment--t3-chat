@@ -215,7 +215,6 @@ import {
 import {
 	type files_nodes_WriteContext,
 	files_nodes_user_write_context,
-	files_nodes_db_require_writable,
 	files_nodes_db_require_user_writable,
 } from "../server/files-write-policy.ts";
 import {
@@ -228,9 +227,6 @@ import {
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
-
-// The up-front Archive policy check can defer larger trees to its background worker.
-const MAX_SUBTREE_POLICY_NODE_COUNT = 2000;
 
 // A search box page holds at most this many rows. A text search page has no split cursor and can
 // grow on a rerun, so a bigger one restarts from the first page before any per-row read.
@@ -696,142 +692,6 @@ export type files_nodes_get_user_file_write_access_Result =
 	typeof get_user_file_write_access extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-/**
- * Load active descendants below `parentId`; older Trash is not removed again.
- * Use parent ids because active and archived trees can have the same path.
- * Return null when there are more than `MAX_SUBTREE_POLICY_NODE_COUNT`, so one mutation never reads a
- * huge folder and fails on the Convex read limits.
- */
-async function db_collect_descendants(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		parentId: Id<"files_nodes">;
-	},
-) {
-	const descendants: Array<Doc<"files_nodes">> = [];
-	const stack = [args.parentId];
-
-	while (stack.length > 0) {
-		const parentId = stack.pop();
-		if (parentId === undefined) {
-			continue;
-		}
-
-		const children = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("parentId", parentId)
-					.eq("archiveOperationId", null),
-			)
-			.take(MAX_SUBTREE_POLICY_NODE_COUNT + 1 - descendants.length);
-
-		descendants.push(...children);
-		if (descendants.length > MAX_SUBTREE_POLICY_NODE_COUNT) {
-			return null;
-		}
-		// Only folders have children. Skip the files so the walk reads one index range per folder.
-		stack.push(...children.filter((child) => child.kind === "folder").map((child) => child._id));
-	}
-
-	return descendants;
-}
-
-/**
- * Refuse the whole change when any node is read-only.
- * Say "read-only" only when the caller can see that node. Otherwise use a general error.
- */
-export async function files_nodes_db_require_swept_nodes_writable(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		writeContext: files_nodes_WriteContext;
-		nodes: readonly Doc<"files_nodes">[];
-	},
-) {
-	// Check each restricted folder once, per extended scope: added people change access inside it.
-	const readableByScope = new Map<string, boolean>();
-	let hasHiddenRefusal = false;
-
-	for (const node of args.nodes) {
-		const writable = await files_nodes_db_require_writable(ctx, { ...args, target: { kind: "node", node } });
-		if (!writable._nay) {
-			continue;
-		}
-
-		const scopeNodeId = node.restrictedScopeNodeId;
-		// This node is not restricted. The caller can see the read-only error.
-		if (!scopeNodeId) {
-			return writable;
-		}
-
-		const scopeKey = `${scopeNodeId}:${node.extendedScopeNodeId ?? ""}`;
-		let readable = readableByScope.get(scopeKey);
-		if (readable === undefined) {
-			readable = await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				subject: args.writeContext.subject,
-				fileNode: node,
-				permission: "content.read",
-			});
-			readableByScope.set(scopeKey, readable);
-		}
-
-		if (readable) {
-			return writable;
-		}
-		hasHiddenRefusal = true;
-	}
-
-	return hasHiddenRefusal ? Result({ _nay: { message: "Permission denied" } }) : Result({ _yay: null });
-}
-
-/**
- * Refuse removing a folder when any removed descendant is read-only.
- * Use only for delete, archive, and replace paths. Rename and move never call this:
- * protected descendants travel along and keep their rules.
- * Items already in Trash are not removed again and do not block the change.
- * Refuse with `subtree_too_large` when the folder holds more than `MAX_SUBTREE_POLICY_NODE_COUNT` items.
- */
-export async function files_nodes_db_require_subtree_writable(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_nodes">["organizationId"];
-		workspaceId: Doc<"files_nodes">["workspaceId"];
-		writeContext: files_nodes_WriteContext;
-		node: Doc<"files_nodes">;
-	},
-) {
-	if (args.node.kind !== "folder") {
-		return Result({ _yay: null });
-	}
-
-	const subtreeFileNodes = await db_collect_descendants(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		parentId: args.node._id,
-	});
-	if (!subtreeFileNodes) {
-		return Result({
-			_nay: { name: "subtree_too_large", message: "This folder holds too many items to check at once." },
-		});
-	}
-
-	return await files_nodes_db_require_swept_nodes_writable(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		writeContext: args.writeContext,
-		nodes: subtreeFileNodes,
-	});
-}
 
 export async function files_nodes_db_set_read_only(
 	ctx: MutationCtx,
@@ -3545,6 +3405,7 @@ export async function files_nodes_db_archive_named_nodes(
 		writeContext,
 		membership,
 		nodes: rootFileNodes.filter((node) => !refusedNodes.has(node._id)),
+		opCheck: "overlapping",
 	});
 	for (const [nodeId, refusal] of fastCheck.refusals) refusedNodes.set(nodeId, refusal);
 

@@ -429,6 +429,7 @@ async function db_check_archive_parent(
 			_nay: {
 				name: "read_only",
 				message: `The folder "${parent.path}" is read-only. Unlock it before moving items inside it to Trash.`,
+				data: { parentId: parent._id },
 			},
 		});
 	return writable;
@@ -557,13 +558,18 @@ function refuse_named_item(args: StepArgs, refusal: RunFields["refusedItems"][nu
  * The reason saved for a refused named item, with how to fix it. `inside` is set when the refused node
  * is inside the named folder. Then the node's own message would blame the folder, so name the locked
  * node instead, or say that an item inside is refused. `lockedPath` is set only for a node the person
- * may read.
+ * may read. `hasMore` says that the person may read another Read-only item inside too.
  */
-function get_named_item_refusal(nay: { name?: string; message: string }, inside: { lockedPath: string | null } | null) {
+function get_named_item_refusal(
+	nay: { name?: string; message: string },
+	inside: { lockedPath: string | null; hasMore: boolean } | null,
+) {
 	const name = nay.name ?? null;
 	// A review refusal of an agent's delete asks for a new review. That message fits an item inside too.
 	if (name === "needs_review") return { name, message: nay.message };
 	if (name === "read_only") {
+		if (inside?.lockedPath && inside.hasMore)
+			return { name, message: `"${inside.lockedPath}" and other items inside are read-only. Unlock them, then try again.` };
 		const lockedItem = !inside ? "This item" : inside.lockedPath ? `"${inside.lockedPath}"` : "An item inside it";
 		return { name, message: `${lockedItem} is read-only. Unlock it, then try again.` };
 	}
@@ -685,7 +691,10 @@ async function db_check_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			if (refusal === MEMBERSHIP_LOST) return refusal;
 			refuse_named_item(
 				args,
-				get_named_item_refusal(refusal.nay, { lockedPath: "node" in refusal ? (refusal.node?.path ?? null) : null }),
+				get_named_item_refusal(refusal.nay, {
+					lockedPath: "node" in refusal ? (refusal.node?.path ?? null) : null,
+					hasMore: false,
+				}),
 			);
 			continue;
 		}
@@ -2321,8 +2330,16 @@ const FAST_CHECK_MAX_OPS = 500;
  *
  * Returns the named items to refuse now, with the reason the check would give, and `isFast`: true when
  * every other named item is proven to pass. When even one is not proven, the whole archive runs the
- * check, so one job keeps one set of rules. Every node read is one `.first()` on an index range, and the
- * op read stops at `FAST_CHECK_MAX_OPS`, so the cost does not grow with the size of a folder.
+ * check, so one job keeps one set of rules. Every node read is one index range of at most two rows, and
+ * the op read stops at `FAST_CHECK_MAX_OPS`, so the cost does not grow with the size of a folder.
+ *
+ * `blockers` holds the Read-only item behind a refusal: an item inside the named item, or its parent
+ * folder. A caller with its own words, like `rm`, can name it. It is set only for an item the person may
+ * read.
+ *
+ * `opCheck: "any"` stops at the first op of any kind, so the op read is one row. Then the caller leaves
+ * more cases to a later check. `"overlapping"` reads up to `FAST_CHECK_MAX_OPS` ops to find one on
+ * these paths.
  */
 export async function files_archive_runs_db_check_fast(
 	ctx: MutationCtx,
@@ -2330,11 +2347,13 @@ export async function files_archive_runs_db_check_fast(
 		writeContext: files_nodes_WriteContext;
 		membership: Doc<"organizations_workspaces_users">;
 		nodes: Doc<"files_nodes">[];
+		opCheck: "overlapping" | "any";
 	},
 ) {
 	const { organizationId, workspaceId } = args.membership;
 	const refusals = new Map<Id<"files_nodes">, RunFields["refusedItems"][number]["refusal"]>();
-	if (args.writeContext.force) return { refusals, isFast: false };
+	const blockers = new Map<Id<"files_nodes">, { place: "inside" | "parent"; nodeId: Id<"files_nodes">; hasMore: boolean }>();
+	if (args.writeContext.force) return { refusals, blockers, isFast: false };
 
 	// Check the item and the direct parent whose child list changes.
 	const checkedScopes = new Map<string, boolean>();
@@ -2342,6 +2361,9 @@ export async function files_archive_runs_db_check_fast(
 		const parentCheck = await db_check_archive_parent(ctx, { ...args, node, checkedScopes });
 		if (parentCheck._nay) {
 			refusals.set(node._id, { name: parentCheck._nay.name ?? null, message: parentCheck._nay.message });
+			// The parent check passed write access on the parent before it read the flag, so the person may read it.
+			if (parentCheck._nay.data)
+				blockers.set(node._id, { place: "parent", nodeId: parentCheck._nay.data.parentId, hasMore: false });
 			continue;
 		}
 		const writable = await files_nodes_db_require_writable(ctx, {
@@ -2361,6 +2383,14 @@ export async function files_archive_runs_db_check_fast(
 		if (nodes.length > files_archive_runs_REQUEST_MAX_NODES) return false;
 		if (await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: { organizationId, workspaceId } }))
 			return false;
+		// A finished op deletes its row, so any row is a queued or running op.
+		if (args.opCheck === "any")
+			return !(await ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_organization_workspace_kind", (q) =>
+					q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+				)
+				.first());
 		for (const kind of ["scope", "move"] as const) {
 			const op = await ctx.db
 				.query("files_subtree_ops")
@@ -2382,7 +2412,7 @@ export async function files_archive_runs_db_check_fast(
 		});
 		return blocked !== null && !blocked.includes(true);
 	})();
-	if (!isQuiet) return { refusals, isFast: false };
+	if (!isQuiet) return { refusals, blockers, isFast: false };
 
 	const organization = await ctx.db.get("organizations", organizationId);
 	// A service account is never the owner, even when the person behind its key is.
@@ -2420,7 +2450,8 @@ export async function files_archive_runs_db_check_fast(
 			}
 		}
 
-		const readOnly = await ctx.db
+		// Read two rows: the first one names the item, the second one only says that there are more.
+		const [readOnly, nextReadOnly] = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_org_ws_archive_readOnly_treePath", (q) =>
 				q
@@ -2432,14 +2463,17 @@ export async function files_archive_runs_db_check_fast(
 					.gt("treePath", node.treePath)
 					.lt("treePath", treePathEnd),
 			)
-			.first();
+			.take(2);
 		if (readOnly) {
-			// Name the item only in an area the person can read.
-			if (isOwner || readOnly.restrictedScopeNodeId === area) {
+			// Name the item only in an area the person can read. Count the next one only by the same test.
+			const isReadable = (item: Doc<"files_nodes">) => isOwner || item.restrictedScopeNodeId === area;
+			if (isReadable(readOnly)) {
+				const hasMore = nextReadOnly !== undefined && isReadable(nextReadOnly);
 				refusals.set(
 					node._id,
-					get_named_item_refusal({ name: "read_only", message: "" }, { lockedPath: readOnly.path }),
+					get_named_item_refusal({ name: "read_only", message: "" }, { lockedPath: readOnly.path, hasMore }),
 				);
+				blockers.set(node._id, { place: "inside", nodeId: readOnly._id, hasMore });
 			} else {
 				isFast = false;
 			}
@@ -2447,7 +2481,7 @@ export async function files_archive_runs_db_check_fast(
 		}
 	}
 
-	return { refusals, isFast };
+	return { refusals, blockers, isFast };
 }
 
 /**

@@ -218,13 +218,28 @@ Reviewed pending Delete uses the Save cohort. It checks active descendants befor
 already trashed descendants keep their stamps and do not block it. Stop before the switch keeps
 saved files and proposals; after the switch, required repair finishes.
 
+The agent's `rm` proposal uses the move to Trash fast check (`files_archive_runs_db_check_fast` with
+`opCheck: "any"`). It checks the item, its parent folder, and the first two active Read-only items
+inside, so its cost does not grow with the folder. A refusal names the blocking item: a Read-only
+item inside, or the Read-only parent folder. It shows the path the person's drafts show, like
+`resolve`, so a draft move above the item does not give a stale path. The check reads the saved
+tree, so when the person's drafts moved the blocker out of the folder or hid it, it refuses nothing:
+Accept may pass then. It also says when the person may read another Read-only
+item inside. It names an item only in an area the person can read.
+
+When the check cannot decide, the proposal is made and Accept checks every item. That happens for a
+non-owner with a restricted folder inside, while any subtree job runs, or while a Move holds the
+workspace. Accept's refusal of an item inside says "An item inside it is read-only." with no path:
+the review saves that text and shows it later without a new access check.
+
 ## Human-approved delete exception
 
-The agent's `rm`, `rm -r` and `rm -f` refuse a Read-only item, or a folder that holds one. When the
-user asks in the chat to delete those items, the agent runs `rm --ignore-read-only`. That only
-records a request: `pendingArchive.ignoreReadOnly: true` on the proposal. The last `rm` decides, so
-a later plain `rm` of the same item drops the request. The proposal's early checks skip only the
-flag. They still refuse a purge and a missing permission.
+The agent's `rm`, `rm -r` and `rm -f` refuse a Read-only item, a folder that holds one, or an item in
+a Read-only folder. When the user asks in the chat to delete those items, the agent runs
+`rm --ignore-read-only`. That only records a request: `pendingArchive.ignoreReadOnly: true` on the
+proposal. The last `rm` decides, so a later plain `rm` of the same item drops the request. The
+proposal's early checks skip only the flag. They still refuse a purge of the item and a missing
+permission on it. Accept checks the parent folder and the items inside.
 
 The user's Accept of that row is the approval. The review item carries `ignoreReadOnly: true` for
 that exact proposal revision. A plain Accept of such a delete, or an approval on any other proposal,
@@ -399,7 +414,8 @@ Keep visible labels, keyboard and focus behavior, and usable layout at 200% zoom
   Copy/Save receipts, clear/re-lock, partial Save, Trash, Move. RO-15: the structural
   "pending update read-only checks" block (approval, ACL) and `files_pending_update_runs.test.ts`
   (a move in the same unit, page replay).
-- `server/bash.files.test.ts`: `rm -f` refuses a Read-only file; `--ignore-read-only` only requests.
+- `server/bash.files.test.ts`: `rm -f` refuses a Read-only file; `rm -r` of its folder names it by its
+  shell path; `--ignore-read-only` only requests.
 - `convex/files_archive_runs*.test.ts`: Restore receipts, forced partial moves to Trash, current authority.
 - `convex/public_api*.test.ts`, `plugins_external_files*.test.ts`: grant checks, force, exact retries,
   sealed destinations, partial completion, accepted uploads.

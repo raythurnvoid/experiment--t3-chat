@@ -1643,6 +1643,31 @@ describe("bash_run_command", () => {
 		expect(await list_pending_updates(runner)).toMatchObject([
 			{ target: { kind: "saved", id: nodeId }, pendingArchive: { fromPath: "/docs/readme.md", ignoreReadOnly: true } },
 		]);
+
+		// The Read-only file inside has its own pending delete now, so the agent no longer sees it. Leave
+		// its folder's delete to Accept instead of refusing on the saved tree.
+		const folder = await runner.run({ command: `rm -r ${test_db_files_mount}/docs` });
+		expect(folder.metadata.exitCode, folder.stderr).toBe(0);
+		expect(folder.stdout).toBe(
+			"pending delete created: /docs — moves the folder and its contents to Trash when accepted; review in Files\n",
+		);
+	});
+
+	test("rm -r of a folder names the Read-only file inside at the path the agent sees", async () => {
+		const runner = await create_bash_runner();
+		const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+		await runner.t.run((ctx) =>
+			ctx.db.patch("files_nodes", nodeId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+		);
+		// A draft move changes the path the agent sees. The saved path is still /docs/readme.md.
+		const moved = await runner.run({ command: `mv ${test_db_files_mount}/docs ${test_db_files_mount}/moved-docs` });
+		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+
+		const removed = await runner.run({ command: `rm -r ${test_db_files_mount}/moved-docs` });
+		expect(removed.stderr).toBe(
+			`rm: cannot remove '${test_db_files_mount}/moved-docs': Read-only item inside: '${test_db_files_mount}/moved-docs/readme.md'. Tell the user. Do not retry unless they explicitly ask to delete these Read-only items. They can also turn off Read-only in Properties.\n`,
+		);
+		expect((await list_pending_updates(runner)).some((row) => row.pendingArchive)).toBe(false);
 	});
 
 	test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {

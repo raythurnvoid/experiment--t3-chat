@@ -676,6 +676,7 @@ describe("files_archive_runs_db_check_fast", () => {
 				writeContext: files_nodes_user_write_context(member.userId),
 				membership,
 				nodes: [node],
+				opCheck: "overlapping",
 			});
 			const after = await ctx.meta.getTransactionMetrics();
 			return {
@@ -688,6 +689,43 @@ describe("files_archive_runs_db_check_fast", () => {
 		expect(checked.isFast).toBe(true);
 		expect(checked.refusalCount).toBe(0);
 		expect(checked.reads).toBeLessThan(10);
+	});
+});
+
+describe("upsert_file_pending_archive_in_db", () => {
+	test("rm names the Read-only item that blocks it, even deep inside a folder of more than 2,000 items", async () => {
+		// The seed writes the whole tree in one transaction, which is more than Convex allows. The read
+		// cost of the check itself is covered by the `files_archive_runs_db_check_fast` test above.
+		const f = await fixture({ transactionLimits: false });
+		// The old proposal check walked at most 2,000 items, so it never reached the last file and made
+		// the proposal anyway.
+		const tree = await seed_tree(f, { name: "big", folderCount: 21, filesPerFolder: 100 });
+		await lock({ f, nodeId: tree.fileIds.at(-1)!, locked: true });
+		const propose = (nodeId: Id<"files_nodes">) =>
+			f.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				target: { kind: "saved", id: nodeId },
+			});
+
+		expect(await propose(tree.topId)).toEqual({
+			_nay: {
+				name: "read_only",
+				message: '"/big/d20/f099.md" is read-only. Unlock it, then try again.',
+				data: { place: "inside", path: "/big/d20/f099.md", hasMore: false },
+			},
+		});
+
+		// A second locked item names the first one by path and says that there are more.
+		await lock({ f, nodeId: tree.fileIds[0]!, locked: true });
+		expect((await propose(tree.topId))._nay?.data).toEqual({ place: "inside", path: "/big/d0/f000.md", hasMore: true });
+
+		// A Read-only folder refuses rm of a file inside it, because the folder's list of items changes.
+		await lock({ f, nodeId: tree.folderIds[0]!, locked: true });
+		expect((await propose(tree.fileIds[1]!))._nay?.data).toEqual({ place: "parent", path: "/big/d0", hasMore: false });
+
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 });
 

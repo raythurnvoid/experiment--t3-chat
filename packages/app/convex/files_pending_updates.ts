@@ -38,7 +38,8 @@ import {
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { api, internal } from "./_generated/api.js";
-import { files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_require_subtree_writable, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
+import { files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
+import { files_archive_runs_db_check_fast } from "./files_archive_runs.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import {
 	files_nodes_db_require_user_writable,
@@ -5021,6 +5022,21 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			/** "cancelled_added_file": the user's private create was discarded. */
 			outcome: v.union(v.literal("proposed"), v.literal("cancelled_added_file")),
 		}),
+		_nay: {
+			/**
+			 * The Read-only item that blocks the delete: one inside the folder, or the parent folder. It is
+			 * set only when the person may read that item. `path` is where the person's drafts show it, and
+			 * `rm` prints it.
+			 */
+			data: v.object({
+				place: v.union(v.literal("inside"), v.literal("parent")),
+				path: v.string(),
+				/**
+				 * True when the person may read another Read-only item inside too.
+				 */
+				hasMore: v.boolean(),
+			}),
+		},
 	}),
 	handler: async (ctx, args) => {
 		if (args.agentSource) {
@@ -5100,9 +5116,8 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// Accepting a delete archives the node and all its descendants.
-		// Require all of them to be writable before creating the proposal.
-		// A saved delete needs current write access. Discard can still remove the owner's proposal.
+		// Accepting a delete archives the node and all its descendants. A saved delete needs current write
+		// access. Discard can still remove the owner's proposal.
 		//
 		// With --ignore-read-only, these early checks skip only the Read-only flag. They still refuse a
 		// purge and a missing permission. Accept checks every item again, and only after the user approves.
@@ -5115,17 +5130,6 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 		});
 		if (nodeWritable._nay) {
 			return nodeWritable;
-		}
-		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			writeContext,
-			node,
-		});
-		// A folder too big to check here still gets the proposal. Save checks the items inside again
-		// before it archives them.
-		if (subtreeWritable._nay && subtreeWritable._nay.name !== "subtree_too_large") {
-			return subtreeWritable;
 		}
 
 		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
@@ -5142,8 +5146,50 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			membership: existingPendingUpdate?.pendingArchive?.fromPath !== node.path || !!existingPendingUpdate?.pendingMove,
 		});
 		if (writable._nay) return writable;
-		// Store the request, not the early check: that check misses a Read-only parent and stops early in a
-		// big folder. A later plain rm replaces the whole value, so the last rm decides.
+
+		// Use the Trash's index check: a Read-only parent folder, or a Read-only item anywhere inside. It
+		// reads a few index rows, so a huge folder costs the same as a small one. When it cannot decide
+		// (a restricted folder inside, a running job), make the proposal: Accept checks every item.
+		// A forced delete skips this whole check, the parent's Can edit too, and leaves the parent folder
+		// and the items inside to Accept.
+		//
+		// Run it after the Move check above. A Move holds an item until its cleanup moves the node doc,
+		// so before that the doc still names the old parent folder.
+		const fastCheck = await files_archive_runs_db_check_fast(ctx, {
+			writeContext,
+			membership,
+			nodes: [node],
+			opCheck: "any",
+		});
+		const refusal = fastCheck.refusals.get(node._id);
+		const blocker = fastCheck.blockers.get(node._id);
+		// Map the blocker into the person's drafts, like `resolve` does, so `rm` names the path the agent
+		// sees. The reader answers null for an item a draft hides.
+		const reader = blocker ? await files_visible_db_create_reader(ctx, { ...args, readLimit: 2048 }) : null;
+		const blockerEntry = blocker && reader ? await reader.resolveTarget({ kind: "saved", id: blocker.nodeId }) : null;
+		const nodeEntry =
+			blocker?.place === "inside" && reader ? await reader.resolveTarget({ kind: "saved", id: node._id }) : null;
+		// The check reads the saved tree. A draft can move the blocker out of this folder or delete it, and
+		// then Accept may pass. So refuse now only when the drafts still show the blocker where the check
+		// found it. Otherwise make the proposal: Accept checks every item.
+		const isBlockerInPlace =
+			blocker?.place === "parent"
+				? blockerEntry !== null
+				: blockerEntry !== null && nodeEntry !== null && blockerEntry.path.startsWith(`${nodeEntry.path}/`);
+		if (refusal && (!blocker || isBlockerInPlace)) {
+			return Result({
+				_nay: {
+					...(refusal.name ? { name: refusal.name } : {}),
+					message: refusal.message,
+					...(blocker && blockerEntry
+						? { data: { place: blocker.place, path: blockerEntry.path, hasMore: blocker.hasMore } }
+						: {}),
+				},
+			});
+		}
+
+		// Store the request, not the early check: that check can leave a case to Accept. A later plain rm
+		// replaces the whole value, so the last rm decides.
 		const pendingArchive = { fromPath: node.path, ...(args.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}) };
 		// Contributor set: an agent rm records its thread once per doc; client deletes pass no threadId.
 		const nextThreadIds =

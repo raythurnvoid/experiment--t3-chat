@@ -1839,7 +1839,12 @@ async function db_authorize_record(
 		return await db_authorize_node(ctx, cohort, recordActor, parent, privateNode);
 	}
 	if (!node) return Result({ _nay: { name: "needs_review", message: "A moved file is no longer available." } });
-	return await db_authorize_node(ctx, cohort, recordActor, node);
+	const access = await db_authorize_node(ctx, cohort, recordActor, node);
+	// The review shows this text on the deleted folder, so do not say "This item". Leave the path out:
+	// the text is saved and shown later without a new access check.
+	if (archiveDescendant && access._nay?.name === "read_only")
+		return Result({ _nay: { name: "read_only", message: "An item inside it is read-only. Unlock it, then try again." } });
+	return access;
 }
 
 async function db_sides(
