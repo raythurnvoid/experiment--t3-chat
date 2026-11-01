@@ -569,6 +569,38 @@ describe("FilesSidebar", () => {
 		expect(view.queryByRole("dialog")).toBeNull();
 	});
 
+	test("child row actions follow live parent write access", async () => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo"
+				? {
+						...node,
+						parentId: "alpha" as app_convex_Id<"files_nodes">,
+						path: "/alpha/bravo",
+						treePath: "/alpha/bravo/",
+						pathDepth: 2,
+					}
+				: node,
+		);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		await view.findByRole("treeitem", { name: "bravo" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		const rename = await view.findByRole("menuitem", { name: "Rename" });
+		const cut = view.getByRole("menuitem", { name: "Cut" });
+
+		for (const canWrite of [false, true]) {
+			act(() => {
+				// Change only the parent. Keep the child's data and the open menu mounted.
+				treeState.nodes = treeState.nodes.map((node) => (node._id === "alpha" ? { ...node, canWrite } : node));
+				for (const listener of treeState.listeners) listener();
+			});
+			await waitFor(() => {
+				expect(rename.getAttribute("aria-disabled")).toBe(canWrite ? null : "true");
+				expect(cut.getAttribute("aria-disabled")).toBe(canWrite ? null : "true");
+			});
+		}
+	});
+
 	test("a Shared with you row has the tree row menu, which archives that row only", async () => {
 		treeState.sharedRoots = [share("secret")];
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });

@@ -1315,6 +1315,9 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - `FilesSidebarTreeItem` reads the current tree values on every tree update. `FilesSidebarTreeRow`
   compares those snapshots before rendering the row UI. Compare every new render prop, callback,
   ARIA value, and guide-line set. Never compare old and new values by reading the same mutable tree.
+- Read parent write access and the selection's Cut access with `useVal` in `FilesSidebarTreeItem`.
+  Pass the answers to `FilesSidebarTreeRow`. A parent can change while the child's own data stays
+  the same, so reading it inside the memoized row leaves Rename and Cut stale.
 - Opening a file must render only the rows whose look changes. A set shared by every row is compared
   by the ids that row reads: `trackActiveFileIds` by the row's own track ids, `protectedDescendantIds`
   by value. `useFolders` keeps the same `rows` and `hoistedIds` when a new pin is already loaded, so

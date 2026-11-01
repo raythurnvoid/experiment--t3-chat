@@ -2358,6 +2358,30 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const itemId = useVal(() => item.getId());
 	const itemData = useVal(() => item.getItemData());
 	const itemProps = useVal(() => item.getProps());
+	// Read parent access before the row's memo comparison, even when this item's data stays the same.
+	const parentCanWrite = useVal(() => {
+		const parentItemData = item.getParent()?.getItemData();
+		return !parentItemData || !is_open_node(parentItemData) ? props.canWriteRoot : parentItemData.canWrite;
+	});
+	const canCutItems = useVal(() => {
+		const sourceItems = (props.isSelected ? item.getTree().getSelectedItems() : [item]).map((selected) =>
+			selected.getItemData(),
+		);
+		return (
+			get_clipboard_source_ids(sourceItems.filter(is_open_node)).length > 0 &&
+			sourceItems.every((selected) => {
+				if (!is_open_node(selected) || !selected.canWrite || selected.archiveOperationId !== null) {
+					return false;
+				}
+				if (selected._id === itemId) {
+					return parentCanWrite;
+				}
+				const selectedParent = item.getTree().getItemInstance(selected._id)?.getParent()?.getItemData();
+				// A parent outside the loaded tree is checked by the server on drop.
+				return !selectedParent || !is_open_node(selectedParent) || selectedParent.canWrite;
+			})
+		);
+	});
 
 	const isRenaming = useVal(() => item.isRenaming());
 	// Idle titles do not need the tree's changing rename value or a fresh props object.
@@ -2410,6 +2434,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			// Show the typed name at once, like a desktop file manager. If the rename fails, the saved name comes back.
 			itemData={renamingName === undefined ? itemData : ({ ...itemData, name: renamingName } as FilesSidebarItem)}
 			itemProps={itemProps}
+			parentCanWrite={parentCanWrite}
+			canCutItems={canCutItems}
 			renameInputProps={renameInputProps}
 			isNavigated={isNavigated}
 			isPending={isPending}
@@ -2447,6 +2473,8 @@ type FilesSidebarTreeRow_Props = Omit<
 	itemId: string;
 	itemData: FilesSidebarItem;
 	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
+	parentCanWrite: boolean;
+	canCutItems: boolean;
 	renameInputProps: FilesSidebarTreeItemTitle_Props["renameInputProps"];
 	isNavigated: boolean;
 	isPending: boolean;
@@ -2489,6 +2517,8 @@ const FilesSidebarTreeRow = memo(
 			itemId,
 			itemData,
 			itemProps,
+			parentCanWrite,
+			canCutItems,
 			renameInputProps,
 			isNavigated,
 			isPending,
@@ -2513,7 +2543,6 @@ const FilesSidebarTreeRow = memo(
 			canWrite,
 			canUnarchive,
 			canDeletePermanently,
-			canWriteRoot,
 			hasVisibleProtectedDescendant,
 			protectedDescendantIds,
 			hasPublicLink,
@@ -2579,8 +2608,6 @@ const FilesSidebarTreeRow = memo(
 			forward_ref(element, itemElementRef);
 		});
 
-		const parentItemData = item.getParent()?.getItemData();
-		const parentCanWrite = !parentItemData || !is_open_node(parentItemData) ? canWriteRoot : parentItemData.canWrite;
 		const capabilities = files_get_read_only_capabilities({
 			canWrite,
 			parentCanWrite,
@@ -2590,19 +2617,6 @@ const FilesSidebarTreeRow = memo(
 			(state) => is_open_node(itemData) && state.nodeIds.includes(itemData._id),
 		);
 		const canRename = is_open_node(itemData) && capabilities.canRelocateOrRename && !isUploading;
-		const canCutItems =
-			canCopyItems &&
-			sourceItems.every((selected) => {
-				if (!is_open_node(selected) || !selected.canWrite) {
-					return false;
-				}
-				if (selected._id === itemId) {
-					return parentCanWrite;
-				}
-				const selectedParent = item.getTree().getItemInstance(selected._id)?.getParent()?.getItemData();
-				// A parent outside the loaded tree is checked by the server on drop.
-				return !selectedParent || !is_open_node(selectedParent) || selectedParent.canWrite;
-			});
 		// One row the person can archive is enough, like the header "Archive N selected" action. The
 		// archive refuses the other rows and lists them on its Activity.
 		const canArchiveItems = sourceItems.some(

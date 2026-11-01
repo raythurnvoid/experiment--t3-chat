@@ -1087,10 +1087,17 @@ follow an old recipe.
   never shows in the UI. To read it, call `files_nodes.rename_node` from page context with the
   item's current name as `path`. The parent check runs before the same-name no-op, so this call
   cannot rename anything even if the check breaks. A `_nay` result also means no Activity run.
-- Known UI bug (2026-11-01): a child row's menu does not update when only its parent folder's flag
-  changes in the same tab. After locking the folder, the child's `Rename` stays enabled and a click
-  does nothing, with no message. After unlocking, `Rename` and `Cut` stay disabled. The tree
-  itself is right (`item.canRename()` changes). Reload before you read a child row's menu.
+- Fixed child row menu updates (2026-11-01): parent write access and the selection's Cut access
+  now pass through the tree wrapper's `useVal` snapshots into the row comparison. Toggle a folder's
+  Read-only flag in Properties, Save, and close Properties. Without reloading, its child's `Rename`
+  and `Cut` must have `aria-disabled="true"` while the folder is locked, then no disabled attribute
+  after clearing it. Removing the fix made both stay disabled after clearing the folder, while
+  `item.canRename()` and fresh node queries allowed writes. The focused component test also fails
+  without the fix. Use Shift+F10 on a deep tree row when its More button is outside the pane.
+- Properties Save keeps the dialog open. Close it with the visible footer text `Close` before
+  opening a row menu. The dialog also has an icon button named Close, so use
+  `getByRole("dialog").getByText("Close", { exact: true })`. The Read-only input is a hidden 1px
+  control: focus its checkbox role and press Space, or click its visible label, then Save.
 - A create-only public upload was accepted before its file became Read-only. One signed PUT then
   completed normal conversion with the flag still set and exact saved bytes. The ordinary key had
   no force scope and was revoked. The unused first placeholder was removed without sending a PUT.
