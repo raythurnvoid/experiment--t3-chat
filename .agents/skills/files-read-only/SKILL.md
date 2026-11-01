@@ -231,6 +231,10 @@ landing. The narrow exception is a parent restored by this same run with the exa
 decision ID, including null. Repair-only docs grant no exception. Clearing and setting again breaks
 the receipt. Current ACL and placement checks still apply.
 
+A public API restore dry run (`files/restore` with `dryRun: true`) runs this same restore and then
+rolls it back. So for the steps it runs, it answers with the same Read-only refusals a real restore
+would give, and it saves nothing. See the `public-api` skill.
+
 Restore name clashes keep Keep both, Skip, and Replace. Replace always refuses a Read-only occupant,
 even for a forced request. It keeps its existing empty-folder rules and bounded checks of content in Trash.
 Separate Trash operations remain separate. Moving an item to root still needs its root and
