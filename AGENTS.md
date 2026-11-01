@@ -276,6 +276,11 @@ Files should feel like apps people already know. When an edge case has more than
 - **Dropbox, Google Drive:** uploads, sync, sharing, trash, storage limits, work that resumes after a restart.
 - **Notion (and Google Docs):** documents, pages, embeds, comments.
 - **OpenViking** (a file system for AI agents, source in `references-submodules/openviking`): read, write and manage permissions, restricted folders, name-only rows for denied items, and what an agent may delete.
+- **Cloudflare Computer** (agent file system in Durable Object SQLite, source in `references-submodules/cloudflare-computer`): the agent's file tree, rename and move, folder listing order, read-only mounts.
+- **agent-fs** (database and object store, source in `references-submodules/agent-fs`): roles per operation, share links, file versions with diff and revert.
+- **grover** (database file system, source in `references-submodules/grover-vfs`): grants per folder path, versions, trash and restore.
+- **TigerFS** (Postgres as files, source in `references-submodules/tigerfs`): file history and undo per user.
+- **Mirage** (one shell over many services, source in `references-submodules/mirage`): which commands an agent may run, must ask for, or is denied. It hides denied paths; we do not (see "Locked, not hidden").
 
 If they agree, do the same. If they disagree, pick the behavior most of them share, or the one that fits our product best, and write down the choice and the reason in the owning spec skill.
 
