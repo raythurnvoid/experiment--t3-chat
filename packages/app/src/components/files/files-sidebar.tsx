@@ -9936,7 +9936,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				view.rerender(<TestTree selectedNodeId="child-1000" canWrite={false} />);
 				await waitFor(() => expect(view.queryByRole("textbox")).toBeNull());
 				expect(treeRef.current?.getState().renamingItem).toBeNull();
-				expect(view.getByRole("treeitem", { name: "child-1001, read-only" })).toBeTruthy();
+				await waitFor(() => expect(document.activeElement?.getAttribute("data-file-id")).toBe("child-1001"));
 			} finally {
 				cleanup();
 				vi.restoreAllMocks();
