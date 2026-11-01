@@ -521,7 +521,7 @@ describe("advance", () => {
 		);
 		expect(items.find((entry) => entry.sourcePath === "/source/child.txt")).toMatchObject({
 			state: "failed",
-			errorMessage: "This item is read-only.",
+			errorMessage: "The destination folder is read-only. Unlock it, then try again.",
 		});
 		expect(await get_node(fixture, "/target/source/child.txt")).toBeNull();
 	});

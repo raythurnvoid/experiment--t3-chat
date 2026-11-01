@@ -98,10 +98,11 @@ describe("bash_run_command", () => {
 			}
 		});
 
-		// Writes to writable children pass. The folder lock does not cover them.
+		// Writes to writable children pass. The folder lock does not cover them. A plain rm checks the
+		// parent folder too, so the delete asks to ignore Read-only.
 		const allowedCommands = [
 			`printf changed > ${test_db_files_mount}/docs/readme.md`,
-			`rm ${test_db_files_mount}/docs/tutorial.md`,
+			`rm --ignore-read-only ${test_db_files_mount}/docs/tutorial.md`,
 		];
 		for (const command of allowedCommands) {
 			const result = await runner.run({ command });

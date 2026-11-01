@@ -240,8 +240,15 @@ is read-only.". A Rename refused at once because the item's folder is Read-only 
 read-only." with no path too. A reviewed delete says the same. Each text ends with "Unlock it, then
 try again."
 
-A Move that uses Replace on a private draft at its destination still says "This item is read-only."
-when the saved folder that holds the draft is Read-only. Known gap, not fixed yet.
+A Copy or Move checks its destination folder again at each step. When that folder became Read-only
+after the start, the item fails with "The destination folder is read-only.". When the destination
+is a draft folder, the lock is on a saved folder above it, so the text is "A folder in the
+destination path is read-only.".
+
+A Copy or Move that merges into a folder or replaces a file checks that item too. When it became
+Read-only after the start, the Activity says "The destination folder is read-only." or "The
+destination file is read-only.". When the item is a draft, the lock is on a saved folder above it,
+so the text is "A folder in the destination path is read-only.".
 
 ## Human-approved delete exception
 

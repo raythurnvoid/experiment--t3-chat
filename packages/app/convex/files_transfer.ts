@@ -413,6 +413,18 @@ async function db_get_destination(
 			writeContext: args.writeContext,
 			runWrittenReadOnlyDecisionId: args.runWrittenReadOnlyDecisionId,
 		});
+		// The Activity shows this text on the item, so do not say "This item". A draft folder takes its
+		// access from the nearest saved folder above it, so the lock may be on a folder higher up.
+		if (writable._nay?.name === "read_only")
+			return Result({
+				_nay: {
+					name: "read_only",
+					message:
+						entry?.kind === "saved"
+							? "The destination folder is read-only. Unlock it, then try again."
+							: "A folder in the destination path is read-only. Unlock it, then try again.",
+				},
+			});
 		if (writable._nay) return writable;
 	}
 	return Result({ _yay: { entry, parent } });
@@ -944,6 +956,20 @@ async function db_resolve_name(
 					writeContext: args.writeContext,
 					target: { kind: "node", node: accessNode },
 				});
+				// The Activity shows this text for the whole Copy or Move, so do not say "This item". A draft takes
+				// its access from the nearest saved folder above it.
+				if (writable._nay?.name === "read_only")
+					return Result({
+						_nay: {
+							name: "read_only",
+							message:
+								occupant.kind === "private"
+									? "A folder in the destination path is read-only. Unlock it, then try again."
+									: occupant.node.kind === "folder"
+										? "The destination folder is read-only. Unlock it, then try again."
+										: "The destination file is read-only. Unlock it, then try again.",
+						},
+					});
 				if (writable._nay) return writable;
 			}
 

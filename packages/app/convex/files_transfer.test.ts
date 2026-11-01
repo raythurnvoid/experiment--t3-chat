@@ -2229,6 +2229,89 @@ describe("move", () => {
 		);
 	});
 
+	test("an agent Move into a draft folder whose saved folder became Read-only names a folder, not the item", async () => {
+		const fixture = await create_folder_fixture(["/source/x", "/target"]);
+		const { t, db, asUser, folders } = fixture;
+		const draft = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/target/drafts",
+			kind: "folder",
+		});
+		if (draft._nay) throw new Error(draft._nay.message);
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "move-into-locked-draft",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await start_agent_transfer(t, {
+			membershipId: db.membershipId,
+			threadId: thread._yay.threadId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
+			requestId: "move-into-locked-draft",
+			kind: "move",
+			sources: [{ kind: "saved", id: folders.get("/source/x")! }],
+			targetParent: draft._yay.target,
+			targetPath: "/target/drafts",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "error", folder: "error" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		// Lock the saved folder above the draft after the Move started, so a later step finds the lock.
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+			membershipId: db.membershipId,
+			nodeId: folders.get("/target")!,
+			readOnly: true,
+		});
+		if (locked._nay) throw new Error(locked._nay.message);
+
+		expect((await finish_folder_copy(fixture, started._yay.runId)).activity).toMatchObject({
+			errorMessage: "A folder in the destination path is read-only. Unlock it, then try again.",
+		});
+		expect((await get_node(fixture, "/source/x"))?._id).toBe(folders.get("/source/x"));
+	});
+
+	test("an agent Copy that merges into a folder made Read-only after the start names that folder", async () => {
+		const fixture = await create_folder_fixture(["/source", "/target", "/target/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "merge-into-locked-folder",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await start_agent_transfer(t, {
+			membershipId: db.membershipId,
+			threadId: thread._yay.threadId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
+			requestId: "merge-into-locked-folder",
+			kind: "copy",
+			sources: [{ kind: "saved", id: folders.get("/source")! }],
+			targetParent: { kind: "saved", id: folders.get("/target")! },
+			targetPath: "/target",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "replace", folder: "merge" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		// The start checks only /target. Lock the folder the Copy merges into after that check.
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+			membershipId: db.membershipId,
+			nodeId: folders.get("/target/source")!,
+			readOnly: true,
+		});
+		if (locked._nay) throw new Error(locked._nay.message);
+
+		expect((await finish_folder_copy(fixture, started._yay.runId)).activity).toMatchObject({
+			errorMessage: "The destination folder is read-only. Unlock it, then try again.",
+		});
+	});
+
 	test("releases proposal Move holds after Stop keeps its first output", async () => {
 		const fixture = await create_folder_fixture([]);
 		const { t, db, asUser, folders } = fixture;
