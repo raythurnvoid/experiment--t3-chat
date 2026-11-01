@@ -144,7 +144,7 @@ describe("read", () => {
 		}
 	});
 
-	test("prints no facts, keeps the old --to file, stops on a refused page, a lost answer, or a closed stdout, and refuses a missing local folder", async () => {
+	test("prints no facts, keeps the old --to file, stops on a refused page, a lost answer, or a closed stdout, and refuses a missing local folder or an empty --to", async () => {
 		let pipeClosed: Promise<void> = Promise.resolve();
 		let secondPage: "refused" | "lost" | "held" = "refused";
 		const api = await start_api(async (request, response) => {
@@ -203,12 +203,17 @@ describe("read", () => {
 			expect(closed.stderr).not.toContain('"revision"');
 			expect(api.requests.slice(requestCount).map((request) => request.body.cursor)).toEqual([null, "c1"]);
 
-			// A missing local folder is a usage error, and the CLI sends nothing.
-			const missingFolderRequestCount = api.requests.length;
-			const missingFolder = await run_cli(api.origin, ["read", FACTS.path, "--to", path.join(folder, "gone", "a.bin")]);
-			expect(missingFolder.code, missingFolder.stderr).toBe(2);
-			expect(missingFolder.stderr).toContain("Local folder not found");
-			expect(api.requests).toHaveLength(missingFolderRequestCount);
+			// A missing local folder or an empty --to is a usage error, and the CLI sends nothing.
+			const localMistakeRequestCount = api.requests.length;
+			for (const [to, message] of [
+				[path.join(folder, "gone", "a.bin"), "Local folder not found"],
+				["", "--to needs a file name."],
+			] as const) {
+				const refused = await run_cli(api.origin, ["read", FACTS.path, "--to", to]);
+				expect(refused.code, refused.stderr).toBe(2);
+				expect(refused.stderr).toContain(message);
+			}
+			expect(api.requests).toHaveLength(localMistakeRequestCount);
 		} finally {
 			await api.close();
 			rmSync(folder, { recursive: true, force: true });
@@ -363,6 +368,55 @@ describe("restore", () => {
 			expect(api.requests).toHaveLength(5);
 		} finally {
 			await api.close();
+		}
+	});
+});
+
+describe("upload", () => {
+	test("a local file that cannot be read fails alone, and the report lists the files that worked", async () => {
+		const folder = make_fixture_folder();
+		const unreadable = path.join(folder, "up", "b.txt");
+		const api = await start_api((request, response) => {
+			if (request.route === "/api/v1/files/upload-urls") {
+				// Delete one file after the CLI listed it. Its read then fails, like a file that another
+				// program holds open on Windows.
+				rmSync(unreadable);
+				const files = request.body.files as Array<{ path: string }>;
+				response.writeHead(200, { "content-type": "application/json" });
+				response.end(
+					JSON.stringify({
+						files: files.map((file, index) => ({
+							path: file.path,
+							nodeId: `n${index}`,
+							uploadUrl: `${api.origin}/put/${index}`,
+							headers: {},
+						})),
+					}),
+				);
+				return;
+			}
+			response.writeHead(200);
+			response.end();
+		});
+		try {
+			// start_api parses every body as JSON, so the files hold JSON text.
+			mkdirSync(path.join(folder, "up"));
+			writeFileSync(path.join(folder, "up", "a.txt"), "1");
+			writeFileSync(unreadable, "2");
+
+			const result = await run_cli(api.origin, ["upload", path.join(folder, "up"), "--to", "/inbox"]);
+			expect(result.code, result.stderr).toBe(1);
+			const report = JSON.parse(result.stdout.toString("utf8")) as {
+				uploaded: Array<{ path: string }>;
+				failed: Array<{ path: string; message: string }>;
+			};
+			expect(report.uploaded.map((item) => item.path)).toEqual(["/inbox/up/a.txt"]);
+			expect(report.failed.map((item) => item.path)).toEqual(["/inbox/up/b.txt"]);
+			expect(report.failed[0]?.message).toContain("Cannot read the local file (ENOENT)");
+			expect(api.requests.filter((request) => request.route.startsWith("/put/"))).toHaveLength(1);
+		} finally {
+			await api.close();
+			rmSync(folder, { recursive: true, force: true });
 		}
 	});
 });
