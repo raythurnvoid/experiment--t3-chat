@@ -39,7 +39,7 @@ means look but do not change anything.
 | `qa-tmp-share/home` | `qa.perm.member` (owner) | reuse | Cross-org share checks. No plugin installations. Empty reusable Data Probe and GitHub Sources service accounts remain without file grants. |
 | `f5-repro-org/home` | Former `qa.paid.owner` workspace | retired | Content erased in the 2026-10-28 cleanup. The account, its default home and billing links were preserved. Read current billing before a paid check. |
 | `personal/home` of each `qa.perm.*` account | that account | reuse | Almost empty. |
-| `personal/home` (owner) | QA Edge profile | reuse for QA folders only | The owner's main workspace. **Every upload here runs the image, pdf, video, and data-probe plugins**, so upload here only to test those plugins. The owner's own notes (`/tasks`, `/inbox`, `/todo.md`, `/README.md`) are read-only. |
+| `personal/home` (owner) | QA Edge profile | reuse for QA folders only | The owner's main workspace. **Every upload here runs the image, pdf, video, and data-probe plugins**, so upload here only to test those plugins. The owner's own notes (`/tasks/README.md`, `/todo.md`, `/README.md`, `/about.md`) are read-only. The owner trashed the test files here on 2026-10-31; see the change log. |
 | `personal/plugin-access-qa` | QA Edge profile | reuse | Plugin access settings; setup stays Owner only. Private GitHub Mount check is complete. The sample repo `bonobo-mounts-private-qa-20260929` (owned by the repo owner's GitHub account) stays private for reuse. Its test installation, copied files and token are removed; three runs and 18 API call records remain. Empty GitHub Sources account `rd7zqff8p0vvqc155ehk9n4s4x8fa15s` remains for reuse. Reinstall needs service-account management. Files still has only the automatic `/README.md`. |
 | `sybill-demo/demo` | QA Edge profile | read-only | Large realistic import: `/people` (about 9,700 files), `/companies` (1,000+ in one folder), `/emails`, `/meetings`, `/email-attachments` (Office files). About 10 GB stored. Use it for load, paging, and search on big data. |
 | `sybill-demo/home` | QA Edge profile | reuse | Empty. |
@@ -70,7 +70,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 
 | Need | Use |
 | --- | --- |
-| Markdown, collaboration on | `chitchat-qa/xfer-qa-0914:/u18/dest.md`, `chitchat-qa/copy-qa-0922:/README.md`, `personal/home:/documents/notes.md` |
+| Markdown, collaboration on | `chitchat-qa/xfer-qa-0914:/u18/dest.md`, `chitchat-qa/copy-qa-0922:/README.md` |
 | Saved Bash text output | `chitchat-qa/xfer-qa-0914:/u18/file-type-private.md` (21 bytes, `File type private QA` plus a final newline). Despite its name, this file is saved and has no pending changes. Use it for stored-type and public read checks. |
 | Saved plain text for type search | `chitchat-qa/xfer-qa-0914:/u18/type-find-private.txt` (14 bytes, `MIME index QA` plus a final newline; `text/plain;charset=utf-8`). It is saved and has no pending changes. Use it for indexed type search and public text/byte reads. |
 | Markdown update with a code block | `chitchat-qa/xfer-qa-0914:/press-api-upload-qa/markdown-update-repro.md`. A `files/write-many` update over it used to add an empty line before the closing code fence. Fixed and checked live on 2026-10-21. Reuse it to check that code blocks keep their text through an update. |
@@ -95,16 +95,16 @@ Sign-in steps for the `qa.perm.*` accounts are in
 
 | Need | Use |
 | --- | --- |
-| PDF | `personal/home:/documents/config-matched-document.pdf`, `chitchat-qa/home:/r2-upload-sample.pdf` |
-| PDF with its generated `.pdf.md` | `personal/home:/documents/config-matched-document.pdf` and `.pdf.md` next to it; `/documents/pdf-converter-check.pdf` and `/documents/pdf-converter-check-2.pdf`, each with its `.pdf.md` (same 23,219-byte PDF) |
-| PNG | `chitchat-qa/xfer-qa-0914:/u03/shapes.png`, `personal/home:/assets/` (13 pasted images) |
-| PNG with its generated description | `personal/home:/images/config-matched-image.png` and `.description.md` |
+| PDF | `chitchat-qa/home:/r2-upload-sample.pdf` |
+| PDF with its generated `.pdf.md` | None kept. The `personal/home:/documents` sets were moved to Trash on 2026-10-31; restore one from the Trash before you upload a new PDF. |
+| PNG | `chitchat-qa/xfer-qa-0914:/u03/shapes.png`, `personal/home:/images/config-matched-image-2.png` |
+| PNG with its generated description | `personal/home:/images/filter-matched-image-20260722.png` and `.description.md` |
 | PNG over 20 MB (image plugin refusal) | `personal/home:/qa-size-limit/qa-size-limit-22mb-16bit.png` (22,123,638 bytes, 2048×1800, 16-bit). Image 0.3.5 and later refuse it before any secret read, file, or OpenAI call. Rerun it with `plugins:run_installation_on_files` instead of uploading again. Next to it, `qa-size-limit-21mb.png` was sent at 2700×2730, but the Files sidebar resized it to 14,061,901 bytes, so its `.description.md` comes from a normal run. Added 2026-10-22. |
 | Images on public link pages (the public flag) | Retired: `f5-repro-org/home:/public-image-qa` was erased. No replacement image/grant setup is claimed. |
 | Retained text draft after image replacement | Retired: `f5-repro-org/home:/public-image-qa/retained-draft.md` was erased. For simple non-collaborative recovery, use kept `chitchat-qa/xfer-qa-0914:/u23p/my-file.md` after reading its current state. Two-tab Read-only recovery and Copy text passed on 2026-10-29; saved text, metadata and flag were restored. This does not replace the old image-replacement fixture. |
 | WebP | `personal/home:/tmp/generated/image-76eae624-5365-43b6-85ae-fc8a9030ee37.webp` |
-| MP4 video | `chitchat-qa/xfer-qa-0914:/g4-media/speakers.mp4`, `personal/home:/assets/pasted-video-20260808-235459.mp4` |
-| Video with transcript and summary | `personal/home:/speakers-activity-e2e.mp4` with `.transcript.md` and `.summary.md` (9 such sets at the root); `personal/home:/assets/pasted-video-20260808-235459.mp4` (38 s, two speakers) |
+| MP4 video | `chitchat-qa/xfer-qa-0914:/g4-media/speakers.mp4` |
+| Video with transcript and summary | `personal/home:/meetings/15f1649a-d06c-4af3-be03-c5255c9180de` (`recording.mp4`, `transcript.md`, `summary.md`; written by Council, read-only). The pasted and `speakers*.mp4` sets were moved to Trash on 2026-10-31. |
 | Audio | `personal/home:/meetings/15f1649a-d06c-4af3-be03-c5255c9180de/recording-audio.m4a` (read-only); two `.webm` files in `personal/home:/meetings/a610f275-3582-4c51-957f-4d37d1a9212b/` |
 | Word, Excel, PowerPoint, CSV, XLS | `sybill-demo/demo:/email-attachments/` (35 docx, 10 xlsx, 6 pptx, 10 csv, 2 xls). Read-only. |
 | Mixed small upload from a PC | `chitchat-qa/xfer-qa-0914:/press-api-upload-qa/upload-sample` (2026-10-21): `qa-plain.txt`, `qa-plain.json`, `qa-plain.csv`, `nested/qa-plain.yaml`, `r2-upload-markdown-sample.md`, `shapes.png`, `added-later.md` (names seen 2026-10-23). Sent by the `press-api` skill helper `upload`. Text files are editable, the YAML is `application/yaml`. Reuse it for public API list, read, and download checks. `added-later.md` (56 bytes, collaboration on) is a good rich-editor round-trip check: edit it in the browser, then read the saved text with the helper `call files/read`. The saved helper key `press-api-skill-qa` (list, read, download, write) is for this workspace. |
@@ -130,7 +130,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Public API Copy and Move | Retired: `f5-repro-org/home:/release-move-check.md` was erased. Pick a small kept source below and read its current state. |
 | Many small subfolders | `chitchat-qa/xfer-qa-0914:/u55/c0` … `c22`, each with `sibling.md` |
 | Deep folder with a Read-only item inside | `chitchat-qa/xfer-qa-0914:/g4-u15` (22 levels, 21 items, `keeper.txt` at `/g4-u15/d01/…/d20/keeper.txt`). For `rm -r` and Move to Trash refusal checks, set Read-only on `keeper.txt` with `files_nodes.read_only_set`, run the check, then clear the flag. The flag is off at rest (checked 2026-11-01). For the rename refusal ("Its folder is read-only"), set the flag on the parent folder `d20` (`v978xmkt9yjbjmmvp2nacprq0h8echv8`) instead and clear it after; also off at rest (checked 2026-11-01). Never Accept a delete of `/g4-u15`. Reuse the chat `QA rm read-only refusal names` (`n1702gm87va5nkq5mwxmt6y0rx8hc650`). |
-| Move and copy sources and targets | `personal/home:/demo` (`mv-src.md`, `mv-target.md`, `cp-target.md`, `/archive`), `personal/home:/tests` (`eval-*` files and folders) |
+| Move and copy sources and targets | None kept in `personal/home`: `/demo` was already gone on 2026-10-31, and `/tests` was moved to Trash that day. |
 | Search: public and private | Retired: `qa-browser/home:/qa-search-0905` was erased. Its old restriction and grant setup is not available. |
 | Folder table sorts and columns | Retired: `qa-browser/home:/qa-sort-0924` and `/qa-sort-0924-r` were erased. No kept fixture is claimed to have the same sort ties or grants. |
 | More than 200 restricted children | Retired: `qa-browser/home:/qa-cap-0924` was erased. Its 203-child shape is not available. |
@@ -154,7 +154,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 
 | Need | Use |
 | --- | --- |
-| Meeting recordings with transcript and summary | `personal/home:/meetings` (about 44 files) |
+| Meeting recordings with transcript and summary | `personal/home:/meetings` (11 files after the 2026-10-31 cleanup, all in Council meeting folders) |
 | Chitchat transcripts | `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d` ([chitchat.md](../../app-playwriter-harness/references/chitchat.md)). The old `qa-browser/home:/chitchat` choice was erased. |
 | External repo Mount | `personal/home:/.mounts/github/native-popovers`. GitHub Sources copies the public `<owner>/react-native-popovers` repo. Its first copy has 70 text files. Use Bash to read it; it stays out of the Files sidebar. |
 
@@ -223,7 +223,7 @@ File-comment checks reuse this new native fixture from 2026-10-29:
 `personal/home` already has about 410 chats. For an agent check where chat history does not
 matter, continue a chat you already made for the same task instead of starting a new one.
 
-Reuse `QA workspace framing (on)` (`n1782ahb6cb83z87bb9sy7w0qs8gt8fw`) and `QA workspace framing (off)` (`n17451rkcfafmrf7a0swh1nqxd8gt71e`) in `personal/home` for system prompt checks. Each has one turn that asks about `MOVE-MARKER-4411` (in `/documents/notes.md`).
+Reuse `QA workspace framing (on)` (`n1782ahb6cb83z87bb9sy7w0qs8gt8fw`) and `QA workspace framing (off)` (`n17451rkcfafmrf7a0swh1nqxd8gt71e`) in `personal/home` for system prompt checks. Each has one turn that asks about `MOVE-MARKER-4411`. Its file `/documents/notes.md` was moved to Trash on 2026-10-31; restore it from the Trash before you rerun these chats.
 
 Reuse `QA paged message edit` in `chitchat-qa/home` (`n175v5tanrcx2363yz4478h0w58fn2nc`) for loading older history and editing or retrying messages more than 50 nodes behind the leaf. It has two long branches with 56 and 58 short fixture nodes.
 
@@ -240,6 +240,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-10-31: the owner reorganized `personal/home` through the app agent and archived its test files (66 reviewed deletions): `/assets/*` (13 PNGs and a video set), the 9 files in `/tasks` (README kept), `/tests`, `/inbox`, the PDF sets and `notes.md` in `/documents`, the `speakers*`, `config-matched`, `filter-matched`, `r2-upload-sample` and `shapes.png` sets in `/meetings`, and five empty meeting folders. All are restorable from the Trash. A read before the cleanup also found these catalog paths already missing: `/demo`, `/qa`, `/frontmatter-demo.md`, `/speakers-activity-e2e.mp4`, `/qa-size-limit`, `/binary-qa-20260920-1546`, `/activity-ui-fixture.md`, `/split-browser-click-check.html`, `/aaa-closing-qa-mu6ygix9.md`, `/.mounts` and `/images/config-matched-image.png`. Rows that still name them are stale. No new data, tenant or user.
 - 2026-10-31: agent listing depth checks in `chitchat-qa/xfer-qa-0914` added three owned chats (`QA listing depth 2026-10-31`, `QA listing depth overview 2026-10-31`, and `QA listing depth member 2026-10-31` for `qa.perm.member`). Reuse them for later `tree -L` checks. The member got its first billing row (Free, 1,000 credits). No file changed, no new tenant or user.
 - 2026-10-31: Council access checks added three small meetings, kept after normal close. `personal/home`: `Council token room` (`65e4eb9c-ed79-452f-af8d-39b0abaf5207`). `chitchat-qa/metadata-qa-0906`: `Council approval room` (`12b6f0f7-e921-40af-8d5f-81e3fafeccac`) and `Council link room` (`af5870c4-e221-4f36-9501-27bbc38d8a67`). No recording was started. Reuse these for finished-room checks; testing admission needs a new open room. No new app user or tenant.
 - 2026-10-29: reset all old human Messages and file-comment data, then added the four small sidebar fixtures and one native general comment on the existing `/new-file.md`. Old current comment marks were removed; ordinary Files, saved file copies, history and AI chats were preserved. The seeded member's role and memberships are restored after permission QA. Its DM is open after Close/reopen QA. Old human message IDs in saved AI output are stale. No new tenant or user.
