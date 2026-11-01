@@ -2312,6 +2312,59 @@ describe("move", () => {
 		});
 	});
 
+	test("an agent Copy that merges onto a draft folder made Read-only between plan pages names a folder, not the item", async () => {
+		// One plan page holds 50 items: /source and a00-a48. a49 lands on the next page.
+		const children = Array.from({ length: 50 }, (_, index) => `/source/a${String(index).padStart(2, "0")}`);
+		const fixture = await create_folder_fixture(["/source", ...children, "/target", "/target/source"]);
+		const { t, db, asUser, folders } = fixture;
+		const draft = await t.mutation(internal.files_nodes.create_private_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/target/source/a49",
+			kind: "folder",
+		});
+		if (draft._nay) throw new Error(draft._nay.message);
+		const thread = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: db.membershipId,
+			clientGeneratedId: "merge-onto-locked-draft",
+			lastMessageAt: Date.now(),
+		});
+		if (thread._nay) throw new Error(thread._nay.message);
+		const started = await start_agent_transfer(t, {
+			membershipId: db.membershipId,
+			threadId: thread._yay.threadId,
+			sourceWorkspace: "current",
+			destinationWorkspace: "current",
+			requestId: "merge-onto-locked-draft",
+			kind: "copy",
+			sources: [{ kind: "saved", id: folders.get("/source")! }],
+			targetParent: { kind: "saved", id: folders.get("/target")! },
+			targetPath: "/target",
+			targetName: null,
+			missingParentNames: [],
+			conflictPolicy: { file: "replace", folder: "merge" },
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		for (let step = 0; step < 300; step += 1) {
+			const run = await t.run((ctx) => ctx.db.get("files_transfer_runs", started._yay.runId));
+			if (run?.step === "plan" && run.planCursor !== null) break;
+			await t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
+		}
+		// The first page checked /target/source while it was writable. The planned parent is not completed
+		// yet, so the next page checks a49's draft directly.
+		const locked = await asUser.mutation(api.files_nodes.read_only_set, {
+			membershipId: db.membershipId,
+			nodeId: folders.get("/target/source")!,
+			readOnly: true,
+		});
+		if (locked._nay) throw new Error(locked._nay.message);
+
+		expect((await finish_folder_copy(fixture, started._yay.runId)).activity).toMatchObject({
+			errorMessage: "A folder in the destination path is read-only. Unlock it, then try again.",
+		});
+	});
+
 	test("releases proposal Move holds after Stop keeps its first output", async () => {
 		const fixture = await create_folder_fixture([]);
 		const { t, db, asUser, folders } = fixture;
