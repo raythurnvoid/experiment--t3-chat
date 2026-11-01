@@ -199,6 +199,19 @@ Read-only nodes with `by_org_ws_archive_readOnly_treePath`; trashed and false no
 that range. Restricted areas still need the existing authority checks. Older Trash keeps its own
 Trash operation and never blocks deletion of its active parent.
 
+App and API Trash check queued and running op paths through `files_subtree_op_paths`.
+The old workspace scan is gone from this fast check. A balanced tree finds a matching path without
+reading unrelated jobs or every parent folder. It stores one doc per distinct covered path, including
+old Move paths and same-workspace Copy sources. It does not add docs per child, user, or grant.
+Each path change updates a short tree branch. Large sets are built and removed in background steps.
+
+A pending path-index job means the records are incomplete. Trash then shows Checking and waits,
+instead of walking every child just because the records are not ready. It repeats current access,
+Read-only, Move and overlap checks before stamping. It excludes its own op. A real overlapping op
+still selects the ordinary full check; waiting for it could create a cycle in the job queue.
+Keep the global running Move/scope checks. This path index does not replace the general queue
+blocker and waiter scans in `files_subtree_ops_db_find_blocker`.
+
 Accepted limitation: an ordinary move to Trash does not repeat flag or ACL checks during its later stamp
 walk. A flag set after its check may not stop that move to Trash. This window also exists when a bulk job
 sets flags. Do not describe ordinary moves to Trash as checking each final stamp.

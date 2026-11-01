@@ -23,6 +23,10 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
   once in `total`, so the counts still add up.
   Items the Trash check counted that somebody else moved to Trash, deleted, or moved out before the
   apply reached them count as `skipped` when the job ends.
+- Trash can stay in Checking while covered-path records catch up. Its Activity remains running.
+  When the records are complete, the job repeats its access and safety checks before stamping.
+  This wait is not a failed step. Path-record work has its own recovery, since cleanup can outlive
+  the original op and Activity.
 - A move to Trash or restore job started by the public API `files/delete` or `files/restore` stores the
   key in `files_archive_runs.credentialId`. Its background steps treat a revoked key like a lost
   membership, with their own message. The person still sees the job card in the app. Through the API,

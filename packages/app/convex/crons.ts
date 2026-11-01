@@ -45,6 +45,9 @@ crons.cron(
 // Every 5 minutes — stop expired jobs through their producer's publication fences.
 crons.cron("recover expired activities", "*/5 * * * *", internal.activities.recover_expired, {});
 
+// Path cleanup can outlive its op and Activity, so it has its own recovery.
+crons.cron("recover subtree op path records", "*/5 * * * *", internal.files_subtree_ops.path_index_recover, {});
+
 // Every 5 minutes — look up the usage of model calls whose request ended without saving it.
 crons.cron("recover model call usage", "*/5 * * * *", internal.ai_model_call_receipts.recover_due, {});
 

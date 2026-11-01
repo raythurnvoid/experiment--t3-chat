@@ -13,6 +13,7 @@ import {
 } from "../server/files-move-reservations.ts";
 import { files_pending_overlay_db_flush } from "../server/files-pending-overlay.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { files_subtree_op_paths_db_replace } from "./files_subtree_op_paths_db.ts";
 
 /**
  * A step also ends when less than this share of a transaction limit is left. A file with many text
@@ -43,7 +44,7 @@ export async function files_subtree_ops_db_is_near_limits(ctx: MutationCtx) {
 	].some((metric) => metric.remaining < (metric.used + metric.remaining) * METRICS_MIN_REMAINING_SHARE);
 }
 
-export function files_subtree_ops_busy_tree_paths(op: Doc<"files_subtree_ops">) {
+export function files_subtree_ops_busy_tree_paths(op: WithoutSystemFields<Doc<"files_subtree_ops">>) {
 	return [
 		...op.treePaths,
 		...(op.kind === "move" ? op.oldTreePaths : []),
@@ -111,40 +112,6 @@ export async function files_subtree_ops_db_find_blocker(
 	return null;
 }
 
-/**
- * For each of `treePaths`, whether a running or queued op overlaps it.
- *
- * `files_subtree_ops_db_find_blocker` stops at the first op that blocks any path, so it cannot tell
- * which other paths a later op blocks. This reads every op of the workspace once instead. It returns
- * null past `maxOps` ops, because a partial scan could miss a blocker.
- */
-export async function files_subtree_ops_db_find_blocked_paths(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		treePaths: readonly string[];
-		maxOps: number;
-	},
-) {
-	const blocked = args.treePaths.map(() => false);
-	let opCount = 0;
-	for await (const op of ctx.db
-		.query("files_subtree_ops")
-		.withIndex("by_organization_workspace_kind", (q) =>
-			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
-		)) {
-		opCount += 1;
-		if (opCount > args.maxOps) return null;
-
-		const busyPaths = files_subtree_ops_busy_tree_paths(op);
-		for (const [index, treePath] of args.treePaths.entries()) {
-			blocked[index] ||= busyPaths.some((busyPath) => files_subtree_ops_tree_paths_overlap(busyPath, treePath));
-		}
-	}
-	return blocked;
-}
-
 export async function files_subtree_ops_db_require_walk(
 	ctx: QueryCtx | MutationCtx,
 	opId: Id<"files_subtree_ops">,
@@ -168,6 +135,15 @@ export async function files_subtree_ops_db_insert(
 ) {
 	const opId = await ctx.db.insert("files_subtree_ops", args.op);
 	await ctx.db.insert("files_subtree_op_walks", { opId, step: 0, passWrote: false, sequence: 0, updatedAt: args.now });
+	// Publish the paths or their pending marker with the op. A partial index must never look clear.
+	await files_subtree_op_paths_db_replace(ctx, {
+		...args.op,
+		opId,
+		oldTreePaths: [],
+		treePaths: files_subtree_ops_busy_tree_paths(args.op),
+		defer: args.op.status === "queued",
+		now: args.now,
+	});
 	return opId;
 }
 
@@ -458,6 +434,15 @@ export async function files_subtree_ops_db_delete(
 		await ctx.scheduler.runAfter(0, internal.files_subtree_ops.delete_queue, { opId: args.opId });
 	}
 
+	if (op) {
+		await files_subtree_op_paths_db_replace(ctx, {
+			...op,
+			opId: op._id,
+			oldTreePaths: files_subtree_ops_busy_tree_paths(op),
+			treePaths: [],
+			now: args.now,
+		});
+	}
 	await ctx.db.delete("files_subtree_ops", args.opId);
 
 	await files_subtree_ops_db_release_waiters(ctx, { opId: args.opId });

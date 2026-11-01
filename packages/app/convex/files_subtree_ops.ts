@@ -27,7 +27,13 @@ import {
 	files_subtree_ops_db_delete,
 	files_subtree_ops_db_pause_for_move,
 	files_subtree_ops_db_release_waiters as db_release_waiters,
+	files_subtree_ops_db_is_near_limits,
 } from "./files_subtree_ops_db.ts";
+import {
+	files_subtree_op_paths_db_advance,
+	files_subtree_op_paths_db_has_pending,
+	files_subtree_op_paths_db_recover,
+} from "./files_subtree_op_paths_db.ts";
 import {
 	files_subtree_ops_STEP_MAX_NODES,
 	files_subtree_ops_db_rebuild_walk,
@@ -183,6 +189,57 @@ export const delete_queue = internalMutation({
 		if (rows.length === PAGE_SIZE * 10) {
 			await ctx.scheduler.runAfter(0, internal.files_subtree_ops.delete_queue, { opId: args.opId });
 		}
+		return null;
+	},
+});
+
+export const path_index_advance = internalMutation({
+	args: { jobId: v.id("files_subtree_op_path_jobs"), generation: v.number(), step: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await files_subtree_op_paths_db_advance(ctx, args);
+		return null;
+	},
+});
+
+export const path_index_recover = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		await files_subtree_op_paths_db_recover(ctx);
+		return null;
+	},
+});
+
+/**
+ * Wake only archives waiting for path records. Each one repeats its checks before any stamp.
+ */
+export const path_index_wake = internalMutation({
+	args: { organizationId: v.id("organizations"), workspaceId: v.id("organizations_workspaces") },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		if (await files_subtree_op_paths_db_has_pending(ctx, args)) return null;
+		while (!(await files_subtree_ops_db_is_near_limits(ctx))) {
+			const run = await ctx.db
+				.query("files_archive_runs")
+				.withIndex("by_organization_workspace_active_pathIndexWaiting", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("active", true)
+						.eq("pathIndexWaiting", true),
+				)
+				.first();
+			if (!run) return null;
+			const op = await ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", run._id))
+				.unique();
+			if (!op) throw should_never_happen("Waiting archive has no subtree op", { runId: run._id });
+			await ctx.db.patch("files_archive_runs", run._id, { pathIndexWaiting: false });
+			await files_subtree_ops_db_schedule_step(ctx, { opId: op._id, now: Date.now() });
+		}
+		await ctx.scheduler.runAfter(0, internal.files_subtree_ops.path_index_wake, args);
 		return null;
 	},
 });

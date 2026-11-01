@@ -62,6 +62,7 @@ import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_u
 import { files_write_policy_runs_db_delete_run_batch } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
+import { files_subtree_op_paths_db_advance } from "./files_subtree_op_paths_db.ts";
 import { files_db_delete_pending_update, files_db_expire_pending_update_operation_batch } from "../server/files.ts";
 import { files_pending_overlay_db_delete_job } from "../server/files-pending-overlay.ts";
 import { files_type_query_db_delete_batch } from "../server/files-type-query.ts";
@@ -644,6 +645,23 @@ async function db_purge_organization_workspace_content_batch(
 		const deletedActivity = await activities_db_delete(ctx, activity._id);
 		if (deletedActivity.done) await files_subtree_ops_db_delete(ctx, { opId: subtreeOp._id, now: Date.now() });
 		return { done: false, deletedCount: deletedActivity.deletedCount + (deletedActivity.done ? 1 : 0) };
+	}
+	// Op deletion leaves large path sets to their own cleanup. Drain that work before the workspace
+	// disappears, so an old callback cannot leave path records behind.
+	const pathJob = await ctx.db
+		.query("files_subtree_op_path_jobs")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.first();
+	if (pathJob) {
+		const deletedCount = await files_subtree_op_paths_db_advance(ctx, {
+			jobId: pathJob._id,
+			generation: pathJob.generation,
+			step: pathJob.step,
+		});
+		// The caller needs this count to keep scheduling cleanup while it makes progress.
+		return { done: false, deletedCount };
 	}
 
 	// Retire unfinished producers before removing their batches or private targets.

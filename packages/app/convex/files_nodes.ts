@@ -3400,7 +3400,7 @@ export async function files_nodes_db_archive_named_nodes(
 	}
 
 	// When index reads prove that the check would pass, the request stamps the named items at once and
-	// the job runs no check. Otherwise the job checks every node inside before it archives anything.
+	// the job runs no check. Incomplete op paths wait and retry; other uncertainty checks every child.
 	const fastCheck = await files_archive_runs_db_check_fast(ctx, {
 		writeContext,
 		membership,
@@ -3429,6 +3429,7 @@ export async function files_nodes_db_archive_named_nodes(
 		rootNodeIds: jobFileNodes.map((node) => node._id),
 		refusedNodes: refusedItems,
 		isFast: fastCheck.isFast,
+		waitForPathIndex: fastCheck.indexPending,
 		treePaths: jobFileNodes.map((node) => node.treePath),
 		budget: {
 			nodes: files_archive_runs_REQUEST_MAX_NODES,

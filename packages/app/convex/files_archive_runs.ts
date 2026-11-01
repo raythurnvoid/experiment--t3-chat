@@ -22,6 +22,8 @@
 // the request stamps the named items, so they leave the tree at once, and the job stamps the rest. When
 // the indexes cannot decide for one named item, the whole archive runs the check, and the named items
 // stay in the tree until the check passes.
+// Incomplete op path records are different: wait for them, then retry the fast check. This keeps
+// unrelated index work from adding a full check walk through every child.
 //
 // Forced archive visits children first and keeps denied branches active. It can stop between steps.
 // Ordinary archive cannot stop after stamping a root. Restore stops while waiting for a clash choice.
@@ -74,13 +76,17 @@ import {
 	files_subtree_ops_db_recover,
 	files_subtree_ops_db_run,
 	files_subtree_ops_db_schedule_step,
-	files_subtree_ops_db_find_blocked_paths,
 	files_subtree_ops_db_first_node,
 	files_subtree_ops_db_next_children,
 	files_subtree_ops_db_pause_for_move,
 	files_subtree_ops_db_reserve_sequences,
 	files_subtree_ops_db_save_page,
 } from "./files_subtree_ops_db.ts";
+import {
+	files_subtree_op_paths_db_has_pending,
+	files_subtree_op_paths_db_replace,
+} from "./files_subtree_op_paths_db.ts";
+import { files_subtree_op_paths_tree_find_blocked } from "./files_subtree_op_paths_tree.ts";
 import { files_nodes_db_rebuild_node } from "./files_subtree_ops_rebuild.ts";
 import { files_purge_db_drain_node_batch } from "./files_purge_db.ts";
 import { files_tree_archived_tops_parse_cursor, files_tree_db_read_archived_tops } from "./files_tree.ts";
@@ -223,6 +229,7 @@ type StepOutcome =
 	| { kind: "blocked" }
 	| { kind: "done" }
 	| { kind: "paused" }
+	| { kind: "index_wait" }
 	| {
 			kind: "failed";
 			nay: { name?: string; message: string; data?: { refusedItems: RunFields["refusedItems"] } };
@@ -1072,6 +1079,14 @@ async function db_queue_empty_archive_page(ctx: MutationCtx, args: StepArgs): Pr
 		status: blocker ? "queued" : "running",
 		blockedByOpId: blocker?._id ?? null,
 	});
+	await files_subtree_op_paths_db_replace(ctx, {
+		...op,
+		opId: op._id,
+		oldTreePaths: op.treePaths,
+		treePaths: busyPaths.discoverTreePaths,
+		defer: blocker !== null,
+		now: args.now,
+	});
 	await files_subtree_ops_db_enqueue_nodes(ctx, {
 		opId: args.opId,
 		nodes: tops.map((node) => ({
@@ -1456,6 +1471,14 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 		treePaths: run.discoverTreePaths,
 		status: blocker ? "queued" : "running",
 		blockedByOpId: blocker?._id ?? null,
+	});
+	await files_subtree_op_paths_db_replace(ctx, {
+		...op,
+		opId: op._id,
+		oldTreePaths: op.treePaths,
+		treePaths: run.discoverTreePaths,
+		defer: blocker !== null,
+		now: args.now,
 	});
 	// A restore that waits finds its paths again when it starts, so it starts from an empty list.
 	run.discoverTreePaths = [];
@@ -2170,6 +2193,63 @@ async function db_begin_archive_apply(ctx: MutationCtx, args: StepArgs) {
 }
 
 /**
+ * Path records may need several steps to catch up. Wait for complete records, then repeat the
+ * current access checks before stamping. A real overlap still chooses the ordinary check: waiting
+ * for that op could deadlock when it is itself queued behind this archive.
+ */
+async function db_retry_fast_check(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	if (!args.membership) return MEMBERSHIP_LOST;
+	const nodes = await Promise.all(args.run.rootNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+	const activeNodes = nodes.filter(
+		(node): node is Doc<"files_nodes"> => node !== null && node.archiveOperationId === null,
+	);
+	// The fast helper expects access on each named item to be proven by its caller. A grant can
+	// change during the wait. The ordinary check handles missing, archived, or no-longer-writable items.
+	if (activeNodes.length === nodes.length && !(await db_check_writable_nodes({ ctx, ...args, nodes: activeNodes }))) {
+		const checked = await files_archive_runs_db_check_fast(ctx, {
+			writeContext: args.writeContext,
+			membership: args.membership,
+			nodes: activeNodes,
+			opCheck: "overlapping",
+			excludeOpId: args.opId,
+		});
+		if (checked.indexPending) {
+			args.run.pathIndexWaiting = true;
+			return { kind: "index_wait" };
+		}
+		for (const [nodeId, refusal] of checked.refusals) {
+			args.run.refusedItems.push({ nodeId, refusal });
+			args.progress.discovered += 1;
+			args.progress.blocked += 1;
+		}
+		args.run.rootNodeIds = args.run.rootNodeIds.filter((nodeId) => !checked.refusals.has(nodeId));
+		if (args.run.rootNodeIds.length === 0) {
+			args.progress.total = args.progress.discovered;
+			return {
+				kind: "failed",
+				nay: {
+					...files_archive_runs_get_all_refused_nay(args.run.refusedItems),
+					data: { refusedItems: args.run.refusedItems },
+				},
+			};
+		}
+		if (checked.isFast) {
+			args.run.pathIndexWaiting = false;
+			args.run.phase = "apply";
+			await db_begin_archive_apply(ctx, args);
+			return { kind: "done" };
+		}
+	}
+	args.run.pathIndexWaiting = false;
+	args.run.phase = "check";
+	await files_subtree_ops_db_enqueue_nodes(ctx, {
+		opId: args.opId,
+		nodes: args.run.rootNodeIds.map((nodeId) => ({ nodeId, nodeDone: false })),
+	});
+	return { kind: "done" };
+}
+
+/**
  * Run one step: the check walk first, then the changes. A step that finishes the check goes on with
  * the changes in the same mutation, so a small restore, or a small archive of files and empty folders,
  * ends inside the request.
@@ -2190,6 +2270,10 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	if (args.run.phase === "discover") {
 		const discovered = await db_discover_restore(ctx, args);
 		if (discovered.kind !== "done") return discovered;
+	}
+	if (args.run.phase === "fast_check") {
+		const checked = await db_retry_fast_check(ctx, args);
+		if (checked.kind !== "done") return checked;
 	}
 	if (args.run.phase === "check") {
 		const checked = args.run.kind === "archive" ? await db_check_archive(ctx, args) : await db_check_restore(ctx, args);
@@ -2273,6 +2357,7 @@ async function db_settle_step(
 	});
 
 	switch (args.outcome.kind) {
+		case "index_wait":
 		case "blocked": {
 			return;
 		}
@@ -2331,28 +2416,22 @@ async function db_settle_step(
 }
 
 /**
- * The fast check reads every subtree op of the workspace to learn whether one overlaps the named items.
- * Past this many it gives up and the job runs the full check, because a partial read could miss an op.
- */
-const FAST_CHECK_MAX_OPS = 500;
-
-/**
  * Decide with index reads only whether the archive check would pass for `nodes`: the named items the
  * write context may write, with no named item inside another. Then the request stamps the named items itself,
  * and the job runs no check.
  *
  * Returns the named items to refuse now, with the reason the check would give, and `isFast`: true when
  * every other named item is proven to pass. When even one is not proven, the whole archive runs the
- * check, so one job keeps one set of rules. Every node read is one index range of at most two rows, and
- * the op read stops at `FAST_CHECK_MAX_OPS`, so the cost does not grow with the size of a folder.
+ * check, so one job keeps one set of rules. Each file check reads at most two matching docs. Op
+ * overlaps use a balanced path tree, so unrelated jobs and deep folder paths need no scan.
  *
  * `blockers` holds the Read-only item behind a refusal: an item inside the named item, or its parent
  * folder. A caller with its own words, like `rm`, can name it. It is set only for an item the person may
  * read.
  *
  * `opCheck: "any"` stops at the first op of any kind, so the op read is one row. Then the caller leaves
- * more cases to a later check. `"overlapping"` reads up to `FAST_CHECK_MAX_OPS` ops to find one on
- * these paths.
+ * more cases to a later check. `"overlapping"` checks covered paths. `indexPending` asks the caller
+ * to wait and retry: incomplete path records must never prove that an item is clear.
  */
 export async function files_archive_runs_db_check_fast(
 	ctx: MutationCtx,
@@ -2361,12 +2440,13 @@ export async function files_archive_runs_db_check_fast(
 		membership: Doc<"organizations_workspaces_users">;
 		nodes: Doc<"files_nodes">[];
 		opCheck: "overlapping" | "any";
+		excludeOpId?: Id<"files_subtree_ops">;
 	},
 ) {
 	const { organizationId, workspaceId } = args.membership;
 	const refusals = new Map<Id<"files_nodes">, RunFields["refusedItems"][number]["refusal"]>();
 	const blockers = new Map<Id<"files_nodes">, { place: "inside" | "parent"; nodeId: Id<"files_nodes">; hasMore: boolean }>();
-	if (args.writeContext.force) return { refusals, blockers, isFast: false };
+	if (args.writeContext.force) return { refusals, blockers, isFast: false, indexPending: false };
 
 	// Check the item and the direct parent whose child list changes.
 	const checkedScopes = new Map<string, boolean>();
@@ -2392,6 +2472,7 @@ export async function files_archive_runs_db_check_fast(
 	// The index answers below are right only while nothing rewrites paths or scopes under these items.
 	// A Move, a running scope or move op, or any op on these paths does that page by page. Too many named
 	// items would also make the request stamp less than all of them.
+	let indexPending = false;
 	const isQuiet = await (async (/* iife */) => {
 		if (nodes.length > files_archive_runs_REQUEST_MAX_NODES) return false;
 		if (await files_move_reservations_db_find_blocker(ctx.db, { wholeWorkspace: { organizationId, workspaceId } }))
@@ -2417,15 +2498,17 @@ export async function files_archive_runs_db_check_fast(
 				.first();
 			if (op) return false;
 		}
-		const blocked = await files_subtree_ops_db_find_blocked_paths(ctx, {
+		indexPending = await files_subtree_op_paths_db_has_pending(ctx, { organizationId, workspaceId });
+		if (indexPending) return false;
+		const blocked = await files_subtree_op_paths_tree_find_blocked(ctx, {
 			organizationId,
 			workspaceId,
 			treePaths: nodes.map((node) => node.treePath),
-			maxOps: FAST_CHECK_MAX_OPS,
+			excludeOpId: args.excludeOpId,
 		});
-		return blocked !== null && !blocked.includes(true);
+		return !blocked.includes(true);
 	})();
-	if (!isQuiet) return { refusals, blockers, isFast: false };
+	if (!isQuiet) return { refusals, blockers, isFast: false, indexPending };
 
 	const organization = await ctx.db.get("organizations", organizationId);
 	// A service account is never the owner, even when the person behind its key is.
@@ -2494,7 +2577,7 @@ export async function files_archive_runs_db_check_fast(
 		}
 	}
 
-	return { refusals, blockers, isFast };
+	return { refusals, blockers, isFast, indexPending };
 }
 
 /**
@@ -2536,6 +2619,10 @@ export async function files_archive_runs_db_start(
 		 * starts with the stamps and runs no check. Restore: false.
 		 */
 		isFast: boolean;
+		/**
+		 * Wait for complete op paths, then try the fast check again. Restore never uses this.
+		 */
+		waitForPathIndex?: boolean;
 		/**
 		 * Where readers see the items now. Restore passes its top item, because it has no named items yet.
 		 */
@@ -2617,7 +2704,14 @@ export async function files_archive_runs_db_start(
 		kind: args.kind,
 		archiveOperationId: args.archiveOperationId,
 		rootNodeIds: args.kind === "archive" ? args.rootNodeIds : [],
-		phase: args.kind === "restore" ? "discover" : force || args.isFast ? "apply" : "check",
+		phase:
+			args.kind === "restore"
+				? "discover"
+				: force || args.isFast
+					? "apply"
+					: args.waitForPathIndex
+						? "fast_check"
+						: "check",
 		checkCursor: { rootIndex: 0, treePath: "" },
 		discoverTreePaths: [],
 		applyRootIndex: 0,
@@ -2675,7 +2769,7 @@ export async function files_archive_runs_db_start(
 			});
 		}
 		await files_subtree_ops_db_enqueue_nodes(ctx, { opId, nodes });
-	} else if (args.kind === "archive" && !args.isFast) {
+	} else if (args.kind === "archive" && run.phase === "check") {
 		await files_subtree_ops_db_enqueue_nodes(ctx, {
 			opId,
 			nodes: args.rootNodeIds.map((nodeId) => ({ nodeId, nodeDone: false })),
@@ -2775,7 +2869,7 @@ export async function files_archive_runs_db_start(
 			notArchivedNodeIds,
 			refusedItems,
 			waitingNodeIds,
-			isChecking: run.kind === "archive" && run.phase === "check",
+			isChecking: run.kind === "archive" && run.phase !== "apply",
 		},
 	});
 }
@@ -3086,6 +3180,7 @@ export async function files_archive_runs_db_request_stop(
 			// Before the apply phase the job changed nothing, so a step that keeps failing ends it. An apply
 			// must go on: items it did not reach would stay active, with their links, inside the archived folder.
 			if (
+				!run.pathIndexWaiting &&
 				(await files_subtree_ops_db_count_recover(ctx, { opId, activity })) &&
 				(run.phase !== "apply" ||
 					(run.kind === "archive" && run.force) ||

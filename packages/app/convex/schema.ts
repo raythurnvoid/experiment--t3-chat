@@ -6847,9 +6847,13 @@ const app_convex_schema = defineSchema({
 		/**
 		 * Restore discovers every top root before checking overlaps. `check` walks everything before
 		 * `apply` changes the nodes. A fast archive starts in `apply`, because its request proved with
-		 * index reads that the check would pass.
+		 * index reads that the check would pass. `fast_check` retries that proof after op paths catch up.
 		 */
-		phase: v.union(v.literal("discover"), v.literal("check"), v.literal("apply")),
+		phase: v.union(v.literal("discover"), v.literal("fast_check"), v.literal("check"), v.literal("apply")),
+		/**
+		 * True while an archive waits for complete op path records. Missing or false means no wait.
+		 */
+		pathIndexWaiting: v.optional(v.boolean()),
 		/**
 		 * Where the walk goes on. During restore discovery, `treePath` holds the page cursor.
 		 * During check it holds the last tree path. It is "" at the start of either walk.
@@ -6975,6 +6979,12 @@ const app_convex_schema = defineSchema({
 		),
 	})
 		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
+		.index("by_organization_workspace_active_pathIndexWaiting", [
+			"organizationId",
+			"workspaceId",
+			"active",
+			"pathIndexWaiting",
+		])
 		.index("by_user_workspace_apiRequest", ["userId", "workspaceId", "apiRequest.requestId"])
 		.index("by_requestFirstRun_active", ["requestFirstRunId", "active"])
 		.index("by_organization_workspace_archiveOperation_active", [
@@ -7033,7 +7043,8 @@ const app_convex_schema = defineSchema({
 	 * restore, restrict, or copy. The request writes what people must see now, like the moved folder
 	 * itself. Steps then fix the stored copies inside, like each child's `path`.
 	 *
-	 * Every new op reads the ops of its workspace to find overlaps. So a step never writes this doc.
+	 * Queue blocker checks read the ops of their workspace. Trash's fast check uses the path tree below.
+	 * Walk steps leave this doc alone, except when Restore or Empty Trash replaces its covered paths.
 	 * Step state lives on `files_subtree_op_walks`, `files_subtree_op_nodes`, and the kind's run doc.
 	 * The last step deletes the op.
 	 */
@@ -7070,6 +7081,56 @@ const app_convex_schema = defineSchema({
 		.index("by_blockedByOp", ["blockedByOpId"])
 		.index("by_archiveRun", ["archiveRunId"])
 		.index("by_transferRun", ["transferRunId"]),
+
+	/**
+	 * One covered path per op, including queued work. A balanced tree finds overlaps without reading
+	 * unrelated ops or every parent folder. The two end refs belong to different ops, so a waiting
+	 * archive can exclude itself. Storage grows with covered paths, not files or users.
+	 */
+	files_subtree_op_paths: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		opId: v.id("files_subtree_ops"),
+		treePath: v.string(),
+		parentId: v.union(v.id("files_subtree_op_paths"), v.null()),
+		leftId: v.union(v.id("files_subtree_op_paths"), v.null()),
+		rightId: v.union(v.id("files_subtree_op_paths"), v.null()),
+		height: v.number(),
+		// Null only while insertion assigns this doc's own id in the same transaction.
+		maxEndId: v.union(v.id("files_subtree_op_paths"), v.null()),
+		otherMaxEndId: v.union(v.id("files_subtree_op_paths"), v.null()),
+	})
+		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
+		.index("by_op_treePath", ["opId", "treePath"]),
+
+	/**
+	 * A marker stays until all path records match the op. Trash waits while any marker exists.
+	 * Cleanup owns its own job because the original op and Activity may already be gone.
+	 */
+	files_subtree_op_path_jobs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		opId: v.id("files_subtree_ops"),
+		generation: v.number(),
+		step: v.number(),
+		phase: v.union(v.literal("clear"), v.literal("build")),
+		updatedAt: v.number(),
+	})
+		.index("by_op", ["opId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_updatedAt", ["updatedAt"]),
+
+	/**
+	 * Small snapshots of the op's paths. A worker reads one chunk instead of the whole Copy op.
+	 * A replacement leaves old generations for the same worker to remove in small steps.
+	 */
+	files_subtree_op_path_inputs: defineTable({
+		jobId: v.id("files_subtree_op_path_jobs"),
+		generation: v.number(),
+		order: v.number(),
+		treePaths: v.array(v.string()),
+		nextPath: v.number(),
+	}).index("by_job_generation_order", ["jobId", "generation", "order"]),
 
 	/**
 	 * The step state of one op. Only steps write it, so a step does not conflict with a new op.

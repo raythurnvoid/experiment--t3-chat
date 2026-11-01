@@ -21,6 +21,10 @@ Load each companion skill that owns the affected boundary:
 - Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
+- Subtree op deletion also removes its covered-path records. Large sets leave a path cleanup job.
+  Workspace purge drains these jobs after the ops, including their saved input chunks. Cleanup must
+  finish even when the original Activity is gone. Never delete only the job marker: incomplete
+  records would then look safe to the Trash fast check.
 - Human Messages personal state belongs to an exact workspace membership. User and organization
   member cleanup drain its joins, reads, followers, inbox receipts, summaries and member jobs.
   Cleanup subtracts stamped count contributions before deleting sources and never creates new
