@@ -220,7 +220,7 @@ At the start of every implementation, review, or investigation task, decide whet
 - Base it on agreed product decisions and verified system needs. Keep proposals labeled as proposals. Do not turn one special case into a rule for the whole app.
 - Keep the set small. When a principle changes, replace or remove the old guidance instead of adding conflicting rules.
 
-For substantial implementations across schema, backend, UI, or repository boundaries, load [.agents/skills/goal-driven-planning-execution/SKILL.md](.agents/skills/goal-driven-planning-execution/SKILL.md) by default. Prefer this repo copy over a personal copy with the same name. The user does not need to repeat the workflow request. Keep its closing checks in the task plan: live Playwriter checks for affected app flows, independent correctness review, separate codebase-uniformity reviews, required checks, and updated docs. Create a goal only when the user explicitly asks for one. Small, clear edits do not need the full workflow.
+For substantial implementations across schema, backend, UI, or repository boundaries, load the user-level `goal-driven-planning-execution` skill by default. It is not in this repo: it lives in the user's skills folder (`~/.agents/skills`). The user does not need to repeat the workflow request. Keep its closing checks in the task plan: live Playwriter checks for affected app flows, independent correctness review, separate codebase-uniformity reviews, required checks, and updated docs. Create a goal only when the user explicitly asks for one. Small, clear edits do not need the full workflow.
 
 Consider whether the work needs:
 
