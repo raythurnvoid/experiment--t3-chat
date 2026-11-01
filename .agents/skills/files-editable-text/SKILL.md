@@ -330,6 +330,17 @@ Each materialization uploads a fresh Yjs snapshot asset and a fresh version asse
 
 Materialization starts bounded cleanup of covered update and job docs immediately. It keeps the old Yjs object for 35 minutes for readers that already loaded its header, then checks its references before deleting it. This covers the default runtime's 30-minute action lifetime plus the five-minute upload margin. The separate `putMayArriveUntil` used by OFF, repair, and replacement is a deletion-job settlement deadline: DELETE starts immediately, but a successful early delete keeps the job for another attempt after the deadline. The hourly recovery schedules due jobs. It is not a promise that the first DELETE waits 35 minutes.
 
+## Saved bytes and the editor document
+
+A collaborative file has two truths: the saved bytes (version asset and exact chunks) and the editor document (Yjs). Materialization rebuilds the saved bytes from the document, so it writes them in editor style: the rich editor's Markdown is not byte-stable. That is fine for typing, because the editor is where the text came from. It is wrong for an API write, which promises the caller's exact bytes.
+
+- A public fill (`files/write`, `write-many`, `edit`, `append`) uploads its exact text and its own Yjs snapshot, and passes `yjsSnapshot` to `files_nodes_db_fill_text_node_content`. The fill then installs that snapshot at the filled sequence, like a finished materialization: snapshot doc and asset, update counters 0, the refusal markers cleared, and covered-update cleanup scheduled (delay 0, plus the late-PUT window). It enqueues no materialization, so no background job rewrites the bytes. The snapshot is left out over the 4 MiB state cap; then the old materialization path runs.
+- A materialization job whose target the snapshot already covers is stale. `materialize_file_content` (after its header read) and the stale branch of `finalize_file_content_materialization` skip when `snapshot.sequence >= target` and the saved asset has an R2 key. The R2 key condition keeps the job for old data whose saved text has no object yet.
+- Covered-update cleanup deletes one update doc per call (`FILE_YJS_COVERED_UPDATE_CLEANUP_BATCH_SIZE`). A fill resets the counters, so the 8 MiB budget no longer bounds covered docs, and 32 docs of 930,000 bytes would pass the 16 MiB read limit.
+- Open editors catch up through the live query and snapshot recovery; see "Live updates and recovery" in the `files-editors` skill.
+
+What still reformats (separate task): a person typing in the rich editor saves the whole file in editor style later (the revision changes, so a conditional API caller gets 409 and reads again). Restore, collaboration enable, copy, and Review Save also save editor style today. Agent Bash tools, pending drafts, the Pending tab, and diffs work on editor text, because pending branches are editor documents by design.
+
 Exact text belongs to its source head. Yjs updates belong to the separate log-owner head named by
 `yjsContentHeadId`. Exact reads and covered-update cleanup use these separate ranges. Cleanup also
 keeps its sequence and lineage checks. A preparing or current head retains both its content asset
@@ -345,7 +356,7 @@ so a later insert uses the new selected content without losing earlier writes.
 
 The two toggles answer a permission refusal with different words, and that is not an oversight: the mutation asks the permission question itself and bubbles the shared helper's `Permission denied`, while the action only learns that its preflight query said no and answers `Not found` for every reason, exactly like `restore_snapshot_r2`.
 
-Public `files/read` serves the selected saved version asset through byte pages. It does not reconstruct Yjs text or wait for materialization. Recent editor changes may be newer than these bytes. Neither `stat`'s `status: "ready"` nor the read headers report that gap today. An explicit freshness signal is a follow-up in the [public API spec](../public-api/SKILL.md#bounded-file-reads).
+Public `files/read` serves the selected saved version asset through byte pages. It does not reconstruct Yjs text or wait for materialization. Recent editor changes may be newer than these bytes. The read header `X-File-Is-Latest: false` reports that gap (`unmaterializedUpdateCount > 0`); see "Revision and freshness" in the [public API spec](../public-api/SKILL.md#revision-and-freshness).
 
 ## Where the mode comes from
 

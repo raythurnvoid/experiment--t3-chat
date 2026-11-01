@@ -101,9 +101,11 @@ type get_paths_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const stat_body_validator = z.object({
-	paths: z.array(z.string()).min(1),
-});
+const stat_body_validator = z
+	.object({
+		paths: z.array(z.string()).min(1),
+	})
+	.strict();
 
 export type public_api_files_organize_http_stat_Body = z.infer<typeof stat_body_validator>;
 
@@ -322,10 +324,12 @@ type create_folders_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const mkdir_body_validator = z.object({
-	force: z.boolean().optional(),
-	paths: z.array(z.string()).min(1),
-});
+const mkdir_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		paths: z.array(z.string()).min(1),
+	})
+	.strict();
 
 export type public_api_files_organize_http_mkdir_Body = z.infer<typeof mkdir_body_validator>;
 
@@ -547,10 +551,12 @@ type delete_paths_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const delete_body_validator = z.object({
-	force: z.boolean().optional(),
-	paths: z.array(z.string()).min(1),
-});
+const delete_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		paths: z.array(z.string()).min(1),
+	})
+	.strict();
 
 export type public_api_files_organize_http_delete_Body = z.infer<typeof delete_body_validator>;
 
@@ -862,15 +868,17 @@ type restore_paths_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const restore_body_validator = z.object({
-	force: z.boolean().optional(),
-	paths: z.array(z.string()).min(1),
-	onConflict: z.union([z.literal("keep_both"), z.literal("skip")]).optional(),
-	/**
-	 * Send the same `requestId` and body again to retry safely. The answer then names the same jobs.
-	 */
-	requestId: z.string().min(1).max(64),
-});
+const restore_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		paths: z.array(z.string()).min(1),
+		onConflict: z.union([z.literal("keep_both"), z.literal("skip")]).optional(),
+		/**
+		 * Send the same `requestId` and body again to retry safely. The answer then names the same jobs.
+		 */
+		requestId: z.string().min(1).max(64),
+	})
+	.strict();
 
 export type public_api_files_organize_http_restore_Body = z.infer<typeof restore_body_validator>;
 
@@ -1192,16 +1200,18 @@ type transfer_paths_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const transfer_body_validator = z.object({
-	force: z.boolean().optional(),
-	from: z.array(z.string()).min(1),
-	to: z.string(),
-	onConflict: z.union([z.literal("error"), z.literal("replace"), z.literal("skip")]).optional(),
-	/**
-	 * Send the same `requestId` and body again to retry safely. The answer then names the same job.
-	 */
-	requestId: z.string().min(1).max(64),
-});
+const transfer_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		from: z.array(z.string()).min(1),
+		to: z.string(),
+		onConflict: z.union([z.literal("error"), z.literal("replace"), z.literal("skip")]).optional(),
+		/**
+		 * Send the same `requestId` and body again to retry safely. The answer then names the same job.
+		 */
+		requestId: z.string().min(1).max(64),
+	})
+	.strict();
 
 export type public_api_files_organize_http_transfer_Body = z.infer<typeof transfer_body_validator>;
 
@@ -1526,15 +1536,17 @@ type get_job_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const jobs_get_body_validator = z.object({
-	jobId: z.string().max(64),
-	/** `refusedCursor` from the last page, to read more refused or renamed items. */
-	cursor: z
-		.string()
-		.regex(/^(failed|denied|items):-?\d{1,9}$/u)
-		.nullable()
-		.optional(),
-});
+const jobs_get_body_validator = z
+	.object({
+		jobId: z.string().max(64),
+		/** `refusedCursor` from the last page, to read more refused or renamed items. */
+		cursor: z
+			.string()
+			.regex(/^(failed|denied|items):-?\d{1,9}$/u)
+			.nullable()
+			.optional(),
+	})
+	.strict();
 
 export type public_api_files_organize_http_jobs_get_Body = z.infer<typeof jobs_get_body_validator>;
 

@@ -2972,6 +2972,53 @@ export const get_file_read_source = internalQuery({
 	},
 });
 
+/**
+ * The public revision of a saved file at `path`, and whether its saved text is the latest text.
+ *
+ * The revision changes when the saved bytes, the path, the type, the mode, or the editor document
+ * change. A background save of typed text changes it too, because it saves new bytes. `latest` is
+ * false while people typed changes that are not in the saved text yet.
+ *
+ * Point reads only: the selected head and its sequence. Keep counters, snapshots, and times out of
+ * the digest, so a background tidy-up of editor data keeps the revision.
+ */
+export async function files_nodes_db_get_file_revision(
+	db: QueryCtx["db"],
+	args: { node: Doc<"files_nodes">; path: string },
+) {
+	const head = await files_saved_content_db_get_head(db, args.node);
+	if (!head) throw should_never_happen("File revision read on a node that is not a file", { nodeId: args.node._id });
+
+	const asset = head.textKind === null && head.assetId ? await db.get("files_r2_assets", head.assetId) : null;
+	const sequence = head.textKind === null ? null : await files_saved_placement_db_get_sequence(db, args.node);
+	const tail =
+		head.textKind === null
+			? [head.assetId, asset?.r2Key ?? null, asset?.size ?? null]
+			: sequence
+				? [
+						head.assetId,
+						head.yjsContentHeadId,
+						head.yjsLastSequenceId,
+						sequence.lineageGeneration,
+						sequence.lastSequence,
+					]
+				: [head.assetId];
+	const revision = await crypto_sha256_hex(
+		JSON.stringify([
+			1,
+			args.node.organizationId,
+			args.node.workspaceId,
+			args.node._id,
+			args.path,
+			head.textKind === null ? "stored" : "text",
+			head.contentType,
+			head.collaborationEnabled,
+			...tail,
+		]),
+	);
+	return { revision, latest: sequence === null || sequence.unmaterializedUpdateCount === 0 };
+}
+
 export const get_saved_file_read_source = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
@@ -2989,7 +3036,13 @@ export const get_saved_file_read_source = internalQuery({
 			contentType: v.string(),
 			size: v.number(),
 			path: v.string(),
+			/**
+			 * Changes only when the served bytes change. A multi-page read keeps it in its cursor, so
+			 * typing in an editor does not stop the read.
+			 */
+			sourceDigest: v.string(),
 			revision: v.string(),
+			latest: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -3019,10 +3072,11 @@ export const get_saved_file_read_source = internalQuery({
 			return null;
 		const target = { kind: "saved" as const, id: node._id };
 		const kind = node.textKind === null ? ("stored" as const) : ("text" as const);
-		// Serve the available saved bytes. Newer editor updates do not change this revision.
-		const revision = await crypto_sha256_hex(
+		// Serve the available saved bytes. Newer editor updates do not change this digest.
+		const sourceDigest = await crypto_sha256_hex(
 			JSON.stringify([target.kind, target.id, entry.path, kind, asset._id, asset.r2Key, asset.size, node.contentType]),
 		);
+		const { revision, latest } = await files_nodes_db_get_file_revision(ctx.db, { node: entry.node, path: entry.path });
 		return {
 			kind,
 			target,
@@ -3031,7 +3085,9 @@ export const get_saved_file_read_source = internalQuery({
 			contentType: node.contentType,
 			size: asset.size,
 			path: entry.path,
+			sourceDigest,
 			revision,
+			latest,
 		};
 	},
 });
@@ -3978,6 +4034,12 @@ export async function files_nodes_db_fill_text_node_content(
 		contentSize: number;
 		fillUpdateStageId?: Id<"files_yjs_trusted_update_stages">;
 		expectedYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
+		/**
+		 * The editor snapshot the caller PUT for the filled document. Installing it saves the
+		 * caller's exact text as the latest text. Without it, a background job rebuilds the text
+		 * from the document in editor style later. Left out over the 4 MiB state cap.
+		 */
+		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
 	},
 ) {
 	const now = Date.now();
@@ -4066,14 +4128,16 @@ export async function files_nodes_db_fill_text_node_content(
 			createdAt: now,
 		});
 
-		await enqueue_file_content_materialization(ctx, {
-			organizationId,
-			workspaceId,
-			nodeId: args.fileNode._id,
-			userId: args.userId,
-			targetSequence: newSequenceData.lastSequence,
-			delayMs: 0,
-		});
+		if (!args.yjsSnapshot) {
+			await enqueue_file_content_materialization(ctx, {
+				organizationId,
+				workspaceId,
+				nodeId: args.fileNode._id,
+				userId: args.userId,
+				targetSequence: newSequenceData.lastSequence,
+				delayMs: 0,
+			});
+		}
 
 		yjsSequence = newSequenceData.lastSequence;
 	} else if (files_node_has_editable_yjs_state(fileNode)) {
@@ -4091,6 +4155,71 @@ export async function files_nodes_db_fill_text_node_content(
 		yjsSequence = yjsLastSequenceDoc.lastSequence;
 	}
 
+	// Install the caller's snapshot at the filled sequence, like a finished materialization. The
+	// saved text then stays the caller's exact text: no background job rebuilds it in editor style.
+	if (args.yjsSnapshot) {
+		const [yjsLastSequenceDoc, yjsSnapshotDoc, head] = await Promise.all([
+			files_saved_placement_db_get_sequence(ctx.db, fileNode),
+			fileNode.yjsSnapshotId ? ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId) : null,
+			files_saved_content_db_get_head(ctx.db, args.fileNode._id),
+		]);
+		if (!yjsLastSequenceDoc || !yjsSnapshotDoc || !head?.yjsContentHeadId || yjsSequence === undefined) {
+			throw should_never_happen("Collaborative fill has no Yjs snapshot or sequence", { nodeId: args.fileNode._id });
+		}
+
+		await Promise.all([
+			ctx.db.patch("files_r2_assets", args.yjsSnapshot.assetId, {
+				r2Key: r2_create_asset_key({ organizationId, workspaceId, assetId: args.yjsSnapshot.assetId }),
+				size: args.yjsSnapshot.size,
+				unfinalizedExpiresAt: undefined,
+				updatedAt: now,
+			}),
+			ctx.db.patch("files_yjs_snapshots", yjsSnapshotDoc._id, {
+				assetId: args.yjsSnapshot.assetId,
+				sequence: yjsSequence,
+				updatedBy: args.userId,
+				updatedAt: now,
+			}),
+			// The new snapshot covers every update through `yjsSequence`, which is the last one.
+			ctx.db.patch("files_yjs_docs_last_sequences", yjsLastSequenceDoc._id, {
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+			}),
+			// The saved text is complete and has its declared shape, so clear the old refusal markers.
+			ctx.db.patch("files_nodes", args.fileNode._id, {
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+			}),
+		]);
+
+		// Same cleanup as a finished materialization. An open editor that misses the deleted update
+		// docs reloads the snapshot.
+		await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
+			organizationId,
+			workspaceId,
+			nodeId: args.fileNode._id,
+			logOwnerId: head.yjsContentHeadId,
+			expectedYjsLastSequenceId: yjsLastSequenceDoc._id,
+			throughSequence: yjsSequence,
+		});
+		await ctx.scheduler.runAfter(
+			FILE_MATERIALIZATION_LATE_PUT_WINDOW_MS,
+			internal.files_nodes_content.cleanup_file_yjs_covered_rows,
+			{
+				organizationId,
+				workspaceId,
+				nodeId: args.fileNode._id,
+				logOwnerId: head.yjsContentHeadId,
+				throughSequence: yjsSequence,
+				supersededYjsAssetId: yjsSnapshotDoc.assetId,
+				expectedActiveYjsLastSequenceId: yjsLastSequenceDoc._id,
+			},
+		);
+	}
+
 	return await db_replace_file_chunks(ctx, {
 		organizationId,
 		workspaceId,
@@ -4102,6 +4231,11 @@ export async function files_nodes_db_fill_text_node_content(
 }
 
 const FILE_CONTENT_CLEANUP_BATCH_SIZE = 32;
+
+// Delete one covered update doc per call. One update doc can hold 930,000 bytes, and an API fill
+// resets the update counters, so the 8 MiB budget does not bound the covered docs. 32 of them
+// could pass the 16 MiB a transaction may read.
+const FILE_YJS_COVERED_UPDATE_CLEANUP_BATCH_SIZE = 1;
 
 async function db_delete_covered_file_content_docs(
 	ctx: MutationCtx,
@@ -4120,10 +4254,10 @@ async function db_delete_covered_file_content_docs(
 		.withIndex("by_contentHead_sequence", (q) =>
 			q.eq("contentHeadId", args.logOwnerId).lte("sequence", args.throughSequence),
 		)
-		.take(FILE_CONTENT_CLEANUP_BATCH_SIZE);
+		.take(FILE_YJS_COVERED_UPDATE_CLEANUP_BATCH_SIZE);
 	await Promise.all(coveredUpdateDocs.map((doc) => ctx.db.delete("files_yjs_updates", doc._id)));
 
-	if (coveredUpdateDocs.length === FILE_CONTENT_CLEANUP_BATCH_SIZE) {
+	if (coveredUpdateDocs.length === FILE_YJS_COVERED_UPDATE_CLEANUP_BATCH_SIZE) {
 		return true;
 	}
 
@@ -4206,8 +4340,10 @@ export const finalize_file_content_materialization = internalMutation({
 			nodeId: args.nodeId,
 			targetSequence: args.targetSequence,
 		})) as get_file_content_materialization_header_Result;
+		// A snapshot that already covers this sequence came from a newer save, so this result is stale.
 		if (
 			!header ||
+			(header.yjsSnapshotDoc.sequence >= args.sequence && header.asset.r2Key) ||
 			header.fileNode.assetId !== args.expectedContentAssetId ||
 			header.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
 			header.yjsLastSequenceDoc.lastSequence < args.sequence ||
@@ -4304,9 +4440,10 @@ export const finalize_file_content_materialization = internalMutation({
 		}
 
 		await files_index_db_request(ctx, { nodeId: args.nodeId, previousPublishedHeadId: previousHeadId });
-		// The advanced snapshot sequence already hides every covered update doc from readers. They
-		// filter on `sequence > snapshot.sequence`, so bounded batches delete the update docs and
-		// their settled job docs after this commit instead of loading them into this transaction.
+		// Readers no longer need the update docs that the advanced snapshot covers. Rebuilds read
+		// only after `snapshot.sequence`, and the live editor query reads from it. So bounded
+		// batches delete the update docs and their settled job docs after this commit, instead of
+		// loading them into this transaction.
 		await ctx.scheduler.runAfter(0, internal.files_content_saves.retire, { headId: previousHeadId });
 		await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
 			organizationId: args.organizationId,
@@ -4346,10 +4483,10 @@ type finalize_file_content_materialization_Result =
 		: never;
 
 /**
- * Delete the update docs a finalized materialization covered, plus its settled job docs, in
- * bounded batches. The finalize commit already advanced the snapshot sequence past these docs,
- * so readers ignore them; this only reclaims storage without loading the whole covered log into
- * one transaction.
+ * Delete the update docs a finalized materialization or an API fill covered, plus the settled
+ * job docs, in bounded batches. That commit already moved the snapshot sequence onto these docs,
+ * so readers no longer need them. This only frees storage, without loading the whole covered log
+ * into one transaction.
  */
 export const cleanup_file_materialization_covered_rows = internalMutation({
 	args: {
@@ -4585,7 +4722,11 @@ export const materialize_file_content = internalAction({
 			nodeId: args.nodeId,
 			targetSequence: args.targetSequence,
 		})) as get_file_content_materialization_header_Result;
-		if (!header) {
+		// A snapshot that already covers the target means the saved text is already up to date. A
+		// public API write installs its own snapshot, and rebuilding the text here would replace the
+		// caller's exact bytes with editor-style text. Old data whose saved text has no object yet
+		// still needs this run.
+		if (!header || (header.yjsSnapshotDoc.sequence >= args.targetSequence && header.asset.r2Key)) {
 			return Result({ _yay: null });
 		}
 

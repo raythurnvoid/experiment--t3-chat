@@ -36,6 +36,7 @@ import {
 	test_get_file_yjs_pointers,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_push_empty_yjs_update,
 	test_run_with_flush,
 } from "./setup.test.ts";
 import {
@@ -3186,6 +3187,60 @@ describe("materialization guards", () => {
 		}
 	});
 
+	test("the live query and cleanup stay bounded when covered updates pass 16 MiB", async () => {
+		vi.useFakeTimers();
+		const t = test_convex({ transactionLimits: true });
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const nodeId = await test_create_saved_text_file(t, {
+			membershipId: db.membershipId,
+			path: "/covered.txt",
+			textContent: "Original\n",
+		});
+		const node = (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!;
+		const head = (await t.run((ctx) => ctx.db.get("files_saved_content_heads", node.contentHeadId!)))!;
+
+		// An API write installs a snapshot that covers every older update and starts the counters again.
+		// So the covered updates waiting for cleanup can pass what one transaction may read.
+		const coveredCount = 19;
+		for (let sequence = 1; sequence <= coveredCount; sequence++) {
+			await test_run_with_flush(t, (ctx) =>
+				ctx.db.insert("files_yjs_updates", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					fileNodeId: nodeId,
+					sequence,
+					update: new Uint8Array(930_000).buffer,
+					origin: { type: "USER_EDIT", sessionId: "covered-updates" },
+					createdBy: db.userId,
+					createdAt: Date.now(),
+				}),
+			);
+		}
+		await test_run_with_flush(t, async (ctx) => {
+			await ctx.db.patch("files_yjs_snapshots", node.yjsSnapshotId!, { sequence: coveredCount });
+			await ctx.db.patch("files_yjs_docs_last_sequences", node.yjsLastSequenceId!, { lastSequence: coveredCount });
+		});
+
+		const live = await asUser.query(api.files_yjs_load.yjs_get_incremental_updates, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(live?.lastSequence).toBe(coveredCount);
+		expect(live?.updates.map((update) => update.sequence)).toEqual([coveredCount]);
+
+		await t.mutation(internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			logOwnerId: head.yjsContentHeadId!,
+			expectedYjsLastSequenceId: node.yjsLastSequenceId!,
+			throughSequence: coveredCount,
+		});
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await t.run((ctx) => ctx.db.query("files_yjs_updates").first())).toBeNull();
+	});
+
 	test("materialization keeps a later editor update across source rotation", async () => {
 		vi.useFakeTimers();
 		const t = test_convex({ transactionLimits: true });
@@ -3281,6 +3336,7 @@ describe("materialization guards", () => {
 			}
 			await ctx.db.patch("files_r2_assets", yjsSnapshotDoc.assetId, { size: 5 * 1024 * 1024 });
 		});
+		const targetSequence = await test_push_empty_yjs_update(t, { ...db, nodeId });
 
 		const getUrlSpy = vi.spyOn(R2.prototype, "getUrl");
 		getUrlSpy.mockClear();
@@ -3289,7 +3345,7 @@ describe("materialization guards", () => {
 			workspaceId: db.workspaceId,
 			nodeId,
 			userId: db.userId,
-			targetSequence: 0,
+			targetSequence,
 		});
 
 		expect(materialized._nay?.message).toContain("Yjs state exceeds");
@@ -3379,13 +3435,14 @@ describe("materialization guards", () => {
 				unmaterializedUpdateBytes: 999_999,
 			});
 		});
+		const targetSequence = await test_push_empty_yjs_update(t, { ...db, nodeId });
 
 		const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId,
 			userId: db.userId,
-			targetSequence: 0,
+			targetSequence,
 		});
 		if (materialized._nay) {
 			throw new Error(materialized._nay.message);
@@ -3626,7 +3683,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			workspaceId: db.workspaceId,
 			nodeId,
 			userId: db.userId,
-			targetSequence: 0,
+			targetSequence: await test_push_empty_yjs_update(t, { ...db, nodeId }),
 		});
 		if (materialized._nay) {
 			throw new Error(materialized._nay.message);

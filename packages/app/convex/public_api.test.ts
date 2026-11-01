@@ -19,6 +19,7 @@ import {
 	test_mocks_fill_db_with,
 	test_rename_node,
 	test_seed_folder_chain,
+	test_push_empty_yjs_update,
 	test_spy_handler,
 } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
@@ -649,7 +650,9 @@ describe("public_api_http_read_file", () => {
 		expect(await changed.json()).toMatchObject({ errorCode: "file_changed" });
 		const restart = await read();
 		expect(restart.status).toBe(200);
-		expect(restart.headers.get("X-File-Revision")).not.toBe(first.headers.get("X-File-Revision"));
+		// The revision names the saved version in the database, so a write can return it. Caller upload
+		// URLs are create-only, so the saved bytes of one asset do not change outside this test.
+		expect(restart.headers.get("X-File-Revision")).toBe(first.headers.get("X-File-Revision"));
 	});
 
 	test.each([2 * 1024 * 1024, 1])("returns file_changed when the stored object changes to %i bytes", async (size) => {
@@ -1843,7 +1846,7 @@ describe("public files API", () => {
 			["/api/v1/files/list", { limit: 0 }],
 			["/api/v1/files/list", { scanLimit: 0 }],
 			["/api/v1/files/list", { contentTypePrefixes: [] }],
-			["/api/v1/files/read", { path: "/file.md", maxBytes: 0 }],
+			["/api/v1/files/read", { path: "/file.md", cursor: 42 }],
 			["/api/v1/files/write", { path: 42, content: "" }],
 			["/api/v1/files/download-urls", { fileNodeIds: [] }],
 		] as const) {
@@ -1855,7 +1858,7 @@ describe("public files API", () => {
 			expect(response.status).toBe(400);
 			expect(await response.json()).toEqual({
 				message: "Request body validation failed",
-				...(path === "/api/v1/files/read" ? { errorCode: "invalid_input" } : {}),
+				...(path === "/api/v1/files/read" || path === "/api/v1/files/write" ? { errorCode: "invalid_input" } : {}),
 			});
 		}
 
@@ -1866,6 +1869,39 @@ describe("public files API", () => {
 		});
 		expect(invalidJson.status).toBe(400);
 		expect(await invalidJson.json()).toEqual({ message: "Failed to parse request body as JSON" });
+
+		// A misspelled field must not be dropped in silence. The message names it and where it sits.
+		for (const [path, body, message] of [
+			[
+				"/api/v1/files/write",
+				{ path: "/a.md", content: "a", expectedRevison: "r" },
+				'Unknown request field "expectedRevison". Remove it.',
+			],
+			[
+				"/api/v1/files/write",
+				{ path: "/a.md", content: "a", access: { readOnly: true, writable: true } },
+				'Unknown request field "writable" in "access". Remove it.',
+			],
+			[
+				"/api/v1/files/write-many",
+				{
+					files: [
+						{ path: "/a.md", content: "a" },
+						{ path: "/b.md", content: "b", overwrit: "fail" },
+					],
+				},
+				'Unknown request field "overwrit" in "files.1". Remove it.',
+			],
+			["/api/v1/files/list", { path: "/", recursiv: true }, 'Unknown request field "recursiv". Remove it.'],
+		] as const) {
+			const response = await t.fetch(path, {
+				method: "POST",
+				headers: auth_headers(created._yay.credential),
+				body: JSON.stringify(body),
+			});
+			expect(response.status).toBe(400);
+			expect(((await response.json()) as { message: string }).message).toBe(message);
+		}
 
 		type PublicValidationError =
 			| api_schemas_Main["/api/v1/files/list"]["POST"]["response"][400]["body"]
@@ -2042,6 +2078,9 @@ describe("public files API", () => {
 			path: "/notes/report.md",
 			nodeId: expect.any(String),
 			contentType: "text/markdown;charset=utf-8",
+			revision: expect.any(String),
+			size: expect.any(Number),
+			contentChanged: false,
 		});
 
 		const listResponse = await t.fetch("/api/v1/files/list", {
@@ -2895,6 +2934,9 @@ describe("public files API", () => {
 			path: "/skip/report.md",
 			nodeId: firstBody.nodeId,
 			contentType: "text/markdown;charset=utf-8",
+			revision: expect.any(String),
+			size: expect.any(Number),
+			contentChanged: false,
 			unchanged: true,
 		});
 		const after = await t.run(async (ctx) => ({
@@ -2922,6 +2964,85 @@ describe("public files API", () => {
 		});
 		expect(readResponse.status).toBe(200);
 		expect(await readResponse.text()).toContain("New content");
+	});
+
+	test("a fill keeps the exact bytes, and no later background save rewrites them", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-exact-fill" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: db.membershipId,
+			name: "Exact writer",
+			scopes: ["files:read", "files:write"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const write = (body: Record<string, unknown>) =>
+			t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: auth_headers(created._yay.credential),
+				body: JSON.stringify({ path: "/exact/notes.md", ...body }),
+			});
+		const read = async () => {
+			const response = await t.fetch("/api/v1/files/read", {
+				method: "POST",
+				headers: auth_headers(created._yay.credential),
+				body: JSON.stringify({ path: "/exact/notes.md" }),
+			});
+			expect(response.status).toBe(200);
+			return await response.text();
+		};
+
+		const first = await write({ content: "# Title\n\nBody text\n" });
+		expect(first.status).toBe(200);
+		const nodeId = ((await first.json()) as { nodeId: Id<"files_nodes"> }).nodeId;
+		await finish_saved_file_content(t, nodeId);
+		const count_versions = () =>
+			t.run(
+				async (ctx) =>
+					(await ctx.db.query("files_snapshots").collect()).filter((doc) => doc.fileNodeId === nodeId).length,
+			);
+		const versionsBefore = await count_versions();
+
+		// Extra blank lines keep the same document, so the editor update is empty, but the bytes
+		// change: the write is saved, and stays saved byte for byte.
+		const reformatted = "# Title\n\n\n\nBody text\n";
+		const saved = await write({ content: reformatted, skipIfUnchanged: true });
+		expect(saved.status).toBe(200);
+		expect(await saved.json()).not.toHaveProperty("unchanged");
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await read()).toBe(reformatted);
+
+		// The editor would save this differently, with one blank line instead of three.
+		const content = "# Notes\n\n\n\nOther text\n";
+		expect((await write({ content })).status).toBe(200);
+		const state = await t.query(internal.files_nodes.get_file_content_materialization_state, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+		});
+		expect(state?.yjsSnapshotDoc.sequence, "the fill installs its own snapshot").toBe(
+			state?.yjsLastSequenceDoc.lastSequence,
+		);
+		expect(state?.yjsLastSequenceDoc.unmaterializedUpdateCount).toBe(0);
+		expect(await read()).toBe(content);
+
+		// Neither the scheduled cleanup nor a job started later for the same sequence (a resume, a
+		// download) may rewrite the text in editor style.
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(
+			await t.action(internal.files_nodes_content.materialize_file_content, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				nodeId,
+				userId: db.userId,
+				targetSequence: state!.yjsLastSequenceDoc.lastSequence,
+			}),
+		).toEqual({ _yay: null });
+		expect(await read()).toBe(content);
+		expect(await count_versions(), "one version for each write").toBe(versionsBefore + 2);
 	});
 
 	test("a replace needs write on the file and its folder only, not on a locked folder above", async () => {
@@ -3345,7 +3466,7 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/shared/notes.md", content: "# Owner only", skipIfUnchanged: true }),
 		});
 		expect(skipped.status).toBe(403);
-		expect(await skipped.json()).toEqual({ message: "Permission denied" });
+		expect(await skipped.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		// publish_file_write asks before archiving what is already there.
 		const replaced = await t.fetch("/api/v1/files/write", {
@@ -4778,7 +4899,7 @@ describe("locked and missing paths", () => {
 				content: "# Mine",
 				overwrite: "replace",
 			}),
-		).toEqual({ status: 403, body: { message: "Permission denied" } });
+		).toEqual({ status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } });
 	});
 
 	test("a create-only write onto a locked name says the file exists", async () => {
@@ -4792,7 +4913,7 @@ describe("locked and missing paths", () => {
 				content: "# Mine",
 				overwrite: "fail",
 			}),
-		).toEqual({ status: 409, body: { message: "A file already exists at this path" } });
+		).toEqual({ status: 409, body: { message: "A file already exists at this path", errorCode: "conflict" } });
 		expect(
 			await post(t, "/api/v1/files/upload-urls", f.memberCredential, {
 				files: [{ path: "/hidden.md", contentType: "text/markdown;charset=utf-8", size: 6 }],
@@ -4806,7 +4927,7 @@ describe("locked and missing paths", () => {
 				content: "# Mine",
 				overwrite: "fail",
 			}),
-		).toEqual({ status: 403, body: { message: "Permission denied" } });
+		).toEqual({ status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } });
 	});
 
 	/** A guest: an active member with no workspace role. `/secret/shared` is shared with them with write. */
@@ -4978,7 +5099,7 @@ describe("locked and missing paths", () => {
 		for (const path of ["/secret/new.md", "/new.md", "/b.md"]) {
 			expect(await post(t, "/api/v1/files/write", guestCredential, { path, content: "# Guest" }), path).toEqual({
 				status: 403,
-				body: { message: "Permission denied" },
+				body: { message: "Permission denied", errorCode: "permission_denied" },
 			});
 		}
 		expect(
@@ -7270,10 +7391,31 @@ describe("files write-many", () => {
 		};
 		expect(body.errors).toEqual([]);
 		expect(body.written).toEqual([
-			{ path: "/bulk/new-1.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
-			{ path: "/bulk/nested/new-2.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
+			{
+				path: "/bulk/new-1.md",
+				nodeId: expect.any(String),
+				contentType: "text/markdown;charset=utf-8",
+				revision: expect.any(String),
+				size: expect.any(Number),
+				contentChanged: false,
+			},
+			{
+				path: "/bulk/nested/new-2.md",
+				nodeId: expect.any(String),
+				contentType: "text/markdown;charset=utf-8",
+				revision: expect.any(String),
+				size: expect.any(Number),
+				contentChanged: false,
+			},
 			// Same fill-in-place behavior as the single route: the nodeId stays stable.
-			{ path: "/bulk/existing.md", nodeId: firstBody.nodeId, contentType: "text/markdown;charset=utf-8" },
+			{
+				path: "/bulk/existing.md",
+				nodeId: firstBody.nodeId,
+				contentType: "text/markdown;charset=utf-8",
+				revision: expect.any(String),
+				size: expect.any(Number),
+				contentChanged: false,
+			},
 		]);
 
 		await finish_saved_file_content(t, firstBody.nodeId as Id<"files_nodes">);
@@ -7484,7 +7626,7 @@ describe("files write-many", () => {
 		expect(await t.run(async (ctx) => await ctx.db.query("files_private_storage_reservations").collect())).toEqual([]);
 	});
 
-	test("a refused fill publish deletes its trusted fill stage", async () => {
+	test("a fill publish refused during the write deletes its trusted fill stage", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-fill-refused" });
@@ -7498,7 +7640,8 @@ describe("files write-many", () => {
 		const node = await find_active_node({ t, db, path: "/fill-refused.md" });
 
 		// Turn collaboration off while the content PUT runs. The publish then refuses with "The file
-		// changed during the write", after the fill update was already staged.
+		// changed during the write", after the fill update was already staged. The write tries again
+		// and fills the file as a non-collaborative file.
 		const stubbedFetch = globalThis.fetch;
 		let changed = false;
 		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
@@ -7511,13 +7654,13 @@ describe("files write-many", () => {
 			return await stubbedFetch(url, init);
 		});
 
-		const refused = await t.fetch("/api/v1/files/write", {
+		const written = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path: "/fill-refused.md", content: "# New\n", overwrite: "replace" }),
 		});
 		expect(changed).toBe(true);
-		expect(refused.status).toBe(409);
+		expect(written.status).toBe(200);
 		expect(await t.run(async (ctx) => await ctx.db.query("files_yjs_trusted_update_stages").collect())).toEqual([]);
 	});
 
@@ -7785,11 +7928,22 @@ describe("files write-many", () => {
 		};
 		expect(rerunBody.errors).toEqual([]);
 		expect(rerunBody.written).toEqual([
-			{ path: "/rerun/stable.md", nodeId: stableNodeId, contentType: "text/markdown;charset=utf-8", unchanged: true },
+			{
+				path: "/rerun/stable.md",
+				nodeId: stableNodeId,
+				contentType: "text/markdown;charset=utf-8",
+				revision: expect.any(String),
+				size: expect.any(Number),
+				contentChanged: false,
+				unchanged: true,
+			},
 			{
 				path: "/rerun/changed.md",
 				nodeId: firstBody.written[1]!.nodeId,
 				contentType: "text/markdown;charset=utf-8",
+				revision: expect.any(String),
+				size: expect.any(Number),
+				contentChanged: false,
 			},
 		]);
 
@@ -7843,6 +7997,332 @@ describe("files write-many", () => {
 		expect(await find_active_node({ t, db, path: "/blocked/file-0.md" })).toBeNull();
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
 		expect(stages).toEqual([]);
+	});
+});
+
+/**
+ * Push an empty editor update after each of the next `count` R2 uploads, like someone typing while
+ * a write uploads its staged objects.
+ */
+function type_during_r2_uploads(args: {
+	t: ReturnType<typeof test_convex>;
+	db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+	nodeId: Id<"files_nodes">;
+	count: number;
+}) {
+	const upload = globalThis.fetch;
+	let left = args.count;
+	vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+		const response = await upload(url, init);
+		if (init?.method === "PUT" && left > 0) {
+			left--;
+			await test_push_empty_yjs_update(args.t, { ...args.db, nodeId: args.nodeId });
+		}
+		return response;
+	});
+}
+
+/**
+ * A member with a personal key, and helpers that write and read one text file with it.
+ */
+async function seed_revision_writer(
+	clerkUserId: string,
+	scopes: Array<"files:read" | "files:write"> = ["files:read", "files:write"],
+) {
+	const t = test_convex();
+	install_r2_object_reads();
+	const db = await seed_signed_in_membership({ t, clerkUserId });
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: clerkUserId, external_id: db.userId });
+	const created = await asUser.mutation(api.public_api.api_credential_create, {
+		serviceAccountId: null,
+		membershipId: db.membershipId,
+		name: "Revision writer",
+		scopes,
+	});
+	if (created._nay) throw new Error(created._nay.message);
+	const credential = created._yay.credential;
+	const write = (body: Record<string, unknown>) =>
+		t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/revision/notes.md", ...body }),
+		});
+	const read = (path = "/revision/notes.md") =>
+		t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path }),
+		});
+	return { t, db, credential, credentialId: created._yay.credentialId, write, read };
+}
+
+describe("files write conflicts", () => {
+	test("a write returns the revision and size that the next read shows", async () => {
+		const { write, read } = await seed_revision_writer("clerk-revision-response");
+
+		const written = await write({ content: "# Title\r\n\r\nCafé\r\n" });
+		expect(written.status).toBe(200);
+		const body = (await written.json()) as { revision: string; size: number; contentChanged: boolean };
+		// The CRLF line endings are saved as LF, so the saved text differs from the request.
+		expect(body).toMatchObject({ size: new TextEncoder().encode("# Title\n\nCafé\n").length, contentChanged: true });
+
+		const response = await read();
+		expect(response.headers.get("X-File-Revision")).toBe(body.revision);
+		expect(response.headers.get("X-File-Is-Latest")).toBe("true");
+		expect(await response.text()).toBe("# Title\n\nCafé\n");
+	});
+
+	test("a conditional write fills only the saved revision the caller read", async () => {
+		const { t, db, write, read } = await seed_revision_writer("clerk-revision-conditional");
+		const first = await write({ content: "# One\n" });
+		const { nodeId, revision: firstRevision } = (await first.json()) as { nodeId: Id<"files_nodes">; revision: string };
+
+		for (const extra of [{ expectedRevision: firstRevision, overwrite: "fail" }, { expectedRevision: null }]) {
+			const refused = await write({ content: "# Bad\n", ...extra });
+			expect(refused.status).toBe(400);
+			expect(await refused.json()).toMatchObject({ errorCode: "invalid_input" });
+		}
+
+		const second = await write({ content: "# Two\n", expectedRevision: firstRevision });
+		expect(second.status).toBe(200);
+		const secondRevision = ((await second.json()) as { revision: string }).revision;
+		expect(secondRevision).not.toBe(firstRevision);
+
+		// A second writer with the same old revision loses, also when its text matches the saved text.
+		for (const body of [{ content: "# Stale\n" }, { content: "# Two\n", skipIfUnchanged: true }]) {
+			const stale = await write({ ...body, expectedRevision: firstRevision });
+			expect(stale.status).toBe(409);
+			expect(await stale.json()).toMatchObject({ errorCode: "file_changed" });
+		}
+		const skipped = await write({ content: "# Two\n", expectedRevision: secondRevision, skipIfUnchanged: true });
+		expect(await skipped.json()).toMatchObject({ unchanged: true, revision: secondRevision });
+
+		// A conditional write never creates a file.
+		const missing = await write({ path: "/revision/missing.md", content: "# New\n", expectedRevision: secondRevision });
+		expect(missing.status).toBe(409);
+		expect(await missing.json()).toMatchObject({ errorCode: "file_changed" });
+		expect((await read("/revision/missing.md")).status).toBe(404);
+
+		// Someone types. The saved text is no longer the latest text, so even the new revision is refused.
+		await test_push_empty_yjs_update(t, { ...db, nodeId });
+		const typed = await read();
+		expect(typed.headers.get("X-File-Is-Latest")).toBe("false");
+		const typedRevision = typed.headers.get("X-File-Revision")!;
+		expect(typedRevision).not.toBe(secondRevision);
+		const notLatest = await write({ content: "# Three\n", expectedRevision: typedRevision });
+		expect(notLatest.status).toBe(409);
+		expect(await notLatest.json()).toMatchObject({ errorCode: "file_not_latest" });
+		expect(await (await read()).text()).toBe("# Two\n");
+	});
+
+	test("the publish checks the revision again after prepare", async () => {
+		const { t, db, credentialId, write } = await seed_revision_writer("clerk-revision-publish");
+		const first = await write({ content: "# One\n" });
+		const { nodeId, revision } = (await first.json()) as { nodeId: Id<"files_nodes">; revision: string };
+		const sequenceId = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!);
+
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			principalRef: { kind: "user_api_key", credentialId },
+			path: "/revision/notes.md",
+			overwrite: "replace",
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			contentSize: 9,
+			yjsSnapshotSize: 0,
+			expectedRevision: revision,
+		});
+		if (prepared._nay) throw new Error(prepared._nay.message);
+
+		// The file changes between prepare and publish.
+		await test_push_empty_yjs_update(t, { ...db, nodeId });
+		const published = await t.mutation(internal.public_api.publish_file_fill, {
+			stageId: prepared._yay.stageId,
+			content: "# Change\n",
+			expectedNodeId: nodeId,
+			expectedYjsLastSequenceId: sequenceId,
+			expectedRevision: revision,
+		});
+		expect(published._nay?.name).toBe("file_changed");
+	});
+
+	test("a write to a file that needs repair answers file_needs_repair", async () => {
+		const { t, write } = await seed_revision_writer("clerk-revision-repair");
+		const first = await write({ content: "# One\n" });
+		const { nodeId, revision } = (await first.json()) as { nodeId: Id<"files_nodes">; revision: string };
+		await test_run_with_flush(t, async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() });
+		});
+
+		for (const body of [{ content: "# Two\n" }, { content: "# Two\n", expectedRevision: revision }]) {
+			const refused = await write(body);
+			expect(refused.status).toBe(409);
+			expect(await refused.json()).toMatchObject({ errorCode: "file_needs_repair" });
+		}
+	});
+
+	test("write-many checks each item's revision on its own", async () => {
+		const { t, credential, write } = await seed_revision_writer("clerk-revision-many");
+		const revisions: Record<string, string> = {};
+		for (const path of ["/revision/a.md", "/revision/b.md"]) {
+			const written = await write({ path, content: "# Before\n" });
+			revisions[path] = ((await written.json()) as { revision: string }).revision;
+		}
+		await write({ path: "/revision/a.md", content: "# Changed\n" });
+		const write_many = (files: Array<Record<string, unknown>>) =>
+			t.fetch("/api/v1/files/write-many", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ files }),
+			});
+
+		const refused = await write_many([
+			{ path: "/revision/a.md", content: "# A\n", expectedRevision: revisions["/revision/a.md"], overwrite: "fail" },
+		]);
+		expect(refused.status).toBe(400);
+
+		const response = await write_many([
+			{ path: "/revision/a.md", content: "# A\n", expectedRevision: revisions["/revision/a.md"] },
+			{ path: "/revision/b.md", content: "# B\n", expectedRevision: revisions["/revision/b.md"] },
+		]);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			written: Array<{ path: string; revision: string }>;
+			errors: Array<{ path: string; errorCode: string }>;
+		};
+		expect(body.errors).toEqual([expect.objectContaining({ path: "/revision/a.md", errorCode: "file_changed" })]);
+		expect(body.written).toEqual([expect.objectContaining({ path: "/revision/b.md", revision: expect.any(String) })]);
+	});
+
+	test("a write tries again when someone types during it, and gives up after three attempts", async () => {
+		const { t, db, write, read } = await seed_revision_writer("clerk-revision-retry");
+		const first = await write({ content: "# One\n" });
+		const { nodeId } = (await first.json()) as { nodeId: Id<"files_nodes"> };
+
+		type_during_r2_uploads({ t, db, nodeId, count: 1 });
+		const retried = await write({ content: "# Two\n" });
+		expect(retried.status).toBe(200);
+		expect(await (await read()).text()).toBe("# Two\n");
+
+		type_during_r2_uploads({ t, db, nodeId, count: Number.POSITIVE_INFINITY });
+		const busy = await write({ content: "# Three\n" });
+		expect(busy.status).toBe(409);
+		expect(await busy.json()).toMatchObject({ errorCode: "file_busy" });
+		expect(await (await read()).text()).toBe("# Two\n");
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+	});
+});
+
+describe("files edit and append", () => {
+	function change_file(
+		writer: Awaited<ReturnType<typeof seed_revision_writer>>,
+		route: "edit" | "append",
+		body: Record<string, unknown>,
+	) {
+		return writer.t.fetch(`/api/v1/files/${route}`, {
+			method: "POST",
+			headers: auth_headers(writer.credential),
+			body: JSON.stringify({ path: "/revision/notes.md", ...body }),
+		});
+	}
+
+	test("an edit or append changes only its own part of the saved bytes", async () => {
+		const writer = await seed_revision_writer("clerk-edit-exact");
+		// The app editor would save this with one blank line instead of three.
+		await writer.write({ content: "# Title\n\n\n\nBody two\n" });
+
+		const edited = await change_file(writer, "edit", { oldText: "two", newText: "three" });
+		expect(edited.status).toBe(200);
+		const editedBody = (await edited.json()) as { revision: string };
+		expect(editedBody).toMatchObject({
+			size: new TextEncoder().encode("# Title\n\n\n\nBody three\n").length,
+			contentChanged: false,
+		});
+		expect(await (await writer.read()).text()).toBe("# Title\n\n\n\nBody three\n");
+
+		const appended = await change_file(writer, "append", { content: "tail", expectedRevision: editedBody.revision });
+		expect(appended.status).toBe(200);
+		expect(await (await writer.read()).text()).toBe("# Title\n\n\n\nBody three\ntail");
+
+		// A retry with the old revision cannot append twice.
+		const retried = await change_file(writer, "append", { content: "tail", expectedRevision: editedBody.revision });
+		expect(retried.status).toBe(409);
+		expect(await retried.json()).toMatchObject({ errorCode: "file_changed" });
+
+		const missing = await change_file(writer, "edit", { path: "/revision/missing.md", oldText: "a", newText: "b" });
+		expect(missing.status).toBe(404);
+		expect(await missing.json()).toMatchObject({ errorCode: "not_found" });
+	});
+
+	test("an edit refuses a missing or repeated match, and can empty the file", async () => {
+		const writer = await seed_revision_writer("clerk-edit-match");
+		await writer.write({ content: "aaa\n" });
+
+		const notFound = await change_file(writer, "edit", { oldText: "b", newText: "c" });
+		expect(notFound.status).toBe(409);
+		expect(await notFound.json()).toMatchObject({ errorCode: "text_not_found" });
+		// "aa" matches at the first and the second "a". Overlapping matches count.
+		const notUnique = await change_file(writer, "edit", { oldText: "aa", newText: "b" });
+		expect(notUnique.status).toBe(409);
+		expect(await notUnique.json()).toMatchObject({ errorCode: "text_not_unique" });
+
+		for (const [route, body] of [
+			["edit", { oldText: "aaa", newText: "aaa" }],
+			["append", { content: "" }],
+		] as const) {
+			const same = await change_file(writer, route, body);
+			expect(await same.json()).toMatchObject({ unchanged: true });
+		}
+
+		const emptied = await change_file(writer, "edit", { oldText: "aaa\n", newText: "" });
+		expect(await emptied.json()).toMatchObject({ size: 0, contentChanged: false });
+		expect(await (await writer.read()).text()).toBe("");
+	});
+
+	test("an edit while someone types starts from the editor text", async () => {
+		const writer = await seed_revision_writer("clerk-edit-live");
+		const written = await writer.write({ content: "# Title\n\n\n\nBody two\n" });
+		const { nodeId } = (await written.json()) as { nodeId: Id<"files_nodes"> };
+		await test_push_empty_yjs_update(writer.t, { ...writer.db, nodeId });
+
+		const edited = await change_file(writer, "edit", { oldText: "two", newText: "three" });
+		expect(edited.status).toBe(200);
+		expect(await edited.json()).toMatchObject({ contentChanged: true });
+		const text = await (await writer.read()).text();
+		expect(text).toContain("three");
+		expect(text).not.toBe("# Title\n\n\n\nBody three\n");
+	});
+
+	test("an edit keeps a save that lands while it uploads", async () => {
+		const writer = await seed_revision_writer("clerk-edit-concurrent");
+		await writer.write({ content: "# A\n\nBody two\n", nonCollaborative: true });
+
+		// Another writer saves while the edit uploads its text. The edit then tries again on that save.
+		const upload = globalThis.fetch;
+		let saved = false;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			const response = await upload(url, init);
+			if (init?.method === "PUT" && !saved) {
+				saved = true;
+				expect((await writer.write({ content: "# B\n\nBody two\n" })).status).toBe(200);
+			}
+			return response;
+		});
+		const edited = await change_file(writer, "edit", { oldText: "two", newText: "three" });
+		expect(edited.status).toBe(200);
+		expect(await (await writer.read()).text()).toBe("# B\n\nBody three\n");
+	});
+
+	test("an edit needs a key that can read the file", async () => {
+		const writer = await seed_revision_writer("clerk-edit-scope", ["files:write"]);
+		await writer.write({ content: "# One\n" });
+
+		const refused = await change_file(writer, "append", { content: "tail" });
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toMatchObject({ errorCode: "permission_denied" });
 	});
 });
 
@@ -7927,7 +8407,7 @@ describe("files write billing", () => {
 			body: JSON.stringify({ path: "/billing/refused.md", content: "# Refused\n" }),
 		});
 		expect(refused.status).toBe(402);
-		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+		expect(await refused.json()).toEqual({ message: "Insufficient funds", errorCode: "insufficient_funds" });
 
 		const node = await t.run(async (ctx) =>
 			ctx.db
@@ -7993,6 +8473,28 @@ describe("files write billing", () => {
 		}
 	});
 
+	test("a write that tries again saves one version and emits one file_save", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const { db, credential } = await seed_billing_writer({ t, clerkSubject: "write-billing-retry" });
+		const { file_save_events } = spy_billing_enqueue();
+		const write = (content: string) =>
+			t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ path: "/billing/retry.md", content }),
+			});
+
+		const written = await write("# One\n");
+		const { nodeId } = (await written.json()) as { nodeId: Id<"files_nodes"> };
+		type_during_r2_uploads({ t, db, nodeId, count: 1 });
+		expect((await write("# Two\n")).status).toBe(200);
+
+		expect(await read_version_snapshot_asset_ids({ t, db, nodeId })).toHaveLength(2);
+		await test_drain_billing_usage_event_outbox(t);
+		expect(file_save_events()).toHaveLength(2);
+	});
+
 	test("a skipIfUnchanged no-op emits nothing but is still gated", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -8028,7 +8530,7 @@ describe("files write billing", () => {
 			body: JSON.stringify({ path: "/billing/skip.md", content: "# Same\n", skipIfUnchanged: true }),
 		});
 		expect(refused.status).toBe(402);
-		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+		expect(await refused.json()).toEqual({ message: "Insufficient funds", errorCode: "insufficient_funds" });
 	});
 
 	test("touch stays free: a broke payer still creates empty placeholders and no event is sent", async () => {
@@ -8742,7 +9244,7 @@ describe("files read-only locks", () => {
 					)
 					.toBe(403);
 				expect.soft(await touched.json()).toEqual({ message: "Permission denied" });
-				expect.soft(await unchanged.json()).toEqual({ message: "Permission denied" });
+				expect.soft(await unchanged.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 			});
 			expect(checkedPublishedScope, "the real worker reaches publication before physical repair").toBe(true);
 			expect(
@@ -8805,7 +9307,7 @@ describe("files read-only locks", () => {
 			content: "# Change\n",
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 
 		// The public vocabulary is 409/conflict; the internal refusal keeps its `read_only` name.
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
@@ -8862,7 +9364,7 @@ describe("files read-only locks", () => {
 		for (const path of ["/locked-dir/other.md", "/locked-dir/deep/nested.md"]) {
 			const refused = await write_file({ t, credential: writer.credential, path, content: "# Nope\n" });
 			expect(refused.status).toBe(409);
-			expect(await refused.json()).toEqual({ message: "This item is read-only." });
+			expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 		}
 		expect(await find_active_node({ t, db: writer.db, path: "/locked-dir/other.md" })).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
@@ -8908,7 +9410,7 @@ describe("files read-only locks", () => {
 			skipIfUnchanged: true,
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 	});
 
 	test("write-many reports a locked item as a per-item conflict and still writes the others", async () => {
@@ -8947,8 +9449,22 @@ describe("files read-only locks", () => {
 			{ path: "/bulk-lock/locked.md", message: "This item is read-only.", errorCode: "conflict" },
 		]);
 		expect(body.written).toEqual([
-			{ path: "/bulk-lock/a.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
-			{ path: "/bulk-lock/b.md", nodeId: expect.any(String), contentType: "text/markdown;charset=utf-8" },
+			{
+				path: "/bulk-lock/a.md",
+				nodeId: expect.any(String),
+				contentType: "text/markdown;charset=utf-8",
+				revision: expect.any(String),
+				size: expect.any(Number),
+				contentChanged: false,
+			},
+			{
+				path: "/bulk-lock/b.md",
+				nodeId: expect.any(String),
+				contentType: "text/markdown;charset=utf-8",
+				revision: expect.any(String),
+				size: expect.any(Number),
+				contentChanged: false,
+			},
 		]);
 		expect(await read_file_content({ t, credential: writer.credential, path: "/bulk-lock/locked.md" })).toContain(
 			"# Keep",
@@ -8991,7 +9507,7 @@ describe("files read-only locks", () => {
 			skipIfUnchanged: true,
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
 
@@ -9572,7 +10088,7 @@ describe("files read-only locks", () => {
 
 		const response = await writePromise;
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await find_active_node({ t, db: writer.db, path: "/write-hidden/new.md" })).toBeNull();
 		await t.run(async (ctx) => {
 			const hiddenFolder = await ctx.db.get("files_nodes", hiddenFolderId);
@@ -10005,7 +10521,7 @@ describe("files read-only locks", () => {
 			overwrite: "replace",
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 		await t.run(async (ctx) => {
 			const target = await ctx.db.get("files_nodes", occupantNodeId);
 			expect(target?.archiveOperationId).toBeNull();
@@ -10068,7 +10584,10 @@ describe("files read-only locks", () => {
 
 		const written = await write_file({ t, credential: writer.credential, path, content: "# Long\n" });
 		expect(written.status, "a write of a new name over the limit").toBe(400);
-		expect(await written.json()).toEqual({ message: "Names can have at most 255 characters." });
+		expect(await written.json()).toEqual({
+			message: "Names can have at most 255 characters.",
+			errorCode: "invalid_input",
+		});
 		const touched = await t.fetch("/api/v1/files/touch", {
 			method: "POST",
 			headers: auth_headers(writer.credential),
@@ -10216,6 +10735,7 @@ describe("files read-only locks", () => {
 		expect(written.status, "a write that adds one new folder too many").toBe(400);
 		expect(await written.json()).toEqual({
 			message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
+			errorCode: "invalid_input",
 		});
 		const touched = await t.fetch("/api/v1/files/touch", {
 			method: "POST",
@@ -10448,7 +10968,7 @@ describe("service file writes", () => {
 			content: "# Meeting\n",
 		});
 		expect(refused.status).toBe(402);
-		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+		expect(await refused.json()).toEqual({ message: "Insufficient funds", errorCode: "insufficient_funds" });
 		expect(await find_active_node({ t, db, path: "/meetings/meeting-broke/meeting.md" })).toBeNull();
 	});
 
@@ -10470,6 +10990,9 @@ describe("service file writes", () => {
 			path: "/meetings/meeting-1/meeting.md",
 			nodeId: expect.any(String),
 			contentType: "text/markdown;charset=utf-8",
+			revision: expect.any(String),
+			size: expect.any(Number),
+			contentChanged: false,
 		});
 
 		const asUser = t.withIdentity({
@@ -10512,7 +11035,10 @@ describe("service file writes", () => {
 
 		const outside = await service_write({ t, token: service.token, path: "/elsewhere/note.md", content: "# Out\n" });
 		expect(outside.status).toBe(403);
-		expect(await outside.json()).toEqual({ message: "Path is outside this grant's destination" });
+		expect(await outside.json()).toEqual({
+			message: "Path is outside this grant's destination",
+			errorCode: "permission_denied",
+		});
 
 		// Forge the doc the exchange refuses to mint: an interactive grant that somehow carries the
 		// write scope and a destination. Only the phase is wrong, so this pins the phase fence.
@@ -10524,7 +11050,10 @@ describe("service file writes", () => {
 			content: "# Early\n",
 		});
 		expect(unsealed.status).toBe(403);
-		expect(await unsealed.json()).toEqual({ message: "Path is outside this grant's destination" });
+		expect(await unsealed.json()).toEqual({
+			message: "Path is outside this grant's destination",
+			errorCode: "permission_denied",
+		});
 
 		expect(await find_active_node({ t, db, path: "/elsewhere/note.md" })).toBeNull();
 		expect(await find_active_node({ t, db, path: "/meetings/note.md" })).toBeNull();
@@ -10554,7 +11083,7 @@ describe("service file writes", () => {
 			skipIfUnchanged: true,
 		});
 		expect(probe.status).toBe(403);
-		expect(await probe.json()).toEqual({ message: "Permission denied" });
+		expect(await probe.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		const overwrite = await service_write({
 			t,
@@ -10608,6 +11137,9 @@ describe("service file writes", () => {
 			path: "/meetings/notes.md",
 			nodeId,
 			contentType: "text/markdown;charset=utf-8",
+			revision: expect.any(String),
+			size: expect.any(Number),
+			contentChanged: false,
 		});
 		expect(
 			await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId }),
@@ -10748,7 +11280,7 @@ describe("service file writes", () => {
 			content: "# Transcript\n\nAgain\n",
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 	});
 
 	test("Read-only creation needs plugin consent and the actor's write permission", async () => {
@@ -10770,7 +11302,7 @@ describe("service file writes", () => {
 			readOnly: true,
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Permission denied" });
+		expect(await refused.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await find_active_node({ t, db, path: "/meetings/locked.md" })).toBeNull();
 
 		// A member's write access allows setting Read-only on a new file.
@@ -10835,7 +11367,7 @@ describe("service file writes", () => {
 			body: JSON.stringify({ path: "/user-locked.md", content: "# Locked\n", access: { readOnly: true } }),
 		});
 		expect(userKeyLocked.status).toBe(403);
-		expect(await userKeyLocked.json()).toEqual({ message: "Permission denied" });
+		expect(await userKeyLocked.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 	});
 
 	test.each(["missing consent", "outer member lock"] as const)(
@@ -10998,7 +11530,7 @@ describe("service file writes", () => {
 			content: "# Notes\n\nTaken\n",
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 	});
 
 	test("forced plugin archive preserves Read-only", async () => {

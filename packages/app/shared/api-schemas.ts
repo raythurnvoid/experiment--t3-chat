@@ -181,6 +181,10 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/write-many": ReturnType<typeof public_api_http_routes>["/api/v1/files/write-many"];
 
+	"/api/v1/files/edit": ReturnType<typeof public_api_http_routes>["/api/v1/files/edit"];
+
+	"/api/v1/files/append": ReturnType<typeof public_api_http_routes>["/api/v1/files/append"];
+
 	"/api/v1/files/touch": ReturnType<typeof public_api_http_routes>["/api/v1/files/touch"];
 
 	"/api/v1/files/download-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/download-urls"];

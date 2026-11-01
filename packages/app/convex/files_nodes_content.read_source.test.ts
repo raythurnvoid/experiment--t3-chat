@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("get_saved_file_read_source", () => {
-	test("keeps the available saved revision until newer editor bytes are published", async () => {
+	test("keeps serving the saved bytes until newer editor bytes are published", async () => {
 		const { t, db, asUser, scope, nodeId, pointers } = await create_file_fixture();
 		const args = {
 			...scope,
@@ -21,7 +21,7 @@ describe("get_saved_file_read_source", () => {
 			path: "/restore.txt",
 		};
 		const before = await t.query(internal.files_nodes_content.get_saved_file_read_source, args);
-		expect(before).toMatchObject({ kind: "text", size: 14, target: { kind: "saved", id: nodeId } });
+		expect(before).toMatchObject({ kind: "text", size: 14, target: { kind: "saved", id: nodeId }, latest: true });
 		const yjsKey = await t.run(async (ctx) => {
 			const snapshot = (await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId))!;
 			return (await ctx.db.get("files_r2_assets", snapshot.assetId))!.r2Key!;
@@ -40,10 +40,13 @@ describe("get_saved_file_read_source", () => {
 		});
 		editor.destroy();
 		if (pushed._nay) throw new Error(pushed._nay.message);
-		expect(
-			await t.query(internal.files_nodes_content.get_saved_file_read_source, args),
-			"new editor updates keep the saved read source",
-		).toEqual(before);
+		const typed = await t.query(internal.files_nodes_content.get_saved_file_read_source, args);
+		expect(typed, "new editor updates keep the served bytes").toEqual({
+			...before,
+			revision: expect.any(String),
+			latest: false,
+		});
+		expect(typed?.revision, "the public revision changes with the typed text").not.toBe(before?.revision);
 		expect(
 			await t.action(internal.files_nodes_content.materialize_file_content, {
 				...scope,
@@ -52,7 +55,8 @@ describe("get_saved_file_read_source", () => {
 			}),
 		).toHaveProperty("_yay");
 		const after = await t.query(internal.files_nodes_content.get_saved_file_read_source, args);
-		expect(after?.revision).not.toBe(before?.revision);
+		expect(after?.sourceDigest).not.toBe(before?.sourceDigest);
+		expect(after?.latest).toBe(true);
 		expect(after?.size).toBe(23);
 		expect(await new Response(objects.get(after!.r2Key)).text()).toBe("Original text\nNew edit\n");
 	});

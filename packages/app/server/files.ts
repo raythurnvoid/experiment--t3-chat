@@ -127,11 +127,16 @@ export async function files_db_get_yjs_content_and_sequence(
 		throw should_never_happen(errorMessage, errorData);
 	}
 
-	// The update log is bounded by the per-file write gate.
+	// The per-file write gate bounds the updates after the snapshot. Covered updates can wait for
+	// their cleanup outside that budget, so do not read them.
 	const yjsUpdatesDocs: Doc<"files_yjs_updates">[] = [];
-	for await (const update of files_saved_content_db_yjs_updates(ctx.db, { ...args, throughSequence: yjsLastSequenceDoc.lastSequence }))
+	for await (const update of files_saved_content_db_yjs_updates(ctx.db, {
+		...args,
+		afterSequence: yjsSnapshotDoc.sequence,
+		throughSequence: yjsLastSequenceDoc.lastSequence,
+	}))
 		yjsUpdatesDocs.push(update);
-	const incrementalYjsUpdatesDocs = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
+	const incrementalYjsUpdatesDocs = yjsUpdatesDocs.toReversed();
 	return {
 		file: fileNode,
 		yjsSnapshotDoc,

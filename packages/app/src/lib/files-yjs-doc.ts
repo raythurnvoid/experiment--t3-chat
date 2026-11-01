@@ -168,7 +168,8 @@ export class files_yjs_DocHandler extends ObservableV2<files_yjs_DocHandler_Even
 	}
 
 	/**
-	 * Called by the Convex stream when it receives the ack-only tail packet for the local session.
+	 * Called by the Convex stream once the server accepted an outgoing update and this document has
+	 * every update up to its sequence.
 	 */
 	public notifyOutgoingUpdateAcked() {
 		const next = Math.max(0, this.pendingOutgoingΣ.get() - 1);

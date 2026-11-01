@@ -42,8 +42,8 @@ type FilesConvexYjsStream_Args = {
 	 */
 	expectedYjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
 	presenceStore: files_PresenceStore;
-	onGoodUpdatePacket: (packet: FilesConvexIncrementalUpdates["updates"][number]) => void;
-	onAckUpdatePacket: (packet: FilesConvexIncrementalUpdates["updates"][number]) => void;
+	onRemoteUpdate: (update: Uint8Array) => void;
+	onOutgoingUpdateAcked: () => void;
 	onOutgoingUpdateSent: () => void;
 	onSync: (currentStateUpdate: Uint8Array) => void;
 	onLoadFailedChange: (failed: boolean) => void;
@@ -66,8 +66,8 @@ class FilesConvexYjsStream {
 		incrementalUpdates: FilesConvexIncrementalUpdates | null;
 	};
 
-	private onRemoteUpdatePacket: FilesConvexYjsStream_Args["onGoodUpdatePacket"];
-	private onAckUpdatePacket: FilesConvexYjsStream_Args["onAckUpdatePacket"];
+	private onRemoteUpdate: FilesConvexYjsStream_Args["onRemoteUpdate"];
+	private onOutgoingUpdateAcked: FilesConvexYjsStream_Args["onOutgoingUpdateAcked"];
 	private onOutgoingUpdateSent: FilesConvexYjsStream_Args["onOutgoingUpdateSent"];
 	private onSync: FilesConvexYjsStream_Args["onSync"];
 	private onLoadFailedChange: FilesConvexYjsStream_Args["onLoadFailedChange"];
@@ -84,6 +84,8 @@ class FilesConvexYjsStream {
 	private pendingOutgoingBatches: FilesConvexYjsOutgoingBatch[] = [];
 	private outgoingUpdatesDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private outgoingUpdateInFlight = false;
+	// Sequences of sent batches the server accepted, until this document has applied them.
+	private acceptedSequences: number[] = [];
 
 	// Resolve only when the subscription shows the expected document. Sync waits on this, so
 	// it never joins the snapshot with updates from another document.
@@ -99,8 +101,8 @@ class FilesConvexYjsStream {
 			incrementalUpdates: null,
 		};
 
-		this.onRemoteUpdatePacket = args.onGoodUpdatePacket;
-		this.onAckUpdatePacket = args.onAckUpdatePacket;
+		this.onRemoteUpdate = args.onRemoteUpdate;
+		this.onOutgoingUpdateAcked = args.onOutgoingUpdateAcked;
 		this.onOutgoingUpdateSent = args.onOutgoingUpdateSent;
 		this.onSync = args.onSync;
 		this.onLoadFailedChange = args.onLoadFailedChange;
@@ -144,27 +146,42 @@ class FilesConvexYjsStream {
 
 			if (!updatePacket || updatePacket.sequence <= appliedSeq) continue;
 
-			// Only USER_EDIT with matching sessionId are treated as local (ack-only).
+			// Apply only the next sequence. A save deletes the updates its snapshot covers, so this
+			// document may have missed some. Then stop here and load the snapshot below.
+			if (updatePacket.sequence !== appliedSeq + 1) break;
+
+			// Only USER_EDIT with matching sessionId are treated as local (already applied).
 			// All other origins (USER_SNAPSHOT_RESTORE, USER_AI_EDIT, or USER_EDIT with different sessionId)
 			// are treated as remote changes and applied to the document.
 			const isLocalEdit =
 				updatePacket.origin.type === "USER_EDIT" &&
 				updatePacket.origin.sessionId === this.args.presenceStore.localSessionId;
 
-			if (isLocalEdit) {
-				// Local packets are "ack-only": applying them again would be redundant,
-				// but we still need the ack to update sync status and keep stream
-				// ordering consistent.
-				this.onAckUpdatePacket(updatePacket);
-			} else {
-				// Remote changes: apply to the document
-				this.onRemoteUpdatePacket(updatePacket);
+			if (!isLocalEdit) {
+				this.onRemoteUpdate(new Uint8Array(updatePacket.update));
 			}
 
 			appliedSeq = updatePacket.sequence;
 		}
 
 		this.state.appliedSeq = appliedSeq;
+		this.ackAppliedSequences();
+
+		// Some updates are missing. Merge the saved snapshot into this document. It keeps local
+		// edits, both queued and sent ones.
+		if (appliedSeq < incrementalUpdates.lastSequence) {
+			void this.sync();
+		}
+	}
+
+	// Count a sent batch as saved once the server accepted it and this document has every update
+	// up to its sequence. Do not wait for its own update packet: a save can delete it first.
+	private ackAppliedSequences() {
+		this.acceptedSequences = this.acceptedSequences.filter((sequence) => {
+			if (sequence > this.state.appliedSeq) return true;
+			this.onOutgoingUpdateAcked();
+			return false;
+		});
 	}
 
 	enqueueUpdate(update: Uint8Array) {
@@ -282,6 +299,8 @@ class FilesConvexYjsStream {
 							if (batchIndex !== -1) {
 								this.pendingOutgoingBatches.splice(batchIndex, 1);
 							}
+							this.acceptedSequences.push(result._yay.newSequence);
+							this.ackAppliedSequences();
 							this.onPushRefusedChange(null);
 							break;
 						} catch (err) {
@@ -463,7 +482,7 @@ class FilesConvexYjsStream {
 
 				let lastSequence = result.snapshot.sequence;
 				let updatesAfterSnapshot;
-				let missingPreloadedUpdates = false;
+				let missingUpdates = false;
 
 				if (incrementalUpdates.updates.length) {
 					updatesAfterSnapshot = [] as Uint8Array[];
@@ -476,8 +495,10 @@ class FilesConvexYjsStream {
 						if (updateData.sequence <= lastSequence) {
 							continue;
 						}
-						if (preload && updateData.sequence !== lastSequence + 1) {
-							missingPreloadedUpdates = true;
+						// The query reads from its own snapshot. A save between the snapshot action and
+						// the query can leave a gap after this older snapshot, so load the snapshot again.
+						if (updateData.sequence !== lastSequence + 1) {
+							missingUpdates = true;
 							break;
 						}
 
@@ -497,9 +518,13 @@ class FilesConvexYjsStream {
 						updatesAfterSnapshot.push(new Uint8Array(updateData.update));
 					}
 				}
-				if (preloadLastSequence && (missingPreloadedUpdates || lastSequence < preloadLastSequence.lastSequence)) {
+				if (preloadLastSequence && (missingUpdates || lastSequence < preloadLastSequence.lastSequence)) {
 					preload?.abortController.abort();
 					this.snapshotPreload = null;
+					continue;
+				}
+				if (missingUpdates || lastSequence < incrementalUpdates.lastSequence) {
+					await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
 					continue;
 				}
 
@@ -512,9 +537,16 @@ class FilesConvexYjsStream {
 				// The only interleaving point is earlier in this `sync()` at `await`s: the query watcher
 				// may update `this.state.incrementalUpdates` while we are awaiting the snapshot/query.
 
-				this.onSync(currentStateUpdate);
+				// A ready document is catching up after a gap. Merge the snapshot like any remote update.
+				// `onSync()` would reset the count of sent edits and send this document's diff again.
+				if (this.state.ready) {
+					this.onRemoteUpdate(currentStateUpdate);
+				} else {
+					this.onSync(currentStateUpdate);
+				}
 				this.state.ready = true;
 				this.state.appliedSeq = lastSequence;
+				this.ackAppliedSequences();
 				this.onLoadFailedChange(false);
 				this.snapshotPreload = null;
 
@@ -724,15 +756,10 @@ export class files_yjs_Provider extends ObservableV2<files_yjs_Provider_Events> 
 			expectedYjsLastSequenceId: this.args.expectedYjsLastSequenceId,
 			presenceStore: args.presenceStore,
 			onBeforeDrop: (reason) => this.args.onBeforeDrop?.(this.rootDoc, reason),
-			onGoodUpdatePacket: (updateItem) => {
-				args.yDocHandler.handleServerUpdate({
-					update: new Uint8Array(updateItem.update),
-				});
+			onRemoteUpdate: (update) => {
+				args.yDocHandler.handleServerUpdate({ update });
 			},
-			onAckUpdatePacket: () => {
-				// Do not re-apply local updates (already applied optimistically).
-				// Still use the ack so sync status can converge to "synchronized"
-				// and keep seq ordering consistent.
+			onOutgoingUpdateAcked: () => {
 				args.yDocHandler.notifyOutgoingUpdateAcked();
 			},
 			onOutgoingUpdateSent: () => {

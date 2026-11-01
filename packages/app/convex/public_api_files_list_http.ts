@@ -33,21 +33,23 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
-						const bodyValidator = z.object({
-							path: z.string().optional(),
-							// A real cursor is about 1.4 KB. The cap stops a huge string before the server decodes it.
-							cursor: z.string().max(16384).nullable().optional(),
-							limit: z.number().int().min(1).optional(),
-							// Accepted and ignored: the type filter reads an index, so there is no scan budget.
-							scanLimit: z.number().int().min(1).optional(),
-							recursive: z.boolean().optional(),
-							kind: z.enum(["file", "folder"]).optional(),
-							extension: z.string().optional(),
-							// Stored content types are at most 255 characters, so a longer value can never match.
-							contentTypePrefixes: z.array(z.string().min(1).max(255)).min(1).max(8).optional(),
-							// Name order of one folder's children. A recursive list reads in path order only.
-							order: z.enum(["asc", "desc"]).optional(),
-						});
+						const bodyValidator = z
+							.object({
+								path: z.string().optional(),
+								// A real cursor is about 1.4 KB. The cap stops a huge string before the server decodes it.
+								cursor: z.string().max(16384).nullable().optional(),
+								limit: z.number().int().min(1).optional(),
+								// Accepted and ignored: the type filter reads an index, so there is no scan budget.
+								scanLimit: z.number().int().min(1).optional(),
+								recursive: z.boolean().optional(),
+								kind: z.enum(["file", "folder"]).optional(),
+								extension: z.string().optional(),
+								// Stored content types are at most 255 characters, so a longer value can never match.
+								contentTypePrefixes: z.array(z.string().min(1).max(255)).min(1).max(8).optional(),
+								// Name order of one folder's children. A recursive list reads in path order only.
+								order: z.enum(["asc", "desc"]).optional(),
+							})
+							.strict();
 
 						type SearchParams = never;
 						type PathParams = never;

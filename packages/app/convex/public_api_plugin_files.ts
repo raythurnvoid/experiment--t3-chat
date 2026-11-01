@@ -749,25 +749,27 @@ export function public_api_validate_canonical_folder_path(rawPath: string) {
 	return Result({ _yay: normalized });
 }
 
-const ensure_folder_body_validator = z.object({
-	force: z.boolean().optional(),
-	path: z.string(),
-	access: z
-		.object({
-			readOnly: z.boolean().optional(),
-			readScopeId: z.string().nullable().optional(),
-			readers: z
-				.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
-				.max(50)
-				.optional(),
-		})
-		.strict()
-		.optional(),
-	writer: z
-		.object({ resourceKey: z.string().min(1).max(512), rootNodeId: z.string().nullable() })
-		.strict()
-		.optional(),
-});
+const ensure_folder_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		path: z.string(),
+		access: z
+			.object({
+				readOnly: z.boolean().optional(),
+				readScopeId: z.string().nullable().optional(),
+				readers: z
+					.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
+					.max(50)
+					.optional(),
+			})
+			.strict()
+			.optional(),
+		writer: z
+			.object({ resourceKey: z.string().min(1).max(512), rootNodeId: z.string().nullable() })
+			.strict()
+			.optional(),
+	})
+	.strict();
 
 export type public_api_plugin_files_http_ensure_folder_Body = z.infer<typeof ensure_folder_body_validator>;
 
@@ -925,23 +927,25 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 	} as const;
 }
 
-const plugin_archive_body_validator = z.object({
-	force: z.boolean().optional(),
-	requestId: z.string().min(1).max(128).optional(),
-	previousRequestId: z.string().min(1).max(128).optional(),
-	path: z.string(),
-	writer: z
-		.object({
-			writerId: z.string(),
-			operationId: z.string().min(1).max(128),
-			writerGeneration: z.number().int().positive(),
-			sequence: z.number().int().positive(),
-			nodeId: z.string(),
-			expectedContentRevision: z.string().optional(),
-		})
-		.strict()
-		.optional(),
-});
+const plugin_archive_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		requestId: z.string().min(1).max(128).optional(),
+		previousRequestId: z.string().min(1).max(128).optional(),
+		path: z.string(),
+		writer: z
+			.object({
+				writerId: z.string(),
+				operationId: z.string().min(1).max(128),
+				writerGeneration: z.number().int().positive(),
+				sequence: z.number().int().positive(),
+				nodeId: z.string(),
+				expectedContentRevision: z.string().optional(),
+			})
+			.strict()
+			.optional(),
+	})
+	.strict();
 
 export type public_api_plugin_files_http_archive_Body = z.infer<typeof plugin_archive_body_validator>;
 
@@ -1096,28 +1100,30 @@ export async function public_api_plugin_files_http_archive(args: {
 	} as const;
 }
 
-const plugin_access_body_validator = z.object({
-	path: z.string(),
-	access: z
-		.object({
-			readOnly: z.boolean().optional(),
-			readScopeId: z.string().nullable().optional(),
-			readers: z
-				.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
-				.max(50)
-				.optional(),
-		})
-		.strict(),
-	writer: z
-		.object({
-			writerId: z.string(),
-			operationId: z.string().min(1).max(128),
-			writerGeneration: z.number().int().positive(),
-			expectedReaderRevision: z.number().int().positive(),
-		})
-		.strict()
-		.optional(),
-});
+const plugin_access_body_validator = z
+	.object({
+		path: z.string(),
+		access: z
+			.object({
+				readOnly: z.boolean().optional(),
+				readScopeId: z.string().nullable().optional(),
+				readers: z
+					.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
+					.max(50)
+					.optional(),
+			})
+			.strict(),
+		writer: z
+			.object({
+				writerId: z.string(),
+				operationId: z.string().min(1).max(128),
+				writerGeneration: z.number().int().positive(),
+				expectedReaderRevision: z.number().int().positive(),
+			})
+			.strict()
+			.optional(),
+	})
+	.strict();
 
 export type public_api_plugin_files_http_set_access_Body = z.infer<typeof plugin_access_body_validator>;
 

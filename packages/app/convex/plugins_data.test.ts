@@ -1236,7 +1236,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", padding: "not allowed" }),
 		});
 		expect(unknown.status).toBe(400);
-		expect(await unknown.json()).toEqual({ message: "Request body validation failed" });
+		expect(await unknown.json()).toEqual({ message: 'Unknown request field "padding". Remove it.' });
 
 		const oversized = await t.fetch("/api/v1/plugin-data/read", {
 			method: "POST",
@@ -1997,7 +1997,7 @@ describe("invoke file write preconditions", () => {
 				});
 			const denied = await request();
 			expect(denied.status).toBe(403);
-			expect(await denied.json()).toEqual({ message: "Permission denied" });
+			expect(await denied.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 			expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 
 			expect(
@@ -2010,7 +2010,10 @@ describe("invoke file write preconditions", () => {
 			).toEqual({ _yay: null });
 			const accessible = await request();
 			expect(accessible.status).toBe(409);
-			expect(await accessible.json()).toEqual({ message: "The parent folder changed during the write" });
+			expect(await accessible.json()).toEqual({
+				message: "The parent folder changed during the write",
+				errorCode: "conflict",
+			});
 			const prepared = await prepare_file({ t, fixture: { ...fixture, userId: member.userId } });
 			if (prepared._nay) throw new Error(prepared._nay.message);
 			const published =

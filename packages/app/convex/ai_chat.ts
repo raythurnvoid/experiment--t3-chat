@@ -3978,18 +3978,20 @@ export const run_job_wakeup = internalAction({
  * Keep this in sync with the AI SDK `PrepareSendMessagesRequest` shape used by
  * `AssistantChatTransport.prepareSendMessagesRequest`.
  */
-const run_stream_body_validator = z.object({
-	/**
-	 * Authenticated membership scope.
-	 *
-	 * Server derives organization/workspace from this membership doc.
-	 **/
-	membershipId: z.string(),
-	thread_id: z.string(),
-	assistant_id: z.string(),
-	messages: z.array(z.any()),
-	response_format: z.string().optional(),
-});
+const run_stream_body_validator = z
+	.object({
+		/**
+		 * Authenticated membership scope.
+		 *
+		 * Server derives organization/workspace from this membership doc.
+		 **/
+		membershipId: z.string(),
+		thread_id: z.string(),
+		assistant_id: z.string(),
+		messages: z.array(z.any()),
+		response_format: z.string().optional(),
+	})
+	.strict();
 
 export type ai_chat_http_run_stream_Body = z.infer<typeof run_stream_body_validator>;
 
@@ -4000,7 +4002,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 		if (requestParseResult._nay) {
 			return {
 				status: 400,
-				body: requestParseResult._nay,
+				body: { message: requestParseResult._nay.message },
 			} as const;
 		}
 

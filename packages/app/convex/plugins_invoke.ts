@@ -21,6 +21,7 @@ import {
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { server_request_body_issue_message } from "../server/server-utils.ts";
 import { plugins_parse_installation_configuration_yaml, type plugins_ConfigurationValue } from "../shared/plugins.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
 
@@ -79,7 +80,7 @@ async function parse_request_json<T>(args: { request: Request; schema: z.ZodSche
 	try {
 		const parsed = schema.safeParse(JSON.parse(bodyText));
 		if (parsed.error) {
-			return { _nay: { message: "Request body validation failed" } } as const;
+			return { _nay: { message: server_request_body_issue_message(parsed.error) } } as const;
 		}
 
 		return { _yay: parsed.data } as const;

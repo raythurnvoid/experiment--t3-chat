@@ -19,7 +19,14 @@ type MockIncrementalUpdate = {
 	};
 };
 
-type MockIncrementalUpdates = { yjsLastSequenceId: string; updates: MockIncrementalUpdate[] } | null;
+/**
+ * `lastSequence` defaults to the newest update in `updates`, as when no save deleted any update.
+ */
+type MockIncrementalUpdates = {
+	yjsLastSequenceId: string;
+	lastSequence?: number;
+	updates: MockIncrementalUpdate[];
+} | null;
 
 type MockPushUpdateArgs = {
 	membershipId: string;
@@ -84,7 +91,10 @@ const appConvexMock = vi.hoisted(() => {
 			},
 		},
 		emitIncrementalUpdates(result: MockIncrementalUpdates) {
-			watcherResult = result;
+			watcherResult = result && {
+				...result,
+				lastSequence: result.lastSequence ?? Math.max(0, ...result.updates.map((update) => update.sequence)),
+			};
 			watcherCallback?.();
 		},
 		files_u8_equals,
@@ -739,6 +749,47 @@ describe("files_yjs_Provider snapshot sync", () => {
 		provider.destroy();
 	});
 
+	test("loads the snapshot again when a save deleted the updates after an older snapshot", async () => {
+		const savedDoc = new Y.Doc();
+		savedDoc.getText("content").insert(0, "Saved elsewhere");
+		const savedUpdate = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(savedDoc));
+		appConvexMock.app_convex.action
+			.mockResolvedValueOnce({
+				snapshot: { sequence: 0 },
+				snapshotUrl: "https://r2.test/old",
+				yjsLastSequenceId: "last_sequence_id",
+			})
+			.mockResolvedValue({
+				snapshot: { sequence: 2 },
+				snapshotUrl: "https://r2.test/current",
+				yjsLastSequenceId: "last_sequence_id",
+			});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => new Response(url.endsWith("/old") ? createEmptySnapshotUpdate() : savedUpdate)),
+		);
+
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		// The save at sequence 2 deleted updates 1 and 2 before the query answered.
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", lastSequence: 2, updates: [] });
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("loading");
+
+		await advanceTimersByTime(500);
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(getRootDoc(provider).getText("content").toString()).toBe("Saved elsewhere");
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+
+		provider.destroy();
+		savedDoc.destroy();
+	});
+
 	test("stops without the load-failed banner when the prepare action returns another lineage", async () => {
 		appConvexMock.app_convex.action.mockResolvedValue({
 			snapshot: { sequence: 0 },
@@ -830,6 +881,41 @@ describe("files_yjs_Provider incoming updates", () => {
 		expect(rootDoc.getText("content").toString()).toBe("remote");
 
 		provider.destroy();
+	});
+
+	test("loads the snapshot after a save deleted updates it missed, and keeps unsent typing", async () => {
+		appConvexMock.app_convex.mutation.mockResolvedValue({ _yay: { newSequence: 3 } });
+		const { provider, rootDoc } = await createReadyProvider();
+		insertText(rootDoc, "typed");
+
+		const savedDoc = new Y.Doc();
+		savedDoc.getText("content").insert(0, "Saved elsewhere");
+		const savedUpdate = appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(savedDoc));
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 2 },
+			snapshotUrl: "https://r2.test/current",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(savedUpdate)),
+		);
+
+		// An API write at sequence 2 installed its snapshot and deleted updates 1 and 2.
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", lastSequence: 2, updates: [] });
+		await flushMicrotasks();
+		expect(rootDoc.getText("content").toString()).toContain("Saved elsewhere");
+		expect(rootDoc.getText("content").toString()).toContain("typed");
+
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+		const sentDoc = new Y.Doc();
+		Y.applyUpdate(sentDoc, new Uint8Array(getMutationUpdate(0)));
+		expect(sentDoc.getText("content").toString()).toBe("typed");
+
+		provider.destroy();
+		savedDoc.destroy();
+		sentDoc.destroy();
 	});
 });
 
@@ -949,6 +1035,43 @@ describe("files_yjs_Provider outgoing update queue", () => {
 		expect(provider.getStatus()).toBe("synchronized");
 
 		provider.destroy();
+	});
+
+	test("counts a sent edit as saved when a save deleted its update before the push answered", async () => {
+		const pushResult = Promise.withResolvers<{ _yay: { newSequence: number } }>();
+		appConvexMock.app_convex.mutation.mockReturnValue(pushResult.promise);
+		const { provider, rootDoc } = await createReadyProvider();
+
+		insertText(rootDoc, "a");
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+
+		// The server saved the edit at sequence 1, then an API write at sequence 2 deleted that update.
+		// Convex shows the query change before the push result.
+		const savedDoc = new Y.Doc();
+		Y.applyUpdate(savedDoc, Y.encodeStateAsUpdate(rootDoc));
+		savedDoc.getText("content").insert(0, "API ");
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 2 },
+			snapshotUrl: "https://r2.test/current",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(savedDoc)))),
+		);
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", lastSequence: 2, updates: [] });
+		await flushMicrotasks();
+		expect(rootDoc.getText("content").toString()).toBe("API a");
+		expect(provider.getStatus()).toBe("synchronizing");
+
+		pushResult.resolve({ _yay: { newSequence: 1 } });
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("synchronized");
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+
+		provider.destroy();
+		savedDoc.destroy();
 	});
 
 	test("keeps the batch and tells the user while a Move holds the file", async () => {

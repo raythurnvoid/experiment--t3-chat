@@ -197,6 +197,25 @@ export function json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>)
 	}
 }
 
+/**
+ * Build the public 400 message for a request body that failed its schema.
+ *
+ * Name an unknown field, so a caller with a typo (`expectedRevison`) learns what to fix. A strict
+ * schema would otherwise drop the field in silence. Other failures keep the stable generic message.
+ */
+export function server_request_body_issue_message(error: z.ZodError) {
+	const issue = error.issues.find((item) => item.code === "unrecognized_keys");
+	if (issue?.code !== "unrecognized_keys" || !issue.keys[0]) {
+		return "Request body validation failed";
+	}
+
+	// Cut a very long key so the message stays small.
+	const field = JSON.stringify(issue.keys[0].slice(0, 100));
+	return issue.path.length === 0
+		? `Unknown request field ${field}. Remove it.`
+		: `Unknown request field ${field} in "${issue.path.map(String).join(".")}". Remove it.`;
+}
+
 export async function server_request_json_parse_and_validate<T>(request: Request, schema: z.ZodSchema<T>) {
 	try {
 		const json = await request.json();
@@ -204,7 +223,7 @@ export async function server_request_json_parse_and_validate<T>(request: Request
 		if (parseResult.error) {
 			return Result({
 				_nay: {
-					message: "Request body validation failed",
+					message: server_request_body_issue_message(parseResult.error),
 					cause: parseResult.error,
 				},
 			});

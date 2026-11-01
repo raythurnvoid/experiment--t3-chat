@@ -8,6 +8,7 @@ import {
 	test_finish_file_index,
 	test_get_file_yjs_pointers,
 	test_mocks_fill_db_with,
+	test_push_empty_yjs_update,
 	test_save_file_pending_update,
 	test_spy_handler,
 } from "./setup.test.ts";
@@ -1559,10 +1560,11 @@ describe("snapshot content fields", () => {
 		async (rootKind) => {
 			vi.useFakeTimers();
 			const { t, db, asUser, scope, nodeId } = await create_file_fixture(rootKind);
+			// The snapshot already covers sequence 0, so materialize a newer update.
 			const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
 				...scope,
 				nodeId,
-				targetSequence: 0,
+				targetSequence: await test_push_empty_yjs_update(t, { ...scope, nodeId }),
 			});
 			expect(materialized._nay).toBeUndefined();
 			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {

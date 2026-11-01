@@ -28,6 +28,7 @@ import { files_get_utf8_byte_size, files_ROOT_ID } from "../server/files.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_move_reservations_db_note_source } from "../server/files-move-reservations.ts";
+import { server_request_body_issue_message } from "../server/server-utils.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -1011,17 +1012,19 @@ export const cleanup_write = internalMutation({
 
 // #endregion registered volume doors
 
-const list_body_validator = z.object({ mountId: z.string().optional() });
-const stage_body_validator = z.object({ mountId: z.string(), volumeKey: z.string(), revision: z.string() });
-const write_many_body_validator = z.object({
-	stagingId: z.string(),
-	files: z
-		.array(z.object({ path: z.string(), content: z.string() }))
-		.min(1)
-		.max(100),
-});
-const publish_body_validator = z.object({ stagingId: z.string() });
-const delete_body_validator = z.object({ mountId: z.string(), volumeKey: z.string() });
+const list_body_validator = z.object({ mountId: z.string().optional() }).strict();
+const stage_body_validator = z.object({ mountId: z.string(), volumeKey: z.string(), revision: z.string() }).strict();
+const write_many_body_validator = z
+	.object({
+		stagingId: z.string(),
+		files: z
+			.array(z.object({ path: z.string(), content: z.string() }).strict())
+			.min(1)
+			.max(100),
+	})
+	.strict();
+const publish_body_validator = z.object({ stagingId: z.string() }).strict();
+const delete_body_validator = z.object({ mountId: z.string(), volumeKey: z.string() }).strict();
 export type public_api_volumes_http_list_Body = z.infer<typeof list_body_validator>;
 export type public_api_volumes_http_stage_Body = z.infer<typeof stage_body_validator>;
 export type public_api_volumes_http_write_many_Body = z.infer<typeof write_many_body_validator>;
@@ -1147,7 +1150,11 @@ async function authorize_request<T>(args: {
 			_nay: await finish_failure({
 				ctx,
 				callId,
-				error: failure({ status: 400, message: "Request body validation failed", errorCode: "invalid_input" })._nay,
+				error: failure({
+					status: 400,
+					message: server_request_body_issue_message(body.error),
+					errorCode: "invalid_input",
+				})._nay,
 			}),
 		};
 	return {

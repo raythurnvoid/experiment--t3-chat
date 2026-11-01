@@ -10,6 +10,8 @@ import type {
 	public_api_http_set_file_public_Body,
 	public_api_http_write_file_Body,
 	public_api_http_write_many_Body,
+	public_api_http_edit_file_Body,
+	public_api_http_append_file_Body,
 	public_api_http_touch_files_Body,
 	public_api_http_download_urls_Body,
 	public_api_http_upload_urls_Body,
@@ -172,6 +174,70 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							body: Body;
 							response: api_schemas_BuildResponseSpecFromHandler<
 								typeof import("./public_api.ts").public_api_http_write_file
+							>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+		...((/* iife */ path = "/api/v1/files/edit" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = public_api_http_edit_file_Body;
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const { public_api_http_change_file } = await import("./public_api.ts");
+								const result = await public_api_http_change_file({ ctx, request, path });
+								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<
+								typeof import("./public_api.ts").public_api_http_change_file
+							>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+		...((/* iife */ path = "/api/v1/files/append" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = public_api_http_append_file_Body;
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const { public_api_http_change_file } = await import("./public_api.ts");
+								const result = await public_api_http_change_file({ ctx, request, path });
+								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<
+								typeof import("./public_api.ts").public_api_http_change_file
 							>;
 						};
 					})(),

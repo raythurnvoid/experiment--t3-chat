@@ -186,7 +186,7 @@ The provider is app code adapted from Liveblocks. Convex stores and streams upda
 
 - `FilesConvexYjsStream` watches `files_yjs_load.yjs_get_incremental_updates` and sends merged local batches through `files_nodes.yjs_push_update`. The idle debounce is 500 ms. Failed batches stay ahead of newer edits. The files route can load the update log before the stream subscribes, and Convex `onUpdate` fires only for later changes, so the stream also reads the current answer once when it starts.
 - While a Move holds the file, `yjs_push_update` answers a `move_busy` `_nay`. The stream keeps the batch, shows the "moving" message, and retries every 5 seconds. Unsent batches live only in memory, so `beforeunload` asks before the tab closes while any wait.
-- After the document has loaded, a `USER_EDIT` packet with the same `sessionId` is an acknowledgement only. It updates sync status without applying the edit again. Other origins are applied as remote edits.
+- After the document has loaded, a `USER_EDIT` packet with the same `sessionId` is not applied again. Other origins are applied as remote edits (`onRemoteUpdate`).
 - The first sync must include matching-session updates too: a fresh provider has not applied them yet.
 - `sync()` merges the snapshot with later updates, applies the merged state, and advances `appliedSeq`. The backend returns updates in descending order; reconstruction applies them in ascending order and skips sequences already covered by the snapshot.
 - Snapshot, update, and sequence reads must agree on `yjsLastSequenceId`. Numeric sequence values alone cannot identify a document after collaboration is toggled or its history is rebuilt.
@@ -211,6 +211,15 @@ An early snapshot can become stale when materialization deletes covered update p
 For a one-time client read, start at `files_fetch_file_yjs_state_and_text` in `packages/app/src/lib/files.ts`. It checks the document ids across the three reads, fetches the R2 snapshot, applies later updates, and extracts text using the stored shape.
 
 When opening file B shows file A's text, compare the route's `nodeId`, the hook's `providerNodeId`, and the rendered editor content. Inspect `useFilesYjs` and the caller's provider checks. Test repeated A/B switches after the fix.
+
+## Live updates and recovery
+
+A save (materialization or a public API fill) moves the snapshot forward and then deletes the update docs it covers. An open editor may not have applied those updates yet. So:
+
+- `yjs_get_incremental_updates` reads from `snapshot.sequence - 1` and returns `lastSequence`, so its answer stays small however many covered docs wait for cleanup. Reconstruction reads start after `snapshot.sequence`.
+- The stream applies only the next sequence (`appliedSeq + 1`). On a gap, or when `appliedSeq < lastSequence`, it stops and runs `sync()`. A ready document merges the snapshot through `onRemoteUpdate`, like any remote update. It must not call `onSync()`, which would reset the count of sent edits and send the document's diff again. Yjs updates merge in any order, so local edits (queued or sent) are kept and are not held back during recovery.
+- A sent batch counts as saved (`onOutgoingUpdateAcked`) when the server accepted its sequence and the document has applied every update up to it (`acceptedSequences`). It does not wait for its own update packet, because a save can delete that packet first.
+- The first load checks for a gap too. A non-preload load that finds one waits and reads again.
 
 # Unsaved Text Recovery
 

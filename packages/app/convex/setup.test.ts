@@ -27,8 +27,10 @@ import { files_pending_updates_action_prepare_content } from "./files_pending_up
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_TRANSFER_SELECTION_PAGE_SIZE,
+	files_u8_to_array_buffer,
 	type files_PendingTarget,
 } from "../shared/files.ts";
+import { files_db_yjs_push_update } from "./files_nodes.ts";
 import { db_replace_file_chunks } from "./files_nodes_content.ts";
 import { files_nodes_db_insert_committed_text_chunks } from "./files_nodes_create_db.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
@@ -1218,6 +1220,38 @@ export async function test_get_file_yjs_pointers(t: ReturnType<typeof test_conve
 			yjsSnapshotId: node.yjsSnapshotId,
 			logOwnerId: head.yjsContentHeadId!,
 		};
+	});
+}
+
+/**
+ * Push one empty Yjs update and return its sequence. A materialization needs a sequence that the
+ * snapshot does not cover yet, because a job for a covered sequence does nothing.
+ */
+export async function test_push_empty_yjs_update(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+	},
+) {
+	return await t.run(async (ctx) => {
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
+		const node = (await ctx.db.get("files_nodes", args.nodeId))!;
+		const result = await files_db_yjs_push_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			expectedYjsLastSequenceId: node.yjsLastSequenceId!,
+			update: files_u8_to_array_buffer(new Uint8Array([0, 0])),
+			sessionId: "empty-update-test-session",
+			userId: args.userId,
+			rootKind: node.textKind!,
+			materializeImmediately: false,
+		});
+		if (result._nay) throw new Error(result._nay.message);
+		return result._yay.newSequence;
 	});
 }
 

@@ -14,6 +14,7 @@ import { file_quotes_part_schema } from "../shared/file-quotes.ts";
 import { ai_chat_ui_context_part_schema } from "../shared/ai-chat-ui-context.ts";
 import { crypto_open_cursor, crypto_seal_cursor } from "../server/crypto-utils.ts";
 import { ai_chat_tool_output_char_boundary } from "../server/ai-chat-tool-output.ts";
+import { server_request_body_issue_message } from "../server/server-utils.ts";
 
 const REQUEST_MAX_BYTES = 32 * 1024;
 const RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
@@ -364,7 +365,7 @@ async function parse_body<T>(request: Request, schema: z.ZodSchema<T>) {
 			}
 		}
 		const parsed = schema.safeParse(JSON.parse(new TextDecoder().decode(bytes.subarray(0, length))));
-		if (!parsed.success) return Result({ _nay: { message: "Request body validation failed" } });
+		if (!parsed.success) return Result({ _nay: { message: server_request_body_issue_message(parsed.error) } });
 		return Result({ _yay: parsed.data });
 	} catch {
 		return Result({ _nay: { message: "Failed to parse request body as JSON" } });
@@ -373,16 +374,18 @@ async function parse_body<T>(request: Request, schema: z.ZodSchema<T>) {
 	}
 }
 
-const transcript_body_schema = z.object({
-	threadId: z.string().min(1).max(128),
-	endMessageId: z.string().min(1).max(128).nullable().optional(),
-	cursor: z
-		.string()
-		.min(1)
-		.max(16 * 1024)
-		.nullable()
-		.optional(),
-});
+const transcript_body_schema = z
+	.object({
+		threadId: z.string().min(1).max(128),
+		endMessageId: z.string().min(1).max(128).nullable().optional(),
+		cursor: z
+			.string()
+			.min(1)
+			.max(16 * 1024)
+			.nullable()
+			.optional(),
+	})
+	.strict();
 export type public_api_ai_chat_http_transcript_Body = z.infer<typeof transcript_body_schema>;
 
 export async function public_api_ai_chat_http_transcript(args: {
@@ -453,12 +456,14 @@ export async function public_api_ai_chat_http_transcript(args: {
 	return { status: 200, headers: NO_STORE_HEADERS, body: response } as const;
 }
 
-const output_body_schema = z.object({
-	threadId: z.string().min(1).max(128),
-	outputId: z.string().min(1).max(128),
-	offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-	limit: z.number().int().min(4).max(65_536).optional(),
-});
+const output_body_schema = z
+	.object({
+		threadId: z.string().min(1).max(128),
+		outputId: z.string().min(1).max(128),
+		offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+		limit: z.number().int().min(4).max(65_536).optional(),
+	})
+	.strict();
 export type public_api_ai_chat_http_read_output_Body = z.infer<typeof output_body_schema>;
 
 export async function public_api_ai_chat_http_read_output(args: {

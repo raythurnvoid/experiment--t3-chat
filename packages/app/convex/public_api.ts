@@ -35,6 +35,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_path_normalize,
 	server_path_parent_of,
+	server_request_body_issue_message,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -50,6 +51,7 @@ import {
 	files_check_new_folder_count,
 	files_check_request_path_length,
 	files_PATH_BELOW_FILE_MESSAGE,
+	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -79,12 +81,13 @@ import {
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { files_media_refs_added, files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
-import { encodeStateVector } from "yjs";
+import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import {
 	files_nodes_db_archive_nodes,
 	files_nodes_db_get_read_only_state,
 	files_nodes_db_set_read_only,
 	files_nodes_read_only_state_validator,
+	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
 	type files_nodes_get_by_path_Result,
 	type files_nodes_read_file_content_from_chunks_Result,
 	type get_file_content_materialization_state_Result,
@@ -100,6 +103,7 @@ import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	files_nodes_create_yjs_snapshot_update_from_text,
 	files_nodes_db_fill_text_node_content,
+	files_nodes_db_get_file_revision,
 	type files_nodes_get_saved_file_read_source_Result,
 } from "./files_nodes_content.ts";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
@@ -3099,6 +3103,41 @@ async function db_require_file_write_parent(
 	return Result({ _yay: null });
 }
 
+const FILE_CHANGED_MESSAGE = "The file changed since you read it. Read it again.";
+
+/**
+ * Check the file a write fills: first its repair marker, then the caller's `expectedRevision`,
+ * then whether people typed changes that are not saved yet. Run after the access and Read-only
+ * checks, so a caller who cannot write the file learns nothing about it.
+ */
+async function db_check_file_write_revision(
+	ctx: QueryCtx,
+	args: { node: Doc<"files_nodes">; path: string; expectedRevision: string | undefined },
+) {
+	// Without this check the fill would reach the edit gate, which refuses by throwing.
+	if (
+		files_node_has_editable_yjs_state(args.node) &&
+		(args.node.contentShapeMismatchAt !== null || args.node.contentYjsStateTooLargeByteSize !== null)
+	) {
+		return Result({ _nay: { name: "file_needs_repair", message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
+	}
+	if (args.expectedRevision === undefined) return Result({ _yay: null });
+
+	const current = await files_nodes_db_get_file_revision(ctx.db, { node: args.node, path: args.path });
+	if (current.revision !== args.expectedRevision) {
+		return Result({ _nay: { name: "file_changed", message: FILE_CHANGED_MESSAGE } });
+	}
+	if (!current.latest) {
+		return Result({
+			_nay: {
+				name: "file_not_latest",
+				message: "Someone typed changes that are not saved yet. Read the file again in a moment.",
+			},
+		});
+	}
+	return Result({ _yay: null });
+}
+
 /**
  * Stop a prepared write after a conflict. Mark its plugin call as failed. Create R2 deletion jobs
  * before deleting its temporary docs, so a later crash cannot lose the cleanup work.
@@ -3181,6 +3220,11 @@ export const prepare_file_write = internalMutation({
 		 */
 		contentType: v.string(),
 		yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
+		/**
+		 * The revision the caller read. The write then only fills that editable text file. It never
+		 * creates a file. Publish checks it again before its first write.
+		 */
+		expectedRevision: v.optional(v.string()),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -3240,6 +3284,25 @@ export const prepare_file_write = internalMutation({
 		});
 		if (preflight._nay) {
 			return preflight;
+		}
+
+		// Refuse a stale conditional write before the caller uploads anything.
+		if (args.expectedRevision !== undefined) {
+			const target = await lookups.get(args.path);
+			if (!target) {
+				return Result({ _nay: { name: "file_changed", message: FILE_CHANGED_MESSAGE } });
+			}
+			if (!files_node_has_editable_text_content(target)) {
+				return Result({ _nay: { name: "not_editable_text", message: "expectedRevision works only on a text file." } });
+			}
+			const checked = await db_check_file_write_revision(ctx, {
+				node: target,
+				path: args.path,
+				expectedRevision: args.expectedRevision,
+			});
+			if (checked._nay) {
+				return checked;
+			}
 		}
 
 		// On publish, the staged content snapshot becomes the file's first version snapshot, and
@@ -3315,7 +3378,11 @@ export const publish_file_write = internalMutation({
 		addedFileRefs: v.optional(v.array(v.string())),
 	},
 	returns: v_result({
-		_yay: v.object({ nodeId: v.id("files_nodes") }),
+		/**
+		 * `revision` is null only when a writer-mode write was already published. The route then answers
+		 * with its receipt.
+		 */
+		_yay: v.object({ nodeId: v.id("files_nodes"), revision: v.union(v.string(), v.null()) }),
 	}),
 	handler: async (ctx, args) => {
 		const now = Date.now();
@@ -3403,7 +3470,7 @@ export const publish_file_write = internalMutation({
 				refusalMessage: "This write was already published",
 				deletionReason: "failed_create",
 			});
-			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId } });
+			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId, revision: null } });
 		}
 		if (!yjsSnapshotAsset || !contentSnapshotAsset) {
 			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
@@ -3678,7 +3745,9 @@ export const publish_file_write = internalMutation({
 			});
 		}
 
-		return Result({ _yay: { nodeId: created._yay } });
+		const createdNode = await files_saved_placement_db_get_node(ctx.db, created._yay);
+		const { revision } = await files_nodes_db_get_file_revision(ctx.db, { node: createdNode!, path: stage.path });
+		return Result({ _yay: { nodeId: created._yay, revision } });
 	},
 });
 
@@ -3691,8 +3760,9 @@ type publish_file_write_Result =
  * Publish a write whose target is an existing editable text file: replace the file's content
  * in place so the nodeId stays stable for open editors and links. The route computed the fill
  * update (a Yjs diff against the doc state it reconstructed), staged it as a trusted
- * `public_fill` update, and PUT only the content snapshot object; the staged Yjs snapshot asset
- * is unused and dropped here.
+ * `public_fill` update, and PUT the content snapshot object. When the filled document fits, it also
+ * PUT an editor snapshot, which the fill installs. Otherwise the staged Yjs snapshot asset is unused
+ * and dropped here.
  */
 export const publish_file_fill = internalMutation({
 	args: {
@@ -3706,18 +3776,32 @@ export const publish_file_fill = internalMutation({
 		 * document, so its fill is a plain content swap and carries no `fillUpdateStageId`.
 		 */
 		nonCollaborative: v.optional(v.boolean()),
+		/**
+		 * The route PUT an editor snapshot of the filled document at the staged Yjs snapshot asset.
+		 * The fill installs it, so the saved text stays the caller's exact text.
+		 */
+		installYjsSnapshot: v.optional(v.boolean()),
 		/** Plugin principals only: the app file refs this content adds. See `db_check_plugin_added_file_refs`. */
 		addedFileRefs: v.optional(v.array(v.string())),
 		/**
-		 * Set when a plugin write keeps old app file refs: the content the route read them from. The old
-		 * refs are allowed only while that content is still the file's. Non-collaborative files pin the
-		 * content asset, and collaborative files pin the last update sequence.
+		 * The saved text and document the route built the new content from. Collaborative fills
+		 * always pin all three, so a fill never overwrites typing or a save the route did not see.
+		 * Non-collaborative plugin fills pin the content asset when they keep old app file refs.
 		 */
 		expectedContentAssetId: v.optional(v.id("files_r2_assets")),
 		expectedYjsLastSequence: v.optional(v.number()),
+		expectedYjsLineageGeneration: v.optional(v.number()),
+		/**
+		 * The revision the caller read. This is the final check: it runs before any content write.
+		 */
+		expectedRevision: v.optional(v.string()),
 	},
 	returns: v_result({
-		_yay: v.object({ nodeId: v.id("files_nodes") }),
+		/**
+		 * `revision` is null only when a writer-mode write was already published. The route then answers
+		 * with its receipt.
+		 */
+		_yay: v.object({ nodeId: v.id("files_nodes"), revision: v.union(v.string(), v.null()) }),
 	}),
 	handler: async (ctx, args) => {
 		const now = Date.now();
@@ -3726,6 +3810,9 @@ export const publish_file_fill = internalMutation({
 			// A cleanup already consumed the stage: the write can no longer be published.
 			return Result({ _nay: { message: "Write was not published" } });
 		}
+		const putAssetIds = args.installYjsSnapshot
+			? [stage.contentSnapshotAssetId, stage.yjsSnapshotAssetId]
+			: [stage.contentSnapshotAssetId];
 
 		const principalRef: Infer<typeof file_write_principal_ref_validator> | null =
 			stage.runId && stage.callId
@@ -3758,7 +3845,7 @@ export const publish_file_fill = internalMutation({
 			if (revalidated._nay.name === "stale_write") {
 				await db_abandon_file_write_stage_conflict(ctx, {
 					stage,
-					putAssetIds: [stage.contentSnapshotAssetId],
+					putAssetIds,
 					refusalMessage: revalidated._nay.message,
 					deletionReason: "failed_create",
 				});
@@ -3774,7 +3861,7 @@ export const publish_file_fill = internalMutation({
 		) {
 			await db_abandon_file_write_stage_conflict(ctx, {
 				stage,
-				putAssetIds: [stage.contentSnapshotAssetId],
+				putAssetIds,
 				refusalMessage: "The file write options or content changed",
 				deletionReason: "failed_create",
 			});
@@ -3784,18 +3871,18 @@ export const publish_file_fill = internalMutation({
 		if ("receipt" in revalidated._yay && revalidated._yay.receipt) {
 			await db_abandon_file_write_stage_conflict(ctx, {
 				stage,
-				putAssetIds: [stage.contentSnapshotAssetId],
+				putAssetIds,
 				refusalMessage: "This write was already published",
 				deletionReason: "failed_create",
 			});
-			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId } });
+			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId, revision: null } });
 		}
 		const writeContext = revalidated._yay.writeContext;
 		// Bind only the tenant and node before access checks. Path, archive, type, mode, and lineage
 		// are details a caller without node access must not learn from the conflict response.
 		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.expectedNodeId);
 		if (!fileNode || fileNode.organizationId !== stage.organizationId || fileNode.workspaceId !== stage.workspaceId) {
-			return Result({ _nay: { message: "The file changed during the write" } });
+			return Result({ _nay: { name: "changed_during_write", message: "The file changed during the write" } });
 		}
 
 		// `public_api_db_revalidate_file_write_principal` above asked before staging, and a write can be staged
@@ -3832,11 +3919,21 @@ export const publish_file_fill = internalMutation({
 		if (writable._nay) {
 			await db_abandon_file_write_stage_conflict(ctx, {
 				stage,
-				putAssetIds: [stage.contentSnapshotAssetId],
+				putAssetIds,
 				refusalMessage: writable._nay.message,
 				deletionReason: "read_only_stage",
 			});
 			return writable;
+		}
+
+		// Use the node's own path: a file moved since the caller read it has a new revision.
+		const revisionChecked = await db_check_file_write_revision(ctx, {
+			node: fileNode,
+			path: fileNode.path,
+			expectedRevision: args.expectedRevision,
+		});
+		if (revisionChecked._nay) {
+			return revisionChecked;
 		}
 
 		// After ACL and lock checks, require the exact active editable target and collaboration
@@ -3848,16 +3945,19 @@ export const publish_file_fill = internalMutation({
 			(fileNode.collaborationEnabled === false) !== (args.nonCollaborative === true) ||
 			(fileNode.collaborationEnabled !== false && fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
 		) {
-			return Result({ _nay: { message: "The file changed during the write" } });
+			return Result({ _nay: { name: "changed_during_write", message: "The file changed during the write" } });
 		}
-		// Otherwise a stale read could bring back a ref that someone removed during the write.
+		// The new content replaces the text the route read. If someone typed or saved since, this
+		// write would erase that change, and a stale read could bring back a ref someone removed.
 		const sequence =
 			args.expectedYjsLastSequence === undefined ? null : await files_saved_placement_db_get_sequence(ctx.db, fileNode);
 		if (
 			(args.expectedContentAssetId !== undefined && fileNode.assetId !== args.expectedContentAssetId) ||
-			(args.expectedYjsLastSequence !== undefined && sequence?.lastSequence !== args.expectedYjsLastSequence)
+			(args.expectedYjsLastSequence !== undefined && sequence?.lastSequence !== args.expectedYjsLastSequence) ||
+			(args.expectedYjsLineageGeneration !== undefined &&
+				sequence?.lineageGeneration !== args.expectedYjsLineageGeneration)
 		) {
-			return Result({ _nay: { message: "The file changed during the write" } });
+			return Result({ _nay: { name: "changed_during_write", message: "The file changed during the write" } });
 		}
 		const refsChecked = await db_check_plugin_added_file_refs(ctx, {
 			stage,
@@ -3876,9 +3976,15 @@ export const publish_file_fill = internalMutation({
 			});
 		}
 
-		// The fill path never PUT a Yjs snapshot object, so only the staged asset doc exists.
 		const yjsSnapshotAsset = await ctx.db.get("files_r2_assets", stage.yjsSnapshotAssetId);
-		if (yjsSnapshotAsset) {
+		if (!yjsSnapshotAsset) {
+			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
+			throw should_never_happen("public_api_file_write_stages doc with missing asset docs", {
+				stageId: stage._id,
+			});
+		}
+		// Without a snapshot upload only the staged asset doc exists.
+		if (!args.installYjsSnapshot) {
 			await ctx.db.delete("files_r2_assets", yjsSnapshotAsset._id);
 		}
 
@@ -3892,6 +3998,9 @@ export const publish_file_fill = internalMutation({
 			contentSize: contentSnapshotAsset.size,
 			fillUpdateStageId: args.fillUpdateStageId,
 			expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
+			...(args.installYjsSnapshot
+				? { yjsSnapshot: { assetId: yjsSnapshotAsset._id, size: yjsSnapshotAsset.size } }
+				: {}),
 		});
 		if (filled._nay) {
 			// Throw so Convex rolls back the snapshot and node writes done above.
@@ -3965,7 +4074,10 @@ export const publish_file_fill = internalMutation({
 				fingerprint: revalidated._yay.fingerprint,
 			});
 		}
-		return Result({ _yay: { nodeId: fileNode._id } });
+
+		const filledNode = await files_saved_placement_db_get_node(ctx.db, fileNode._id);
+		const { revision } = await files_nodes_db_get_file_revision(ctx.db, { node: filledNode!, path: stage.path });
+		return Result({ _yay: { nodeId: fileNode._id, revision } });
 	},
 });
 
@@ -4307,6 +4419,39 @@ export const can_write_file_node = internalQuery({
 		return writable._nay ? "read_only" : "ok";
 	},
 });
+
+/**
+ * The revision of the active file at `path`, or null when the node is no longer there. It checks no
+ * access: a skipped write returns it only after `can_write_file_node` says yes.
+ */
+export const get_file_write_revision = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		nodeId: v.id("files_nodes"),
+		path: v.string(),
+	},
+	returns: v.union(v.object({ revision: v.string(), latest: v.boolean() }), v.null()),
+	handler: async (ctx, args) => {
+		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+		if (
+			!fileNode ||
+			fileNode.kind !== "file" ||
+			fileNode.organizationId !== args.organizationId ||
+			fileNode.workspaceId !== args.workspaceId ||
+			fileNode.archiveOperationId !== null ||
+			fileNode.path !== args.path
+		) {
+			return null;
+		}
+		return await files_nodes_db_get_file_revision(ctx.db, { node: fileNode, path: args.path });
+	},
+});
+
+type get_file_write_revision_Result =
+	typeof get_file_write_revision extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 /**
  * Reveal the calling run's Activity in the workspace feed. Every run already has an Activity;
@@ -4814,6 +4959,10 @@ export async function public_api_db_cleanup_file_write_stage(args: {
 	ctx: MutationCtx;
 	stage: Doc<"public_api_file_write_stages">;
 	orphanedKeys?: string[];
+	/**
+	 * The write tries again with a new stage, so its plugin call stays open.
+	 */
+	keepPluginCall?: boolean;
 }) {
 	const { ctx, stage, orphanedKeys = [] } = args;
 
@@ -4849,7 +4998,7 @@ export async function public_api_db_cleanup_file_write_stage(args: {
 		await ctx.db.delete("files_r2_assets", assetId);
 	}
 
-	if (stage.callId) {
+	if (stage.callId && args.keepPluginCall !== true) {
 		const call = await ctx.db.get("plugins_event_run_calls", stage.callId);
 		// Ignore a late or repeated finish. Only a started call can finish.
 		if (call && call.status === "started") {
@@ -4883,12 +5032,21 @@ export const cleanup_file_write_stage = internalMutation({
 				workspaceId: v.id("organizations_workspaces"),
 			}),
 		),
+		/**
+		 * The write tries again with a new stage, so its plugin call stays open.
+		 */
+		keepPluginCall: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const stage = await ctx.db.get("public_api_file_write_stages", args.stageId);
 		if (stage) {
-			await public_api_db_cleanup_file_write_stage({ ctx, stage, orphanedKeys: args.orphanedKeys });
+			await public_api_db_cleanup_file_write_stage({
+				ctx,
+				stage,
+				orphanedKeys: args.orphanedKeys,
+				keepPluginCall: args.keepPluginCall,
+			});
 		} else if (args.orphanedKeys?.length) {
 			if (!args.orphanedScope) {
 				throw should_never_happen("orphaned file write keys without their stage scope", {
@@ -4953,15 +5111,71 @@ function file_reference_failure(name: string | undefined) {
 }
 
 /**
- * Write one Markdown file: decide create-vs-fill, stage, PUT the staged objects, publish, and
- * clean the stage up on failure. Shared by the single write route and write-many. For plugin
- * principals it also finds the file refs the text adds, for the publish mutation to check. The
- * single route maps `_nay` through its own `fail()` closure (which settles the plugin call), and
- * success-path plugin settlement lives inside the publish mutations.
+ * The answer for a refusal of `db_check_file_write_revision`, or null for any other refusal.
  */
-export async function public_api_write_one_text_file(
+function file_revision_failure(name: string | undefined) {
+	if (name === "file_changed" || name === "file_not_latest" || name === "file_needs_repair") {
+		const errorCode: "file_changed" | "file_not_latest" | "file_needs_repair" = name;
+		return { status: 409 as const, errorCode };
+	}
+	// A stored file has no text to fill. This is not a request error, so one batch item fails alone.
+	if (name === "not_editable_text") return { status: 409 as const, errorCode: "conflict" as const };
+	return null;
+}
+
+/**
+ * The revision of a written file. Only a replayed writer-mode write has none, and its route answers
+ * with the write receipt instead.
+ */
+function written_file_revision(written: { revision: string | null }, path: string) {
+	if (written.revision === null) throw should_never_happen("A public file write has no revision", { path });
+	return written.revision;
+}
+
+/**
+ * The text after an edit or append. An edit replaces exactly one literal match of `oldText`, and
+ * overlapping matches count. The refusals never show the file's text.
+ */
+function apply_text_change(
+	text: string,
+	change: { kind: "edit"; oldText: string; newText: string } | { kind: "append"; content: string },
+) {
+	if (change.kind === "append") return Result({ _yay: text + change.content });
+
+	const start = text.indexOf(change.oldText);
+	if (start === -1) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "oldText was not found in the file.",
+				data: { status: 409, errorCode: "text_not_found" },
+			},
+		});
+	}
+	// Search again from the next character, so a match that overlaps the first one also counts.
+	if (text.indexOf(change.oldText, start + 1) !== -1) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "oldText matches more than one place in the file. Add more text around it so it matches once.",
+				data: { status: 409, errorCode: "text_not_unique" },
+			},
+		});
+	}
+	return Result({ _yay: text.slice(0, start) + change.newText + text.slice(start + change.oldText.length) });
+}
+
+/**
+ * One attempt of `public_api_write_one_text_file`. It refuses with the name `changed_during_write`
+ * when the file changed between its read and the publish, so the caller can try again.
+ */
+async function write_one_text_file_attempt(
 	ctx: ActionCtx,
 	args: {
+		/**
+		 * Another attempt follows a `changed_during_write` refusal, so keep the plugin call open.
+		 */
+		keepPluginCall: boolean;
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		/**
@@ -4976,10 +5190,21 @@ export async function public_api_write_one_text_file(
 		path: string;
 		expectedParentNodeId?: string;
 		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
-		content: string;
-		contentBytes: number;
+		/**
+		 * A write saves its own text. An edit or append changes an existing text file: each attempt
+		 * applies it to the file's text at that moment.
+		 */
+		change:
+			| { kind: "write"; content: string }
+			| { kind: "edit"; oldText: string; newText: string }
+			| { kind: "append"; content: string };
 		overwrite: "replace" | "fail";
 		skipIfUnchanged: boolean;
+		/**
+		 * The revision the caller read. The write then fills only that file, and only while its saved
+		 * text is the latest text. It never creates a file.
+		 */
+		expectedRevision?: string;
 		/**
 		 * The type the caller named, already checked to be editable text. `null` when the caller
 		 * named none: a created file then takes the hint from its name, and a filled file keeps
@@ -4999,9 +5224,9 @@ export async function public_api_write_one_text_file(
 	},
 ) {
 	// Plugin writes only: the app file refs the new text adds, for the publish mutation to check.
-	const find_added_file_refs = (previousContent: string | null, rootKind: files_YjsRootKind) => {
+	const find_added_file_refs = (content: string, previousContent: string | null, rootKind: files_YjsRootKind) => {
 		if (args.principalRef.kind === "user_api_key") return Result({ _yay: undefined });
-		const added = files_media_refs_added({ content: args.content, previousContent, rootKind });
+		const added = files_media_refs_added({ content, previousContent, rootKind });
 		if (added._nay) {
 			console.error("Failed to read the file refs of a plugin file write", { nay: added._nay, path: args.path });
 			return Result({
@@ -5009,6 +5234,118 @@ export async function public_api_write_one_text_file(
 			});
 		}
 		return added;
+	};
+
+	// The saved text, never the caller's own proposal on this file.
+	const read_saved_text = async () =>
+		(await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.visibilityUserId,
+			subject: args.subject,
+			path: args.path,
+			committedOnly: true,
+			mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
+		})) as files_nodes_read_file_content_from_chunks_Result;
+
+	// The text this attempt saves. A write saves its own text. An edit or append changes the latest
+	// text: the saved bytes when they are the latest text, else the editor text.
+	const build_content = (savedText: string | null, editorText: string | null) => {
+		if (args.change.kind === "write") {
+			const content = args.change.content;
+			return Result({ _yay: { content, contentBytes: files_get_utf8_byte_size(content), contentChanged: false } });
+		}
+
+		const baseline = savedText ?? editorText;
+		// Only a non-collaborative file has no editor text. Its saved read found no file there, or
+		// another file. The next attempt looks again.
+		if (baseline === null) {
+			return Result({
+				_nay: {
+					name: "changed_during_write",
+					message: "The file changed during the write",
+					data: { status: 409, errorCode: "conflict" },
+				},
+			});
+		}
+		const changed = apply_text_change(baseline, args.change);
+		if (changed._nay) return changed;
+
+		// Save the result like a write: LF line endings and no leading BOM.
+		const content = files_normalize_text_document_input(changed._yay);
+		const contentBytes = files_get_utf8_byte_size(content);
+		if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
+			return Result({
+				_nay: {
+					name: "nay",
+					message: `The changed file exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte limit.`,
+					data: { status: 400, errorCode: "invalid_input" },
+				},
+			});
+		}
+		// The editor text can differ from the saved bytes, for example in its Markdown style.
+		return Result({
+			_yay: { content, contentBytes, contentChanged: content !== changed._yay || savedText === null },
+		});
+	};
+
+	// Re-running an import must not mint a new version for a file whose saved bytes already match.
+	// Compare the saved text, not the caller's own proposal on this file: a write of that proposal's
+	// text must still land as a save. Plugin writes must reach the mutation's current label,
+	// permission, and lock checks, so they never skip. An edit or append that keeps the saved bytes
+	// always skips.
+	const find_unchanged_result = async (
+		node: Doc<"files_nodes">,
+		contentType: files_ContentType,
+		built: { content: string; contentBytes: number; contentChanged: boolean },
+	) => {
+		if ((!args.skipIfUnchanged && args.change.kind === "write") || args.principalRef.kind !== "user_api_key")
+			return null;
+
+		// Read the revision before the text. If a save lands between the two reads, the caller gets the
+		// older revision, so a later conditional write is refused instead of erasing that save. A stale
+		// conditional write falls through, and the write below refuses it.
+		const current = (await ctx.runQuery(internal.public_api.get_file_write_revision, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: node._id,
+			path: args.path,
+		})) as get_file_write_revision_Result;
+		if (
+			!current ||
+			!current.latest ||
+			(args.expectedRevision !== undefined && current.revision !== args.expectedRevision)
+		)
+			return null;
+		const saved = await read_saved_text();
+		if (saved?.content !== built.content) return null;
+
+		// Skip only when the commit-time write check would also say yes. When it says no, fall
+		// through so the caller gets the same refusal a plain write gets. A 200 here would let a
+		// caller who cannot write the node confirm its exact content.
+		const canWriteNode = (await ctx.runQuery(internal.public_api.can_write_file_node, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: node._id,
+			path: args.path,
+			principalRef: args.principalRef,
+			force: args.force === true,
+			requestReadOnly: args.requestReadOnly,
+		})) as "ok" | "permission_denied" | "read_only";
+		if (canWriteNode !== "ok") return null;
+
+		return Result({
+			_yay: {
+				nodeId: node._id,
+				contentType,
+				wroteInPlace: true,
+				unchanged: true,
+				revision: current.revision,
+				size: built.contentBytes,
+				contentChanged: built.contentChanged,
+			},
+		});
 	};
 
 	// Decide create-vs-fill before staging. Writing over an existing editable text file
@@ -5022,6 +5359,33 @@ export async function public_api_write_one_text_file(
 		subject: args.subject,
 		path: args.path,
 	})) as files_nodes_get_by_path_Result;
+	// An edit or append never creates a file. A locked file answers like a read of it.
+	if (args.change.kind !== "write" && !activeNode) {
+		const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			subject: args.subject,
+			path: args.path,
+		});
+		return access.status === "locked"
+			? Result({
+					_nay: {
+						name: "nay",
+						message: "Permission denied: " + args.path,
+						data: { status: 403, errorCode: "permission_denied" },
+					},
+				})
+			: Result({ _nay: { name: "nay", message: "File unavailable", data: { status: 404, errorCode: "not_found" } } });
+	}
+	if (args.change.kind !== "write" && !files_node_has_editable_text_content(activeNode)) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Edit and append work only on a text file.",
+				data: { status: 400, errorCode: "invalid_input" },
+			},
+		});
+	}
 	if (activeNode?.kind === "folder") {
 		return Result({
 			_nay: {
@@ -5089,65 +5453,20 @@ export async function public_api_write_one_text_file(
 		files_node_has_editable_text_content(activeNode) &&
 		activeNodeContentType !== null
 	) {
-		// Re-running an import must not mint a new version for a file whose text did not change.
-		// Plugin writes must reach the mutation's current label, permission, and lock checks.
-		if (args.skipIfUnchanged && args.principalRef.kind === "user_api_key") {
-			// Compare against the saved text. The caller's own proposal on this file is not the
-			// file, and a write of that proposal's text must still land as a save.
-			const current = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.visibilityUserId,
-				subject: args.subject,
-				path: args.path,
-				committedOnly: true,
-				mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
-			})) as files_nodes_read_file_content_from_chunks_Result;
-			// Skip only when the commit-time write check would also say yes. When it says no, fall
-			// through so the caller gets the same refusal a plain write gets. A 200 here would let
-			// a caller who cannot write the node confirm its exact content.
-			if (current?.content === args.content) {
-				const canWriteNode = (await ctx.runQuery(internal.public_api.can_write_file_node, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.userId,
-					nodeId: activeNode._id,
-					path: args.path,
-					principalRef: args.principalRef,
-					force: args.force === true,
-					requestReadOnly: args.requestReadOnly,
-				})) as "ok" | "permission_denied" | "read_only";
-				if (canWriteNode === "ok") {
-					return Result({
-						_yay: {
-							nodeId: activeNode._id,
-							contentType: activeNodeContentType,
-							wroteInPlace: true,
-							unchanged: true,
-						},
-					});
-				}
-			}
-		}
-
 		// The saved text is the whole file here: it has no document.
 		const previous =
-			args.principalRef.kind === "user_api_key"
-				? null
-				: ((await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						userId: args.visibilityUserId,
-						subject: args.subject,
-						path: args.path,
-						committedOnly: true,
-						mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
-					})) as files_nodes_read_file_content_from_chunks_Result);
-		// The read goes by path, so it may have found another file there. Then no old ref counts.
-		const fileRefs = find_added_file_refs(
-			previous?.target.kind === "saved" && previous.target.id === activeNode._id ? previous.content : null,
-			activeNode.textKind,
-		);
+			args.principalRef.kind === "user_api_key" && args.change.kind === "write" ? null : await read_saved_text();
+		// The read goes by path, so it may have found another file there. Then no old text counts.
+		const previousText =
+			previous?.target.kind === "saved" && previous.target.id === activeNode._id ? previous.content : null;
+		const built = build_content(previousText, null);
+		if (built._nay) return built;
+		const { content, contentBytes, contentChanged } = built._yay;
+
+		const unchanged = await find_unchanged_result(activeNode, activeNodeContentType, built._yay);
+		if (unchanged) return unchanged;
+
+		const fileRefs = find_added_file_refs(content, previousText, activeNode.textKind);
 		if (fileRefs._nay) return fileRefs;
 
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
@@ -5161,12 +5480,13 @@ export async function public_api_write_one_text_file(
 			expectedParentNodeId: args.expectedParentNodeId,
 			externalFileWrite: args.externalFileWrite,
 			overwrite: args.overwrite,
-			contentSize: args.contentBytes,
+			contentSize: contentBytes,
 			// This path never uploads a Yjs snapshot object; publish_file_fill drops the staged
 			// asset doc.
 			yjsSnapshotSize: 0,
 			contentType: activeNodeContentType,
 			yjsRootKind: activeNode.textKind,
+			expectedRevision: args.expectedRevision,
 		});
 		if (prepared._nay) {
 			if (prepared._nay.name === "invalid_input") {
@@ -5190,6 +5510,10 @@ export async function public_api_write_one_text_file(
 					_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
 				});
 			}
+			const revisionFailure = file_revision_failure(prepared._nay.name);
+			if (revisionFailure) {
+				return Result({ _nay: { name: "nay", message: prepared._nay.message, data: revisionFailure } });
+			}
 			return Result({
 				_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
 			});
@@ -5199,10 +5523,11 @@ export async function public_api_write_one_text_file(
 			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 				stageId: prepared._yay.stageId,
 				orphanedKeys: [],
+				keepPluginCall: args.keepPluginCall,
 			});
 			return Result({
 				_nay: {
-					name: "nay",
+					name: "changed_during_write",
 					message: "The file changed during the write",
 					data: { status: 409, errorCode: "conflict" },
 				},
@@ -5217,7 +5542,7 @@ export async function public_api_write_one_text_file(
 		try {
 			await r2_put_object(ctx, {
 				key: contentSnapshotKey,
-				body: args.content,
+				body: content,
 				contentType: activeNodeContentType,
 			});
 		} catch (error) {
@@ -5238,17 +5563,22 @@ export async function public_api_write_one_text_file(
 
 		const published: publish_file_fill_Result = await ctx.runMutation(internal.public_api.publish_file_fill, {
 			stageId: prepared._yay.stageId,
-			content: args.content,
+			content,
 			expectedNodeId: activeNode._id,
 			nonCollaborative: true,
+			expectedRevision: args.expectedRevision,
 			...(fileRefs._yay ? { addedFileRefs: fileRefs._yay.added } : {}),
-			...(fileRefs._yay?.keepsOldRefs ? { expectedContentAssetId: activeNode.assetId } : {}),
+			// An edit or append changed the saved text it read, so that text must still be the saved text.
+			...(fileRefs._yay?.keepsOldRefs || args.change.kind !== "write"
+				? { expectedContentAssetId: activeNode.assetId }
+				: {}),
 		});
 		if (published._nay) {
 			// Conflict is the fallback: structural 409s pass their specific message through,
 			// while the auth and storage failures use fixed literals.
 			const failure =
 				file_reference_failure(published._nay.name) ??
+				file_revision_failure(published._nay.name) ??
 				(published._nay.message === "Unauthenticated"
 					? { status: 401 as const, errorCode: "unauthenticated" as const }
 					: published._nay.message === "Permission denied"
@@ -5258,15 +5588,19 @@ export async function public_api_write_one_text_file(
 							: { status: 409 as const, errorCode: "conflict" as const });
 			// A read-only refusal already cleaned up the stage during publish. Running cleanup again
 			// would change the plugin call to the wrong unpublished_write/500 error.
+			const changed = published._nay.name === "changed_during_write";
 			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
 				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 					stageId: prepared._yay.stageId,
 					orphanedKeys: [contentSnapshotKey],
 					orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+					keepPluginCall: changed && args.keepPluginCall,
 				});
 			}
 
-			return Result({ _nay: { name: "nay", message: published._nay.message, data: failure } });
+			return Result({
+				_nay: { name: changed ? "changed_during_write" : "nay", message: published._nay.message, data: failure },
+			});
 		}
 
 		return Result({
@@ -5275,6 +5609,9 @@ export async function public_api_write_one_text_file(
 				contentType: activeNodeContentType,
 				wroteInPlace: true,
 				unchanged: false,
+				revision: published._yay.revision,
+				size: contentBytes,
+				contentChanged,
 			},
 		});
 	}
@@ -5302,7 +5639,19 @@ export async function public_api_write_one_text_file(
 				});
 			}
 
-			const fileRefs = find_added_file_refs(currentContent._yay.text, activeNode.textKind);
+			const sequenceDoc = materializationState.yjsLastSequenceDoc;
+			// While someone's typing is not saved yet, the saved bytes are not the latest text. The read
+			// goes by path, so it may have found another file there.
+			const saved =
+				args.change.kind === "write" || sequenceDoc.unmaterializedUpdateCount > 0 ? null : await read_saved_text();
+			const built = build_content(
+				saved?.target.kind === "saved" && saved.target.id === activeNode._id ? saved.content : null,
+				currentContent._yay.text,
+			);
+			if (built._nay) return built;
+			const { content, contentBytes, contentChanged } = built._yay;
+
+			const fileRefs = find_added_file_refs(content, currentContent._yay.text, activeNode.textKind);
 			if (fileRefs._nay) return fileRefs;
 
 			// Mirror the snapshot-restore recipe: project the new text into the current
@@ -5311,7 +5660,7 @@ export async function public_api_write_one_text_file(
 			const yjsBeforeStateVector = encodeStateVector(currentContent._yay.yjsDoc);
 			const projectedYjsDoc = files_yjs_doc_update_from_text({
 				mut_yjsDoc: currentContent._yay.yjsDoc,
-				text: args.content,
+				text: content,
 				// The node in hand owns the shape; it never comes from the request.
 				rootKind: activeNode.textKind,
 			});
@@ -5329,35 +5678,22 @@ export async function public_api_write_one_text_file(
 				yjsBeforeStateVector,
 			});
 
-			// Re-running an import must not mint new versions for files whose content did not
-			// change. A null diff means projecting the incoming Markdown was a semantic no-op,
-			// so return before staging: no stage, no asset docs, no uploads, no version snapshot.
-			//
-			// Plugin writes must reach the mutation's current label, permission, and lock checks.
-			if (args.skipIfUnchanged && fillUpdate === null && args.principalRef.kind === "user_api_key") {
-				// Skip only when the commit-time write check would also say yes. When it says no,
-				// fall through to the normal write path so the caller gets the same refusal a plain
-				// write gets — a 200 here would let a caller who cannot write the node confirm its
-				// exact content through the unchanged marker.
-				const canWriteNode = (await ctx.runQuery(internal.public_api.can_write_file_node, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					userId: args.userId,
-					nodeId: activeNode._id,
-					path: args.path,
-					principalRef: args.principalRef,
-					force: args.force === true,
-					requestReadOnly: args.requestReadOnly,
-				})) as "ok" | "permission_denied" | "read_only";
-				if (canWriteNode === "ok") {
-					return Result({
-						_yay: {
-							nodeId: activeNode._id,
-							contentType: activeNodeContentType,
-							wroteInPlace: true,
-							unchanged: true,
-						},
-					});
+			// A null diff is not enough to skip: a formatting-only change keeps the same document
+			// but changes the saved bytes. Skip only when the saved text is the latest text.
+			if (sequenceDoc.unmaterializedUpdateCount === 0) {
+				const unchanged = await find_unchanged_result(activeNode, activeNodeContentType, built._yay);
+				if (unchanged) return unchanged;
+			}
+
+			// Upload an editor snapshot of the new document with the text. The fill installs it, so
+			// no background job later rebuilds the text in editor style. A null diff over saved text
+			// that is already the latest needs none: the current snapshot holds this document. Over
+			// the state cap, the background job marks the file too large, as before.
+			let yjsSnapshotUpdate: ArrayBuffer | null = null;
+			if (fillUpdate !== null || sequenceDoc.unmaterializedUpdateCount > 0) {
+				const encoded = encodeStateAsUpdate(projectedYjsDoc._yay);
+				if (encoded.byteLength <= files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
+					yjsSnapshotUpdate = files_u8_to_array_buffer(encoded);
 				}
 			}
 
@@ -5372,12 +5708,12 @@ export async function public_api_write_one_text_file(
 				expectedParentNodeId: args.expectedParentNodeId,
 				externalFileWrite: args.externalFileWrite,
 				overwrite: args.overwrite,
-				contentSize: args.contentBytes,
-				// The fill path never uploads a Yjs snapshot object; publish_file_fill drops
-				// the staged asset doc.
-				yjsSnapshotSize: 0,
+				contentSize: contentBytes,
+				// Without a snapshot upload, publish_file_fill drops the staged asset doc.
+				yjsSnapshotSize: yjsSnapshotUpdate?.byteLength ?? 0,
 				contentType: activeNodeContentType,
 				yjsRootKind: activeNode.textKind,
+				expectedRevision: args.expectedRevision,
 			});
 			if (prepared._nay) {
 				if (prepared._nay.name === "invalid_input") {
@@ -5401,6 +5737,10 @@ export async function public_api_write_one_text_file(
 						_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
 					});
 				}
+				const revisionFailure = file_revision_failure(prepared._nay.name);
+				if (revisionFailure) {
+					return Result({ _nay: { name: "nay", message: prepared._nay.message, data: revisionFailure } });
+				}
 				return Result({
 					_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
 				});
@@ -5412,36 +5752,49 @@ export async function public_api_write_one_text_file(
 				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 					stageId: prepared._yay.stageId,
 					orphanedKeys: [],
+					keepPluginCall: args.keepPluginCall,
 				});
 				return Result({
 					_nay: {
-						name: "nay",
+						name: "changed_during_write",
 						message: "The file changed during the write",
 						data: { status: 409, errorCode: "conflict" },
 					},
 				});
 			}
+			const stageScope = { organizationId: args.organizationId, workspaceId: args.workspaceId };
+			const yjsSnapshotKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.yjsSnapshotAssetId });
 			const contentSnapshotKey = r2_create_asset_key({
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+				...stageScope,
 				assetId: prepared._yay.contentSnapshotAssetId,
 			});
-			try {
-				await r2_put_object(ctx, {
+			const orphanedKeys = yjsSnapshotUpdate ? [yjsSnapshotKey, contentSnapshotKey] : [contentSnapshotKey];
+			// Wait for both writes before cleanup, like the create path below.
+			const putResults = await Promise.allSettled([
+				yjsSnapshotUpdate
+					? r2_put_object(ctx, {
+							key: yjsSnapshotKey,
+							body: yjsSnapshotUpdate,
+							contentType: "application/octet-stream" satisfies files_ContentType,
+						})
+					: Promise.resolve(null),
+				r2_put_object(ctx, {
 					key: contentSnapshotKey,
-					body: args.content,
+					body: content,
 					contentType: activeNodeContentType,
-				});
-			} catch (error) {
-				console.error("Failed to write staged file object", {
-					error,
+				}),
+			]);
+			const putFailure = putResults.find((result) => result.status === "rejected");
+			if (putFailure) {
+				console.error("Failed to write staged file objects", {
+					error: putFailure.reason,
 					stageId: prepared._yay.stageId,
 					path: args.path,
 				});
 				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 					stageId: prepared._yay.stageId,
-					orphanedKeys: [contentSnapshotKey],
-					orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+					orphanedKeys,
+					orphanedScope: stageScope,
 				});
 				return Result({
 					_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -5469,8 +5822,8 @@ export async function public_api_write_one_text_file(
 					});
 					await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 						stageId: prepared._yay.stageId,
-						orphanedKeys: [contentSnapshotKey],
-						orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+						orphanedKeys,
+						orphanedScope: stageScope,
 					});
 					return Result({
 						_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -5495,14 +5848,16 @@ export async function public_api_write_one_text_file(
 			try {
 				published = await ctx.runMutation(internal.public_api.publish_file_fill, {
 					stageId: prepared._yay.stageId,
-					content: args.content,
+					content,
 					expectedNodeId: activeNode._id,
-					expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
+					expectedYjsLastSequenceId: sequenceDoc._id,
+					expectedContentAssetId: materializationState.fileNode.assetId,
+					expectedYjsLastSequence: sequenceDoc.lastSequence,
+					expectedYjsLineageGeneration: sequenceDoc.lineageGeneration,
+					expectedRevision: args.expectedRevision,
+					...(yjsSnapshotUpdate ? { installYjsSnapshot: true } : {}),
 					...(fillUpdateStageId ? { fillUpdateStageId } : {}),
 					...(fileRefs._yay ? { addedFileRefs: fileRefs._yay.added } : {}),
-					...(fileRefs._yay?.keepsOldRefs
-						? { expectedYjsLastSequence: materializationState.yjsLastSequenceDoc.lastSequence }
-						: {}),
 				});
 			} catch (error) {
 				await retire_fill_update_stage();
@@ -5514,6 +5869,7 @@ export async function public_api_write_one_text_file(
 				// while the auth and storage failures use fixed literals.
 				const failure =
 					file_reference_failure(published._nay.name) ??
+					file_revision_failure(published._nay.name) ??
 					(published._nay.message === "Unauthenticated"
 						? { status: 401 as const, errorCode: "unauthenticated" as const }
 						: published._nay.message === "Permission denied"
@@ -5523,15 +5879,17 @@ export async function public_api_write_one_text_file(
 								: { status: 409 as const, errorCode: "conflict" as const });
 				// A read-only refusal already cleaned up the stage during publish. Running cleanup again
 				// would change the plugin call to the wrong unpublished_write/500 error.
+				const changed = published._nay.name === "changed_during_write";
 				if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
 					await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 						stageId: prepared._yay.stageId,
-						orphanedKeys: [contentSnapshotKey],
-						orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+						orphanedKeys,
+						orphanedScope: stageScope,
+						keepPluginCall: changed && args.keepPluginCall,
 					});
 				}
 				return Result({
-					_nay: { name: "nay", message: published._nay.message, data: failure },
+					_nay: { name: changed ? "changed_during_write" : "nay", message: published._nay.message, data: failure },
 				});
 			}
 
@@ -5541,15 +5899,32 @@ export async function public_api_write_one_text_file(
 					contentType: activeNodeContentType,
 					wroteInPlace: true,
 					unchanged: false,
+					revision: published._yay.revision,
+					size: contentBytes,
+					contentChanged,
 				},
 			});
 		}
 	}
 
+	// An edit or append reaches this point when its file was archived after the lookup, or when its
+	// document is not ready yet. The next attempt looks the path up again.
+	if (args.change.kind !== "write") {
+		return Result({
+			_nay: {
+				name: "changed_during_write",
+				message: "The file changed during the write",
+				data: { status: 409, errorCode: "conflict" },
+			},
+		});
+	}
+	const content = args.change.content;
+	const contentBytes = files_get_utf8_byte_size(content);
+
 	// The created file's type: the caller's, else the name's hint, else plain text.
 	const createShape = args.shape ?? files_default_text_shape_for_name(path_name_of(args.path));
 	// A replaced file here is not editable text, so it has no refs to keep.
-	const fileRefs = find_added_file_refs(null, createShape.rootKind);
+	const fileRefs = find_added_file_refs(content, null, createShape.rootKind);
 	if (fileRefs._nay) return fileRefs;
 
 	// A non-collaborative file is created with committed content only, so there is no document to
@@ -5557,7 +5932,7 @@ export async function public_api_write_one_text_file(
 	let snapshotUpdate: ArrayBuffer | null = null;
 	if (!args.nonCollaborative) {
 		const built = files_nodes_create_yjs_snapshot_update_from_text({
-			text: args.content,
+			text: content,
 			rootKind: createShape.rootKind,
 		});
 		if (built._nay) {
@@ -5583,10 +5958,11 @@ export async function public_api_write_one_text_file(
 		expectedParentNodeId: args.expectedParentNodeId,
 		externalFileWrite: args.externalFileWrite,
 		overwrite: args.overwrite,
-		contentSize: args.contentBytes,
+		contentSize: contentBytes,
 		yjsSnapshotSize: snapshotUpdate?.byteLength ?? 0,
 		contentType: createShape.contentType,
 		yjsRootKind: createShape.rootKind,
+		expectedRevision: args.expectedRevision,
 	});
 	if (prepared._nay) {
 		if (prepared._nay.name === "invalid_input") {
@@ -5606,12 +5982,24 @@ export async function public_api_write_one_text_file(
 				_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
 			});
 		}
+		const revisionFailure = file_revision_failure(prepared._nay.name);
+		if (revisionFailure) {
+			return Result({ _nay: { name: "nay", message: prepared._nay.message, data: revisionFailure } });
+		}
 		return Result({
 			_nay: { name: "nay", message: prepared._nay.message, data: { status: 401, errorCode: "unauthenticated" } },
 		});
 	}
 
 	const stageId = prepared._yay.stageId;
+	// Prepare refuses a conditional write onto a missing file. It can pass only when a file appeared
+	// after the lookup above, and replacing that file would not fill the file the caller read.
+	if (args.expectedRevision !== undefined) {
+		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys: [] });
+		return Result({
+			_nay: { name: "nay", message: FILE_CHANGED_MESSAGE, data: { status: 409, errorCode: "file_changed" } },
+		});
+	}
 	const stageScope = { organizationId: args.organizationId, workspaceId: args.workspaceId };
 	const yjsSnapshotKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.yjsSnapshotAssetId });
 	const contentSnapshotKey = r2_create_asset_key({
@@ -5633,7 +6021,7 @@ export async function public_api_write_one_text_file(
 			: Promise.resolve(null),
 		r2_put_object(ctx, {
 			key: contentSnapshotKey,
-			body: args.content,
+			body: content,
 			contentType: createShape.contentType,
 		}),
 	]);
@@ -5656,7 +6044,7 @@ export async function public_api_write_one_text_file(
 
 	const published: publish_file_write_Result = await ctx.runMutation(internal.public_api.publish_file_write, {
 		stageId,
-		content: args.content,
+		content,
 		targetAnchor: prepared._yay.targetAnchor,
 		nonCollaborative: args.nonCollaborative,
 		...(args.requestReadOnly ? { requestReadOnly: true } : {}),
@@ -5696,8 +6084,53 @@ export async function public_api_write_one_text_file(
 			contentType: createShape.contentType,
 			wroteInPlace: false,
 			unchanged: false,
+			revision: published._yay.revision,
+			size: contentBytes,
+			contentChanged: false,
 		},
 	});
+}
+
+/**
+ * Attempts of one unconditional write. Someone typing between the read and the publish refuses an
+ * attempt, and the next attempt reads the new text.
+ */
+const FILE_WRITE_MAX_ATTEMPTS = 3;
+
+/**
+ * Write one Markdown file: decide create-vs-fill, stage, PUT the staged objects, publish, and
+ * clean the stage up on failure. Shared by the single write route and write-many. For plugin
+ * principals it also finds the file refs the text adds, for the publish mutation to check. The
+ * single route maps `_nay` through its own `fail()` closure (which settles the plugin call), and
+ * success-path plugin settlement lives inside the publish mutations.
+ *
+ * When the file changes during an unconditional write, the write tries again. A conditional write
+ * never tries again: the caller's revision is stale, so it gets `file_changed`.
+ */
+export async function public_api_write_one_text_file(
+	ctx: ActionCtx,
+	args: Omit<Parameters<typeof write_one_text_file_attempt>[1], "keepPluginCall">,
+) {
+	for (let attempt = 1; ; attempt++) {
+		const lastAttempt = args.expectedRevision !== undefined || attempt === FILE_WRITE_MAX_ATTEMPTS;
+		const written = await write_one_text_file_attempt(ctx, { ...args, keepPluginCall: !lastAttempt });
+		if (written._nay?.name !== "changed_during_write") return written;
+
+		if (args.expectedRevision !== undefined) {
+			return Result({
+				_nay: { name: "nay", message: FILE_CHANGED_MESSAGE, data: { status: 409, errorCode: "file_changed" } },
+			});
+		}
+		if (lastAttempt) {
+			return Result({
+				_nay: {
+					name: "nay",
+					message: "Someone is editing this file. Try again.",
+					data: { status: 409, errorCode: "file_busy" },
+				},
+			});
+		}
+	}
 }
 
 // HTTP routes
@@ -5715,7 +6148,7 @@ const read_file_body_validator = z
 	.strict();
 const read_file_cursor_validator = z
 	.object({
-		sourceRevision: z.string().regex(/^[0-9a-f]{64}$/u),
+		sourceDigest: z.string().regex(/^[0-9a-f]{64}$/u),
 		etag: z.string().regex(/^"[\x21\x23-\x7e]{1,256}"$/u),
 		offset: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
 	})
@@ -5851,7 +6284,7 @@ export async function public_api_http_read_file(args: {
 			(requiredScope === "files:download" && principal.kind !== "user_api_key" && principal.kind !== "public_api_grant")
 		)
 			return refuse(403, "permission_denied", "Permission denied");
-		if (cursor && cursor.sourceRevision !== source.revision)
+		if (cursor && cursor.sourceDigest !== source.sourceDigest)
 			return refuse(409, "file_changed", "File changed. Start a new read.");
 		if (source.contentType.length > 256 || !/^[\x20-\x7e]+$/u.test(source.contentType))
 			return refuse(502, "storage_unavailable", "File content type unavailable");
@@ -5921,13 +6354,12 @@ export async function public_api_http_read_file(args: {
 		} catch {
 			return refuse(502, "storage_unavailable", "File bytes unavailable");
 		}
-		const revision = await crypto_sha256_hex(JSON.stringify([source.revision, etag]));
 		const nextCursor =
 			offset + length < source.size
 				? await crypto_seal_cursor({
 						purpose: "files_read",
 						scope,
-						payload: { sourceRevision: source.revision, etag, offset: offset + length },
+						payload: { sourceDigest: source.sourceDigest, etag, offset: offset + length },
 					})
 				: null;
 
@@ -5972,7 +6404,8 @@ export async function public_api_http_read_file(args: {
 				? refuse(403, "permission_denied", "Permission denied: " + requestedPath)
 				: refuse(404, "not_found", "File unavailable");
 		}
-		if (after.revision !== source.revision) return refuse(409, "file_changed", "File changed. Start a new read.");
+		if (after.sourceDigest !== source.sourceDigest)
+			return refuse(409, "file_changed", "File changed. Start a new read.");
 		if (principal.kind === "plugin_run" && pluginCallId) {
 			const checked = (await ctx.runMutation(internal.public_api.validate_and_finish_scheduled_file_read, {
 				runId: principal.runId,
@@ -5995,7 +6428,8 @@ export async function public_api_http_read_file(args: {
 				...headers,
 				"Content-Type": "application/octet-stream",
 				"X-File-Content-Type": source.contentType,
-				"X-File-Revision": revision,
+				"X-File-Revision": after.revision,
+				"X-File-Is-Latest": String(after.latest),
 				"X-File-Size": String(source.size),
 				...(nextCursor ? { "X-File-Next-Cursor": nextCursor } : {}),
 			},
@@ -6023,7 +6457,7 @@ export async function public_api_http_read_file(args: {
 	return result;
 }
 
-const get_file_read_only_body_validator = z.object({ nodeId: z.string() });
+const get_file_read_only_body_validator = z.object({ nodeId: z.string() }).strict();
 
 export type public_api_http_get_file_read_only_Body = z.infer<typeof get_file_read_only_body_validator>;
 
@@ -6118,10 +6552,12 @@ export async function public_api_http_set_file_read_only(args: {
 	return { status: 200, body: { nodeId: body._yay.nodeId }, headers: { "Cache-Control": "no-store" } } as const;
 }
 
-const set_file_public_body_validator = z.object({
-	nodeId: z.string(),
-	public: z.boolean(),
-});
+const set_file_public_body_validator = z
+	.object({
+		nodeId: z.string(),
+		public: z.boolean(),
+	})
+	.strict();
 
 export type public_api_http_set_file_public_Body = z.infer<typeof set_file_public_body_validator>;
 
@@ -6186,50 +6622,60 @@ export async function public_api_http_set_file_public(args: {
 	} as const;
 }
 
-const write_file_body_validator = z.object({
-	force: z.boolean().optional(),
-	path: z.string(),
-	/**
-	 * Invoke and conditional service writes can pin the immediate parent.
-	 */
-	expectedParentNodeId: z.string().optional(),
-	content: z.string(),
-	overwrite: z.enum(["replace", "fail"]).optional(),
-	skipIfUnchanged: z.boolean().optional(),
-	/**
-	 * Create the file with no collaborative document: its text lives only in the committed
-	 * content, and a later write replaces the whole text. Absent or `false` creates the normal
-	 * collaborative file. Only read when this write creates the file; writing over a file that
-	 * already exists keeps whatever mode that file has.
-	 */
-	nonCollaborative: z.boolean().optional(),
-	/**
-	 * The file's content type. Must be an editable text type (Markdown, plain text, JSON, YAML,
-	 * and the other text types the app edits). Absent: a created file takes the hint from its
-	 * name, else plain text, and a filled file keeps its own type. Naming a type that differs
-	 * from an existing file's type is a conflict.
-	 */
-	contentType: z.string().optional(),
-	/**
-	 * Plugin principals only. `readOnly: true` selects the installation's account as the writer;
-	 * it does nothing when the write fills an existing file. The consent behind it is checked
-	 * transactionally at publish time.
-	 */
-	access: z.object({ readOnly: z.boolean().optional() }).optional(),
-	writer: z
-		.object({
-			writerId: z.string(),
-			operationId: z.string().min(1).max(128),
-			writerGeneration: z.number().int().positive(),
-			sequence: z.number().int().positive(),
-			expectedNodeId: z.string().nullable(),
-			expectedContentRevision: z.string().nullable(),
-			expectedReaderRevision: z.number().int().positive().nullable(),
-			contentHash: z.string().regex(/^[a-f0-9]{64}$/),
-		})
-		.strict()
-		.optional(),
-});
+const EXPECTED_REVISION_COMBINATION_MESSAGE = 'expectedRevision cannot be used with overwrite "fail" or writer.';
+
+const write_file_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		path: z.string(),
+		/**
+		 * Invoke and conditional service writes can pin the immediate parent.
+		 */
+		expectedParentNodeId: z.string().optional(),
+		content: z.string(),
+		overwrite: z.enum(["replace", "fail"]).optional(),
+		skipIfUnchanged: z.boolean().optional(),
+		/**
+		 * The `revision` the caller read. The write then fills only that file, and only while its saved
+		 * text is the latest text. It never creates a file. Not allowed with `overwrite: "fail"` or
+		 * `writer`.
+		 */
+		expectedRevision: z.string().min(1).max(256).optional(),
+		/**
+		 * Create the file with no collaborative document: its text lives only in the committed
+		 * content, and a later write replaces the whole text. Absent or `false` creates the normal
+		 * collaborative file. Only read when this write creates the file; writing over a file that
+		 * already exists keeps whatever mode that file has.
+		 */
+		nonCollaborative: z.boolean().optional(),
+		/**
+		 * The file's content type. Must be an editable text type (Markdown, plain text, JSON, YAML,
+		 * and the other text types the app edits). Absent: a created file takes the hint from its
+		 * name, else plain text, and a filled file keeps its own type. Naming a type that differs
+		 * from an existing file's type is a conflict.
+		 */
+		contentType: z.string().optional(),
+		/**
+		 * Plugin principals only. `readOnly: true` selects the installation's account as the writer;
+		 * it does nothing when the write fills an existing file. The consent behind it is checked
+		 * transactionally at publish time.
+		 */
+		access: z.object({ readOnly: z.boolean().optional() }).strict().optional(),
+		writer: z
+			.object({
+				writerId: z.string(),
+				operationId: z.string().min(1).max(128),
+				writerGeneration: z.number().int().positive(),
+				sequence: z.number().int().positive(),
+				expectedNodeId: z.string().nullable(),
+				expectedContentRevision: z.string().nullable(),
+				expectedReaderRevision: z.number().int().positive().nullable(),
+				contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+			})
+			.strict()
+			.optional(),
+	})
+	.strict();
 
 export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
 
@@ -6314,7 +6760,7 @@ export async function public_api_http_write_file(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	const body = await server_request_json_parse_and_validate(request, write_file_body_validator);
@@ -6322,6 +6768,18 @@ export async function public_api_http_write_file(args: {
 		return {
 			status: 400,
 			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+		} as const;
+	}
+	// A conditional write fills an existing file. `overwrite: "fail"` only creates, and writer mode has
+	// its own expected file checks.
+	if (body._yay.expectedRevision !== undefined && (body._yay.overwrite === "fail" || body._yay.writer)) {
+		return {
+			status: 400,
+			body: await fail({
+				status: 400,
+				message: EXPECTED_REVISION_COMBINATION_MESSAGE,
+				errorCode: "invalid_input",
+			}),
 		} as const;
 	}
 	if (
@@ -6398,6 +6856,8 @@ export async function public_api_http_write_file(args: {
 	// the document, the R2 content snapshot, the committed chunks, and the stored size
 	// must all see the same LF-normalized, BOM-stripped string.
 	const content = files_normalize_text_document_input(body._yay.content);
+	// Only the LF and BOM rule above can make the saved text differ from the request.
+	const contentChanged = content !== body._yay.content;
 	if (content.length === 0) {
 		return {
 			status: 400,
@@ -6582,10 +7042,10 @@ export async function public_api_http_write_file(args: {
 		path: requestedPath,
 		expectedParentNodeId: body._yay.expectedParentNodeId,
 		externalFileWrite,
-		content,
-		contentBytes,
+		change: { kind: "write", content },
 		overwrite,
 		skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
+		expectedRevision: body._yay.expectedRevision,
 		shape,
 		nonCollaborative: body._yay.nonCollaborative ?? false,
 		requestReadOnly: body._yay.access?.readOnly === true,
@@ -6632,6 +7092,9 @@ export async function public_api_http_write_file(args: {
 				path: requestedPath,
 				nodeId: written._yay.nodeId,
 				contentType: written._yay.contentType,
+				revision: written_file_revision(written._yay, requestedPath),
+				size: contentBytes,
+				contentChanged,
 				unchanged: true as const,
 			},
 			headers: { "Cache-Control": "no-store" },
@@ -6682,33 +7145,213 @@ export async function public_api_http_write_file(args: {
 			path: requestedPath,
 			nodeId: written._yay.nodeId,
 			contentType: written._yay.contentType,
+			revision: written_file_revision(written._yay, requestedPath),
+			size: contentBytes,
+			contentChanged,
 		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }
 
-const write_many_body_validator = z.object({
-	force: z.boolean().optional(),
-	files: z
-		.array(
-			z.object({
-				path: z.string(),
-				content: z.string(),
-				overwrite: z.enum(["replace", "fail"]).optional(),
-				/**
-				 * Same meaning as on the single write route.
-				 */
-				nonCollaborative: z.boolean().optional(),
-				/**
-				 * Same meaning as on the single write route.
-				 */
-				contentType: z.string().optional(),
-			}),
-		)
-		.min(1)
-		.max(FILES_WRITE_MANY_MAX_ITEMS),
-	skipIfUnchanged: z.boolean().optional(),
-});
+const edit_file_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		path: z.string(),
+		/**
+		 * The exact text to replace. It must match exactly one place in the file.
+		 */
+		oldText: z.string().min(1),
+		newText: z.string(),
+		/**
+		 * Same meaning as on the write route.
+		 */
+		expectedRevision: z.string().min(1).max(256).optional(),
+	})
+	.strict();
+
+export type public_api_http_edit_file_Body = z.infer<typeof edit_file_body_validator>;
+
+const append_file_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		path: z.string(),
+		/**
+		 * The exact text to add at the end of the file. No newline is added.
+		 */
+		content: z.string(),
+		/**
+		 * Same meaning as on the write route. Send it when you may retry: without it, a retry after a
+		 * lost response can append twice.
+		 */
+		expectedRevision: z.string().min(1).max(256).optional(),
+	})
+	.strict();
+
+export type public_api_http_append_file_Body = z.infer<typeof append_file_body_validator>;
+
+/**
+ * `files/edit` replaces one exact match in an existing text file, and `files/append` adds text at its
+ * end. Both change the file's latest text and save the result like a write.
+ */
+export async function public_api_http_change_file(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/edit" | "/api/v1/files/append";
+}) {
+	const { ctx, request, path } = args;
+
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
+		requiredScope: "files:write" satisfies public_api_Scope,
+		allowedKinds: ["user_api_key"],
+		route: path,
+	});
+	if (auth._nay) {
+		return auth._nay;
+	}
+	const principal = auth._yay.principal;
+	// The change starts from the file's text, so the key must also be allowed to read it.
+	const scopes: readonly public_api_Scope[] = principal.scopes;
+	if (!scopes.includes("files:read")) {
+		return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
+	}
+
+	const body =
+		path === "/api/v1/files/edit"
+			? await server_request_json_parse_and_validate(request, edit_file_body_validator)
+			: await server_request_json_parse_and_validate(request, append_file_body_validator);
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
+	}
+	const change =
+		"oldText" in body._yay
+			? { kind: "edit" as const, oldText: body._yay.oldText, newText: body._yay.newText }
+			: { kind: "append" as const, content: body._yay.content };
+	const texts = change.kind === "edit" ? [change.oldText, change.newText] : [change.content];
+	// A lone half of a character pair can be neither matched nor saved.
+	if (![body._yay.path, ...texts].every((text) => text.isWellFormed())) {
+		return {
+			status: 400,
+			body: { message: "Text must be valid Unicode.", errorCode: "invalid_input" },
+		} as const;
+	}
+	// The file exists, so its path is the exact path a read uses.
+	const requestedPath = body._yay.path;
+	if (
+		!requestedPath.startsWith("/") ||
+		requestedPath !== server_path_normalize(requestedPath) ||
+		/[\\*?\[\]]|\p{Cc}/u.test(requestedPath) ||
+		requestedPath
+			.slice(1)
+			.split("/")
+			.some((segment) => !segment || segment === "." || segment === "..")
+	) {
+		return {
+			status: 400,
+			body: { message: "Path must be a canonical Files path.", errorCode: "invalid_input" },
+		} as const;
+	}
+
+	// Each change is a save, so it costs what a write costs.
+	const credits = await ctx.runQuery(internal.billing.check_credits, {
+		userId: public_api_visibility_user_id(principal),
+		organizationId: principal.organizationId,
+		minimumRequiredCents: 1,
+	});
+	if (!credits.hasCredits) {
+		return { status: 402, body: { message: "Insufficient funds", errorCode: "insufficient_funds" } } as const;
+	}
+
+	const written = await public_api_write_one_text_file(ctx, {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		userId: public_api_visibility_user_id(principal),
+		visibilityUserId: public_api_visibility_user_id(principal),
+		subject: principal.subject,
+		principalRef: { kind: "user_api_key", credentialId: principal.credentialId },
+		path: requestedPath,
+		change,
+		overwrite: "replace",
+		skipIfUnchanged: false,
+		expectedRevision: body._yay.expectedRevision,
+		shape: null,
+		nonCollaborative: false,
+		requestReadOnly: false,
+		force: body._yay.force === true,
+	});
+	if (written._nay) {
+		const failBody = { message: written._nay.message, errorCode: written._nay.data.errorCode };
+		// Branch per literal so the response union keeps exact status literals.
+		if (written._nay.data.status === 400) {
+			return { status: 400, body: failBody } as const;
+		}
+		if (written._nay.data.status === 404) {
+			return { status: 404, body: failBody } as const;
+		}
+		if (written._nay.data.status === 409) {
+			return { status: 409, body: failBody } as const;
+		}
+		if (written._nay.data.status === 403) {
+			return { status: 403, body: failBody } as const;
+		}
+		if (written._nay.data.status === 401) {
+			return { status: 401, body: failBody } as const;
+		}
+		return { status: 500, body: failBody } as const;
+	}
+
+	console.info(written._yay.unchanged ? "Public API file change skipped as unchanged" : "Public API file changed", {
+		principalKind: principal.kind,
+		principalKey: principal.principalKey,
+		change: change.kind,
+		bytes: written._yay.size,
+	});
+	return {
+		status: 200,
+		body: {
+			path: requestedPath,
+			nodeId: written._yay.nodeId,
+			contentType: written._yay.contentType,
+			revision: written_file_revision(written._yay, requestedPath),
+			size: written._yay.size,
+			contentChanged: written._yay.contentChanged,
+			...(written._yay.unchanged ? { unchanged: true as const } : {}),
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const write_many_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		files: z
+			.array(
+				z
+					.object({
+						path: z.string(),
+						content: z.string(),
+						overwrite: z.enum(["replace", "fail"]).optional(),
+						/**
+						 * Same meaning as on the single write route. Each file is checked on its own.
+						 */
+						expectedRevision: z.string().min(1).max(256).optional(),
+						/**
+						 * Same meaning as on the single write route.
+						 */
+						nonCollaborative: z.boolean().optional(),
+						/**
+						 * Same meaning as on the single write route.
+						 */
+						contentType: z.string().optional(),
+					})
+					.strict(),
+			)
+			.min(1)
+			.max(FILES_WRITE_MANY_MAX_ITEMS),
+		skipIfUnchanged: z.boolean().optional(),
+	})
+	.strict();
 
 export type public_api_http_write_many_Body = z.infer<typeof write_many_body_validator>;
 
@@ -6749,7 +7392,7 @@ export async function public_api_http_write_many(args: {
 	}
 	const body = write_many_body_validator.safeParse(bodyJson);
 	if (!body.success) {
-		return { status: 400, body: { message: "Request body validation failed" } } as const;
+		return { status: 400, body: { message: server_request_body_issue_message(body.error) } } as const;
 	}
 
 	// Validate every item with the single-route rules before writing anything, so a
@@ -6761,8 +7404,10 @@ export async function public_api_http_write_many(args: {
 		content: string;
 		contentBytes: number;
 		overwrite: "replace" | "fail";
+		expectedRevision: string | undefined;
 		shape: { contentType: files_ContentType; rootKind: files_YjsRootKind } | null;
 		nonCollaborative: boolean;
+		contentChanged: boolean;
 	}> = [];
 	const seenPaths = new Set<string>();
 	// Resolve every path at once. The loop below still checks items in request order, so the first
@@ -6788,6 +7433,9 @@ export async function public_api_http_write_many(args: {
 		}
 		if (requestedPath === "/") {
 			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
+		}
+		if (file.expectedRevision !== undefined && file.overwrite === "fail") {
+			return { status: 400, body: { message: EXPECTED_REVISION_COMBINATION_MESSAGE, path: file.path } } as const;
 		}
 		const name = path_name_of(requestedPath);
 		if (!public_api_is_valid_write_file_name(name)) {
@@ -6844,8 +7492,10 @@ export async function public_api_http_write_many(args: {
 			content,
 			contentBytes,
 			overwrite: file.overwrite ?? "replace",
+			expectedRevision: file.expectedRevision,
 			shape,
 			nonCollaborative: file.nonCollaborative ?? false,
+			contentChanged: content !== file.content,
 		});
 	}
 
@@ -6935,10 +7585,10 @@ export async function public_api_http_write_many(args: {
 						subject: principal.subject,
 						principalRef,
 						path: file.path,
-						content: file.content,
-						contentBytes: file.contentBytes,
+						change: { kind: "write", content: file.content },
 						overwrite: file.overwrite,
 						skipIfUnchanged: body.data.skipIfUnchanged ?? false,
+						expectedRevision: file.expectedRevision,
 						shape: file.shape,
 						nonCollaborative: file.nonCollaborative ?? false,
 						// Write-many creates ordinary writable files.
@@ -6972,12 +7622,22 @@ export async function public_api_http_write_many(args: {
 		path: string;
 		nodeId: Id<"files_nodes">;
 		contentType: files_ContentType;
+		revision: string;
+		size: number;
+		contentChanged: boolean;
 		unchanged?: true;
 	}> = [];
 	const errors: Array<{
 		path: string;
 		message: string;
-		errorCode: "permission_denied" | "conflict" | "storage_failure";
+		errorCode:
+			| "permission_denied"
+			| "conflict"
+			| "storage_failure"
+			| "file_changed"
+			| "file_not_latest"
+			| "file_needs_repair"
+			| "file_busy";
 	}> = [];
 	// Report in request order. Skipped files have no result.
 	for (const [index, file] of validatedFiles.entries()) {
@@ -7001,6 +7661,14 @@ export async function public_api_http_write_many(args: {
 			) {
 				throw should_never_happen("File ref refusal in a batch write", { path: file.path });
 			}
+			// Only edits and appends refuse a missing file or a text match, and this route only writes.
+			if (
+				result._nay.data.errorCode === "not_found" ||
+				result._nay.data.errorCode === "text_not_found" ||
+				result._nay.data.errorCode === "text_not_unique"
+			) {
+				throw should_never_happen("Edit refusal in a batch write", { path: file.path });
+			}
 			errors.push({
 				path: file.path,
 				message: result._nay.message,
@@ -7012,6 +7680,9 @@ export async function public_api_http_write_many(args: {
 			path: file.path,
 			nodeId: result._yay.nodeId,
 			contentType: result._yay.contentType,
+			revision: written_file_revision(result._yay, file.path),
+			size: file.contentBytes,
+			contentChanged: file.contentChanged,
 			...(result._yay.unchanged ? { unchanged: true as const } : {}),
 		});
 	}
@@ -7030,10 +7701,12 @@ export async function public_api_http_write_many(args: {
 	} as const;
 }
 
-const touch_files_body_validator = z.object({
-	force: z.boolean().optional(),
-	paths: z.array(z.string()).min(1).max(FILES_TOUCH_MAX_PATHS),
-});
+const touch_files_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		paths: z.array(z.string()).min(1).max(FILES_TOUCH_MAX_PATHS),
+	})
+	.strict();
 
 export type public_api_http_touch_files_Body = z.infer<typeof touch_files_body_validator>;
 
@@ -7408,11 +8081,13 @@ export async function public_api_http_touch_files(args: {
 	} as const;
 }
 
-const download_urls_body_validator = z.object({
-	fileNodeIds: z.array(z.string().min(1)).min(1).max(FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS),
-	expiresInSeconds: z.number().int().min(1).max(FILES_DOWNLOAD_URL_MAX_TTL_SECONDS).optional(),
-	download: z.boolean().optional(),
-});
+const download_urls_body_validator = z
+	.object({
+		fileNodeIds: z.array(z.string().min(1)).min(1).max(FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS),
+		expiresInSeconds: z.number().int().min(1).max(FILES_DOWNLOAD_URL_MAX_TTL_SECONDS).optional(),
+		download: z.boolean().optional(),
+	})
+	.strict();
 
 export type public_api_http_download_urls_Body = z.infer<typeof download_urls_body_validator>;
 
@@ -7439,7 +8114,7 @@ export async function public_api_http_download_urls(args: {
 	}
 	const body = download_urls_body_validator.safeParse(bodyJson);
 	if (!body.success) {
-		return { status: 400, body: { message: "Request body validation failed" } } as const;
+		return { status: 400, body: { message: server_request_body_issue_message(body.error) } } as const;
 	}
 	// Duplicate ids never consume principal capacity or start file work.
 	if (new Set(body.data.fileNodeIds).size !== body.data.fileNodeIds.length) {
@@ -7757,21 +8432,25 @@ export async function public_api_http_download_urls(args: {
 	} as const;
 }
 
-const upload_urls_body_validator = z.object({
-	force: z.boolean().optional(),
-	files: z
-		.array(
-			z.object({
-				path: z.string(),
-				contentType: z.string().min(1).max(200),
-				size: z.number().int().min(1),
-			}),
-		)
-		.min(1)
-		.max(FILES_UPLOAD_URLS_MAX_ITEMS),
-	skipProcessing: z.boolean().optional(),
-	overwrite: z.enum(["replace", "fail"]).optional(),
-});
+const upload_urls_body_validator = z
+	.object({
+		force: z.boolean().optional(),
+		files: z
+			.array(
+				z
+					.object({
+						path: z.string(),
+						contentType: z.string().min(1).max(200),
+						size: z.number().int().min(1),
+					})
+					.strict(),
+			)
+			.min(1)
+			.max(FILES_UPLOAD_URLS_MAX_ITEMS),
+		skipProcessing: z.boolean().optional(),
+		overwrite: z.enum(["replace", "fail"]).optional(),
+	})
+	.strict();
 
 export type public_api_http_upload_urls_Body = z.infer<typeof upload_urls_body_validator>;
 
@@ -7880,13 +8559,15 @@ export async function public_api_http_upload_urls(args: {
 	} as const;
 }
 
-const start_activity_body_validator = z.object({
-	// "" (after trimming) = no custom title; the host composes one from the plugin's
-	// display name and the triggering file's name.
-	title: z.string().trim().max(ACTIVITIES_TITLE_MAX_CHARS),
-	// This estimate controls the Overdue label. The execution deadline stays separate.
-	timeoutMs: z.number().int().min(1).max(ACTIVITIES_ESTIMATE_MAX_MS),
-});
+const start_activity_body_validator = z
+	.object({
+		// "" (after trimming) = no custom title; the host composes one from the plugin's
+		// display name and the triggering file's name.
+		title: z.string().trim().max(ACTIVITIES_TITLE_MAX_CHARS),
+		// This estimate controls the Overdue label. The execution deadline stays separate.
+		timeoutMs: z.number().int().min(1).max(ACTIVITIES_ESTIMATE_MAX_MS),
+	})
+	.strict();
 
 export type public_api_http_start_activity_Body = z.infer<typeof start_activity_body_validator>;
 

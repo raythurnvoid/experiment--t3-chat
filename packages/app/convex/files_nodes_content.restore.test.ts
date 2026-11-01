@@ -12,6 +12,7 @@ import {
 	test_get_file_yjs_pointers,
 	test_meta_search,
 	test_mocks_fill_db_with,
+	test_push_empty_yjs_update,
 	test_run_with_flush,
 	test_spy_move_ranges,
 } from "./setup.test.ts";
@@ -55,10 +56,11 @@ describe("cleanup_file_yjs_task", () => {
 	test("bounded cleanup retires before new history and a late task cannot delete the next OFF history", async () => {
 		const { t, db, asUser, nodeId, pointers } = await create_file_fixture();
 		await test_run_with_flush(t, async (ctx) => {
-			await ctx.db.patch("files_yjs_snapshots", pointers.yjsSnapshotId, { sequence: 64 });
-			await ctx.db.patch("files_yjs_docs_last_sequences", pointers.yjsLastSequenceId, { lastSequence: 64 });
+			// Cleanup deletes one update doc per call, so two docs need two calls.
+			await ctx.db.patch("files_yjs_snapshots", pointers.yjsSnapshotId, { sequence: 2 });
+			await ctx.db.patch("files_yjs_docs_last_sequences", pointers.yjsLastSequenceId, { lastSequence: 2 });
 			await Promise.all(
-				Array.from({ length: 64 }, (_, index) =>
+				Array.from({ length: 2 }, (_, index) =>
 					ctx.db.insert("files_yjs_updates", {
 						organizationId: db.organizationId,
 						workspaceId: db.workspaceId,
@@ -91,7 +93,7 @@ describe("cleanup_file_yjs_task", () => {
 		).toBe(true);
 
 		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
-		expect(await t.run(async (ctx) => ctx.db.query("files_yjs_updates").collect())).toHaveLength(32);
+		expect(await t.run(async (ctx) => ctx.db.query("files_yjs_updates").collect())).toHaveLength(1);
 		expect(
 			(
 				await asUser.action(api.files_nodes_content.set_file_collaborative, {
@@ -601,6 +603,8 @@ describe("materialize_file_content and restore_snapshot_r2", () => {
 describe("materialize_file_content", () => {
 	test("two workers for the same counter publish once and retire the unused uploads", async () => {
 		const { t, scope, nodeId, pointers } = await create_file_fixture();
+		// The snapshot already covers sequence 0, so a worker needs a newer update to publish.
+		const targetSequence = await test_push_empty_yjs_update(t, { ...scope, nodeId });
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const fetchMock = vi.mocked(globalThis.fetch);
@@ -617,14 +621,14 @@ describe("materialize_file_content", () => {
 		const first = t.action(internal.files_nodes_content.materialize_file_content, {
 			...scope,
 			nodeId,
-			targetSequence: 0,
+			targetSequence,
 		});
 		await started.promise;
 		try {
 			const second = await t.action(internal.files_nodes_content.materialize_file_content, {
 				...scope,
 				nodeId,
-				targetSequence: 0,
+				targetSequence,
 			});
 			expect(second._nay).toBeUndefined();
 		} finally {
@@ -640,6 +644,7 @@ describe("materialize_file_content", () => {
 
 	test("a worker paused before OFF and ON cannot publish into the new document", async () => {
 		const { t, db, asUser, scope, nodeId, pointers } = await create_file_fixture();
+		const targetSequence = await test_push_empty_yjs_update(t, { ...scope, nodeId });
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const fetchMock = vi.mocked(globalThis.fetch);
@@ -656,16 +661,27 @@ describe("materialize_file_content", () => {
 		const materializing = t.action(internal.files_nodes_content.materialize_file_content, {
 			...scope,
 			nodeId,
-			targetSequence: 0,
+			targetSequence,
 		});
 		await started.promise;
 		try {
+			// OFF waits until the text is saved. A second worker saves it while the first one stays paused.
+			const saved = await t.action(internal.files_nodes_content.materialize_file_content, {
+				...scope,
+				nodeId,
+				targetSequence,
+			});
+			expect(saved._nay).toBeUndefined();
 			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 				membershipId: db.membershipId,
 				nodeId,
 				acknowledgeDropCollaborativeHistory: true,
 			});
 			expect(off._nay).toBeUndefined();
+			// ON waits until the old update doc is deleted.
+			for (const task of await t.run((ctx) => ctx.db.query("files_yjs_cleanup_tasks").collect())) {
+				await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
+			}
 			const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
 				membershipId: db.membershipId,
 				nodeId,

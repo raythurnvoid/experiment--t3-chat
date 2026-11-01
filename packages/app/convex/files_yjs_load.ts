@@ -108,6 +108,7 @@ export const yjs_get_incremental_updates = query({
 		v.object({
 			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 			pendingContentVersion: v.number(),
+			lastSequence: v.number(),
 			updates: v.array(doc(app_convex_schema, "files_yjs_updates")),
 		}),
 		v.null(),
@@ -150,13 +151,19 @@ export const yjs_get_incremental_updates = query({
 		}
 
 		const sequence = await files_saved_placement_db_get_sequence(ctx.db, fileNode);
-		if (!sequence) return null;
+		const snapshot = fileNode.yjsSnapshotId && (await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId));
+		if (!sequence || !snapshot) return null;
+
+		// Read from the update at the snapshot sequence. The snapshot holds the older updates, and a
+		// save deletes them soon after. An editor that misses an update sees the gap against
+		// `lastSequence` and loads the snapshot again.
 		const updates = await files_saved_content_collect(
 			files_saved_content_db_yjs_updates(ctx.db, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				nodeId: args.nodeId,
 				order: "desc",
+				afterSequence: snapshot.sequence - 1,
 				throughSequence: sequence.lastSequence,
 			}),
 		);
@@ -166,6 +173,7 @@ export const yjs_get_incremental_updates = query({
 		return {
 			yjsLastSequenceId: fileNode.yjsLastSequenceId,
 			pendingContentVersion: fileNode.pendingContentVersion,
+			lastSequence: sequence.lastSequence,
 			updates,
 		};
 	},

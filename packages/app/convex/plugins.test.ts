@@ -15,6 +15,7 @@ import {
 	test_convex,
 	test_create_saved_text_file,
 	test_mocks_fill_db_with,
+	test_push_empty_yjs_update,
 	test_run_with_flush,
 } from "./setup.test.ts";
 import {
@@ -2221,7 +2222,7 @@ describe("plugins Phase 0", () => {
 		});
 
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "A file already exists at this path" });
+		expect(await response.json()).toEqual({ message: "A file already exists at this path", errorCode: "conflict" });
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		// The failed constraint still burned a quota slot.
 		expect(run?.apiCallCount).toBe(1);
@@ -2368,7 +2369,7 @@ describe("plugins Phase 0", () => {
 			body: JSON.stringify({ path: "/media/locked-note.md", content: "SECRET-PLUGIN-OUTPUT\n" }),
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run?.apiCallCount).toBe(2);
@@ -2523,7 +2524,7 @@ describe("plugins Phase 0", () => {
 			}),
 		});
 		expect(relativeTraversal.status).toBe(400);
-		expect(await relativeTraversal.json()).toEqual({ message: "Path must be absolute." });
+		expect(await relativeTraversal.json()).toEqual({ message: "Path must be absolute.", errorCode: "invalid_input" });
 
 		// An absolute path outside the source file's parent violates the sibling constraint.
 		const escapedSibling = await t.fetch("/api/v1/files/write", {
@@ -2539,7 +2540,7 @@ describe("plugins Phase 0", () => {
 			}),
 		});
 		expect(escapedSibling.status).toBe(403);
-		expect(await escapedSibling.json()).toEqual({ message: "Permission denied" });
+		expect(await escapedSibling.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		// Both rejected attempts burned quota slots.
@@ -2645,6 +2646,7 @@ describe("plugins Phase 0", () => {
 		expect(await rejected.json()).toEqual({
 			message:
 				'File name "Plugin Live Image 20260702T011841Z.png.description.md" is not allowed. Use only lowercase letters, digits, and single "-", "_", or "." between them, with none of those at the start or end. Try "plugin-live-image-20260702t011841z.png.description.md".',
+			errorCode: "invalid_input",
 		});
 
 		const response = await t.fetch("/api/v1/files/write", {
@@ -3008,7 +3010,7 @@ describe("plugins Phase 0", () => {
 			}),
 		});
 		expect(response.status).toBe(402);
-		expect(await response.json()).toEqual({ message: "Insufficient funds" });
+		expect(await response.json()).toEqual({ message: "Insufficient funds", errorCode: "insufficient_funds" });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		// The refused call still burned a quota slot but wrote nothing.
@@ -3230,6 +3232,71 @@ describe("plugins Phase 0", () => {
 		// Cleanup settled the consumed call as failed.
 		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
 		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
+	});
+
+	test("a write that tries again keeps its plugin call open until it saves", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		// Keep R2 objects in memory. Someone types once, while the first fill attempt uploads.
+		const objects = new Map<string, BodyInit>();
+		let typeDuringUpload: Id<"files_nodes"> | null = null;
+		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key = "test-upload-key") => ({
+			key,
+			url: `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		}));
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.mocked(fetch).mockImplementation(async (input, init) => {
+			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			if (url.origin !== "https://r2.test") return new Response(null, { status: 200 });
+			const key = url.searchParams.get("key")!;
+			if (init?.method === "PUT") {
+				objects.set(key, init.body ?? "");
+				if (typeDuringUpload) {
+					const nodeId = typeDuringUpload;
+					typeDuringUpload = null;
+					await test_push_empty_yjs_update(t, { ...fixture.membership, nodeId });
+				}
+				return new Response(null);
+			}
+			const body = objects.get(key);
+			return body === undefined ? new Response(null, { status: 404 }) : new Response(body);
+		});
+		const runId = await insert_event_run({
+			t,
+			fixture,
+			eventId: "plugin:retry-keeps-call-test",
+			status: "queued",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const apiToken = `plr_${"3".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+		const write = (content: string) =>
+			t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ path: "/expired.png.description.md", content }),
+			});
+		const created = await write("# One");
+		expect(created.status).toBe(200);
+		const { nodeId } = (await created.json()) as { nodeId: Id<"files_nodes"> };
+
+		typeDuringUpload = nodeId;
+		const filled = await write("# Two");
+		expect(filled.status).toBe(200);
+		expect(typeDuringUpload).toBeNull();
+
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded"]);
 	});
 
 	test("a destination locked between staging and publish settles the plugin call as a conflict", async () => {
@@ -8722,7 +8789,7 @@ describe("plugins metadata file doors", () => {
 				body: { path, content: "# No\n" },
 			});
 			expect(refused.status).toBe(403);
-			expect(await refused.json()).toEqual({ message: "Permission denied" });
+			expect(await refused.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 			expect(await find_active_node({ t, fixture, path })).toBeNull();
 		}
 
@@ -8778,6 +8845,7 @@ describe("plugins metadata file doors", () => {
 			expect(refused.status).toBe(403);
 			expect(await refused.json()).toEqual({
 				message: `This write adds a reference to a file this plugin cannot read: ${src.replace("\\", "")}`,
+				errorCode: "file_reference_denied",
 			});
 		}
 		// An `<image>` tag, which a browser reads as an image.
@@ -8818,7 +8886,10 @@ describe("plugins metadata file doors", () => {
 		const many = Array.from({ length: 51 }, (_, index) => `![x](bonobo-file://many${index})`).join("\n\n");
 		const tooMany = await write(many);
 		expect(tooMany.status).toBe(400);
-		expect(await tooMany.json()).toEqual({ message: "This write adds more than 50 new file references" });
+		expect(await tooMany.json()).toEqual({
+			message: "This write adds more than 50 new file references",
+			errorCode: "file_reference_limit",
+		});
 	});
 
 	test("the archive door keeps Read-only and retains a branch without the plugin label", async () => {

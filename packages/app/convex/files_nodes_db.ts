@@ -119,6 +119,7 @@ export async function db_get_file_content_materialization_db_state(
 	const yjsUpdatesDocs: Doc<"files_yjs_updates">[] = [];
 	for await (const update of files_saved_content_db_yjs_updates(ctx.db, {
 		...args,
+		afterSequence: header.yjsSnapshotDoc.sequence,
 		throughSequence: header.yjsLastSequenceDoc.lastSequence,
 	}))
 		yjsUpdatesDocs.push(update);
