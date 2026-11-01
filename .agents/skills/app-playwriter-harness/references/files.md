@@ -309,6 +309,16 @@ Verified 2026-10-31 on `/u55` in `chitchat-qa/xfer-qa-0914`. Second-user check, 
 inside and grant the member `read`. The member's Accept stays enabled, and the run then stops with
 "Permission denied". After a `write` grant the same Accept succeeds.
 
+A Move that replaces a Read-only file: the agent's `mv` refuses an existing destination name
+("mv: The destination already exists"); `mv -f` drafts a Move that replaces it (`Replaced` caption).
+The draft itself is refused while the destination is locked, so clear the flag, draft, then set it again.
+The row's Accept is then disabled, because the Pending tab checks that the replaced file is writable.
+To reach the server check, call `files_pending_update_runs.start` (`kind: "accept"`, the row's
+`pendingUpdateId` and `revision` from `files_pending_target.get_file_pending_target`) and `seal` from page
+context. The run ends "Some changes still need review."; `files_pending_update_runs.list_items` gives the
+item text "The destination file is read-only. Unlock it, then try again." Fixture: the "Move that
+replaces a Read-only file" row in the qa-data catalog. Verified 2026-11-01.
+
 ## Common Gotchas
 
 - Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.
