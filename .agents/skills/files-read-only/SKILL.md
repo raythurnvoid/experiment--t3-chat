@@ -254,10 +254,13 @@ after the start, the item fails with "The destination folder is read-only.". Whe
 is a draft folder, the lock is on a saved folder above it, so the text is "A folder in the
 destination path is read-only.".
 
-A Copy or Move that merges into a folder or replaces a file checks that item too. When it became
-Read-only after the start, the Activity says "The destination folder is read-only." or "The
-destination file is read-only.". When the item is a draft, the lock is on a saved folder above it,
-so the text is "A folder in the destination path is read-only.".
+A Copy or Move that merges into a folder or replaces a file checks that item too. When it is
+Read-only, the text says "The destination folder is read-only." or "The destination file is
+read-only.". When the item is a draft, the lock is on a saved folder above it, so the text is "A
+folder in the destination path is read-only.". Before it saves, the Move checks the replaced item and
+the items inside it again, and says "An item the Move replaces is read-only.". A folder that a Move
+creates on the way to its destination checks the folder above it, and says "A folder in the
+destination path is read-only.".
 
 ## Human-approved delete exception
 

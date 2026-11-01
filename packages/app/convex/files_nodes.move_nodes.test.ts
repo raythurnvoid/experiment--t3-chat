@@ -600,7 +600,11 @@ describe("reviewed Move graph", () => {
 					});
 					const review = await accept_move_proposals_for_test(t, db, [proposal!._id, parentMove.pendingUpdateId]);
 					expect(review.activity?.status).toBe("failed");
-					expect(review.units.some((unit) => unit.errorMessage === "This item is read-only.")).toBe(true);
+					expect(
+						review.units.some(
+							(unit) => unit.errorMessage === "An item the Move replaces is read-only. Unlock it, then try again.",
+						),
+					).toBe(true);
 				} else
 					expect(result._nay.message).toBe(childState === "active" ? "Directory not empty" : "This item is read-only.");
 				expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);

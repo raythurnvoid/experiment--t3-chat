@@ -3824,7 +3824,10 @@ describe("apply_file_pending_move", () => {
 			membershipId: db.membershipId,
 			...move,
 		});
-		expect(applied._nay).toMatchObject({ name: "read_only" });
+		expect(applied._nay).toMatchObject({
+			name: "read_only",
+			message: "The destination file is read-only. Unlock it, then try again.",
+		});
 		const docs = await t.run(async (ctx) => ({
 			source: await ctx.db.get("files_nodes", nodeId),
 			occupantNode: await ctx.db.get("files_nodes", occupant._yay.nodeId),

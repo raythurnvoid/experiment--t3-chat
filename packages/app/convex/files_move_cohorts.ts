@@ -1650,6 +1650,12 @@ async function db_headers(
 			...physical,
 			...placement_header_from_place(old!),
 		});
+		// The review or the Activity shows this text on the moved item. A replacement record is the item the
+		// Move replaces or an item inside it, so name neither one.
+		if (authorized._nay?.name === "read_only")
+			return Result({
+				_nay: { name: "read_only", message: "An item the Move replaces is read-only. Unlock it, then try again." },
+			});
 		if (authorized._nay) return authorized;
 	}
 	const afterArchive = archiveOperationId ?? parent?.archiveOperationId ?? null;
@@ -1687,6 +1693,17 @@ async function db_headers(
 						_nay: { name: "destination_changed", message: "The destination is occupied. Review this Move again." },
 					});
 				const access = await db_authorize_node(ctx, cohort, actor, occupant);
+				// The review or the Activity shows this text on the moved item, not on the item it replaces.
+				if (access._nay?.name === "read_only")
+					return Result({
+						_nay: {
+							name: "read_only",
+							message:
+								occupant.kind === "folder"
+									? "The destination folder is read-only. Unlock it, then try again."
+									: "The destination file is read-only. Unlock it, then try again.",
+						},
+					});
 				if (access._nay) return access;
 				if (occupant.kind === "folder") {
 					const child = await ctx.db
@@ -1828,7 +1845,17 @@ async function db_authorize_record(
 			after.parentId === "root"
 				? null
 				: await files_saved_placement_db_get_node(ctx.db, after.parentId, { cohortId: cohort._id, view: "after" });
-		return await db_authorize_node(ctx, cohort, recordActor, parent);
+		const access = await db_authorize_node(ctx, cohort, recordActor, parent);
+		// A derived folder is one the Move creates on the way to the destination. The Activity shows this
+		// text on the moved item, so name the folder above, not the item.
+		if (access._nay?.name === "read_only")
+			return Result({
+				_nay: {
+					name: "read_only",
+					message: "A folder in the destination path is read-only. Unlock it, then try again.",
+				},
+			});
+		return access;
 	}
 	let sourceId = record.nodeId;
 	let archiveDescendant = false;
@@ -1872,6 +1899,12 @@ async function db_authorize_record(
 	// the text is saved and shown later without a new access check.
 	if (archiveDescendant && access._nay?.name === "read_only")
 		return Result({ _nay: { name: "read_only", message: "An item inside it is read-only. Unlock it, then try again." } });
+	// A replacement record is the item the Move replaces or an item inside it. The text shows on the
+	// moved item, so name neither one.
+	if (record.role === "replacement" && access._nay?.name === "read_only")
+		return Result({
+			_nay: { name: "read_only", message: "An item the Move replaces is read-only. Unlock it, then try again." },
+		});
 	return access;
 }
 
