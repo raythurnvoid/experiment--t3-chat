@@ -749,8 +749,9 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 	nodeId: app_convex_Id<"files_nodes">;
 }) {
 	// The snapshot, the updates, and the sequence doc come from three separate reads. If someone
-	// turns collaboration off and on between them, they describe two different documents. Read
-	// all three again until they agree. Three tries cover one toggle landing in the middle.
+	// turns collaboration off and on between them, they describe two different documents. If a save
+	// lands between them, the updates may not continue the snapshot. Read all three again until they
+	// agree. Three tries cover one change landing in the middle.
 	for (let attempt = 0; attempt < 3; attempt++) {
 		const [yjsSnapshotTarget, yjsUpdatesData, yjsLastSequenceDoc] = await Promise.all([
 			app_convex.action(app_convex_api.files_yjs_load.yjs_prepare_doc_last_snapshot, args),
@@ -771,7 +772,6 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 			continue;
 		}
 
-		const yjsSnapshotUpdate = await files_yjs_fetch_snapshot(yjsSnapshotTarget.snapshotUrl);
 		const yjsSnapshotDoc = yjsSnapshotTarget.snapshot;
 
 		// By default the API returns updates in descending order; normalize to ascending and filter
@@ -779,6 +779,26 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 		const filteredIncrementalUpdates = yjsUpdatesData.updates
 			.filter((u: app_convex_Doc<"files_yjs_updates">) => u.sequence > yjsSnapshotDoc.sequence)
 			.reverse();
+
+		// The updates must continue the snapshot without a gap, at least up to the newest sequence that
+		// either query returns. The two queries can answer from different moments. A save that installs a
+		// newer snapshot drops the older updates from the update list. The old snapshot plus the newer
+		// updates would then miss text. So read all three again.
+		//
+		// Return the sequence the loaded document really ends at. A save can land just before the snapshot
+		// read, so the snapshot can be newer than both queries.
+		const lastSequence = Math.max(yjsLastSequenceDoc.lastSequence, yjsUpdatesData.lastSequence);
+		const loadedSequence = yjsSnapshotDoc.sequence + filteredIncrementalUpdates.length;
+		const isContinuous =
+			filteredIncrementalUpdates.every(
+				(u: app_convex_Doc<"files_yjs_updates">, index: number) => u.sequence === yjsSnapshotDoc.sequence + index + 1,
+			) && loadedSequence >= lastSequence;
+		if (!isContinuous) {
+			await delay(250);
+			continue;
+		}
+
+		const yjsSnapshotUpdate = await files_yjs_fetch_snapshot(yjsSnapshotTarget.snapshotUrl);
 
 		const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotUpdate, {
 			additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map(
@@ -793,7 +813,7 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 		return {
 			text,
 			yjsDoc,
-			yjsSequence: yjsLastSequenceDoc.lastSequence,
+			yjsSequence: loadedSequence,
 			textKind,
 			yjsLastSequenceId: yjsSnapshotTarget.yjsLastSequenceId,
 			pendingContentVersion: yjsSnapshotTarget.pendingContentVersion,

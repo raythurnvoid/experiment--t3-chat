@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, test, vi } from 
 import { api, internal } from "./_generated/api.js";
 import { getFunctionName, type FunctionArgs } from "convex/server";
 import type { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server.js";
 import {
 	test_convex,
 	test_db_hold_move_source,
@@ -23,18 +24,23 @@ import {
 	test_spy_handler,
 } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-yjs.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { r2_confirmed_object_delete, r2_server_side_copy } from "./r2_client.ts";
 import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { prepare_file_write } from "./public_api.ts";
+import { get_by_path, get_file_content_materialization_state, read_file_content_from_chunks } from "./files_nodes.ts";
+import { stage_trusted_yjs_update } from "./files_pending_updates.ts";
 import { delete_paths, transfer_paths } from "./public_api_files_organize.ts";
 import { mock_transfer_storage } from "./files_transfer.setup.test.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	files_get_utf8_byte_size,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
+	files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES,
+	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
 	files_NAME_MAX_LENGTH,
 	files_NEW_FOLDER_DEPTH_MAX,
 	files_PATH_MAX_LENGTH,
@@ -1848,6 +1854,7 @@ describe("public files API", () => {
 			["/api/v1/files/list", { contentTypePrefixes: [] }],
 			["/api/v1/files/read", { path: "/file.md", cursor: 42 }],
 			["/api/v1/files/write", { path: 42, content: "" }],
+			["/api/v1/files/write-many", { files: 42 }],
 			["/api/v1/files/download-urls", { fileNodeIds: [] }],
 		] as const) {
 			const response = await t.fetch(path, {
@@ -1858,7 +1865,9 @@ describe("public files API", () => {
 			expect(response.status).toBe(400);
 			expect(await response.json()).toEqual({
 				message: "Request body validation failed",
-				...(path === "/api/v1/files/read" || path === "/api/v1/files/write" ? { errorCode: "invalid_input" } : {}),
+				...(path === "/api/v1/files/read" || path === "/api/v1/files/write" || path === "/api/v1/files/write-many"
+					? { errorCode: "invalid_input" }
+					: {}),
 			});
 		}
 
@@ -7676,7 +7685,7 @@ describe("files write-many", () => {
 			body: JSON.stringify({ files: [{ path: "/big.md", content: "x".repeat(8_500_000) }] }),
 		});
 		expect(oversized.status).toBe(400);
-		expect(await oversized.json()).toEqual({ message: "Request body is too large" });
+		expect(await oversized.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
 
 		// One item over the batch item cap fails shape validation.
 		const overfull = await t.fetch("/api/v1/files/write-many", {
@@ -7687,7 +7696,7 @@ describe("files write-many", () => {
 			}),
 		});
 		expect(overfull.status).toBe(400);
-		expect(await overfull.json()).toEqual({ message: "Request body validation failed" });
+		expect(await overfull.json()).toEqual({ message: "Request body validation failed", errorCode: "invalid_input" });
 
 		for (const path of ["/big.md", "/cap/file-0.md"]) {
 			expect(await find_active_node({ t, db, path })).toBeNull();
@@ -7746,7 +7755,7 @@ describe("files write-many", () => {
 			}),
 		});
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthenticated" });
+		expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 
 		// The first file survived; the aborted items were never published and left no stage.
 		expect(await find_active_node({ t, db, path: "/abort/first.md" })).not.toBeNull();
@@ -7776,6 +7785,7 @@ describe("files write-many", () => {
 		expect(await invalid.json()).toEqual({
 			message:
 				'File name "Bad Report.txt" is not allowed. Use only lowercase letters, digits, and single "-", "_", or "." between them, with none of those at the start or end. Try "bad-report.txt".',
+			errorCode: "invalid_input",
 			path: "/bad/Bad Report.txt",
 		});
 
@@ -7790,7 +7800,11 @@ describe("files write-many", () => {
 			}),
 		});
 		expect(duplicate.status).toBe(400);
-		expect(await duplicate.json()).toEqual({ message: "Duplicate path in batch", path: "/dup/a.md" });
+		expect(await duplicate.json()).toEqual({
+			message: "Duplicate path in batch",
+			errorCode: "invalid_input",
+			path: "/dup/a.md",
+		});
 
 		// The refused batches wrote nothing: not even their valid items exist.
 		for (const path of ["/ok/good.md", "/dup/a.md"]) {
@@ -8053,7 +8067,7 @@ async function seed_revision_writer(
 			headers: auth_headers(credential),
 			body: JSON.stringify({ path }),
 		});
-	return { t, db, credential, credentialId: created._yay.credentialId, write, read };
+	return { t, db, asUser, credential, credentialId: created._yay.credentialId, write, read };
 }
 
 describe("files write conflicts", () => {
@@ -8161,6 +8175,16 @@ describe("files write conflicts", () => {
 			expect(refused.status).toBe(409);
 			expect(await refused.json()).toMatchObject({ errorCode: "file_needs_repair" });
 		}
+
+		// A document whose roots do not fit the file's shape cannot be rebuilt at all.
+		const plain = await write({ path: "/revision/plain.txt", content: "one\n" });
+		const plainNodeId = ((await plain.json()) as { nodeId: Id<"files_nodes"> }).nodeId;
+		await test_run_with_flush(t, async (ctx) => {
+			await ctx.db.patch("files_nodes", plainNodeId, { textKind: "rich_text", contentShapeMismatchAt: Date.now() });
+		});
+		const refused = await write({ path: "/revision/plain.txt", content: "two\n" });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toMatchObject({ errorCode: "file_needs_repair" });
 	});
 
 	test("write-many checks each item's revision on its own", async () => {
@@ -8213,6 +8237,92 @@ describe("files write conflicts", () => {
 		expect(await (await read()).text()).toBe("# Two\n");
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
 		expect(stages).toEqual([]);
+	});
+
+	test("a write over too many unsaved editor updates answers file_busy or file_needs_repair and leaves no stage", async () => {
+		const { t, credential, write, read } = await seed_revision_writer("clerk-revision-budget");
+		const first = await write({ content: "# One\n" });
+		const { nodeId } = (await first.json()) as { nodeId: Id<"files_nodes"> };
+		const set_budget = (budget: { unmaterializedUpdateCount: number; unmaterializedUpdateBytes: number }) =>
+			t.run(async (ctx) => {
+				const { db } = files_content_heads_db_wrap(ctx);
+				const node = await db.get("files_nodes", nodeId);
+				await db.patch("files_yjs_docs_last_sequences", node!.yjsLastSequenceId!, budget);
+			});
+
+		// Someone's typing filled the update budget, and the background save has not run yet.
+		await set_budget({
+			unmaterializedUpdateCount: files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
+			unmaterializedUpdateBytes: 0,
+		});
+		const busy = await write({ content: "# Two\n" });
+		expect(busy.status).toBe(409);
+		expect(await busy.json()).toMatchObject({ errorCode: "file_busy" });
+		expect(await (await read()).text()).toBe("# One\n");
+
+		// The typed text is too large to save, so the background save can never free the budget. Only the
+		// Yjs reserve gate sees a full byte budget, because it needs the size of the write's own update.
+		await t.run(async (ctx) => {
+			const { db } = files_content_heads_db_wrap(ctx);
+			await db.patch("files_nodes", nodeId, { contentTooLargeByteSize: 1_000_000 });
+		});
+		await set_budget({
+			unmaterializedUpdateCount: 0,
+			unmaterializedUpdateBytes: files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES,
+		});
+		const refused = await write({ content: "# Two\n" });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toMatchObject({ errorCode: "file_needs_repair" });
+		expect(await (await read()).text()).toBe("# One\n");
+
+		// The settle marker is still set from the step above. A full update count is known before the write,
+		// so it is refused before any answer about the text.
+		await set_budget({
+			unmaterializedUpdateCount: files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
+			unmaterializedUpdateBytes: 0,
+		});
+		const edited = await t.fetch("/api/v1/files/edit", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/revision/notes.md", oldText: "missing", newText: "x" }),
+		});
+		expect(edited.status).toBe(409);
+		expect(await edited.json()).toMatchObject({ errorCode: "file_needs_repair" });
+
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+	});
+
+	test("a write whose file moved away during the upload creates a new file at the path, not the moved file's repair state", async () => {
+		const { t, db, asUser, write, read } = await seed_revision_writer("clerk-revision-moved-repair");
+		const first = await write({ content: "A" });
+		const { nodeId } = (await first.json()) as { nodeId: Id<"files_nodes"> };
+
+		// While the write uploads, the file is renamed away. It also can never be saved again. Its text
+		// is too large, and its update count is full.
+		const upload = globalThis.fetch;
+		let moved = false;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			const response = await upload(url, init);
+			if (init?.method === "PUT" && !moved) {
+				moved = true;
+				const renamed = await test_rename_node(t, asUser, { membershipId: db.membershipId, nodeId, path: "moved.md" });
+				if (renamed._nay) throw new Error(renamed._nay.message);
+				await t.run(async (ctx) => {
+					const contentHeads = files_content_heads_db_wrap(ctx);
+					await contentHeads.db.patch("files_nodes", nodeId, { contentTooLargeByteSize: 1_000_000 });
+					const node = await contentHeads.db.get("files_nodes", nodeId);
+					await contentHeads.db.patch("files_yjs_docs_last_sequences", node!.yjsLastSequenceId!, {
+						unmaterializedUpdateCount: files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
+					});
+				});
+			}
+			return response;
+		});
+		const written = await write({ content: "B" });
+		expect(written.status).toBe(200);
+		expect(await (await read()).text()).toBe("B");
+		expect(await (await read("/revision/moved.md")).text()).toBe("A");
 	});
 });
 
@@ -8268,6 +8378,10 @@ describe("files edit and append", () => {
 		const notUnique = await change_file(writer, "edit", { oldText: "aa", newText: "b" });
 		expect(notUnique.status).toBe(409);
 		expect(await notUnique.json()).toMatchObject({ errorCode: "text_not_unique" });
+		// A stale revision is refused before the match, like a save would refuse it.
+		const stale = await change_file(writer, "edit", { oldText: "b", newText: "c", expectedRevision: "0".repeat(64) });
+		expect(stale.status).toBe(409);
+		expect(await stale.json()).toMatchObject({ errorCode: "file_changed" });
 
 		for (const [route, body] of [
 			["edit", { oldText: "aaa", newText: "aaa" }],
@@ -8316,6 +8430,126 @@ describe("files edit and append", () => {
 		expect(await (await writer.read()).text()).toBe("# B\n\nBody three\n");
 	});
 
+	test("two equal appends at the same time both land", async () => {
+		const writer = await seed_revision_writer("clerk-append-twice");
+		await writer.write({ content: "A" });
+
+		// The first append reads the file, then the second one saves the same result. The first append's
+		// later no-op check then finds its own result saved, but it still has to append.
+		//
+		// A request cannot run inside another one's query in convex-test, so replay the reads instead:
+		// a no-op append records the two reads the first append makes before its no-op check.
+		let mode: "record" | "replay" | "live" = "record";
+		const recorded = new Map<unknown, unknown>();
+		for (const registered of [get_file_content_materialization_state, read_file_content_from_chunks]) {
+			test_spy_handler(registered, async (handler, ctx, args) => {
+				if (mode === "replay" && recorded.has(registered)) {
+					const result = recorded.get(registered);
+					recorded.delete(registered);
+					return result as null;
+				}
+				const result = await handler(ctx, args);
+				if (mode === "record" && !recorded.has(registered)) recorded.set(registered, result);
+				return result;
+			});
+		}
+		expect(await (await change_file(writer, "append", { content: "" })).json()).toMatchObject({ unchanged: true });
+
+		mode = "live";
+		expect((await change_file(writer, "append", { content: "B" })).status).toBe(200);
+		mode = "replay";
+		expect((await change_file(writer, "append", { content: "B" })).status).toBe(200);
+		expect(await (await writer.read()).text()).toBe("ABB");
+	});
+
+	test("an edit or append whose file moved after its lookup tries again on the file now there", async () => {
+		// The lookup finds a file that is then no longer at the path, and the text read finds another file
+		// there. A request cannot run inside another one's query in convex-test, so let the first lookup
+		// return a file from another path instead.
+		//
+		// A plain file then has no old text, while a collaborative edit builds from the old file's
+		// document and finds no match there. Both must try again instead of answering about the old file.
+		for (const [nonCollaborative, route, body, expected] of [
+			[true, "append", { content: "B" }, "AB"],
+			[false, "edit", { oldText: "A", newText: "C" }, "C"],
+		] as const) {
+			const writer = await seed_revision_writer(`clerk-moved-${route}`);
+			await writer.write({ path: "/revision/old.md", content: "old", nonCollaborative });
+			await writer.write({ content: "A", nonCollaborative });
+
+			let looked = false;
+			test_spy_handler(get_by_path, async (handler, ctx, args) => {
+				if (looked) return await handler(ctx, args);
+				looked = true;
+				return await handler(ctx, { ...(args as object), path: "/revision/old.md" });
+			});
+			const changed = await change_file(writer, route, body);
+			expect(changed.status).toBe(200);
+			expect(await (await writer.read()).text()).toBe(expected);
+			expect(await (await writer.read("/revision/old.md")).text()).toBe("old");
+		}
+	});
+
+	test("an append whose staged update another write replaced tries again", async () => {
+		const writer = await seed_revision_writer("clerk-append-stage");
+		await writer.write({ content: "A" });
+
+		// Another write by the same user stages its own update for this file before this append
+		// publishes. That deletes this append's staged update.
+		let replaced = false;
+		test_spy_handler(stage_trusted_yjs_update, async (handler, ctx, args) => {
+			const staged = await handler(ctx, args);
+			if (!replaced) {
+				replaced = true;
+				await handler(ctx, args);
+			}
+			return staged;
+		});
+		const appended = await change_file(writer, "append", { content: "B" });
+		expect(appended.status).toBe(200);
+		expect(await (await writer.read()).text()).toBe("AB");
+	});
+
+	test("an edit checks the current file and key after it reads the text", async () => {
+		const writer = await seed_revision_writer("clerk-edit-after-read");
+		const written = await writer.write({ content: "aaa\n" });
+		const { nodeId } = (await written.json()) as { nodeId: Id<"files_nodes"> };
+
+		// Change the file or the key while the edit reads the saved document from R2.
+		const stubbedFetch = globalThis.fetch;
+		let change: ((ctx: MutationCtx) => Promise<void>) | null = null;
+		vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (change && urlString.startsWith("https://r2.test/object?key=")) {
+				const run = change;
+				change = null;
+				await writer.t.run(async (ctx) => await run(ctx));
+			}
+			return await stubbedFetch(url, init);
+		});
+
+		// Background work marks the document too large to save while the edit reads it.
+		change = async (ctx) => {
+			await files_content_heads_db_wrap(ctx).db.patch("files_nodes", nodeId, {
+				contentYjsStateTooLargeByteSize: 5_000_000,
+			});
+		};
+		const marked = await change_file(writer, "edit", { oldText: "b", newText: "c" });
+		expect(marked.status).toBe(409);
+		expect(await marked.json()).toMatchObject({ errorCode: "file_needs_repair" });
+		await writer.t.run(async (ctx) => {
+			await files_content_heads_db_wrap(ctx).db.patch("files_nodes", nodeId, { contentYjsStateTooLargeByteSize: null });
+		});
+
+		// A key revoked during the read gets the same answer whether or not the text matches.
+		change = async (ctx) => {
+			await ctx.db.patch("api_credentials", writer.credentialId, { revokedAt: Date.now() });
+		};
+		const revoked = await change_file(writer, "edit", { oldText: "b", newText: "c" });
+		expect(revoked.status).toBe(401);
+		expect(await revoked.json()).toMatchObject({ errorCode: "unauthenticated" });
+	});
+
 	test("an edit needs a key that can read the file", async () => {
 		const writer = await seed_revision_writer("clerk-edit-scope", ["files:write"]);
 		await writer.write({ content: "# One\n" });
@@ -8323,6 +8557,13 @@ describe("files edit and append", () => {
 		const refused = await change_file(writer, "append", { content: "tail" });
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toMatchObject({ errorCode: "permission_denied" });
+
+		const noKey = await writer.t.fetch("/api/v1/files/append", {
+			method: "POST",
+			body: JSON.stringify({ path: "/revision/notes.md", content: "tail" }),
+		});
+		expect(noKey.status).toBe(401);
+		expect(await noKey.json()).toMatchObject({ errorCode: "unauthenticated" });
 	});
 });
 
@@ -8568,7 +8809,7 @@ describe("files write billing", () => {
 			}),
 		});
 		expect(refused.status).toBe(402);
-		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+		expect(await refused.json()).toEqual({ message: "Insufficient funds", errorCode: "insufficient_funds" });
 
 		const after = await t.run(async (ctx) => {
 			const nodes = await ctx.db

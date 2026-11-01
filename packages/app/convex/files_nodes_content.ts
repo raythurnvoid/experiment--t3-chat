@@ -2979,8 +2979,8 @@ export const get_file_read_source = internalQuery({
  * change. A background save of typed text changes it too, because it saves new bytes. `latest` is
  * false while people typed changes that are not in the saved text yet.
  *
- * Point reads only: the selected head and its sequence. Keep counters, snapshots, and times out of
- * the digest, so a background tidy-up of editor data keeps the revision.
+ * Point reads only: the selected head, and its sequence or its asset. Keep counters, snapshots, and
+ * times out of the digest, so snapshot compaction and covered-update cleanup keep the revision.
  */
 export async function files_nodes_db_get_file_revision(
 	db: QueryCtx["db"],

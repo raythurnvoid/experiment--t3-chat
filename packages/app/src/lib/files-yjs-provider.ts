@@ -502,7 +502,7 @@ class FilesConvexYjsStream {
 							break;
 						}
 
-						// Only USER_EDIT with matching sessionId are treated as local (ack-only).
+						// Only USER_EDIT with matching sessionId are treated as local (already applied).
 						// All other origins (USER_SNAPSHOT_RESTORE, USER_AI_EDIT, or USER_EDIT with different sessionId)
 						// are treated as remote changes and applied to the document.
 						const isLocalEdit =

@@ -3234,12 +3234,13 @@ describe("plugins Phase 0", () => {
 		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
 	});
 
-	test("a write that tries again keeps its plugin call open until it saves", async () => {
+	test("a write's plugin call stays open until the route settles it with the caller's answer", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		// Keep R2 objects in memory. Someone types once, while the first fill attempt uploads.
+		// Keep R2 objects in memory. Someone types while some uploads run, and the last upload fails.
 		const objects = new Map<string, BodyInit>();
-		let typeDuringUpload: Id<"files_nodes"> | null = null;
+		let typeDuringUpload: { nodeId: Id<"files_nodes">; count: number } | null = null;
+		let failUploads = false;
 		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key = "test-upload-key") => ({
 			key,
 			url: `https://r2.test/object?key=${encodeURIComponent(key)}`,
@@ -3252,11 +3253,11 @@ describe("plugins Phase 0", () => {
 			if (url.origin !== "https://r2.test") return new Response(null, { status: 200 });
 			const key = url.searchParams.get("key")!;
 			if (init?.method === "PUT") {
+				if (failUploads) return new Response(null, { status: 500 });
 				objects.set(key, init.body ?? "");
-				if (typeDuringUpload) {
-					const nodeId = typeDuringUpload;
-					typeDuringUpload = null;
-					await test_push_empty_yjs_update(t, { ...fixture.membership, nodeId });
+				if (typeDuringUpload && typeDuringUpload.count > 0) {
+					typeDuringUpload.count--;
+					await test_push_empty_yjs_update(t, { ...fixture.membership, nodeId: typeDuringUpload.nodeId });
 				}
 				return new Response(null);
 			}
@@ -3266,7 +3267,7 @@ describe("plugins Phase 0", () => {
 		const runId = await insert_event_run({
 			t,
 			fixture,
-			eventId: "plugin:retry-keeps-call-test",
+			eventId: "plugin:settle-with-answer-test",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
 		});
@@ -3285,10 +3286,21 @@ describe("plugins Phase 0", () => {
 		expect(created.status).toBe(200);
 		const { nodeId } = (await created.json()) as { nodeId: Id<"files_nodes"> };
 
-		typeDuringUpload = nodeId;
+		typeDuringUpload = { nodeId, count: 1 };
 		const filled = await write("# Two");
 		expect(filled.status).toBe(200);
-		expect(typeDuringUpload).toBeNull();
+		expect(typeDuringUpload.count).toBe(0);
+
+		// Someone types during every attempt. The call records the answer the caller got.
+		typeDuringUpload = { nodeId, count: Number.POSITIVE_INFINITY };
+		const busy = await write("# Three");
+		expect(busy.status).toBe(409);
+
+		// The upload fails. The call records the same storage failure the caller got.
+		typeDuringUpload = null;
+		failUploads = true;
+		const failed = await write("# Four");
+		expect(failed.status).toBe(500);
 
 		const calls = await t.run((ctx) =>
 			ctx.db
@@ -3296,7 +3308,9 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
 				.collect(),
 		);
-		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded"]);
+		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "failed", "failed"]);
+		expect(calls[2]).toMatchObject({ responseStatus: 409, errorCode: "file_busy" });
+		expect(calls[3]).toMatchObject({ responseStatus: 500, errorCode: "storage_failure" });
 	});
 
 	test("a destination locked between staging and publish settles the plugin call as a conflict", async () => {

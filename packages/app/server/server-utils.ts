@@ -200,8 +200,9 @@ export function json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>)
 /**
  * Build the public 400 message for a request body that failed its schema.
  *
- * Name an unknown field, so a caller with a typo (`expectedRevison`) learns what to fix. A strict
- * schema would otherwise drop the field in silence. Other failures keep the stable generic message.
+ * Name an unknown field, so a caller with a typo (`expectedRevison`) learns what to fix. Without
+ * this, a strict schema refuses the field with only the generic message. Other failures keep the
+ * stable generic message.
  */
 export function server_request_body_issue_message(error: z.ZodError) {
 	const issue = error.issues.find((item) => item.code === "unrecognized_keys");

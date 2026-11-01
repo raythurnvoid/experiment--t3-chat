@@ -1,4 +1,4 @@
-import { v, type Infer } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { internalQuery, query, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation, mutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
@@ -52,6 +52,7 @@ import {
 	files_check_request_path_length,
 	files_PATH_BELOW_FILE_MESSAGE,
 	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
+	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
 } from "../shared/files.ts";
 import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -73,7 +74,10 @@ import {
 	type files_ContentType,
 	type files_YjsRootKind,
 } from "../server/files.ts";
-import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
+import {
+	files_yjs_COMPACTION_RETRY_MESSAGE,
+	files_yjs_compute_diff_update_from_state_vector,
+} from "../shared/files-yjs.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_sequence,
@@ -189,6 +193,15 @@ const FILES_WRITE_MANY_CONCURRENCY = 4;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
 const INVALID_WRITE_CONTENT_TYPE_MESSAGE = "contentType must be an editable text type.";
+const EXPECTED_REVISION_COMBINATION_MESSAGE = 'expectedRevision cannot be used with overwrite "fail" or writer.';
+const FILE_CHANGED_MESSAGE = "The file changed since you read it. Read it again.";
+const FILE_NOT_LATEST_MESSAGE = "Someone typed changes that are not saved yet. Read the file again in a moment.";
+
+/**
+ * Attempts of one unconditional write. Someone typing between the read and the publish refuses an
+ * attempt, and the next attempt reads the new text.
+ */
+const FILE_WRITE_MAX_ATTEMPTS = 3;
 const ACTIVITIES_TITLE_MAX_CHARS = 120;
 
 const CREDENTIAL_KEY_PREFIX = "pk_";
@@ -3103,23 +3116,40 @@ async function db_require_file_write_parent(
 	return Result({ _yay: null });
 }
 
-const FILE_CHANGED_MESSAGE = "The file changed since you read it. Read it again.";
-
 /**
- * Check the file a write fills: first its repair marker, then the caller's `expectedRevision`,
- * then whether people typed changes that are not saved yet. Run after the access and Read-only
- * checks, so a caller who cannot write the file learns nothing about it.
+ * Check the file a write fills: first its repair marker, or a full update count that the background
+ * save can never free, then the caller's `expectedRevision`, then whether people typed changes that
+ * are not saved yet. Run after the access, Read-only, and place checks, so a caller who cannot write
+ * the file learns nothing about it, and a file that moved away does not answer with its own repair
+ * state.
  */
 async function db_check_file_write_revision(
 	ctx: QueryCtx,
 	args: { node: Doc<"files_nodes">; path: string; expectedRevision: string | undefined },
 ) {
-	// Without this check the fill would reach the edit gate, which refuses by throwing.
+	// Without this check the fill would reach the Yjs reserve gate, which refuses by throwing.
 	if (
 		files_node_has_editable_yjs_state(args.node) &&
 		(args.node.contentShapeMismatchAt !== null || args.node.contentYjsStateTooLargeByteSize !== null)
 	) {
 		return Result({ _nay: { name: "file_needs_repair", message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
+	}
+	// The Yjs reserve gate also refuses a file whose text or frontmatter is too large to save, once its
+	// unsaved editor updates fill the budget. The background save can never free that budget. Refuse it
+	// here, so no answer about the text comes first.
+	//
+	// Check only the update count. The byte budget needs the size of the write's own update, so only the
+	// gate can check it.
+	if (
+		files_node_has_editable_yjs_state(args.node) &&
+		(args.node.contentTooLargeByteSize !== null ||
+			args.node.contentFrontmatterTooLargeFieldCount !== null ||
+			args.node.contentFrontmatterTooLargeIndexDocumentCount !== null)
+	) {
+		const sequence = await files_saved_placement_db_get_sequence(ctx.db, args.node);
+		if (sequence && sequence.unmaterializedUpdateCount >= files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT) {
+			return Result({ _nay: { name: "file_needs_repair", message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
+		}
 	}
 	if (args.expectedRevision === undefined) return Result({ _yay: null });
 
@@ -3129,10 +3159,7 @@ async function db_check_file_write_revision(
 	}
 	if (!current.latest) {
 		return Result({
-			_nay: {
-				name: "file_not_latest",
-				message: "Someone typed changes that are not saved yet. Read the file again in a moment.",
-			},
+			_nay: { name: "file_not_latest", message: FILE_NOT_LATEST_MESSAGE },
 		});
 	}
 	return Result({ _yay: null });
@@ -3926,18 +3953,11 @@ export const publish_file_fill = internalMutation({
 			return writable;
 		}
 
-		// Use the node's own path: a file moved since the caller read it has a new revision.
-		const revisionChecked = await db_check_file_write_revision(ctx, {
-			node: fileNode,
-			path: fileNode.path,
-			expectedRevision: args.expectedRevision,
-		});
-		if (revisionChecked._nay) {
-			return revisionChecked;
-		}
-
 		// After ACL and lock checks, require the exact active editable target and collaboration
 		// lineage the route built its content projection from.
+		//
+		// Check this before the repair and revision checks. A file that moved away from the path must not
+		// answer with its own repair state. It answers `changed_during_write` instead.
 		if (
 			fileNode.path !== stage.path ||
 			fileNode.archiveOperationId !== null ||
@@ -3947,6 +3967,16 @@ export const publish_file_fill = internalMutation({
 		) {
 			return Result({ _nay: { name: "changed_during_write", message: "The file changed during the write" } });
 		}
+
+		const revisionChecked = await db_check_file_write_revision(ctx, {
+			node: fileNode,
+			path: fileNode.path,
+			expectedRevision: args.expectedRevision,
+		});
+		if (revisionChecked._nay) {
+			return revisionChecked;
+		}
+
 		// The new content replaces the text the route read. If someone typed or saved since, this
 		// write would erase that change, and a stale read could bring back a ref someone removed.
 		const sequence =
@@ -4367,9 +4397,68 @@ type publish_file_touch_Result =
 		: never;
 
 /**
+ * Check that the caller may write the active file at `path` now: the credential, the file's place,
+ * write access, then Read-only. Check access first so a locked node is refused without revealing its
+ * Read-only state. A node that is gone or no longer at `path` returns `changed_during_write`.
+ */
+async function db_check_file_node_write_access(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		path: string;
+		principalRef: Infer<typeof file_write_principal_ref_validator>;
+		force?: boolean;
+		requestReadOnly?: boolean;
+	},
+) {
+	const revalidated = await public_api_db_revalidate_file_write_principal(ctx, { ...args, now: Date.now() });
+	if (revalidated._nay) {
+		return Result({
+			_nay: {
+				name: revalidated._nay.message === "Unauthenticated" ? "unauthenticated" : "permission_denied",
+				message: revalidated._nay.message,
+			},
+		});
+	}
+	const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
+	if (
+		!fileNode ||
+		fileNode.organizationId !== args.organizationId ||
+		fileNode.workspaceId !== args.workspaceId ||
+		fileNode.archiveOperationId !== null ||
+		fileNode.path !== args.path
+	) {
+		return Result({ _nay: { name: "changed_during_write", message: "The file changed during the write" } });
+	}
+	const writeContext = revalidated._yay.writeContext;
+	if (
+		!(await has_workspace_content_permission(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			subject: writeContext.subject,
+			fileNode,
+			permission: "content.write",
+		}))
+	) {
+		return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
+	}
+	const writable = await files_nodes_db_require_writable(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		writeContext,
+		target: { kind: "node", node: fileNode },
+	});
+	if (writable._nay) return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+	return Result({ _yay: fileNode });
+}
+
+/**
  * Check the same access and read-only rules as `publish_file_touch`. The touch route uses this when
- * the file already exists and it does not call the publish mutation. Check access first so a locked
- * node returns `permission_denied` without revealing its read-only state.
+ * the file already exists and it does not call the publish mutation. A missing or moved node returns
+ * `permission_denied`.
  */
 export const can_write_file_node = internalQuery({
 	args: {
@@ -4384,41 +4473,65 @@ export const can_write_file_node = internalQuery({
 	},
 	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
 	handler: async (ctx, args) => {
-		const fileNode = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== args.organizationId ||
-			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== null ||
-			fileNode.path !== args.path
-		) {
-			return "permission_denied";
-		}
-		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, { ...args, now: Date.now() });
-		if (revalidated._nay) {
-			return "permission_denied";
-		}
-		const writeContext = revalidated._yay.writeContext;
-		if (
-			!(await has_workspace_content_permission(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				subject: writeContext.subject,
-				fileNode,
-				permission: "content.write",
-			}))
-		) {
-			return "permission_denied";
-		}
-		const writable = await files_nodes_db_require_writable(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			writeContext,
-			target: { kind: "node", node: fileNode },
-		});
-		return writable._nay ? "read_only" : "ok";
+		const access = await db_check_file_node_write_access(ctx, args);
+		if (!access._nay) return "ok";
+		return access._nay.name === "read_only" ? "read_only" : "permission_denied";
 	},
 });
+
+/**
+ * Find why a save of the file would be refused, in the order the save checks: the credential, the
+ * file's place, write access, Read-only, the repair marker, then the caller's revision. Read the
+ * current file, so a marker that background work set during the caller's slow reads counts.
+ *
+ * A file that is gone or no longer at `path` returns `changed_during_write`, so the write does not
+ * answer about text it read from the old file. The write then looks the path up again, or answers
+ * `file_changed` when the caller sent `expectedRevision`. Return null when nothing refuses.
+ */
+export const get_file_save_refusal = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		path: v.string(),
+		principalRef: file_write_principal_ref_validator,
+		force: v.optional(v.boolean()),
+		requestReadOnly: v.optional(v.boolean()),
+		expectedRevision: v.optional(v.string()),
+	},
+	returns: v.union(
+		v.object({
+			name: v.union(
+				v.literal("unauthenticated"),
+				v.literal("changed_during_write"),
+				v.literal("permission_denied"),
+				v.literal("read_only"),
+				v.literal("file_needs_repair"),
+				v.literal("file_changed"),
+				v.literal("file_not_latest"),
+			),
+			message: v.string(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const access = await db_check_file_node_write_access(ctx, args);
+		if (access._nay) return { name: access._nay.name, message: access._nay.message };
+
+		const checked = await db_check_file_write_revision(ctx, {
+			node: access._yay,
+			path: args.path,
+			expectedRevision: args.expectedRevision,
+		});
+		return checked._nay ? { name: checked._nay.name, message: checked._nay.message } : null;
+	},
+});
+
+type get_file_save_refusal_Result =
+	typeof get_file_save_refusal extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 /**
  * The revision of the active file at `path`, or null when the node is no longer there. It checks no
@@ -4960,7 +5073,8 @@ export async function public_api_db_cleanup_file_write_stage(args: {
 	stage: Doc<"public_api_file_write_stages">;
 	orphanedKeys?: string[];
 	/**
-	 * The write tries again with a new stage, so its plugin call stays open.
+	 * The route settles the plugin call with its own answer, or the write tries again with a new
+	 * stage. So cleanup leaves the call open.
 	 */
 	keepPluginCall?: boolean;
 }) {
@@ -5033,7 +5147,8 @@ export const cleanup_file_write_stage = internalMutation({
 			}),
 		),
 		/**
-		 * The write tries again with a new stage, so its plugin call stays open.
+		 * The route settles the plugin call with its own answer, or the write tries again with a new
+		 * stage. So cleanup leaves the call open.
 		 */
 		keepPluginCall: v.optional(v.boolean()),
 	},
@@ -5172,10 +5287,6 @@ function apply_text_change(
 async function write_one_text_file_attempt(
 	ctx: ActionCtx,
 	args: {
-		/**
-		 * Another attempt follows a `changed_during_write` refusal, so keep the plugin call open.
-		 */
-		keepPluginCall: boolean;
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		/**
@@ -5298,6 +5409,7 @@ async function write_one_text_file_attempt(
 		node: Doc<"files_nodes">,
 		contentType: files_ContentType,
 		built: { content: string; contentBytes: number; contentChanged: boolean },
+		baseline: string | null,
 	) => {
 		if ((!args.skipIfUnchanged && args.change.kind === "write") || args.principalRef.kind !== "user_api_key")
 			return null;
@@ -5319,6 +5431,9 @@ async function write_one_text_file_attempt(
 			return null;
 		const saved = await read_saved_text();
 		if (saved?.content !== built.content) return null;
+		// An edit or append is a no-op only when the saved text is still the text it started from.
+		// If another request saved the same result in between, this change must still apply on top.
+		if (args.change.kind !== "write" && saved.content !== baseline) return null;
 
 		// Skip only when the commit-time write check would also say yes. When it says no, fall
 		// through so the caller gets the same refusal a plain write gets. A 200 here would let a
@@ -5346,6 +5461,43 @@ async function write_one_text_file_attempt(
 				contentChanged: built.contentChanged,
 			},
 		});
+	};
+
+	// Some refusals come from the text: an edit finds no match, the changed file would be too large,
+	// or the document cannot be rebuilt. Give them only after the checks a save makes first: the
+	// credential, the file's place, write access, Read-only, the repair marker, and the caller's revision.
+	//
+	// These checks run after the slow reads, so a caller who lost access during them learns nothing
+	// about the text. A file that moved or was deleted during the reads answers `changed_during_write`.
+	// The write then looks the path up again, or answers `file_changed` when the caller sent
+	// `expectedRevision`.
+	const find_save_refusal = async (node: Doc<"files_nodes">) => {
+		const refusal = (await ctx.runQuery(internal.public_api.get_file_save_refusal, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: node._id,
+			path: args.path,
+			principalRef: args.principalRef,
+			force: args.force === true,
+			requestReadOnly: args.requestReadOnly,
+			expectedRevision: args.expectedRevision,
+		})) as get_file_save_refusal_Result;
+		if (refusal === null) return null;
+		if (refusal.name === "changed_during_write") {
+			return Result({
+				_nay: { name: "changed_during_write", message: refusal.message, data: { status: 409, errorCode: "conflict" } },
+			});
+		}
+
+		const failure =
+			file_revision_failure(refusal.name) ??
+			(refusal.name === "unauthenticated"
+				? { status: 401 as const, errorCode: "unauthenticated" as const }
+				: refusal.name === "permission_denied"
+					? { status: 403 as const, errorCode: "permission_denied" as const }
+					: { status: 409 as const, errorCode: "conflict" as const });
+		return Result({ _nay: { name: "nay", message: refusal.message, data: failure } });
 	};
 
 	// Decide create-vs-fill before staging. Writing over an existing editable text file
@@ -5460,10 +5612,10 @@ async function write_one_text_file_attempt(
 		const previousText =
 			previous?.target.kind === "saved" && previous.target.id === activeNode._id ? previous.content : null;
 		const built = build_content(previousText, null);
-		if (built._nay) return built;
+		if (built._nay) return (await find_save_refusal(activeNode)) ?? built;
 		const { content, contentBytes, contentChanged } = built._yay;
 
-		const unchanged = await find_unchanged_result(activeNode, activeNodeContentType, built._yay);
+		const unchanged = await find_unchanged_result(activeNode, activeNodeContentType, built._yay, previousText);
 		if (unchanged) return unchanged;
 
 		const fileRefs = find_added_file_refs(content, previousText, activeNode.textKind);
@@ -5523,7 +5675,7 @@ async function write_one_text_file_attempt(
 			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 				stageId: prepared._yay.stageId,
 				orphanedKeys: [],
-				keepPluginCall: args.keepPluginCall,
+				keepPluginCall: true,
 			});
 			return Result({
 				_nay: {
@@ -5555,6 +5707,7 @@ async function write_one_text_file_attempt(
 				stageId: prepared._yay.stageId,
 				orphanedKeys: [contentSnapshotKey],
 				orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+				keepPluginCall: true,
 			});
 			return Result({
 				_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -5586,15 +5739,15 @@ async function write_one_text_file_attempt(
 						: published._nay.message === "Write was not published"
 							? { status: 500 as const, errorCode: "storage_failure" as const }
 							: { status: 409 as const, errorCode: "conflict" as const });
-			// A read-only refusal already cleaned up the stage during publish. Running cleanup again
-			// would change the plugin call to the wrong unpublished_write/500 error.
+			// A read-only refusal already cleaned up the stage during publish. Cleanup keeps the plugin
+			// call open: the route settles it with this refusal's own status.
 			const changed = published._nay.name === "changed_during_write";
 			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
 				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 					stageId: prepared._yay.stageId,
 					orphanedKeys: [contentSnapshotKey],
 					orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
-					keepPluginCall: changed && args.keepPluginCall,
+					keepPluginCall: true,
 				});
 			}
 
@@ -5630,6 +5783,10 @@ async function write_one_text_file_attempt(
 				state: materializationState,
 			});
 			if (currentContent._nay) {
+				// A file marked for repair cannot be rebuilt. The check answers file_needs_repair for it.
+				const refusal = await find_save_refusal(activeNode);
+				if (refusal) return refusal;
+
 				console.error("Failed to reconstruct current file content for public file write", {
 					nay: currentContent._nay,
 					path: args.path,
@@ -5644,11 +5801,9 @@ async function write_one_text_file_attempt(
 			// goes by path, so it may have found another file there.
 			const saved =
 				args.change.kind === "write" || sequenceDoc.unmaterializedUpdateCount > 0 ? null : await read_saved_text();
-			const built = build_content(
-				saved?.target.kind === "saved" && saved.target.id === activeNode._id ? saved.content : null,
-				currentContent._yay.text,
-			);
-			if (built._nay) return built;
+			const savedText = saved?.target.kind === "saved" && saved.target.id === activeNode._id ? saved.content : null;
+			const built = build_content(savedText, currentContent._yay.text);
+			if (built._nay) return (await find_save_refusal(activeNode)) ?? built;
 			const { content, contentBytes, contentChanged } = built._yay;
 
 			const fileRefs = find_added_file_refs(content, currentContent._yay.text, activeNode.textKind);
@@ -5681,7 +5836,7 @@ async function write_one_text_file_attempt(
 			// A null diff is not enough to skip: a formatting-only change keeps the same document
 			// but changes the saved bytes. Skip only when the saved text is the latest text.
 			if (sequenceDoc.unmaterializedUpdateCount === 0) {
-				const unchanged = await find_unchanged_result(activeNode, activeNodeContentType, built._yay);
+				const unchanged = await find_unchanged_result(activeNode, activeNodeContentType, built._yay, savedText);
 				if (unchanged) return unchanged;
 			}
 
@@ -5752,7 +5907,7 @@ async function write_one_text_file_attempt(
 				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 					stageId: prepared._yay.stageId,
 					orphanedKeys: [],
-					keepPluginCall: args.keepPluginCall,
+					keepPluginCall: true,
 				});
 				return Result({
 					_nay: {
@@ -5795,6 +5950,7 @@ async function write_one_text_file_attempt(
 					stageId: prepared._yay.stageId,
 					orphanedKeys,
 					orphanedScope: stageScope,
+					keepPluginCall: true,
 				});
 				return Result({
 					_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -5824,6 +5980,7 @@ async function write_one_text_file_attempt(
 						stageId: prepared._yay.stageId,
 						orphanedKeys,
 						orphanedScope: stageScope,
+						keepPluginCall: true,
 					});
 					return Result({
 						_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -5861,7 +6018,44 @@ async function write_one_text_file_attempt(
 				});
 			} catch (error) {
 				await retire_fill_update_stage();
-				throw error;
+
+				// The fill throws to roll back its writes, so it saved nothing. Delete the stage and its
+				// uploads now.
+				//
+				// Two refusals mean the file changed during the write, so try again and answer
+				// file_busy after the last attempt. The Yjs reserve gate sends the compaction message
+				// while the file holds too many unsaved editor updates, because someone is typing.
+				// "Not found" means the staged update is gone: another write by the same user staged
+				// its own update for this file, which deletes this one, or the stage expired.
+				//
+				// The repair message means the file cannot save those editor updates (for example its
+				// text is too large), so trying again cannot help.
+				const fillMessage = error instanceof ConvexError ? (error.data as { message?: unknown }).message : null;
+				const changed = fillMessage === files_yjs_COMPACTION_RETRY_MESSAGE || fillMessage === "Not found";
+				const needsRepair = fillMessage === files_yjs_NODE_NEEDS_REPAIR_MESSAGE;
+				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+					stageId: prepared._yay.stageId,
+					orphanedKeys,
+					orphanedScope: stageScope,
+					keepPluginCall: changed || needsRepair,
+				});
+				if (needsRepair) {
+					return Result({
+						_nay: {
+							name: "nay",
+							message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
+							data: file_revision_failure("file_needs_repair")!,
+						},
+					});
+				}
+				if (!changed) throw error;
+				return Result({
+					_nay: {
+						name: "changed_during_write",
+						message: "The file changed during the write",
+						data: { status: 409, errorCode: "conflict" },
+					},
+				});
 			}
 			if (published._nay) {
 				await retire_fill_update_stage();
@@ -5877,15 +6071,15 @@ async function write_one_text_file_attempt(
 							: published._nay.message === "Write was not published"
 								? { status: 500 as const, errorCode: "storage_failure" as const }
 								: { status: 409 as const, errorCode: "conflict" as const });
-				// A read-only refusal already cleaned up the stage during publish. Running cleanup again
-				// would change the plugin call to the wrong unpublished_write/500 error.
+				// A read-only refusal already cleaned up the stage during publish. Cleanup keeps the plugin
+				// call open: the route settles it with this refusal's own status.
 				const changed = published._nay.name === "changed_during_write";
 				if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
 					await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 						stageId: prepared._yay.stageId,
 						orphanedKeys,
 						orphanedScope: stageScope,
-						keepPluginCall: changed && args.keepPluginCall,
+						keepPluginCall: true,
 					});
 				}
 				return Result({
@@ -5995,7 +6189,11 @@ async function write_one_text_file_attempt(
 	// Prepare refuses a conditional write onto a missing file. It can pass only when a file appeared
 	// after the lookup above, and replacing that file would not fill the file the caller read.
 	if (args.expectedRevision !== undefined) {
-		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys: [] });
+		await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+			stageId,
+			orphanedKeys: [],
+			keepPluginCall: true,
+		});
 		return Result({
 			_nay: { name: "nay", message: FILE_CHANGED_MESSAGE, data: { status: 409, errorCode: "file_changed" } },
 		});
@@ -6036,6 +6234,7 @@ async function write_one_text_file_attempt(
 			stageId,
 			orphanedKeys,
 			orphanedScope: stageScope,
+			keepPluginCall: true,
 		});
 		return Result({
 			_nay: { name: "nay", message: "Failed to write file", data: { status: 500, errorCode: "storage_failure" } },
@@ -6064,13 +6263,14 @@ async function write_one_text_file_attempt(
 						: published._nay.name === "too_many_folders"
 							? { status: 400 as const, errorCode: "invalid_input" as const }
 							: { status: 409 as const, errorCode: "conflict" as const });
-		// A read-only refusal already cleaned up the stage during publish. Running cleanup again
-		// would change the plugin call to the wrong unpublished_write/500 error.
+		// A read-only refusal already cleaned up the stage during publish. Cleanup keeps the plugin
+		// call open: the route settles it with this refusal's own status.
 		if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
 			await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
 				stageId,
 				orphanedKeys,
 				orphanedScope: stageScope,
+				keepPluginCall: true,
 			});
 		}
 		return Result({
@@ -6092,14 +6292,8 @@ async function write_one_text_file_attempt(
 }
 
 /**
- * Attempts of one unconditional write. Someone typing between the read and the publish refuses an
- * attempt, and the next attempt reads the new text.
- */
-const FILE_WRITE_MAX_ATTEMPTS = 3;
-
-/**
- * Write one Markdown file: decide create-vs-fill, stage, PUT the staged objects, publish, and
- * clean the stage up on failure. Shared by the single write route and write-many. For plugin
+ * Write one editable text file: decide create-vs-fill, stage, PUT the staged objects, publish, and
+ * clean the stage up on failure. Shared by write, write-many, edit, and append. For plugin
  * principals it also finds the file refs the text adds, for the publish mutation to check. The
  * single route maps `_nay` through its own `fail()` closure (which settles the plugin call), and
  * success-path plugin settlement lives inside the publish mutations.
@@ -6109,11 +6303,10 @@ const FILE_WRITE_MAX_ATTEMPTS = 3;
  */
 export async function public_api_write_one_text_file(
 	ctx: ActionCtx,
-	args: Omit<Parameters<typeof write_one_text_file_attempt>[1], "keepPluginCall">,
+	args: Parameters<typeof write_one_text_file_attempt>[1],
 ) {
 	for (let attempt = 1; ; attempt++) {
-		const lastAttempt = args.expectedRevision !== undefined || attempt === FILE_WRITE_MAX_ATTEMPTS;
-		const written = await write_one_text_file_attempt(ctx, { ...args, keepPluginCall: !lastAttempt });
+		const written = await write_one_text_file_attempt(ctx, args);
 		if (written._nay?.name !== "changed_during_write") return written;
 
 		if (args.expectedRevision !== undefined) {
@@ -6121,7 +6314,7 @@ export async function public_api_write_one_text_file(
 				_nay: { name: "nay", message: FILE_CHANGED_MESSAGE, data: { status: 409, errorCode: "file_changed" } },
 			});
 		}
-		if (lastAttempt) {
+		if (attempt === FILE_WRITE_MAX_ATTEMPTS) {
 			return Result({
 				_nay: {
 					name: "nay",
@@ -6134,6 +6327,36 @@ export async function public_api_write_one_text_file(
 }
 
 // HTTP routes
+
+/**
+ * Add the documented error code to a refusal from `public_api_authorize_request`.
+ */
+function with_auth_error_code<Refusal extends { status: number; body: object }>(refusal: Refusal) {
+	return {
+		...refusal,
+		body: {
+			...refusal.body,
+			errorCode:
+				refusal.status === 401 ? "unauthenticated" : refusal.status === 429 ? "rate_limited" : "permission_denied",
+		},
+	};
+}
+
+/**
+ * Whether a path names a file exactly as it is stored. The read, edit, and append routes take only
+ * this exact path, so a request cannot reach one file under two spellings.
+ */
+function is_canonical_file_path(path: string) {
+	return (
+		path.startsWith("/") &&
+		path === server_path_normalize(path) &&
+		!/[\\*?\[\]]|\p{Cc}/u.test(path) &&
+		path
+			.slice(1)
+			.split("/")
+			.every((segment) => segment !== "" && segment !== "." && segment !== "..")
+	);
+}
 
 const read_file_body_validator = z
 	.object({
@@ -6176,19 +6399,7 @@ export async function public_api_http_read_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return {
-			...auth._nay,
-			headers,
-			body: {
-				...auth._nay.body,
-				errorCode:
-					auth._nay.status === 401
-						? "unauthenticated"
-						: auth._nay.status === 429
-							? "rate_limited"
-							: "permission_denied",
-			},
-		};
+		return { ...with_auth_error_code(auth._nay), headers };
 	}
 	const { principal, pluginCallId, presentedToken } = auth._yay;
 	let fileReadStarted = false;
@@ -6198,15 +6409,7 @@ export async function public_api_http_read_file(args: {
 		const body = await server_request_json_parse_and_validate(request, read_file_body_validator);
 		if (body._nay) return refuse(400, "invalid_input", body._nay.message);
 		const requestedPath = body._yay.path;
-		if (
-			!requestedPath.startsWith("/") ||
-			requestedPath !== server_path_normalize(requestedPath) ||
-			/[\\*?\[\]]|\p{Cc}/u.test(requestedPath) ||
-			requestedPath
-				.slice(1)
-				.split("/")
-				.some((segment) => !segment || segment === "." || segment === "..")
-		)
+		if (!is_canonical_file_path(requestedPath))
 			return refuse(400, "invalid_input", "Path must be a canonical Files path.");
 		if (!public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix))
 			return refuse(403, "permission_denied", "Permission denied");
@@ -6622,8 +6825,6 @@ export async function public_api_http_set_file_public(args: {
 	} as const;
 }
 
-const EXPECTED_REVISION_COMBINATION_MESSAGE = 'expectedRevision cannot be used with overwrite "fail" or writer.';
-
 const write_file_body_validator = z
 	.object({
 		force: z.boolean().optional(),
@@ -6745,7 +6946,7 @@ export async function public_api_http_write_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return auth._nay;
+		return with_auth_error_code(auth._nay);
 	}
 	const principal = auth._yay.principal;
 	const pluginCallId = auth._yay.pluginCallId;
@@ -7208,7 +7409,7 @@ export async function public_api_http_change_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return auth._nay;
+		return with_auth_error_code(auth._nay);
 	}
 	const principal = auth._yay.principal;
 	// The change starts from the file's text, so the key must also be allowed to read it.
@@ -7238,15 +7439,7 @@ export async function public_api_http_change_file(args: {
 	}
 	// The file exists, so its path is the exact path a read uses.
 	const requestedPath = body._yay.path;
-	if (
-		!requestedPath.startsWith("/") ||
-		requestedPath !== server_path_normalize(requestedPath) ||
-		/[\\*?\[\]]|\p{Cc}/u.test(requestedPath) ||
-		requestedPath
-			.slice(1)
-			.split("/")
-			.some((segment) => !segment || segment === "." || segment === "..")
-	) {
+	if (!is_canonical_file_path(requestedPath)) {
 		return {
 			status: 400,
 			body: { message: "Path must be a canonical Files path.", errorCode: "invalid_input" },
@@ -7372,27 +7565,33 @@ export async function public_api_http_write_many(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return auth._nay;
+		return with_auth_error_code(auth._nay);
 	}
 	const principal = auth._yay.principal;
 
 	const declaredBytes = Number(request.headers.get("content-length"));
 	if (Number.isFinite(declaredBytes) && declaredBytes > FILES_WRITE_MANY_MAX_REQUEST_BYTES) {
-		return { status: 400, body: { message: "Request body is too large" } } as const;
+		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
 	}
 	const bodyText = await read_request_text_bounded(request, FILES_WRITE_MANY_MAX_REQUEST_BYTES);
 	if (bodyText === null) {
-		return { status: 400, body: { message: "Request body is too large" } } as const;
+		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
 	}
 	let bodyJson: unknown;
 	try {
 		bodyJson = JSON.parse(bodyText);
 	} catch {
-		return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
+		return {
+			status: 400,
+			body: { message: "Failed to parse request body as JSON", errorCode: "invalid_input" },
+		} as const;
 	}
 	const body = write_many_body_validator.safeParse(bodyJson);
 	if (!body.success) {
-		return { status: 400, body: { message: server_request_body_issue_message(body.error) } } as const;
+		return {
+			status: 400,
+			body: { message: server_request_body_issue_message(body.error), errorCode: "invalid_input" },
+		} as const;
 	}
 
 	// Validate every item with the single-route rules before writing anything, so a
@@ -7429,26 +7628,39 @@ export async function public_api_http_write_many(args: {
 	for (const [index, file] of body.data.files.entries()) {
 		const requestedPath = requestedPaths[index];
 		if (requestedPath === null) {
-			return { status: 400, body: { message: "Path must be absolute.", path: file.path } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must be absolute.", errorCode: "invalid_input", path: file.path },
+			} as const;
 		}
 		if (requestedPath === "/") {
-			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must point to a file.", errorCode: "invalid_input", path: file.path },
+			} as const;
 		}
 		if (file.expectedRevision !== undefined && file.overwrite === "fail") {
-			return { status: 400, body: { message: EXPECTED_REVISION_COMBINATION_MESSAGE, path: file.path } } as const;
+			return {
+				status: 400,
+				body: { message: EXPECTED_REVISION_COMBINATION_MESSAGE, errorCode: "invalid_input", path: file.path },
+			} as const;
 		}
 		const name = path_name_of(requestedPath);
 		if (!public_api_is_valid_write_file_name(name)) {
 			return {
 				status: 400,
-				body: { message: invalid_name_message("file", name, clean_write_file_name(name)), path: file.path },
+				body: {
+					message: invalid_name_message("file", name, clean_write_file_name(name)),
+					errorCode: "invalid_input",
+					path: file.path,
+				},
 			} as const;
 		}
 		const shape = file.contentType === undefined ? null : files_editable_text_shape_of(file.contentType);
 		if (file.contentType !== undefined && shape === null) {
 			return {
 				status: 400,
-				body: { message: INVALID_WRITE_CONTENT_TYPE_MESSAGE, path: file.path },
+				body: { message: INVALID_WRITE_CONTENT_TYPE_MESSAGE, errorCode: "invalid_input", path: file.path },
 			} as const;
 		}
 		// Intermediate folders are created verbatim on publish; require already-canonical
@@ -7460,6 +7672,7 @@ export async function public_api_http_write_many(args: {
 					status: 400,
 					body: {
 						message: invalid_name_message("folder", segment, normalizedSegment._nay ? null : normalizedSegment._yay),
+						errorCode: "invalid_input",
 						path: file.path,
 					},
 				} as const;
@@ -7469,7 +7682,10 @@ export async function public_api_http_write_many(args: {
 		// the same rule as the single-file write route.
 		const content = files_normalize_text_document_input(file.content);
 		if (content.length === 0) {
-			return { status: 400, body: { message: "Content must not be empty.", path: file.path } } as const;
+			return {
+				status: 400,
+				body: { message: "Content must not be empty.", errorCode: "invalid_input", path: file.path },
+			} as const;
 		}
 		const contentBytes = files_get_utf8_byte_size(content);
 		if (contentBytes > files_MAX_TEXT_CONTENT_BYTES) {
@@ -7477,6 +7693,7 @@ export async function public_api_http_write_many(args: {
 				status: 400,
 				body: {
 					message: `Content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte limit.`,
+					errorCode: "invalid_input",
 					path: file.path,
 				},
 			} as const;
@@ -7484,7 +7701,10 @@ export async function public_api_http_write_many(args: {
 		// Compare normalized paths so two spellings of one path cannot race each other
 		// inside the same batch.
 		if (seenPaths.has(requestedPath)) {
-			return { status: 400, body: { message: "Duplicate path in batch", path: file.path } } as const;
+			return {
+				status: 400,
+				body: { message: "Duplicate path in batch", errorCode: "invalid_input", path: file.path },
+			} as const;
 		}
 		seenPaths.add(requestedPath);
 		validatedFiles.push({
@@ -7509,7 +7729,7 @@ export async function public_api_http_write_many(args: {
 	if (batchRateLimit) {
 		return {
 			status: 429,
-			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+			body: { message: batchRateLimit.message, errorCode: "rate_limited", retryAfterMs: batchRateLimit.retryAfterMs },
 		} as const;
 	}
 
@@ -7522,7 +7742,7 @@ export async function public_api_http_write_many(args: {
 		minimumRequiredCents: 1,
 	});
 	if (!credits.hasCredits) {
-		return { status: 402, body: { message: "Insufficient funds" } } as const;
+		return { status: 402, body: { message: "Insufficient funds", errorCode: "insufficient_funds" } } as const;
 	}
 
 	const principalRef: Infer<typeof file_write_principal_ref_validator> = {
@@ -7649,10 +7869,10 @@ export async function public_api_http_write_many(args: {
 			// The credential died mid-batch (expired or revoked); every remaining item
 			// would fail the same way, so abort the whole request.
 			if (result._nay.data.errorCode === "unauthenticated") {
-				return { status: 401, body: { message: result._nay.message } } as const;
+				return { status: 401, body: { message: result._nay.message, errorCode: "unauthenticated" } } as const;
 			}
 			if (result._nay.data.errorCode === "invalid_input") {
-				return { status: 400, body: { message: result._nay.message } } as const;
+				return { status: 400, body: { message: result._nay.message, errorCode: "invalid_input" } } as const;
 			}
 			// Only plugin writes check file refs, and this route takes only people's keys.
 			if (

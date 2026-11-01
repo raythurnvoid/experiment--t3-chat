@@ -184,6 +184,83 @@ describe("files_fetch_file_yjs_state_and_text", () => {
 			convexQueryMock.mockReset();
 		}
 	});
+
+	test("reads again when the updates do not continue the snapshot", async () => {
+		const doc = files_yjs_doc_create_from_text({ text: "ABCD", rootKind: "plain_text" });
+		if ("_nay" in doc) throw new Error(doc._nay.message);
+		const snapshotBytes = files_u8_to_array_buffer(encodeStateAsUpdate(doc));
+		doc.destroy();
+		const lineage = { yjsLastSequenceId: "lineage", pendingContentVersion: 1 };
+		const target = { ...lineage, textKind: "plain_text", snapshotUrl: "https://r2.test/snapshot" };
+		// The first snapshot is older than a save that installed a newer snapshot, and the save deleted
+		// the updates it covers. In the second case the update list is empty, and only its own
+		// `lastSequence` shows the save, because the sequence query answered from an older moment.
+		for (const { savedSequence, updates, sequenceDocLastSequence } of [
+			{
+				savedSequence: 3,
+				updates: [{ sequence: 3, update: new Uint8Array([0, 0]).buffer }],
+				sequenceDocLastSequence: 3,
+			},
+			{ savedSequence: 1, updates: [], sequenceDocLastSequence: 0 },
+		]) {
+			vi.stubGlobal("fetch", async () => new Response(snapshotBytes));
+			convexActionMock
+				.mockResolvedValueOnce({ ...target, snapshot: { sequence: 0 } })
+				.mockResolvedValueOnce({ ...target, snapshot: { sequence: savedSequence } });
+			convexQueryMock.mockImplementation(async (functionName: string) =>
+				functionName === "yjs_get_incremental_updates"
+					? { ...lineage, lastSequence: savedSequence, updates }
+					: { ...lineage, lastSequence: sequenceDocLastSequence },
+			);
+			try {
+				const loaded = await files_fetch_file_yjs_state_and_text({
+					membershipId: "membership" as Id<"organizations_workspaces_users">,
+					nodeId: "node" as Id<"files_nodes">,
+				});
+
+				expect(convexActionMock).toHaveBeenCalledTimes(2);
+				expect(loaded).toMatchObject({ text: { _yay: "ABCD" }, yjsSequence: savedSequence });
+			} finally {
+				convexActionMock.mockReset();
+				convexQueryMock.mockReset();
+				vi.unstubAllGlobals();
+			}
+		}
+	});
+
+	test("returns the snapshot's sequence when a save lands just before the snapshot read", async () => {
+		const doc = files_yjs_doc_create_from_text({ text: "ABCD", rootKind: "plain_text" });
+		if ("_nay" in doc) throw new Error(doc._nay.message);
+		const snapshotBytes = files_u8_to_array_buffer(encodeStateAsUpdate(doc));
+		doc.destroy();
+		vi.stubGlobal("fetch", async () => new Response(snapshotBytes));
+		const lineage = { yjsLastSequenceId: "lineage", pendingContentVersion: 1 };
+		// Both queries answered before the save, and the snapshot read after it.
+		convexActionMock.mockResolvedValue({
+			...lineage,
+			textKind: "plain_text",
+			snapshotUrl: "https://r2.test/snapshot",
+			snapshot: { sequence: 2 },
+		});
+		convexQueryMock.mockImplementation(async (functionName: string) =>
+			functionName === "yjs_get_incremental_updates"
+				? { ...lineage, lastSequence: 1, updates: [] }
+				: { ...lineage, lastSequence: 1 },
+		);
+		try {
+			const loaded = await files_fetch_file_yjs_state_and_text({
+				membershipId: "membership" as Id<"organizations_workspaces_users">,
+				nodeId: "node" as Id<"files_nodes">,
+			});
+
+			expect(convexActionMock).toHaveBeenCalledTimes(1);
+			expect(loaded).toMatchObject({ text: { _yay: "ABCD" }, yjsSequence: 2 });
+		} finally {
+			convexActionMock.mockReset();
+			convexQueryMock.mockReset();
+			vi.unstubAllGlobals();
+		}
+	});
 });
 
 describe("files_fetch_private_file_pending_text", () => {
