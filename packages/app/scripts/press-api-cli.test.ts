@@ -210,7 +210,7 @@ describe("read", () => {
 });
 
 describe("write", () => {
-	test("sends the local text unchanged, maps --if-revision, and refuses text that is not UTF-8", async () => {
+	test("sends the local text unchanged, maps --if-revision, and refuses local mistakes without a request", async () => {
 		const answer = {
 			path: "/notes/a.md",
 			nodeId: "n1",
@@ -247,12 +247,19 @@ describe("write", () => {
 				expect(refused.stderr.includes("Read the file and run the command again."), code).toBe(advice);
 			}
 
+			// A local mistake is a usage error, and the CLI sends nothing.
 			const binary = path.join(folder, "a.bin");
 			writeFileSync(binary, Buffer.from([0x41, 0xc3, 0x28]));
 			const requestCount = api.requests.length;
-			const refused = await run_cli(api.origin, ["write", "/notes/a.md", "--from", binary]);
-			expect(refused.code, refused.stderr).toBe(2);
-			expect(refused.stderr).toContain("Not valid UTF-8 text");
+			for (const [args, message] of [
+				[["write", "/notes/a.md", "--from", binary], "Not valid UTF-8 text"],
+				[["write", "/notes/a.md", "--from", path.join(folder, "gone.md")], "Local file not found"],
+				[["read", "/notes/a.md", "--to", path.join(folder, "gone", "a.md")], "Local folder not found"],
+			] as const) {
+				const refused = await run_cli(api.origin, [...args]);
+				expect(refused.code, refused.stderr).toBe(2);
+				expect(refused.stderr).toContain(message);
+			}
 			expect(api.requests).toHaveLength(requestCount);
 		} finally {
 			await api.close();

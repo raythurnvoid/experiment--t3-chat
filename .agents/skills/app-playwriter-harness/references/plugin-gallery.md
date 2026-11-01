@@ -51,7 +51,11 @@ Then wait for 12 tiles and `Load more`, rename an empty QA folder in the same wo
 
 ## Live check of locked tiles (second user)
 
-Gallery is installed in `chitchat-qa/xfer-qa-0914`. There, `/g4-media/shapes.png` and `/g4-media/speakers.mp4` are restricted files that `qa.perm.member` cannot open, while `/g4-media` stays readable, so the recursive list returns them as `locked: true`. Sign `qa.perm.member` into a scratch browser (`clerk-test-accounts.md`), register `request`/`response` listeners on `state.page` for `/api/v1/files/` before you open `/w/chitchat-qa/xfer-qa-0914/plugins/gallery/pages/gallery`, then read the frame. Expected (verified 2026-10-22 on 0.1.26): 4 tiles, 2 of them `[data-locked]`, no failed tile, and the `download-urls` bodies hold only the two open ids. The owner can open both files, so an owner run shows 4 normal tiles and proves nothing about locked rows.
+Gallery is installed in `chitchat-qa/xfer-qa-0914`. There, `/g4-media/shapes.png` and `/g4-media/speakers.mp4` are restricted files that `qa.perm.member` cannot open, while `/g4-media` stays readable, so the recursive list returns them as `locked: true`. Sign `qa.perm.member` into a scratch browser (`clerk-test-accounts.md`), register `request`/`response` listeners on `state.page` for `/api/v1/files/` before you open `/w/chitchat-qa/xfer-qa-0914/plugins/gallery/pages/gallery`, then read the frame. Expected (verified 2026-10-22 on 0.1.26): 4 tiles, 2 of them `[data-locked]`, no failed tile, and the `download-urls` bodies hold only the two open ids. The owner can open both files, so an owner run proves nothing about a member's locked rows. On 2026-11-01 an owner run also showed those two tiles as locked, while the owner's own API key read both files. So the lock there comes from what the Gallery installation may read, not from the owner's access.
+
+## Live check of the list end
+
+Register a `response` listener on `state.page` for `/api/v1/files/list` before you open the page, and keep only `status`, item count, `isDone`, and whether `cursor` is `null`, an empty string, or a string. Never store the cursor value. In `xfer-qa-0914` (fewer than 100 media files) Gallery sends one list request. Expected since 2026-11-01: 200, `isDone: true`, `cursor: null`, no `role="alert"`. Remove the listener with `state.page.off("response", handler)` and leave the tab open.
 
 ## Known hazards
 
