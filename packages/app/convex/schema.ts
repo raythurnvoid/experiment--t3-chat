@@ -548,6 +548,8 @@ const files_saved_placement_fields = {
 	pathDepth: v.number(),
 	lowercaseExtension: v.union(v.string(), v.null()),
 	archiveOperationId: v.union(v.string(), v.null()),
+	archiveTopScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+	archiveTopOrder: v.optional(v.string()),
 	// Missing uses the normal Restore path limit.
 	archivedPathLength: v.optional(v.number()),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
@@ -2924,6 +2926,15 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
 		.index("by_cohort_view_node", ["cohortId", "view", "nodeId"])
+		.index("by_view_archiveTopScope_archiveTopOrder_treePath", [
+			"cohortId",
+			"view",
+			"archiveTopScopeNodeId",
+			"archiveTopOrder",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
 		.index("by_view_path_archive", [
 			"cohortId",
 			"view",
@@ -5307,6 +5318,9 @@ const app_convex_schema = defineSchema({
 		 * (`files_archive_operation_id_new`). An older id is a plain UUID.
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
+		// Present only for a Trash top. The area and reverse delete key make its list one index range.
+		archiveTopScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
+		archiveTopOrder: v.optional(v.string()),
 		/**
 		 * The first Archive path length, stored only when it is above 1,024. Missing means the normal
 		 * 1,024-character Restore limit. Active nodes have no field. An archived child keeps this
@@ -5504,6 +5518,14 @@ const app_convex_schema = defineSchema({
 			"workspaceId",
 			"moveCohortId",
 			"archiveOperationId",
+			"treePath",
+		])
+		.index("by_org_ws_cohort_archiveTopScope_archiveTopOrder_treePath", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"archiveTopScopeNodeId",
+			"archiveTopOrder",
 			"treePath",
 		])
 		// A recursive read pages one restricted area at a time (`server/files-tree-walk.ts`), so it never
@@ -6941,7 +6963,7 @@ const app_convex_schema = defineSchema({
 		 * Set only on an Empty Trash job: a purge of every top item of one area that was archived before
 		 * the job started. `area` is null for the open part of the workspace. `cutoff` is
 		 * `files_archive_operation_id_cutoff` of the start time; only operation ids below it are deleted.
-		 * `cursor` is where the Archive view reader goes on (`files_tree_db_read_archived_tops`). The
+		 * `cursor` is a native top-index cursor: empty before the first page, `done` after the last. The
 		 * counts are of top items: found so far, deleted, and kept.
 		 */
 		emptyArchive: v.optional(
@@ -7108,6 +7130,23 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
 		.index("by_op_treePath", ["opId", "treePath"]),
+
+	/**
+	 * Repair direct children's Trash top fields after a parent changes its delete id.
+	 * Each job pages one delete. Trash pauses for the workspace until all jobs finish.
+	 */
+	files_trash_top_jobs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		parentId: v.id("files_nodes"),
+		archiveOperationId: v.string(),
+		cursor: v.union(v.string(), v.null()),
+		step: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_parent_archiveOperation", ["parentId", "archiveOperationId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_updatedAt", ["updatedAt"]),
 
 	/**
 	 * A marker stays until all path records match the op. Trash waits while any marker exists.

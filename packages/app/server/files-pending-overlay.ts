@@ -55,6 +55,7 @@ import { files_visible_resolve_db_create, type files_visible_resolve_Facts } fro
 import { files_pending_types_compute } from "./files-pending-types.ts";
 import { files_metadata_maps_db_delete } from "./files-metadata-maps.ts";
 import { files_content_heads_db_flush } from "./files-content-heads.ts";
+import { files_trash_tops_db_parent_changed, files_trash_tops_db_sync } from "./files-trash-tops.ts";
 import {
 	files_metadata_catalog_add_write,
 	files_metadata_catalog_db_insert_deltas,
@@ -1059,6 +1060,12 @@ export function files_pending_overlay_db_wrap(ctx: MutationCtx) {
 					}
 
 					if (table === "files_nodes") {
+						// Trash markers are derived fields. Their own patches need no second flush.
+						if (
+							property === "patch" &&
+							Object.keys(value!).every((field) => field === "archiveTopScopeNodeId" || field === "archiveTopOrder")
+						)
+							return await Reflect.apply(write, target, args);
 						const ancestorFields = Object.keys(value ?? {}).filter(files_is_ancestor_field);
 						if (property === "patch" && ancestorFields.length > 0) {
 							if (ancestorFields.length !== Object.keys(value!).length)
@@ -2810,11 +2817,18 @@ async function db_flush_saved_node(
 	const { ctx } = flush;
 	const doc = node ?? old;
 	if (!doc) return;
+	if (node) await files_trash_tops_db_sync(ctx, node);
 	// Global and plugin volume workspaces have no drafts.
 	const organizationId = ctx.db.normalizeId("organizations", doc.organizationId);
 	const workspaceId = ctx.db.normalizeId("organizations_workspaces", doc.workspaceId);
 	if (!organizationId || !workspaceId) return;
 	const scope = { organizationId, workspaceId };
+	await files_trash_tops_db_parent_changed(ctx, {
+		...scope,
+		nodeId,
+		oldArchive: old?.archiveOperationId,
+		archiveOperationId: node?.archiveOperationId,
+	});
 
 	const active = node?.archiveOperationId === null;
 	// A claim job can give one node many hides, so read them only when a copied field changed.

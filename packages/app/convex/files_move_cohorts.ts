@@ -71,6 +71,7 @@ import { path_join, path_extract_segments_from } from "../server/server-utils.ts
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_share_rows_db_sync_node } from "../server/files-share-rows.ts";
+import { files_trash_tops_fields } from "../server/files-trash-tops.ts";
 import { files_share_links_db_delete } from "./files_share_links_db.ts";
 import {
 	files_move_content_db_create,
@@ -160,6 +161,8 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 	return {
 		...header,
 		archivedPathLength: place.archivedPathLength,
+		archiveTopScopeNodeId: place.archiveTopScopeNodeId,
+		archiveTopOrder: place.archiveTopOrder,
 		parentScopeNodeId: place.parentScopeNodeId,
 		extendedScopeNodeId: place.extendedScopeNodeId,
 		parentExtendedScopeNodeId: place.parentExtendedScopeNodeId,
@@ -560,6 +563,11 @@ async function db_reserve_saved(
 	if (source._nay) return source;
 	const claim = node.archiveOperationId === null ? await db_claim_slot(ctx, cohort, node) : Result({ _yay: null });
 	if (claim._nay) return claim;
+	// A parent repair may still be pending. Read this view instead of copying cached top fields.
+	const parent =
+		node.archiveOperationId !== null && node.parentId !== "root"
+			? await files_saved_placement_db_get_node(ctx.db, node.parentId, { cohortId: cohort._id, view: "before" })
+			: null;
 	const place = {
 		cohortId: cohort._id,
 		nodeId: node._id,
@@ -567,6 +575,7 @@ async function db_reserve_saved(
 		organizationId: cohort.organizationId,
 		workspaceId: cohort.workspaceId,
 		...placement_header(node),
+		...files_trash_tops_fields(node, parent),
 		contentId: null,
 	};
 	const beforePlaceId = await ctx.db.insert("files_saved_places", { ...place, view: "before" });
@@ -1188,6 +1197,7 @@ async function db_rename_parents(
 			organizationId: cohort.organizationId,
 			workspaceId: cohort.workspaceId,
 			...placement_header(folder),
+			...files_trash_tops_fields(folder, parent),
 			contentId: null,
 		});
 		const latest = (await ctx.db.get("files_move_cohorts", cohort._id))!;
@@ -1790,6 +1800,16 @@ async function db_headers(
 				: undefined,
 		isPublic,
 		archiveOperationId: afterArchive,
+		...files_trash_tops_fields(
+			{
+				parentId,
+				archiveOperationId: afterArchive,
+				restrictedScopeNodeId: scope,
+				isRestrictedScopeRoot: scope === physical._id,
+				parentScopeNodeId: parent?.restrictedScopeNodeId ?? null,
+			},
+			parent,
+		),
 		// Already archived nodes keep their allowance even if the path changes.
 		archivedPathLength:
 			afterArchive === null

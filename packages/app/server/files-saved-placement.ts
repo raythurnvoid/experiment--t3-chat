@@ -143,6 +143,8 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		lowercaseExtension: place.lowercaseExtension,
 		archiveOperationId: place.archiveOperationId,
 		archivedPathLength: place.archivedPathLength,
+		archiveTopScopeNodeId: place.archiveTopScopeNodeId,
+		archiveTopOrder: place.archiveTopOrder,
 		restrictedScopeNodeId: place.restrictedScopeNodeId,
 		isRestrictedScopeRoot: place.isRestrictedScopeRoot,
 		parentScopeNodeId: place.parentScopeNodeId,

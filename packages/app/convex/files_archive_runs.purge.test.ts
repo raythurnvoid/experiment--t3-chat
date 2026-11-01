@@ -16,7 +16,7 @@ import {
 	type Fixture,
 } from "./files_archive_runs.setup.test.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
-import { test_mocks } from "./setup.test.ts";
+import { test_mocks, test_run_with_flush } from "./setup.test.ts";
 import { files_archive_operation_id_new } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -328,7 +328,7 @@ describe("files_nodes.purge_nodes", () => {
 	test("Empty Trash deletes only what was archived before it started, in its own area", async () => {
 		const f = await fixture();
 		const insert_archived = (fields: { name: string; archiveOperationId: string }) =>
-			f.t.run((ctx) =>
+			test_run_with_flush(f.t, (ctx) =>
 				ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: f.db.organizationId,
@@ -355,7 +355,7 @@ describe("files_nodes.purge_nodes", () => {
 		await insert_archived({ name: "legacy.md", archiveOperationId: crypto.randomUUID() });
 		await insert_archived({ name: "unknown.md", archiveOperationId: "no-time" });
 		// A restricted folder is another area, so its archive stays.
-		await f.t.run(async (ctx) => {
+		await test_run_with_flush(f.t, async (ctx) => {
 			const restrictedId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.db.organizationId,

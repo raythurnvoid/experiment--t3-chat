@@ -829,6 +829,136 @@ describe("Move cohort and folder-wide jobs", () => {
 		expect(await w.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
 	}, 120_000);
 
+	test("a cleaned child stays out of Trash tops while its parent still uses the published Move view", async () => {
+		const w = await transfer_workspace();
+		const parent = await w.folder("/archive");
+		const child = await w.folder("/archive/child");
+		const scope = { organizationId: w.db.organizationId, workspaceId: w.db.workspaceId, userId: w.db.userId };
+		const items = [];
+		// Selecting the child first makes its physical cleanup finish before its parent's.
+		for (const nodeId of [child, parent]) {
+			expect(
+				await w.t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					...scope,
+					target: { kind: "saved", id: nodeId },
+				}),
+			).toHaveProperty("_yay");
+			const proposal = (await w.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_user_target", (q) =>
+						q.eq("userId", scope.userId).eq("target.kind", "saved").eq("target.id", nodeId),
+					)
+					.unique(),
+			))!;
+			items.push({ pendingUpdateId: proposal._id, reviewedRevision: proposal.revision, selectedContentStateId: null });
+		}
+		const started = await w.asUser.mutation(api.files_pending_update_runs.start, {
+			membershipId: w.db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "accept",
+			expectedItemCount: 2,
+			items,
+		});
+		if (started._nay) throw new Error(started._nay.message);
+		const { runId } = started._yay;
+		expect(
+			await w.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: w.db.membershipId, runId }),
+		).toEqual({ _yay: null });
+		let cohortId: Id<"files_move_cohorts"> | null = null;
+		for (let pass = 0; !cohortId; pass++) {
+			if (pass === 100) throw new Error("The grouped Archive did not start");
+			const job = await w.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_org_ws", (q) =>
+						q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
+					)
+					.first(),
+			);
+			if (job) {
+				await w.t.mutation(internal.files_pending_overlay.run_job, {
+					kind: job.kind,
+					key: job.key,
+					nextAttemptAt: job.nextAttemptAt,
+				});
+				continue;
+			}
+			const run = (await w.t.run((ctx) => ctx.db.get("files_pending_update_runs", runId)))!;
+			if (run.step === "planning")
+				await w.t.action(internal.files_pending_update_runs.plan, { runId, fence: run.fence });
+			else await w.t.mutation(internal.files_pending_update_runs.advance, { runId });
+			cohortId =
+				(
+					await w.t.run((ctx) =>
+						ctx.db
+							.query("files_pending_update_run_units")
+							.withIndex("by_run_order", (q) => q.eq("runId", runId))
+							.first(),
+					)
+				)?.cohortId ?? null;
+		}
+		for (let pass = 0; ; pass++) {
+			if (pass === 100) throw new Error("The grouped Archive did not clean its child first");
+			const physicalChild = (await w.node(child))!;
+			const physicalParent = (await w.node(parent))!;
+			if (physicalChild.moveCohortId === undefined && physicalChild.archiveOperationId !== null) {
+				expect(physicalParent.moveCohortId).toBe(cohortId);
+				expect(physicalParent.archiveOperationId).toBeNull();
+				break;
+			}
+			const cohort = (await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId!)))!;
+			await w.t.mutation(internal.files_move_cohorts.advance, {
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				join: false,
+			});
+		}
+		expect(
+			await w.asUser.mutation(api.files_nodes.read_only_set, {
+				membershipId: w.db.membershipId,
+				nodeId: child,
+				readOnly: true,
+			}),
+		).toEqual({ _yay: null });
+		const view = (await w.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: w.db.membershipId }))!;
+		const normal = await w.asUser.query(api.files_tree.list_archived_tops, {
+			membershipId: w.db.membershipId,
+			savedStream: { kind: "normal", generation: view.generation },
+			area: null,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		const selected = await w.asUser.query(api.files_tree.list_archived_tops, {
+			membershipId: w.db.membershipId,
+			savedStream: { kind: "cohort", generation: view.generation, cohortId, view: "after" },
+			area: null,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(
+			selected.page.map((row) => row._id),
+			"the selected Move stream shows the parent only",
+		).toEqual([parent]);
+		expect(
+			normal.page.map((row) => row._id),
+			"a cleaned child stays out of Trash tops while its parent is held",
+		).toEqual([]);
+		await finish_cohort({ t: w.t, runId, cohortId });
+		const finalView = (await w.asUser.query(api.files_tree.get_workspace_move_view, {
+			membershipId: w.db.membershipId,
+		}))!;
+		const final = await w.asUser.query(api.files_tree.list_archived_tops, {
+			membershipId: w.db.membershipId,
+			savedStream: { kind: "normal", generation: finalView.generation },
+			area: null,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(
+			final.page.map((row) => row._id),
+			"only the parent lists after the grouped Archive finishes",
+		).toEqual([parent]);
+	});
+
 	test.each(["finish", "stop_before", "stop_after", "first_archive"] as const)(
 		"Save Archive keeps numeric and absent allowances through %s",
 		async (end) => {

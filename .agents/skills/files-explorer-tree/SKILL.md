@@ -1127,10 +1127,25 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   `Workspace`.
 - The list (`files_tree.list_archived_tops`) shows the top items of each Trash operation in the
   area, newest trashed first, then by path. A top item that is a restricted folder shows in its
-  parent's area, as a locked row when the person cannot open it. The query reads two streams (items
-  and folders) and skips a whole trashed subtree in one read, so its cost grows with the rows it
-  returns. The client merges the normal and the Move streams like "Shared with you", and pins each
-  page's end (`pinPageEnds` in `useFilesPaginatedQuery`), so a new move to Trash cannot open a gap.
+  parent's area, as a locked row when the person cannot open it. Each saved stream reads one native
+  index of top items. Reads grow with the rows returned, even when paths match or overlap. The client
+  merges the normal and the Move streams like "Shared with you". Native page ends keep new rows from
+  opening a gap between pages.
+- `archiveTopScopeNodeId` and `archiveTopOrder` are derived current fields, not delete history.
+  Missing means not a top item. The area is null for Workspace. The order reverses the delete id,
+  so the index sorts newest deletes first and paths A to Z. The write flush updates each node.
+  Move derives both saved views from their own parents and copies the winning fields on cleanup.
+- A parent's delete id can change which children are tops. `files_trash_top_jobs` repairs only its
+  children in the old and new deletes, 64 per step. A later parent change restarts those jobs.
+  Each scheduled call carries a step number, so repeated or old callbacks stop. Cron recovery drains
+  every due batch. Jobs wait for Move cleanup. The top reader and Empty Trash wait while any
+  repair exists in the workspace. The view resets its pages and shows `Updating Trash…`.
+- Normal and forced moves to Trash, Restore, and Skip can each queue one repair per affected
+  parent/delete pair. This pause is intentional: children saved in earlier steps may now need a
+  different top marker. A normal parent-first archive may need no repair. Repair work grows with
+  affected parent-child links, never with viewers.
+- Keep top membership in an index. Do not infer it by skipping path ranges: different items in
+  Trash may have matching or overlapping paths. Do not force unique names in Trash to serve a read.
 - A row shows the name, its folder, date moved to Trash and "Changed by" (`updatedBy`). Its menu:
   Restore (the whole Trash operation), Delete permanently…, Copy path. A locked row offers nothing.
 - Delete permanently and Empty Trash need `content.permissions.manage`: on the workspace for the

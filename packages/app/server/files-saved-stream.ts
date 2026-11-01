@@ -32,6 +32,22 @@ function create_stream(
 	fixedView: files_saved_placement_FixedView | null,
 ) {
 	const queries = {
+		by_archive_top_scope: (area: Doc<"files_nodes">["restrictedScopeNodeId"]) =>
+			fixedView
+				? db
+						.query("files_saved_places")
+						.withIndex("by_view_archiveTopScope_archiveTopOrder_treePath", (q) =>
+							q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view).eq("archiveTopScopeNodeId", area),
+						)
+				: db
+						.query("files_nodes")
+						.withIndex("by_org_ws_cohort_archiveTopScope_archiveTopOrder_treePath", (q) =>
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("archiveTopScopeNodeId", area),
+						),
 		by_parent_archive_restricted_kind_created: (args: {
 			parentId: Doc<"files_nodes">["parentId"];
 			archiveOperationId: Doc<"files_nodes">["archiveOperationId"];

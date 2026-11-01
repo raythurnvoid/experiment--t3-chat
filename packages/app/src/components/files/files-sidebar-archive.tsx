@@ -301,6 +301,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	const { selectedNodeId, onOpen, onRestore, onDeleted, onExit } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const view = useFilesSavedView(membershipId);
+	const topsReady = useQuery(app_convex_api.files_tree.get_archived_tops_ready, { membershipId });
 	const rootRef = useRef<HTMLElement | null>(null);
 	const backButtonRef = useRef<HTMLButtonElement | null>(null);
 	const emptyButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -348,9 +349,8 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	const areaLabel = area === null ? "Workspace" : path_name_of(area.path);
 
 	const topArgs = (savedStream: files_SavedStream | null) =>
-		savedStream ? { membershipId, savedStream, area: area?.id ?? null } : ("skip" as const);
-	// The query has its own cursor, so pin each page's end. Otherwise a new archive could hide a row.
-	const topOptions = { initialNumItems: FilesSidebarArchive_PAGE_SIZE, pinPageEnds: true };
+		savedStream && topsReady === true ? { membershipId, savedStream, area: area?.id ?? null } : ("skip" as const);
+	const topOptions = { initialNumItems: FilesSidebarArchive_PAGE_SIZE };
 	const topNormal = useFilesPaginatedQuery(
 		app_convex_api.files_tree.list_archived_tops,
 		topArgs(view.normal),
@@ -368,7 +368,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 		loadMore: loadMoreTops,
 	} = merge_streams<FilesSidebarArchive_TopRow>({
 		streams: view.normal ? [topNormal, ...(view.cohort ? [topCohort] : [])] : [],
-		isViewLoading: view.loading,
+		isViewLoading: view.loading || topsReady !== true,
 		// The server order: newest archive operation first, then by `treePath`. A locked row has no
 		// `treePath`, so build it from the path the same way.
 		compare: (a, b) =>
@@ -376,7 +376,9 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 			compareValues(
 				a.locked ? files_derive_tree_path_for_file_node(a.path, a.kind) : a.treePath,
 				b.locked ? files_derive_tree_path_for_file_node(b.path, b.kind) : b.treePath,
-			),
+			) ||
+			compareValues(a._creationTime, b._creationTime) ||
+			compareValues(a._id, b._id),
 	});
 
 	// Delete permanently needs Can manage, like the server: on the workspace for the open part, on the
@@ -488,11 +490,13 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	}, [purgeRequest]);
 
 	const statusText =
-		topStatus === "loading"
-			? "Loading Trash…"
-			: topRows.length === 0 && topStatus === "done"
-				? "Trash is empty."
-				: null;
+		topsReady === false
+			? "Updating Trash…"
+			: topStatus === "loading"
+				? "Loading Trash…"
+				: topRows.length === 0 && topStatus === "done"
+					? "Trash is empty."
+					: null;
 
 	return (
 		<section
@@ -570,7 +574,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 						ref={emptyButtonRef}
 						type="button"
 						variant="outline_destructive"
-						disabled={!canManageArea || (topStatus === "done" && topRows.length === 0)}
+						disabled={topsReady !== true || !canManageArea || (topStatus === "done" && topRows.length === 0)}
 						onClick={handleEmptyArchiveClick}
 					>
 						Empty Trash…

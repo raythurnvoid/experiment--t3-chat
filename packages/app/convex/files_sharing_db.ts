@@ -19,6 +19,7 @@ import {
 } from "../server/files-move-reservations.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_share_links_db_check_live_node } from "../server/files-share-links.ts";
+import { files_trash_tops_fields } from "../server/files-trash-tops.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
 /**
@@ -85,11 +86,13 @@ export async function files_nodes_db_set_restricted_scope(args: {
 			if (!place) continue;
 			let parentScopeNodeId: Id<"files_nodes"> | null = null;
 			let parentExtendedScopeNodeId: Id<"files_nodes"> | null = null;
+			let placedParent: Doc<"files_nodes"> | null = null;
 			let parentId = place.parentId;
 			while (!parentScopeNodeId && parentId !== files_ROOT_ID) {
 				const parent = await files_saved_placement_db_get_node(ctx.db, parentId, fixedView);
 				if (!parent) break;
 				if (parent._id === place.parentId) {
+					placedParent = parent;
 					parentExtendedScopeNodeId = parent.extendedScopeNodeId;
 				}
 				if (parent.isRestrictedScopeRoot) parentScopeNodeId = parent._id;
@@ -102,6 +105,10 @@ export async function files_nodes_db_set_restricted_scope(args: {
 				...boundary(parentScopeNodeId),
 				...extended(parentExtendedScopeNodeId),
 				...publicFlag(place),
+				...files_trash_tops_fields(
+					{ ...place, restrictedScopeNodeId, isRestrictedScopeRoot, parentScopeNodeId },
+					placedParent,
+				),
 			});
 			await files_metadata_db_patch_file_scope(ctx, {
 				...args,
@@ -118,6 +125,17 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		...boundary(physicalParent?.restrictedScopeNodeId ?? null),
 		...extended(physicalParent?.extendedScopeNodeId ?? null),
 		...(physical ? publicFlag(physical) : {}),
+		...(physical
+			? files_trash_tops_fields(
+					{
+						...physical,
+						restrictedScopeNodeId: args.restrictedScopeNodeId,
+						isRestrictedScopeRoot,
+						parentScopeNodeId: physicalParent?.restrictedScopeNodeId ?? null,
+					},
+					physicalParent,
+				)
+			: {}),
 	});
 	await files_metadata_db_patch_file_scope(ctx, {
 		organizationId: args.organizationId,

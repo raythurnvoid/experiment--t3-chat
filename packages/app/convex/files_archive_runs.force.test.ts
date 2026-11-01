@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
@@ -122,6 +122,43 @@ describe("archive parent child list", () => {
 			expect((await read_node(f, first.topId)).archiveOperationId).not.toBeNull();
 		}
 		expect((await read_node(f, fileId)).archiveOperationId).toBeNull();
+	});
+});
+
+describe("Trash top repairs", () => {
+	test.each(["normal", "forced"] as const)("%s folder archive repairs tops before publishing Trash", async (mode) => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "repair-tops", folderCount: 3, filesPerFolder: 70 });
+		if (mode === "forced") {
+			const credential = await key(f);
+			await run_to_end(f, await force_archive(f, credential.credential, "/repair-tops"));
+		} else await archive_to_end(f, tree.topId);
+		const jobs = await f.t.run((ctx) => ctx.db.query("files_trash_top_jobs").collect());
+		if (mode === "forced") expect(jobs.length, "children stamped before their parent need repairs").toBeGreaterThan(0);
+		else expect(jobs.length, "a normal parent-first archive needs no repair").toBe(0);
+		expect(jobs.length).toBeLessThanOrEqual(tree.folderIds.length + 1);
+		expect(await f.asOwner.query(api.files_tree.get_archived_tops_ready, { membershipId: f.db.membershipId })).toBe(
+			jobs.length === 0,
+		);
+		for (let pass = 0; pass < 20; pass++) {
+			const job = await f.t.run((ctx) => ctx.db.query("files_trash_top_jobs").first());
+			if (!job) break;
+			await f.t.mutation(internal.files_trash_tops.advance, { jobId: job._id, step: job.step });
+		}
+		expect(await f.asOwner.query(api.files_tree.get_archived_tops_ready, { membershipId: f.db.membershipId })).toBe(
+			true,
+		);
+		const page = await f.asOwner.query(api.files_tree.list_archived_tops, {
+			membershipId: f.db.membershipId,
+			savedStream: { kind: "normal", generation: 0 },
+			area: null,
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
+		expect(
+			page.page.map((node) => node._id),
+			"only the archived parent is a top item",
+		).toEqual([tree.topId]);
+		expect(page.isDone).toBe(true);
 	});
 });
 

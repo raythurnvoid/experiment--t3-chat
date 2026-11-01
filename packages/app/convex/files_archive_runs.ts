@@ -89,7 +89,6 @@ import {
 import { files_subtree_op_paths_tree_find_blocked } from "./files_subtree_op_paths_tree.ts";
 import { files_nodes_db_rebuild_node } from "./files_subtree_ops_rebuild.ts";
 import { files_purge_db_drain_node_batch } from "./files_purge_db.ts";
-import { files_tree_archived_tops_parse_cursor, files_tree_db_read_archived_tops } from "./files_tree.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
 	organizations_membership_lifetimes_db_ensure,
@@ -1022,27 +1021,36 @@ const LEGACY_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f
  */
 async function db_queue_empty_archive_page(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome | null> {
 	const emptyArchive = args.run.emptyArchive!;
-	const positions = files_tree_archived_tops_parse_cursor(emptyArchive.cursor);
-	if (positions.items === "done" && positions.folders === "done") return { kind: "done" };
+	if (emptyArchive.cursor === "done") return { kind: "done" };
+	if (
+		await ctx.db
+			.query("files_trash_top_jobs")
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", args.run.organizationId).eq("workspaceId", args.run.workspaceId),
+			)
+			.first()
+	)
+		return { kind: "continue" };
 
 	// A Move shows its rows in another saved view until it ends. The job waits for it.
 	if ((await files_saved_placement_db_get_view(ctx.db, args.run)).cohortId !== null) return { kind: "continue" };
+	// Convex allows one native page per mutation, including the child walk below.
+	if (args.budget.hasPaginated) return { kind: "continue" };
+	args.budget.hasPaginated = true;
 	const saved = await files_saved_stream_db_create(ctx.db, args.run);
-	const { page } = await files_tree_db_read_archived_tops(ctx, {
-		saved,
-		area: emptyArchive.area,
-		positions,
-		end: null,
+	const result = await saved.queries.by_archive_top_scope(emptyArchive.area).paginate({
+		cursor: emptyArchive.cursor || null,
 		numItems: PAGE_SIZE,
-		over_budget: () => files_subtree_ops_db_is_near_limits(ctx),
 	});
+	const page = await saved.read_nodes(result.page);
 	args.budget.checkNodes -= page.length + 1;
-	emptyArchive.cursor = JSON.stringify(positions);
+	emptyArchive.cursor = result.isDone ? "done" : result.continueCursor;
 
 	const startedAt = Number(emptyArchive.cutoff.slice(1));
 	const tops = [];
 	for (const node of page) {
 		const operationId = node.archiveOperationId!;
+		if (operationId >= emptyArchive.cutoff) continue;
 		if (!operationId.startsWith("t") && !LEGACY_OPERATION_ID.test(operationId)) continue;
 		// One operation has one archive job and a few restore jobs, one per Restore of its leftovers.
 		let isArchivedLate = false;
@@ -2932,11 +2940,8 @@ export async function files_archive_runs_db_start_purge(
 		...(args.emptyArchive && {
 			emptyArchive: {
 				...args.emptyArchive,
-				// Each stream starts at the cutoff, so it first reads the newest operation below it.
-				cursor: JSON.stringify({
-					items: { op: args.emptyArchive.cutoff, start: "", inclusive: true },
-					folders: { op: args.emptyArchive.cutoff, start: "", inclusive: true },
-				}),
+				// Empty starts the native top-item index. "done" marks its last page.
+				cursor: "",
 				foundCount: 0,
 				deletedCount: 0,
 				keptCount: 0,

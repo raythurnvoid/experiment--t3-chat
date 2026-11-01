@@ -660,8 +660,7 @@ const trash_key_validator = v.object({
  * One page of one index stream of `files/trash/list`: the archived docs of one area below `upperKey`,
  * newest archive operation first. `public_api_files_organize_http_trash_list` merges the streams.
  *
- * Every archived doc is listed, not only the top items of the app's Trash view: the app's reader can
- * miss an item when two top items share a path (`files_tree.list_archived_tops`). Two index ranges
+ * Every archived doc is listed, not only the top items of the app's Trash view. Two index ranges
  * serve an area. "items" holds the docs of the area. "folders" holds the restricted folders whose
  * parent is in the area: a restricted folder lists in the area of its parent, locked when the
  * caller cannot open it, and its contents list only in its own area.
