@@ -8865,6 +8865,22 @@ describe("plugins metadata file doors", () => {
 		// An `<image>` tag, which a browser reads as an image.
 		expect((await write(`${kept}\nHello <image src="bonobo-file://${locked}"> there\n`)).status).toBe(403);
 		expect(await read_doc()).toBe(kept);
+		// A new file is refused at publish, after its upload. Its plugin call keeps the answer the caller got.
+		const refusedCreate = await door_call({
+			t,
+			path: "/api/v1/files/write",
+			apiToken: run.apiToken,
+			body: { path: "/probe/new.md", content: `![b](bonobo-file://${locked})\n` },
+		});
+		expect(refusedCreate.status).toBe(403);
+		expect(await find_active_node({ t, fixture, path: "/probe/new.md" })).toBeNull();
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", run.runId))
+				.collect(),
+		);
+		expect(calls.at(-1)).toMatchObject({ status: "failed", responseStatus: 403, errorCode: "file_reference_denied" });
 		// A ref inside a code block stays code text, also after the saved text is rebuilt from the document.
 		expect(
 			(

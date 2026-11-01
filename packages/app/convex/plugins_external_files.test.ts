@@ -2218,6 +2218,12 @@ describe("ensure_writer", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		// Finish the background jobs of the steps above first. A search index run holds the workspace's
+		// Move slot, so a rename that starts while it runs waits, and the rename helper stops with
+		// "Transfer made no progress". On a slow machine the index run is often still running here.
+		vi.useFakeTimers();
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		vi.useRealTimers();
 
 		if (change === "nonempty") {
 			expect(
