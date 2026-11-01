@@ -138,19 +138,17 @@
 		flex-direction: column;
 	}
 
-	/* Sit on the box's label line: the box has 12px padding and the label line is 24px tall. At 28px
-	   the button stays between 10px and 38px from the top. The description starts at 40px, so the
-	   box keeps its size and the button covers no text. `z-index: 2` keeps it above the box, which
-	   takes `z-index: 1` on hover. */
+	/* Keep the standard button size. Center it on the box's right side, inside the box padding, like
+	   a trailing control in a list row. The box is taller than the button, so it keeps its size, and
+	   the box leaves room on the right so no text runs under it. `z-index: 2` keeps it above the box,
+	   which takes `z-index: 1` on hover. */
 	.FilesPropertiesModalSetting-info {
 		position: absolute;
-		top: 10px;
-		right: 8px;
+		top: 50%;
+		right: 12px;
 		z-index: 2;
 
-		width: 28px;
-		height: 28px;
-		padding: 6px;
+		translate: 0 -50%;
 	}
 	/* #endregion setting */
 
@@ -161,10 +159,12 @@
 		gap: 10px;
 	}
 
+	/* The right padding leaves room for the 36px help button of `.FilesPropertiesModalSetting-info`, plus
+	   an 8px gap before the text. */
 	.FilesPropertiesModalReadOnly-checkbox {
 		align-items: start;
 		height: auto;
-		padding: 12px;
+		padding: 12px 56px 12px 12px;
 		white-space: normal;
 		text-align: start;
 	}

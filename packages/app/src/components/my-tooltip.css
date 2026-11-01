@@ -2,6 +2,11 @@
 	.MyTooltipInfoTrigger {
 		cursor: help;
 		outline-offset: 2px;
+
+		/* A disabled trigger never shows its tooltip, so keep the default cursor. */
+		&[aria-disabled="true"] {
+			cursor: auto;
+		}
 	}
 
 	/* Do not add `contain`, `transform`, or `filter` here. They turn off `anchor()` for the native

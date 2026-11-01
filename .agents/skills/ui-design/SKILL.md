@@ -57,8 +57,10 @@ is turned on or off, or when it is blocked. This is a product rule, decided by t
 - The help opens on hover, on keyboard focus, and on a click or tap. A click only opens it, so it
   never hides text the hover has just shown. Touch never opens a tooltip, so without the click a
   phone could not read it. Clicking the icon does not change the setting.
-- The icon must not change the size or layout of the setting. Place it in a corner of the box,
-  outside the clickable label, on a line that already has room.
+- The icon must not change the size or layout of the setting, and it keeps the standard
+  `MyIconButton` size. Do not shrink it to fit. Center it on the box's right side, outside the
+  clickable label, like a trailing control in a list row. Give the box enough right padding so no
+  text runs under it.
 - A setting with no extra text gets no icon. When it is blocked, hovering the box shows why
   (`open={reason ? undefined : false}`, like the billing tooltips in the header).
 

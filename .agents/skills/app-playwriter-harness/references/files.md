@@ -1494,7 +1494,7 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   toast appeared after it, while `confirm.focus()` + `keyboard.press("Enter")` toggled both
   directions every time. Use the keyboard for the confirm button. The description text is the same
   in every state, so read the state from the checkbox (`isChecked()`) after the write lands.
-- The Read-only box has a `?` help button in its top-right corner, `About Read-only`. Hover, focus,
+- The Read-only box has a `?` help button centered on its right side, `About Read-only`. Hover, focus,
   or a click opens its tooltip. A click does not toggle the checkbox. The tooltip stays in the DOM
   while hidden; read it through the button's `aria-describedby` id. It holds the disabled reason
   ("You need Can edit permission to change this.") and the plugin note.

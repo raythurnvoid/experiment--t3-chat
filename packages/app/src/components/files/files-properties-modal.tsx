@@ -272,14 +272,14 @@ type FilesPropertiesModalSetting_Props = {
 };
 
 /**
- * A setting box with a help button in its top-right corner. Hover or keyboard focus on the button
+ * A setting box with a help button on its right side. Hover or keyboard focus on the button
  * shows the extra text in a tooltip. A click or a tap shows it at once. The tooltip itself never opens
  * on touch, so without the click a phone could not read the text. It closes when the pointer leaves,
  * on Escape, and on a click elsewhere.
  *
  * The button sits outside the checkbox `<label>`. A focusable element inside a label is invalid HTML,
- * and a click on it would toggle the checkbox. It is placed over the label line, so the box keeps its
- * size.
+ * and a click on it would toggle the checkbox. It keeps the standard size and sits centered on the box's
+ * right side, so the box keeps its size.
  */
 const FilesPropertiesModalSetting = memo(function FilesPropertiesModalSetting(
 	props: FilesPropertiesModalSetting_Props,
