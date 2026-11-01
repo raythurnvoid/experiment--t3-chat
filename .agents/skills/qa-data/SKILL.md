@@ -81,16 +81,20 @@ without auto-run plugins.
 Do this when the catalog looks out of date. It only reads data. Write the exports to the task's
 personal `+ai` folder, never to the repo.
 
-`convex data` refuses a `--limit` of 50,000 or more, and it has no cursor. So `files_nodes` and
-`files_r2_assets` are read twice: newest rows and oldest rows. Rows created between the two
-windows are missing, so check the time ranges the script prints.
+`convex data` has no cursor, and it refuses a large `--limit`: 49,999 fails with "Requested too many
+items: 50000". So `files_nodes` and `files_r2_assets` are read twice: newest rows and oldest rows.
+Rows created between the two windows are missing, so check the time ranges the script prints. On
+2026-11-01, newest 30,000 `files_nodes` rows (about 49 MB) plus oldest 8,000 left only a four-hour gap
+on 2026-09-10.
 
 ```powershell
 $d = "$(git rev-parse --show-toplevel)-+personal/+ai/<task>-<YYYY-MM-DD>"
-foreach ($t in "users", "organizations", "organizations_workspaces", "organizations_workspaces_users", "plugins_workspace_installations", "ai_chat_threads", "files_nodes", "files_r2_assets") {
+foreach ($t in "users", "organizations", "organizations_workspaces", "organizations_workspaces_users", "plugins_workspace_installations", "ai_chat_threads", "files_r2_assets") {
 	vp env exec pnpm --dir packages/app exec convex data $t --format jsonArray --limit 8000 > "$d/$t.json"
 	echo "$t EXIT: $LASTEXITCODE"
 }
+vp env exec pnpm --dir packages/app exec convex data files_nodes --format jsonArray --limit 30000 > "$d/files_nodes.json"
+echo "files_nodes EXIT: $LASTEXITCODE"
 foreach ($t in "files_nodes", "files_r2_assets") {
 	vp env exec pnpm --dir packages/app exec convex data $t --format jsonArray --limit 8000 --order asc > "$d/$t.asc.json"
 	echo "$t asc EXIT: $LASTEXITCODE"

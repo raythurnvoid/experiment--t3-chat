@@ -260,7 +260,9 @@ read-only.". When the item is a draft, the lock is on a saved folder above it, s
 folder in the destination path is read-only.". Before it saves, the Move checks the replaced item and
 the items inside it again, and says "An item the Move replaces is read-only.". A folder that a Move
 creates on the way to its destination checks the folder above it, and says "A folder in the
-destination path is read-only.".
+destination path is read-only.". The Pending tab keeps Accept disabled while the file a Move replaces
+is Read-only. So a user sees "The destination file is read-only." there only when the lock comes after
+the tab loaded.
 
 ## Human-approved delete exception
 
