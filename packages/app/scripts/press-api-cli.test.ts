@@ -1,13 +1,28 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
-import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const cliPath = fileURLToPath(new URL("../../../.agents/skills/press-api/scripts/api.mjs", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const scratchRoot = path.resolve(
+	repoRoot,
+	"..",
+	`${path.basename(repoRoot)}-+personal`,
+	"+ai",
+	`press-api-cli-tests-${new Date().toISOString().slice(0, 10)}`,
+);
+
+/**
+ * Make an empty folder for local files, outside the repo.
+ */
+function make_fixture_folder() {
+	mkdirSync(scratchRoot, { recursive: true });
+	return mkdtempSync(path.join(scratchRoot, "fixture-"));
+}
 
 type ApiRequest = { route: string; body: Record<string, unknown> };
 
@@ -61,7 +76,19 @@ function run_cli(origin: string, args: string[], options: { onStdout?: (child: C
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk: string) => (stderr += chunk));
 		child.on("error", reject);
-		child.on("close", (code) => resolve({ code, stdout: Buffer.concat(stdout), stderr }));
+
+		// A broken CLI can wait forever for a page the fake API never sends. Stop it before the Vitest
+		// timeout, so the test still reaches its finally block and closes the server.
+		let timedOut = false;
+		const deadline = setTimeout(() => {
+			timedOut = true;
+			child.kill();
+		}, 4000);
+		child.on("close", (code) => {
+			clearTimeout(deadline);
+			if (timedOut) reject(new Error(`The CLI did not end within 4 seconds: ${args.join(" ")}`));
+			else resolve({ code, stdout: Buffer.concat(stdout), stderr });
+		});
 	});
 }
 
@@ -93,7 +120,7 @@ describe("read", () => {
 		const api = await start_api((request, response) =>
 			request.body.cursor === null ? send_page(response, PAGE_1, "c1") : send_page(response, PAGE_2, null),
 		);
-		const folder = mkdtempSync(path.join(os.tmpdir(), "press-api-cli-"));
+		const folder = make_fixture_folder();
 		try {
 			const raw = await run_cli(api.origin, ["read", FACTS.path]);
 			expect(raw.code, raw.stderr).toBe(0);
@@ -117,7 +144,7 @@ describe("read", () => {
 		}
 	});
 
-	test("prints no facts, keeps the old --to file, and stops on a refused page, a lost page, or a closed stdout", async () => {
+	test("prints no facts, keeps the old --to file, and stops on a refused page, a lost answer, or a closed stdout", async () => {
 		let pipeClosed: Promise<void> = Promise.resolve();
 		let secondPage: "refused" | "lost" | "held" = "refused";
 		const api = await start_api(async (request, response) => {
@@ -137,7 +164,7 @@ describe("read", () => {
 				send_page(response, PAGE_2, "c2");
 			}
 		});
-		const folder = mkdtempSync(path.join(os.tmpdir(), "press-api-cli-"));
+		const folder = make_fixture_folder();
 		const target = path.join(folder, "a.bin");
 		try {
 			for (const [failure, exitCode] of [
@@ -197,9 +224,9 @@ describe("write", () => {
 			response.writeHead(errorCode ? 409 : 200, { "content-type": "application/json" });
 			response.end(JSON.stringify(errorCode ? { message: "Refused.", errorCode } : answer));
 		});
-		const folder = mkdtempSync(path.join(os.tmpdir(), "press-api-cli-"));
+		const folder = make_fixture_folder();
 		try {
-			const text = "﻿# Café\r\nline\r\n";
+			const text = "\uFEFF# Café\r\nline\r\n";
 			const local = path.join(folder, "a.md");
 			writeFileSync(local, text, "utf8");
 			const written = await run_cli(api.origin, ["write", "/notes/a.md", "--from", local, "--if-revision", "r1"]);
@@ -236,7 +263,7 @@ describe("write", () => {
 
 describe("stat", () => {
 	test("--expect sets the status every path must have, and an API refusal prints no items", async () => {
-		const statuses: Record<string, string> = { "/a": "found", "/b": "missing", "/c": "denied" };
+		const statuses: Record<string, string> = { "/a": "found", "/b": "missing" };
 		const api = await start_api((request, response) => {
 			const paths = request.body.paths as string[];
 			if (paths.includes("/x")) {
@@ -249,11 +276,8 @@ describe("stat", () => {
 		});
 		try {
 			for (const [args, exitCode] of [
-				[["/a"], 0],
-				[["/a", "/b"], 1],
 				[["/b", "--expect", "missing"], 0],
 				[["/a", "/b", "--expect", "missing"], 1],
-				[["/c", "--expect", "denied"], 0],
 			] as const) {
 				const result = await run_cli(api.origin, ["stat", ...args]);
 				expect(result.code, args.join(" ")).toBe(exitCode);

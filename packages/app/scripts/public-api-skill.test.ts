@@ -9,15 +9,16 @@ const skillRoot = fileURLToPath(new URL("../../../.agents/skills/press-api/", im
 const schemaPath = fileURLToPath(new URL("../shared/api-schemas.ts", import.meta.url));
 
 /**
- * Read a Markdown file without its fenced code blocks, so a sample inside a code block is not read as a link or a heading.
+ * Drop the fenced code blocks of a Markdown text, so a sample inside a code block is not read as a link or a heading.
  */
-function read_prose(file: string) {
-	return readFileSync(file, "utf8").replace(/^```[\s\S]*?^```/gmu, "");
+function strip_code_blocks(markdown: string) {
+	return markdown.replace(/^```[\s\S]*?^```/gmu, "");
 }
 
 /**
- * Make the `#anchor` of every heading the way GitHub does: drop inline code and bold marks, keep letters, digits,
- * `_`, `-` and spaces, lowercase, and turn spaces into `-`. A repeated heading gets `-1`, `-2`, and so on.
+ * Make the `#anchor` of every heading the way GitHub does: keep only the text of a link, lowercase, drop every
+ * character other than letters, digits, `_`, `-` and spaces, and turn spaces into `-`. A repeated heading gets
+ * `-1`, `-2`, and so on.
  */
 function heading_anchors(markdown: string) {
 	const counts = new Map<string, number>();
@@ -46,7 +47,7 @@ describe("Bonobo Senate API client skill", () => {
 		for (const file of files) {
 			const text = readFileSync(path.join(skillRoot, file), "utf8");
 			expect(Buffer.byteLength(text), file).toBeLessThanOrEqual(ai_chat_skills_LIMITS.skill);
-			for (const match of read_prose(path.join(skillRoot, file)).matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)) {
+			for (const match of strip_code_blocks(text).matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)) {
 				const [target, anchor] = match[1].split("#");
 				expect(target, `${file}: ${match[1]}`).not.toMatch(/^(?:[a-z]+:|[/\\])/iu);
 				// A link opens from the folder of the file that holds it, like on GitHub and in editors.
@@ -57,7 +58,7 @@ describe("Bonobo Senate API client skill", () => {
 				expect(path.isAbsolute(relative), `${file}: ${match[1]}`).toBe(false);
 				expect(readFileSync(resolved, "utf8").length, `${file}: ${match[1]}`).toBeGreaterThan(0);
 				if (anchor !== undefined)
-					expect(heading_anchors(read_prose(resolved)), `${file}: ${match[1]}`).toContain(anchor);
+					expect(heading_anchors(strip_code_blocks(readFileSync(resolved, "utf8"))), `${file}: ${match[1]}`).toContain(anchor);
 				linked.add(relative);
 			}
 		}
