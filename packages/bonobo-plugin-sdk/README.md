@@ -270,7 +270,7 @@ type WriteOk = BonoboHttpApi["/api/v1/files/write"]["POST"]["response"][200]["bo
 type WriteAnswer = BonoboHttpResponse<"/api/v1/files/write">;
 ```
 
-0.25.1 types the last page of `/api/v1/files/list` as `cursor: null`. It answered `""` before. Stop on `isDone`. The runtime is unchanged.
+0.25.1 types the last page of `/api/v1/files/list` as `cursor: null`. It answered `""` before. Stop on `isDone`. It also types the safe write fields: optional `expectedRevision` on `/api/v1/files/write`, `revision`, `size` and `contentChanged` in write answers, and the `X-File-Is-Latest` read header. The docs say "move to Trash" instead of "archive". The runtime is unchanged.
 
 0.25.0 replaces all file reads with `POST /api/v1/files/read` and `{ path, cursor? }`. Success is raw bytes. Use `client.fetchRaw`, which returns a native `Response` with its body unread. `fetchJson` accepts only JSON routes. Follow `X-File-Next-Cursor` until it is absent. The old whole-file JSON response, `maxBytes`, `read-many`, and `read-bytes` are removed.
 
