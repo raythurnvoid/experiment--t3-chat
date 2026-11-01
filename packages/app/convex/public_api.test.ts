@@ -4724,7 +4724,7 @@ describe("locked and missing paths", () => {
 
 		const paths: string[] = [];
 		const locked: string[] = [];
-		let firstCursor = "";
+		let firstCursor: string | null = null;
 		for (let cursor: string | null = null; ;) {
 			const page = await list(t, f.memberCredential, { path: "/", order: "desc", limit: 1, cursor });
 			expect(page.status).toBe(200);
@@ -4733,7 +4733,7 @@ describe("locked and missing paths", () => {
 				if (item.locked) locked.push(item.path);
 			}
 			if (page.body.isDone) break;
-			firstCursor ||= page.body.cursor;
+			firstCursor ??= page.body.cursor;
 			cursor = page.body.cursor;
 		}
 		expect(paths).toEqual(["/secret", "/notes", "/hidden.md", "/b.md"]);
