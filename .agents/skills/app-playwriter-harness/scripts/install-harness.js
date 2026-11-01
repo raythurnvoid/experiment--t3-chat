@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.7";
+	const VERSION = "0.6.8";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -565,6 +565,36 @@
 					};
 				}
 
+				// Find the nearest ancestor that clips a sample point away and that no scroll can bring back.
+				// A scroll box (overflow auto or scroll on that axis) can, so it answers null. An
+				// `overflow: hidden` box, or a box that clips its own paint (`content-visibility: auto`, paint
+				// containment), cannot.
+				function findUnreachableClip(element, sample) {
+					for (let el = element.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+						const box = el.getBoundingClientRect();
+						const outsideX = sample.x < box.left || sample.x >= box.right;
+						const outsideY = sample.y < box.top || sample.y >= box.bottom;
+						if (!outsideX && !outsideY) {
+							continue;
+						}
+
+						const clipStyle = getComputedStyle(el);
+						const overflow = outsideX ? clipStyle.overflowX : clipStyle.overflowY;
+						if (overflow === "auto" || overflow === "scroll") {
+							return null;
+						}
+						if (
+							overflow === "hidden" ||
+							overflow === "clip" ||
+							clipStyle.contentVisibility === "auto" ||
+							/\b(paint|strict|content)\b/.test(clipStyle.contain)
+						) {
+							return el;
+						}
+					}
+					return null;
+				}
+
 				function isVisible(element) {
 					// Check ancestors too. A control inside a closed <details> element can still have
 					// a non-zero rectangle, which would create false hit-target findings below.
@@ -601,6 +631,7 @@
 
 				const unlabeled = [];
 				const blockedHitTargets = [];
+				const unreachableTargets = [];
 				const smallTargets = [];
 				const negativeTabIndex = [];
 
@@ -641,6 +672,7 @@
 							{ point: "bottom-right", x: rect.right - inset, y: rect.bottom - inset },
 						];
 						const blockedPoints = [];
+						const unreachablePoints = [];
 						let topAtCenter = null;
 						for (const sample of samples) {
 							// A sample outside the window has no element under it, and elementFromPoint answers
@@ -654,12 +686,20 @@
 								continue;
 							}
 							// Hit testing respects overflow clipping. If the control is not in the point's stack
-							// at all, a scroll container cut it off there (a toolbar button past the edge, a
-							// half-scrolled row). That is clipped, not covered: a scroll or Tab brings it back.
+							// at all, an ancestor cut it off there (a toolbar button past the edge, a
+							// half-scrolled row). That is clipped, not covered. Usually a scroll or Tab brings it
+							// back. When the clipping ancestor cannot scroll (overflow hidden, or a row that clips
+							// its own paint), nothing brings it back, and a click there hits what is next to it.
+							// Report that point as unreachable. Seen 2026-11-01: a deep Files sidebar row drew
+							// its More button under the editor, and this audit skipped it.
 							// Keep pointer-events: none controls on the old path, because they are never in the
 							// stack.
 							const stack = document.elementsFromPoint(sample.x, sample.y);
 							if (style.pointerEvents !== "none" && !stack.some((el) => element.contains(el))) {
+								const clipper = findUnreachableClip(element, sample);
+								if (clipper) {
+									unreachablePoints.push({ point: sample.point, clippedBy: describeControl(clipper) });
+								}
 								continue;
 							}
 							const describedTop = describeControl(top);
@@ -670,6 +710,9 @@
 						}
 						if (blockedPoints.length > 0) {
 							blockedHitTargets.push({ ...described, topAtCenter, blockedPoints });
+						}
+						if (unreachablePoints.length > 0) {
+							unreachableTargets.push({ ...described, unreachablePoints });
 						}
 					}
 
@@ -695,6 +738,7 @@
 					controlCount: controls.length,
 					unlabeled,
 					blockedHitTargets,
+					unreachableTargets,
 					smallTargets,
 					negativeTabIndex,
 				};

@@ -22,7 +22,8 @@
 		flex-direction: column;
 		flex: 1;
 
-		overflow: hidden auto;
+		/* Scroll sideways when the deepest shown tree row does not fit (see `.FilesSidebarTree`). */
+		overflow: auto;
 
 		padding: 0;
 
@@ -362,7 +363,16 @@
 
 	/* #region tree */
 	.FilesSidebarTree {
+		/* Rows keep a fixed 20px indent. Make the tree wide enough for the deepest shown row, a short name
+		   and its buttons. When the panel is narrower, the sidebar scrolls sideways. */
+		--FilesSidebarTree-actions-width: 132px;
+		--FilesSidebarTree-name-min-width: 120px;
+
 		flex: 1 0 auto;
+		min-width: calc(
+			44px + (var(--FilesSidebarTree-max-depth) * 20px) + var(--FilesSidebarTree-name-min-width) +
+				var(--FilesSidebarTree-actions-width)
+		);
 		min-height: 100%;
 
 		/* Column flex so the drop zone indicator can push itself to the panel bottom. */
@@ -371,6 +381,11 @@
 
 		/* The scroll box paints the focus ring. */
 		outline: none;
+	}
+
+	/* A narrow tree hides the two create buttons, so a folder row has only More. */
+	.FilesSidebarTree-folder-actions-expanded {
+		--FilesSidebarTree-actions-width: 60px;
 	}
 
 	.FilesSidebarTree-row {
@@ -520,12 +535,15 @@
 	/* #region tree drop zone indicator */
 	.FilesSidebarTreeDropZoneIndicator {
 		/* Rest at the tree bottom (margin-top auto); sticky keeps it on the visible scrollport
-		   bottom when the tree overflows. */
+		   bottom when the tree overflows. Sticky `left: 50%` and the translate center it in the visible
+		   part of the panel, also when a deep tree scrolls sideways. */
 		position: sticky;
 		bottom: 16px;
+		left: 50%;
+		align-self: start;
 		margin-top: auto;
 		width: fit-content;
-		margin-inline: auto;
+		translate: -50% 0;
 
 		pointer-events: none;
 		contain: layout style paint;
@@ -570,8 +588,17 @@
 	}
 
 	.FilesSidebarTreeItem {
+		/* A file row has only More. A folder row also has the create buttons. */
+		--FilesSidebarTreeItem-actions-width: 60px;
+
 		display: grid;
-		grid-template-columns: auto 1fr auto;
+		/* The last column stays empty. It keeps room for the sticky buttons (see
+		   `.FilesSidebarTreeItemActions`), so the name ends with "…" before them. */
+		grid-template-columns: auto 1fr var(--FilesSidebarTreeItem-actions-width);
+
+		&:has(> .FilesSidebarTreeItemActions .FilesSidebarTreeItemSecondaryActionCreateFile) {
+			--FilesSidebarTreeItem-actions-width: var(--FilesSidebarTree-actions-width);
+		}
 
 		/* The wrapper is the focusable treeitem; its focus ring is painted on the row surface below. */
 		outline: none;
@@ -782,6 +809,10 @@
 	.FilesSidebarTreeItemIcon {
 		width: 16px;
 		height: 16px;
+
+		/* A focused row scrolls its icon into view when the tree scrolls sideways. Keep two parent levels
+		   on the left, and room for the name and the sticky row buttons on the right. */
+		scroll-margin-inline: 48px calc(var(--FilesSidebarTree-name-min-width) + var(--FilesSidebarTreeItem-actions-width));
 	}
 
 	/* A restricted folder: lucide has no folder-with-person, so one is stacked from two of its icons.
@@ -926,7 +957,13 @@
 		padding: 0;
 		border: 0;
 		grid-row: 1;
-		grid-column: 3;
+		/* Stick the buttons to the visible right edge when the tree scrolls sideways, so they can
+		   always be clicked. A sticky box only moves inside its grid area, and column 3 alone sits at
+		   the far right of a wide row. So span the name column too, and end-align in it. */
+		grid-column: 2 / 4;
+		justify-self: end;
+		position: sticky;
+		right: 0;
 
 		display: flex;
 		align-items: center;
@@ -937,6 +974,60 @@
 		height: 45px;
 
 		contain: layout style;
+	}
+
+	/* When the tree scrolls sideways, a name can run under the sticky buttons. Paint the row surface
+	   color behind them (::before), and the panel color in the 16px gap at the right edge (::after).
+	   The top and bottom insets keep the keyboard focus ring visible. */
+	.FilesSidebarTree-scroll-x .FilesSidebarTreeItemActions {
+		&::before,
+		&::after {
+			content: "";
+			position: absolute;
+			z-index: -1;
+
+			/* The panel color, painted by `MyPanelInfiniteBackground`. */
+			background: var(--color-base-1-03);
+		}
+
+		&::before {
+			inset: 2.5px 16px 2.5px 0;
+		}
+
+		&::after {
+			inset: 0 0 0 auto;
+			width: 16px;
+		}
+	}
+
+	/* Follow the row surface colors of `.FilesSidebarTreeItemPrimaryAction`, in the same order. */
+	.FilesSidebarTree-scroll-x
+		:where(.FilesSidebarTreeItem:has(> .FilesSidebarTreeItemPrimaryAction:not([data-disabled]):hover))
+		> .FilesSidebarTreeItemActions::before {
+		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+	}
+
+	.FilesSidebarTree-scroll-x
+		:where(.FilesSidebarTreeItem:has(> .FilesSidebarTreeItemPrimaryAction[data-selected]))
+		> .FilesSidebarTreeItemActions::before {
+		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+	}
+
+	.FilesSidebarTree-scroll-x :where(.FilesSidebarTreeItem:focus-visible) > .FilesSidebarTreeItemActions::before {
+		/* Leave the 2px focus ring at the row's right edge visible. */
+		inset-inline-end: 18px;
+
+		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+	}
+
+	.FilesSidebarTree-scroll-x :where(.FilesSidebarTreeItem-content-navigated) > .FilesSidebarTreeItemActions::before {
+		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+	}
+
+	.FilesSidebarTree-scroll-x
+		:where(.FilesSidebarTreeItem:has(> .FilesSidebarTreeItemPrimaryAction:not([data-disabled]):active))
+		> .FilesSidebarTreeItemActions::before {
+		background: linear-gradient(var(--color-base-1-08), var(--color-base-1-07));
 	}
 	/* #endregion tree item actions */
 

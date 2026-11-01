@@ -65,13 +65,16 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id][aria-selected="true"]`. The attribute sits on the row wrapper itself; `FilesSidebarTreeItemPrimaryAction` never carries it (the row strips it before passing props down).
 - For one known row, use `[role="treeitem"][data-file-id="<id>"]`. Its inner drag handle has the same file ID, so a bare ID selector matches both. Read selection and Cut markers from the row wrapper.
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
-- Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
-  On a deep row (22 levels, `/g4-u15/…/d20/keeper.txt`) this button sits right of the sidebar,
-  under the editor, so a click lands on the editor. The accessibility audit does not flag it,
-  because it skips points a scroll container clips. Open the same menu with a right-click near the
-  row's end: `row.click({ button: "right", position: { x: box.width - 40, y: box.height / 2 } })`.
-  A right-click on `.FilesSidebarTreeItemPrimaryAction` fails there too: its center is under the
-  row's arrow. Seen 2026-11-01.
+- Sidebar row more action: `.FilesSidebarTreeItemMoreAction`. The row buttons are sticky at the
+  visible right edge, so they can be clicked on any row. A deep tree (22 levels,
+  `/g4-u15/…/d20/keeper.txt`) scrolls sideways: `.FilesSidebarTree` then has the class
+  `FilesSidebarTree-scroll-x`. A deep chevron or name may be out of view: set
+  `.FilesSidebar-content` `scrollLeft`, or focus the row (focus scrolls its icon into view). At
+  `scrollLeft` 0, `auditAccessibility` lists those deep `Collapse folder …` chevrons under
+  `blockedHitTargets`, covered by their own row's sticky buttons. That is expected; re-audit after a
+  sideways scroll before reporting one. To
+  measure a narrow sidebar, set `Emulation.setDeviceMetricsOverride` in the same call as the
+  measurement; the override was gone in the next call. Checked 2026-11-01.
 - Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or one key:value filter`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
 - Locked row accessible name: `getByRole("treeitem", { name: "<name>, Read-only" })` when the lock is on that node. A parent lock does not mark a child `read-only from /path`. A writable folder with locked children can say it contains read-only items. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26; row suffix recased 2026-09-18).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`. The row menu renders in `.FilesSidebarTree-menus`, right after the tree and outside `role="tree"`. See the `MyMenu` entry in `known-hazards.md`.

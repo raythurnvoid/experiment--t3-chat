@@ -1272,6 +1272,26 @@ the tree. The link rules live in the "Public file links" section of `../access-c
 Row guide lines use `ItemMeta.posInSet` (zero-based) and `setSize` to find the last sibling.
 Do not call `parent.getChildren()` for this check in each row: it loads every sibling again per row.
 
+## Row Layout
+
+Design principle (decided 2026-11-01): rows keep a fixed 20px indent per level, at any depth. The
+row buttons must always stay clickable. The user rejected an indent that shrinks with depth, and a
+row whose indent is cut makes deep levels look like siblings.
+
+- The tree is as wide as its deepest shown row needs: its indent, a 120px name, and its buttons
+  (`--FilesSidebarTree-max-depth`, read from every shown row, not only the mounted ones). When the
+  panel is narrower, `FilesSidebar-content` scrolls sideways, like the Windows Explorer navigation
+  pane. A normal tree fits and does not scroll.
+- The row buttons are `position: sticky; right: 0`, so they stay at the visible right edge at every
+  scroll position. The empty third grid column keeps their room, so a name still ends with "…" before
+  them. While the tree scrolls sideways (`FilesSidebarTree-scroll-x`), they paint the row surface color
+  behind them, so a name under them is hidden.
+- Focus on a row button never moves the sideways scroll. Focus on the row itself (arrow keys, a click
+  on the row, a reveal) scrolls its icon into view only when the icon is out of view. Use the icon's
+  `scroll-margin`, not `scroll-padding` on the scroll box: a sticky button always sits inside that
+  padding, so focusing it would scroll the tree to the far right.
+- Compact mode (under 300px) reads the scroll box width, not the tree width.
+
 ## Virtual Rows
 
 - Headless Tree keeps the full visible item list and uses `buildProxiedInstance`. TanStack Virtual

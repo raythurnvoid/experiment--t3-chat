@@ -2750,11 +2750,20 @@ const FilesSidebarTreeRow = memo(
 			wrapperElementRef.current?.focus();
 		});
 
-		const handleWrapperFocus = useFn(() => {
+		const handleWrapperFocus = useFn<NonNullable<ComponentProps<"div">["onFocus"]>>((event) => {
 			// Row controls also need their row kept mounted while they hold focus.
 			// Rename and keyboard navigation may have set tree focus before the DOM event.
 			if (item.getTree().getState().focusedItem !== itemId) {
 				item.setFocused();
+			}
+
+			// When a deep tree scrolls sideways, show the name of the row that got focus (arrow keys, a
+			// click, a reveal). "nearest" scrolls only when the icon is out of view, and the icon's scroll
+			// margin keeps room for the name. Focus on a row button keeps the scroll as it is.
+			if (event.target === event.currentTarget) {
+				event.currentTarget
+					.querySelector(`.${"FilesSidebarTreeItemIcon" satisfies FilesSidebarTreeItemIcon_ClassNames}`)
+					?.scrollIntoView({ block: "nearest", inline: "nearest" });
 			}
 		});
 
@@ -3252,7 +3261,12 @@ type FilesSidebarTree_ClassNames =
 	| "FilesSidebarTree-skeleton-glyph"
 	| "FilesSidebarTree-skeleton-create-action"
 	| "FilesSidebarTree-folder-actions-expanded"
+	| "FilesSidebarTree-scroll-x"
 	| "FilesSidebarTree-menus";
+
+type FilesSidebarTree_CssVars = {
+	"--FilesSidebarTree-max-depth": number;
+};
 
 type FilesSidebarTree_Props = {
 	tree: FilesSidebarTree_Shared;
@@ -3354,6 +3368,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	const { ref: treeContainerRef, ...treeContainerRest } = treeContainerProps;
 
 	const [expandedFolderActionsVisible, setExpandedFolderActionsVisible] = useState(false);
+	const [isScrollableX, setIsScrollableX] = useState(false);
 	const [openMenuItemId, setOpenMenuItemId] = useState<string | null>(null);
 	const [menusPortalHost, setMenusPortalHost] = useState<HTMLElement | null>(null);
 	const [dragSourceItemId, setDragSourceItemId] = useState<string | null>(null);
@@ -3406,6 +3421,15 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 				} satisfies DropZoneRow;
 			}),
 		[renderedTreeItems],
+	);
+
+	// The tree is as wide as its deepest row needs (see `.FilesSidebarTree`). Read every shown row, not
+	// only the mounted ones, so the width does not change while scrolling up and down. An empty open
+	// folder's placeholder sits one level deeper. Use reduce: spreading thousands of rows into
+	// Math.max can overflow the call stack.
+	const maxRowDepth = dropZoneRows.reduce(
+		(max, row) => Math.max(max, row.hasPlaceholderRow ? row.depth + 1 : row.depth),
+		0,
 	);
 
 	// A changed row model must refresh the known heights, including offscreen placeholders.
@@ -3549,16 +3573,23 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 		if (!element) {
 			setExpandedFolderActionsVisible(false);
+			setIsScrollableX(false);
 			return;
 		}
 
-		const updateExpandedFolderActionsVisible = () => {
-			setExpandedFolderActionsVisible(element.clientWidth < FilesSidebarTree_COMPACT_ACTIONS_MAX_WIDTH);
+		// Measure the panel on the scroll box, not on the tree. A deep row can make the tree wider than
+		// the panel. The tree is always rendered inside the scroll box.
+		const scrollElement = element.parentElement!;
+		const updateWidths = () => {
+			setExpandedFolderActionsVisible(scrollElement.clientWidth < FilesSidebarTree_COMPACT_ACTIONS_MAX_WIDTH);
+			setIsScrollableX(element.clientWidth > scrollElement.clientWidth);
 		};
-		updateExpandedFolderActionsVisible();
+		updateWidths();
 
-		const resizeObserver = new ResizeObserver(updateExpandedFolderActionsVisible);
+		// Watch both: the panel changes on resize, and the tree changes when a deeper folder opens.
+		const resizeObserver = new ResizeObserver(updateWidths);
 		resizeObserver.observe(element);
+		resizeObserver.observe(scrollElement);
 		treeRootResizeObserverRef.current = resizeObserver;
 	});
 
@@ -3653,13 +3684,18 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 					isTreeDragging && ("FilesSidebarTree-dragging" satisfies FilesSidebarTree_ClassNames),
 					expandedFolderActionsVisible &&
 						("FilesSidebarTree-folder-actions-expanded" satisfies FilesSidebarTree_ClassNames),
+					isScrollableX && ("FilesSidebarTree-scroll-x" satisfies FilesSidebarTree_ClassNames),
 				)}
 				{...treeContainerRest}
 				// Let a click on empty tree space focus the tree itself, with no row focused, like the VS Code
 				// explorer. Mod+V then pastes into the root. It stays out of the Tab order: rows own the tab stop.
 				tabIndex={-1}
 				aria-busy={isTreeLoading || undefined}
-				style={{ ...treeContainerProps.style, height: virtualizer.getTotalSize() }}
+				style={sx({
+					...treeContainerProps.style,
+					height: virtualizer.getTotalSize(),
+					"--FilesSidebarTree-max-depth": maxRowDepth,
+				} satisfies React.CSSProperties & Partial<FilesSidebarTree_CssVars>)}
 				onDragStartCapture={handleDragStartCapture}
 				onDragEnterCapture={handleDragEnterCapture}
 				onDragOverCapture={handleDragOverCapture}

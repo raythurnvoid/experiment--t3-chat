@@ -1595,7 +1595,8 @@ the same overlay, so `getByRole` waits forever. Hide it from the page instead.
 
 ## `auditAccessibility` returns `blockedHitTargets`, and a summary script reading another name reports "none"
 
-The result keys are `unlabeled`, `blockedHitTargets`, `smallTargets` and `negativeTabIndex`. A
+The result keys are `unlabeled`, `blockedHitTargets`, `unreachableTargets` (since 0.6.8),
+`smallTargets` and `negativeTabIndex`. A
 wrapper that reads `audit.blocked` or `audit.blockedTargets` gets `undefined`, and a
 `?? []` fallback next to it then prints an empty list. The run looks clean and nothing warns you,
 because reading a key that does not exist is not an error in JavaScript. Hit 2026-08-19: a summary
