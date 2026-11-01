@@ -144,7 +144,7 @@ describe("read", () => {
 		}
 	});
 
-	test("prints no facts, keeps the old --to file, and stops on a refused page, a lost answer, or a closed stdout", async () => {
+	test("prints no facts, keeps the old --to file, stops on a refused page, a lost answer, or a closed stdout, and refuses a missing local folder", async () => {
 		let pipeClosed: Promise<void> = Promise.resolve();
 		let secondPage: "refused" | "lost" | "held" = "refused";
 		const api = await start_api(async (request, response) => {
@@ -202,6 +202,13 @@ describe("read", () => {
 			expect(closed.stderr).not.toMatch(/\n\s+at /u);
 			expect(closed.stderr).not.toContain('"revision"');
 			expect(api.requests.slice(requestCount).map((request) => request.body.cursor)).toEqual([null, "c1"]);
+
+			// A missing local folder is a usage error, and the CLI sends nothing.
+			const missingFolderRequestCount = api.requests.length;
+			const missingFolder = await run_cli(api.origin, ["read", FACTS.path, "--to", path.join(folder, "gone", "a.bin")]);
+			expect(missingFolder.code, missingFolder.stderr).toBe(2);
+			expect(missingFolder.stderr).toContain("Local folder not found");
+			expect(api.requests).toHaveLength(missingFolderRequestCount);
 		} finally {
 			await api.close();
 			rmSync(folder, { recursive: true, force: true });
@@ -210,7 +217,7 @@ describe("read", () => {
 });
 
 describe("write", () => {
-	test("sends the local text unchanged, maps --if-revision, and refuses local mistakes without a request", async () => {
+	test("sends the local text unchanged, maps --if-revision, and refuses local file mistakes without a request", async () => {
 		const answer = {
 			path: "/notes/a.md",
 			nodeId: "n1",
@@ -254,7 +261,6 @@ describe("write", () => {
 			for (const [args, message] of [
 				[["write", "/notes/a.md", "--from", binary], "Not valid UTF-8 text"],
 				[["write", "/notes/a.md", "--from", path.join(folder, "gone.md")], "Local file not found"],
-				[["read", "/notes/a.md", "--to", path.join(folder, "gone", "a.md")], "Local folder not found"],
 			] as const) {
 				const refused = await run_cli(api.origin, [...args]);
 				expect(refused.code, refused.stderr).toBe(2);
