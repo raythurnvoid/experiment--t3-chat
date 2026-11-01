@@ -93,6 +93,20 @@ Activity keeps creation time, `updatedAt`, optional `startedAt`, `stopRequestedA
 and `expiresAt`, plus `deadlineAt`. Attempts keep their own upload leases. Pending proposals keep
 their own expiry. These clocks serve different owners.
 
+# Historical messages and live data
+
+Activities are like notifications: saved warnings and errors record what happened. They may keep
+names and paths the requester could read when the message was made, even after a rename, move, or
+loss of file access. That alone is not a bug. Choose which fields need live data case by case;
+do not require every Activity field to refresh or hide old text after access changes.
+
+This applies to every file operation: Move, Copy, Rename, Trash, Restore, Delete permanently,
+uploads, Save, Discard, and others. Their saved warnings, errors, and recorded names and paths may
+stay unchanged in Activity logs, run details, and job API responses. Trash refusals are one example,
+not an exception. Keep the existing rules for who may read the job. This history gives no permission
+to open a file or take a new action. Live file details, actions, and shared plugin Activities keep
+their current access checks below.
+
 # Visibility and controls
 
 `activities_feed.list_page` returns separate active and history pages, each capped at 50 scanned Activities.
@@ -100,12 +114,13 @@ Current membership is required. Hidden or dismissed entries can consume a page. 
 continuation and follow `isDone`; an empty visible page does not prove the feed ended.
 
 - Transfer, review, Bash job, protection job, Trash job, and move or scope job Activities are private
-  to their requester, including against other workspace owners. Their summaries contain no source names
-  or paths. Move to Trash jobs are titled "Move files to Trash" or "Restore files". A move job (source kind
+  to their requester, including against other workspace owners. Their standard titles contain no source
+  names or paths; saved warnings and errors follow the history rule above. Move to Trash jobs are titled
+  "Move files to Trash" or "Restore files". A move job (source kind
   `files_subtree_op`) is titled "Move files" and shows in the feed. A scope job (restrict or
   unrestrict) is titled "Restrict files" and has `feedVisible: false`: it exists only so the recover
   cron finds the op. A protection job, a Trash job, and a move or scope job have no targets at all.
-  Details recheck file access separately.
+  Live file paths in details recheck access separately from saved messages.
 - Shared plugin Activities require current access to every target. A missing target or a changed
   target path hides the whole Activity. A shared Activity with no target requires workspace read.
 - The server returns allowed controls after visibility checks. UI code uses those controls.

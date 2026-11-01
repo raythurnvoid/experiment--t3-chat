@@ -623,12 +623,18 @@ bounded history pages and must never reach hidden Activities. See the [Activity 
 
 Clipboard Activity is private to the requester, even from other workspace owners. Current
 membership is required. A folder guest can view and stop their own run, and dismiss it after it
-finishes, without workspace-wide write permission. These activities contain no file names or paths.
+finishes, without workspace-wide write permission. Their standard titles and summary counts do not name files.
 The detail dialog shows the source and output paths recorded by the job. These private results
 remain history after a move, rename, or loss of file access. Result reads require a live user and
 active membership. New actions still check current file access; Replace also checks the exact
 current destination and reviewed version. See
 [Files transfer runs](../files-explorer-tree/references/transfer.md#stop-activity-and-cleanup).
+
+Saved warnings and errors in private job history may keep names and paths the requester could read
+when they were made. Later loss of file access does not make those old messages a bug. This applies
+to Move, Copy, Rename, Trash, and every other file operation. See the
+[Activity history rule](../activities/SKILL.md#historical-messages-and-live-data).
+Live fields and new actions still need their own current access checks.
 
 **Comments answer to their file channel.** `channels_db_get_access` checks the channel's saved file:
 `content.write` starts a post, replies, or resolves; `content.read` lists or gets comments. Current

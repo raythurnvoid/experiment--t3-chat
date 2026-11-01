@@ -124,6 +124,11 @@ Both routes use existing auth/principal rate buckets, one request per page, and 
 Follow the [Files delete words](../files-explorer-tree/SKILL.md#trash-view-and-delete-permanently).
 The `delete` routes move saved items to Trash. Route names and response fields keep their current names.
 
+Saved warnings, refusals, and errors returned by `jobs/get` follow the
+[Activity history rule](../activities/SKILL.md#historical-messages-and-live-data) for Move, Copy,
+Trash, Restore, and every other file operation. They may keep old paths after access changes.
+The job reader's checks and live item-path checks still apply.
+
 `stat`, `mkdir`, `delete`, `restore`, `move`, `copy`, and `jobs/get` live in `packages/app/convex/public_api_files_organize.ts`, with routes in `public_api_files_organize_http_routes.ts`. They take `allowedKinds: ["user_api_key"]` and act as the key with the "Locked, not hidden" rules (access-control skill): each path is resolved with `files_db_get_path_access`, so a locked path, or any path below a locked folder, answers "Permission denied", never "Not found". Each path costs a few index reads that grow with its depth, never with folder size.
 
 - `mkdir` runs in one mutation. An existing folder answers `created: false`, also a locked one in a readable folder, because it already shows there as a locked row. It revalidates the key once, then creates each missing path from its deepest existing folder with `files_nodes_db_create_node_recursively_at_path`, so a guest makes folders only inside a folder shared with them. Any refusal throws `convex_error` with `{ path, status }`, so the whole batch rolls back, and the HTTP action answers that status. It charges `public_api_files_write_bulk` with `count: paths.length` (at most 20, under the 25-per-charge shard rule above).

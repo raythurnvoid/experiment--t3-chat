@@ -157,8 +157,10 @@ can still reach its idle deadline. This existing limitation is not a new scalabl
   required. Force never broadens those bounds.
 - Final content, Yjs, create, snapshot, repair, and pending transactions repeat current checks.
   Accepted upload completion is separate: the first accepted bytes may finish after a later flag.
-- A refusal names an item only while the caller may read it. Locked folders stop recursive reads.
-  Never use a stored path as proof that it is still safe to show.
+- When creating a refusal, name an item only when the caller may read it. Locked folders stop
+  recursive reads. A stored path is not proof of current access for live details or new actions.
+  Saved job warnings and errors for every file operation follow the
+  [Activity history rule](../activities/SKILL.md#historical-messages-and-live-data).
 - Keep exact expected node IDs and ordered pending source IDs. Never retarget a retry to a new
   occupant at the same path.
 - If external bytes exist before a refusal, queue their exact keys for durable cleanup before
@@ -183,6 +185,13 @@ An agent can only ask for the human-approved delete exception, with `rm --ignore
 
 `files_archive_runs` uses the existing `files_subtree_ops` scheduling and Activity records.
 Requests do a bounded first step; larger work continues in indexed pages.
+
+Saved Trash refusals may name the Read-only parent folder or an item inside the selected folder
+that the caller could read when the check ran. Those warnings and their Activity error copies are
+history, like saved Move, Copy, and other file-operation messages. They may keep the old path after
+a rename, move, or loss of file access. This is not a bug and needs no live refresh or removal.
+Current item paths and new actions still check current access.
+See the [Activity history rule](../activities/SKILL.md#historical-messages-and-live-data).
 
 An ordinary move to Trash checks each named item's current direct parent for Can edit and Read-only in
 both its fast and background checks. It then keeps the existing check-then-stamp behavior. Its fast path queries active
@@ -229,11 +238,11 @@ item inside. It names an item only in an area the person can read.
 
 When the check cannot decide, the proposal is made and Accept checks every item. That happens for a
 non-owner with a restricted folder inside, while any subtree job runs, or while a Move holds the
-workspace. Accept's refusal of an item inside says "An item inside it is read-only." with no path:
-the review saves that text and shows it later without a new access check.
+workspace. Accept's refusal of an item inside uses the general wording "An item inside it is
+read-only." with no path. This wording is specific to the review; other saved errors may include paths.
 
 A Move, Rename or reviewed delete refused because of a Read-only folder talks about that folder, not
-"This item". The review and the Activity save most of these texts, so they have no path. A Move says
+"This item". These flows use general wording without a path. A Move says
 "The destination folder is read-only." or "The source folder is read-only.". A Rename that puts the
 item in another folder checks each folder on the way, so it says "A folder in the destination path
 is read-only.". A Rename refused at once because the item's folder is Read-only says "Its folder is
@@ -417,7 +426,7 @@ Keep visible labels, keyboard and focus behavior, and usable layout at 200% zoom
 | RO-07 | Machine force needs an explicit request and current new grant |
 | RO-08 | Decision IDs prevent clear/re-lock from reviving a Copy or Restore exception |
 | RO-09 | Pending work and whole-proposal Discard remain available after refusal |
-| RO-10 | Public responses hide decision IDs and inaccessible paths |
+| RO-10 | Public responses hide decision IDs and unreadable live paths; saved job messages follow the Activity history rule |
 | RO-11 | Accepted uploads and committed materialization finish; failed placeholders can be cleaned |
 | RO-12 | Capture unsaved text before reset; keep recovery reachable within the tab |
 | RO-13 | Keep read_only and each door's existing error shape |

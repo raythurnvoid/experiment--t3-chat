@@ -182,6 +182,8 @@ with private proposals. `files_pending_updates.ts` and
   file access do not rewrite that history. A skipped locked child keeps the path visible when its
   parent was listed; Copy never reads inside that child. The result door still requires a live user,
   active membership, and the same run owner and workspace.
+  Saved warnings and errors follow this same [Activity history rule](../../activities/SKILL.md#historical-messages-and-live-data),
+  which applies to every file operation.
 - Result pages use the stored transfer items and existing cursors. Do not rebuild current source or
   output paths for display. Show full paths as text and explain that locations may have changed.
   New reads, Retry, Continue, and Replace still use current access checks. Historical text grants
@@ -237,7 +239,8 @@ with private proposals. `files_pending_updates.ts` and
   Copies do not dispatch upload-completed plugin events. Empty copied folders are normal output.
 - A file whose upload is still saving can fail after its parent folder was copied. Keep completed
   output and show the first item failure reason in progress and Activity. Item failure messages
-  must be safe without current source access: fixed text with no source names, paths, or raw errors.
+  for this case use fixed app text. Other saved warnings and errors may keep names and paths under
+  the Activity history rule above. Do not show raw internal or provider errors.
 - Save one payer at the first successful billing check and keep it through retries. Stored copies
   check paid plan and `stored_file_bytes` before any private placeholder or asset allocation.
   Recheck that payer's live credits before publication. Stored files emit one `file_upload` and
