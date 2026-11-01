@@ -218,3 +218,18 @@
 [submodule "references-submodules/openviking"]
 	path = references-submodules/openviking
 	url = https://github.com/volcengine/OpenViking.git
+[submodule "references-submodules/cloudflare-computer"]
+	path = references-submodules/cloudflare-computer
+	url = https://github.com/cloudflare/computer.git
+[submodule "references-submodules/grover-vfs"]
+	path = references-submodules/grover-vfs
+	url = https://github.com/ClayGendron/vfs.git
+[submodule "references-submodules/mirage"]
+	path = references-submodules/mirage
+	url = https://github.com/strukto-ai/mirage.git
+[submodule "references-submodules/tigerfs"]
+	path = references-submodules/tigerfs
+	url = https://github.com/timescale/tigerfs.git
+[submodule "references-submodules/agent-fs"]
+	path = references-submodules/agent-fs
+	url = https://github.com/desplega-ai/agent-fs.git
