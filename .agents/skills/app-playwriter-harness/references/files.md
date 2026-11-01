@@ -66,6 +66,12 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - For one known row, use `[role="treeitem"][data-file-id="<id>"]`. Its inner drag handle has the same file ID, so a bare ID selector matches both. Read selection and Cut markers from the row wrapper.
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
 - Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
+  On a deep row (22 levels, `/g4-u15/…/d20/keeper.txt`) this button sits right of the sidebar,
+  under the editor, so a click lands on the editor. The accessibility audit does not flag it,
+  because it skips points a scroll container clips. Open the same menu with a right-click near the
+  row's end: `row.click({ button: "right", position: { x: box.width - 40, y: box.height / 2 } })`.
+  A right-click on `.FilesSidebarTreeItemPrimaryAction` fails there too: its center is under the
+  row's arrow. Seen 2026-11-01.
 - Sidebar search input: `#app_files_sidebar_search input` (combobox named `Search files by name, path, or one key:value filter`); filter chips `.FilesSearchInputFilterChip`; suggestions `.FilesSearchInput-popover [role=option]`; sr-only status `.FilesSidebarTopSection [role=status]`. Recipes under "Sidebar Search Box" below.
 - Locked row accessible name: `getByRole("treeitem", { name: "<name>, Read-only" })` when the lock is on that node. A parent lock does not mark a child `read-only from /path`. A writable folder with locked children can say it contains read-only items. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26; row suffix recased 2026-09-18).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`. The row menu renders in `.FilesSidebarTree-menus`, right after the tree and outside `role="tree"`. See the `MyMenu` entry in `known-hazards.md`.
@@ -1074,6 +1080,17 @@ follow an old recipe.
   same. Restoring the original sharing brought the paths back under the same membership lifetime.
 - A Read-only folder allowed native Code Save in a writable direct child. Direct child creation
   and Rename stayed disabled. Exact original bytes, metadata and flags were restored.
+- Rename refusal text under a Read-only folder (2026-11-01, `d20` and `keeper.txt` from the
+  qa-data "Deep folder with a Read-only item inside" row). The sidebar never sends this rename:
+  after a fresh load the child's row menu has `Rename` and `Cut` with `aria-disabled="true"`, and
+  F2 opens no input. So the server text `Its folder is read-only. Unlock it, then try again.`
+  never shows in the UI. To read it, call `files_nodes.rename_node` from page context with the
+  item's current name as `path`. The parent check runs before the same-name no-op, so this call
+  cannot rename anything even if the check breaks. A `_nay` result also means no Activity run.
+- Known UI bug (2026-11-01): a child row's menu does not update when only its parent folder's flag
+  changes in the same tab. After locking the folder, the child's `Rename` stays enabled and a click
+  does nothing, with no message. After unlocking, `Rename` and `Cut` stay disabled. The tree
+  itself is right (`item.canRename()` changes). Reload before you read a child row's menu.
 - A create-only public upload was accepted before its file became Read-only. One signed PUT then
   completed normal conversion with the flag still set and exact saved bytes. The ordinary key had
   no force scope and was revoked. The unused first placeholder was removed without sending a PUT.
@@ -1495,6 +1512,8 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   explicitly clearing a late flag clears it before saving a kept metadata draft. A later failure
   keeps the remaining draft and reports that only part was saved.
   Escape did not close the dialog after the checkbox click (2026-10-31); use the footer `Close`.
+  `Save` keeps the dialog open. After `Save`, Escape closed it (2026-11-01). Two buttons are named
+  `Close` (footer and icon), so `getByRole("button", { name: "Close", exact: true })` is ambiguous.
 - Both folder bulk buttons verified natively 2026-10-29 on two descendants: choose
   `Make contents Read-only` or
   `Clear Read-only from contents`, then `Start` in its confirm dialog. No folder default is saved.

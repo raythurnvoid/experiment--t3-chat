@@ -17,7 +17,9 @@ screenshot times out. Bringing the same tab forward fixed both on 2026-10-03. Do
 the user's tab unless the task allows changing its focus. The same happens in an owned tab of the
 extension Edge (opened with `context.newPage()`): on 2026-10-19 a click and a `focus()` on a sidebar
 tab timed out with `waiting for locator(...)` while `page.evaluate` found the element, and
-`bringToFront()` fixed it.
+`bringToFront()` fixed it. The page's own reads do not show this state: on 2026-11-01 a click and a
+screenshot both stalled while `document.visibilityState` was `visible` and `document.hasFocus()` was
+`true`. Another window had taken OS focus. `bringToFront()` fixed it again.
 
 In the user's own Edge window, `bringToFront()` also moves the OS keyboard focus to the QA tab. If the
 user is typing in another window at that moment, their keys land in the QA editor and are saved to the
