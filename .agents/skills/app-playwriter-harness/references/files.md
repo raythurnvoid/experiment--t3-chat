@@ -1094,6 +1094,9 @@ follow an old recipe.
   after clearing it. Removing the fix made both stay disabled after clearing the folder, while
   `item.canRename()` and fresh node queries allowed writes. The focused component test also fails
   without the fix. Use Shift+F10 on a deep tree row when its More button is outside the pane.
+- To check Cut across parents, keep the child selected and Ctrl-click an independent row's
+  `.FilesSidebarTreeItemPrimaryAction`. Confirm both rows have `aria-selected="true"`, then open
+  the other row's menu. Its Rename stays enabled; Cut must follow the child's parent flag too.
 - Properties Save keeps the dialog open. Close it with the visible footer text `Close` before
   opening a row menu. The dialog also has an icon button named Close, so use
   `getByRole("dialog").getByText("Close", { exact: true })`. The Read-only input is a hidden 1px

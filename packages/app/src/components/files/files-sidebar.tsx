@@ -2368,7 +2368,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			selected.getItemData(),
 		);
 		return (
-			get_clipboard_source_ids(sourceItems.filter(is_open_node)).length > 0 &&
+			sourceItems.length > 0 &&
 			sourceItems.every((selected) => {
 				if (!is_open_node(selected) || !selected.canWrite || selected.archiveOperationId !== null) {
 					return false;
