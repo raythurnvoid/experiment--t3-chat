@@ -24,11 +24,19 @@ let exitCode = 0;
 try {
 	// Clone only the workspace submodules, from the local checkout's git dirs, so there is no network fetch.
 	// Submodule names can differ from their paths (`novel` is `packages/app/vendor/novel`).
+	//
+	// `.gitmodules` lists `packages/app/vendor/novel` under two names, and git may read either one. This
+	// config is shared by all worktrees, so an old run can leave a wrong URL under the other name. Set
+	// every URL first, then update.
+	const subPaths = [];
 	for (const line of git(dir, "config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$").split("\n")) {
 		const [key, subPath] = line.split(" ");
 		if (!/^packages\/app\/vendor\/|^packages\/native-popovers$/.test(subPath)) continue;
 		const name = key.replace(/^submodule\./, "").replace(/\.path$/, "");
 		git(dir, "config", `submodule.${name}.url`, git(path.join(repo, subPath), "rev-parse", "--absolute-git-dir"));
+		subPaths.push(subPath);
+	}
+	for (const subPath of new Set(subPaths)) {
 		git(dir, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--", subPath);
 	}
 
