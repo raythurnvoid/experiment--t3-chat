@@ -318,6 +318,13 @@ Pop-Location
   - App boot/homepage initialization.
   - Files tree create/rename/move to Trash/move.
   - These paths can fail silently if response keys change.
+- An erase runner for data the old code wrote must decide "old" for a whole scope, not per item.
+  New writes can sit inside old data: on 2026-11-02 a Trash item that a restore Skip gave a new
+  Trash entry still sat inside an old deleted folder, and a per-item check purged it with that
+  folder. So the Trash erase worked on a workspace only while it had no new-style row at all, and
+  checked that again on every step. It logged each skipped workspace, and its audit listed what
+  stayed. Read each step's rows with `take` and a value cursor (not a growing list of ids), so
+  every call stays small.
 - Scope discipline prevents regressions:
   - Migrate only the requested table.
   - Do not opportunistically rename neighboring tables in the same pass.
