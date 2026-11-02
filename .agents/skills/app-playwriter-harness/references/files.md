@@ -1023,7 +1023,7 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 
 ### Trash View, Delete Permanently, Empty Trash
 
-Use this after changing `files-sidebar-archive.tsx`, `files-purge-modal.tsx`, `files_nodes.purge_nodes` / `empty_archive`, or `files_tree.list_archive_areas` / `list_archived_tops`. Spec: "Trash view and Delete permanently" in the `files-explorer-tree` skill and "Delete Permanently" in the `data-deletion` skill. Verified 2026-10-31.
+Use this after changing `files-sidebar-archive.tsx`, `files-purge-modal.tsx`, `files_nodes.purge_nodes` / `empty_archive`, or `files_tree.list_archive_areas` / `list_trash_entries`. Spec: "Trash view and Delete permanently" in the `files-explorer-tree` skill and "Delete Permanently" in the `data-deletion` skill. Verified 2026-10-31.
 
 - Open it with the sidebar header `More options` → menu item `Open Trash`. The view replaces the tree inside `section.FilesSidebarArchive` (named `Trash` by its heading). Leave with the `Back to files` button or Escape.
 - Rows are `[data-archive-row-id]` buttons, newest move to Trash first. Their `aria-label` is `<name> in <parent path>`, plus `, you don't have access` for a locked row. Items trashed before the time-prefixed op ids show `Moved to Trash before Oct 31, 2026` and sort last.

@@ -64,13 +64,13 @@ async function seed_archive() {
 		membershipId: Id<"organizations_workspaces_users">,
 		area: Id<"files_nodes"> | null,
 		paginationOpts: { numItems: number; cursor: string | null; endCursor?: string },
-	) => as.query(api.files_tree.list_archived_tops, { membershipId, area, paginationOpts });
+	) => as.query(api.files_tree.list_trash_entries, { membershipId, area, paginationOpts });
 
 	return { ...f, owner, ids, read };
 }
 
-describe("list_archived_tops", () => {
-	test("lists each top item once, newest operation first, without reading archived children", async () => {
+describe("list_trash_entries", () => {
+	test("lists each entry once, newest operation first, without reading archived children", async () => {
 		const f = await seed_archive();
 
 		const pages = [];
@@ -92,7 +92,7 @@ describe("list_archived_tops", () => {
 
 		const ranges = await f.asOwner.run(async (ctx) => {
 			const before = await ctx.meta.getTransactionMetrics();
-			await ctx.runQuery(api.files_tree.list_archived_tops, {
+			await ctx.runQuery(api.files_tree.list_trash_entries, {
 				membershipId: f.db.membershipId,
 				area: null,
 				paginationOpts: { numItems: 2, cursor: null },
@@ -105,7 +105,7 @@ describe("list_archived_tops", () => {
 		expect((await f.read(f.asOwner, f.db.membershipId, f.ids.locked, { numItems: 10, cursor: null })).page).toEqual([]);
 	});
 
-	test("pages equal-path files and a top folder inside another top folder's path range", async () => {
+	test("pages equal-path files and an entry folder inside another entry folder's path range", async () => {
 		const f = await seed_archive();
 		const big = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.ids.big)))!;
 		const inActive = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.ids.inActive)))!;
@@ -145,7 +145,7 @@ describe("list_archived_tops", () => {
 			if (page.isDone) break;
 			cursor = page.continueCursor;
 		}
-		expect(listed, "overlapping paths and equal paths keep every distinct top item").toEqual([
+		expect(listed, "overlapping paths and equal paths keep every distinct entry").toEqual([
 			f.ids.big,
 			ids.nested,
 			f.ids.locked,
@@ -156,7 +156,7 @@ describe("list_archived_tops", () => {
 		]);
 	});
 
-	test("Restore Skip keeps both equal-path top folders and hides their same-delete children", async () => {
+	test("Restore Skip keeps both equal-path folders as entries and hides their same-delete children", async () => {
 		const f = await seed_archive();
 		const big = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.ids.big)))!;
 		const other = await test_run_with_flush(f.t, async (ctx) => {
@@ -200,7 +200,7 @@ describe("list_archived_tops", () => {
 		).toEqual([]);
 	});
 
-	test("moves an archived top between areas when its active parent is restricted and opened again", async () => {
+	test("moves an entry between areas when its active parent is restricted and opened again", async () => {
 		const f = await seed_archive();
 		const child = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.ids.inActive)))!;
 		const parentId = child.parentId as Id<"files_nodes">;

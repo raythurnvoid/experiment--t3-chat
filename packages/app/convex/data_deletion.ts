@@ -646,16 +646,6 @@ async function db_purge_organization_workspace_content_batch(
 		if (deletedActivity.done) await files_subtree_ops_db_delete(ctx, { opId: subtreeOp._id, now: Date.now() });
 		return { done: false, deletedCount: deletedActivity.deletedCount + (deletedActivity.done ? 1 : 0) };
 	}
-	const trashTopJob = await ctx.db
-		.query("files_trash_top_jobs")
-		.withIndex("by_organization_workspace", (q) =>
-			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
-		)
-		.first();
-	if (trashTopJob) {
-		await ctx.db.delete("files_trash_top_jobs", trashTopJob._id);
-		return { done: false, deletedCount: 1 };
-	}
 	// Op deletion leaves large path sets to their own cleanup. Drain that work before the workspace
 	// disappears, so an old callback cannot leave path records behind.
 	const pathJob = await ctx.db

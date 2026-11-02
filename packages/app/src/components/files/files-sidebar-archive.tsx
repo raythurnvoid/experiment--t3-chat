@@ -59,8 +59,8 @@ type FilesSidebarArchive_AreaRow = app_convex_FunctionReturnType<
 	typeof app_convex_api.files_tree.list_archive_areas
 >["page"][number];
 
-type FilesSidebarArchive_TopRow = app_convex_FunctionReturnType<
-	typeof app_convex_api.files_tree.list_archived_tops
+type FilesSidebarArchive_EntryRow = app_convex_FunctionReturnType<
+	typeof app_convex_api.files_tree.list_trash_entries
 >["page"][number];
 
 /**
@@ -116,16 +116,16 @@ type FilesSidebarArchiveRow_CustomAttributes = {
 };
 
 type FilesSidebarArchiveRow_Props = {
-	row: FilesSidebarArchive_TopRow;
+	row: FilesSidebarArchive_EntryRow;
 	isCurrent: boolean;
 	/**
 	 * Whether the person has Can manage on the shown area.
 	 */
 	canManageArea: boolean;
-	canRestoreItem: (row: FilesSidebarArchive_TopRow) => boolean;
+	canRestoreItem: (row: FilesSidebarArchive_EntryRow) => boolean;
 	onOpen: (nodeId: string, kind: string) => void;
 	onRestore: (nodeId: string) => void;
-	onDelete: (row: FilesSidebarArchive_TopRow, returnFocusElement: HTMLElement | null) => void;
+	onDelete: (row: FilesSidebarArchive_EntryRow, returnFocusElement: HTMLElement | null) => void;
 };
 
 /**
@@ -353,23 +353,23 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	// The Trash entries of the area are one stream in the server order. Destructure, so the React
 	// Compiler does not treat the rows as changed by a later `loadMore` call.
 	const {
-		results: topRows,
-		status: topPaginationStatus,
-		loadMore: loadMoreTopsPage,
+		results: entryRows,
+		status: entryPaginationStatus,
+		loadMore: loadMoreEntriesPage,
 	} = useFilesPaginatedQuery(
-		app_convex_api.files_tree.list_archived_tops,
+		app_convex_api.files_tree.list_trash_entries,
 		{ membershipId, area: area?.id ?? null },
 		{ initialNumItems: FilesSidebarArchive_PAGE_SIZE },
 	);
-	const topStatus =
-		topPaginationStatus === "LoadingFirstPage"
+	const entryStatus =
+		entryPaginationStatus === "LoadingFirstPage"
 			? ("loading" as const)
-			: topPaginationStatus === "LoadingMore"
+			: entryPaginationStatus === "LoadingMore"
 				? ("loading_more" as const)
-				: topPaginationStatus === "Exhausted"
+				: entryPaginationStatus === "Exhausted"
 					? ("done" as const)
 					: ("more" as const);
-	const loadMoreTops = () => loadMoreTopsPage(FilesSidebarArchive_PAGE_SIZE);
+	const loadMoreEntries = () => loadMoreEntriesPage(FilesSidebarArchive_PAGE_SIZE);
 
 	// Delete permanently needs Can manage, like the server: on the workspace for the open part, on the
 	// area for a restricted folder, and on the folder itself for a restricted folder listed here.
@@ -427,9 +427,9 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	});
 
 	const handleLoadMoreClick = useFn(() => {
-		if (topStatus === "loading_more") return;
-		setLoadMoreFromIds(new Set(topRows.map((row) => row._id)));
-		loadMoreTops();
+		if (entryStatus === "loading_more") return;
+		setLoadMoreFromIds(new Set(entryRows.map((row) => row._id)));
+		loadMoreEntries();
 	});
 
 	const handleKeyDown = useFn((event: KeyboardEvent<HTMLElement>) => {
@@ -451,17 +451,17 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	useEffect(() => {
 		if (
 			loadMoreFromIds === null ||
-			topStatus === "loading_more" ||
-			(topStatus === "more" && topRows.length <= loadMoreFromIds.size)
+			entryStatus === "loading_more" ||
+			(entryStatus === "more" && entryRows.length <= loadMoreFromIds.size)
 		) {
 			return;
 		}
 		setLoadMoreFromIds(null);
 		const activeElement = document.activeElement;
-		if (topStatus === "more" || (activeElement !== document.body && !rootRef.current?.contains(activeElement))) {
+		if (entryStatus === "more" || (activeElement !== document.body && !rootRef.current?.contains(activeElement))) {
 			return;
 		}
-		const firstNewRow = topRows.find((row) => !loadMoreFromIds.has(row._id)) ?? topRows.at(-1);
+		const firstNewRow = entryRows.find((row) => !loadMoreFromIds.has(row._id)) ?? entryRows.at(-1);
 		if (firstNewRow) {
 			rootRef.current
 				?.querySelector<HTMLElement>(
@@ -469,7 +469,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 				)
 				?.focus();
 		}
-	}, [topRows, topStatus, loadMoreFromIds]);
+	}, [entryRows, entryStatus, loadMoreFromIds]);
 
 	// The sidebar is inert while the dialog is open, so focus the element `handlePurged` picked only
 	// after the dialog has closed.
@@ -480,9 +480,9 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	}, [purgeRequest]);
 
 	const statusText =
-		topStatus === "loading"
+		entryStatus === "loading"
 			? "Loading Trash…"
-			: topRows.length === 0 && topStatus === "done"
+			: entryRows.length === 0 && entryStatus === "done"
 				? "Trash is empty."
 				: null;
 
@@ -562,7 +562,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 						ref={emptyButtonRef}
 						type="button"
 						variant="outline_destructive"
-						disabled={!canManageArea || (topStatus === "done" && topRows.length === 0)}
+						disabled={!canManageArea || (entryStatus === "done" && entryRows.length === 0)}
 						onClick={handleEmptyArchiveClick}
 					>
 						Empty Trash…
@@ -582,7 +582,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 					</p>
 				) : (
 					<ul className={"FilesSidebarArchive-list" satisfies FilesSidebarArchive_ClassNames}>
-						{topRows.map((row) => (
+						{entryRows.map((row) => (
 							<FilesSidebarArchiveRow
 								key={row._id}
 								row={row}
@@ -596,14 +596,14 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 						))}
 					</ul>
 				)}
-				{topStatus === "more" || topStatus === "loading_more" ? (
+				{entryStatus === "more" || entryStatus === "loading_more" ? (
 					<MyButton
 						type="button"
 						variant="ghost"
 						className={"FilesSidebarArchive-more" satisfies FilesSidebarArchive_ClassNames}
 						// `aria-disabled`, not `disabled`, so focus stays on Show more while its page loads.
-						aria-busy={topStatus === "loading_more"}
-						aria-disabled={topStatus === "loading_more"}
+						aria-busy={entryStatus === "loading_more"}
+						aria-disabled={entryStatus === "loading_more"}
 						onClick={handleLoadMoreClick}
 					>
 						Show more

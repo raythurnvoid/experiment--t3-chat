@@ -162,7 +162,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		usePaginatedQuery: (query: FunctionReference<"query">, args: { clause?: unknown } | "skip") => {
 			useSyncExternalStore(subscribeSaved, () => savedState.revision);
 			if (args === "skip") return { results: [], status: "LoadingFirstPage", isLoading: true, loadMore: () => {} };
-			if (getFunctionName(query) === "files_tree:list_archived_tops") {
+			if (getFunctionName(query) === "files_tree:list_trash_entries") {
 				return {
 					results: treeState.nodes
 						.filter((node) => node.archiveOperationId !== null)

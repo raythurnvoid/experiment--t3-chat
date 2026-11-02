@@ -1128,7 +1128,7 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   everyone, and their plugin grants of the live lifetime. So the index never reads a restricted file
   or a grant of an old lifetime. Guests get no areas and an empty list. A gone area falls back to
   `Workspace`.
-- The list (`files_tree.list_archived_tops`) shows the Trash entries of the area (`files_trash_entries`,
+- The list (`files_tree.list_trash_entries`) shows the Trash entries of the area (`files_trash_entries`,
   `server/files-trash-entries.ts`), newest delete first, then by the path the item had when it moved
   to Trash. An entry is an item in Trash on its own: its folder is not in Trash with the same delete
   id. Items inside it from the same delete do not show separately. A restricted folder lists in its

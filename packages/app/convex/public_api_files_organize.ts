@@ -730,7 +730,7 @@ export const list_trash_page = internalQuery({
 			)
 			.first();
 		if (!membership) return { status: "denied" as const };
-		// A guest has no Trash view, like in the app (`files_tree.list_archived_tops`).
+		// A guest has no Trash view, like in the app (`files_tree.list_trash_entries`).
 		const workspaceRead = await access_control_db_authorize_membership(ctx, {
 			userAuth: { id: args.userId },
 			membership,

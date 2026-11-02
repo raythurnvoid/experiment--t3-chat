@@ -113,8 +113,8 @@ const TREE_METADATA_OPEN_SPLIT_GUARD = 166;
 const TREE_METADATA_RESTRICTED_SPLIT_GUARD = 428;
 
 // A published Move file costs 18 reads per Trash row, like a share row.
-const ARCHIVED_TOPS_PAGE_MAX_ITEMS = 50;
-const ARCHIVED_TOPS_SPLIT_GUARD = 166;
+const TRASH_ENTRIES_PAGE_MAX_ITEMS = 50;
+const TRASH_ENTRIES_SPLIT_GUARD = 166;
 
 const TREE_ANCESTORS_MAX_DEPTH = 64;
 
@@ -1689,7 +1689,7 @@ export const list_archive_areas = query({
  * One index range, so reads grow with the rows returned at any Trash size. Each row reads its node in
  * the caller's current saved view.
  */
-export const list_archived_tops = query({
+export const list_trash_entries = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		area: v.union(v.null(), v.id("files_nodes")),
@@ -1712,7 +1712,7 @@ export const list_archived_tops = query({
 			}
 		}
 
-		const guard = await db_shrink_split_guard(ctx, ARCHIVED_TOPS_SPLIT_GUARD);
+		const guard = await db_shrink_split_guard(ctx, TRASH_ENTRIES_SPLIT_GUARD);
 		const result = await ctx.db
 			.query("files_trash_entries")
 			.withIndex("by_org_ws_area_order_path", (q) =>
@@ -1723,7 +1723,7 @@ export const list_archived_tops = query({
 			)
 			.paginate({
 				...args.paginationOpts,
-				numItems: Math.min(args.paginationOpts.numItems, ARCHIVED_TOPS_PAGE_MAX_ITEMS, guard),
+				numItems: Math.min(args.paginationOpts.numItems, TRASH_ENTRIES_PAGE_MAX_ITEMS, guard),
 			});
 		if (files_tree_db_page_needs_split(result, guard)) {
 			return files_tree_db_page_split_required(result);

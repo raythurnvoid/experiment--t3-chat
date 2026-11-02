@@ -57,7 +57,7 @@ async function force_archive(f: Fixture, credential: string, path: string) {
 }
 
 async function list_trash(f: Fixture) {
-	return await f.asOwner.query(api.files_tree.list_archived_tops, {
+	return await f.asOwner.query(api.files_tree.list_trash_entries, {
 		membershipId: f.db.membershipId,
 		area: null,
 		paginationOpts: { cursor: null, numItems: 200 },

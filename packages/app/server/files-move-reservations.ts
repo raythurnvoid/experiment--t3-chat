@@ -729,8 +729,6 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 								"restrictedScopeNodeId",
 								"isRestrictedScopeRoot",
 								"parentScopeNodeId",
-								"archiveTopScopeNodeId",
-								"archiveTopOrder",
 								"scopeOpId",
 								"extendedScopeNodeId",
 								"parentExtendedScopeNodeId",

@@ -922,7 +922,7 @@ describe("Move cohort and folder-wide jobs", () => {
 				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
-		const during = await w.asUser.query(api.files_tree.list_archived_tops, {
+		const during = await w.asUser.query(api.files_tree.list_trash_entries, {
 			membershipId: w.db.membershipId,
 			area: null,
 			paginationOpts: { numItems: 10, cursor: null },
@@ -932,7 +932,7 @@ describe("Move cohort and folder-wide jobs", () => {
 			"a cleaned child stays out of Trash while its parent is held",
 		).toEqual([]);
 		await finish_cohort({ t: w.t, runId, cohortId });
-		const final = await w.asUser.query(api.files_tree.list_archived_tops, {
+		const final = await w.asUser.query(api.files_tree.list_trash_entries, {
 			membershipId: w.db.membershipId,
 			area: null,
 			paginationOpts: { numItems: 10, cursor: null },
