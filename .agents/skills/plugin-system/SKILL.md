@@ -1260,9 +1260,17 @@ account and grant. A Files call is then one call instead of four, and a unit rea
 mark. An email with no attachment due saves its final state in one write, and held retries are read
 only when the account has some. Live check: a new email at 18:28 UTC was saved with 9 calls inside its
 slice (19 for a similar email at 13:30 UTC). With the push, dispatch and follow-up slice, one email now
-costs about 18 calls instead of about 28. Known leftover: each slice end schedules a dispatch for the
-next due account, so that account can collect several dispatches (9 at 17:42 UTC), and all but the
-first find nothing to do. 510 tests.
+costs about 18 calls instead of about 28. Each slice end still scheduled a dispatch for the next due
+account, so that account could collect several dispatches (9 at 17:42 UTC), and all but the first
+found nothing to do. 510 tests.
+
+That was fixed the same day (18:51 UTC, plugin commit `dfcf812`, no new version). The new
+`dispatch_schedule` table holds one row: the id of the one waiting dispatch job. Every path that wants a
+dispatch calls `gmail_schedule_dispatch`. It keeps the waiting job when that job runs at the asked time
+or earlier, and otherwise cancels it and schedules a new one. A dispatch that starts no slice schedules
+the next one itself. Live check: after the old queued jobs ran once (4 at 19:16 UTC), each due time had
+one dispatch. A quiet hour with three accounts now costs 18 calls: 3 idle slices of 5 calls and 3 cron
+runs. 511 tests.
 
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
