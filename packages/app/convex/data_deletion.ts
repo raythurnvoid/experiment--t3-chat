@@ -60,7 +60,7 @@ import {
 } from "./files_browser.ts";
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_write_policy_runs_db_delete_run_batch } from "./files_write_policy_runs.ts";
-import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
+import { files_archive_runs_db_delete_run_batch, files_archive_runs_db_request_stop } from "./files_archive_runs.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_subtree_op_paths_db_advance } from "./files_subtree_op_paths_db.ts";
 import { files_db_delete_pending_update, files_db_expire_pending_update_operation_batch } from "../server/files.ts";
@@ -1675,6 +1675,17 @@ async function db_purge_organization_workspace_content_batch(
 		await Promise.all(shareRows.map((doc) => ctx.db.delete("files_share_rows", doc._id)));
 		return { done: false, deletedCount: shareRows.length };
 	}
+	// The flush deleted the Trash entries with their nodes above. This pass deletes the rest.
+	const trashEntries = await ctx.db
+		.query("files_trash_entries")
+		.withIndex("by_org_ws_area_order_path", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (trashEntries.length > 0) {
+		await Promise.all(trashEntries.map((doc) => ctx.db.delete("files_trash_entries", doc._id)));
+		return { done: false, deletedCount: trashEntries.length };
+	}
 	// The metadata docs above are gone, so no saver adds catalog deltas now. Delete the marker first:
 	// its scheduled compactor and rebuild jobs then do nothing.
 	for (const table of ["files_metadata_catalog_compactors", "files_metadata_catalog_deltas"] as const) {
@@ -2368,12 +2379,20 @@ async function db_drain_user_write_policy_runs_batch(ctx: MutationCtx, args: { u
  *
  * A Delete permanently job is left too. It may be halfway through one file, and it ends on its own
  * after that file once the user's membership is gone.
+ *
+ * A restore or forced archive that already changed items is stopped and left. Before it ends, it gives
+ * Trash entries to the items it left in Trash, so none of them goes missing from the Trash list.
  */
 async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId: Id<"users"> }) {
 	// Skip the stamping archives, so the user's other jobs behind them are still found.
 	for await (const run of ctx.db.query("files_archive_runs").withIndex("by_user", (q) => q.eq("userId", args.userId))) {
 		if (run.active && run.kind === "archive" && run.phase === "apply" && !run.force) continue;
 		if (run.active && run.kind === "purge") continue;
+		if (run.active && run.phase === "apply" && (run.kind === "restore" || run.force)) {
+			await files_archive_runs_db_request_stop(ctx, { runId: run._id, reason: "user", now: Date.now() });
+			// A job whose op did not run yet changed nothing, and the stop ended it. Delete it below.
+			if ((await ctx.db.get("files_archive_runs", run._id))?.active) continue;
+		}
 		const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: run._id });
 		return purged.deletedCount;
 	}

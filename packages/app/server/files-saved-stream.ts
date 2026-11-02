@@ -32,22 +32,6 @@ function create_stream(
 	fixedView: files_saved_placement_FixedView | null,
 ) {
 	const queries = {
-		by_archive_top_scope: (area: Doc<"files_nodes">["restrictedScopeNodeId"]) =>
-			fixedView
-				? db
-						.query("files_saved_places")
-						.withIndex("by_view_archiveTopScope_archiveTopOrder_treePath", (q) =>
-							q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view).eq("archiveTopScopeNodeId", area),
-						)
-				: db
-						.query("files_nodes")
-						.withIndex("by_org_ws_cohort_archiveTopScope_archiveTopOrder_treePath", (q) =>
-							q
-								.eq("organizationId", scope.organizationId)
-								.eq("workspaceId", scope.workspaceId)
-								.eq("moveCohortId", undefined)
-								.eq("archiveTopScopeNodeId", area),
-						),
 		by_parent_archive_restricted_kind_created: (args: {
 			parentId: Doc<"files_nodes">["parentId"];
 			archiveOperationId: Doc<"files_nodes">["archiveOperationId"];
@@ -163,13 +147,15 @@ function create_stream(
 				: db.query("files_nodes").withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		// The restricted folders of the workspace by path, for the owner's Archive view area picker.
-		by_archive_restricted_tree: (range: (q: SavedRange<["archiveOperationId", "isRestrictedScopeRoot", "treePath"]>) => IndexRange) =>
+		// The restricted folders of the workspace by path, for the owner's Trash area pickers.
+		by_archive_restricted_kind_tree: (
+			range: (q: SavedRange<["archiveOperationId", "isRestrictedScopeRoot", "kind", "treePath"]>) => IndexRange,
+		) =>
 			fixedView
-				? db.query("files_saved_places").withIndex("by_view_archive_restricted_tree", (q) =>
+				? db.query("files_saved_places").withIndex("by_view_archive_restricted_kind_tree", (q) =>
 						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
 					)
-				: db.query("files_nodes").withIndex("by_org_ws_archive_restricted_tree", (q) =>
+				: db.query("files_nodes").withIndex("by_org_ws_archive_restricted_kind_tree", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
 		// One restricted area of a recursive read (`server/files-tree-walk.ts`).

@@ -1114,38 +1114,42 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
 - A Trash operation id starts with its time: `t<15-digit ms>-<uuid>`
   (`files_archive_operation_id_new` in `shared/files.ts`). Every writer of `archiveOperationId` uses
   it. A Move cohort uses this Trash operation id: `t<operationTime>-<cohort._id>`. Ids from before this format are
-  plain UUIDs. They have no time, sort last, and show "Moved to Trash before Oct 31, 2026". No table lists
-  trashed items: the time in the id is the sort key.
+  plain UUIDs. They have no time, sort last, and show "Moved to Trash before Oct 31, 2026". The time in
+  the id is the sort key of the Trash list.
 - The Trash view (`files-sidebar-archive.tsx`) replaces the tree. Open it from "Open Trash" in
   the top More menu, beside "Show items in Trash". It is sidebar state, not a route or search param.
   An active search wins over it. Back to files and Escape (inside the view) close it.
 - It shows one area at a time, like Google Drive (one Trash per shared drive) and SharePoint (one bin
   per site). An area is the open part of the workspace (`Workspace`) or one restricted folder the
-  person can open. One rule for everybody: the picker reads `files_tree.list_archive_areas`. The
-  owner pages restricted roots by `by_archive_restricted_tree`; a member pages their share rows by
-  `isRestrictedScopeRoot`. Guests get no areas and an empty list. A gone area falls back to
+  person can open. A restricted file holds no other items, so it is no area. One rule for
+  everybody: the picker reads `files_tree.list_archive_areas`. The owner pages restricted folders by
+  `by_archive_restricted_kind_tree`; a member pages their share rows by `isRestrictedScopeRoot`,
+  `kind` and the plugin membership lifetime, in five streams: their own shares, their two roles,
+  everyone, and their plugin grants of the live lifetime. So the index never reads a restricted file
+  or a grant of an old lifetime. Guests get no areas and an empty list. A gone area falls back to
   `Workspace`.
-- The list (`files_tree.list_archived_tops`) shows the top items of each Trash operation in the
-  area, newest trashed first, then by path. A top item that is a restricted folder shows in its
-  parent's area, as a locked row when the person cannot open it. Each saved stream reads one native
-  index of top items. Reads grow with the rows returned, even when paths match or overlap. The client
-  merges the normal and the Move streams like "Shared with you". Native page ends keep new rows from
-  opening a gap between pages.
-- `archiveTopScopeNodeId` and `archiveTopOrder` are derived current fields, not delete history.
-  Missing means not a top item. The area is null for Workspace. The order reverses the delete id,
-  so the index sorts newest deletes first and paths A to Z. The write flush updates each node.
-  Move derives both saved views from their own parents and copies the winning fields on cleanup.
-- A parent's delete id can change which children are tops. `files_trash_top_jobs` repairs only its
-  children in the old and new deletes, 64 per step. A later parent change restarts those jobs.
-  Each scheduled call carries a step number, so repeated or old callbacks stop. Cron recovery drains
-  every due batch. Jobs wait for Move cleanup. The top reader and Empty Trash wait while any
-  repair exists in the workspace. The view resets its pages and shows `Updating Trash…`.
-- Normal and forced moves to Trash, Restore, and Skip can each queue one repair per affected
-  parent/delete pair. This pause is intentional: children saved in earlier steps may now need a
-  different top marker. A normal parent-first archive may need no repair. Repair work grows with
-  affected parent-child links, never with viewers.
-- Keep top membership in an index. Do not infer it by skipping path ranges: different items in
-  Trash may have matching or overlapping paths. Do not force unique names in Trash to serve a read.
+- The list (`files_tree.list_archived_tops`) shows the Trash entries of the area (`files_trash_entries`,
+  `server/files-trash-entries.ts`), newest delete first, then by the path the item had when it moved
+  to Trash. An entry is an item in Trash on its own: its folder is not in Trash with the same delete
+  id. Items inside it from the same delete do not show separately. A restricted folder lists in its
+  parent's area, as a locked row when the person cannot open it. The list is one native index range,
+  so reads grow with the rows returned, at any Trash size. Each row reads its node in the current
+  saved view. While a Move runs, a row whose node the view already shows out of Trash or in another
+  area is left out until the Move cleanup fixes its entry. There is no pause and no repair job.
+- Design principle: **the step that decides an entry writes it.** An entry is a fact, never derived
+  from a parent. Delete writes one for each named item; a forced delete writes one for each item it
+  moved to Trash inside a folder it keeps; Restore Skip, a too-long path, and Replace write one for
+  the item they put in Trash on its own; Move cleanup writes one for an item it moved to Trash; the
+  archive helper of the plugin and service routes (`public_api_file_archives_db_archive`) writes one
+  for each stamped item whose folder it kept. The write flush and Move cleanup only keep an entry
+  true for its own node: delete it when the node leaves Trash or is deleted, and follow the node's
+  area and delete id. So a parent change never needs a repair of its children. A restore or forced
+  delete that ends early (Stop, timeout, a step that keeps failing, a lost membership, user
+  deletion) first runs steps that give entries to the items it left in Trash (`run.ending`, Activity
+  "stopping"), then ends the way it was ended. Reason: derived tops needed child repairs and a Trash
+  pause after every parent change.
+- Do not infer entries by skipping path ranges: different items in Trash may have matching or
+  overlapping paths. Do not force unique names in Trash to serve a read.
 - A row shows the name, its folder, date moved to Trash and "Changed by" (`updatedBy`). Its menu:
   Restore, Delete permanently…, Copy path. A locked row offers nothing.
 - Restore brings back the selected item and the items inside it that were moved to Trash with it; see [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore).

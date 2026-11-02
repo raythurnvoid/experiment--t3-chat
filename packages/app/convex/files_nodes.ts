@@ -204,6 +204,7 @@ import {
 	files_pending_overlay_list,
 	files_pending_overlay_list_over_budget,
 } from "../server/files-pending-overlay.ts";
+import { files_trash_entries_db_delete, files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
 import { quotas } from "../shared/quotas.ts";
 import { r2 } from "./r2_client.ts";
 import {
@@ -3167,6 +3168,15 @@ export async function files_nodes_db_archive_node(
 		 * scope job, for a caller that archives many nodes in one mutation.
 		 */
 		savedScope: "follow" | "job";
+		/**
+		 * Whether the node is in Trash on its own after this step, so it has a Trash entry
+		 * (`server/files-trash-entries.ts`). False for an item that goes to Trash with a folder of the
+		 * same delete, or joins one. A forced delete passes true only for its named items. When it keeps
+		 * a folder, it gives entries later to the items it moved to Trash inside it. The archive helper of
+		 * the plugin and service routes (`public_api_file_archives_db_archive`) passes false and decides
+		 * after it has moved every item.
+		 */
+		trashEntry: boolean;
 	},
 ) {
 	await files_share_links_db_delete_for_node(ctx, {
@@ -3191,6 +3201,8 @@ export async function files_nodes_db_archive_node(
 	if (args.savedScope === "follow") await files_pending_overlay_db_follow_saved_scope(ctx, args.node);
 	else await files_pending_overlay_db_schedule_saved_scope(ctx, args.node);
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
+	if (args.trashEntry) await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", args.node._id))!);
+	else await files_trash_entries_db_delete(ctx, args.node._id);
 }
 
 /**
@@ -3292,6 +3304,9 @@ export async function files_nodes_db_archive_nodes(args: {
 			proofWorkspaces.add(fileNode.workspaceId);
 	}
 
+	// A named folder comes with all its descendants, so only a node whose parent is not named is in
+	// Trash on its own. Decide it from the ids, not from the parallel stamps below.
+	const namedIds = new Set(fileNodes.map((fileNode) => fileNode._id));
 	// Up to a few hundred nodes and no limit check between them, so their docs follow in jobs.
 	await Promise.all(
 		fileNodes.map((fileNode) =>
@@ -3301,6 +3316,7 @@ export async function files_nodes_db_archive_nodes(args: {
 				updatedBy: args.updatedBy,
 				now: args.now,
 				savedScope: "job",
+				trashEntry: fileNode.parentId === files_ROOT_ID || !namedIds.has(fileNode.parentId),
 			}),
 		),
 	);
@@ -3757,7 +3773,7 @@ export const purge_nodes = mutation({
 });
 
 /**
- * Delete permanently every top item of one area of the Archive view that was archived before now.
+ * Delete permanently every Trash entry of one area of the Trash view that was archived before now.
  * `area` is null for the open part of the workspace, or a restricted folder. It needs Can manage on
  * the area. The job keeps the items inside that the person may not delete.
  */
@@ -3773,7 +3789,7 @@ export const empty_archive = mutation({
 			 */
 			runId: v.union(v.id("files_archive_runs"), v.null()),
 			/**
-			 * Counts of top items found so far, not of the items inside them.
+			 * Counts of Trash entries found so far, not of the items inside them.
 			 */
 			itemCount: v.number(),
 			deletedCount: v.number(),
@@ -3936,7 +3952,11 @@ export async function files_nodes_db_restore_named_nodes(
 		if (started._nay) {
 			refusals.push({ archiveOperationId, nay: started._nay });
 			// A job that stopped partway keeps what it restored, so list it too. The caller can read what it did.
-			if (started._nay.data && "runId" in started._nay.data) jobs.push({ ...started._nay.data, isDone: true });
+			if (started._nay.data && "runId" in started._nay.data) {
+				jobs.push(started._nay.data);
+				// It may still hold its op while it gives Trash entries, so the next job waits for it.
+				if (!started._nay.data.isDone) previousJob = started._nay.data;
+			}
 			if (args.stopAtRefusal) break;
 			continue;
 		}

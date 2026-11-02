@@ -39,6 +39,8 @@ describe("http routes", () => {
 				"OPTIONS /api/v1/files/restore",
 				"POST /api/v1/files/trash/list",
 				"OPTIONS /api/v1/files/trash/list",
+				"POST /api/v1/files/trash/areas",
+				"OPTIONS /api/v1/files/trash/areas",
 				"POST /api/v1/files/download-urls",
 				"OPTIONS /api/v1/files/download-urls",
 				"POST /api/v1/files/jobs/get",

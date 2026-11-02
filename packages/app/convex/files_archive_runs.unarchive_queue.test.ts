@@ -116,7 +116,9 @@ describe("unarchive_nodes", () => {
 				activityId: ahead!.activityId,
 			}),
 		).toEqual({ _yay: null });
-		expect((await read_activity(f, ahead!.activityId)).status).toBe("canceled");
+		// The stopped job first gives Trash entries to the items it did not restore.
+		expect((await read_activity(f, ahead!.activityId)).status).toBe("stopping");
+		expect((await run_to_end(f, ahead!)).activity.status).toBe("canceled");
 		expect((await read_activity(f, queued!.activityId)).status).toBe("canceled");
 		expect(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();

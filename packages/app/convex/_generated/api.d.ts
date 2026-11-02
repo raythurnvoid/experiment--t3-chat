@@ -102,7 +102,7 @@ import type * as files_transfer from "../files_transfer.js";
 import type * as files_transfer_assets_db from "../files_transfer_assets_db.js";
 import type * as files_transfer_media from "../files_transfer_media.js";
 import type * as files_transfer_status from "../files_transfer_status.js";
-import type * as files_trash_tops from "../files_trash_tops.js";
+import type * as files_trash_entries_erase from "../files_trash_entries_erase.js";
 import type * as files_tree from "../files_tree.js";
 import type * as files_tree_db from "../files_tree_db.js";
 import type * as files_type_queries from "../files_type_queries.js";
@@ -291,7 +291,7 @@ declare const fullApi: ApiFromModules<{
   files_transfer_assets_db: typeof files_transfer_assets_db;
   files_transfer_media: typeof files_transfer_media;
   files_transfer_status: typeof files_transfer_status;
-  files_trash_tops: typeof files_trash_tops;
+  files_trash_entries_erase: typeof files_trash_entries_erase;
   files_tree: typeof files_tree;
   files_tree_db: typeof files_tree_db;
   files_type_queries: typeof files_type_queries;

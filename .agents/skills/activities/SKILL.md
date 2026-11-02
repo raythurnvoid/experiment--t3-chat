@@ -237,9 +237,14 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   Recovery moves the deadline and schedules the step again (`files_subtree_ops_db_recover`). A restore
   that waits on a name clash is `awaiting_input` until `resolve_conflicts`, with a 24-hour deadline
   like a paused paste. The clash can be of a top item or of an item inside a restored folder. Only that wait can time out (`timed_out`) or be stopped. Its Stop ends the whole
-  Restore request, with the queued restore jobs of that request. The done part stays in Trash or
-  restored. The restore jobs of one Restore request run one at a time: the ones after the first
-  start as `queued`, with `feedVisible: false`, a 24-hour deadline, and no scheduled step. A restore
+  Restore request, with the queued restore jobs of that request. A restore or forced move to Trash
+  that already changed items and then ends early (Stop, timeout, a failing step, a lost membership)
+  shows `stopping` first. Its steps give Trash entries to the items it left in Trash, then it ends
+  with the stored status. See the Trash entries principle in the
+  [Files explorer spec](../files-explorer-tree/SKILL.md#trash-view-and-delete-permanently). The done
+  part stays in Trash or restored. The restore jobs of one Restore request run one at a time: the
+  ones after the first start as `queued`, with `feedVisible: false`, a 24-hour deadline, and no
+  scheduled step. A restore
   also waits as `queued` while it overlaps another subtree op. A move to Trash or restore op marks at most
   64 paths busy, so one with many top items can mark a whole shared folder, or `/`, busy. When an op ends,
   `files_subtree_ops_db_delete` starts each waiter that overlaps nothing any more: promote marks it

@@ -97,6 +97,13 @@ test("forced archive keeps blocked branches, replays its receipt, and pins a par
 	expect(result.refused).toHaveLength(2);
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", destination._id)))?.archiveOperationId).toBeNull();
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", blocked._yay.nodeId)))?.archiveOperationId).toBeNull();
+	// Its folder stays, so the note is in Trash on its own and the Trash list shows it.
+	expect(
+		await t.run(async (ctx) => {
+			const entries = await ctx.db.query("files_trash_entries").collect();
+			return Promise.all(entries.map(async (entry) => (await ctx.db.get("files_nodes", entry.nodeId))?.path));
+		}),
+	).toEqual(["/meetings/meeting-1/meeting.md"]);
 	expect((await read_destination(t, fixture))?.closedEpoch ?? 0).toBe(0);
 	expect(await (await call({ t, path: ARCHIVE_PATH, bearer: memberGrant, body })).json()).toEqual(result);
 

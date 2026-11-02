@@ -169,6 +169,8 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/trash/list": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/trash/list"];
 
+	"/api/v1/files/trash/areas": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/trash/areas"];
+
 	"/api/v1/files/jobs/get": ReturnType<typeof public_api_files_organize_http_routes>["/api/v1/files/jobs/get"];
 
 	"/api/v1/files/read": ReturnType<typeof public_api_http_routes>["/api/v1/files/read"];

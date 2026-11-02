@@ -45,6 +45,7 @@ import {
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
+import { files_trash_entries_area } from "../server/files-trash-entries.ts";
 import { files_pending_overlay_db_has_saved_scope_job } from "../server/files-pending-overlay.ts";
 import {
 	files_node_public_doc_fields,
@@ -580,8 +581,11 @@ function get_table_read_args(args: {
  * 2 are their workspace role and organization role (`access_control_db_resolve_role_refs`), 3 is
  * "Everyone in this workspace can view". A role they do not have has no key, and a member without
  * workspace read (a guest) has no workspace key, like the permission check.
+ *
+ * The Trash area pickers also read principal 4, the member's plugin grants. It reuses key 0, and the
+ * caller adds the live membership lifetime.
  */
-async function db_get_share_principal_keys(
+export async function files_tree_db_get_share_principal_keys(
 	ctx: QueryCtx,
 	reader: {
 		userAuth: { id: Id<"users"> };
@@ -1278,7 +1282,8 @@ export const list_tree_children_sorted = query({
  * A share row is one copy per share (one grant to a user, a role or the whole workspace), not one
  * per member who can read the node. A share to a role stays one row however many members hold the
  * role, and a role change writes nothing. So a member reads up to 4 streams per kind, by
- * `principalIndex` (`db_get_share_principal_keys`), and the client drops a node it already has.
+ * `principalIndex` (`files_tree_db_get_share_principal_keys`), and the client drops a node it already
+ * has.
  */
 export const list_tree_children_shared = query({
 	args: {
@@ -1357,7 +1362,7 @@ export const list_tree_children_shared = query({
 		const { sort, filter, namePrefix, metadataField } = table;
 
 		// The server builds the key from the caller only, never from the client.
-		const principalKey = (await db_get_share_principal_keys(ctx, reader))[args.principalIndex];
+		const principalKey = (await files_tree_db_get_share_principal_keys(ctx, reader))[args.principalIndex];
 		if (!principalKey) {
 			return empty;
 		}
@@ -1533,7 +1538,7 @@ export const list_tree_shared_roots = query({
 		if (!reader || reader.isOwner) {
 			return refused;
 		}
-		const principalKey = (await db_get_share_principal_keys(ctx, reader))[args.principalIndex];
+		const principalKey = (await files_tree_db_get_share_principal_keys(ctx, reader))[args.principalIndex];
 		if (!principalKey) {
 			return refused;
 		}
@@ -1567,13 +1572,16 @@ export const list_tree_shared_roots = query({
 });
 
 /**
- * The area picker of the Archive view: every active restricted folder the caller can open, by
+ * The area picker of the Trash view: every active restricted folder the caller can open, by
  * `treePath`. The open part of the workspace is the picker's first choice and has no row.
  *
  * One page of one principal, like `list_tree_children_shared`. Members read their share rows. The
  * owner can open every folder, so the owner reads all restricted folders on principal 0 and gets
- * empty pages for 1 to 3. The client merges the streams by `treePath` and drops a node it already
- * has. Saved rows only. A guest has no Archive view and gets nothing.
+ * empty pages for 1 to 4. The client merges the streams by `treePath` and drops a node it already
+ * has. Saved rows only. A guest has no Trash view and gets nothing.
+ *
+ * A plugin grant to the member carries their membership lifetime. Principal 4 reads only the grants
+ * of the live lifetime, so the grants of an old lifetime are never read.
  */
 export const list_archive_areas = query({
 	args: {
@@ -1581,9 +1589,9 @@ export const list_archive_areas = query({
 		savedStream: files_saved_stream_validator,
 		/**
 		 * 0 reads the member's own shares, 1 and 2 the shares of their roles, 3 the folders everyone in
-		 * the workspace can view.
+		 * the workspace can view, and 4 the member's plugin grants of their live membership lifetime.
 		 */
-		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
+		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3), v.literal(4)),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(v.object(tree_open_row_fields)),
@@ -1606,7 +1614,9 @@ export const list_archive_areas = query({
 				saved.tag ? TREE_COHORT_RESTRICTED_OWNER_SPLIT_GUARD : TREE_RESTRICTED_SPLIT_GUARD,
 			);
 			const result = await saved.queries
-				.by_archive_restricted_tree((q) => q.eq("archiveOperationId", null).eq("isRestrictedScopeRoot", true))
+				.by_archive_restricted_kind_tree((q) =>
+					q.eq("archiveOperationId", null).eq("isRestrictedScopeRoot", true).eq("kind", "folder"),
+				)
 				.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, guard) });
 			if (files_tree_db_page_needs_split(result, guard)) {
 				return files_tree_db_page_split_required(result);
@@ -1622,16 +1632,29 @@ export const list_archive_areas = query({
 		}
 
 		// The server builds the key from the caller only, never from the client.
-		const principalKey = (await db_get_share_principal_keys(ctx, reader))[args.principalIndex];
+		const principalKey = (await files_tree_db_get_share_principal_keys(ctx, reader))[
+			args.principalIndex === 4 ? 0 : args.principalIndex
+		];
 		if (!principalKey) {
 			return refused;
+		}
+		let lifetime: number | null = null;
+		if (args.principalIndex === 4) {
+			const live = await organizations_membership_lifetimes_db_get(ctx, {
+				workspaceId: reader.membership.workspaceId,
+				userId: reader.userAuth.id,
+			});
+			if (!live?.active) {
+				return refused;
+			}
+			lifetime = live.lifetime;
 		}
 		const { tag } = saved;
 		const guard = await db_shrink_split_guard(ctx, TREE_SHARE_PAGE_MAX_ITEMS);
 
 		const result = await ctx.db
 			.query("files_share_rows")
-			.withIndex("by_org_ws_principal_restricted_archive_treePath", (q) =>
+			.withIndex("by_org_ws_principal_restricted_kind_archive_lifetime_treePath", (q) =>
 				q
 					.eq("organizationId", reader.membership.organizationId)
 					.eq("workspaceId", reader.membership.workspaceId)
@@ -1639,7 +1662,9 @@ export const list_archive_areas = query({
 					.eq("moveView.cohortId", tag?.cohortId)
 					.eq("moveView.view", tag?.view)
 					.eq("isRestrictedScopeRoot", true)
-					.eq("archiveOperationId", null),
+					.eq("kind", "folder")
+					.eq("archiveOperationId", null)
+					.eq("externalPluginMembershipLifetime", lifetime),
 			)
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, guard) });
 
@@ -1654,23 +1679,19 @@ export const list_archive_areas = query({
 });
 
 /**
- * The Archive view: the archived top items of one area, newest archive operation first, then by
- * `treePath`. A top item is an archived item whose parent is the root, active, or archived by
- * another operation. Items inside it from the same delete do not show separately.
+ * The Trash view: the Trash entries of one area, newest delete first, then by the path each item had
+ * when it moved to Trash. An entry is an item in Trash on its own. Items inside it from the same
+ * delete do not show separately.
  *
  * `area` is the open part of the workspace (null) or one restricted folder the caller can open. A
- * restricted folder lists in the area of its parent, locked when the caller cannot open it. Saved
- * rows only, from one saved stream. The client merges the normal and the Move stream.
+ * restricted folder lists in the area of its parent, locked when the caller cannot open it.
  *
- * Each saved stream has one index of top items for this area. It returns every indexed item,
- * including separate items with the same path. Reads grow with the items returned, even when a
- * folder holds many trashed children. Native cursors keep the full order through equal paths.
- * Parent changes may need bounded child repairs. The view pauses until those repairs finish.
+ * One index range, so reads grow with the rows returned at any Trash size. Each row reads its node in
+ * the caller's current saved view.
  */
 export const list_archived_tops = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		savedStream: files_saved_stream_validator,
 		area: v.union(v.null(), v.id("files_nodes")),
 		paginationOpts: paginationOptsValidator,
 	},
@@ -1679,64 +1700,51 @@ export const list_archived_tops = query({
 		const refused = { page: [], isDone: true, continueCursor: "" };
 
 		const reader = await files_nodes_db_get_tree_reader(ctx, { membershipId: args.membershipId });
-		// A guest has no Archive view.
+		// A guest has no Trash view.
 		if (!reader || !reader.hasWorkspaceRead) {
 			return refused;
 		}
 		const { userAuth, membership } = reader;
-		if (
-			await ctx.db
-				.query("files_trash_top_jobs")
-				.withIndex("by_organization_workspace", (q) =>
-					q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
-				)
-				.first()
-		) {
-			return refused;
-		}
 		if (args.area !== null) {
 			const areaNode = await files_tree_db_get_readable_node(ctx, { reader, nodeId: args.area });
 			if (areaNode?.restrictedScopeNodeId !== args.area) {
 				return refused;
 			}
 		}
-		const saved = await files_saved_stream_db_create(ctx.db, membership, args.savedStream);
 
 		const guard = await db_shrink_split_guard(ctx, ARCHIVED_TOPS_SPLIT_GUARD);
-		const result = await saved.queries.by_archive_top_scope(args.area).paginate({
-			...args.paginationOpts,
-			numItems: Math.min(args.paginationOpts.numItems, ARCHIVED_TOPS_PAGE_MAX_ITEMS, guard),
-		});
+		const result = await ctx.db
+			.query("files_trash_entries")
+			.withIndex("by_org_ws_area_order_path", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("area", args.area),
+			)
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(args.paginationOpts.numItems, ARCHIVED_TOPS_PAGE_MAX_ITEMS, guard),
+			});
 		if (files_tree_db_page_needs_split(result, guard)) {
 			return files_tree_db_page_split_required(result);
 		}
 
+		// Entries follow the stored nodes. While a Move runs, the current view can already show a moved
+		// node out of Trash or in another area. Its Move cleanup fixes the entry. Until then, leave the row
+		// out. Only nodes of the running Move can differ, so this drops few rows.
+		const nodes = await Promise.all(
+			result.page.map((entry) => files_saved_placement_db_get_node(ctx.db, entry.nodeId)),
+		);
 		const rows = await files_tree_db_get_list_rows(ctx, {
 			userAuth,
 			membership,
 			checker: reader.checker,
 			folder: { restrictedScopeNodeId: args.area, extendedScopeNodeId: null },
-			fileNodes: await saved.read_nodes(result.page),
+			fileNodes: nodes.filter(
+				(node): node is Doc<"files_nodes"> =>
+					node !== null && node.archiveOperationId !== null && files_trash_entries_area(node) === args.area,
+			),
 		});
 		return { ...result, page: rows };
-	},
-});
-
-/**
- * Trash pauses for the whole workspace while any top repair is unfinished.
- */
-export const get_archived_tops_ready = query({
-	args: { membershipId: v.id("organizations_workspaces_users") },
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		const reader = await files_nodes_db_get_tree_reader(ctx, args);
-		if (!reader || !reader.hasWorkspaceRead) return true;
-		const { organizationId, workspaceId } = reader.membership;
-		return !(await ctx.db
-			.query("files_trash_top_jobs")
-			.withIndex("by_organization_workspace", (q) =>
-				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
-			)
-			.first());
 	},
 });

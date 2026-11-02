@@ -118,13 +118,14 @@ API or plugin door can do it yet.
   dialog lists the kept names under "Not deleted (N)".
 - Deleting a stored asset takes its `storedFileBytes` off the workspace `stored_file_bytes` counter.
   Assets settled before that field existed give nothing back. Credits are never refunded.
-- Empty Trash deletes every top item trashed in the area strictly before the request's millisecond
+- Empty Trash deletes every Trash entry of the area trashed strictly before the request's millisecond
   (`emptyArchive.cutoff`, a `t<ms>` prefix of the operation id). It skips ids with no time, except
   plain old UUIDs, and skips items whose Trash job was still running or ended after the start. It
-  reads the top-item index with native pages and keeps only counts (`foundCount`, `deletedCount`,
-  `keptCount`), never a list. Its cursor is empty before the first page and `done` after the last.
+  reads the Trash entries index from the cutoff on, with native pages, and keeps only counts
+  (`foundCount`, `deletedCount`, `keptCount`), never a list. Its cursor is empty before the first
+  page and `done` after the last.
   Only one Empty Trash runs per workspace. It refuses while a Move view is selected. Its worker
-  waits for Move cleanup and `files_trash_top_jobs` before advancing its cursor.
+  waits for Move cleanup before advancing its cursor.
 - Workspace deletion force-finishes a running purge job. A member's account drain skips it; the job
   ends by itself on the lost membership.
 
@@ -147,6 +148,10 @@ API or plugin door can do it yet.
   manifest is being copied. All user-deletion paths wait before removing memberships or the user.
 - Transfer cleanup drains selection pages and items before its holds and Activity. Completed
   copies in retained workspaces stay.
+- `db_drain_user_archive_runs_batch`: deletes the user's Trash and restore jobs one at a time. It
+  leaves an ordinary move to Trash that stamps items and a Delete permanently job to end by
+  themselves. It stops a restore or forced move to Trash that already changed items and leaves it
+  too: the job first gives Trash entries to the items it left in Trash, then ends.
 - Move and Save cleanup first wait for their active cohort. Unpublished work aborts; published
   work finishes physical repair. Only then may cleanup release parent holds or delete history.
   Completed cohort docs stay until parent history is gone and delayed storage resources settle.
@@ -306,7 +311,8 @@ Current purge coverage includes:
 - `files_write_policy_runs` (protection jobs) right after review runs, one job per pass through `files_write_policy_runs_db_delete_run_batch`. It stops the job first, so a scheduled step writes nothing.
 - `files_archive_runs` (Trash and restore jobs) right after protection jobs, one job per pass through `files_archive_runs_db_delete_run_batch`. It stops the job first, so a scheduled step writes nothing. Then it deletes the job's `files_archive_run_items` rows (API Restore changes and forced delete refusals), 50 per pass, before the Activity and the run. Workspace deletion can stop any job because its files are being purged too. People can stop forced moves to Trash; ordinary moves to Trash have no Stop. Stopping a restore job also ends the queued jobs of the same Restore request. Ending a job deletes its `files_subtree_ops` op, which can start another waiting op; a later pass stops and deletes that one too.
 - `files_subtree_ops` of kind `move` or `scope` right after the Trash runs, one op per pass. These ops have no run doc, so the purge deletes the op's Activity and then the op with `files_subtree_ops_db_delete`. The files it walks go away with the workspace. Move to Trash, restore, and copy ops are deleted with their runs.
-- `files_trash_top_jobs` before path cleanup, one job per pass. A later callback sees the missing job and stops.
+- `files_trash_top_jobs` before path cleanup, one job per pass. The table is unused and goes away after the Trash entries cutover.
+- `files_trash_entries` after the last `files_share_rows` pass. The write flush deletes each entry with its node; this pass deletes the rest.
 - `files_browser_sessions` with their `files_browser_download_saves` docs. Every session delete, in every path, goes through the private `browser_db_delete_session` helper in `files_browser.ts`, which deletes the session's download saves first (at most 20 per session). The saved download files are ordinary Files nodes and follow Files deletion, not the session.
 - `files_browser_profiles` (saved browser logins) after browser sessions. Every delete, here and in every other path, goes through `files_browser_db_delete_profile`. It writes a `files_browser_profile_wipes` doc in the same transaction, and the wipe job asks the runner to delete the stored cookie bytes. Wipe docs outlive user and workspace deletion on purpose: they hold only ids and retry state, and they leave when the runner confirms the wipe. User finalization and the data-only reset (`hard_delete_user_data`) drain the user's profiles the same way through `files_browser_db_delete_user_batch`.
   - The wipe job is `files_browser.process_browser_profile_wipes` (20 wipes per run). Each deletion schedules it at once, and the `process browser profile wipes` cron runs it every 5 minutes. A failed wipe retries after 1 minute, doubling up to 6 hours, with no attempt limit (`finish_browser_profile_wipe`). The hourly `cleanup_expired_browser_docs` also deletes profiles unused for 90 days. As a backstop, the runner deletes stored profile bytes by itself 100 days after the last save.

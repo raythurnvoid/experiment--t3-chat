@@ -155,7 +155,6 @@ vi.mock("convex/react", async (importOriginal) => {
 			if (getFunctionName(query) === "files_tree:get_workspace_move_view")
 				return { cohortId: null, view: null, generation: 0, searchGeneration: 0 };
 			if (getFunctionName(query) === "files_share_links:list_workspace_links") return links;
-			if (getFunctionName(query) === "files_tree:get_archived_tops_ready") return true;
 			if (getFunctionName(query) === "users:get_anagraphic") return null;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
 		},

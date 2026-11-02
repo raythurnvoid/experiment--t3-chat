@@ -8438,7 +8438,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.membership).toBeNull();
 	});
 
-	test("drains an archive run before memberships", async () => {
+	test("stops a restore before memberships, and the restore ends on its own", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -8454,13 +8454,16 @@ describe("finalize_user_deletion_data", () => {
 		});
 
 		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+		// The drain stops the restore and leaves it. It gives its Trash entries, then ends on its own.
+		// History cleanup deletes it later, like a Delete permanently job.
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
 		const after = await t.run(async (ctx) => ({
 			run: await ctx.db.get("files_archive_runs", run.runId),
 			activity: await ctx.db.get("activities", run.activityId),
 			membership: await ctx.db.get("organizations_workspaces_users", run.membershipId),
 		}));
-		expect(after.run).toBeNull();
-		expect(after.activity).toBeNull();
+		expect(after.run?.active).toBe(false);
+		expect(after.activity?.status).toBe("canceled");
 		expect(after.membership).toBeNull();
 	});
 

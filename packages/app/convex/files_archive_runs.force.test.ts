@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, internal } from "./_generated/api.js";
+import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
@@ -54,6 +54,20 @@ async function force_archive(f: Fixture, credential: string, path: string) {
 	if (!body.jobId) throw new Error("Expected an archive job");
 	const activity = await read_activity(f, body.jobId);
 	return { activityId: body.jobId, runId: activity.source.id as Id<"files_archive_runs"> };
+}
+
+async function list_trash(f: Fixture) {
+	return await f.asOwner.query(api.files_tree.list_archived_tops, {
+		membershipId: f.db.membershipId,
+		area: null,
+		paginationOpts: { cursor: null, numItems: 200 },
+	});
+}
+
+async function read_entry_node_ids(f: Fixture) {
+	return await f.t.run(async (ctx) =>
+		(await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId),
+	);
 }
 
 describe("archive parent child list", () => {
@@ -125,38 +139,20 @@ describe("archive parent child list", () => {
 	});
 });
 
-describe("Trash top repairs", () => {
-	test.each(["normal", "forced"] as const)("%s folder archive repairs tops before publishing Trash", async (mode) => {
+describe("Trash entries", () => {
+	test.each(["normal", "forced"] as const)("%s folder archive gives the folder the only entry", async (mode) => {
 		const f = await fixture();
-		const tree = await seed_tree(f, { name: "repair-tops", folderCount: 3, filesPerFolder: 70 });
+		const tree = await seed_tree(f, { name: "entry-tree", folderCount: 3, filesPerFolder: 70 });
 		if (mode === "forced") {
 			const credential = await key(f);
-			await run_to_end(f, await force_archive(f, credential.credential, "/repair-tops"));
+			await run_to_end(f, await force_archive(f, credential.credential, "/entry-tree"));
 		} else await archive_to_end(f, tree.topId);
-		const jobs = await f.t.run((ctx) => ctx.db.query("files_trash_top_jobs").collect());
-		if (mode === "forced") expect(jobs.length, "children stamped before their parent need repairs").toBeGreaterThan(0);
-		else expect(jobs.length, "a normal parent-first archive needs no repair").toBe(0);
-		expect(jobs.length).toBeLessThanOrEqual(tree.folderIds.length + 1);
-		expect(await f.asOwner.query(api.files_tree.get_archived_tops_ready, { membershipId: f.db.membershipId })).toBe(
-			jobs.length === 0,
-		);
-		for (let pass = 0; pass < 20; pass++) {
-			const job = await f.t.run((ctx) => ctx.db.query("files_trash_top_jobs").first());
-			if (!job) break;
-			await f.t.mutation(internal.files_trash_tops.advance, { jobId: job._id, step: job.step });
-		}
-		expect(await f.asOwner.query(api.files_tree.get_archived_tops_ready, { membershipId: f.db.membershipId })).toBe(
-			true,
-		);
-		const page = await f.asOwner.query(api.files_tree.list_archived_tops, {
-			membershipId: f.db.membershipId,
-			savedStream: { kind: "normal", generation: 0 },
-			area: null,
-			paginationOpts: { cursor: null, numItems: 50 },
-		});
+		// A forced archive stamps children before their folder. The folder's stamp removes their entries.
+		expect(await read_entry_node_ids(f)).toEqual([tree.topId]);
+		const page = await list_trash(f);
 		expect(
 			page.page.map((node) => node._id),
-			"only the archived parent is a top item",
+			"only the archived parent is listed",
 		).toEqual([tree.topId]);
 		expect(page.isDone).toBe(true);
 	});
@@ -344,6 +340,14 @@ describe("forced archive", () => {
 			expect((await read_node(f, tree.topId)).archiveOperationId).toBeNull();
 			expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).toBeNull();
 			expect((await read_node(f, tree.fileIds.at(-1)!)).archiveOperationId).toBeNull();
+
+			// The folders stay active, so each file the job stamped is in Trash on its own.
+			const stampedIds: Id<"files_nodes">[] = [];
+			for (const fileId of tree.fileIds)
+				if ((await read_node(f, fileId)).archiveOperationId !== null) stampedIds.push(fileId);
+			expect(stampedIds.length).toBe(before);
+			expect((await read_entry_node_ids(f)).toSorted()).toEqual(stampedIds.toSorted());
+			expect((await list_trash(f)).page.map((node) => node._id).toSorted()).toEqual(stampedIds.toSorted());
 		},
 	);
 });

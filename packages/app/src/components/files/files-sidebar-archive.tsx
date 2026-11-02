@@ -44,11 +44,7 @@ import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id 
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_time } from "@/lib/date.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
-import {
-	files_archive_operation_id_time,
-	files_derive_tree_path_for_file_node,
-	type files_SavedStream,
-} from "@/lib/files.ts";
+import { files_archive_operation_id_time, type files_SavedStream } from "@/lib/files.ts";
 import { path_name_of } from "@/lib/paths.ts";
 import { cn, copy_to_clipboard } from "@/lib/utils.ts";
 
@@ -133,8 +129,8 @@ type FilesSidebarArchiveRow_Props = {
 };
 
 /**
- * One archived top item. A locked row is an item in this area that the person cannot open: it shows
- * only its name and dates, and its menu only copies its path.
+ * One Trash entry: an item in Trash on its own. A locked row is an item in this area that the person
+ * cannot open: it shows only its name and dates, and its menu only copies its path.
  */
 const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: FilesSidebarArchiveRow_Props) {
 	const { row, isCurrent, canManageArea, canRestoreItem, onOpen, onRestore, onDelete } = props;
@@ -298,7 +294,7 @@ type FilesSidebarArchive_Props = {
 };
 
 /**
- * The Archive view: the archived top items of one area, newest first, in place of the tree. An area
+ * The Trash view: the Trash entries of one area, newest delete first, in place of the tree. An area
  * is the open part of the workspace or one restricted folder the person can open, like one Trash per
  * shared drive in Google Drive. Escape, when no menu or dialog is open, goes back to the files.
  */
@@ -306,7 +302,6 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	const { selectedNodeId, canRestoreItem, onOpen, onRestore, onDeleted, onExit } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const view = useFilesSavedView(membershipId);
-	const topsReady = useQuery(app_convex_api.files_tree.get_archived_tops_ready, { membershipId });
 	const rootRef = useRef<HTMLElement | null>(null);
 	const backButtonRef = useRef<HTMLButtonElement | null>(null);
 	const emptyButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -323,9 +318,9 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	// The row ids when Show more was clicked, until its page has loaded.
 	const [loadMoreFromIds, setLoadMoreFromIds] = useState<Set<string> | null>(null);
 
-	// The areas: one stream per principal (the member, two roles, everyone), each in the normal and the
-	// Move saved stream, like the "Shared with you" group.
-	const areaArgs = (principalIndex: 0 | 1 | 2 | 3, savedStream: files_SavedStream | null) =>
+	// The areas: one stream per principal (the member, two roles, everyone, the member's plugin
+	// grants), each in the normal and the Move saved stream, like the "Shared with you" group.
+	const areaArgs = (principalIndex: 0 | 1 | 2 | 3 | 4, savedStream: files_SavedStream | null) =>
 		savedStream ? { membershipId, savedStream, principalIndex } : ("skip" as const);
 	const areaOptions = { initialNumItems: FilesSidebarArchive_PAGE_SIZE };
 	const areaNormal = [
@@ -333,12 +328,14 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(1, view.normal), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(2, view.normal), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(3, view.normal), areaOptions),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(4, view.normal), areaOptions),
 	];
 	const areaCohort = [
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(0, view.cohort), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(1, view.cohort), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(2, view.cohort), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(3, view.cohort), areaOptions),
+		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(4, view.cohort), areaOptions),
 	];
 	const areas = merge_streams<FilesSidebarArchive_AreaRow>({
 		streams: view.normal ? [...areaNormal, ...(view.cohort ? areaCohort : [])] : [],
@@ -353,38 +350,26 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 			: chosenArea;
 	const areaLabel = area === null ? "Workspace" : path_name_of(area.path);
 
-	const topArgs = (savedStream: files_SavedStream | null) =>
-		savedStream && topsReady === true ? { membershipId, savedStream, area: area?.id ?? null } : ("skip" as const);
-	const topOptions = { initialNumItems: FilesSidebarArchive_PAGE_SIZE };
-	const topNormal = useFilesPaginatedQuery(
-		app_convex_api.files_tree.list_archived_tops,
-		topArgs(view.normal),
-		topOptions,
-	);
-	const topCohort = useFilesPaginatedQuery(
-		app_convex_api.files_tree.list_archived_tops,
-		topArgs(view.cohort),
-		topOptions,
-	);
-	// Destructure, so the React Compiler does not treat the rows as changed by a later `loadMore` call.
+	// The Trash entries of the area are one stream in the server order. Destructure, so the React
+	// Compiler does not treat the rows as changed by a later `loadMore` call.
 	const {
-		rows: topRows,
-		status: topStatus,
-		loadMore: loadMoreTops,
-	} = merge_streams<FilesSidebarArchive_TopRow>({
-		streams: view.normal ? [topNormal, ...(view.cohort ? [topCohort] : [])] : [],
-		isViewLoading: view.loading || topsReady !== true,
-		// The server order: newest archive operation first, then by `treePath`. A locked row has no
-		// `treePath`, so build it from the path the same way.
-		compare: (a, b) =>
-			compareValues(b.archiveOperationId ?? "", a.archiveOperationId ?? "") ||
-			compareValues(
-				a.locked ? files_derive_tree_path_for_file_node(a.path, a.kind) : a.treePath,
-				b.locked ? files_derive_tree_path_for_file_node(b.path, b.kind) : b.treePath,
-			) ||
-			compareValues(a._creationTime, b._creationTime) ||
-			compareValues(a._id, b._id),
-	});
+		results: topRows,
+		status: topPaginationStatus,
+		loadMore: loadMoreTopsPage,
+	} = useFilesPaginatedQuery(
+		app_convex_api.files_tree.list_archived_tops,
+		{ membershipId, area: area?.id ?? null },
+		{ initialNumItems: FilesSidebarArchive_PAGE_SIZE },
+	);
+	const topStatus =
+		topPaginationStatus === "LoadingFirstPage"
+			? ("loading" as const)
+			: topPaginationStatus === "LoadingMore"
+				? ("loading_more" as const)
+				: topPaginationStatus === "Exhausted"
+					? ("done" as const)
+					: ("more" as const);
+	const loadMoreTops = () => loadMoreTopsPage(FilesSidebarArchive_PAGE_SIZE);
 
 	// Delete permanently needs Can manage, like the server: on the workspace for the open part, on the
 	// area for a restricted folder, and on the folder itself for a restricted folder listed here.
@@ -495,13 +480,11 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	}, [purgeRequest]);
 
 	const statusText =
-		topsReady === false
-			? "Updating Trash…"
-			: topStatus === "loading"
-				? "Loading Trash…"
-				: topRows.length === 0 && topStatus === "done"
-					? "Trash is empty."
-					: null;
+		topStatus === "loading"
+			? "Loading Trash…"
+			: topRows.length === 0 && topStatus === "done"
+				? "Trash is empty."
+				: null;
 
 	return (
 		<section
@@ -579,7 +562,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 						ref={emptyButtonRef}
 						type="button"
 						variant="outline_destructive"
-						disabled={topsReady !== true || !canManageArea || (topStatus === "done" && topRows.length === 0)}
+						disabled={!canManageArea || (topStatus === "done" && topRows.length === 0)}
 						onClick={handleEmptyArchiveClick}
 					>
 						Empty Trash…

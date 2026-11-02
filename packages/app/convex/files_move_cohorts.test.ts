@@ -829,7 +829,7 @@ describe("Move cohort and folder-wide jobs", () => {
 		expect(await w.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
 	}, 120_000);
 
-	test("a cleaned child stays out of Trash tops while its parent still uses the published Move view", async () => {
+	test("a cleaned child stays out of the Trash list while its parent still uses the published Move view", async () => {
 		const w = await transfer_workspace();
 		const parent = await w.folder("/archive");
 		const child = await w.folder("/archive/child");
@@ -922,34 +922,18 @@ describe("Move cohort and folder-wide jobs", () => {
 				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
-		const view = (await w.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: w.db.membershipId }))!;
-		const normal = await w.asUser.query(api.files_tree.list_archived_tops, {
+		const during = await w.asUser.query(api.files_tree.list_archived_tops, {
 			membershipId: w.db.membershipId,
-			savedStream: { kind: "normal", generation: view.generation },
-			area: null,
-			paginationOpts: { numItems: 10, cursor: null },
-		});
-		const selected = await w.asUser.query(api.files_tree.list_archived_tops, {
-			membershipId: w.db.membershipId,
-			savedStream: { kind: "cohort", generation: view.generation, cohortId, view: "after" },
 			area: null,
 			paginationOpts: { numItems: 10, cursor: null },
 		});
 		expect(
-			selected.page.map((row) => row._id),
-			"the selected Move stream shows the parent only",
-		).toEqual([parent]);
-		expect(
-			normal.page.map((row) => row._id),
-			"a cleaned child stays out of Trash tops while its parent is held",
+			during.page.map((row) => row._id),
+			"a cleaned child stays out of Trash while its parent is held",
 		).toEqual([]);
 		await finish_cohort({ t: w.t, runId, cohortId });
-		const finalView = (await w.asUser.query(api.files_tree.get_workspace_move_view, {
-			membershipId: w.db.membershipId,
-		}))!;
 		const final = await w.asUser.query(api.files_tree.list_archived_tops, {
 			membershipId: w.db.membershipId,
-			savedStream: { kind: "normal", generation: finalView.generation },
 			area: null,
 			paginationOpts: { numItems: 10, cursor: null },
 		});

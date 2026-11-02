@@ -19,6 +19,7 @@ import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./file
 import { test_mocks, test_run_with_flush } from "./setup.test.ts";
 import { files_archive_operation_id_new } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -328,8 +329,8 @@ describe("files_nodes.purge_nodes", () => {
 	test("Empty Trash deletes only what was archived before it started, in its own area", async () => {
 		const f = await fixture();
 		const insert_archived = (fields: { name: string; archiveOperationId: string }) =>
-			test_run_with_flush(f.t, (ctx) =>
-				ctx.db.insert("files_nodes", {
+			test_run_with_flush(f.t, async (ctx) => {
+				const nodeId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
@@ -343,9 +344,10 @@ describe("files_nodes.purge_nodes", () => {
 					treePath: `/${fields.name}`,
 					pathDepth: 1,
 					archiveOperationId: fields.archiveOperationId,
-				}),
-			);
-		// More top items than one page, each under its own older operation.
+				});
+				await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", nodeId))!);
+			});
+		// More Trash entries than one page, each under its own older operation.
 		for (let index = 0; index < 55; index++) {
 			await insert_archived({
 				name: `old-${String(index).padStart(2, "0")}.md`,
@@ -373,7 +375,7 @@ describe("files_nodes.purge_nodes", () => {
 				parentScopeNodeId: null,
 			});
 			await ctx.db.patch("files_nodes", restrictedId, { restrictedScopeNodeId: restrictedId });
-			await ctx.db.insert("files_nodes", {
+			const innerId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
@@ -389,6 +391,7 @@ describe("files_nodes.purge_nodes", () => {
 				restrictedScopeNodeId: restrictedId,
 				archiveOperationId: files_archive_operation_id_new(Date.now() - 10_000),
 			});
+			await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", innerId))!);
 		});
 		// An archive job that still stamps the items inside its folder.
 		const tree = await seed_tree(f, { name: "stamping", folderCount: 1, filesPerFolder: 60 });

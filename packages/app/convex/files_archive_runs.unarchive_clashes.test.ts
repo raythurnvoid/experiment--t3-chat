@@ -418,6 +418,35 @@ describe("unarchive_nodes", () => {
 				path: "/inside/d1/f080.md",
 			});
 			expect((await read_node(f, occupantIds[1]!)).archiveOperationId).not.toBeNull();
+			// Both stay in Trash on their own, so the Trash list shows them.
+			const entryNodeIds = await f.t.run(async (ctx) =>
+				(await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId),
+			);
+			expect(entryNodeIds.toSorted()).toEqual([tree.fileIds[150]!, occupantIds[1]!].toSorted());
+		});
+
+		test("Stop on a clash inside a restored folder gives Trash entries to the items left there", async () => {
+			const f = await fixture();
+			const { tree, job } = await seed_clash_inside(f, ["f050.md"]);
+
+			expect(
+				await f.asOwner.mutation(api.activities.request_stop, {
+					membershipId: f.db.membershipId,
+					activityId: job.activityId,
+				}),
+			).toEqual({ _yay: null });
+			expect((await read_activity(f, job.activityId)).status).toBe("stopping");
+			expect((await run_to_end(f, job)).activity.status).toBe("canceled");
+
+			// Their folder is back, so each item the job did not reach is in Trash on its own.
+			const leftIds: Id<"files_nodes">[] = [];
+			for (const fileId of tree.fileIds)
+				if ((await read_node(f, fileId)).archiveOperationId !== null) leftIds.push(fileId);
+			expect(leftIds.length).toBeGreaterThan(0);
+			const entryNodeIds = await f.t.run(async (ctx) =>
+				(await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId),
+			);
+			expect(entryNodeIds.toSorted()).toEqual(leftIds.toSorted());
 		});
 	});
 });

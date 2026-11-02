@@ -548,6 +548,7 @@ const files_saved_placement_fields = {
 	pathDepth: v.number(),
 	lowercaseExtension: v.union(v.string(), v.null()),
 	archiveOperationId: v.union(v.string(), v.null()),
+	// Old Trash top fields. No code sets or reads them for Trash now. Deploy B removes them.
 	archiveTopScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 	archiveTopOrder: v.optional(v.string()),
 	// Missing uses the normal Restore path limit.
@@ -2929,6 +2930,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
 		.index("by_cohort_view_node", ["cohortId", "view", "nodeId"])
 		.index("by_view_archive_tree", ["cohortId", "view", "archiveOperationId", "treePath"])
+		// Unused since Trash entries. Deploy B removes it.
 		.index("by_view_archiveTopScope_archiveTopOrder_treePath", [
 			"cohortId",
 			"view",
@@ -3151,6 +3153,17 @@ const app_convex_schema = defineSchema({
 			"view",
 			"archiveOperationId",
 			"isRestrictedScopeRoot",
+			"treePath",
+			"nodeCreationTime",
+			"nodeId",
+		])
+		// The Move view of `files_nodes.by_org_ws_archive_restricted_kind_tree`.
+		.index("by_view_archive_restricted_kind_tree", [
+			"cohortId",
+			"view",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"kind",
 			"treePath",
 			"nodeCreationTime",
 			"nodeId",
@@ -4723,15 +4736,19 @@ const app_convex_schema = defineSchema({
 			"sortName",
 			"name",
 		])
-		// The Archive view's area picker: the restricted folders one principal can open, by path.
-		.index("by_org_ws_principal_restricted_archive_treePath", [
+		// The Trash area picker: the restricted folders one principal can open, by path. The plugin
+		// membership lifetime comes before the path, so a read of the live lifetime never reads the grants
+		// of an old one.
+		.index("by_org_ws_principal_restricted_kind_archive_lifetime_treePath", [
 			"organizationId",
 			"workspaceId",
 			"principalKey",
 			"moveView.cohortId",
 			"moveView.view",
 			"isRestrictedScopeRoot",
+			"kind",
 			"archiveOperationId",
+			"externalPluginMembershipLifetime",
 			"treePath",
 		])
 		.index("by_node", ["nodeId", "moveView.cohortId", "moveView.view"])
@@ -5321,7 +5338,7 @@ const app_convex_schema = defineSchema({
 		 * (`files_archive_operation_id_new`). An older id is a plain UUID.
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
-		// Present only for a Trash top. The area and reverse delete key make its list one index range.
+		// Old Trash top fields. No code sets or reads them for Trash now. Deploy B removes them.
 		archiveTopScopeNodeId: v.optional(v.union(v.id("files_nodes"), v.null())),
 		archiveTopOrder: v.optional(v.string()),
 		/**
@@ -5529,6 +5546,7 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"treePath",
 		])
+		// Unused since Trash entries. Deploy B removes it.
 		.index("by_org_ws_cohort_archiveTopScope_archiveTopOrder_treePath", [
 			"organizationId",
 			"workspaceId",
@@ -5620,6 +5638,16 @@ const app_convex_schema = defineSchema({
 			"moveCohortId",
 			"archiveOperationId",
 			"isRestrictedScopeRoot",
+			"treePath",
+		])
+		// The owner's Trash areas: the restricted folders by path, without the restricted files.
+		.index("by_org_ws_archive_restricted_kind_tree", [
+			"organizationId",
+			"workspaceId",
+			"moveCohortId",
+			"archiveOperationId",
+			"isRestrictedScopeRoot",
+			"kind",
 			"treePath",
 		])
 		.index("by_organization_workspace_asset", ["organizationId", "workspaceId", "assetId"])
@@ -6975,11 +7003,11 @@ const app_convex_schema = defineSchema({
 		 */
 		longPathOperationId: v.optional(v.string()),
 		/**
-		 * Set only on an Empty Trash job: a purge of every top item of one area that was archived before
+		 * Set only on an Empty Trash job: a purge of every Trash entry of one area that was archived before
 		 * the job started. `area` is null for the open part of the workspace. `cutoff` is
 		 * `files_archive_operation_id_cutoff` of the start time; only operation ids below it are deleted.
-		 * `cursor` is a native top-index cursor: empty before the first page, `done` after the last. The
-		 * counts are of top items: found so far, deleted, and kept.
+		 * `cursor` is a native entry-index cursor: empty before the first page, `done` after the last.
+		 * The counts are of entries: found so far, deleted, and kept.
 		 */
 		emptyArchive: v.optional(
 			v.object({
@@ -6989,6 +7017,23 @@ const app_convex_schema = defineSchema({
 				foundCount: v.number(),
 				deletedCount: v.number(),
 				keptCount: v.number(),
+			}),
+		),
+		/**
+		 * Set while a restore or forced archive that ended early gives Trash entries to the items it left
+		 * in Trash, so none of them is missing from the Trash list. It keeps the status and error the job
+		 * reports when that is done. A restore reads each selected root's items of its operation
+		 * (`rootIndex`, and a native page `cursor`), and starts again when a Move changed paths
+		 * (`generation`). A forced archive gives entries inside each folder still in its queue.
+		 */
+		ending: v.optional(
+			v.object({
+				status: v.union(v.literal("failed"), v.literal("canceled"), v.literal("timed_out")),
+				errorMessage: v.union(v.string(), v.null()),
+				errorCode: v.string(),
+				rootIndex: v.number(),
+				cursor: v.union(v.string(), v.null()),
+				generation: v.number(),
 			}),
 		),
 		/**
@@ -7147,8 +7192,38 @@ const app_convex_schema = defineSchema({
 		.index("by_op_treePath", ["opId", "treePath"]),
 
 	/**
-	 * Repair direct children's Trash top fields after a parent changes its delete id.
-	 * Each job pages one delete. Trash pauses for the workspace until all jobs finish.
+	 * One doc per item that is in Trash on its own. Items inside a deleted folder with the same delete
+	 * id have none. The steps that write it are listed in the Trash entries principle of the
+	 * files-explorer-tree skill. The Trash list of one area is one range of `by_org_ws_area_order_path`.
+	 *
+	 * The step that decides it inserts the doc (`files_trash_entries_db_insert` in
+	 * `server/files-trash-entries.ts`). The overlay flush and Move cleanup delete it when its node
+	 * leaves Trash or is deleted, and keep `area` and the delete id in step with the node.
+	 */
+	files_trash_entries: defineTable({
+		organizationId: files_committed_index_fields.organizationId,
+		workspaceId: files_committed_index_fields.workspaceId,
+		nodeId: v.id("files_nodes"),
+		archiveOperationId: v.string(),
+		/**
+		 * The area the item lists in: the parent's area for a restricted folder, else the item's own.
+		 * Null for the open part of the workspace.
+		 */
+		area: v.union(v.id("files_nodes"), v.null()),
+		/**
+		 * The delete id with each char mapped to `127 - code`, so ascending order is newest delete first.
+		 */
+		order: v.string(),
+		/**
+		 * The item's path when it first moved to Trash. It never changes, and Restore lands the item there.
+		 */
+		archivedPath: v.string(),
+	})
+		.index("by_node", ["nodeId"])
+		.index("by_org_ws_area_order_path", ["organizationId", "workspaceId", "area", "order", "archivedPath"]),
+
+	/**
+	 * Unused since Trash entries. Only data deletion still clears it. Deploy B removes the table.
 	 */
 	files_trash_top_jobs: defineTable({
 		organizationId: v.id("organizations"),
@@ -7253,6 +7328,12 @@ const app_convex_schema = defineSchema({
 				rootTreePath: v.string(),
 				parentId: v.union(v.id("files_nodes"), v.literal("root")),
 				afterName: v.union(v.string(), v.null()),
+				/**
+				 * Set once the job keeps this folder out of Trash. The items it moved to Trash inside the
+				 * folder are then in Trash on their own, and get Trash entries page by page. Null before the
+				 * first page, else a native page cursor.
+				 */
+				promoteCursor: v.optional(v.union(v.string(), v.null())),
 			}),
 		),
 		restoredParent: v.optional(

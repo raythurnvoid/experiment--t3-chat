@@ -2360,6 +2360,7 @@ describe("list_tree_children_sorted", () => {
 				updatedBy: db.userId,
 				now: Date.now(),
 				savedScope: "follow",
+				trashEntry: true,
 			}),
 		);
 		// The Restore must start from docs that say archived.
@@ -2431,6 +2432,7 @@ describe("list_tree_children_sorted", () => {
 				updatedBy: db.userId,
 				now: Date.now(),
 				savedScope: "follow",
+				trashEntry: true,
 			}),
 		);
 		await test_finish_saved_scope_jobs(t);
@@ -2500,6 +2502,7 @@ describe("list_tree_children_sorted", () => {
 				updatedBy: db.userId,
 				now: Date.now(),
 				savedScope: "follow",
+				trashEntry: true,
 			}),
 		);
 		await t.run(async (ctx) =>

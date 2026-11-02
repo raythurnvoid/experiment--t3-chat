@@ -50,6 +50,7 @@ import {
 	activities_db_start,
 	activities_get_controls,
 	activities_get_result_status,
+	activities_is_active,
 } from "./activities_db.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
@@ -113,7 +114,7 @@ import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
-import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import { files_trash_entries_db_insert, files_trash_entries_order } from "../server/files-trash-entries.ts";
 import {
 	path_extract_segments_from,
 	path_join,
@@ -788,6 +789,10 @@ async function db_archive_node(
 	args: StepArgs & {
 		ctx: MutationCtx;
 		node: Doc<"files_nodes">;
+		/**
+		 * True for a named item. Its Trash entry covers everything inside it.
+		 */
+		trashEntry: boolean;
 	},
 ) {
 	const { ctx, node } = args;
@@ -798,6 +803,7 @@ async function db_archive_node(
 		updatedBy: args.userAuth.id,
 		now: args.now,
 		savedScope: "follow",
+		trashEntry: args.trashEntry,
 	});
 	args.writeState.isWritten = true;
 	args.progress.completed += 1;
@@ -811,6 +817,11 @@ async function db_finish_forced_item(
 	args: StepArgs & {
 		row: Doc<"files_subtree_op_nodes">;
 		reason?: "permission" | "changed" | "not_empty";
+		/**
+		 * The job leaves this node out of Trash, or someone else moved it to Trash. When it is a folder,
+		 * keep the row and give Trash entries to the items the job moved to Trash inside it first.
+		 */
+		keptNode?: Doc<"files_nodes">;
 	},
 ) {
 	if (args.reason) {
@@ -831,6 +842,12 @@ async function db_finish_forced_item(
 			});
 		}
 	}
+	if (args.keptNode?.kind === "folder") {
+		await ctx.db.patch("files_subtree_op_nodes", args.row._id, {
+			forceArchive: { ...args.row.forceArchive!, promoteCursor: null },
+		});
+		return;
+	}
 	if (args.row.forceArchive?.rootNodeId === args.row.nodeId) args.run.applyRootIndex += 1;
 	await ctx.db.delete("files_subtree_op_nodes", args.row._id);
 }
@@ -839,20 +856,23 @@ async function db_finish_forced_item(
  * Keep denied branches in place. Only an empty active folder may leave the tree.
  */
 async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
-	if (!args.membership) return MEMBERSHIP_LOST;
-	// A running Restore also repairs descendant paths. Queued work must never hold this job up.
-	for (const kind of ["move", "scope", "restore"] as const) {
-		const repair = await ctx.db
-			.query("files_subtree_ops")
-			.withIndex("by_organization_workspace_kind_status", (q) =>
-				q
-					.eq("organizationId", args.run.organizationId)
-					.eq("workspaceId", args.run.workspaceId)
-					.eq("kind", kind)
-					.eq("status", "running"),
-			)
-			.first();
-		if (repair) return { kind: "continue" };
+	// A job that ended early only gives Trash entries. That needs no membership and waits for nothing.
+	if (!args.run.ending) {
+		if (!args.membership) return MEMBERSHIP_LOST;
+		// A running Restore also repairs descendant paths. Queued work must never hold this job up.
+		for (const kind of ["move", "scope", "restore"] as const) {
+			const repair = await ctx.db
+				.query("files_subtree_ops")
+				.withIndex("by_organization_workspace_kind_status", (q) =>
+					q
+						.eq("organizationId", args.run.organizationId)
+						.eq("workspaceId", args.run.workspaceId)
+						.eq("kind", kind)
+						.eq("status", "running"),
+				)
+				.first();
+			if (repair) return { kind: "continue" };
+		}
 	}
 	while (args.budget.nodes > 0 && args.budget.checkNodes > 0 && !(await files_subtree_ops_db_is_near_limits(ctx))) {
 		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
@@ -860,11 +880,44 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 		const frame = row.forceArchive;
 		if (!frame) throw should_never_happen("Forced archive has no saved parent", { rowId: row._id });
 		args.budget.checkNodes -= 1;
+		// The children-first walk stamps a folder only after everything inside it. So a folder the job
+		// keeps out of Trash may hold items it stamped. They are in Trash on their own now.
+		if (frame.promoteCursor !== undefined) {
+			if (args.budget.hasPaginated) return { kind: "continue" };
+			args.budget.hasPaginated = true;
+			const stamped = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
+					q
+						.eq("organizationId", args.run.organizationId)
+						.eq("workspaceId", args.run.workspaceId)
+						.eq("moveCohortId", undefined)
+						.eq("parentId", row.nodeId)
+						.eq("archiveOperationId", args.run.archiveOperationId),
+				)
+				.paginate({ cursor: frame.promoteCursor, numItems: PAGE_SIZE });
+			for (const child of stamped.page) await files_trash_entries_db_insert(ctx, child);
+			args.budget.nodes -= stamped.page.length;
+			if (!stamped.isDone) {
+				await ctx.db.patch("files_subtree_op_nodes", row._id, {
+					forceArchive: { ...frame, promoteCursor: stamped.continueCursor },
+				});
+				continue;
+			}
+			if (frame.rootNodeId === row.nodeId) args.run.applyRootIndex += 1;
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
+			continue;
+		}
 		const node = await ctx.db.get("files_nodes", row.nodeId);
+		// The job ended early, so every folder still in its queue stays out of Trash.
+		if (args.run.ending) {
+			await db_finish_forced_item(ctx, { ...args, row, keptNode: node ?? undefined });
+			continue;
+		}
 		if (!node || node.archiveOperationId !== null) {
 			args.progress.skipped += 1;
 			args.progress.discovered += 1;
-			await db_finish_forced_item(ctx, { ...args, row });
+			await db_finish_forced_item(ctx, { ...args, row, keptNode: node ?? undefined });
 			continue;
 		}
 		const root = node._id === frame.rootNodeId ? node : await ctx.db.get("files_nodes", frame.rootNodeId);
@@ -877,13 +930,14 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 			node.parentId !== frame.parentId ||
 			(node._id !== root._id && (root.kind !== "folder" || !node.treePath.startsWith(root.treePath)))
 		) {
-			await db_finish_forced_item(ctx, { ...args, row, reason: "changed" });
+			await db_finish_forced_item(ctx, { ...args, row, reason: "changed", keptNode: node });
 			continue;
 		}
-		const parentCheck = await db_check_archive_parent(ctx, { ...args, membership: args.membership, node });
+		// The top of this function returned when the membership is missing. A job that ended early never gets here.
+		const parentCheck = await db_check_archive_parent(ctx, { ...args, membership: args.membership!, node });
 		const refusal = parentCheck._nay || (await db_check_writable_nodes({ ctx, ...args, nodes: [node] }));
 		if (refusal) {
-			await db_finish_forced_item(ctx, { ...args, row, reason: "permission" });
+			await db_finish_forced_item(ctx, { ...args, row, reason: "permission", keptNode: node });
 			continue;
 		}
 		if (node.kind === "folder") {
@@ -928,11 +982,11 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 				)
 				.first();
 			if (remaining) {
-				await db_finish_forced_item(ctx, { ...args, row, reason: "not_empty" });
+				await db_finish_forced_item(ctx, { ...args, row, reason: "not_empty", keptNode: node });
 				continue;
 			}
 		}
-		await db_archive_node({ ctx, ...args, node });
+		await db_archive_node({ ctx, ...args, node, trashEntry: node._id === frame.rootNodeId });
 		await db_finish_forced_item(ctx, { ...args, row });
 	}
 	return { kind: "continue" };
@@ -967,7 +1021,7 @@ async function db_finish_purge_item(
 			reason: args.reason,
 		});
 		args.progress.blocked += 1;
-		// Empty Trash can keep any number of top items, so it only counts them.
+		// Empty Trash can keep any number of Trash entries, so it only counts them.
 		if (args.row.purge?.rootNodeId === args.row.nodeId && args.run.emptyArchive) {
 			args.run.emptyArchive.keptCount += 1;
 		} else if (args.row.purge?.rootNodeId === args.row.nodeId) {
@@ -1044,38 +1098,37 @@ async function db_check_purge_node(
 const LEGACY_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
- * Empty Trash: queue the next page of top items of the area as named items, so the walk deletes
+ * Empty Trash: queue the next page of Trash entries of the area as named items, so the walk deletes
  * them like a Delete permanently of the same items. Returns null when the walk can go on, or the
  * step's outcome.
  *
- * A top item goes only when it was archived before the job started. Its operation id must sort below
- * the cutoff, and no archive job of that operation may still stamp items or have ended after the
- * start. A forced archive stamps its top items late, under the early time of its operation id.
+ * An entry goes only when its item was archived before the job started. Its operation id must sort
+ * below the cutoff, and no archive job of that operation may still stamp items or have ended after the
+ * start. A forced archive gives some entries late, under the early time of its operation id.
  */
 async function db_queue_empty_archive_page(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome | null> {
 	const emptyArchive = args.run.emptyArchive!;
 	if (emptyArchive.cursor === "done") return { kind: "done" };
-	if (
-		await ctx.db
-			.query("files_trash_top_jobs")
-			.withIndex("by_organization_workspace", (q) =>
-				q.eq("organizationId", args.run.organizationId).eq("workspaceId", args.run.workspaceId),
-			)
-			.first()
-	)
-		return { kind: "continue" };
 
 	// A Move shows its rows in another saved view until it ends. The job waits for it.
 	if ((await files_saved_placement_db_get_view(ctx.db, args.run)).cohortId !== null) return { kind: "continue" };
 	// Convex allows one native page per mutation, including the child walk below.
 	if (args.budget.hasPaginated) return { kind: "continue" };
 	args.budget.hasPaginated = true;
-	const saved = await files_saved_stream_db_create(ctx.db, args.run);
-	const result = await saved.queries.by_archive_top_scope(emptyArchive.area).paginate({
-		cursor: emptyArchive.cursor || null,
-		numItems: PAGE_SIZE,
-	});
-	const page = await saved.read_nodes(result.page);
+	// Entries deleted after the start sort first, so the range starts after them. An id of the same
+	// millisecond as the cutoff still sorts in. The check below skips it.
+	const result = await ctx.db
+		.query("files_trash_entries")
+		.withIndex("by_org_ws_area_order_path", (q) =>
+			q
+				.eq("organizationId", args.run.organizationId)
+				.eq("workspaceId", args.run.workspaceId)
+				.eq("area", emptyArchive.area)
+				.gt("order", files_trash_entries_order(emptyArchive.cutoff)),
+		)
+		.paginate({ cursor: emptyArchive.cursor || null, numItems: PAGE_SIZE });
+	// The overlay flush deletes an entry with its node, so every entry has its node.
+	const page = await Promise.all(result.page.map(async (entry) => (await ctx.db.get("files_nodes", entry.nodeId))!));
 	args.budget.checkNodes -= page.length + 1;
 	emptyArchive.cursor = result.isDone ? "done" : result.continueCursor;
 
@@ -1288,7 +1341,7 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			args.progress.skipped += 1;
 			if (args.progress.total === null) args.progress.discovered += 1;
 		} else {
-			await db_archive_node({ ctx, ...args, node });
+			await db_archive_node({ ctx, ...args, node, trashEntry: true });
 			// The check kept the numbers below `rootNodeIds.length` for these rows. The first named item
 			// gets the highest one, and every folder found later gets a higher one still. So the walk ends
 			// inside the first named item before it goes into the second.
@@ -1348,7 +1401,7 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				isStopped = true;
 				break;
 			}
-			await db_archive_node({ ctx, ...args, node: child });
+			await db_archive_node({ ctx, ...args, node: child, trashEntry: false });
 			count += 1;
 			if (child.kind === "folder") {
 				folderIds.push(child._id);
@@ -2028,6 +2081,7 @@ async function db_restore_top(
 			updatedBy: args.userAuth.id,
 			now: args.now,
 			savedScope: "follow",
+			trashEntry: false,
 		});
 		args.writeState.isWritten = true;
 		progress.skipped += 1;
@@ -2168,6 +2222,8 @@ async function db_land_node(
 			updatedBy: args.userAuth.id,
 			now: args.now,
 			savedScope: "follow",
+			// Its folder is out of Trash, so it is in Trash on its own. What is inside joins it as the walk goes.
+			trashEntry: true,
 		});
 		// Nobody saw the clash of an API job, so list the item. It stays in the Trash.
 		if (isSkipped && run.credentialId !== undefined) {
@@ -2209,6 +2265,7 @@ async function db_land_node(
 			updatedBy: args.userAuth.id,
 			now: args.now,
 			savedScope: "follow",
+			trashEntry: true,
 		});
 		args.budget.nodes -= 1;
 	}
@@ -2447,6 +2504,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 						updatedBy: args.userAuth.id,
 						now: args.now,
 						savedScope: "follow",
+						trashEntry: false,
 					});
 					await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder });
 					progress.skipped += 1;
@@ -2475,6 +2533,72 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			isRowFirst: false,
 			restoredParents: args.restoredParents,
 		});
+	}
+}
+
+/**
+ * A restore that ended early leaves items of its operation in Trash. An item whose folder is not in the
+ * same delete, because the folder came back or was never deleted, is now in Trash on its own. Give it
+ * a Trash entry.
+ *
+ * Read each selected root's items with the same index the apply uses, one native page per step. The
+ * walk changes nothing else, so it needs no membership.
+ */
+async function db_end_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+	const { run } = args;
+
+	// A Move changes tree paths, so a saved cursor could skip items. Start again from the first root.
+	const { generation } = await files_saved_placement_db_get_view(ctx.db, run);
+	if (generation !== run.ending!.generation) run.ending = { ...run.ending!, rootIndex: 0, cursor: null, generation };
+
+	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
+	const is_alone = async (node: Doc<"files_nodes">) => {
+		if (node.parentId === files_ROOT_ID) return true;
+		let parent = parents.get(node.parentId);
+		if (parent === undefined) {
+			parent = await ctx.db.get("files_nodes", node.parentId);
+			parents.set(node.parentId, parent);
+		}
+		return parent?.archiveOperationId !== run.archiveOperationId;
+	};
+
+	while (true) {
+		const ending = run.ending!;
+		const root = run.restoreRoots[ending.rootIndex];
+		if (!root) return { kind: "done" };
+
+		// The root itself first, before its first page.
+		if (ending.cursor === null) {
+			const node = await ctx.db.get("files_nodes", root.nodeId);
+			if (node?.archiveOperationId === run.archiveOperationId && (await is_alone(node)))
+				await files_trash_entries_db_insert(ctx, node);
+		}
+		if (!root.treePath.endsWith("/")) {
+			run.ending = { ...ending, rootIndex: ending.rootIndex + 1, cursor: null };
+			continue;
+		}
+
+		if (args.budget.hasPaginated) return { kind: "continue" };
+		args.budget.hasPaginated = true;
+		const left = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
+				q
+					.eq("organizationId", run.organizationId)
+					.eq("workspaceId", run.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("archiveOperationId", run.archiveOperationId)
+					.gt("treePath", root.treePath)
+					.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
+			)
+			.paginate({ cursor: ending.cursor, numItems: PAGE_SIZE });
+		for (const node of left.page) {
+			if (await is_alone(node)) await files_trash_entries_db_insert(ctx, node);
+		}
+		run.ending = left.isDone
+			? { ...ending, rootIndex: ending.rootIndex + 1, cursor: null }
+			: { ...ending, cursor: left.continueCursor };
+		return { kind: "continue" };
 	}
 }
 
@@ -2563,6 +2687,7 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 		if (outcome.kind === "done") args.progress.total = args.progress.discovered;
 		return outcome;
 	}
+	if (args.run.kind === "restore" && args.run.ending) return await db_end_restore(ctx, args);
 	if (args.run.phase === "discover") {
 		const discovered = await db_discover_restore(ctx, args);
 		if (discovered.kind !== "done") return discovered;
@@ -2624,6 +2749,54 @@ async function db_finish_run(
 }
 
 /**
+ * End a job before its walk is done. A restore or a forced archive that already changed items can
+ * leave items in Trash on their own that have no Trash entry yet. Such a job first runs more steps that
+ * only give those items entries (`ending`). Its Activity shows "stopping" meanwhile. Then it finishes
+ * with the status and error given here.
+ *
+ * It finishes at once in these cases. The job changed nothing yet: its op does not run, or it is not in
+ * its apply phase. It is not a restore or forced archive. Or it is already ending, for example when
+ * its ending steps keep failing.
+ */
+async function db_stop_run(
+	args: Parameters<typeof db_finish_run>[0] & { status: "failed" | "canceled" | "timed_out"; errorCode: string },
+) {
+	const { ctx, runId } = args;
+
+	const run = (await ctx.db.get("files_archive_runs", runId))!;
+	const op = await db_require_op(ctx, runId);
+	if (
+		run.ending ||
+		op.status !== "running" ||
+		run.phase !== "apply" ||
+		(run.kind !== "restore" && !(run.kind === "archive" && run.force))
+	) {
+		await db_finish_run(args);
+		return;
+	}
+
+	const { generation } = await files_saved_placement_db_get_view(ctx.db, run);
+	await ctx.db.patch("files_archive_runs", runId, {
+		ending: {
+			status: args.status,
+			errorMessage: args.errorMessage,
+			errorCode: args.errorCode,
+			rootIndex: 0,
+			cursor: null,
+			generation,
+		},
+	});
+	const activity = await db_require_activity(ctx, runId);
+	await ctx.db.patch("activities", activity._id, {
+		status: "stopping",
+		stopRequestedAt: args.now,
+		deadlineAt: args.now + RUN_TIMEOUT_MS,
+		updatedAt: args.now,
+	});
+	await files_subtree_ops_db_schedule_step(ctx, { opId: op._id, now: args.now });
+}
+
+/**
  * Save a step's result on the run and its Activity, then schedule the next step or finish.
  */
 async function db_settle_step(
@@ -2665,7 +2838,7 @@ async function db_settle_step(
 			return;
 		}
 		case "canceled": {
-			await db_finish_run({
+			await db_stop_run({
 				ctx,
 				runId: args.runId,
 				status: "canceled",
@@ -2676,6 +2849,18 @@ async function db_settle_step(
 			return;
 		}
 		case "done": {
+			// A job that ended early gave its Trash entries. Finish it the way it ended.
+			if (args.run.ending) {
+				await db_finish_run({
+					ctx,
+					runId: args.runId,
+					status: args.run.ending.status,
+					errorMessage: args.run.ending.errorMessage,
+					errorCode: args.run.ending.errorCode,
+					now: args.now,
+				});
+				return;
+			}
 			// Items that stayed in Trash because their path got too long make the job only partly done.
 			const status = activities_get_result_status(args.progress);
 			await db_finish_run({
@@ -2690,7 +2875,7 @@ async function db_settle_step(
 		case "failed": {
 			// A failed check changed nothing. A later failure keeps the items already changed.
 			const isPartway = args.progress.completed + args.progress.skipped > 0;
-			await db_finish_run({
+			await db_stop_run({
 				ctx,
 				runId: args.runId,
 				status: "failed",
@@ -3144,10 +3329,16 @@ export async function files_archive_runs_db_start(
 		await db_settle_step(ctx, { opId, runId, activityId, run, progress, outcome, now });
 		// A request that failed after some writes keeps them and a failed Activity. Answer with the error, so
 		// the caller does not say the work goes on in the background. `data` names the job, so an API
-		// caller can read what the job did before it stopped.
+		// caller can read what the job did before it stopped. A restore that changed items still runs
+		// a few "stopping" steps for their Trash entries, so it is not done yet.
 		if (outcome.kind === "failed") {
+			const isDone = !activities_is_active((await ctx.db.get("activities", activityId))!.status);
 			return Result({
-				_nay: { ...outcome.nay, message: `Stopped partway: ${outcome.nay.message}`, data: { runId, activityId } },
+				_nay: {
+					...outcome.nay,
+					message: `Stopped partway: ${outcome.nay.message}`,
+					data: { runId, activityId, isDone },
+				},
 			});
 		}
 	}
@@ -3179,11 +3370,11 @@ export async function files_archive_runs_db_start(
  * Delete permanently through the job. The caller checked that each named node is archived and that the
  * person can manage it. The job checks every node inside again and keeps what it may not delete.
  *
- * Empty Trash passes no nodes and `emptyArchive` instead. The job then finds the top items itself,
+ * Empty Trash passes no nodes and `emptyArchive` instead. The job then finds the Trash entries itself,
  * one page at a time. The caller checked that the person can manage the area.
  *
  * Returns `runId` null when the work finished inside this request with nothing kept. The counts are
- * of top items only.
+ * of Trash entries only.
  */
 export async function files_archive_runs_db_start_purge(
 	ctx: MutationCtx,
@@ -3234,7 +3425,7 @@ export async function files_archive_runs_db_start_purge(
 		...(args.emptyArchive && {
 			emptyArchive: {
 				...args.emptyArchive,
-				// Empty starts the native top-item index. "done" marks its last page.
+				// Empty starts the native Trash entries index. "done" marks its last page.
 				cursor: "",
 				foundCount: 0,
 				deletedCount: 0,
@@ -3454,9 +3645,11 @@ export async function files_archive_runs_db_promote(
 }
 
 /**
- * Finish the job at once. Items already changed keep the job's operation id, so they can be restored
- * or archived again as one unit. People can stop only a restore that waits for a clash choice. Workspace
- * deletion stops any job. User deletion lets an archive that stamps items finish first.
+ * End the job. Items already changed keep the job's operation id, so they can be restored or archived
+ * again as one unit. A restore or forced archive that changed items first gives Trash entries to the
+ * items it left in Trash (see `db_stop_run`). People can stop only a restore that waits for a clash
+ * choice. Workspace deletion stops any job. User deletion lets an archive that stamps items finish
+ * first.
  *
  * A timeout does not stop a job that is not waiting for a choice. Archive has no Stop, so the deadline
  * only tells the recover cron to schedule the step again.
@@ -3471,6 +3664,8 @@ export async function files_archive_runs_db_request_stop(
 ) {
 	const run = await ctx.db.get("files_archive_runs", args.runId);
 	if (!run?.active) return;
+	// The job is already ending. Its steps only give Trash entries now, so let them finish.
+	if (args.reason === "user" && run.ending) return;
 
 	if (args.reason === "timeout") {
 		const activity = await db_require_activity(ctx, run._id);
@@ -3478,14 +3673,16 @@ export async function files_archive_runs_db_request_stop(
 			const opId = (await db_require_op(ctx, run._id))._id;
 			// Before the apply phase the job changed nothing, so a step that keeps failing ends it. An apply
 			// must go on: items it did not reach would stay active, with their links, inside the archived folder.
+			// A job that is ending must finish its steps too, or its items would be missing from Trash.
 			if (
+				!run.ending &&
 				!run.pathIndexWaiting &&
 				(await files_subtree_ops_db_count_recover(ctx, { opId, activity })) &&
 				(run.phase !== "apply" ||
 					(run.kind === "archive" && run.force) ||
 					(run.kind === "purge" && !(await db_is_purging_node(ctx, run))))
 			) {
-				await db_finish_run({
+				await db_stop_run({
 					ctx,
 					runId: run._id,
 					status: "failed",
@@ -3543,7 +3740,7 @@ export async function files_archive_runs_db_request_stop(
 		}
 	}
 
-	await db_finish_run({
+	await db_stop_run({
 		ctx,
 		runId: run._id,
 		status: args.reason === "timeout" ? "timed_out" : "canceled",
@@ -3819,7 +4016,8 @@ export async function files_archive_runs_db_delete_run_batch(
 	if (!run) return { done: true, deletedCount: 0 };
 
 	// Stop first, so a step that is already scheduled writes nothing. A purge that deletes a node does
-	// not stop at once, and this deletion cannot wait, so end it here.
+	// not stop at once, and neither does a job that still gives Trash entries. This deletion cannot wait,
+	// so end it here.
 	await files_archive_runs_db_request_stop(ctx, { runId: run._id, reason: "user", now: Date.now() });
 	if ((await ctx.db.get("files_archive_runs", run._id))?.active) {
 		await db_finish_run({

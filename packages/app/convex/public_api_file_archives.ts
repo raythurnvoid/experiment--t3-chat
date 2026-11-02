@@ -7,6 +7,7 @@ import { files_media_validation_db_advance_version } from "./files_media_validat
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
 import { files_move_reservations_db_check_node_write } from "../server/files-move-reservations.ts";
 import { files_archive_operation_id_new, files_ROOT_ID } from "../shared/files.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -243,8 +244,16 @@ export async function public_api_file_archives_db_archive(
 			updatedBy: args.writeContext.actorUserId,
 			now: Date.now(),
 			savedScope: "job",
+			trashEntry: false,
 		});
 		archivedNodeIds.push(node._id);
+	}
+	// Children go first, so a node knows only now whether its folder went to Trash with it. A node
+	// whose folder stays out of Trash is in Trash on its own.
+	const archivedIds = new Set<string>(archivedNodeIds);
+	for (const nodeId of archivedNodeIds) {
+		const node = (await ctx.db.get("files_nodes", nodeId))!;
+		if (!archivedIds.has(node.parentId)) await files_trash_entries_db_insert(ctx, node);
 	}
 	if (archivedNodeIds.length) await files_media_validation_db_advance_version(ctx, scope);
 	return Result({

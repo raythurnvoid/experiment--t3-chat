@@ -634,7 +634,8 @@ describe("files/restore", () => {
 			status: 200,
 			body: {
 				jobIds: [expect.any(String)],
-				isDone: true,
+				// The job still gives `clash.md` its Trash entry.
+				isDone: false,
 				refused: body.paths.map((path) => ({ path, message: expect.stringMatching(/^Stopped partway: /u) })),
 			},
 		});
@@ -642,7 +643,13 @@ describe("files/restore", () => {
 		// The stopped job holds the request, so a retry answers the same and restores nothing again.
 		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, body)).toEqual(response);
 
-		const jobId = (response.body.jobIds as string[])[0];
+		const jobId = (response.body.jobIds as string[])[0] as Id<"activities">;
+		const activity = await read_activity(f, jobId);
+		expect(activity.status).toBe("stopping");
+		await run_to_end(f, { runId: activity.source.id as Id<"files_archive_runs">, activityId: jobId });
+		expect(
+			await f.t.run(async (ctx) => (await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId)),
+		).toEqual([leftId]);
 		expect(await post(f, "/api/v1/files/jobs/get", ownerKey.credential, { jobId })).toMatchObject({
 			status: 200,
 			body: {
@@ -1076,5 +1083,150 @@ describe("files/trash/list", () => {
 			status: 403,
 			body: { message: "Permission denied" },
 		});
+	});
+});
+
+describe("files/trash/areas", () => {
+	/**
+	 * Restricted folders `/a-mine` and `/b-team`, a restricted folder in Trash, and more restricted files
+	 * before them than the reads of one page.
+	 */
+	async function seed_areas(f: Fixture) {
+		const restrict = async (nodeId: Id<"files_nodes">) => {
+			const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.db.membershipId,
+				nodeId,
+			});
+			expect(restricted).toEqual({ _yay: null });
+			return nodeId;
+		};
+		const mineId = await restrict(await folder(f, "/a-mine"));
+		const teamId = await restrict(await folder(f, "/b-team"));
+		for (let index = 0; index < 12; index++) {
+			const fileId = await insert_root_file(f, {
+				name: `0-file-${String(index).padStart(2, "0")}.md`,
+				archiveOperationId: null,
+			});
+			// Mark it directly: `restrict_node` is rate limited.
+			await test_run_with_flush(f.t, (ctx) =>
+				ctx.db.patch("files_nodes", fileId, {
+					restrictedScopeNodeId: fileId,
+					isRestrictedScopeRoot: true,
+					parentScopeNodeId: null,
+				}),
+			);
+		}
+		// An empty folder goes to Trash inside the request.
+		expect(await archive(f, [await restrict(await folder(f, "/d-gone"))])).toEqual({ _yay: null });
+		return { mineId, teamId };
+	}
+
+	test("pages the open area first, then the restricted folders by path", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const { mineId, teamId } = await seed_areas(f);
+
+		const first = await post(f, "/api/v1/files/trash/areas", ownerKey.credential, { limit: 2 });
+		expect(first).toMatchObject({
+			status: 200,
+			body: {
+				areas: [
+					{ areaNodeId: null, path: "/" },
+					{ areaNodeId: mineId, path: "/a-mine" },
+				],
+				cursor: expect.any(String),
+				isDone: false,
+			},
+		});
+		expect(
+			await post(f, "/api/v1/files/trash/areas", ownerKey.credential, { limit: 2, cursor: first.body.cursor }),
+		).toEqual({
+			status: 200,
+			body: { areas: [{ areaNodeId: teamId, path: "/b-team" }], cursor: null, isDone: true },
+		});
+		// With `limit: 1` the first page holds only the open area.
+		const openOnly = await post(f, "/api/v1/files/trash/areas", ownerKey.credential, { limit: 1 });
+		expect(openOnly).toMatchObject({
+			status: 200,
+			body: { areas: [{ areaNodeId: null, path: "/" }], cursor: expect.any(String), isDone: false },
+		});
+		expect(
+			await post(f, "/api/v1/files/trash/areas", ownerKey.credential, { limit: 1, cursor: openOnly.body.cursor }),
+		).toMatchObject({ status: 200, body: { areas: [{ areaNodeId: mineId, path: "/a-mine" }], isDone: false } });
+		expect(await post(f, "/api/v1/files/trash/areas", ownerKey.credential, { cursor: "" })).toEqual({
+			status: 400,
+			body: { message: "This Trash cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+		});
+	});
+
+	test("a member gets the folders they can open, and guests and account keys get 403", async () => {
+		const f = await fixture();
+		await create_owner_key(f);
+		const { mineId } = await seed_areas(f);
+		const member = await add_member(f);
+		await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.insert("access_control_permission_grants", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				resourceKind: "file",
+				resourceId: String(mineId),
+				principalKind: "user",
+				userId: member.userId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		await f.t.run((ctx) =>
+			quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId: member.userId,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				now: Date.now(),
+			}),
+		);
+		const memberKey = await create_key({ asUser: member.asUser, membershipId: member.membershipId });
+		expect(await post(f, "/api/v1/files/trash/areas", memberKey.credential, {})).toEqual({
+			status: 200,
+			body: {
+				areas: [
+					{ areaNodeId: null, path: "/" },
+					{ areaNodeId: mineId, path: "/a-mine" },
+				],
+				cursor: null,
+				isDone: true,
+			},
+		});
+
+		const account = await f.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: f.db.membershipId,
+			name: "Trash bot",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		vi.advanceTimersByTime(60_000);
+		const accountKey = await f.asOwner.mutation(api.public_api.api_credential_create, {
+			membershipId: f.db.membershipId,
+			serviceAccountId: account._yay.serviceAccountId,
+			name: "Trash bot",
+			scopes: ["files:list"],
+		});
+		if (accountKey._nay) throw new Error(accountKey._nay.message);
+		expect(await post(f, "/api/v1/files/trash/areas", accountKey._yay.credential, {})).toEqual({
+			status: 403,
+			body: { message: "Keys bound to a service account cannot list the Trash yet." },
+		});
+
+		// Without a role the member is a guest, and a guest has no Trash view.
+		await f.t.run(async (ctx) => {
+			for (const assignment of await ctx.db.query("access_control_role_assignments").collect())
+				if (assignment.userId === member.userId) await ctx.db.delete("access_control_role_assignments", assignment._id);
+		});
+		for (const body of [{}, { limit: 1 }]) {
+			expect(await post(f, "/api/v1/files/trash/areas", memberKey.credential, body)).toEqual({
+				status: 403,
+				body: { message: "Permission denied" },
+			});
+		}
 	});
 });
