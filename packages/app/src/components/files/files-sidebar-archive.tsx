@@ -50,11 +50,6 @@ import { cn, copy_to_clipboard } from "@/lib/utils.ts";
 
 const FilesSidebarArchive_PAGE_SIZE = 50;
 
-/**
- * Archive operation ids hold their time since this day. An older id is a plain UUID with no time.
- */
-const FilesSidebarArchive_TIME_IDS_SINCE = "Oct 31, 2026";
-
 type FilesSidebarArchive_AreaRow = app_convex_FunctionReturnType<
 	typeof app_convex_api.files_tree.list_archive_areas
 >["page"][number];
@@ -150,12 +145,11 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 	const canRestore = !row.locked && canRestoreItem(row);
 
 	const parentPath = row.path.slice(0, row.path.lastIndexOf("/")) || "/";
-	const archivedAt = files_archive_operation_id_time(row.archiveOperationId ?? "");
+	// The Trash list returns only items in Trash, so every row has its delete id.
+	const archivedAt = files_archive_operation_id_time(row.archiveOperationId!);
 	const details = [
 		parentPath,
-		archivedAt === null
-			? `Moved to Trash before ${FilesSidebarArchive_TIME_IDS_SINCE}`
-			: `Moved to Trash ${format_time(archivedAt)}`,
+		`Moved to Trash ${format_time(archivedAt)}`,
 		...(updatedByName ? [`Changed by ${updatedByName}`] : []),
 	].join(" · ");
 

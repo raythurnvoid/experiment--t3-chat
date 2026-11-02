@@ -135,9 +135,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 
 /**
  * A new archive operation id. It starts with the time, so ids sort by when the items were archived.
- * The Archive view lists the newest first, and Empty Trash deletes only ids from before it started.
- *
- * Ids made before this format are plain UUIDs. They sort below every new id, so they read as the oldest.
+ * The Trash view lists the newest first, and Empty Trash deletes only ids from before it started.
  */
 export function files_archive_operation_id_new(now: number, uniquePart: string = crypto.randomUUID()) {
 	return `${files_archive_operation_id_cutoff(now)}-${uniquePart}`;
@@ -152,12 +150,10 @@ export function files_archive_operation_id_cutoff(now: number) {
 }
 
 /**
- * When the items of an archive operation were archived, read from its id. Null for an old plain
- * UUID id, which holds no time.
+ * When the items of an archive operation were archived, read from its id.
  */
 export function files_archive_operation_id_time(archiveOperationId: string) {
-	const match = /^t(\d{15})-/.exec(archiveOperationId);
-	return match ? Number(match[1]) : null;
+	return Number(archiveOperationId.slice(1, 16));
 }
 
 /**

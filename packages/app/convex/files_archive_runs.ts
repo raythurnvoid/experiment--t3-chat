@@ -1093,11 +1093,6 @@ async function db_check_purge_node(
 }
 
 /**
- * A legacy archive operation id: a UUID v4 made before ids started with their time.
- */
-const LEGACY_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-/**
  * Empty Trash: queue the next page of Trash entries of the area as named items, so the walk deletes
  * them like a Delete permanently of the same items. Returns null when the walk can go on, or the
  * step's outcome.
@@ -1137,7 +1132,6 @@ async function db_queue_empty_archive_page(ctx: MutationCtx, args: StepArgs): Pr
 	for (const node of page) {
 		const operationId = node.archiveOperationId!;
 		if (operationId >= emptyArchive.cutoff) continue;
-		if (!operationId.startsWith("t") && !LEGACY_OPERATION_ID.test(operationId)) continue;
 		// One operation has one archive job and a few restore jobs, one per Restore of its leftovers.
 		let isArchivedLate = false;
 		for await (const operationRun of ctx.db

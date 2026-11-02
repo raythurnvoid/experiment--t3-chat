@@ -1113,9 +1113,8 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
 
 - A Trash operation id starts with its time: `t<15-digit ms>-<uuid>`
   (`files_archive_operation_id_new` in `shared/files.ts`). Every writer of `archiveOperationId` uses
-  it. A Move cohort uses this Trash operation id: `t<operationTime>-<cohort._id>`. Ids from before this format are
-  plain UUIDs. They have no time, sort last, and show "Moved to Trash before Oct 31, 2026". The time in
-  the id is the sort key of the Trash list.
+  it. A Move cohort uses this Trash operation id: `t<operationTime>-<cohort._id>`. The time in the
+  id is the sort key of the Trash list.
 - The Trash view (`files-sidebar-archive.tsx`) replaces the tree. Open it from "Open Trash" in
   the top More menu, beside "Show items in Trash". It is sidebar state, not a route or search param.
   An active search wins over it. Back to files and Escape (inside the view) close it.

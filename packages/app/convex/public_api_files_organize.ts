@@ -1070,7 +1070,7 @@ export async function public_api_files_organize_http_trash_list(args: {
 					size: assetState ? assetState.size : null,
 					locked: row.locked,
 					archiveOperationId: row.archiveOperationId,
-					// The time inside the archive operation id. Old ids are plain UUIDs without a time.
+					// The time inside the archive operation id.
 					operationAt: files_archive_operation_id_time(row.archiveOperationId),
 					// The last person who changed the item, the app's "Changed by". Usually this is who deleted it.
 					// After a restore with Skip, it is who restored it, because Skip puts the item in a new delete.

@@ -354,8 +354,6 @@ describe("files_nodes.purge_nodes", () => {
 				archiveOperationId: files_archive_operation_id_new(Date.now() - 10_000 - index),
 			});
 		}
-		await insert_archived({ name: "legacy.md", archiveOperationId: crypto.randomUUID() });
-		await insert_archived({ name: "unknown.md", archiveOperationId: "no-time" });
 		// A restricted folder is another area, so its archive stays.
 		await test_run_with_flush(f.t, async (ctx) => {
 			const restrictedId = await ctx.db.insert("files_nodes", {
@@ -414,14 +412,10 @@ describe("files_nodes.purge_nodes", () => {
 
 		expect(ended.status).toBe("succeeded");
 		const paths = await list_workspace_paths(f);
-		expect(paths.filter((path) => !path.startsWith("/stamping"))).toEqual([
-			"/private",
-			"/private/inner.md",
-			"/unknown.md",
-		]);
+		expect(paths.filter((path) => !path.startsWith("/stamping"))).toEqual(["/private", "/private/inner.md"]);
 		expect(paths, "the archive that was still running keeps its items").toContain("/stamping");
 		const run = await f.t.run((ctx) => ctx.db.get("files_archive_runs", emptied._yay.runId!));
-		expect(run?.emptyArchive).toMatchObject({ foundCount: 56, deletedCount: 56, keptCount: 0 });
+		expect(run?.emptyArchive).toMatchObject({ foundCount: 55, deletedCount: 55, keptCount: 0 });
 	});
 
 	test("a restore of the same archive waits until the purge ends", async () => {

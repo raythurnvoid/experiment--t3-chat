@@ -31,8 +31,7 @@ async function seed_archive() {
 	const owner = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, userId: f.db.userId };
 	const opNew = files_archive_operation_id_new(3000);
 	const opOld = files_archive_operation_id_new(2000);
-	// Moved to Trash before archive operation ids started with the time.
-	const opLegacy = crypto.randomUUID();
+	const opOldest = files_archive_operation_id_new(1000);
 
 	const ids = await test_run_with_flush(f.t, async (ctx) => {
 		const insert = (args: Omit<Parameters<typeof insert_tree_node>[0], "ctx" | "owner">) =>
@@ -54,9 +53,9 @@ async function seed_archive() {
 		});
 		await ctx.db.patch("files_nodes", locked, { parentScopeNodeId: null });
 		const old = await insert({ parentId: "root", path: "/old.md", kind: "file", archiveOperationId: opOld });
-		const legacy = await insert({ parentId: "root", path: "/legacy.md", kind: "file", archiveOperationId: opLegacy });
-		await insert_entries(ctx, [big, locked, inActive, old, legacy]);
-		return { big, locked, inActive, old, legacy };
+		const oldest = await insert({ parentId: "root", path: "/oldest.md", kind: "file", archiveOperationId: opOldest });
+		await insert_entries(ctx, [big, locked, inActive, old, oldest]);
+		return { big, locked, inActive, old, oldest };
 	});
 
 	const read = (
@@ -84,10 +83,10 @@ describe("list_trash_entries", () => {
 			if (result.isDone) break;
 			cursor = result.continueCursor;
 		}
-		expect(pages, "newest operation first, then by path, and the old id last").toEqual([
+		expect(pages, "newest operation first, then by path").toEqual([
 			[f.ids.big, f.ids.locked],
 			[f.ids.inActive, f.ids.old],
-			[f.ids.legacy],
+			[f.ids.oldest],
 		]);
 
 		const ranges = await f.asOwner.run(async (ctx) => {
@@ -152,7 +151,7 @@ describe("list_trash_entries", () => {
 			...ids.files,
 			f.ids.inActive,
 			f.ids.old,
-			f.ids.legacy,
+			f.ids.oldest,
 		]);
 	});
 
@@ -227,7 +226,7 @@ describe("list_trash_entries", () => {
 				nodeIds: [f.ids.old],
 			}),
 		).toEqual({ _yay: null });
-		await test_run_with_flush(f.t, (ctx) => ctx.db.delete("files_nodes", f.ids.legacy));
+		await test_run_with_flush(f.t, (ctx) => ctx.db.delete("files_nodes", f.ids.oldest));
 
 		const entryNodeIds = await f.t.run(async (ctx) =>
 			(await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId),
@@ -246,7 +245,7 @@ describe("list_trash_entries", () => {
 			[f.ids.locked, true],
 			[f.ids.inActive, false],
 			[f.ids.old, false],
-			[f.ids.legacy, false],
+			[f.ids.oldest, false],
 		]);
 		expect(await f.read(guest.as, guest.membershipId, null, { numItems: 10, cursor: null })).toMatchObject({
 			page: [],

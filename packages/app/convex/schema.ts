@@ -5321,8 +5321,8 @@ const app_convex_schema = defineSchema({
 		readOnlyDecisionId: v.union(v.string(), v.null()),
 		// Lifecycle and authorship
 		/**
-		 * Archive operation id, or null for an active node. A new id starts with the archive time
-		 * (`files_archive_operation_id_new`). An older id is a plain UUID.
+		 * Archive operation id, or null for an active node. The id starts with the archive time
+		 * (`files_archive_operation_id_new`).
 		 */
 		archiveOperationId: v.union(v.string(), v.null()),
 		/**
