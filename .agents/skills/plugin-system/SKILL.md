@@ -1254,6 +1254,16 @@ watch makes the first idle wait 60 minutes. Live check: an idle slice now costs 
 one account read, token save, finish). After mail, one follow-up runs a minute later, and the next sync is
 60 minutes after that. A quiet hour should now cost about 18 calls. 509 tests.
 
+Later on 2026-11-02 (17:36 UTC, plugin commit `ed5c898`, no new version), saving each email got cheaper.
+`mark_message` and `pace_press` now also check the message row like `guard_message` and return the
+account and grant. A Files call is then one call instead of four, and a unit reads no account after its
+mark. An email with no attachment due saves its final state in one write, and held retries are read
+only when the account has some. Live check: a new email at 18:28 UTC was saved with 9 calls inside its
+slice (19 for a similar email at 13:30 UTC). With the push, dispatch and follow-up slice, one email now
+costs about 18 calls instead of about 28. Known leftover: each slice end schedules a dispatch for the
+next due account, so that account can collect several dispatches (9 at 17:42 UTC), and all but the
+first find nothing to do. 510 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
