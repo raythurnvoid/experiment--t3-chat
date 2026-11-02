@@ -1272,6 +1272,12 @@ the next one itself. Live check: after the old queued jobs ran once (4 at 19:16 
 one dispatch. A quiet hour with three accounts now costs 18 calls: 3 idle slices of 5 calls and 3 cron
 runs. 511 tests.
 
+A review of these three commits found one gap, fixed on 2026-11-02 at 22:14 UTC (plugin commit
+`558516e`, no new version). Convex keeps a job pending for hours when it fails before it starts. A stuck
+waiting dispatch would then make every later request keep it, and only the hourly cron would start
+slices. Now a waiting dispatch still pending 5 minutes after its time is replaced by one that runs now,
+the same rule stuck slice jobs already had. 513 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
