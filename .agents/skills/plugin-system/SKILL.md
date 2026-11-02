@@ -1245,6 +1245,15 @@ October versions. The deployment turned on again on 2026-11-01 at 00:00 UTC with
 18:00 UTC all three accounts were `live` with hourly slices, the blocked account included, and the month
 had used 3,641 calls.
 
+The Gmail backend was updated on dev on 2026-11-02 at 08:06 UTC with no new version (plugin commit
+`22ef6b7`), to use fewer function calls. Before it, a quiet hour with three accounts and push on used
+about 38 calls: 3 idle slices of about 10 calls, and 9 cron runs. After each push, the idle ladder added
+about 6 slices. The change has four parts. The dispatch and grant crons run hourly. A slice end schedules
+one dispatch, for the earliest free account. A token refresh no longer reads the account twice more. A live
+watch makes the first idle wait 60 minutes. Live check: an idle slice now costs 5 calls (dispatch, slice,
+one account read, token save, finish). After mail, one follow-up runs a minute later, and the next sync is
+60 minutes after that. A quiet hour should now cost about 18 calls. 509 tests.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
