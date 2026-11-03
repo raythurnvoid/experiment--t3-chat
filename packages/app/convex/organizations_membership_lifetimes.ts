@@ -152,15 +152,6 @@ export async function organizations_membership_lifetimes_db_record(
 		// Local jobs also use this lifetime, before an external service starts the change feed.
 		if (!active)
 			await plugins_schedules_db_cancel(ctx, { workspaceId: membership.workspaceId, userId: membership.userId });
-		// A re-invite leaves plugin reader grants of older lifetimes. They read nothing, so delete them.
-		if (active && lifetime > 1)
-			await ctx.scheduler.runAfter(0, internal.plugins_external_files.delete_old_reader_grants, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				userId: membership.userId,
-				lifetime,
-				cursor: null,
-			});
 		if (!state) continue;
 		const organization = active ? await ctx.db.get("organizations", membership.organizationId) : null;
 		const member = organization?.defaultWorkspaceId

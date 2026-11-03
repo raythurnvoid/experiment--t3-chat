@@ -90,7 +90,6 @@ async function install_mail_plugin(t: TestConvex, membership: Membership) {
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
-			sandbox: { roots: [], rebuild: null },
 			installedBy: userId,
 			updatedBy: userId,
 			updatedAt: now,

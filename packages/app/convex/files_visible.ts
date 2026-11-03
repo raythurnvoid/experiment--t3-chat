@@ -81,9 +81,9 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 
 // The page cap and the split guard of `list_private_folder_children`. The worst row is a saved node
 // moved into the folder that is its own restricted scope: it reads the node and runs a fresh access
-// check. For a member whose read comes from their second role, with an old plugin grant too, that is
-// 10 index ranges (measured in the cost test under `list_private_folder_children`). floor(3,000 / 10)
-// is 300. Keep 250 for a margin.
+// check. For a member whose read comes from their second role, that is at most 10 index ranges (the
+// cost test under `list_private_folder_children` checks it). floor(3,000 / 10) is 300. Keep 250 for
+// a margin.
 const PRIVATE_FOLDER_PAGE_MAX_ITEMS = 250;
 
 // Outside the owner's overlay, the read filter of an agent stream checks access on this many rows at
@@ -974,8 +974,8 @@ async function db_stream_frame_lists_locked(
 }
 
 /**
- * Whether the opened folder is a workspace root the caller cannot open (a guest, or a plugin whose roots
- * are folders). A walk or a name search of it is "Permission denied", like the folder list of the root.
+ * Whether the opened folder is a workspace root the caller cannot open (a guest, or a plugin whose
+ * account has only folder grants). A walk or a name search of it is "Permission denied", like the folder list of the root.
  */
 async function db_stream_root_locked(
 	ctx: QueryCtx,
@@ -2169,7 +2169,7 @@ export const internal_list_subtree_moved_in_folders = internalQuery({
  * only matching rows (`files_pending_overlay_list`).
  *
  * The time index serves a frame only when the subject can open its whole area. Otherwise (a folder
- * opened through Add people, or a plugin's sandbox root inside an area) the start frame reads its
+ * opened through Add people, or a plugin whose account has a grant only inside an area) the start frame reads its
  * folders in path order and each folder's recent children, so it reads no row the subject cannot
  * open. A workspace root the subject cannot open is refused before this (`internal_get_walk_start`).
  * That rule skips the global organization and reserved workspaces. There a per-folder read of the root

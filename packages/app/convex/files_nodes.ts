@@ -139,7 +139,6 @@ import { files_share_links_db_delete_for_node } from "./files_share_links_db.ts"
 import { files_nodes_db_set_public } from "./files_sharing_db.ts";
 import { files_updated_by_db_delete_for_node, files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_db_authorize_file_read } from "./files_volume_access.ts";
-import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import {
 	access_control_create_file_checker,
 	access_control_db_authorize_membership,
@@ -808,12 +807,14 @@ export const read_only_set = mutation({
  *
  * A folder that is the restricted scope itself carries that scope wherever it goes, so it changes
  * nobody's access and is not asked about.
+ *
+ * Restore asks it as the job's write context: the person, or the service account of the API key.
  */
 export async function authorize_leaving_restricted_scope(
 	ctx: MutationCtx,
 	args: {
-		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
+		writeContext: files_nodes_WriteContext;
 		fileNode: Doc<"files_nodes">;
 		destParentId: Doc<"files_nodes">["parentId"];
 	},
@@ -829,13 +830,15 @@ export async function authorize_leaving_restricted_scope(
 		return Result({ _yay: null });
 	}
 
-	const authorized = await access_control_db_authorize_membership(ctx, {
-		userAuth: args.userAuth,
+	const authorized = await db_has_write_context_permission(ctx, {
+		organizationId: args.membership.organizationId,
+		workspaceId: args.membership.workspaceId,
+		writeContext: args.writeContext,
 		membership: args.membership,
+		node: args.fileNode,
 		permission: "content.permissions.manage",
-		fileNode: args.fileNode,
 	});
-	if (authorized._nay) {
+	if (!authorized) {
 		// Name the level the Share dialog shows, so the message says what to ask a manager for.
 		return Result({
 			_nay: { name: "nay", message: "You need Can manage on the shared folder to move this out of it." },
@@ -1753,17 +1756,6 @@ export async function files_nodes_db_hard_delete_node(
 		...lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		...shareGrants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)),
 	]);
-	// A deleted account grant frees its plugin folder slot.
-	for (const grant of shareGrants) {
-		if (grant.principalKind !== "service_account" || !grant.serviceAccountId) continue;
-		await plugins_db_sync_sandbox_root(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			serviceAccountId: grant.serviceAccountId,
-			resource: { kind: "file", nodeId: node._id },
-			level: null,
-		});
-	}
 
 	for (const assetId of assetIds) {
 		const asset = await ctx.db.get("files_r2_assets", assetId);

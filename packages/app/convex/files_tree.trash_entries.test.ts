@@ -310,33 +310,15 @@ describe("list_archive_areas", () => {
 				file: await insert("/a-file.md", undefined, "file"),
 				hidden: await insert("/c-hidden"),
 				archived: await insert("/d-archived", files_archive_operation_id_new(1000)),
-				pluginLive: await insert("/e-plugin-live"),
-				// More than one page, and they sort before the live lifetime in the share row index.
-				pluginOld: await Promise.all(
-					Array.from({ length: 11 }, (_, index) => insert(`/f-plugin-old-${String(index).padStart(2, "0")}`)),
-				),
 			};
 		});
 		const member = await f.add_member("clerk_area_member", "member");
 		await f.grant_read({ userId: member.userId }, [ids.mine, ids.file, ids.archived]);
 		await f.grant_read({ role: "member" }, [ids.team]);
-		// A plugin grant counts only for the membership lifetime it was made in.
-		await f.t.run((ctx) =>
-			ctx.db.insert("organizations_membership_lifetimes", {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				userId: member.userId,
-				membershipId: member.membershipId,
-				lifetime: 2,
-				active: true,
-			}),
-		);
-		await f.grant_read({ userId: member.userId, externalPluginMembershipLifetime: 2 }, [ids.pluginLive]);
-		await f.grant_read({ userId: member.userId, externalPluginMembershipLifetime: 1 }, ids.pluginOld);
 
 		const read = async (as: typeof f.asOwner, membershipId: Id<"organizations_workspaces_users">) => {
 			const rows = new Map<Id<"files_nodes">, string>();
-			for (const principalIndex of [0, 1, 2, 3, 4] as const) {
+			for (const principalIndex of [0, 1, 2, 3] as const) {
 				const page = await as.query(api.files_tree.list_archive_areas, {
 					membershipId,
 					savedStream: { kind: "normal", generation: 0 },
@@ -351,22 +333,10 @@ describe("list_archive_areas", () => {
 			ids.mine,
 			ids.team,
 			ids.hidden,
-			ids.pluginLive,
-			...ids.pluginOld,
 		]);
-		expect(
-			await read(member.as, member.membershipId),
-			"a member gets their own, their role's, and their live plugin shares",
-		).toEqual([ids.mine, ids.team, ids.pluginLive]);
-		const pluginPage = await member.as.query(api.files_tree.list_archive_areas, {
-			membershipId: member.membershipId,
-			savedStream: { kind: "normal", generation: 0 },
-			principalIndex: 4,
-			paginationOpts: { numItems: 10, cursor: null },
-		});
-		expect(
-			pluginPage.page.map((row) => row._id),
-			"the first page reads no grant of an old lifetime",
-		).toEqual([ids.pluginLive]);
+		expect(await read(member.as, member.membershipId), "a member gets their own and their role's shares").toEqual([
+			ids.mine,
+			ids.team,
+		]);
 	});
 });

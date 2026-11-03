@@ -168,9 +168,6 @@ async function db_check_live_file(
 	if (scope === "dead") {
 		return Result({ _nay: { message: "Wait until the access change of a folder above finishes" } });
 	}
-	if (scope === "bound") {
-		return Result({ _nay: { message: "A plugin decides who can read this file, so it cannot have a public link" } });
-	}
 
 	const asset = await db_get_finished_asset(ctx, node);
 	if (!asset) {
@@ -326,8 +323,8 @@ async function db_check_media_node(args: { ctx: QueryCtx; reads: ViewReads; medi
 		return null;
 	}
 
-	// The media file's area can differ from the shared file's area. A plugin decides who reads a bound
-	// area, and a dead area waits for its scope op, so neither shows.
+	// The media file's area can differ from the shared file's area. A dead area waits for its scope op,
+	// so it does not show.
 	reads_reserve({ reads, calls: 5, docs: 5 });
 	if (
 		(await files_share_links_db_check_scope(ctx, {

@@ -1149,7 +1149,6 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const confirmChange = changeConfirm?.nodeId === viewNodeId ? changeConfirm.change : null;
 	const nodeKindText = shareState?.nodeKind === "folder" ? "folder" : "file";
 	const isOwner = Boolean(shareState && shareState.callerUserId === shareState.organizationOwnerUserId);
-	const pluginName = shareState?.pluginArea?.pluginName ?? null;
 	/** One write at a time. Every control says so, so nothing here is clickable but does nothing. */
 	const busy = pendingKey !== null;
 
@@ -1314,9 +1313,6 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				: shareState.linksInside
 					? "Any public links in this folder turn off. You can turn them on again after."
 					: null;
-		const pluginLine = shareState.pluginArea?.isSelf
-			? `${pluginName} keeps this list up to date. If you change it here, ${pluginName} stops updating it.`
-			: null;
 
 		// Restricting asks only about the public links it ends. Otherwise it is a clear choice: the caller
 		// keeps access, and the list shows who still has access right after. Product decision, 2026-10-26.
@@ -1332,7 +1328,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 		// Only the grant changes, so no link ends and nobody on the list loses their own level.
 		if (change.kind === "workspace_view") {
-			return pluginLine ? { title: "Change access?", lines: [pluginLine], action: "Change anyway" } : null;
+			return null;
 		}
 
 		if (change.kind === "unrestrict") {
@@ -1363,7 +1359,6 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				lines.push(`People in this workspace who cannot open ${baseScope.name} lose access.`);
 			}
 			if (linkLine) lines.push(linkLine);
-			if (pluginLine) lines.push(pluginLine);
 			return lines.length > 0 ? { title: `Change to "${baseLabel}"?`, lines, action: "Change" } : null;
 		}
 
@@ -1379,12 +1374,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				);
 			}
 		}
-		if (pluginLine) lines.push(pluginLine);
 		return lines.length > 0
 			? {
-					title: pluginLine ? "Change access?" : "Change your access?",
+					title: "Change your access?",
 					lines,
-					action: pluginLine ? "Change anyway" : change.kind === "remove" ? "Remove" : "Change",
+					action: change.kind === "remove" ? "Remove" : "Change",
 				}
 			: null;
 	};
@@ -1457,17 +1451,14 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		setAddPrincipalValue(value);
 	};
 
-	// Leaving the access from above restricts the item. A plugin area above and a missing edit
-	// permission block it, and General access says why in text, not only in a tooltip.
-	const pluginDecides = Boolean(shareState?.pluginArea && !shareState.pluginArea.isSelf);
+	// Leaving the access from above restricts the item. A missing edit permission blocks it, and
+	// General access says why in text, not only in a tooltip.
 	const restrictBlocked = generalValue === "base" && !shareState?.canRestrict;
 	const generalNote = !shareState?.canManage
 		? null
-		: pluginDecides
-			? `${pluginName} decides who can open this folder.`
-			: restrictBlocked
-				? "You need Can edit here to restrict this."
-				: null;
+		: restrictBlocked
+			? "You need Can edit here to restrict this."
+			: null;
 	// "Can view" for the whole workspace only goes on where the workspace has access above: no restricted
 	// folder above, or one that the whole workspace can view too. Elsewhere it is offered only while it is
 	// already on, so it can be turned off.
@@ -1730,7 +1721,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 												: "Everyone in this workspace can open this. Their workspace role decides if they can edit."
 								}
 								note={generalNote}
-								editable={shareState.canManage && !pluginDecides}
+								editable={shareState.canManage}
 								pending={pendingKey === "general"}
 								busy={busy}
 								onValueChange={handleGeneralChange}

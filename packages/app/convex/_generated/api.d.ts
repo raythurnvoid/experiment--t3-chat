@@ -130,7 +130,6 @@ import type * as plugins_access from "../plugins_access.js";
 import type * as plugins_data from "../plugins_data.js";
 import type * as plugins_data_http from "../plugins_data_http.js";
 import type * as plugins_data_http_routes from "../plugins_data_http_routes.js";
-import type * as plugins_external_file_readers from "../plugins_external_file_readers.js";
 import type * as plugins_external_files from "../plugins_external_files.js";
 import type * as plugins_external_files_access from "../plugins_external_files_access.js";
 import type * as plugins_follow_up_http from "../plugins_follow_up_http.js";
@@ -318,7 +317,6 @@ declare const fullApi: ApiFromModules<{
   plugins_data: typeof plugins_data;
   plugins_data_http: typeof plugins_data_http;
   plugins_data_http_routes: typeof plugins_data_http_routes;
-  plugins_external_file_readers: typeof plugins_external_file_readers;
   plugins_external_files: typeof plugins_external_files;
   plugins_external_files_access: typeof plugins_external_files_access;
   plugins_follow_up_http: typeof plugins_follow_up_http;

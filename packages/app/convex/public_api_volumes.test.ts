@@ -1250,7 +1250,7 @@ describe("scheduled Files response authority", () => {
 		const f = await fixture({ scheduled: true });
 		const file = await readable_file(f);
 		const afterIo = async () => {
-			// The real removal, so the plugin's sandbox copy of the grant goes too.
+			// Remove the grant through the real door.
 			const removed = await f.asOwner.mutation(api.access_control.remove_service_account_grant, {
 				membershipId: f.owner.membershipId,
 				serviceAccountId: f.installation.serviceAccountId,

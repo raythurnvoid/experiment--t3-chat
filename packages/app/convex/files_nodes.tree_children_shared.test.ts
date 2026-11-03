@@ -421,18 +421,11 @@ describe("list_tree_children_shared", () => {
 	});
 
 	// Guard = floor(3,000 index ranges / index ranges read by the worst row). The admin holds a
-	// workspace role, an organization role and a plugin grant, and each row is its own scope. The
-	// worst row is shared with their second role and also has an old plugin grant to the admin: the
-	// read check reads that grant, then the live membership lifetime, then the roles. A filter row
-	// also reads its field doc.
-	test.each([
-		{ principalIndex: 0, oldPluginGrant: false },
-		{ principalIndex: 2, oldPluginGrant: false },
-		{ principalIndex: 2, oldPluginGrant: true },
-		{ principalIndex: 3, oldPluginGrant: false },
-	] as const)(
-		"the share page guards fit the measured reads of the worst row (principal $principalIndex, old plugin grant $oldPluginGrant)",
-		async ({ principalIndex, oldPluginGrant }) => {
+	// workspace role and an organization role, and each row is its own scope. The worst row is shared
+	// with their second role, so the read check reads the roles. A filter row also reads its field doc.
+	test.each([{ principalIndex: 0 }, { principalIndex: 2 }, { principalIndex: 3 }] as const)(
+		"the share page guards fit the measured reads of the worst row (principal $principalIndex)",
+		async ({ principalIndex }) => {
 			const t = test_convex();
 			const f = await seed_tree_access_fixture(t);
 			await test_run_with_flush(t, async (ctx) => {
@@ -464,20 +457,6 @@ describe("list_tree_children_shared", () => {
 						createdAt: now,
 						updatedAt: now,
 					});
-					if (oldPluginGrant) {
-						await ctx.db.insert("access_control_permission_grants", {
-							organizationId: f.owner.organizationId,
-							workspaceId: f.owner.workspaceId,
-							resourceKind: "file",
-							resourceId: String(nodeId),
-							principalKind: "user",
-							userId: f.admin.userId,
-							externalPluginMembershipLifetime: 1,
-							permission: "content.read",
-							createdAt: now,
-							updatedAt: now,
-						});
-					}
 				}
 			});
 			const indexes = await t.run((ctx) => ctx.db.query("files_index_states").collect());

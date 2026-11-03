@@ -10,29 +10,19 @@ import { internalQuery, query, type MutationCtx, type QueryCtx } from "./_genera
 import { internalMutation, mutation } from "./functions.ts";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_has_permission, access_control_db_set_service_account_grant } from "./access_control.ts";
+import { access_control_db_has_permission } from "./access_control.ts";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
-import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
-import { files_nodes_db_set_public, files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
-import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
-import { files_share_links_db_delete_for_node, files_share_links_db_delete_for_scope } from "./files_share_links_db.ts";
-import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
-import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import {
-	files_saved_placement_db_get_node,
-	files_saved_placement_db_get_node_view,
-	files_saved_placement_db_get_view,
-} from "../server/files-saved-placement.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_convex_get_plugin_session } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_get_utf8_byte_size, files_ROOT_ID } from "../shared/files.ts";
+import { files_get_utf8_byte_size } from "../shared/files.ts";
 import {
 	plugins_data_is_valid_name,
 	plugins_data_MAX_KEY_PREFIX_LENGTH,
@@ -127,13 +117,6 @@ const MAX_MEMBER_LIST_PAGE_SIZE = 100;
  * How many people one private scope may name. Same size as a file share list.
  */
 const MAX_SCOPE_PRINCIPALS = 50;
-/**
- * How many file nodes one private scope may be bound to through the plugin access door. A scope
- * change rewrites one `content.read` grant per member per bound node in the same mutation, so
- * this cap is what keeps that synchronous work small: 50 members x 4 nodes stays under the
- * 256-grant read bound the binding sync uses.
- */
-const MAX_ACCESS_BINDINGS_PER_SCOPE = 4;
 /**
  * How many scope ids one installation may mint before reinstalling.
  *
@@ -3885,427 +3868,10 @@ export async function plugins_data_db_delete_scope(ctx: MutationCtx, scopes: Doc
 }
 
 /**
- * The mirrored `content.read` grants on one scope-bound file node, bounded at 256 (a scope names
- * at most 50 people).
- */
-function db_binding_file_grants(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		nodeId: Id<"files_nodes">;
-	},
-) {
-	return ctx.db
-		.query("access_control_permission_grants")
-		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("resourceKind", "file")
-				.eq("resourceId", String(args.nodeId)),
-		)
-		.take(256);
-}
-
-/**
- * Keep the mirrored `content.read` grants on scope-bound file nodes in step with a scope
- * membership change. Called at every place a scope's member list changes.
- *
- * There is no plugin allowlist here: the file door checks access before creating a binding.
- * Additions apply synchronously too — a binding has no interleaved file write to wait for,
- * so there is no reason to let a new member show up late.
- *
- * `removeUserIds: "all"` is the teardown form, used when the scope itself was deleted. It also
- * deletes the binding docs, because a binding pointing at a dead scope is a dangling doc. It
- * does NOT un-restrict the bound nodes: the reader list is gone, so the nodes end with zero
- * readers and stay restricted — fail closed. A bound area holds no public links, so it has none
- * to end.
- */
-async function db_sync_file_access_bindings(args: {
-	ctx: MutationCtx;
-	installation: Doc<"plugins_workspace_installations">;
-	scopeId: string;
-	addUserIds: Id<"users">[];
-	removeUserIds: Id<"users">[] | "all";
-}) {
-	const { ctx } = args;
-
-	const bindings = await ctx.db
-		.query("plugins_file_access_bindings")
-		.withIndex("by_installation_scopeId", (q) =>
-			q.eq("installationId", args.installation._id).eq("scopeId", args.scopeId),
-		)
-		.collect();
-
-	const now = Date.now();
-	let accessChanged = false;
-	for (const binding of bindings) {
-		const grants = await db_binding_file_grants(ctx, {
-			organizationId: binding.organizationId,
-			workspaceId: binding.workspaceId,
-			nodeId: binding.nodeId,
-		});
-
-		const holders = new Set<Id<"users">>();
-		for (const grant of grants) {
-			const remove =
-				args.removeUserIds === "all" ||
-				(grant.principalKind === "user" && grant.userId !== undefined && args.removeUserIds.includes(grant.userId));
-			if (remove) {
-				await ctx.db.delete("access_control_permission_grants", grant._id);
-				if (grant.principalKind !== "service_account") {
-					accessChanged = true;
-				} else if (grant.serviceAccountId) {
-					// A Move that an API key bound to this account started pins the workspace clock until it
-					// saves, so the lost grant must advance it. A revoked account has no live key.
-					const account = await ctx.db.get("access_control_service_accounts", grant.serviceAccountId);
-					if (account?.revokedAt === null) accessChanged = true;
-					await plugins_db_sync_sandbox_root(ctx, {
-						organizationId: binding.organizationId,
-						workspaceId: binding.workspaceId,
-						serviceAccountId: grant.serviceAccountId,
-						resource: { kind: "file", nodeId: binding.nodeId },
-						level: null,
-					});
-				}
-				continue;
-			}
-			if (grant.principalKind === "user" && grant.userId && grant.permission === "content.read") {
-				holders.add(grant.userId);
-			}
-		}
-
-		if (args.removeUserIds === "all") {
-			await ctx.db.delete("plugins_file_access_bindings", binding._id);
-			continue;
-		}
-		for (const userId of args.addUserIds) {
-			if (holders.has(userId)) {
-				continue;
-			}
-			await ctx.db.insert("access_control_permission_grants", {
-				organizationId: binding.organizationId,
-				workspaceId: binding.workspaceId,
-				resourceKind: "file",
-				resourceId: String(binding.nodeId),
-				principalKind: "user",
-				userId,
-				permission: "content.read",
-				createdAt: now,
-				updatedAt: now,
-			});
-			holders.add(userId);
-			accessChanged = true;
-		}
-	}
-	if (accessChanged) await files_media_validation_db_advance_version(ctx, args.installation);
-}
-
-/**
- * Check a binding change before the caller creates a node or changes its lock.
- */
-export async function plugins_data_db_prepare_file_access_binding(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		installation: Doc<"plugins_workspace_installations">;
-		nodeId: Id<"files_nodes"> | null;
-		/**
-		 * The node's parent, or the folder a new node goes in.
-		 */
-		parentId: Doc<"files_nodes">["parentId"];
-		readScopeId: string | null;
-	},
-) {
-	const nodeId = args.nodeId;
-	const existingBinding = nodeId
-		? await ctx.db
-				.query("plugins_file_access_bindings")
-				.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-				.first()
-		: null;
-	if (existingBinding && existingBinding.installationId !== args.installation._id) {
-		return Result({ _nay: { message: "This item is bound to another plugin installation." } });
-	}
-
-	if (args.readScopeId === null) {
-		return Result({ _yay: { existingBinding, readScopeId: args.readScopeId } });
-	}
-
-	// The scope must be live in this installation. A released or foreign scope id answers the
-	// same way as a missing one.
-	const readScopeId = args.readScopeId;
-	const scope = await ctx.db
-		.query("plugins_data_scopes")
-		.withIndex("by_installation_scope", (q) => q.eq("installationId", args.installation._id).eq("scopeId", readScopeId))
-		.first();
-	if (!scope) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-
-	// The cap keeps the synchronous grant work of every later membership change small.
-	const bindings = await ctx.db
-		.query("plugins_file_access_bindings")
-		.withIndex("by_installation_scopeId", (q) =>
-			q.eq("installationId", args.installation._id).eq("scopeId", readScopeId),
-		)
-		.take(MAX_ACCESS_BINDINGS_PER_SCOPE + 1);
-	const alreadyBoundHere = bindings.some((binding) => binding.nodeId === nodeId);
-	if (!alreadyBoundHere && bindings.length >= MAX_ACCESS_BINDINGS_PER_SCOPE) {
-		return Result({
-			_nay: { message: `One private space can be bound to at most ${MAX_ACCESS_BINDINGS_PER_SCOPE} files or folders.` },
-		});
-	}
-
-	// The plugin decides who reads the whole area of the node. So bind only outside an area that a plugin
-	// already decides, and only a restricted folder whose scope op has ended and that holds no other
-	// restricted item. Then every item inside stores this folder as its scope. A new node and a file hold
-	// nothing. A bound node passed these checks when it was bound, and restrict, Move and restore refuse to
-	// put a restricted item in a bound area since.
-	if (!existingBinding) {
-		const parent =
-			args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
-		// While a Move holds the node, the area it moves into counts too, like in `restrict_node`.
-		const moveView = nodeId ? await files_saved_placement_db_get_node_view(ctx.db, nodeId) : undefined;
-		const moved =
-			nodeId && moveView
-				? await files_saved_placement_db_get_node(ctx.db, nodeId, { cohortId: moveView.cohortId, view: "after" })
-				: null;
-		for (const scopeNodeId of [
-			parent?.restrictedScopeNodeId,
-			moved?.isRestrictedScopeRoot ? moved.parentScopeNodeId : moved?.restrictedScopeNodeId,
-		]) {
-			if (scopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, scopeNodeId))) {
-				return Result({ _nay: { message: "A plugin already decides who can read the folder around this item" } });
-			}
-		}
-	}
-	const node = nodeId && !existingBinding ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
-	if (node?.kind === "folder") {
-		if (node.restrictedScopeNodeId !== node._id) {
-			return Result({ _nay: { message: "Restrict this item first, then a plugin can decide who reads it" } });
-		}
-		if (node.scopeOpId !== undefined) {
-			return Result({ _nay: { message: "Wait until the access change of this folder finishes" } });
-		}
-		// A folder that a Move holds is only in the Move views.
-		const { cohortId } = await files_saved_placement_db_get_view(ctx.db, node);
-		const restrictedInside =
-			(await ctx.db
-				.query("files_nodes")
-				.withIndex("by_org_ws_parentScope_archive_treePath", (q) =>
-					q
-						.eq("organizationId", node.organizationId)
-						.eq("workspaceId", node.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("parentScopeNodeId", node._id)
-						.eq("archiveOperationId", null),
-				)
-				.first()) ??
-			(cohortId === null
-				? null
-				: ((await ctx.db
-						.query("files_saved_places")
-						.withIndex("by_view_parentScope_archive_tree", (q) =>
-							q
-								.eq("cohortId", cohortId)
-								.eq("view", "before")
-								.eq("parentScopeNodeId", node._id)
-								.eq("archiveOperationId", null),
-						)
-						.first()) ??
-					(await ctx.db
-						.query("files_saved_places")
-						.withIndex("by_view_parentScope_archive_tree", (q) =>
-							q
-								.eq("cohortId", cohortId)
-								.eq("view", "after")
-								.eq("parentScopeNodeId", node._id)
-								.eq("archiveOperationId", null),
-						)
-						.first())));
-		if (restrictedInside) {
-			// The caller may not read that folder, so do not name it.
-			return Result({
-				_nay: {
-					message: "An item inside has its own restricted access, so a plugin cannot decide who reads this folder",
-				},
-			});
-		}
-	}
-
-	return Result({ _yay: { existingBinding, readScopeId } });
-}
-
-/**
- * Apply a checked binding change in the same mutation that prepared it.
- * The caller already checked metadata, consent, permissions, and locks.
- */
-export async function plugins_data_db_apply_file_access_binding(
-	ctx: MutationCtx,
-	args: {
-		installation: Doc<"plugins_workspace_installations">;
-		node: Doc<"files_nodes">;
-		prepared: NonNullable<Awaited<ReturnType<typeof plugins_data_db_prepare_file_access_binding>>["_yay"]>;
-		/**
-		 * The user the plugin acts for. The scope op runs in their name.
-		 */
-		userId: Id<"users">;
-	},
-) {
-	const now = Date.now();
-	const { existingBinding, readScopeId } = args.prepared;
-	if (readScopeId === null) {
-		// A detached binding leaves the member's sharing unchanged.
-		if (!existingBinding) {
-			return;
-		}
-		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
-		return;
-	}
-
-	// The plugin now decides who reads this node's area, so end the links of the node and its area now.
-	// For a node that is not restricted yet, the restrict below does the same deletes.
-	if (args.node.restrictedScopeNodeId === args.node._id) {
-		const { organizationId, workspaceId, _id: nodeId } = args.node;
-		await files_share_links_db_delete_for_node(ctx, { organizationId, workspaceId, nodeId });
-		await files_share_links_db_delete_for_scope(ctx, { organizationId, workspaceId, scopeNodeId: nodeId });
-		// A bound file stops being public too. Public pages already hide the images of a bound area.
-		if (args.node.kind === "file") {
-			await files_nodes_db_set_public(ctx, { nodeId, public: false });
-		}
-	}
-
-	let accessChanged = false;
-	// Restrict the node on itself and start a scope op for the items inside, like the member share door does.
-	if (args.node.restrictedScopeNodeId !== args.node._id) {
-		// The plugin's readers are the whole list, so accounts added here lose access. `restrict_node` keeps
-		// them instead, because there a person chose the list. The account writer keeps the plugin folders
-		// in sync. Added people go in the reader loop below.
-		if (args.node.parentExtendedScopeNodeId !== undefined) {
-			const grants = await db_binding_file_grants(ctx, {
-				organizationId: args.installation.organizationId,
-				workspaceId: args.installation.workspaceId,
-				nodeId: args.node._id,
-			});
-			const accountIds = new Set(grants.flatMap((grant) => grant.serviceAccountId ?? []));
-			for (const serviceAccountId of accountIds) {
-				const removed = await access_control_db_set_service_account_grant(ctx, {
-					organizationId: args.installation.organizationId,
-					workspaceId: args.installation.workspaceId,
-					serviceAccountId,
-					resource: { kind: "file", nodeId: args.node._id },
-					level: null,
-				});
-				if (removed._nay) throw convex_error(removed._nay);
-			}
-		}
-		await files_nodes_db_set_restricted_scope({
-			ctx,
-			organizationId: args.node.organizationId,
-			workspaceId: args.node.workspaceId,
-			nodeId: args.node._id,
-			restrictedScopeNodeId: args.node._id,
-		});
-		await files_subtree_ops_db_start_rebuild(ctx, {
-			kind: "scope",
-			organizationId: args.installation.organizationId,
-			workspaceId: args.installation.workspaceId,
-			userId: args.userId,
-			membership: null,
-			roots: [{ node: args.node, oldTreePath: args.node.treePath }],
-			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
-			now,
-		});
-		accessChanged = true;
-	}
-
-	// Exactly one `content.read` grant per active scope member. The kept set makes a duplicate
-	// grant for the same user get deleted. The caller has permission to replace this reader list.
-	//
-	// The node's own tenant fields are typed with the special workspace literals, so use the
-	// installation's ids — the door already proved the node lives in this workspace.
-	const resourceId = scope_resource_id(args.installation._id, readScopeId);
-	const scopeGrants = await db_scope_grants(ctx, {
-		organizationId: args.installation.organizationId,
-		workspaceId: args.installation.workspaceId,
-		resourceId,
-	});
-	const memberUserIds = new Set(
-		await db_active_scope_user_ids(ctx, {
-			organizationId: args.installation.organizationId,
-			workspaceId: args.installation.workspaceId,
-			grants: scopeGrants,
-		}),
-	);
-	const nodeGrants = await db_binding_file_grants(ctx, {
-		organizationId: args.installation.organizationId,
-		workspaceId: args.installation.workspaceId,
-		nodeId: args.node._id,
-	});
-	const kept = new Set<Id<"users">>();
-	for (const grant of nodeGrants) {
-		// Updating human readers keeps service-account grants.
-		if (grant.principalKind === "service_account") {
-			continue;
-		}
-		const mirrored =
-			grant.principalKind === "user" &&
-			grant.userId !== undefined &&
-			memberUserIds.has(grant.userId) &&
-			grant.permission === "content.read" &&
-			!kept.has(grant.userId);
-		if (mirrored && grant.userId) {
-			kept.add(grant.userId);
-			continue;
-		}
-		await ctx.db.delete("access_control_permission_grants", grant._id);
-		accessChanged = true;
-	}
-
-	for (const userId of memberUserIds) {
-		if (kept.has(userId)) {
-			continue;
-		}
-		await ctx.db.insert("access_control_permission_grants", {
-			organizationId: args.installation.organizationId,
-			workspaceId: args.installation.workspaceId,
-			resourceKind: "file",
-			resourceId: String(args.node._id),
-			principalKind: "user",
-			userId,
-			permission: "content.read",
-			createdAt: now,
-			updatedAt: now,
-		});
-		accessChanged = true;
-	}
-
-	if (accessChanged) await files_media_validation_db_advance_version(ctx, args.installation);
-
-	if (existingBinding) {
-		await ctx.db.patch("plugins_file_access_bindings", existingBinding._id, {
-			scopeId: readScopeId,
-			updatedAt: now,
-		});
-	} else {
-		await ctx.db.insert("plugins_file_access_bindings", {
-			organizationId: args.installation.organizationId,
-			workspaceId: args.installation.workspaceId,
-			installationId: args.installation._id,
-			scopeId: readScopeId,
-			nodeId: args.node._id,
-			updatedAt: now,
-		});
-	}
-}
-
-/**
  * Delete an empty live scope, or make its lowest active member the manager.
  */
 export async function plugins_data_db_keep_scope_managed(args: {
 	ctx: MutationCtx;
-	installation: Doc<"plugins_workspace_installations">;
 	scopes: Doc<"plugins_data_scopes">[];
 	excludeUserId?: Id<"users">;
 	deleteIfEmpty?: boolean;
@@ -4331,16 +3897,6 @@ export async function plugins_data_db_keep_scope_managed(args: {
 			return { deleted: false, hasActivePrincipal: false, promoted: false };
 		}
 		await plugins_data_db_delete_scope(ctx, args.scopes);
-		// Account deletion and organization member drain reach scope teardown only through this
-		// branch (via cleanup_stranded_scopes), so a binding not synced here would keep mirrored
-		// `content.read` grants alive on a file whose scope no longer exists.
-		await db_sync_file_access_bindings({
-			ctx,
-			installation: args.installation,
-			scopeId: first.scopeId,
-			addUserIds: [],
-			removeUserIds: "all",
-		});
 		return { deleted: true, hasActivePrincipal: false, promoted: false };
 	}
 
@@ -4431,7 +3987,6 @@ export const cleanup_stranded_scopes = internalMutation({
 
 			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				installation,
 				scopes,
 			});
 			if (!managed.deleted) {
@@ -5034,7 +4589,6 @@ export const user_manage_scope = mutation({
 
 			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				installation,
 				scopes: existing,
 				excludeUserId: userId,
 			});
@@ -5049,13 +4603,6 @@ export const user_manage_scope = mutation({
 				userId,
 				level: null,
 				now,
-			});
-			await db_sync_file_access_bindings({
-				ctx,
-				installation,
-				scopeId: scopeId._yay,
-				addUserIds: [],
-				removeUserIds: [userId],
 			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -5090,13 +4637,6 @@ export const user_manage_scope = mutation({
 
 		if (args.action.kind === "delete") {
 			await plugins_data_db_delete_scope(ctx, existing);
-			await db_sync_file_access_bindings({
-				ctx,
-				installation,
-				scopeId: scopeId._yay,
-				addUserIds: [],
-				removeUserIds: "all",
-			});
 			return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 		}
 
@@ -5110,7 +4650,6 @@ export const user_manage_scope = mutation({
 			}
 			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				installation,
 				scopes: existing,
 				excludeUserId: target,
 				deleteIfEmpty: false,
@@ -5125,13 +4664,6 @@ export const user_manage_scope = mutation({
 				userId: target,
 				level: null,
 				now,
-			});
-			await db_sync_file_access_bindings({
-				ctx,
-				installation,
-				scopeId: scopeId._yay,
-				addUserIds: [],
-				removeUserIds: [target],
 			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -5179,7 +4711,6 @@ export const user_manage_scope = mutation({
 		if (args.action.level === "member") {
 			const managed = await plugins_data_db_keep_scope_managed({
 				ctx,
-				installation,
 				scopes: existing,
 				excludeUserId: target,
 				deleteIfEmpty: false,
@@ -5196,14 +4727,6 @@ export const user_manage_scope = mutation({
 			userId: target,
 			level: args.action.level,
 			now,
-		});
-		// A level change for an existing member makes this an idempotent no-op.
-		await db_sync_file_access_bindings({
-			ctx,
-			installation,
-			scopeId: scopeId._yay,
-			addUserIds: [target],
-			removeUserIds: [],
 		});
 		await Promise.all(
 			existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -6732,20 +6255,6 @@ export async function plugins_data_db_drain_batch(
 		return { done: false, deletedCount: grants.length };
 	}
 
-	// Binding docs drain with the plugin; the mirrored file grants stay. Frozen files outlive the
-	// plugin.
-	const fileAccessBindings = await ctx.db
-		.query("plugins_file_access_bindings")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (fileAccessBindings.length > 0) {
-		await Promise.all(fileAccessBindings.map((doc) => ctx.db.delete("plugins_file_access_bindings", doc._id)));
-		return { done: false, deletedCount: fileAccessBindings.length };
-	}
-
 	// Keep this slot after the document passes. Grants go before scope docs so a
 	// partial drain fails closed. Released fences go last so stale writers stay refused until both the
 	// documents and their live scope docs are gone.
@@ -6960,19 +6469,6 @@ export async function plugins_data_db_count_installation_docs(args: {
 				.take(limit),
 		budget: previewBudget,
 	});
-	const fileAccessBindings = await db_take_preview_docs({
-		read: (limit) =>
-			ctx.db
-				.query("plugins_file_access_bindings")
-				.withIndex("by_organization_workspace_installation", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("installationId", args.installationId),
-				)
-				.take(limit),
-		budget: previewBudget,
-	});
 	const pluginScopeGrants = await db_take_preview_docs({
 		read: (limit) =>
 			ctx.db
@@ -7026,8 +6522,6 @@ export async function plugins_data_db_count_installation_docs(args: {
 		memberUsageDocsTruncated: memberUsage.truncated,
 		serviceGrants: serviceGrants.docs.length,
 		serviceGrantsTruncated: serviceGrants.truncated,
-		fileAccessBindings: fileAccessBindings.docs.length,
-		fileAccessBindingsTruncated: fileAccessBindings.truncated,
 		pluginScopeGrants: pluginScopeGrants.docs.length,
 		pluginScopeGrantsTruncated: pluginScopeGrants.truncated,
 		pluginDataScopeRows: pluginDataScopeRows.docs.length,

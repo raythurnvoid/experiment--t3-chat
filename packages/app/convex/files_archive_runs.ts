@@ -41,6 +41,7 @@ import { mutation } from "./functions.ts";
 import {
 	access_control_db_authorize_file_write,
 	access_control_db_authorize_membership,
+	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
 import {
@@ -59,7 +60,6 @@ import {
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
-import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
 import {
 	files_nodes_db_require_user_writable,
 	files_nodes_db_require_writable,
@@ -189,8 +189,8 @@ type StepArgs = {
 	progress: RunProgress;
 	userAuth: { id: Id<"users"> };
 	/**
-	 * Who the archive checks act as. A job that an API key bound to a service account started checks
-	 * access as the account. A restore always acts as the person.
+	 * Who the archive and restore checks act as. A job that an API key bound to a service account
+	 * started checks access as the account.
 	 */
 	writeContext: files_nodes_WriteContext;
 	/**
@@ -507,15 +507,16 @@ async function db_check_restore_folder(
 	)
 		return null;
 
-	const readable = await access_control_db_authorize_membership(ctx, {
-		userAuth: args.userAuth,
-		membership,
-		permission: "content.read",
+	const readable = await access_control_db_can_act_on_file_node(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		subject: args.writeContext.subject,
 		fileNode: folder,
+		permission: "content.read",
 	});
 	return {
 		kind: "failed",
-		nay: readable._nay
+		nay: !readable
 			? { message: "Permission denied" }
 			: {
 					name: "read_only",
@@ -544,48 +545,29 @@ async function db_check_restore_move(
 	if (!membership) return MEMBERSHIP_LOST;
 	if (node.restrictedScopeNodeId === node._id) return null;
 
-	const authorizedTarget = await access_control_db_authorize_file_write(ctx, {
-		userAuth: args.userAuth,
-		membership,
-		nodeId: destParentId,
-	});
-	if (authorizedTarget._nay) return { kind: "failed", nay: authorizedTarget._nay } as const;
+	const destParent = destParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", destParentId);
+	if (
+		(destParentId !== files_ROOT_ID && !destParent) ||
+		!(await files_write_policy_db_has_write_context_permission(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			writeContext: args.writeContext,
+			membership,
+			node: destParent,
+			permission: "content.write",
+		}))
+	)
+		return { kind: "failed", nay: { message: "Permission denied" } } as const;
 
 	const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
-		userAuth: args.userAuth,
 		membership,
+		writeContext: args.writeContext,
 		fileNode: node,
 		destParentId,
 	});
 	if (authorizedLeaving._nay) return { kind: "failed", nay: authorizedLeaving._nay } as const;
 
 	return null;
-}
-
-/**
- * A plugin decides who reads the whole bound area, so a restricted item cannot come back into one.
- * `folder` is the folder the item lands in, or the folder its new folders are made in: they take its
- * area. Null is the root.
- */
-async function db_get_plugin_area_refusal(
-	ctx: MutationCtx,
-	args: { node: Doc<"files_nodes">; folder: Doc<"files_nodes"> | null },
-) {
-	const { node, folder } = args;
-
-	if (
-		node.restrictedScopeNodeId !== node._id ||
-		!folder?.restrictedScopeNodeId ||
-		!(await files_nodes_db_has_plugin_binding(ctx, folder.restrictedScopeNodeId))
-	)
-		return null;
-	return {
-		kind: "failed",
-		nay: {
-			message:
-				"A plugin decides who can read the folder it comes back to, so a restricted item cannot be restored there.",
-		},
-	} as const;
 }
 
 /**
@@ -1647,12 +1629,15 @@ async function db_check_restore_create(
 	const membership = args.membership;
 	if (!membership) return MEMBERSHIP_LOST;
 
-	const authorized = await access_control_db_authorize_file_write(ctx, {
-		userAuth: args.userAuth,
+	const authorized = await files_write_policy_db_has_write_context_permission(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		writeContext: args.writeContext,
 		membership,
-		nodeId: files_ROOT_ID,
+		node: null,
+		permission: "content.write",
 	});
-	return authorized._nay ? ({ kind: "failed", nay: authorized._nay } as const) : null;
+	return authorized ? null : ({ kind: "failed", nay: { message: "Permission denied" } } as const);
 }
 
 /**
@@ -1669,15 +1654,16 @@ async function db_get_file_in_the_way_refusal(
 
 	const membership = args.membership;
 	if (!membership) return MEMBERSHIP_LOST;
-	const readable = await access_control_db_authorize_membership(ctx, {
-		userAuth: args.userAuth,
-		membership,
-		permission: "content.read",
+	const readable = await access_control_db_can_act_on_file_node(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		subject: args.writeContext.subject,
 		fileNode: file,
+		permission: "content.read",
 	});
 	return {
 		kind: "failed",
-		nay: readable._nay
+		nay: !readable
 			? { message: "Permission denied" }
 			: {
 					name: "file_in_the_way",
@@ -1902,7 +1888,6 @@ async function db_check_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				(target.folder || target.missingNames.length > 0
 					? await db_check_restore_create({ ctx, ...args, folder: target.folder })
 					: null) ??
-				(await db_get_plugin_area_refusal(ctx, { node, folder: target.folder })) ??
 				(await db_check_restore_move({ ctx, ...args, node, destParentId: target.folder?._id ?? files_ROOT_ID }));
 			if (targetRefusal) return targetRefusal;
 			if (run.rootNodeIds.length >= MAX_ROOT_LANDINGS) {
@@ -2030,7 +2015,6 @@ async function db_restore_top(
 			const refusal =
 				(await db_check_writable_nodes({ ctx, ...previousArgs, nodes: [node] })) ??
 				(parent ? await db_check_restore_folder({ ctx, ...previousArgs, folder: parent }) : null) ??
-				(await db_get_plugin_area_refusal(ctx, { node, folder: target.folder })) ??
 				(await db_check_restore_move({
 					ctx,
 					...previousArgs,
@@ -2114,8 +2098,6 @@ async function db_land_node(
 
 	const { run, progress } = previousArgs;
 	const landingParentId = landing?._id ?? files_ROOT_ID;
-	const pluginRefusal = await db_get_plugin_area_refusal(ctx, { node, folder: landing });
-	if (pluginRefusal) return pluginRefusal;
 
 	let name = node.name;
 	let replacedNode: Doc<"files_nodes"> | null = null;

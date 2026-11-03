@@ -25,7 +25,6 @@ import {
 	fixture,
 	reset_rate_limits,
 	insert_installation,
-	apply_binding,
 	seed_big_folder,
 	read_links,
 	link_on,
@@ -34,7 +33,6 @@ import {
 	insert_media_file,
 	insert_restricted_folder,
 	create_restricted_folder,
-	restrict_and_bind,
 	view_of,
 	type Fixture,
 } from "./files_share_links.setup.test.ts";
@@ -369,7 +367,7 @@ describe("view", () => {
 		expect(await shown(f, link.token)).toEqual([false]);
 	});
 
-	test("hides a public image in a bound area or in a dead area", async () => {
+	test("hides a public image in a dead area", async () => {
 		const f = await fixture();
 		const teamId = await insert_restricted_folder(f, "team");
 		const imageId = await insert_media_file(f, {
@@ -381,22 +379,6 @@ describe("view", () => {
 		await patch_node(f, imageId, { restrictedScopeNodeId: teamId });
 		// The page is open, so only the image's own area can hide it.
 		const { link } = await linked_page(f, "/page.md", [imageId]);
-		expect(await shown(f, link.token)).toEqual([true]);
-
-		// A plugin decides who reads the area. The image keeps its own flag, like one inside a bound folder.
-		const installationId = await insert_installation(f);
-		const bindingId = await f.t.run((ctx) =>
-			ctx.db.insert("plugins_file_access_bindings", {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				installationId,
-				scopeId: "team",
-				nodeId: teamId,
-				updatedAt: Date.now(),
-			}),
-		);
-		expect(await shown(f, link.token)).toEqual([false]);
-		await f.t.run((ctx) => ctx.db.delete("plugins_file_access_bindings", bindingId));
 		expect(await shown(f, link.token)).toEqual([true]);
 
 		// The folder stopped being restricted, and its job has not reached the image yet.
@@ -578,7 +560,7 @@ describe("set_node_public", () => {
 		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 	});
 
-	test("refuses a folder, a node of another workspace, and a node in a bound area", async () => {
+	test("refuses a folder and a node of another workspace", async () => {
 		const f = await fixture();
 		const folderId = await create_folder(f, "root", "pub");
 		expect(await set_as(f, f.asOwner, f.db.membershipId, folderId, true)).toMatchObject({
@@ -591,13 +573,6 @@ describe("set_node_public", () => {
 		);
 		const otherNodeId = await test_create_saved_text_file(f.t, { membershipId: other.membershipId, path: "/x.md" });
 		expect((await set_as(f, f.asOwner, f.db.membershipId, otherNodeId, true))._nay?.message).toBe("Not found");
-
-		const team = await create_restricted_folder(f, "/team");
-		await restrict_and_bind(f, team.folderId);
-		expect((await set_as(f, f.asOwner, f.db.membershipId, team.fileId, true))._nay?.message).toBe(
-			"A plugin decides who can read this item, so it cannot be public",
-		);
-		expect((await read_node(f, team.fileId))?.isPublic).toBeUndefined();
 	});
 
 	test("refuses On while a scope job above runs, and for a node a Move reserved", async () => {
@@ -787,32 +762,6 @@ describe("writers", () => {
 		expect(copy?.isPublic).toBeUndefined();
 		const { link } = await linked_page(f, "/page.md", [copy!._id, imageId]);
 		expect(await shown(f, link.token)).toEqual([false, true]);
-	});
-});
-
-describe("plugin binding", () => {
-	test("binding a restricted public file clears its flag, and a detach does not bring it back", async () => {
-		const f = await fixture();
-		const imageId = await insert_media_file(f, { parentId: "root", path: "/photo.png", contentType: "image/png" });
-		await reset_rate_limits(f.t, [f.db.userId]);
-		expect(
-			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: imageId }))
-				._nay,
-		).toBeUndefined();
-		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-		// Made public after the restrict, so only the binding can clear it.
-		await set_public(f, imageId);
-		const { link } = await linked_page(f, "/page.md", [imageId]);
-		expect(await shown(f, link.token)).toEqual([true]);
-
-		const installationId = await insert_installation(f);
-		await apply_binding(f, { installationId, folderId: imageId, readScopeId: "team" });
-		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
-		expect(await shown(f, link.token)).toEqual([false]);
-
-		await apply_binding(f, { installationId, folderId: imageId, readScopeId: null });
-		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
-		expect(await shown(f, link.token)).toEqual([false]);
 	});
 });
 

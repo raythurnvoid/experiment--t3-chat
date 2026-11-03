@@ -57,8 +57,6 @@ describe("http routes", () => {
 				"OPTIONS /api/v1/files/read",
 				"POST /api/v1/files/plugin-access/set",
 				"OPTIONS /api/v1/files/plugin-access/set",
-				"POST /api/v1/files/plugin-access/undo",
-				"OPTIONS /api/v1/files/plugin-access/undo",
 				"POST /api/v1/files/plugin-archive",
 				"OPTIONS /api/v1/files/plugin-archive",
 				"POST /api/v1/files/plugin-folders/ensure",

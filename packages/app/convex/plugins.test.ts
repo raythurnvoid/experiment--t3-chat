@@ -140,12 +140,7 @@ describe("install_version service accounts", () => {
 		).toBeUndefined();
 
 		const rebound = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installation._id)))!;
-		// The new account's roots are built by a background job.
-		expect(rebound).toEqual({
-			...beforeRebind,
-			serviceAccountId: replacement._yay.serviceAccountId,
-			sandbox: { roots: [], rebuild: { status: "running", leaseUntil: expect.any(Number) } },
-		});
+		expect(rebound).toEqual({ ...beforeRebind, serviceAccountId: replacement._yay.serviceAccountId });
 		expect(
 			await t.run((ctx) => plugins_db_get_live_service_account(ctx, { installation: rebound, serviceAccountId })),
 		).toBeNull();
@@ -7697,31 +7692,6 @@ describe("plugins metadata file doors", () => {
 		});
 	}
 
-	async function seed_file_scope(args: {
-		t: ReturnType<typeof test_convex>;
-		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>;
-		scopeId: string;
-	}) {
-		const { t, fixture, scopeId } = args;
-
-		await t.run(async (ctx) => {
-			const now = Date.now();
-			await ctx.db.insert("plugins_data_scopes", {
-				organizationId: fixture.membership.organizationId,
-				workspaceId: fixture.membership.workspaceId,
-				installationId: fixture.installationId,
-				scopeId,
-				collection: "messages",
-				keyPrefix: scopeId,
-				createdByUserId: fixture.membership.userId,
-				createdAt: now,
-				updatedAt: now,
-				lastAppend: null,
-				appendSequence: 0,
-			});
-		});
-	}
-
 	async function seed_file_member(
 		t: ReturnType<typeof test_convex>,
 		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>,
@@ -7902,7 +7872,6 @@ describe("plugins metadata file doors", () => {
 			outer: await ctx.db.get("files_nodes", outer._id),
 			parent: await ctx.db.get("files_nodes", parent._id),
 			grants: await ctx.db.query("access_control_permission_grants").collect(),
-			bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
 		}));
 		expect(before.parent).toMatchObject({ restrictedScopeNodeId: parent._id, isRestrictedScopeRoot: true });
 		expect(before.outer).toMatchObject({ restrictedScopeNodeId: outer._id, isRestrictedScopeRoot: true });
@@ -7962,7 +7931,6 @@ describe("plugins metadata file doors", () => {
 				outer: await ctx.db.get("files_nodes", outer._id),
 				parent: await ctx.db.get("files_nodes", parent._id),
 				grants: await ctx.db.query("access_control_permission_grants").collect(),
-				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
 			})),
 		).toEqual(before);
 		expect(
@@ -8057,12 +8025,11 @@ describe("plugins metadata file doors", () => {
 		).toEqual([{ key: "plugin-name", value: "probe" }]);
 	});
 
-	test("ensure preserves member metadata, unlocks, and detached sharing, then obeys a member relock", async () => {
+	test("ensure preserves member metadata, unlocks, and sharing, then obeys a member relock", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
 		const member = await seed_file_member(t, fixture);
-		await seed_file_scope({ t, fixture, scopeId: "private" });
 
 		expect(
 			(
@@ -8072,14 +8039,13 @@ describe("plugins metadata file doors", () => {
 					apiToken: run.apiToken,
 					body: {
 						path: "/probe",
-						access: { readOnly: true, readScopeId: "private" },
+						access: { readOnly: true },
 					},
 				})
 			).status,
 		).toBe(200);
 
 		const node = (await find_active_node({ t, fixture, path: "/probe" }))!;
-		await grant_file_account(fixture, node._id);
 		expect(
 			await fixture.asOwner.mutation(api.files_nodes.read_only_set, {
 				readOnly: false,
@@ -8094,7 +8060,6 @@ describe("plugins metadata file doors", () => {
 				metadataYaml: "plugin-name: probe\nsource: member\nnote: keep",
 			}),
 		).toEqual({ _yay: null });
-		expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toHaveLength(1);
 		expect(
 			await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 				membershipId: fixture.membership.membershipId,
@@ -8107,9 +8072,7 @@ describe("plugins metadata file doors", () => {
 		const before = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", node._id),
 			grants: await ctx.db.query("access_control_permission_grants").collect(),
-			bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
 		}));
-		expect(before.bindings).toEqual([]);
 
 		expect(
 			(
@@ -8119,7 +8082,7 @@ describe("plugins metadata file doors", () => {
 					apiToken: run.apiToken,
 					body: {
 						path: "/probe",
-						access: { readOnly: true, readScopeId: "private" },
+						access: { readOnly: true },
 					},
 				})
 			).status,
@@ -8129,7 +8092,6 @@ describe("plugins metadata file doors", () => {
 			await t.run(async (ctx) => ({
 				node: await ctx.db.get("files_nodes", node._id),
 				grants: await ctx.db.query("access_control_permission_grants").collect(),
-				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
 			})),
 		).toEqual(before);
 		expect(
@@ -8169,154 +8131,13 @@ describe("plugins metadata file doors", () => {
 		expect(await find_active_node({ t, fixture, path: "/probe" })).toEqual(relocked);
 	});
 
-	test.each(["missing", "full"] as const)(
-		"a %s reader scope refuses before creating folders or changing locks",
-		async (reason) => {
-			const t = test_convex();
-			const fixture = await install_file_doors_plugin(t);
-			const run = await start_file_invoke_run({ t, fixture });
-
-			if (reason === "full") {
-				await seed_file_scope({ t, fixture, scopeId: "limited" });
-				for (let index = 0; index < 4; index++) {
-					expect(
-						(
-							await door_call({
-								t,
-								path: "/api/v1/files/plugin-folders/ensure",
-								apiToken: run.apiToken,
-								body: {
-									path: `/bound-${index}`,
-									access: { readScopeId: "limited" },
-								},
-							})
-						).status,
-					).toBe(200);
-				}
-			}
-
-			expect(
-				(
-					await door_call({
-						t,
-						path: "/api/v1/files/plugin-folders/ensure",
-						apiToken: run.apiToken,
-						body: { path: "/probe" },
-					})
-				).status,
-			).toBe(200);
-
-			const before = await find_active_node({ t, fixture, path: "/probe" });
-			const expectedStatus = reason === "missing" ? 404 : 409;
-
-			expect(
-				(
-					await door_call({
-						t,
-						path: "/api/v1/files/plugin-folders/ensure",
-						apiToken: run.apiToken,
-						body: {
-							path: "/new-parent/new-child",
-							access: { readOnly: true, readScopeId: "limited" },
-						},
-					})
-				).status,
-			).toBe(expectedStatus);
-			expect(await find_active_node({ t, fixture, path: "/new-parent" })).toBeNull();
-
-			expect(
-				(
-					await door_call({
-						t,
-						path: "/api/v1/files/plugin-access/set",
-						apiToken: run.apiToken,
-						body: {
-							path: "/probe",
-							access: { readOnly: true, readScopeId: "limited" },
-						},
-					})
-				).status,
-			).toBe(expectedStatus);
-
-			expect(await find_active_node({ t, fixture, path: "/probe" })).toEqual(before);
-			expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toHaveLength(
-				reason === "full" ? 4 : 0,
-			);
-		},
-	);
-
-	test("ensure refuses a different scope and both policy doors refuse a foreign installation binding", async () => {
-		const t = test_convex();
-		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run({ t, fixture });
-		await seed_file_scope({ t, fixture, scopeId: "first" });
-		await seed_file_scope({ t, fixture, scopeId: "second" });
-
-		expect(
-			(
-				await door_call({
-					t,
-					path: "/api/v1/files/plugin-folders/ensure",
-					apiToken: run.apiToken,
-					body: {
-						path: "/probe",
-						access: { readScopeId: "first" },
-					},
-				})
-			).status,
-		).toBe(200);
-		await grant_file_account(fixture, (await find_active_node({ t, fixture, path: "/probe" }))!._id);
-
-		expect(
-			(
-				await door_call({
-					t,
-					path: "/api/v1/files/plugin-folders/ensure",
-					apiToken: run.apiToken,
-					body: {
-						path: "/probe",
-						access: { readScopeId: "second" },
-					},
-				})
-			).status,
-		).toBe(409);
-
-		await t.run(async (ctx) => {
-			const installation = (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!;
-			const { _id, _creationTime, ...fields } = installation;
-			const foreignId = await ctx.db.insert("plugins_workspace_installations", fields);
-			// Uninstall removes the old installation before its scope and binding drain.
-			await ctx.db.delete("plugins_workspace_installations", foreignId);
-			const binding = (await ctx.db.query("plugins_file_access_bindings").first())!;
-			await ctx.db.patch("plugins_file_access_bindings", binding._id, { installationId: foreignId });
-			const scope = await ctx.db
-				.query("plugins_data_scopes")
-				.withIndex("by_installation_scope", (q) =>
-					q.eq("installationId", fixture.installationId).eq("scopeId", "first"),
-				)
-				.first();
-			await ctx.db.patch("plugins_data_scopes", scope!._id, { installationId: foreignId });
-		});
-
-		const before = await find_active_node({ t, fixture, path: "/probe" });
-		for (const [route, body] of [
-			["/api/v1/files/plugin-folders/ensure", { path: "/probe" }],
-			["/api/v1/files/plugin-access/set", { path: "/probe", access: { readOnly: true } }],
-			["/api/v1/files/plugin-access/set", { path: "/probe", access: { readScopeId: null } }],
-		] as const) {
-			const refused = await door_call({ t, path: route, apiToken: run.apiToken, body });
-			expect(refused.status, route).toBe(409);
-			expect(await find_active_node({ t, fixture, path: "/probe" })).toEqual(before);
-		}
-	});
-
 	test("the folder ensure locks a folder under the plugin's own locked root", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
 
-		// The shape every plugin with a locked root uses: lock the root, then build restricted
-		// subfolders inside it. Chitchat does exactly this for `/chitchat/private/<channel>`.
+		// The shape every plugin with a locked root uses: lock the root, then build subfolders inside
+		// it. Chitchat does this for `/chitchat/private/<channel>`.
 		const root = await door_call({
 			t,
 			path: "/api/v1/files/plugin-folders/ensure",
@@ -8341,25 +8162,6 @@ describe("plugins metadata file doors", () => {
 		});
 		expect(nested.status).toBe(200);
 
-		// The scope binding is applied after Read-only.
-		// The binding needs a live private scope of this installation; the door checks the scope
-		// row, not the page flow that normally creates it.
-		await t.run(async (ctx) => {
-			const now = Date.now();
-			await ctx.db.insert("plugins_data_scopes", {
-				organizationId: fixture.membership.organizationId,
-				workspaceId: fixture.membership.workspaceId,
-				installationId: fixture.installationId,
-				scopeId: "scope-a",
-				collection: "messages",
-				keyPrefix: "scope-a",
-				createdByUserId: fixture.membership.userId,
-				createdAt: now,
-				updatedAt: now,
-				lastAppend: null,
-				appendSequence: 0,
-			});
-		});
 		const scoped = await door_call({
 			t,
 			path: "/api/v1/files/plugin-folders/ensure",
@@ -8367,7 +8169,7 @@ describe("plugins metadata file doors", () => {
 			body: {
 				path: "/probe/private/channel-a",
 				force: true,
-				access: { readOnly: true, readScopeId: "scope-a" },
+				access: { readOnly: true },
 			},
 		});
 		expect(scoped.status).toBe(200);
@@ -8385,8 +8187,6 @@ describe("plugins metadata file doors", () => {
 			readOnly: true,
 			readOnlyDecisionId: expect.any(String),
 		});
-		const binding = await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").first());
-		expect(binding).toMatchObject({ nodeId: scopedNode?._id, scopeId: "scope-a" });
 	});
 
 	test("an invoke run reads and lists workspace files through the public doors", async () => {
@@ -9267,157 +9067,6 @@ describe("plugins metadata file doors", () => {
 		]);
 	});
 
-	test("the access door binds a private-space reader list through readScopeId", async () => {
-		const t = test_convex();
-		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run({ t, fixture });
-		expect(
-			(
-				await door_call({
-					t,
-					path: "/api/v1/files/plugin-folders/ensure",
-					apiToken: run.apiToken,
-					body: { path: "/probe" },
-				})
-			).status,
-		).toBe(200);
-		expect(
-			(
-				await door_call({
-					t,
-					path: "/api/v1/files/write",
-					apiToken: run.apiToken,
-					body: { path: "/probe/secret.md", content: "# S\n" },
-				})
-			).status,
-		).toBe(200);
-		const secretNode = await find_active_node({ t, fixture, path: "/probe/secret.md" });
-		// The binding needs a live private scope of this installation; the door checks the scope
-		// row, not the page flow that normally creates it.
-		await t.run(async (ctx) => {
-			const now = Date.now();
-			await ctx.db.insert("plugins_data_scopes", {
-				organizationId: fixture.membership.organizationId,
-				workspaceId: fixture.membership.workspaceId,
-				installationId: fixture.installationId,
-				scopeId: "p/door",
-				collection: "messages",
-				keyPrefix: "p/door",
-				createdByUserId: fixture.membership.userId,
-				createdAt: now,
-				updatedAt: now,
-				lastAppend: null,
-				appendSequence: 0,
-			});
-		});
-		const read_binding_rows = async () =>
-			await t.run(async (ctx) =>
-				ctx.db
-					.query("plugins_file_access_bindings")
-					.withIndex("by_installation_scopeId", (q) =>
-						q.eq("installationId", fixture.installationId).eq("scopeId", "p/door"),
-					)
-					.collect(),
-			);
-
-		// An access object with nothing to change is refused before the mutation runs.
-		const empty = await door_call({
-			t,
-			path: "/api/v1/files/plugin-access/set",
-			apiToken: run.apiToken,
-			body: {
-				path: "/probe/secret.md",
-				access: {},
-			},
-		});
-		expect(empty.status).toBe(400);
-		expect(await empty.json()).toEqual({ message: "access must set readOnly or readScopeId." });
-
-		const bound = await door_call({
-			t,
-			path: "/api/v1/files/plugin-access/set",
-			apiToken: run.apiToken,
-			body: {
-				path: "/probe/secret.md",
-				access: { readScopeId: "p/door" },
-			},
-		});
-		expect(bound.status).toBe(200);
-		expect(await bound.json()).toEqual({ nodeId: String(secretNode!._id) });
-		expect((await find_active_node({ t, fixture, path: "/probe/secret.md" }))?.restrictedScopeNodeId).toBe(
-			secretNode!._id,
-		);
-		expect(await read_binding_rows()).toMatchObject([{ nodeId: secretNode!._id }]);
-		await grant_file_account(fixture, secretNode!._id);
-
-		const deadScope = await door_call({
-			t,
-			path: "/api/v1/files/plugin-access/set",
-			apiToken: run.apiToken,
-			body: {
-				path: "/probe/secret.md",
-				access: { readScopeId: "p/ghost" },
-			},
-		});
-		expect(deadScope.status).toBe(404);
-		expect(await deadScope.json()).toEqual({ message: "Not found" });
-
-		const beforeDetach = await t.run(async (ctx) => ({
-			node: await ctx.db.get("files_nodes", secretNode!._id),
-			grants: await ctx.db.query("access_control_permission_grants").collect(),
-		}));
-		const released = await door_call({
-			t,
-			path: "/api/v1/files/plugin-access/set",
-			apiToken: run.apiToken,
-			body: {
-				path: "/probe/secret.md",
-				access: { readScopeId: null },
-			},
-		});
-		expect(released.status).toBe(200);
-		expect(
-			await t.run(async (ctx) => ({
-				node: await ctx.db.get("files_nodes", secretNode!._id),
-				grants: await ctx.db.query("access_control_permission_grants").collect(),
-			})),
-		).toEqual(beforeDetach);
-		expect(await read_binding_rows()).toEqual([]);
-
-		// Ensure applies both access fields on the folder it creates, in the same call.
-		const vault = await door_call({
-			t,
-			path: "/api/v1/files/plugin-folders/ensure",
-			apiToken: run.apiToken,
-			body: {
-				path: "/probe/vault",
-				access: { readOnly: true, readScopeId: "p/door" },
-			},
-		});
-		expect(vault.status).toBe(200);
-		const vaultNode = await find_active_node({ t, fixture, path: "/probe/vault" });
-		expect(vaultNode).toMatchObject({
-			readOnly: true,
-			readOnlyDecisionId: expect.any(String),
-			restrictedScopeNodeId: vaultNode!._id,
-		});
-		expect(await read_binding_rows()).toMatchObject([{ nodeId: vaultNode!._id }]);
-
-		// A dead scope on ensure answers 404 through the same arm as the access door.
-		const vaultDead = await door_call({
-			t,
-			path: "/api/v1/files/plugin-folders/ensure",
-			apiToken: run.apiToken,
-			body: {
-				path: "/probe/vault-two",
-				access: { readScopeId: "p/ghost" },
-			},
-		});
-		expect(vaultDead.status).toBe(404);
-		expect(await vaultDead.json()).toEqual({ message: "Not found" });
-		expect(await find_active_node({ t, fixture, path: "/probe/vault-two" })).toBeNull();
-	});
-
 	test("touch creates an empty file inside the labelled area and refuses one outside it", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
@@ -9541,112 +9190,32 @@ describe("plugins metadata file doors", () => {
 		expect(await find_active_node({ t, fixture, path: "/probe/through-lock.md" })).toMatchObject({ kind: "file" });
 	});
 
-	test.each(["lock", "readers"] as const)(
-		"the access door checks the authority for %s on an unrestricted node",
-		async (change) => {
-			const t = test_convex();
-			const fixture = await install_file_doors_plugin(t);
-			const member = await seed_file_member(t, fixture);
-			const nodeId = await seed_member_folder({ t, fixture, name: "member-folder" });
-			expect(
-				await member.asUser.mutation(api.files_metadata.set_entries, {
-					membershipId: member.membershipId,
-					fileNodeId: nodeId,
-					metadataYaml: "plugin-name: probe",
-				}),
-			).toEqual({ _yay: null });
-			if (change === "readers") {
-				await seed_file_scope({ t, fixture, scopeId: "private" });
-			}
-			const run = await start_file_invoke_run({ t, fixture, userId: member.userId });
-			const before = await t.run(async (ctx) => ({
-				node: await ctx.db.get("files_nodes", nodeId),
-				metadata: await ctx.db.query("files_metadata_docs").collect(),
-				grants: await ctx.db.query("access_control_permission_grants").collect(),
-				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
-			}));
-			expect(before.node?.restrictedScopeNodeId).toBeNull();
-			expect(before.node?.readOnly).toBe(false);
-			const access = change === "lock" ? { readOnly: true } : { readScopeId: "private" };
-			const refused = await door_call({
-				t,
-				path: "/api/v1/files/plugin-access/set",
-				apiToken: run.apiToken,
-				body: {
-					path: "/member-folder",
-					access,
-				},
-			});
-			if (change === "lock") {
-				expect(refused.status).toBe(200);
-				expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({ readOnly: true });
-				return;
-			}
-			expect(refused.status).toBe(409);
-			expect(await refused.json()).toEqual({
-				message: "Restrict this item first, then a plugin can decide who reads it",
-			});
-			expect(
-				await t.run(async (ctx) => ({
-					node: await ctx.db.get("files_nodes", nodeId),
-					metadata: await ctx.db.query("files_metadata_docs").collect(),
-					grants: await ctx.db.query("access_control_permission_grants").collect(),
-					bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
-				})),
-			).toEqual(before);
-
-			expect(
-				await fixture.asOwner.mutation(api.access_control.set_user_role, {
-					organizationId: fixture.membership.organizationId,
-					workspaceId: fixture.membership.workspaceId,
-					userId: member.userId,
-					role: "admin",
-				}),
-			).toEqual({ _yay: null });
-			if (change === "readers") {
-				// A plugin binds only a restricted folder. A Files manager restricts it first.
-				const open = await door_call({
-					t,
-					path: "/api/v1/files/plugin-access/set",
-					apiToken: run.apiToken,
-					body: { path: "/member-folder", access },
-				});
-				expect(open.status).toBe(409);
-				expect(await open.json()).toEqual({
-					message: "Restrict this item first, then a plugin can decide who reads it",
-				});
-				expect(
-					await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
-						membershipId: fixture.membership.membershipId,
-						nodeId,
-					}),
-				).toEqual({ _yay: null });
-				expect(
-					await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-						membershipId: fixture.membership.membershipId,
-						nodeId,
-						principal: { kind: "user", userId: member.userId },
-						level: "manage",
-					}),
-				).toEqual({ _yay: null });
-				await grant_file_account(fixture, nodeId);
-			}
-			const accepted = await door_call({
-				t,
-				path: "/api/v1/files/plugin-access/set",
-				apiToken: run.apiToken,
-				body: {
-					path: "/member-folder",
-					access,
-				},
-			});
-			expect(accepted.status).toBe(200);
-			expect(await accepted.json()).toEqual({ nodeId });
-			expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toEqual([
-				expect.objectContaining({ nodeId, installationId: fixture.installationId, scopeId: "private" }),
-			]);
-		},
-	);
+	test("the access door locks an unrestricted node it may change", async () => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t);
+		const member = await seed_file_member(t, fixture);
+		const nodeId = await seed_member_folder({ t, fixture, name: "member-folder" });
+		expect(
+			await member.asUser.mutation(api.files_metadata.set_entries, {
+				membershipId: member.membershipId,
+				fileNodeId: nodeId,
+				metadataYaml: "plugin-name: probe",
+			}),
+		).toEqual({ _yay: null });
+		const run = await start_file_invoke_run({ t, fixture, userId: member.userId });
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.readOnly).toBe(false);
+		const locked = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
+				path: "/member-folder",
+				access: { readOnly: true },
+			},
+		});
+		expect(locked.status).toBe(200);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({ readOnly: true });
+	});
 
 	test("the Read-only door requires live Can edit on the target folder", async () => {
 		const t = test_convex();
@@ -9731,100 +9300,85 @@ describe("plugins metadata file doors", () => {
 	// A folder's flag changes only the folder, so the member needs Can edit on the folder only, like the
 	// Properties setter. A binding decides the readers of the whole folder, so it refuses a folder that holds
 	// a restricted item.
-	test.each(["lock", "binding"] as const)(
-		"the access door over a nested restricted folder: a %s change",
-		async (change) => {
-			const t = test_convex();
-			const fixture = await install_file_doors_plugin(t);
-			const ownerRun = await start_file_invoke_run({ t, fixture });
-			const member = await seed_file_member(t, fixture);
+	test("the access door locks a folder over a nested restricted folder", async () => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t);
+		const ownerRun = await start_file_invoke_run({ t, fixture });
+		const member = await seed_file_member(t, fixture);
 
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: ownerRun.apiToken,
+					body: {
+						path: "/probe/sub/nested",
+					},
+				})
+			).status,
+		).toBe(200);
+		const root = (await find_active_node({ t, fixture, path: "/probe" }))!;
+		const sub = (await find_active_node({ t, fixture, path: "/probe/sub" }))!;
+		const nested = (await find_active_node({ t, fixture, path: "/probe/sub/nested" }))!;
+
+		for (const [nodeId, level] of [
+			[root._id, "manage"],
+			[nested._id, "write"],
+		] as const) {
 			expect(
-				(
-					await door_call({
-						t,
-						path: "/api/v1/files/plugin-folders/ensure",
-						apiToken: ownerRun.apiToken,
-						body: {
-							path: "/probe/sub/nested",
-						},
-					})
-				).status,
-			).toBe(200);
-			const root = (await find_active_node({ t, fixture, path: "/probe" }))!;
-			const sub = (await find_active_node({ t, fixture, path: "/probe/sub" }))!;
-			const nested = (await find_active_node({ t, fixture, path: "/probe/sub/nested" }))!;
-
-			// A plugin binds only a restricted folder, so the binding case restricts /probe/sub in place of /probe.
-			for (const [nodeId, level] of [
-				[change === "binding" ? sub._id : root._id, "manage"],
-				[nested._id, "write"],
-			] as const) {
-				expect(
-					await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
-						membershipId: fixture.membership.membershipId,
-						nodeId,
-					}),
-				).toEqual({ _yay: null });
-				expect(
-					await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-						membershipId: fixture.membership.membershipId,
-						nodeId,
-						principal: { kind: "user", userId: member.userId },
-						level,
-					}),
-				).toEqual({ _yay: null });
-				await grant_file_account(fixture, nodeId);
-			}
-			if (change === "binding") {
-				await seed_file_scope({ t, fixture, scopeId: "private" });
-			}
-
-			await t.run(async (ctx) =>
-				ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
-					status: "succeeded",
+				await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.membership.membershipId,
+					nodeId,
 				}),
-			);
-			const run = await start_file_invoke_run({ t, fixture, userId: member.userId, tokenSeed: "e" });
-			const nestedBefore = await t.run(async (ctx) => ({
+			).toEqual({ _yay: null });
+			expect(
+				await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: fixture.membership.membershipId,
+					nodeId,
+					principal: { kind: "user", userId: member.userId },
+					level,
+				}),
+			).toEqual({ _yay: null });
+			await grant_file_account(fixture, nodeId);
+		}
+
+		await t.run(async (ctx) =>
+			ctx.db.patch("activities", (await activities.activities_db_require_by_source_id(ctx, ownerRun.runId))._id, {
+				status: "succeeded",
+			}),
+		);
+		const run = await start_file_invoke_run({ t, fixture, userId: member.userId, tokenSeed: "e" });
+		const nestedBefore = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nested._id),
+			grants: await ctx.db
+				.query("access_control_permission_grants")
+				.collect()
+				.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
+		}));
+
+		const response = await door_call({
+			t,
+			path: "/api/v1/files/plugin-access/set",
+			apiToken: run.apiToken,
+			body: {
+				path: "/probe/sub",
+				access: { readOnly: true },
+			},
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ nodeId: sub._id });
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", sub._id)))?.readOnly).toBe(true);
+		expect(
+			await t.run(async (ctx) => ({
 				node: await ctx.db.get("files_nodes", nested._id),
 				grants: await ctx.db
 					.query("access_control_permission_grants")
 					.collect()
 					.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
-			}));
-
-			const response = await door_call({
-				t,
-				path: "/api/v1/files/plugin-access/set",
-				apiToken: run.apiToken,
-				body: {
-					path: "/probe/sub",
-					access: change === "lock" ? { readOnly: true } : { readScopeId: "private" },
-				},
-			});
-			if (change === "lock") {
-				expect(response.status).toBe(200);
-				expect(await response.json()).toEqual({ nodeId: sub._id });
-				expect((await t.run((ctx) => ctx.db.get("files_nodes", sub._id)))?.readOnly).toBe(true);
-			} else {
-				expect(response.status).toBe(409);
-				expect(await response.json()).toEqual({
-					message: "An item inside has its own restricted access, so a plugin cannot decide who reads this folder",
-				});
-				expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toEqual([]);
-			}
-			expect(
-				await t.run(async (ctx) => ({
-					node: await ctx.db.get("files_nodes", nested._id),
-					grants: await ctx.db
-						.query("access_control_permission_grants")
-						.collect()
-						.then((grants) => grants.filter((grant) => grant.resourceId === nested._id)),
-				})),
-			).toEqual(nestedBefore);
-		},
-	);
+			})),
+		).toEqual(nestedBefore);
+	});
 
 	test("an outer member lock does not block nested plugin doors", async () => {
 		const t = test_convex();
@@ -10196,8 +9750,8 @@ describe("plugins metadata file doors", () => {
 			ctx.db.patch("plugins_event_runs", run.runId, { event: "ui.invoke.requested", fileNodeId: undefined }),
 		);
 
-		// Consent can be taken back while a run is live: own-access closes the lock doors, then
-		// own-write closes the rest.
+		// Consent can be taken back while a run is live: dropping the Read-only consent closes the lock
+		// doors, then dropping own-write closes the rest.
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
 				acceptedCapabilities: ["plugin.backend.invoke", "workspace.files.write", "workspace.files.own-write"],
@@ -11245,7 +10799,6 @@ describe("plugins admin hard delete", () => {
 						acceptedMcpServersFingerprint: "mcp-servers-hash",
 						acceptedSkillNames: [],
 						outboundOriginsAcceptedAt: Date.now(),
-						sandbox: { roots: [], rebuild: null },
 						installedBy: membership.userId,
 						updatedBy: membership.userId,
 						updatedAt: Date.now(),
@@ -12068,8 +11621,6 @@ describe("plugins admin hard delete", () => {
 			pluginDataMemberUsageTruncated: false,
 			pluginServiceGrants: 1,
 			pluginServiceGrantsTruncated: false,
-			fileAccessBindings: 0,
-			fileAccessBindingsTruncated: false,
 			pluginScopeGrants: 1,
 			pluginScopeGrantsTruncated: false,
 			pluginDataScopeRows: 1,
@@ -12130,8 +11681,6 @@ describe("plugins admin hard delete", () => {
 			pluginDataMemberUsageTruncated: false,
 			pluginServiceGrants: 0,
 			pluginServiceGrantsTruncated: false,
-			fileAccessBindings: 0,
-			fileAccessBindingsTruncated: false,
 			pluginScopeGrants: 0,
 			pluginScopeGrantsTruncated: false,
 			pluginDataScopeRows: 0,

@@ -12,7 +12,6 @@ import {
 	mock_share_storage,
 	fixture,
 	reset_rate_limits,
-	insert_installation,
 	seed_big_folder,
 	read_links,
 	link_on,
@@ -133,21 +132,6 @@ describe("get_share_link_view", () => {
 			await f.t.run((ctx) => ctx.db.replace("files_nodes", node, before!));
 			expect(await view_of(f, link.token)).not.toBeNull();
 		}
-
-		const installationId = await insert_installation(f);
-		const bindingId = await f.t.run((ctx) =>
-			ctx.db.insert("plugins_file_access_bindings", {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				installationId,
-				scopeId: "team",
-				nodeId: folderId,
-				updatedAt: Date.now(),
-			}),
-		);
-		expect(await view_of(f, link.token)).toBeNull();
-		await f.t.run((ctx) => ctx.db.delete("plugins_file_access_bindings", bindingId));
-		expect(await view_of(f, link.token)).not.toBeNull();
 	});
 
 	test("shows nothing while a deletion covers the file", async () => {

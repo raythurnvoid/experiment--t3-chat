@@ -136,9 +136,9 @@ const playwriter_command_identity_validator = v.object({
 });
 
 /**
- * One folder a plugin credential may reach. A copy of one grant of the plugin's service account.
+ * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
  */
-export const plugins_sandbox_root_validator = v.object({
+const plugins_sandbox_root_validator = v.object({
 	target: v.union(
 		// Open content only: nodes whose live restricted scope is null. Stops at every restricted folder.
 		v.object({ kind: v.literal("open") }),
@@ -2210,7 +2210,10 @@ const app_convex_schema = defineSchema({
 				contentHash: v.string(),
 				expectedNodeId: v.union(v.id("files_nodes"), v.null()),
 				expectedContentRevision: v.union(v.string(), v.null()),
-				expectedReaderRevision: v.union(v.number(), v.null()),
+				/**
+				 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
+				 */
+				expectedReaderRevision: v.optional(v.union(v.number(), v.null())),
 				serviceSecretHash: v.string(),
 				tokenHash: v.string(),
 				contentType: v.string(),
@@ -4693,9 +4696,9 @@ const app_convex_schema = defineSchema({
 		 */
 		nodeCreationTime: v.number(),
 		/**
-		 * The grant's `externalPluginMembershipLifetime`, or null when unset.
+		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
 		 */
-		externalPluginMembershipLifetime: v.union(v.number(), v.null()),
+		externalPluginMembershipLifetime: v.optional(v.union(v.number(), v.null())),
 	})
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		// A member's restricted children of one folder by name, for the folder table's custom-field
@@ -4723,10 +4726,8 @@ const app_convex_schema = defineSchema({
 			"sortName",
 			"name",
 		])
-		// The Trash area picker: the restricted folders one principal can open, by path. The plugin
-		// membership lifetime comes before the path, so a read of the live lifetime never reads the grants
-		// of an old one.
-		.index("by_org_ws_principal_restricted_kind_archive_lifetime_treePath", [
+		// The Trash area picker: the restricted folders one principal can open, by path.
+		.index("by_org_ws_principal_restricted_kind_archive_treePath", [
 			"organizationId",
 			"workspaceId",
 			"principalKey",
@@ -4735,7 +4736,6 @@ const app_convex_schema = defineSchema({
 			"isRestrictedScopeRoot",
 			"kind",
 			"archiveOperationId",
-			"externalPluginMembershipLifetime",
 			"treePath",
 		])
 		.index("by_node", ["nodeId", "moveView.cohortId", "moveView.view"])
@@ -7751,21 +7751,18 @@ const app_convex_schema = defineSchema({
 		 */
 		acceptedSkillNames: v.array(v.string()),
 		/**
-		 * The folders this plugin's credentials may reach: a copy of its service account's grants, at
-		 * most 20. Every account grant write keeps it in sync. Plugin output folders are never roots.
-		 * See "Sandbox roots" in the `plugin-system` skill.
+		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
 		 */
-		sandbox: v.object({
-			roots: v.array(plugins_sandbox_root_validator),
-			// Not null while a background job builds `roots` from all the account's grants. Plugin
-			// requests reach no folder until it ends. `leaseUntil` is the job's token; a cron restarts an
-			// expired one. `too_many_folders` waits for a grant change of the account.
-			rebuild: v.union(
-				v.null(),
-				v.object({ status: v.literal("running"), leaseUntil: v.number() }),
-				v.object({ status: v.literal("too_many_folders") }),
-			),
-		}),
+		sandbox: v.optional(
+			v.object({
+				roots: v.array(plugins_sandbox_root_validator),
+				rebuild: v.union(
+					v.null(),
+					v.object({ status: v.literal("running"), leaseUntil: v.number() }),
+					v.object({ status: v.literal("too_many_folders") }),
+				),
+			}),
+		),
 		installedBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
@@ -7775,10 +7772,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])
 		.index("by_organization_workspace_pluginVersion", ["organizationId", "workspaceId", "pluginVersionId"])
 		.index("by_pluginVersion", ["pluginVersionId"])
-		// Grant writes keep `sandbox` in sync.
 		.index("by_serviceAccount", ["serviceAccountId"])
-		// Finds sandbox rebuilds whose chain stopped.
-		.index("by_sandboxRebuildLeaseUntil", ["sandbox.rebuild.leaseUntil"])
 		.index("by_pluginName_status", ["pluginName", "status"])
 		.index("by_pluginName", ["pluginName"]),
 
@@ -8480,11 +8474,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * One doc binds a file or folder's reader list to a plugin-data scope. The host keeps
-	 * exactly one `content.read` grant per active scope member on the node, updating them in the
-	 * same mutations that change the scope's membership. An actual manual sharing change removes
-	 * the binding and keeps its remaining grants. At most
-	 * `MAX_ACCESS_BINDINGS_PER_SCOPE` (4) nodes per scope keep that synchronous work bounded.
+	 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
 	 */
 	plugins_file_access_bindings: defineTable({
 		organizationId: v.id("organizations"),
@@ -8532,8 +8522,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * Reader sync is attached until a real human sharing change takes control of this folder.
-	 * Keep a detached doc so an ensure retry cannot silently attach it again.
+	 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
 	 */
 	plugins_external_file_bindings: defineTable({
 		organizationId: v.id("organizations"),
@@ -8562,8 +8551,9 @@ const app_convex_schema = defineSchema({
 			v.literal("write"),
 			v.literal("read_only"),
 			v.literal("fence"),
-			v.literal("readers"),
 			v.literal("archive"),
+			// TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
+			v.literal("readers"),
 			v.literal("rollback_readers"),
 			v.literal("cancel_readers"),
 		),
@@ -8573,7 +8563,10 @@ const app_convex_schema = defineSchema({
 		writerGeneration: v.number(),
 		nodeId: v.id("files_nodes"),
 		contentRevision: v.union(v.string(), v.null()),
-		readerRevision: v.union(v.number(), v.null()),
+		/**
+		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
+		 */
+		readerRevision: v.optional(v.union(v.number(), v.null())),
 		createdAt: v.number(),
 	})
 		.index("by_writer_operationId", ["writerId", "operationId"])
@@ -8613,7 +8606,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * Private proof for undoing or cancelling one reader change after its sponsor loses access.
+	 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
 	 */
 	plugins_external_file_reader_changes: defineTable({
 		organizationId: v.id("organizations"),
@@ -10017,7 +10010,7 @@ const app_convex_schema = defineSchema({
 		/**
 		 * Missing means no role. The role gives the account only the restricted-folder shares that name
 		 * it. It never gives the role's workspace permission list: a role like `admin` holds many, and
-		 * an API key bound to the account acts alone. Plugin sandbox roots never include role shares.
+		 * an API key bound to the account acts alone. A plugin of this account gets these shares too.
 		 */
 		role: v.optional(access_control_role_ref_validator),
 	})
@@ -10103,8 +10096,7 @@ const app_convex_schema = defineSchema({
 		),
 		userId: v.optional(v.id("users")),
 		/**
-		 * Plugin-managed file readers must belong to this exact membership lifetime.
-		 * A human sharing change removes the tag when it takes over the reader list.
+		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
 		 */
 		externalPluginMembershipLifetime: v.optional(v.number()),
 		role: v.optional(access_control_role_ref_validator),

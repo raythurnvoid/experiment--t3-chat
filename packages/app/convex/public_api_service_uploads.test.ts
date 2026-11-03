@@ -247,8 +247,6 @@ async function seed_installation(
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
-			// The copy of the workspace grant above, which was set before this row existed.
-			sandbox: { roots: [{ target: { kind: "open" }, level: "manage" }], rebuild: null },
 			installedBy: membership.userId,
 			updatedBy: membership.userId,
 			updatedAt: now,

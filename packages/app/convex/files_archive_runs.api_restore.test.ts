@@ -61,6 +61,38 @@ async function create_owner_key(f: Fixture) {
 	return await create_key({ asUser: f.asOwner, membershipId: f.db.membershipId });
 }
 
+/**
+ * A key bound to a new service account with grants on the given folders. The owner makes it.
+ */
+async function create_account_key(f: Fixture, grants: Array<{ nodeId: Id<"files_nodes">; level: "read" | "write" }>) {
+	await f.t.run((ctx) => ctx.db.patch("users", f.db.userId, { clerkUserId: "clerk-restore-key-owner" }));
+	const account = await f.asOwner.mutation(api.access_control.create_service_account, {
+		membershipId: f.db.membershipId,
+		name: "Trash bot",
+	});
+	if (account._nay) throw new Error(account._nay.message);
+	for (const grant of grants) {
+		expect(
+			await f.asOwner.mutation(api.access_control.set_service_account_grant, {
+				membershipId: f.db.membershipId,
+				serviceAccountId: account._yay.serviceAccountId,
+				resource: { kind: "file", nodeId: grant.nodeId },
+				level: grant.level,
+			}),
+		).toEqual({ _yay: null });
+	}
+	// Key creation has a small rate bucket. Let it refill first.
+	vi.advanceTimersByTime(60_000);
+	const created = await f.asOwner.mutation(api.public_api.api_credential_create, {
+		membershipId: f.db.membershipId,
+		serviceAccountId: account._yay.serviceAccountId,
+		name: "Trash bot",
+		scopes: ["files:list", "files:write"],
+	});
+	if (created._nay) throw new Error(created._nay.message);
+	return created._yay;
+}
+
 async function post(f: Fixture, route: string, credential: string, body: unknown) {
 	const response = await f.t.fetch(route, {
 		method: "POST",
@@ -839,6 +871,71 @@ describe("files/restore", () => {
 		});
 	});
 
+	test("an account key cannot bring an item back into a folder the account cannot write", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const sharedId = await folder(f, "/shared");
+		const accountKey = await create_account_key(f, [{ nodeId: sharedId, level: "write" }]);
+		const itemId = await folder(f, "/shared/item");
+		expect(await archive(f, [itemId])).toEqual({ _yay: null });
+		// The folder got a new name, and a new folder without the account's grant took its old path. The
+		// item comes back at its Trash path, so it lands in the new folder.
+		expect(
+			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: sharedId, path: "/renamed" }))
+				._nay,
+		).toBeUndefined();
+		await folder(f, "/shared");
+		const body = {
+			nodes: [{ nodeId: itemId, archiveOperationId: (await read_node(f, itemId)).archiveOperationId! }],
+			dryRun: true,
+		};
+
+		expect(await post(f, "/api/v1/files/restore", accountKey.credential, body)).toMatchObject({
+			status: 200,
+			body: { refused: [{ nodeId: itemId, message: "Permission denied" }] },
+		});
+		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, body), "the person can write there").toMatchObject(
+			{ status: 200, body: { refused: [] } },
+		);
+	});
+
+	test("an account key needs Can manage to bring an item out of its restricted folder, like a person", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const teamId = await folder(f, "/team");
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: teamId }),
+		).toEqual({ _yay: null });
+		const itemId = await folder(f, "/team/item");
+		expect(await archive(f, [itemId])).toEqual({ _yay: null });
+		// The restricted folder got a new name, and a new open folder took its old path. The item comes back
+		// at its Trash path, so it leaves its restricted folder.
+		expect(
+			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: teamId, path: "/team-old" }))
+				._nay,
+		).toBeUndefined();
+		const openId = await folder(f, "/team");
+		const accountKey = await create_account_key(f, [
+			{ nodeId: teamId, level: "write" },
+			{ nodeId: openId, level: "write" },
+		]);
+		const body = {
+			nodes: [{ nodeId: itemId, archiveOperationId: (await read_node(f, itemId)).archiveOperationId! }],
+			dryRun: true,
+		};
+
+		expect(await post(f, "/api/v1/files/restore", accountKey.credential, body)).toMatchObject({
+			status: 200,
+			body: {
+				refused: [{ nodeId: itemId, message: "You need Can manage on the shared folder to move this out of it." }],
+			},
+		});
+		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, body), "the owner can manage it").toMatchObject({
+			status: 200,
+			body: { refused: [] },
+		});
+	});
+
 	test("a dry run says what the restore would do and saves nothing", async () => {
 		const f = await fixture();
 		const ownerKey = await create_owner_key(f);
@@ -1056,6 +1153,58 @@ describe("files/trash/list", () => {
 		).toMatchObject({ status: 200, body: { refused: [] } });
 	});
 
+	test("an account key with one folder grant lists that folder's Trash, and gets 403 for the open area", async () => {
+		const f = await fixture();
+		const sharedId = await folder(f, "/shared");
+		const otherId = await folder(f, "/other");
+		const accountKey = await create_account_key(f, [{ nodeId: sharedId, level: "read" }]);
+		// Five deletes directly inside the folder. More items in Trash outside it and more active items inside
+		// it than one page, and an item in Trash one level down.
+		const itemIds = [];
+		for (const name of ["a", "b", "c", "d", "e"]) itemIds.push(await folder(f, `/shared/${name}`));
+		for (const name of ["x", "y", "z"]) await folder(f, `/shared/live-${name}`);
+		const elsewhereIds = [await folder(f, "/shared/sub/deeper")];
+		for (const name of ["o1", "o2", "o3"]) elsewhereIds.push(await folder(f, `/other/${name}`));
+		for (const nodeId of [...itemIds, ...elsewhereIds]) {
+			// Each delete gets a later time and room in the rate bucket.
+			vi.advanceTimersByTime(60_000);
+			expect(await archive(f, [nodeId])).toEqual({ _yay: null });
+		}
+
+		for (const body of [{}, { areaNodeId: null }]) {
+			expect(await post(f, "/api/v1/files/trash/list", accountKey.credential, body)).toEqual({
+				status: 403,
+				body: { message: "Permission denied" },
+			});
+		}
+		const pages = [];
+		let cursor: unknown = null;
+		do {
+			const response = await post(f, "/api/v1/files/trash/list", accountKey.credential, {
+				folderNodeId: sharedId,
+				limit: 2,
+				cursor,
+			});
+			expect(response.status).toBe(200);
+			pages.push(response.body);
+			cursor = response.body.cursor;
+		} while (pages.at(-1)!.isDone === false);
+		const [a, b, c, d, e] = itemIds;
+		expect(
+			pages.map((page) => (page.items as Array<{ nodeId: string }>).map((item) => item.nodeId)),
+			"full pages, newest delete first, and only the items directly inside the folder",
+		).toEqual([[e, d], [c, b], [a]]);
+		expect(pages[0]!.items, "the account sees who changed the item, like a person").toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "/shared/e", locked: false, top: true, changedBy: f.db.userId }),
+			]),
+		);
+		expect(await post(f, "/api/v1/files/trash/list", accountKey.credential, { folderNodeId: otherId })).toEqual({
+			status: 403,
+			body: { message: "Permission denied" },
+		});
+	});
+
 	test("shows a restricted folder the member cannot open as a locked row", async () => {
 		const f = await fixture();
 		const teamId = await insert_restricted_team(f, files_archive_operation_id_new(1_000));
@@ -1159,7 +1308,7 @@ describe("files/trash/areas", () => {
 		});
 	});
 
-	test("a member gets the folders they can open, and guests and account keys get 403", async () => {
+	test("a member and an account key get the folders they can open, and guests get 403", async () => {
 		const f = await fixture();
 		await create_owner_key(f);
 		const { mineId } = await seed_areas(f);
@@ -1199,22 +1348,11 @@ describe("files/trash/areas", () => {
 			},
 		});
 
-		const account = await f.asOwner.mutation(api.access_control.create_service_account, {
-			membershipId: f.db.membershipId,
-			name: "Trash bot",
-		});
-		if (account._nay) throw new Error(account._nay.message);
-		vi.advanceTimersByTime(60_000);
-		const accountKey = await f.asOwner.mutation(api.public_api.api_credential_create, {
-			membershipId: f.db.membershipId,
-			serviceAccountId: account._yay.serviceAccountId,
-			name: "Trash bot",
-			scopes: ["files:list"],
-		});
-		if (accountKey._nay) throw new Error(accountKey._nay.message);
-		expect(await post(f, "/api/v1/files/trash/areas", accountKey._yay.credential, {})).toEqual({
-			status: 403,
-			body: { message: "Keys bound to a service account cannot list the Trash yet." },
+		// The key's person is the owner, but the account has only its own grant and no workspace read.
+		const accountKey = await create_account_key(f, [{ nodeId: mineId, level: "read" }]);
+		expect(await post(f, "/api/v1/files/trash/areas", accountKey.credential, {})).toEqual({
+			status: 200,
+			body: { areas: [{ areaNodeId: mineId, path: "/a-mine" }], cursor: null, isDone: true },
 		});
 
 		// Without a role the member is a guest, and a guest has no Trash view.
@@ -1228,5 +1366,10 @@ describe("files/trash/areas", () => {
 				body: { message: "Permission denied" },
 			});
 		}
+		// Also for the Trash of a folder shared with them.
+		expect(await post(f, "/api/v1/files/trash/list", memberKey.credential, { folderNodeId: mineId })).toEqual({
+			status: 403,
+			body: { message: "Permission denied" },
+		});
 	});
 });

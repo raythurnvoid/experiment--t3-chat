@@ -211,7 +211,6 @@ async function install_mcp_plugin(args: {
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
-			sandbox: { roots: [], rebuild: null },
 			installedBy: userId,
 			updatedBy: userId,
 			updatedAt: now,

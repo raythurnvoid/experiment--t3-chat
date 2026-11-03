@@ -150,14 +150,6 @@ crons.cron("cleanup expired plugin data", "20 * * * *", internal.plugins_data.cl
 // Every 5 minutes — resume volume and generation cleanup after an expired drain lease.
 crons.cron("cleanup plugin volumes", "*/5 * * * *", internal.plugins_volumes.gc_expired, {});
 
-// Every 5 minutes — restart plugin sandbox rebuilds whose chain stopped.
-crons.cron(
-	"recover plugin sandbox rebuilds",
-	"*/5 * * * *",
-	internal.plugins_service_accounts.recover_sandbox_rebuilds,
-	{},
-);
-
 // Once hourly — clean up files uploaded by interrupted publishes whose scheduled cleanup run never happened (crash, failed retry).
 crons.cron(
 	"cleanup stale plugin publish artifacts",

@@ -1830,14 +1830,12 @@ export function plugins_validate_manifest(input: unknown) {
 	if (endpointIds.size > 0 && !capabilities.has("plugin.backend.invoke" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "Backend endpoints require the plugin.backend.invoke capability" } });
 	}
-	// Own-access changes policy on the same labeled nodes that own-write maintains.
-	if (
-		capabilities.has("workspace.files.own-access" satisfies plugins_Capability) &&
-		!capabilities.has("workspace.files.own-write" satisfies plugins_Capability)
-	) {
+	// Old immutable versions may name this capability. It grants nothing, so new versions cannot ask for it.
+	if (capabilities.has("workspace.files.own-access" satisfies plugins_Capability)) {
 		return Result({
 			_nay: {
-				message: "The workspace.files.own-access capability requires the workspace.files.own-write capability",
+				message:
+					"The workspace.files.own-access capability was removed. Share folders with the plugin's service account instead",
 			},
 		});
 	}

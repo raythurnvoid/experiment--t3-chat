@@ -7,9 +7,8 @@
 // The overlay flush (`server/files-pending-overlay.ts`) keeps them true in the writer's transaction: a
 // grant write syncs its row, and a write to a node that has or may get a row syncs the node's rows.
 // Shares per node are bounded by the share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
-// `convex/files_sharing.ts`, the same 50 with service accounts in
-// `access_control_db_set_service_account_grant`, and `MAX_READERS`, 50 plugin readers, in
-// `convex/plugins_external_files.ts`). A reserved node has at most two copies per grant.
+// `convex/files_sharing.ts`, and the same 50 with service accounts in
+// `access_control_db_set_service_account_grant`). A reserved node has at most two copies per grant.
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`).
@@ -91,7 +90,6 @@ function share_row_of(
 		contentByteSize: node.contentByteSize ?? null,
 		isRestrictedScopeRoot: node.isRestrictedScopeRoot,
 		nodeCreationTime: node._creationTime,
-		externalPluginMembershipLifetime: grant.externalPluginMembershipLifetime ?? null,
 	};
 }
 

@@ -207,7 +207,6 @@ async function fixture() {
 				sequence: 1,
 				expectedNodeId: null,
 				expectedContentRevision: null,
-				expectedReaderRevision: null,
 				contentHash: await crypto_sha256_hex(content),
 			},
 		};

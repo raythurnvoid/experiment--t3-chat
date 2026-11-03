@@ -114,7 +114,6 @@ async function seed_installation(
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
-			sandbox: { roots: [], rebuild: null },
 			installedBy: membership.userId,
 			updatedBy: membership.userId,
 			updatedAt: now,

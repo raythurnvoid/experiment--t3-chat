@@ -231,7 +231,6 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		acceptedMcpServersFingerprint: "mcp-servers-hash",
 		acceptedSkillNames: [],
 		outboundOriginsAcceptedAt: now,
-		sandbox: { roots: [], rebuild: null },
 		installedBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: now,
@@ -701,7 +700,6 @@ const review_workspace_tables = [
 	"plugins_data_revision_tombstones",
 	"plugins_data",
 	"plugin_service_grants",
-	"plugins_file_access_bindings",
 	"plugins_data_scopes",
 	"plugins_data_released_scope_ranges",
 	"plugin_service_storage_destinations",
@@ -1130,13 +1128,6 @@ async function review_seed_all_workspace_content(
 			scopeId: `old-${i}`,
 			collectionName: "messages",
 			keyPrefix: "old/",
-		});
-		await ctx.db.insert("plugins_file_access_bindings", {
-			...tenant,
-			installationId,
-			scopeId,
-			nodeId: node._id,
-			updatedAt: now,
 		});
 		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
 		await ctx.db.insert("access_control_permission_grants", {

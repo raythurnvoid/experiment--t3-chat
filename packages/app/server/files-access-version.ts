@@ -1,9 +1,9 @@
 // Permission answers may live in a saved resolver frame. These clocks cover every database field
 // used by the human Files permission check. User, chat and source authority is checked live too.
 //
-// Account grants, service account roles and plugin sandbox roots stay out on purpose. Only saved
-// `find --content-type` frames read these clocks, and only a user without a sandbox starts one. If an
-// account or a plugin can ever start a type query, add those fields here first.
+// Account grants and service account roles stay out on purpose. Only saved `find --content-type`
+// frames read these clocks, and only a person acting alone starts one. If an account or a plugin can
+// ever start a type query, add those fields here first.
 
 import type { Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
@@ -24,7 +24,6 @@ const FIELDS: Partial<Record<TableNames, readonly string[]>> = {
 		"userId",
 		"role",
 		"permission",
-		"externalPluginMembershipLifetime",
 	],
 	organizations_workspaces_users: ["organizationId", "workspaceId", "userId", "active"],
 	organizations_membership_lifetimes: ["organizationId", "workspaceId", "userId", "membershipId", "lifetime", "active"],

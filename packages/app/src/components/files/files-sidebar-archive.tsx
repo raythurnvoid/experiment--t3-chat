@@ -312,9 +312,9 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 	// The row ids when Show more was clicked, until its page has loaded.
 	const [loadMoreFromIds, setLoadMoreFromIds] = useState<Set<string> | null>(null);
 
-	// The areas: one stream per principal (the member, two roles, everyone, the member's plugin
-	// grants), each in the normal and the Move saved stream, like the "Shared with you" group.
-	const areaArgs = (principalIndex: 0 | 1 | 2 | 3 | 4, savedStream: files_SavedStream | null) =>
+	// The areas: one stream per principal (the member, two roles, everyone), each in the normal and the
+	// Move saved stream, like the "Shared with you" group.
+	const areaArgs = (principalIndex: 0 | 1 | 2 | 3, savedStream: files_SavedStream | null) =>
 		savedStream ? { membershipId, savedStream, principalIndex } : ("skip" as const);
 	const areaOptions = { initialNumItems: FilesSidebarArchive_PAGE_SIZE };
 	const areaNormal = [
@@ -322,14 +322,12 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(1, view.normal), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(2, view.normal), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(3, view.normal), areaOptions),
-		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(4, view.normal), areaOptions),
 	];
 	const areaCohort = [
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(0, view.cohort), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(1, view.cohort), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(2, view.cohort), areaOptions),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(3, view.cohort), areaOptions),
-		useFilesPaginatedQuery(app_convex_api.files_tree.list_archive_areas, areaArgs(4, view.cohort), areaOptions),
 	];
 	const areas = merge_streams<FilesSidebarArchive_AreaRow>({
 		streams: view.normal ? [...areaNormal, ...(view.cohort ? areaCohort : [])] : [],

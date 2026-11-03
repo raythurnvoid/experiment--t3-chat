@@ -43,7 +43,6 @@ import {
 	access_control_db_resolve_role_refs,
 } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
 import { files_trash_entries_area } from "../server/files-trash-entries.ts";
 import { files_pending_overlay_db_has_saved_scope_job } from "../server/files-pending-overlay.ts";
@@ -70,10 +69,9 @@ const TREE_CHILDREN_MAX_ITEMS = 200;
 const TREE_PAGE_MAX_RANGES = 3000;
 
 // The page cap and the split guard of "Shared with you". Each share row is its own scope, so each one
-// reads its node and checks its access. The worst row is shared with the member's second role and
-// also has an old plugin grant to the member, so the check also reads that grant and the live
-// membership lifetime. Loading a published Move file and its content head brings this to 18 reads
-// (measured in `files_tree.budgets.test.ts`), floor(3,000 / 18) = 166.
+// reads its node and checks its access. The worst row is shared with the member's second role.
+// Loading a published Move file and its content head brings this to at most 18 reads (the cost test
+// in `files_tree.budgets.test.ts` checks it), floor(3,000 / 18) = 166.
 const TREE_SHARE_PAGE_MAX_ITEMS = 166;
 
 // The page cap and the split guard of the custom-field filter share pages: the worst share row as
@@ -88,10 +86,9 @@ const TREE_SHARE_FILTER_PAGE_MAX_ITEMS = 111;
 const TREE_RESTRICTED_SPLIT_GUARD = 1000;
 
 // The page cap and the split guard of the restricted rows of every other reader. Each row is its own
-// scope, so it checks access. The worst row is one the member opens through their second role and
-// that also has an old plugin grant to them; a row they can open also checks write access. A locked
-// row checks only read access. 16 index ranges (measured in the cost test in
-// `files_nodes.tree_locked_rows.test.ts`), floor(3,000 / 16) = 187.
+// scope, so it checks access. The worst row is one the member opens through their second role; a row
+// they can open also checks write access. A locked row checks only read access. At most 16 index
+// ranges (the cost test in `files_nodes.tree_locked_rows.test.ts` checks it), floor(3,000 / 16) = 187.
 const TREE_RESTRICTED_MEMBER_SPLIT_GUARD = 187;
 
 // The split guard of the open rows in the tree and the folder table. Most open rows share the
@@ -581,9 +578,6 @@ function get_table_read_args(args: {
  * 2 are their workspace role and organization role (`access_control_db_resolve_role_refs`), 3 is
  * "Everyone in this workspace can view". A role they do not have has no key, and a member without
  * workspace read (a guest) has no workspace key, like the permission check.
- *
- * The Trash area pickers also read principal 4, the member's plugin grants. It reuses key 0, and the
- * caller adds the live membership lifetime.
  */
 export async function files_tree_db_get_share_principal_keys(
 	ctx: QueryCtx,
@@ -614,11 +608,8 @@ export async function files_tree_db_get_share_principal_keys(
  * check: its node must be a restricted root of the reader's workspace (or an extended root, with
  * `extendedRoots`) and readable by the reader.
  * Its copied fields must match the node, so the node is still where the index range read it: under
- * the read's folder, and active or archived, as the read asks. A row of a plugin grant must also
- * carry the member's live membership lifetime: after a re-invite the old grant reads nothing, even
- * while another grant keeps the node readable. A re-invite schedules
- * `plugins_external_files.delete_old_reader_grants`, so this check only guards the short time
- * before that job ends. Rows that fail are dropped, so a page can be short.
+ * the read's folder, and active or archived, as the read asks. Rows that fail are dropped, so a page
+ * can be short.
  */
 async function db_get_share_tree_rows(
 	ctx: QueryCtx,
@@ -635,9 +626,6 @@ async function db_get_share_tree_rows(
 	},
 ) {
 	const { userAuth, membership } = args.reader;
-	const liveLifetime = args.shareRows.some((shareRow) => shareRow.externalPluginMembershipLifetime !== null)
-		? await organizations_membership_lifetimes_db_get(ctx, { workspaceId: membership.workspaceId, userId: userAuth.id })
-		: null;
 
 	const pairs = (
 		await Promise.all(
@@ -663,9 +651,7 @@ async function db_get_share_tree_rows(
 		return (
 			node.organizationId === membership.organizationId &&
 			node.workspaceId === membership.workspaceId &&
-			(node.restrictedScopeNodeId === node._id || (args.extendedRoots && node.extendedScopeNodeId === node._id)) &&
-			(shareRow.externalPluginMembershipLifetime === null ||
-				(liveLifetime?.active === true && liveLifetime.lifetime === shareRow.externalPluginMembershipLifetime))
+			(node.restrictedScopeNodeId === node._id || (args.extendedRoots && node.extendedScopeNodeId === node._id))
 		);
 	});
 	const kept: typeof pairs = [];
@@ -1577,21 +1563,18 @@ export const list_tree_shared_roots = query({
  *
  * One page of one principal, like `list_tree_children_shared`. Members read their share rows. The
  * owner can open every folder, so the owner reads all restricted folders on principal 0 and gets
- * empty pages for 1 to 4. The client merges the streams by `treePath` and drops a node it already
+ * empty pages for 1 to 3. The client merges the streams by `treePath` and drops a node it already
  * has. Saved rows only. A guest has no Trash view and gets nothing.
- *
- * A plugin grant to the member carries their membership lifetime. Principal 4 reads only the grants
- * of the live lifetime, so the grants of an old lifetime are never read.
  */
 export const list_archive_areas = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		savedStream: files_saved_stream_validator,
 		/**
-		 * 0 reads the member's own shares, 1 and 2 the shares of their roles, 3 the folders everyone in
-		 * the workspace can view, and 4 the member's plugin grants of their live membership lifetime.
+		 * 0 reads the member's own shares, 1 and 2 the shares of their roles, and 3 the folders everyone
+		 * in the workspace can view.
 		 */
-		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3), v.literal(4)),
+		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: paginationResultValidator(v.object(tree_open_row_fields)),
@@ -1632,29 +1615,16 @@ export const list_archive_areas = query({
 		}
 
 		// The server builds the key from the caller only, never from the client.
-		const principalKey = (await files_tree_db_get_share_principal_keys(ctx, reader))[
-			args.principalIndex === 4 ? 0 : args.principalIndex
-		];
+		const principalKey = (await files_tree_db_get_share_principal_keys(ctx, reader))[args.principalIndex];
 		if (!principalKey) {
 			return refused;
-		}
-		let lifetime: number | null = null;
-		if (args.principalIndex === 4) {
-			const live = await organizations_membership_lifetimes_db_get(ctx, {
-				workspaceId: reader.membership.workspaceId,
-				userId: reader.userAuth.id,
-			});
-			if (!live?.active) {
-				return refused;
-			}
-			lifetime = live.lifetime;
 		}
 		const { tag } = saved;
 		const guard = await db_shrink_split_guard(ctx, TREE_SHARE_PAGE_MAX_ITEMS);
 
 		const result = await ctx.db
 			.query("files_share_rows")
-			.withIndex("by_org_ws_principal_restricted_kind_archive_lifetime_treePath", (q) =>
+			.withIndex("by_org_ws_principal_restricted_kind_archive_treePath", (q) =>
 				q
 					.eq("organizationId", reader.membership.organizationId)
 					.eq("workspaceId", reader.membership.workspaceId)
@@ -1663,8 +1633,7 @@ export const list_archive_areas = query({
 					.eq("moveView.view", tag?.view)
 					.eq("isRestrictedScopeRoot", true)
 					.eq("kind", "folder")
-					.eq("archiveOperationId", null)
-					.eq("externalPluginMembershipLifetime", lifetime),
+					.eq("archiveOperationId", null),
 			)
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, guard) });
 

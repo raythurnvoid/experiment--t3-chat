@@ -1631,7 +1631,7 @@ describe("plugins_validate_manifest", () => {
 		).toEqual({ _nay: { message: "Backend endpoints require the plugin.backend.invoke capability" } });
 	});
 
-	test("rejects workspace.files.own-write without workspace.files.write and own-access without own-write", () => {
+	test("rejects workspace.files.own-write without workspace.files.write and the removed own-access", () => {
 		expect(
 			plugins_validate_manifest({
 				...manifest_json({ capabilities: ["workspace.files.own-write"] }),
@@ -1641,26 +1641,16 @@ describe("plugins_validate_manifest", () => {
 		});
 		expect(
 			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["workspace.files.write", "workspace.files.own-access"] }),
+				...manifest_json({
+					capabilities: ["workspace.files.write", "workspace.files.own-write", "workspace.files.own-access"],
+				}),
 			}),
 		).toEqual({
 			_nay: {
-				message: "The workspace.files.own-access capability requires the workspace.files.own-write capability",
+				message:
+					"The workspace.files.own-access capability was removed. Share folders with the plugin's service account instead",
 			},
 		});
-		const accepted = plugins_validate_manifest({
-			...manifest_json({
-				capabilities: ["workspace.files.write", "workspace.files.own-write", "workspace.files.own-access"],
-			}),
-		});
-		if (accepted._nay) {
-			throw new Error(accepted._nay.message);
-		}
-		expect(accepted._yay.capabilities).toEqual([
-			"workspace.files.write",
-			"workspace.files.own-write",
-			"workspace.files.own-access",
-		]);
 	});
 
 	test("accepts service capabilities without a manifest service block", () => {
@@ -2066,7 +2056,12 @@ describe("plugins_Capability", () => {
 
 		const sdkCapabilities = [...(union?.[1] ?? "").matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
 		expect([...sdkCapabilities].sort()).toEqual(
-			capabilities.filter((capability) => capability !== "workspace.files.create-read-only").sort(),
+			capabilities
+				.filter(
+					(capability) =>
+						capability !== "workspace.files.create-read-only" && capability !== "workspace.files.own-access",
+				)
+				.sort(),
 		);
 	});
 
@@ -2081,7 +2076,6 @@ describe("plugins_Capability", () => {
 			"workspace.files.manage-read-only": ["workspace.files.write"],
 			"plugin.service.connect": ["plugin.data.read", "workspace.members.read", "workspace.files.write"],
 			"workspace.files.own-write": ["workspace.files.write"],
-			"workspace.files.own-access": ["workspace.files.own-write"],
 		} satisfies Partial<Record<plugins_Capability, plugins_Capability[]>>;
 
 		const sdkTypes = readFileSync(`${process.cwd()}/../bonobo-plugin-sdk/index.d.ts`, "utf8");
@@ -2107,7 +2101,6 @@ describe("plugins_Capability", () => {
 			"workspace.files.manage-read-only": true,
 			"plugin.service.connect": true,
 			"workspace.files.own-write": true,
-			"workspace.files.own-access": true,
 		});
 	});
 });

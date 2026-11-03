@@ -1,146 +1,35 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { internalQuery, type MutationCtx } from "./_generated/server.js";
+import { internalQuery } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import { internal } from "./_generated/api.js";
-import type { Doc, Id } from "./_generated/dataModel";
 import app_convex_schema from "./schema.ts";
-import {
-	access_control_db_authorize_service_account_grant,
-	access_control_db_can_act_on_file_node,
-	access_control_db_set_service_account_grant,
-} from "./access_control.ts";
-import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
+import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_read_only_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_archive_nodes, files_nodes_db_set_read_only } from "./files_nodes.ts";
-import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
-import { files_nodes_db_has_plugin_binding } from "./files_nodes_db.ts";
-import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
-import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
 	plugins_external_files_db_authorize,
 	plugins_external_files_db_content_revision,
 	plugins_external_files_db_check_write,
 } from "./plugins_external_files_access.ts";
-import { convex_error, v_result } from "../server/convex-utils.ts";
+import { v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { public_api_file_archives_db_check_node } from "./public_api_file_archives.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { server_path_parent_of } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
-const MAX_READERS = 50;
-
-export async function plugins_external_files_db_replace_readers(
-	ctx: MutationCtx,
-	args: {
-		installation: Doc<"plugins_workspace_installations">;
-		nodeId: Id<"files_nodes">;
-		readers: { userId: Id<"users">; membershipLifetime: number }[];
-	},
-) {
-	const existing = await ctx.db
-		.query("access_control_permission_grants")
-		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-			q
-				.eq("organizationId", args.installation.organizationId)
-				.eq("workspaceId", args.installation.workspaceId)
-				.eq("resourceKind", "file")
-				.eq("resourceId", String(args.nodeId)),
-		)
-		.take(151);
-	for (const grant of existing) {
-		if (grant.principalKind !== "service_account") await ctx.db.delete("access_control_permission_grants", grant._id);
-	}
-	for (const { userId, membershipLifetime } of args.readers) {
-		const membership = await organizations_membership_lifetimes_db_get(ctx, {
-			workspaceId: args.installation.workspaceId,
-			userId,
-		});
-		if (!membership?.active || membership.lifetime !== membershipLifetime)
-			throw convex_error({ message: "The file readers changed" });
-		await ctx.db.insert("access_control_permission_grants", {
-			organizationId: args.installation.organizationId,
-			workspaceId: args.installation.workspaceId,
-			resourceKind: "file",
-			resourceId: String(args.nodeId),
-			principalKind: "user",
-			userId,
-			externalPluginMembershipLifetime: membership.lifetime,
-			permission: "content.read",
-			createdAt: Date.now(),
-			updatedAt: Date.now(),
-		});
-	}
-	// Reinserting the same readers still replaces their membership-bound grants.
-	if (args.readers.length > 0 || existing.some((grant) => grant.principalKind !== "service_account"))
-		await files_media_validation_db_advance_version(ctx, args.installation);
-
-	// The surviving user grants seed the caller's `previousReaders` for a later rollback.
-	return existing.flatMap((grant) =>
-		grant.principalKind === "user" && grant.userId && grant.externalPluginMembershipLifetime !== undefined
-			? [{ userId: grant.userId, membershipLifetime: grant.externalPluginMembershipLifetime }]
-			: [],
-	);
-}
-
-/**
- * Deletes one page of a member's plugin reader grants from older membership lifetimes, then runs
- * again until the index range ends. A re-invite schedules it: an old grant reads nothing, and its
- * share row would make "Shared with you" pages short. The flush deletes each grant's share row.
- */
-export const delete_old_reader_grants = internalMutation({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		lifetime: v.number(),
-		cursor: v.union(v.string(), v.null()),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const grants = await ctx.db
-			.query("access_control_permission_grants")
-			.withIndex("by_user_organization_workspace_resource_permission", (q) =>
-				q
-					.eq("userId", args.userId)
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("resourceKind", "file"),
-			)
-			.paginate({ cursor: args.cursor, numItems: 100 });
-		// Lifetimes only grow, so a smaller tag never becomes live again.
-		const old = grants.page.filter(
-			(grant) =>
-				grant.externalPluginMembershipLifetime !== undefined && grant.externalPluginMembershipLifetime < args.lifetime,
-		);
-		for (const grant of old) await ctx.db.delete("access_control_permission_grants", grant._id);
-		if (old.length > 0) await files_media_validation_db_advance_version(ctx, args);
-		if (!grants.isDone)
-			await ctx.scheduler.runAfter(0, internal.plugins_external_files.delete_old_reader_grants, {
-				...args,
-				cursor: grants.continueCursor,
-			});
-		return null;
-	},
-});
-
 export const check_public_request = internalQuery({
 	args: {
 		writerId: v.optional(v.string()),
 		nodeIds: v.optional(v.array(v.string())),
-		userIds: v.optional(v.array(v.string())),
-		receiptId: v.optional(v.string()),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		if (
 			(args.writerId !== undefined && ctx.db.normalizeId("plugins_external_file_writers", args.writerId) === null) ||
-			(args.receiptId !== undefined && ctx.db.normalizeId("plugins_external_file_receipts", args.receiptId) === null) ||
-			args.nodeIds?.some((id) => ctx.db.normalizeId("files_nodes", id) === null) ||
-			args.userIds?.some((id) => ctx.db.normalizeId("users", id) === null)
+			args.nodeIds?.some((id) => ctx.db.normalizeId("files_nodes", id) === null)
 		)
 			return Result({ _nay: { name: "invalid_input", message: "Invalid file operation ID" } });
 
@@ -156,7 +45,6 @@ export const ensure_writer = internalMutation({
 		resourceKey: v.string(),
 		rootNodeId: v.union(v.id("files_nodes"), v.null()),
 		path: v.string(),
-		readers: v.optional(v.array(v.object({ userId: v.id("users"), membershipLifetime: v.number() }))),
 		readOnly: v.boolean(),
 		force: v.optional(v.boolean()),
 	},
@@ -166,8 +54,6 @@ export const ensure_writer = internalMutation({
 			rootNodeId: v.id("files_nodes"),
 			folderNodeId: v.id("files_nodes"),
 			writerGeneration: v.number(),
-			readerRevision: v.union(v.number(), v.null()),
-			detached: v.boolean(),
 			created: v.boolean(),
 		}),
 	}),
@@ -186,25 +72,13 @@ export const ensure_writer = internalMutation({
 			...args,
 			allowSealRoot: true,
 			requestReadOnly: args.readOnly,
-			recoverEmptySetup: existing ? { writerId: existing._id } : undefined,
 		});
 		if (facts._nay) return facts;
 
 		const { installation, serviceGrant, writeContext } = facts._yay;
-		if (
-			args.readers &&
-			(args.readers.length > MAX_READERS ||
-				new Set(args.readers.map((reader) => reader.userId)).size !== args.readers.length)
-		) {
-			return Result({ _nay: { message: "Invalid file readers" } });
-		}
 
 		const rootPath = serviceGrant.destinationPathPrefix!;
 		if (existing) {
-			const binding = await ctx.db
-				.query("plugins_external_file_bindings")
-				.withIndex("by_writer", (q) => q.eq("writerId", existing._id))
-				.first();
 			const root = await files_saved_placement_db_get_node(ctx.db, existing.rootNodeId);
 			if (
 				existing.installationId !== installation._id ||
@@ -226,8 +100,6 @@ export const ensure_writer = internalMutation({
 					rootNodeId: existing.rootNodeId,
 					folderNodeId: existing.folderNodeId,
 					writerGeneration: existing.generation,
-					readerRevision: binding?.revision ?? null,
-					detached: binding?.detachedAt != null,
 					created: false,
 				},
 			});
@@ -256,13 +128,11 @@ export const ensure_writer = internalMutation({
 				return Result({ _nay: { name: "stale_write", message: "The output root changed" } });
 			}
 		}
-		if (facts._yay.node && (args.readers || facts._yay.node._id !== args.rootNodeId)) {
+		if (facts._yay.node && facts._yay.node._id !== args.rootNodeId) {
 			return Result({ _nay: { name: "stale_write", message: "The output folder is already used" } });
 		}
 
-		if (args.readOnly || args.readers) {
-			if (args.readers && !installation.acceptedCapabilities.includes("workspace.files.own-access"))
-				return Result({ _nay: { message: "Permission denied" } });
+		if (args.readOnly) {
 			const managed = await files_nodes_db_require_read_only_management(ctx, {
 				organizationId: installation.organizationId,
 				workspaceId: installation.workspaceId,
@@ -274,30 +144,7 @@ export const ensure_writer = internalMutation({
 			if (managed._nay) return managed;
 		}
 
-		if (args.readers) {
-			const parent = facts._yay.parentNode;
-			// A public link checks only the binding of its own scope node, so a binding cannot start inside an
-			// area that a plugin already decides. A detach would leave a plain restricted folder there.
-			if (parent?.restrictedScopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, parent.restrictedScopeNodeId)))
-				return Result({ _nay: { message: "A plugin already decides who can read the folder around this item" } });
-			const allowed = await access_control_db_authorize_service_account_grant(ctx, {
-				userAuth: { id: serviceGrant.actorUserId },
-				membership: facts._yay.membership,
-				resource: parent ? { kind: "file", nodeId: parent.restrictedScopeNodeId ?? parent._id } : { kind: "workspace" },
-				level: "manage",
-			});
-			if (allowed._nay) return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		for (const { userId, membershipLifetime } of args.readers ?? []) {
-			const membership = await organizations_membership_lifetimes_db_get(ctx, {
-				workspaceId: installation.workspaceId,
-				userId,
-			});
-			if (!membership?.active || membership.lifetime !== membershipLifetime)
-				return Result({ _nay: { message: "The file readers changed" } });
-		}
-
+		// A new folder is a regular folder: it gets its parent's access, like a folder a member creates.
 		let nodeId = facts._yay.node?._id;
 		if (!nodeId) {
 			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -333,59 +180,12 @@ export const ensure_writer = internalMutation({
 			updatedAt: Date.now(),
 		});
 
-		// Readers are refused on an existing folder above, so this folder is new and has no links.
-		if (args.readers) {
-			await files_nodes_db_set_restricted_scope({
-				ctx,
-				organizationId: installation.organizationId,
-				workspaceId: installation.workspaceId,
-				nodeId,
-				restrictedScopeNodeId: nodeId,
-			});
-			const scopeRoot = (await files_saved_placement_db_get_node(ctx.db, nodeId))!;
-			await files_subtree_ops_db_start_rebuild(ctx, {
-				kind: "scope",
-				organizationId: installation.organizationId,
-				workspaceId: installation.workspaceId,
-				userId: serviceGrant.actorUserId,
-				membership: null,
-				roots: [{ node: scopeRoot, oldTreePath: scopeRoot.treePath }],
-				budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
-				now: Date.now(),
-			});
-			// Restricting an empty folder changes access too.
-			await files_media_validation_db_advance_version(ctx, installation);
-			await plugins_external_files_db_replace_readers(ctx, { installation, nodeId, readers: args.readers });
-			await ctx.db.insert("plugins_external_file_bindings", {
-				organizationId: installation.organizationId,
-				workspaceId: installation.workspaceId,
-				installationId: installation._id,
-				writerId,
-				nodeId,
-				revision: 1,
-				detachedAt: null,
-				updatedAt: Date.now(),
-			});
-
-			// The new private scope stops inheriting account access. Keep the authorized writer usable.
-			const granted = await access_control_db_set_service_account_grant(ctx, {
-				organizationId: installation.organizationId,
-				workspaceId: installation.workspaceId,
-				serviceAccountId: serviceGrant.serviceAccountId,
-				resource: { kind: "file", nodeId },
-				level: "manage",
-			});
-			if (granted._nay) throw convex_error(granted._nay);
-		}
-
 		return Result({
 			_yay: {
 				writerId,
 				rootNodeId,
 				folderNodeId: nodeId,
 				writerGeneration: 1,
-				readerRevision: args.readers ? 1 : null,
-				detached: false,
 				created: !facts._yay.node,
 			},
 		});
@@ -405,8 +205,6 @@ export const inspect = internalQuery({
 			writer: doc(app_convex_schema, "plugins_external_file_writers"),
 			node: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 			contentRevision: v.union(v.string(), v.null()),
-			readerRevision: v.union(v.number(), v.null()),
-			detached: v.boolean(),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -432,13 +230,9 @@ export const inspect = internalQuery({
 			!(args.path === writer.path || server_path_parent_of(args.path) === writer.path)
 		)
 			return Result({ _nay: { message: "Permission denied" } });
-		const [root, folder, binding] = await Promise.all([
+		const [root, folder] = await Promise.all([
 			files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
 			files_saved_placement_db_get_node(ctx.db, writer.folderNodeId),
-			ctx.db
-				.query("plugins_external_file_bindings")
-				.withIndex("by_writer", (q) => q.eq("writerId", writer._id))
-				.first(),
 		]);
 		if (
 			!root ||
@@ -458,8 +252,6 @@ export const inspect = internalQuery({
 				contentRevision: facts._yay.node
 					? await plugins_external_files_db_content_revision(ctx, facts._yay.node)
 					: null,
-				readerRevision: binding?.revision ?? null,
-				detached: binding?.detachedAt != null,
 			},
 		});
 	},
@@ -497,11 +289,6 @@ export const change_scope = internalMutation({
 			v.object({ kind: v.literal("fence"), nextGeneration: v.number() }),
 			v.object({ kind: v.literal("read_only"), readOnly: v.boolean() }),
 			v.object({
-				kind: v.literal("readers"),
-				expectedReaderRevision: v.number(),
-				readers: v.array(v.object({ userId: v.id("users"), membershipLifetime: v.number() })),
-			}),
-			v.object({
 				kind: v.literal("archive"),
 				path: v.string(),
 				nodeId: v.id("files_nodes"),
@@ -536,13 +323,9 @@ export const change_scope = internalMutation({
 		)
 			return Result({ _nay: { message: "Permission denied" } });
 
-		const [root, folder, binding] = await Promise.all([
+		const [root, folder] = await Promise.all([
 			files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
 			files_saved_placement_db_get_node(ctx.db, writer.folderNodeId),
-			ctx.db
-				.query("plugins_external_file_bindings")
-				.withIndex("by_writer", (q) => q.eq("writerId", writer._id))
-				.first(),
 		]);
 		if (
 			!root ||
@@ -571,8 +354,6 @@ export const change_scope = internalMutation({
 		if (writer.generation !== args.writerGeneration)
 			return Result({ _nay: { name: "stale_write", message: "The file writer changed" } });
 
-		let readerRevision = binding?.revision ?? null;
-		let previousReaders: { userId: Id<"users">; membershipLifetime: number }[] | null = null;
 		let generation = writer.generation;
 		let nodeId = folder._id;
 		if (args.change.kind === "fence") {
@@ -588,49 +369,6 @@ export const change_scope = internalMutation({
 				readOnly: args.change.readOnly,
 			});
 			if (changed._nay) return changed;
-		} else if (args.change.kind === "readers") {
-			if (!binding || binding.detachedAt !== null || binding.revision !== args.change.expectedReaderRevision) {
-				return Result({ _nay: { name: "stale_write", message: "The file reader binding changed" } });
-			}
-
-			if (
-				!facts._yay.installation.acceptedCapabilities.includes("workspace.files.own-access") ||
-				!(await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: writer.organizationId,
-					workspaceId: writer.workspaceId,
-					subject: facts._yay.writeContext.subject,
-					fileNode: folder,
-					permission: "content.permissions.manage",
-				}))
-			)
-				return Result({ _nay: { message: "Permission denied" } });
-
-			if (
-				args.change.readers.length > MAX_READERS ||
-				new Set(args.change.readers.map((reader) => reader.userId)).size !== args.change.readers.length
-			) {
-				return Result({ _nay: { message: "Invalid file readers" } });
-			}
-
-			for (const reader of args.change.readers) {
-				const membership = await organizations_membership_lifetimes_db_get(ctx, {
-					workspaceId: writer.workspaceId,
-					userId: reader.userId,
-				});
-				if (!membership?.active || membership.lifetime !== reader.membershipLifetime)
-					return Result({ _nay: { name: "stale_write", message: "The file readers changed" } });
-			}
-
-			previousReaders = await plugins_external_files_db_replace_readers(ctx, {
-				installation: facts._yay.installation,
-				nodeId: folder._id,
-				readers: args.change.readers,
-			});
-			readerRevision = binding.revision + 1;
-			await ctx.db.patch("plugins_external_file_bindings", binding._id, {
-				revision: readerRevision,
-				updatedAt: Date.now(),
-			});
 		} else {
 			const node = facts._yay.node!;
 			if (
@@ -638,9 +376,6 @@ export const change_scope = internalMutation({
 				(await plugins_external_files_db_content_revision(ctx, node)) !== args.change.expectedContentRevision
 			)
 				return Result({ _nay: { name: "stale_write", message: "The file changed" } });
-
-			if (binding?.detachedAt != null)
-				return Result({ _nay: { name: "stale_write", message: "The file readers are managed in Files" } });
 
 			// Sequences only order writes inside one writer generation; a new generation restarts them.
 			const latest = await ctx.db
@@ -685,27 +420,8 @@ export const change_scope = internalMutation({
 			writerGeneration: generation,
 			nodeId,
 			contentRevision: null,
-			readerRevision,
 			createdAt: Date.now(),
 		});
-
-		if (args.change.kind === "readers" && previousReaders !== null) {
-			await ctx.db.insert("plugins_external_file_reader_changes", {
-				organizationId: writer.organizationId,
-				workspaceId: writer.workspaceId,
-				installationId: writer.installationId,
-				writerId: writer._id,
-				receiptId: id,
-				grantId: args.grantId,
-				tokenHash: args.tokenHash,
-				pluginVersionId: facts._yay.serviceGrant.pluginVersionId,
-				serviceAccountId: facts._yay.serviceGrant.serviceAccountId,
-				actorUserId: facts._yay.serviceGrant.actorUserId,
-				previousReaders,
-				nextReaders: args.change.readers,
-				rollbackReceiptId: null,
-			});
-		}
 
 		return Result({ _yay: (await ctx.db.get("plugins_external_file_receipts", id))! });
 	},

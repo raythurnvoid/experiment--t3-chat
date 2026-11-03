@@ -1856,7 +1856,6 @@ describe("bash_run_command", () => {
 						acceptedMcpServersFingerprint: "mcp-servers-hash",
 						acceptedSkillNames: [],
 						outboundOriginsAcceptedAt: now,
-						sandbox: { roots: [], rebuild: null },
 						installedBy: runner.seeded.userId,
 						updatedBy: runner.seeded.userId,
 						updatedAt: now,

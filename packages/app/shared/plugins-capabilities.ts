@@ -17,8 +17,8 @@ export const plugins_CAPABILITIES = [
 	// The exact plugin-name metadata value selects each existing node. Members may edit the label;
 	// actor permissions and current locks still apply.
 	"workspace.files.own-write",
-	// Consent line: the plugin may set readers on matching files and folders. Members with
-	// Can manage may change sharing. A real manual sharing change stops reader syncing.
+	// Kept only for immutable version history. New manifests reject it; it grants nothing. A plugin
+	// reads only what its person and its service account can read, so it has no reader lists.
 	"workspace.files.own-access",
 	// Consent line: backend runs may add read-only external data through this installation's mounts.
 	// Members with workspace read access may read it through the chat agent. The owner pays for stored files.

@@ -42,8 +42,7 @@ import {
 	organizations_membership_lifetimes_db_get,
 	organizations_membership_lifetimes_db_record,
 } from "./organizations_membership_lifetimes.ts";
-import { plugins_db_get_live_service_account, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
-import app_convex_schema, { plugins_sandbox_root_validator } from "./schema.ts";
+import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -514,12 +513,6 @@ async function db_get_user_permission_grant(
 				.eq("permission", args.permission),
 		)
 		.first();
-	if (grant?.externalPluginMembershipLifetime !== undefined) {
-		const membership = await organizations_membership_lifetimes_db_get(ctx, args);
-		if (!membership?.active || membership.lifetime !== grant.externalPluginMembershipLifetime) {
-			return null;
-		}
-	}
 	return grant;
 }
 
@@ -662,9 +655,8 @@ export async function access_control_db_set_service_account_grant(
 					.eq("resourceKind", "file")
 					.eq("resourceId", resourceId),
 			)
-			.take(154);
+			.take(151);
 
-		// Include the reserved own-account slot when reading existing grants.
 		if (
 			args.level !== null &&
 			!grants.some(
@@ -679,38 +671,11 @@ export async function access_control_db_set_service_account_grant(
 					.map((grant) => `${grant.principalKind}:${grant.userId ?? grant.role ?? grant.serviceAccountId ?? "public"}`),
 			);
 			if (principals.size >= 50) {
-				// An attached transcript reserves one extra slot for its own account after all 50
-				// human readers are set. This never adds a grant without the normal manager checks.
-				const binding = await ctx.db
-					.query("plugins_external_file_bindings")
-					.withIndex("by_node", (q) => q.eq("nodeId", node._id))
-					.first();
-				const installation =
-					binding?.detachedAt === null
-						? await ctx.db.get("plugins_workspace_installations", binding.installationId)
-						: null;
-				const reservedAccountSlot =
-					principals.size === 50 &&
-					grants.every(
-						(grant) => grant.principalKind === "user" && grant.externalPluginMembershipLifetime !== undefined,
-					) &&
-					installation?.status === "enabled" &&
-					installation.organizationId === args.organizationId &&
-					installation.workspaceId === args.workspaceId &&
-					(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: args.serviceAccountId }));
-				if (!reservedAccountSlot) {
-					return Result({
-						_nay: { message: "One file or folder can be shared with at most 50 people, roles, and service accounts" },
-					});
-				}
+				return Result({
+					_nay: { message: "One file or folder can be shared with at most 50 people, roles, and service accounts" },
+				});
 			}
 		}
-	}
-
-	// Before any write: a 21st plugin folder refuses the whole change.
-	const synced = await plugins_db_sync_sandbox_root(ctx, args);
-	if (synced._nay) {
-		return synced;
 	}
 
 	if (extendNode) {
@@ -1202,47 +1167,47 @@ export const access_control_subject_validator = v.union(
 		kind: v.literal("user"),
 		userId: v.id("users"),
 		/**
-		 * Set for plugin credentials. The plugin acts as its human, but only inside the installation's
-		 * sandbox roots and its own output folders. Null for people (UI, Bash, chat).
+		 * Set for plugin credentials. The plugin acts as its human, and it is also limited by the normal
+		 * grants of the installation's service account. Null for people (UI, Bash, chat).
 		 */
 		plugin: v.union(
 			v.null(),
 			v.object({
 				installationId: v.id("plugins_workspace_installations"),
-				/** Empty while the installation rebuilds its roots, so the plugin reaches no folder then. */
-				roots: v.array(plugins_sandbox_root_validator),
+				/**
+				 * The installation's live account. The code that builds the subject checks the pin.
+				 */
+				serviceAccountId: v.id("access_control_service_accounts"),
 			}),
 		),
 	}),
 	v.object({
 		kind: v.literal("service_account"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		/**
-		 * Set only when a plugin acts inside its own private output folder while its human can read it:
-		 * there it acts as its account. A plugin output folder takes only this installation's subject,
-		 * so an API key bound to the same account never reaches it.
-		 */
-		installationId: v.optional(v.id("plugins_workspace_installations")),
 	}),
 );
 
 export type access_control_Subject = Infer<typeof access_control_subject_validator>;
 
-type SubjectPlugin = NonNullable<Extract<access_control_Subject, { kind: "user" }>["plugin"]>;
+/**
+ * One principal the checker asks about. A plugin subject asks about two: its human and its account.
+ */
+type CheckedPrincipal =
+	| { kind: "user"; userId: Id<"users"> }
+	| { kind: "service_account"; serviceAccountId: Id<"access_control_service_accounts"> };
 
 type FileNodeRef = {
 	_id: Id<"files_nodes">;
 	restrictedScopeNodeId: Id<"files_nodes"> | null;
-	/** Read from the node when missing. Plugin subjects and the "Add people" chain need it. */
+	/** Read from the node when missing, for the "Add people" chain. */
 	treePath?: string;
 	/** Read from the node when missing, for the "Add people" chain. */
 	extendedScopeNodeId?: Id<"files_nodes"> | null;
 };
 
 /**
- * The file checks of one subject inside one call. Rows share the workspace answer, each restricted
- * scope answer and the sandbox roots, so a list pays for each once. Make a new one after a write that
- * changes grants.
+ * The file checks of one subject inside one call. Rows share the workspace answer and each restricted
+ * scope answer, so a list pays for each once. Make a new one after a write that changes grants.
  *
  * A query that checks several things (a folder, its rows, their write access) can pass one checker to
  * each, so the nodes and "Add people" roots of a deep chain are read once for the whole query.
@@ -1290,15 +1255,6 @@ export function access_control_create_file_checker(
 			access_control_db_resolve_live_restricted_scope(ctx, { ...tenant, restrictedScopeNodeId: pointer }),
 		);
 
-	const output_folder = (scopeNodeId: Id<"files_nodes">) =>
-		once(`output:${scopeNodeId}`, async () => {
-			const binding = await ctx.db
-				.query("plugins_external_file_bindings")
-				.withIndex("by_node", (q) => q.eq("nodeId", scopeNodeId))
-				.first();
-			return binding?.detachedAt === null ? binding : null;
-		});
-
 	// As a Move shows it, so a moved item does not keep the added people of its old place.
 	const get_node = (nodeId: Id<"files_nodes">) =>
 		once(`node:${nodeId}`, () => files_saved_placement_db_get_node(ctx.db, nodeId));
@@ -1306,6 +1262,7 @@ export function access_control_create_file_checker(
 	/** "Add people": a grant on an extended root at or above the node. Each root's answer is shared. */
 	const chain_allows = async (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		principal: CheckedPrincipal,
 		node: FileNodeRef,
 		permission: access_control_Permission,
 	) => {
@@ -1324,9 +1281,9 @@ export function access_control_create_file_checker(
 			node: { ...full, restrictedScopeNodeId: node.restrictedScopeNodeId },
 			get_node,
 			root_allows: (rootId) =>
-				once(`root:${rootId}:${permission}`, async () => {
-					if (subject.kind === "user") {
-						const userId = subject.userId;
+				once(`root:${principal.kind}:${rootId}:${permission}`, async () => {
+					if (principal.kind === "user") {
+						const userId = principal.userId;
 						return await has_restricted_file_permission(ctx, {
 							...tenant,
 							scopeNodeId: rootId,
@@ -1337,7 +1294,7 @@ export function access_control_create_file_checker(
 						});
 					}
 					const account = await once("account", () =>
-						ctx.db.get("access_control_service_accounts", subject.serviceAccountId),
+						ctx.db.get("access_control_service_accounts", principal.serviceAccountId),
 					);
 					return (
 						account !== null &&
@@ -1350,31 +1307,26 @@ export function access_control_create_file_checker(
 		});
 	};
 
-	/** The subject's own access on a live scope (null = open), before any sandbox limit. */
+	/** One principal's access on a live scope (null = open). */
 	const scope_allows = async (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		principal: CheckedPrincipal,
 		node: FileNodeRef | null,
 		scopeNodeId: Id<"files_nodes"> | null,
 		permission: access_control_Permission,
 	) => {
-		if (subject.kind === "service_account") {
-			// A plugin output folder belongs to its plugin. Only that installation's own requests reach it,
-			// so a key bound to the plugin's account cannot read it.
-			const binding = scopeNodeId ? await output_folder(scopeNodeId) : null;
-			if (binding && binding.installationId !== subject.installationId) {
-				return false;
-			}
+		if (principal.kind === "service_account") {
 			const base = await once(`account:${scopeNodeId}:${permission}`, () =>
 				access_control_db_has_permission(ctx, {
 					...tenant,
-					serviceAccountId: subject.serviceAccountId,
+					serviceAccountId: principal.serviceAccountId,
 					resource: scopeNodeId
 						? { kind: "file", id: scopeNodeId, restrictedScopeNodeId: scopeNodeId }
 						: { kind: "workspace", id: tenant.workspaceId },
 					permission,
 				}),
 			);
-			return base || (node !== null && (await chain_allows(tenant, node, permission)));
+			return base || (node !== null && (await chain_allows(tenant, principal, node, permission)));
 		}
 
 		// An open node needs the workspace permission. Asking here, not trusting the caller, keeps a
@@ -1382,120 +1334,31 @@ export function access_control_create_file_checker(
 		// so both share this cached answer.
 		const open_allows = () =>
 			once(`user:null:${permission}`, async () => {
-				if (subject.userId === tenant.organizationOwnerUserId) {
+				if (principal.userId === tenant.organizationOwnerUserId) {
 					return true;
 				}
 				return await access_control_db_has_permission(ctx, {
 					...tenant,
-					userId: subject.userId,
+					userId: principal.userId,
 					resource: { kind: "workspace", id: tenant.workspaceId },
 					permission,
 				});
 			});
 		const base = scopeNodeId
 			? await once(`user:${scopeNodeId}:${permission}`, async () => {
-					if (subject.userId === tenant.organizationOwnerUserId) {
+					if (principal.userId === tenant.organizationOwnerUserId) {
 						return true;
 					}
 					return await has_restricted_file_permission(ctx, {
 						...tenant,
 						scopeNodeId,
 						permission,
-						userId: subject.userId,
+						userId: principal.userId,
 						workspace_allows: open_allows,
 					});
 				})
 			: await open_allows();
-		return base || (node !== null && (await chain_allows(tenant, node, permission)));
-	};
-
-	const load_sandbox_roots = (
-		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
-		roots: SubjectPlugin["roots"],
-	) =>
-		once("roots", async () => {
-			const loaded: Array<
-				| { kind: "open"; level: access_control_FileShareLevel }
-				| {
-						kind: "folder";
-						node: Doc<"files_nodes">;
-						area: Id<"files_nodes"> | null;
-						level: access_control_FileShareLevel;
-				  }
-			> = [];
-			for (const root of roots) {
-				if (root.target.kind === "open") {
-					loaded.push({ kind: "open", level: root.level });
-					continue;
-				}
-				const node = await ctx.db.get("files_nodes", root.target.nodeId);
-				// An archived node keeps its path, so a new item at that path would match it. It gives nothing.
-				if (
-					!node ||
-					node.organizationId !== tenant.organizationId ||
-					node.workspaceId !== tenant.workspaceId ||
-					node.archiveOperationId !== null
-				) {
-					continue;
-				}
-				const area = await live_scope(tenant, node.restrictedScopeNodeId);
-				// A root on a node inside a restricted area gives nothing unless the node is that restricted
-				// folder or an item with added people, the same as its account grant.
-				if (area !== null && area !== node._id && node.parentExtendedScopeNodeId === undefined) {
-					continue;
-				}
-				loaded.push({ kind: "folder", node, area, level: root.level });
-			}
-			return loaded;
-		});
-
-	/** Whether a plugin subject's sandbox reaches the node with this permission. */
-	const sandbox_allows = async (
-		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
-		plugin: SubjectPlugin,
-		node: FileNodeRef | null,
-		scopeNodeId: Id<"files_nodes"> | null,
-		permission: access_control_Permission,
-	) => {
-		const allows = (level: access_control_FileShareLevel) =>
-			(access_control_FILE_SHARE_LEVELS[level].permissions as readonly access_control_Permission[]).includes(
-				permission,
-			);
-
-		// The installation's own output folders are roots that take no slot. Their level is the account's
-		// live grant there, so removing or lowering that grant limits the plugin at once. A role share
-		// never counts here: any manual share on an output folder detaches its binding.
-		const binding = scopeNodeId ? await output_folder(scopeNodeId) : null;
-		if (node && scopeNodeId && binding?.installationId === plugin.installationId) {
-			const installation = await once("installation", () =>
-				ctx.db.get("plugins_workspace_installations", plugin.installationId),
-			);
-			return (
-				installation !== null &&
-				(await access_control_db_has_permission(ctx, {
-					...tenant,
-					serviceAccountId: installation.serviceAccountId,
-					resource: { kind: "file", id: node._id, restrictedScopeNodeId: scopeNodeId },
-					permission,
-				}))
-			);
-		}
-
-		const treePath = node ? (node.treePath ?? (await ctx.db.get("files_nodes", node._id))?.treePath) : undefined;
-		for (const root of await load_sandbox_roots(tenant, plugin.roots)) {
-			if (!allows(root.level)) continue;
-			if (root.kind === "open") {
-				if (scopeNodeId === null) return true;
-				continue;
-			}
-			// A file root is that one file: its `treePath` has no trailing `/`, so a prefix would also
-			// match a sibling with a longer name. A folder root stops at restricted folders inside it.
-			const inside =
-				root.node._id === node?._id ||
-				(root.node.kind === "folder" && treePath !== undefined && treePath.startsWith(root.node.treePath));
-			if (inside && scopeNodeId === root.area) return true;
-		}
-		return false;
+		return base || (node !== null && (await chain_allows(tenant, principal, node, permission)));
 	};
 
 	/** `node: null` is the workspace root, for a create there. */
@@ -1515,13 +1378,23 @@ export function access_control_create_file_checker(
 		}
 
 		const scopeNodeId = node ? await live_scope(tenant, node.restrictedScopeNodeId) : null;
-		if (!(await scope_allows(tenant, node, scopeNodeId, permission))) {
+		if (subject.kind === "service_account") {
+			return await scope_allows(tenant, subject, node, scopeNodeId, permission);
+		}
+		if (!(await scope_allows(tenant, { kind: "user", userId: subject.userId }, node, scopeNodeId, permission))) {
 			return false;
 		}
+		// A plugin acts as its human and is also limited by its account's normal grants, the same ones
+		// an API key bound to that account uses. Both checks read only indexed grant rows.
 		return (
-			subject.kind === "service_account" ||
 			subject.plugin === null ||
-			(await sandbox_allows(tenant, subject.plugin, node, scopeNodeId, permission))
+			(await scope_allows(
+				tenant,
+				{ kind: "service_account", serviceAccountId: subject.plugin.serviceAccountId },
+				node,
+				scopeNodeId,
+				permission,
+			))
 		);
 	};
 

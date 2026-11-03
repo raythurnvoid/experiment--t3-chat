@@ -184,7 +184,6 @@ async function insert_skill_plugin(
 		acceptedMcpServersFingerprint: "mcp-servers-hash",
 		acceptedSkillNames: skills.map((skill) => skill.name),
 		outboundOriginsAcceptedAt: now,
-		sandbox: { roots: [], rebuild: null },
 		installedBy: userId,
 		updatedBy: userId,
 		updatedAt: now,

@@ -71,7 +71,6 @@ export const bonobo_http_api =
 			| "/api/v1/files/plugin-folders/ensure"
 			| "/api/v1/files/plugin-archive"
 			| "/api/v1/files/plugin-access/set"
-			| "/api/v1/files/plugin-access/undo"
 			| "/api/v1/files/plugin-writers/inspect"
 			| "/api/v1/files/plugin-writers/advance"
 			| "/api/v1/volumes/list"

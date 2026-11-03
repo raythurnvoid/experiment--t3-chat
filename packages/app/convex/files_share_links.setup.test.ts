@@ -11,10 +11,6 @@ import {
 	test_run_with_flush,
 } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import {
-	plugins_data_db_apply_file_access_binding,
-	plugins_data_db_prepare_file_access_binding,
-} from "./plugins_data.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { crypto_random_hex } from "../server/crypto-utils.ts";
 
@@ -102,7 +98,7 @@ export async function reset_rate_limits(t: TestConvex, userIds: Id<"users">[]) {
 export type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 /**
- * A plugin installation in the fixture workspace with one private space `team`, for binding tests.
+ * A plugin installation in the fixture workspace.
  */
 export async function insert_installation(f: Fixture) {
 	const installationId = await f.t.run(async (ctx) =>
@@ -164,73 +160,11 @@ export async function insert_installation(f: Fixture) {
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: Date.now(),
-			sandbox: { roots: [], rebuild: null },
 			installedBy: f.db.userId,
 			updatedBy: f.db.userId,
 			updatedAt: Date.now(),
 		}),
 	);
-	await f.t.run((ctx) =>
-		ctx.db.insert("plugins_data_scopes", {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			installationId,
-			scopeId: "team",
-			collection: "messages",
-			keyPrefix: "team/",
-			createdByUserId: f.db.userId,
-			createdAt: Date.now(),
-			updatedAt: Date.now(),
-			lastAppend: null,
-			appendSequence: 0,
-		}),
-	);
-	return installationId;
-}
-
-/**
- * Bind a folder to a private space, or detach it with `null`, through the same prepare step as the plugin API.
- */
-export function apply_binding(
-	f: Fixture,
-	args: {
-		installationId: Id<"plugins_workspace_installations">;
-		folderId: Id<"files_nodes">;
-		readScopeId: string | null;
-	},
-) {
-	return f.t.run(async (ctx) => {
-		const installation = (await ctx.db.get("plugins_workspace_installations", args.installationId))!;
-		const node = (await ctx.db.get("files_nodes", args.folderId))!;
-		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
-			installation,
-			nodeId: node._id,
-			parentId: node.parentId,
-			readScopeId: args.readScopeId,
-		});
-		expect(prepared._nay).toBeUndefined();
-		await plugins_data_db_apply_file_access_binding(ctx, {
-			installation,
-			node,
-			prepared: prepared._yay!,
-			userId: f.db.userId,
-		});
-	});
-}
-
-/**
- * Bind a node like the plugin API allows it: restrict it, let its scope job end, then bind it to `team`.
- */
-export async function restrict_and_bind(f: Fixture, nodeId: Id<"files_nodes">) {
-	await reset_rate_limits(f.t, [f.db.userId]);
-	const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-		membershipId: f.db.membershipId,
-		nodeId,
-	});
-	expect(restricted._nay).toBeUndefined();
-	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-	const installationId = await insert_installation(f);
-	await apply_binding(f, { installationId, folderId: nodeId, readScopeId: "team" });
 	return installationId;
 }
 

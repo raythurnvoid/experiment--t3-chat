@@ -219,10 +219,6 @@ export interface api_schemas_Main {
 		typeof public_api_plugin_writers_http_routes
 	>["/api/v1/files/plugin-writers/advance"];
 
-	"/api/v1/files/plugin-access/undo": ReturnType<
-		typeof public_api_plugin_writers_http_routes
-	>["/api/v1/files/plugin-access/undo"];
-
 	"/api/v1/files/service-uploads/remint": ReturnType<
 		typeof public_api_service_uploads_http_routes
 	>["/api/v1/files/service-uploads/remint"];

@@ -47,11 +47,8 @@ describe("tree page read budgets", () => {
 					scope: restricted ? "self" : areaId,
 				});
 				if (restricted) {
-					// Read through the second role, after rejecting an old plugin grant.
-					for (const principal of [
-						{ principalKind: "role", role: "member" },
-						{ principalKind: "user", userId: f.admin.userId, externalPluginMembershipLifetime: 1 },
-					] as const) {
+					// Read through the second role.
+					for (const principal of [{ principalKind: "role", role: "member" }] as const) {
 						await ctx.db.insert("access_control_permission_grants", {
 							organizationId: f.owner.organizationId,
 							workspaceId: f.owner.workspaceId,

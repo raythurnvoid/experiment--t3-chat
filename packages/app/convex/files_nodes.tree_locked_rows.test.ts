@@ -355,16 +355,11 @@ describe("locked rows in folder lists", () => {
 	});
 
 	// Guard = floor(3,000 index ranges / index ranges read by the worst row). The admin holds a
-	// workspace role, an organization role and a plugin grant, and each twin row is its own scope. The
-	// worst row is shared with their second role and also has an old plugin grant to the admin.
-	test.each([
-		{ grant: "none", oldPluginGrant: false },
-		{ grant: "user", oldPluginGrant: false },
-		{ grant: "role", oldPluginGrant: false },
-		{ grant: "role", oldPluginGrant: true },
-	] as const)(
-		"the restricted page guard fits the measured reads of the worst row (grant $grant, old plugin grant $oldPluginGrant)",
-		async ({ grant, oldPluginGrant }) => {
+	// workspace role and an organization role, and each twin row is its own scope. The worst row is
+	// shared with their second role.
+	test.each([{ grant: "none" }, { grant: "user" }, { grant: "role" }] as const)(
+		"the restricted page guard fits the measured reads of the worst row (grant $grant)",
+		async ({ grant }) => {
 			const t = test_convex();
 			const f = await seed_tree_access_fixture(t);
 			await test_run_with_flush(t, async (ctx) => {
@@ -391,13 +386,6 @@ describe("locked rows in folder lists", () => {
 					});
 					if (grant === "user") await grant_doc(String(nodeId), { principalKind: "user", userId: f.admin.userId });
 					if (grant === "role") await grant_doc(String(nodeId), { principalKind: "role", role: "member" });
-					if (oldPluginGrant) {
-						await grant_doc(String(nodeId), {
-							principalKind: "user",
-							userId: f.admin.userId,
-							externalPluginMembershipLifetime: 1,
-						});
-					}
 				}
 			});
 			const read_cost = (numItems: number) =>

@@ -120,7 +120,6 @@ describe("ensure_plugin_folder", () => {
 					acceptedMcpServersFingerprint: "mcp-servers-hash",
 					acceptedSkillNames: [],
 					outboundOriginsAcceptedAt: now,
-					sandbox: { roots: [], rebuild: null },
 					installedBy: owner.userId,
 					updatedBy: owner.userId,
 					updatedAt: now,

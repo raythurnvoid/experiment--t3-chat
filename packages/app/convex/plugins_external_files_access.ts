@@ -1,10 +1,6 @@
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import {
-	access_control_db_can_act_on_file_node,
-	access_control_db_resolve_live_restricted_scope,
-	type access_control_Subject,
-} from "./access_control.ts";
+import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
@@ -14,8 +10,6 @@ import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_sequence,
 } from "../server/files-saved-placement.ts";
-import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
-import { files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import { server_path_parent_of } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
@@ -24,56 +18,6 @@ export async function plugins_external_files_db_get_node(
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; path: string },
 ) {
 	return await files_db_get_visible_node_by_path(ctx, args);
-}
-
-/**
- * Who a plugin service request acts as on `node` (the node at the path, or its nearest folder).
- * Inside a private output folder of this installation the plugin acts as its own account, so its own
- * `manage` grant there decides and its human needs only read. Elsewhere, or when the human cannot
- * read the folder, it acts as its human inside the sandbox roots, so it never reads for a human what
- * that human cannot read.
- */
-export async function plugins_external_files_db_request_subject(
-	ctx: QueryCtx,
-	args: {
-		installation: Doc<"plugins_workspace_installations">;
-		actorUserId: Id<"users">;
-		node: Doc<"files_nodes"> | null;
-	},
-): Promise<access_control_Subject> {
-	const { installation } = args;
-	const scopeNodeId = args.node
-		? await access_control_db_resolve_live_restricted_scope(ctx, {
-				organizationId: installation.organizationId,
-				workspaceId: installation.workspaceId,
-				restrictedScopeNodeId: args.node.restrictedScopeNodeId,
-			})
-		: null;
-	const binding = scopeNodeId
-		? await ctx.db
-				.query("plugins_external_file_bindings")
-				.withIndex("by_node", (q) => q.eq("nodeId", scopeNodeId))
-				.first()
-		: null;
-	if (
-		binding?.detachedAt === null &&
-		binding.installationId === installation._id &&
-		args.node !== null &&
-		(await access_control_db_can_act_on_file_node(ctx, {
-			organizationId: installation.organizationId,
-			workspaceId: installation.workspaceId,
-			subject: { kind: "user", userId: args.actorUserId, plugin: null },
-			fileNode: args.node,
-			permission: "content.read",
-		}))
-	) {
-		return {
-			kind: "service_account",
-			serviceAccountId: installation.serviceAccountId,
-			installationId: installation._id,
-		};
-	}
-	return plugins_sandbox_subject(installation, args.actorUserId);
 }
 
 export async function plugins_external_files_db_authorize(
@@ -87,7 +31,6 @@ export async function plugins_external_files_db_authorize(
 		force?: boolean;
 		requestReadOnly?: boolean;
 		exactNodeId?: Id<"files_nodes">;
-		recoverEmptySetup?: { writerId: Id<"plugins_external_file_writers"> };
 	},
 ) {
 	const now = Date.now();
@@ -194,74 +137,13 @@ export async function plugins_external_files_db_authorize(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 	const writeContext: files_nodes_WriteContext = {
-		subject: await plugins_external_files_db_request_subject(ctx, {
-			installation,
-			actorUserId: grant.actorUserId,
-			node: aclNode,
-		}),
+		subject: plugins_sandbox_subject(installation, grant.actorUserId),
 		force: args.force === true,
 		actorUserId: grant.actorUserId,
 		resourceScope: node
 			? { kind: node.kind === "folder" ? "subtree" : "node", nodeId: node._id }
 			: { kind: "create", parentNodeId: parentNode?._id ?? files_ROOT_ID, path: args.path },
 	};
-	if (args.recoverEmptySetup && node?.kind === "folder" && node.restrictedScopeNodeId === node._id) {
-		const writer = await ctx.db.get("plugins_external_file_writers", args.recoverEmptySetup.writerId);
-		if (
-			writer &&
-			writer.installationId === installation._id &&
-			writer.folderNodeId === node._id &&
-			writer.path === args.path &&
-			writer.rootPath === grant.destinationPathPrefix
-		) {
-			const view = await files_saved_placement_db_get_view(ctx.db, scope);
-			const normal = await files_saved_stream_db_create(ctx.db, scope, { kind: "normal", generation: view.generation });
-			const selected =
-				view.cohortId !== null && view.view !== null
-					? await files_saved_stream_db_create(ctx.db, scope, {
-							kind: "cohort",
-							cohortId: view.cohortId,
-							view: view.view,
-							generation: view.generation,
-						})
-					: null;
-			const [root, binding, child] = await Promise.all([
-				files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
-				ctx.db
-					.query("plugins_external_file_bindings")
-					.withIndex("by_writer", (q) => q.eq("writerId", writer._id))
-					.first(),
-				normal.queries.by_parent_name((q) => q.eq("parentId", node._id)).first(),
-			]);
-			const selectedChild = selected
-				? await selected.queries.by_parent_name((q) => q.eq("parentId", node._id)).first()
-				: null;
-			if (
-				root?.kind === "folder" &&
-				root.path === writer.rootPath &&
-				root.archiveOperationId === null &&
-				binding?.nodeId === node._id &&
-				binding.detachedAt === null &&
-				!child &&
-				!selectedChild &&
-				(await files_metadata_db_read_entry(ctx, { ...scope, fileNodeId: root._id, key: "plugin-name" })) ===
-					installation.pluginName &&
-				// Recovery returns only IDs and changes nothing, so it needs only the human to still see the
-				// folder. The account may have lost its grant there.
-				(await access_control_db_can_act_on_file_node(ctx, {
-					...scope,
-					subject: { kind: "user", userId: grant.actorUserId, plugin: null },
-					fileNode: node,
-					permission: "content.read",
-				}))
-			) {
-				// Only ensure uses this path, to recover IDs for an empty private setup. No file or ACL changes follow.
-				return Result({
-					_yay: { installation, membership, serviceGrant: grant, pluginRun: null, writeContext, node, parentNode },
-				});
-			}
-		}
-	}
 	// No node on the path yet means a create at the workspace root.
 	if (
 		!(await access_control_db_can_act_on_file_node(ctx, {
@@ -306,13 +188,9 @@ export async function plugins_external_files_db_check_write(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	const [root, folder, binding] = await Promise.all([
+	const [root, folder] = await Promise.all([
 		files_saved_placement_db_get_node(ctx.db, writer.rootNodeId),
 		files_saved_placement_db_get_node(ctx.db, writer.folderNodeId),
-		ctx.db
-			.query("plugins_external_file_bindings")
-			.withIndex("by_writer", (q) => q.eq("writerId", writer._id))
-			.first(),
 	]);
 	if (
 		!root ||
@@ -341,7 +219,6 @@ export async function plugins_external_files_db_check_write(
 		args.expectedParentNodeId,
 		args.write.expectedNodeId,
 		args.write.expectedContentRevision,
-		args.write.expectedReaderRevision,
 		args.write.contentType,
 		args.write.nonCollaborative,
 		args.write.requestReadOnly,
@@ -351,11 +228,7 @@ export async function plugins_external_files_db_check_write(
 		if (receipt.operation !== "write" || receipt.fingerprint !== fingerprint) {
 			return Result({ _nay: { name: "stale_write", message: "This operation was already used for another write" } });
 		}
-		return Result({ _yay: { ...facts._yay, writer, binding, fingerprint, receipt } });
-	}
-
-	if (binding && binding.detachedAt === null && binding.revision !== args.write.expectedReaderRevision) {
-		return Result({ _nay: { name: "stale_write", message: "The file readers changed" } });
+		return Result({ _yay: { ...facts._yay, writer, fingerprint, receipt } });
 	}
 
 	// A fenced rebuild may reuse its source sequence. Ordering is local to the current writer generation.
@@ -385,7 +258,7 @@ export async function plugins_external_files_db_check_write(
 		target: node ? { kind: "node", node } : { kind: "create", parentNode: facts._yay.parentNode, path: args.path },
 	});
 	if (writable._nay) return Result({ _nay: writable._nay });
-	return Result({ _yay: { ...facts._yay, writer, binding, fingerprint, receipt: null } });
+	return Result({ _yay: { ...facts._yay, writer, fingerprint, receipt: null } });
 }
 
 export async function plugins_external_files_db_record_write(
@@ -411,7 +284,6 @@ export async function plugins_external_files_db_record_write(
 		writerGeneration: write.writerGeneration,
 		nodeId: args.node._id,
 		contentRevision: await plugins_external_files_db_content_revision(ctx, args.node),
-		readerRevision: write.expectedReaderRevision,
 		createdAt: Date.now(),
 	});
 }

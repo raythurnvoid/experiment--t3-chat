@@ -75,7 +75,6 @@ const SHARE = {
 	callerRoles: [] as string[],
 	baseScope: null as { nodeId: string; name: string; path: string; workspaceView: boolean | null } | null,
 	linksInside: false,
-	pluginArea: null,
 	access: "restricted_root",
 	workspaceView: false,
 	canAddPeople: true,

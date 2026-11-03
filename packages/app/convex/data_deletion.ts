@@ -1223,9 +1223,7 @@ async function db_purge_organization_workspace_content_batch(
 
 	// External writers cannot publish through the workspace fence. Drain their children first.
 	for (const tableName of [
-		"plugins_external_file_reader_changes",
 		"plugins_external_file_receipts",
-		"plugins_external_file_bindings",
 		"plugins_external_file_writers",
 		"plugin_service_grant_requests",
 	] as const) {

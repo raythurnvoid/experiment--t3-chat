@@ -41,10 +41,6 @@ import {
 	access_control_db_resolve_role_refs,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
-import {
-	files_nodes_db_get_plugin_binding_installation_id,
-	files_nodes_db_has_plugin_binding,
-} from "./files_nodes_db.ts";
 import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 import {
 	files_nodes_db_set_extended_scope,
@@ -53,17 +49,13 @@ import {
 } from "./files_sharing_db.ts";
 import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_share_links_db_is_selected } from "../server/files-share-links.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import {
-	files_saved_placement_db_get_node,
-	files_saved_placement_db_get_node_view,
-} from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import {
 	access_control_ADDED_PEOPLE_LEVEL_MESSAGE,
@@ -211,81 +203,6 @@ async function caller_can_hand_out_level(
 	return null;
 }
 
-/**
- * A manual sharing change takes over the reader list without removing its grants.
- * Call only after a real change; saving the same sharing must keep plugin reader sync.
- *
- * A bound area holds no public links: the bind deleted them, and turn-on refuses there. So a detach
- * has no links to delete.
- */
-async function db_detach_file_access_binding(args: { ctx: MutationCtx; node: Doc<"files_nodes"> }) {
-	const { ctx, node } = args;
-
-	const binding = await ctx.db
-		.query("plugins_file_access_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", node._id))
-		.first();
-	const externalBinding = await ctx.db
-		.query("plugins_external_file_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", node._id))
-		.first();
-	if (binding) {
-		await ctx.db.delete("plugins_file_access_bindings", binding._id);
-	}
-
-	if (externalBinding && externalBinding.detachedAt === null) {
-		await ctx.db.patch("plugins_external_file_bindings", externalBinding._id, {
-			detachedAt: Date.now(),
-			revision: externalBinding.revision + 1,
-			updatedAt: Date.now(),
-		});
-		const grants = await ctx.db
-			.query("access_control_permission_grants")
-			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-				q
-					.eq("organizationId", externalBinding.organizationId)
-					.eq("workspaceId", externalBinding.workspaceId)
-					.eq("resourceKind", "file")
-					.eq("resourceId", String(node._id)),
-			)
-			.take(MAX_FILE_SHARE_GRANT_DOCS);
-		let changed = false;
-		const accountPermissions = new Map<Id<"access_control_service_accounts">, Set<access_control_GrantPermission>>();
-		for (const grant of grants) {
-			if (grant.principalKind === "service_account" && grant.serviceAccountId) {
-				const permissions = accountPermissions.get(grant.serviceAccountId) ?? new Set();
-				accountPermissions.set(grant.serviceAccountId, permissions.add(grant.permission));
-			}
-			if (grant.externalPluginMembershipLifetime !== undefined) {
-				await ctx.db.patch("access_control_permission_grants", grant._id, {
-					externalPluginMembershipLifetime: undefined,
-				});
-				changed = true;
-			}
-		}
-		// The folder is no longer a plugin output folder, so the account grant becomes a sandbox root.
-		for (const [serviceAccountId, permissions] of accountPermissions) {
-			const synced = await plugins_db_sync_sandbox_root(ctx, {
-				organizationId: externalBinding.organizationId,
-				workspaceId: externalBinding.workspaceId,
-				serviceAccountId,
-				resource: { kind: "file", nodeId: node._id },
-				level: access_control_file_share_level_from_permissions(permissions),
-			});
-			// Do not refuse a sharing change for a plugin limit. The plugin just does not reach the folder.
-			if (synced._nay) {
-				console.warn("Skipped a sandbox root past the plugin folder cap", { nodeId: node._id, serviceAccountId });
-			}
-		}
-		if (changed) {
-			await files_media_validation_db_advance_version(ctx, {
-				organizationId: externalBinding.organizationId,
-				workspaceId: externalBinding.workspaceId,
-			});
-		}
-	}
-}
-
 // #region sharing
 
 /** Written by hand: when you add a level to `access_control_FILE_SHARE_LEVELS`, add it here too. */
@@ -309,7 +226,7 @@ const share_entry_validator = v.object({
 	principal: share_principal_validator,
 	level: share_level_validator,
 	serviceAccountName: v.union(v.string(), v.null()),
-	/** The plugin this account serves here, if any. Its grants are also that plugin's folders. */
+	/** The plugin this account serves here, if any. Its grants also limit that plugin. */
 	servicePluginName: v.union(v.string(), v.null()),
 });
 
@@ -724,11 +641,6 @@ export const get_node_share_state = query({
 			),
 			/** Whether a file inside this restricted folder has a public link. An unrestrict ends it. */
 			linksInside: v.boolean(),
-			/**
-			 * The plugin that decides who reads this node's area. `isSelf` is true when the plugin keeps
-			 * this node's own list: a change here then stops the plugin updating it.
-			 */
-			pluginArea: v.union(v.null(), v.object({ pluginName: v.string(), isSelf: v.boolean() })),
 			/**
 			 * Where the rest of the access comes from. `restricted` null means everyone in the workspace.
 			 * `extended` lists the folders with added people above the node, nearest first.
@@ -1177,19 +1089,6 @@ export const get_node_share_state = query({
 				)
 				.first()) !== null;
 
-		// A plugin decides who reads a bound area. On the bound folder a change stops that, and an item
-		// inside it cannot be restricted, like `restrict_node` refuses.
-		const pluginInstallationId =
-			scopeNode && scopeIsLive ? await files_nodes_db_get_plugin_binding_installation_id(ctx, scopeNode._id) : null;
-		const pluginInstallation = pluginInstallationId
-			? await ctx.db.get("plugins_workspace_installations", pluginInstallationId)
-			: null;
-		const pluginVersion = pluginInstallation
-			? await ctx.db.get("plugins_versions", pluginInstallation.pluginVersionId)
-			: null;
-		const pluginArea =
-			scopeNode && pluginVersion ? { pluginName: pluginVersion.displayName, isSelf: scopeNode._id === node._id } : null;
-
 		if (!scopeNode || !scopeIsLive) {
 			return {
 				nodeId: node._id,
@@ -1211,7 +1110,6 @@ export const get_node_share_state = query({
 				callerRoles,
 				baseScope,
 				linksInside,
-				pluginArea,
 				inheritedFrom,
 				organizationOwnerUserId: organization.ownerUserId,
 				link,
@@ -1244,7 +1142,6 @@ export const get_node_share_state = query({
 			callerRoles,
 			baseScope,
 			linksInside,
-			pluginArea,
 			inheritedFrom,
 			organizationOwnerUserId: organization.ownerUserId,
 			link,
@@ -1442,7 +1339,7 @@ export const set_node_share_grant = mutation({
 			});
 		}
 
-		const changed = await db_set_principal_level(ctx, {
+		await db_set_principal_level(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			scopeNodeId: node._id,
@@ -1451,9 +1348,6 @@ export const set_node_share_grant = mutation({
 			grants,
 			now,
 		});
-		if (changed) {
-			await db_detach_file_access_binding({ ctx, node });
-		}
 
 		return Result({ _yay: null });
 	},
@@ -1539,7 +1433,7 @@ export const remove_node_share_grant = mutation({
 				});
 			}
 
-			const changed = await db_set_principal_level(ctx, {
+			await db_set_principal_level(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				scopeNodeId: node._id,
@@ -1548,9 +1442,6 @@ export const remove_node_share_grant = mutation({
 				grants,
 				now: Date.now(),
 			});
-			if (changed) {
-				await db_detach_file_access_binding({ ctx, node });
-			}
 		}
 
 		if (node.parentExtendedScopeNodeId !== undefined) {
@@ -1600,20 +1491,6 @@ async function db_restrict_node(
 ) {
 	const { userAuth, membership, node, organization, defaultWorkspaceId } = args;
 
-	// A plugin decides who reads the whole bound area. A restricted item inside would leave that list.
-	// While a Move holds the item, the area it moves into counts too: the Move checked it before this restrict.
-	const moveView = await files_saved_placement_db_get_node_view(ctx.db, node._id);
-	const moved = moveView
-		? await files_saved_placement_db_get_node(ctx.db, node._id, { cohortId: moveView.cohortId, view: "after" })
-		: null;
-	for (const scopeNodeId of [node.restrictedScopeNodeId, moved?.restrictedScopeNodeId]) {
-		if (scopeNodeId && (await files_nodes_db_has_plugin_binding(ctx, scopeNodeId))) {
-			return Result({
-				_nay: { message: "A plugin decides who can read this item, so it cannot be restricted on its own" },
-			});
-		}
-	}
-
 	const isOwner = userAuth.id === organization.ownerUserId;
 
 	// The grant below is a `manage` grant, and `manage` carries write. Somebody who may choose access
@@ -1662,7 +1539,6 @@ async function db_restrict_node(
 	}
 
 	const now = Date.now();
-	await db_detach_file_access_binding({ ctx, node });
 	await files_nodes_db_set_restricted_scope({
 		ctx,
 		organizationId: membership.organizationId,
@@ -1856,10 +1732,6 @@ export const set_node_workspace_view = mutation({
 			grants,
 			now: Date.now(),
 		});
-		// A manual change takes the list over from a plugin. The restrict above already did this when it ran.
-		if (isRestrictedRoot) {
-			await db_detach_file_access_binding({ ctx, node });
-		}
 
 		return Result({ _yay: null });
 	},
@@ -1903,7 +1775,6 @@ export const unrestrict_node = mutation({
 			parentId: node.parentId,
 		});
 
-		await db_detach_file_access_binding({ ctx, node });
 		await files_nodes_db_set_restricted_scope({
 			ctx,
 			organizationId: membership.organizationId,
@@ -1933,7 +1804,7 @@ export const unrestrict_node = mutation({
 				continue;
 			}
 			if (grant.permission !== "content.permissions.manage") continue;
-			// Service account grants go through the account writer, so the plugin folders stay in sync.
+			// Service account grants go through the account writer, like every account grant change.
 			// A revoked account cannot get a new level, so its grant goes.
 			if (grant.principalKind === "service_account" && grant.serviceAccountId) {
 				const account = await ctx.db.get("access_control_service_accounts", grant.serviceAccountId);

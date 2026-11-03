@@ -6,7 +6,6 @@ import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schema
 import type {
 	public_api_plugin_files_http_inspect_writer_Body,
 	public_api_plugin_files_http_advance_writer_Body,
-	public_api_plugin_files_http_undo_access_Body,
 } from "./public_api_plugin_files.ts";
 
 export function public_api_plugin_writers_http_routes(router: { route: HttpRouter["route"] }) {
@@ -69,38 +68,6 @@ export function public_api_plugin_writers_http_routes(router: { route: HttpRoute
 							body: Body;
 							response: api_schemas_BuildResponseSpecFromHandler<
 								typeof import("./public_api_plugin_files.ts").public_api_plugin_files_http_advance_writer
-							>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((/* iife */ path = "/api/v1/files/plugin-access/undo" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: ((/* iife */) => {
-						type SearchParams = never;
-						type PathParams = never;
-						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
-						type Body = public_api_plugin_files_http_undo_access_Body;
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { public_api_plugin_files_http_undo_access } = await import("./public_api_plugin_files.ts");
-								const result = await public_api_plugin_files_http_undo_access(ctx, request);
-								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
-							}),
-						});
-
-						return {} as {
-							pathParams: PathParams;
-							searchParams: SearchParams;
-							headers: Headers;
-							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
-								typeof import("./public_api_plugin_files.ts").public_api_plugin_files_http_undo_access
 							>;
 						};
 					})(),

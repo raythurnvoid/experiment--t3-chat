@@ -119,8 +119,8 @@ export function public_api_is_path_inside_prefix(filePath: string, pathPrefix: s
  * The person behind a public API call: their drafts, pins and audit fields use this id.
  *
  * Access checks use `principal.subject` instead. A key bound to a service account acts as the
- * account, and a plugin acts as this person only inside its sandbox roots. Billing doors choose the
- * payer separately.
+ * account, and a plugin acts as this person only where its service account has grants too. Billing
+ * doors choose the payer separately.
  */
 export function public_api_visibility_user_id(principal: { actorUserId: Id<"users"> } | { userId: Id<"users"> }) {
 	return "actorUserId" in principal ? principal.actorUserId : principal.userId;

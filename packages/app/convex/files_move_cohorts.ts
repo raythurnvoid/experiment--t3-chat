@@ -10,7 +10,6 @@ import { files_metadata_maps_db_delete, files_metadata_maps_db_read, files_metad
 import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
-	files_nodes_db_has_plugin_binding,
 	files_nodes_db_resume_file_content_materialization,
 } from "./files_nodes_db.ts";
 import {
@@ -1520,21 +1519,6 @@ async function db_headers(
 	// The people added to the new parent's chain can open the item after the Move. An extended root keeps
 	// its own added people and links to that chain too.
 	const destinationExtendedScopeNodeId = scope === physical._id ? null : (parent?.extendedScopeNodeId ?? null);
-	// A plugin decides who reads the whole bound area, so a restricted item cannot come into one. This
-	// step visits every node, so a restricted folder inside a moved folder is checked too. A node that
-	// stays in its area, like a destination folder that does not move, passes.
-	if (
-		physical.isRestrictedScopeRoot &&
-		parent?.restrictedScopeNodeId &&
-		old?.parentScopeNodeId !== parent.restrictedScopeNodeId &&
-		(await files_nodes_db_has_plugin_binding(ctx, parent.restrictedScopeNodeId))
-	)
-		return Result({
-			_nay: {
-				name: "permission_denied",
-				message: "A plugin decides who can read the destination, so a restricted item cannot move there.",
-			},
-		});
 	if (selected) {
 		const run = cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
 		// A delete stays in its folder, so this parent is its current one. An approved delete from a

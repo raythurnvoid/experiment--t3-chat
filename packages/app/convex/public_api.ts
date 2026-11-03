@@ -483,7 +483,8 @@ async function get_workspace_content_permissions(
 		return { read, write };
 	}
 
-	// The route gate asks about the person. A plugin's sandbox roots limit each file check later.
+	// The route gate asks about the person. The grants of a plugin's service account limit each file
+	// check later.
 	const [organization, workspace] = await Promise.all([
 		ctx.db.get("organizations", args.organizationId),
 		ctx.db.get("organizations_workspaces", args.workspaceId),
@@ -1446,8 +1447,8 @@ export const resolve_principal = internalQuery({
 				/**
 				 * Always null: a plugin run has no destination seal. The read routes call
 				 * `public_api_is_path_inside_prefix(path, principal.pathPrefix)`, which treats null as
-				 * "anywhere" — right here, because the run's real boundary is its `subject`: the actor
-				 * inside the sandbox roots.
+				 * "anywhere" — right here, because the run's real boundary is its `subject`: the actor,
+				 * limited by the grants of the plugin's service account.
 				 */
 				pathPrefix: v.null(),
 			}),
@@ -1634,7 +1635,7 @@ export const resolve_principal = internalQuery({
 				}
 			}
 			// Any run may read files under the same consent a frame reads with. The backend runs the
-			// same publisher code either way, the run reads as its actor inside the sandbox roots, and
+			// same publisher code either way, the run reads as its actor within its account's grants, and
 			// without this an invoke endpoint could not read the files it maintains. `files:download`
 			// stays source-only.
 			if (acceptedCapabilities.includes("workspace.files.read")) {
@@ -2727,7 +2728,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 		// An upload run writes only beside the file the person uploaded, so it acts as that person
-		// there, without the sandbox roots.
+		// there, without the service account's grants.
 		const subject: access_control_Subject = { kind: "user", userId: args.userId, plugin: null };
 		if (
 			!(await has_workspace_content_permission(ctx, {
@@ -6870,7 +6871,6 @@ const write_file_body_validator = z
 				sequence: z.number().int().positive(),
 				expectedNodeId: z.string().nullable(),
 				expectedContentRevision: z.string().nullable(),
-				expectedReaderRevision: z.number().int().positive().nullable(),
 				contentHash: z.string().regex(/^[a-f0-9]{64}$/),
 			})
 			.strict()

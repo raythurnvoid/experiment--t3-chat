@@ -2,8 +2,8 @@
 // and `/api/v1/files/plugin-access/set` (routes in `public_api_plugin_files_http_routes.ts`).
 //
 // Editable `plugin-name` metadata selects the files and folders a plugin can use.
-// Current capabilities, the actor's permissions inside the sandbox roots, and write policies control
-// each operation.
+// Current capabilities, the actor's permissions, the normal grants of the plugin's service account,
+// and write policies control each operation.
 
 import { v, type Infer } from "convex/values";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
@@ -33,10 +33,6 @@ import {
 } from "./public_api.ts";
 import { public_api_service_uploads_MAX_ARCHIVE_NODES } from "./public_api_service_uploads.ts";
 import { public_api_authorize_request, public_api_settle_plugin_call_best_effort } from "./public_api_http_auth.ts";
-import {
-	plugins_data_db_apply_file_access_binding,
-	plugins_data_db_prepare_file_access_binding,
-} from "./plugins_data.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {
 	files_ROOT_ID,
@@ -76,7 +72,7 @@ async function db_get_active_node_at_path(
 }
 
 /**
- * Finish access checks before creating a folder or changing its write policy and readers.
+ * Finish access checks before creating a folder or changing its write policy.
  */
 async function db_prepare_plugin_access(
 	ctx: MutationCtx,
@@ -87,7 +83,6 @@ async function db_prepare_plugin_access(
 		path: string;
 		writeContext: files_nodes_WriteContext;
 		readOnly?: boolean;
-		readScopeId?: string | null;
 	},
 ) {
 	if (
@@ -96,29 +91,8 @@ async function db_prepare_plugin_access(
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
-	if (
-		args.readScopeId !== undefined &&
-		!args.installation.acceptedCapabilities.includes("workspace.files.own-access")
-	) {
-		return Result({ _nay: { message: "Permission denied" } });
-	}
 
-	let binding: NonNullable<Awaited<ReturnType<typeof plugins_data_db_prepare_file_access_binding>>["_yay"]> | null =
-		null;
-	if (args.readScopeId !== undefined) {
-		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
-			installation: args.installation,
-			nodeId: args.node?._id ?? null,
-			parentId: args.parentId,
-			readScopeId: args.readScopeId,
-		});
-		if (prepared._nay) {
-			return prepared;
-		}
-		binding = prepared._yay;
-	}
-
-	if (args.readOnly !== undefined || args.readScopeId !== undefined) {
+	if (args.readOnly !== undefined) {
 		const parentNode =
 			args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
 		const managed = await files_nodes_db_require_read_only_management(ctx, {
@@ -128,25 +102,13 @@ async function db_prepare_plugin_access(
 			target: args.node ? { kind: "node", node: args.node } : { kind: "create", parentNode, path: args.path },
 		});
 		if (managed._nay) return managed;
-		if (
-			args.readScopeId !== undefined &&
-			!(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.installation.organizationId,
-				workspaceId: args.installation.workspaceId,
-				subject: args.writeContext.subject,
-				fileNode: args.node ?? parentNode,
-				permission: "content.permissions.manage",
-			}))
-		)
-			return Result({ _nay: { message: "Permission denied" } });
 	}
-	return Result({ _yay: { readOnly: args.readOnly, binding } });
+	return Result({ _yay: { readOnly: args.readOnly } });
 }
 
 async function db_apply_plugin_access(
 	ctx: MutationCtx,
 	args: {
-		installation: Doc<"plugins_workspace_installations">;
 		node: Doc<"files_nodes">;
 		writeContext: files_nodes_WriteContext;
 		prepared: NonNullable<Awaited<ReturnType<typeof db_prepare_plugin_access>>["_yay"]>;
@@ -161,15 +123,6 @@ async function db_apply_plugin_access(
 		if (managed._nay) {
 			return managed;
 		}
-	}
-
-	if (args.prepared.binding) {
-		await plugins_data_db_apply_file_access_binding(ctx, {
-			installation: args.installation,
-			node: args.node,
-			prepared: args.prepared.binding,
-			userId: args.writeContext.actorUserId,
-		});
 	}
 
 	return Result({ _yay: null });
@@ -189,7 +142,6 @@ export const ensure_plugin_folder = internalMutation({
 		path: v.string(),
 		force: v.optional(v.boolean()),
 		readOnly: v.optional(v.boolean()),
-		readScopeId: v.optional(v.union(v.string(), v.null())),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes"), path: v.string(), created: v.boolean() }),
@@ -219,11 +171,6 @@ export const ensure_plugin_folder = internalMutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		if (!installation.acceptedCapabilities.includes("workspace.files.own-write")) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		// Decide the access consent before any folder is created, so a refusal creates nothing.
-		if (args.readScopeId !== undefined && !installation.acceptedCapabilities.includes("workspace.files.own-access")) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
@@ -312,39 +259,16 @@ export const ensure_plugin_folder = internalMutation({
 		let nodeId: Id<"files_nodes">;
 		let created = false;
 
-		// Existing folders keep the member's metadata, write policy, and sharing. A missing reader
-		// binding may be a manual sharing choice; ensure must not recreate it.
+		// Existing folders keep the member's metadata, write policy, and sharing.
 		if (firstMissingIndex === null) {
 			// The route refuses "/", so the walk always saw at least one segment.
 			if (!deepest) {
 				throw should_never_happen("plugin folder ensure walked no segments", { path: args.path });
 			}
 			nodeId = deepest._id;
-			const binding = await ctx.db
-				.query("plugins_file_access_bindings")
-				.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-				.first();
-			if (
-				binding &&
-				(binding.installationId !== installation._id ||
-					(args.readScopeId !== undefined && binding.scopeId !== args.readScopeId))
-			) {
-				return Result({ _nay: { name: "conflict", message: "This item has a different plugin reader binding" } });
-			}
-			if (binding) {
-				const preparedBinding = await plugins_data_db_prepare_file_access_binding(ctx, {
-					installation,
-					nodeId,
-					parentId: deepest.parentId,
-					readScopeId: binding.scopeId,
-				});
-				if (preparedBinding._nay) {
-					return preparedBinding;
-				}
-			}
 		} else {
 			let preparedAccess: NonNullable<Awaited<ReturnType<typeof db_prepare_plugin_access>>["_yay"]> | null = null;
-			if (args.readOnly !== undefined || args.readScopeId !== undefined) {
+			if (args.readOnly !== undefined) {
 				const prepared = await db_prepare_plugin_access(ctx, {
 					installation,
 					node: null,
@@ -352,7 +276,6 @@ export const ensure_plugin_folder = internalMutation({
 					path: args.path,
 					writeContext,
 					readOnly: args.readOnly,
-					readScopeId: args.readScopeId,
 				});
 				if (prepared._nay) {
 					return prepared;
@@ -389,19 +312,6 @@ export const ensure_plugin_folder = internalMutation({
 			}
 			nodeId = createdResult._yay;
 			created = true;
-
-			if (preparedAccess?.binding) {
-				const node = await files_saved_placement_db_get_node(ctx.db, nodeId);
-				if (!node) {
-					throw should_never_happen("ensured plugin folder is missing right after create", { nodeId });
-				}
-				await plugins_data_db_apply_file_access_binding(ctx, {
-					installation,
-					node,
-					prepared: preparedAccess.binding,
-					userId: args.userId,
-				});
-			}
 		}
 
 		return Result({ _yay: { nodeId, path: args.path, created } });
@@ -588,7 +498,6 @@ export const set_plugin_access = internalMutation({
 		callId: v.id("plugins_event_run_calls"),
 		path: v.string(),
 		readOnly: v.optional(v.boolean()),
-		readScopeId: v.optional(v.union(v.string(), v.null())),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -624,13 +533,6 @@ export const set_plugin_access = internalMutation({
 		}
 
 		const writeContext = revalidated._yay.writeContext;
-		const binding = await ctx.db
-			.query("plugins_file_access_bindings")
-			.withIndex("by_node", (q) => q.eq("nodeId", node._id))
-			.first();
-		if (binding && binding.installationId !== installation._id) {
-			return Result({ _nay: { name: "conflict", message: "This item has a different plugin reader binding" } });
-		}
 
 		const prepared = await db_prepare_plugin_access(ctx, {
 			installation,
@@ -639,13 +541,12 @@ export const set_plugin_access = internalMutation({
 			path: args.path,
 			writeContext,
 			readOnly: args.readOnly,
-			readScopeId: args.readScopeId,
 		});
 		if (prepared._nay) {
 			return prepared;
 		}
 
-		const applied = await db_apply_plugin_access(ctx, { installation, node, writeContext, prepared: prepared._yay });
+		const applied = await db_apply_plugin_access(ctx, { node, writeContext, prepared: prepared._yay });
 		if (applied._nay) {
 			return applied;
 		}
@@ -705,7 +606,6 @@ async function read_writer_proof(args: {
 	ids: {
 		writerId?: string;
 		nodeIds?: string[];
-		userIds?: string[];
 	};
 }) {
 	const { ctx, request, ids } = args;
@@ -756,11 +656,6 @@ const ensure_folder_body_validator = z
 		access: z
 			.object({
 				readOnly: z.boolean().optional(),
-				readScopeId: z.string().nullable().optional(),
-				readers: z
-					.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
-					.max(50)
-					.optional(),
 			})
 			.strict()
 			.optional(),
@@ -827,14 +722,11 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 				status: 403,
 				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 			} as const;
-		if (body._yay.access?.readScopeId !== undefined)
-			return { status: 400, body: { message: "Writer folders use readers, not readScopeId." } } as const;
 		const proof = await read_writer_proof({
 			ctx,
 			request,
 			ids: {
 				nodeIds: body._yay.writer.rootNodeId === null ? [] : [body._yay.writer.rootNodeId],
-				userIds: body._yay.access?.readers?.map((reader) => reader.userId),
 			},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
@@ -845,7 +737,6 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 			resourceKey: body._yay.writer.resourceKey,
 			rootNodeId: body._yay.writer.rootNodeId as Id<"files_nodes"> | null,
 			path: validatedPath._yay,
-			readers: body._yay.access?.readers?.map((reader) => ({ ...reader, userId: reader.userId as Id<"users"> })),
 			readOnly: body._yay.access?.readOnly ?? false,
 		})) as writer_ensure_Result;
 		if (result._nay) return writer_failure(result._nay);
@@ -856,7 +747,7 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 			headers: { "Cache-Control": "no-store" },
 		} as const;
 	}
-	if (principal.kind !== "plugin_run" || body._yay.access?.readers !== undefined)
+	if (principal.kind !== "plugin_run")
 		return {
 			status: 403,
 			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
@@ -870,7 +761,6 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 		runId: principal.runId,
 		path: validatedPath._yay,
 		...(body._yay.access?.readOnly === undefined ? {} : { readOnly: body._yay.access.readOnly }),
-		...(body._yay.access?.readScopeId === undefined ? {} : { readScopeId: body._yay.access.readScopeId }),
 	})) as ensure_plugin_folder_Result;
 	if (result._nay) {
 		if (result._nay.message === "Unauthenticated") {
@@ -884,13 +774,6 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: result._nay.message, errorCode: "permission_denied" }),
-			} as const;
-		}
-		// The private-space binding refuses a dead readScopeId with "Not found".
-		if (result._nay.message === "Not found") {
-			return {
-				status: 404,
-				body: await fail({ status: 404, message: result._nay.message, errorCode: "not_found" }),
 			} as const;
 		}
 		if (result._nay.name === "invalid_input") {
@@ -1105,12 +988,7 @@ const plugin_access_body_validator = z
 		path: z.string(),
 		access: z
 			.object({
-				readOnly: z.boolean().optional(),
-				readScopeId: z.string().nullable().optional(),
-				readers: z
-					.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
-					.max(50)
-					.optional(),
+				readOnly: z.boolean(),
 			})
 			.strict(),
 		writer: z
@@ -1118,7 +996,6 @@ const plugin_access_body_validator = z
 				writerId: z.string(),
 				operationId: z.string().min(1).max(128),
 				writerGeneration: z.number().int().positive(),
-				expectedReaderRevision: z.number().int().positive(),
 			})
 			.strict()
 			.optional(),
@@ -1187,17 +1064,11 @@ export async function public_api_plugin_files_http_set_access(args: {
 				status: 403,
 				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 			} as const;
-		if (
-			body._yay.access.readScopeId !== undefined ||
-			(body._yay.access.readers === undefined) === (body._yay.access.readOnly === undefined)
-		)
-			return { status: 400, body: { message: "A writer access change sets either readers or Read-only." } } as const;
 		const proof = await read_writer_proof({
 			ctx,
 			request,
 			ids: {
 				writerId: body._yay.writer.writerId,
-				userIds: (body._yay.access.readers ?? []).map((reader) => reader.userId),
 			},
 		});
 		if (proof._nay) return writer_failure(proof._nay);
@@ -1208,14 +1079,7 @@ export async function public_api_plugin_files_http_set_access(args: {
 			writerId: writer.writerId as Id<"plugins_external_file_writers">,
 			operationId: writer.operationId,
 			writerGeneration: writer.writerGeneration,
-			change:
-				body._yay.access.readOnly !== undefined
-					? { kind: "read_only", readOnly: body._yay.access.readOnly }
-					: {
-							kind: "readers",
-							expectedReaderRevision: writer.expectedReaderRevision,
-							readers: body._yay.access.readers!.map((reader) => ({ ...reader, userId: reader.userId as Id<"users"> })),
-						},
+			change: { kind: "read_only", readOnly: body._yay.access.readOnly },
 			expectedPath: requestedPath,
 		})) as writer_change_Result;
 		if (result._nay) return writer_failure(result._nay);
@@ -1225,22 +1089,11 @@ export async function public_api_plugin_files_http_set_access(args: {
 			headers: { "Cache-Control": "no-store" },
 		} as const;
 	}
-	if (principal.kind !== "plugin_run" || body._yay.access.readers !== undefined)
+	if (principal.kind !== "plugin_run")
 		return {
 			status: 403,
 			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 		} as const;
-	// An access object with nothing to change is a caller mistake, not a no-op.
-	if (body._yay.access.readOnly === undefined && body._yay.access.readScopeId === undefined) {
-		return {
-			status: 400,
-			body: await fail({
-				status: 400,
-				message: "access must set readOnly or readScopeId.",
-				errorCode: "invalid_input",
-			}),
-		} as const;
-	}
 
 	if (!pluginCallId) {
 		// Unreachable: public API authorization creates the call for plugin_run principals.
@@ -1254,8 +1107,7 @@ export async function public_api_plugin_files_http_set_access(args: {
 		runId: principal.runId,
 		callId: pluginCallId,
 		path: requestedPath,
-		...(body._yay.access.readOnly === undefined ? {} : { readOnly: body._yay.access.readOnly }),
-		...(body._yay.access.readScopeId === undefined ? {} : { readScopeId: body._yay.access.readScopeId }),
+		readOnly: body._yay.access.readOnly,
 	})) as set_plugin_access_Result;
 	if (result._nay) {
 		if (result._nay.message === "Unauthenticated") {
@@ -1293,8 +1145,7 @@ export async function public_api_plugin_files_http_set_access(args: {
 	console.info("Public API plugin access changed", {
 		principalKind: principal.kind,
 		principalKey: principal.principalKey,
-		readOnly: body._yay.access.readOnly ?? null,
-		readScopeIdSet: body._yay.access.readScopeId !== undefined,
+		readOnly: body._yay.access.readOnly,
 	});
 	return {
 		status: 200,
@@ -1382,9 +1233,7 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 	if (
 		confirmed._yay.node?._id !== node?._id ||
 		confirmed._yay.contentRevision !== inspected._yay.contentRevision ||
-		confirmed._yay.readerRevision !== inspected._yay.readerRevision ||
-		confirmed._yay.writer.generation !== writer.generation ||
-		confirmed._yay.detached !== inspected._yay.detached
+		confirmed._yay.writer.generation !== writer.generation
 	)
 		return { status: 409, body: { message: "The file changed during the read." } } as const;
 
@@ -1397,8 +1246,6 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 			contentRevision: inspected._yay.contentRevision,
 			expectedParentNodeId: writer.folderNodeId,
 			writerGeneration: writer.generation,
-			readerRevision: inspected._yay.readerRevision,
-			detached: inspected._yay.detached,
 		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
@@ -1443,10 +1290,5 @@ export async function public_api_plugin_files_http_advance_writer(ctx: ActionCtx
 
 	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
 }
-
-export {
-	plugins_external_file_readers_http_undo as public_api_plugin_files_http_undo_access,
-	type plugins_external_file_readers_http_undo_Body as public_api_plugin_files_http_undo_access_Body,
-} from "./plugins_external_file_readers.ts";
 
 // #endregion http handlers

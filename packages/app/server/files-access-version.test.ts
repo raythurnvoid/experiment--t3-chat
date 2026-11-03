@@ -57,7 +57,7 @@ describe("Files access versions", () => {
 		expect(await t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, scope))).toEqual(messageBefore);
 		await t.run(async (ctx) => {
 			const writes = files_access_version_db_wrap(ctx);
-			await writes.db.patch("access_control_permission_grants", grantId, { externalPluginMembershipLifetime: 2 });
+			await writes.db.patch("access_control_permission_grants", grantId, { permission: "content.write" });
 			await writes.flush();
 		});
 		const after = await t.run((ctx) => files_access_version_db_get(ctx.db, scope));

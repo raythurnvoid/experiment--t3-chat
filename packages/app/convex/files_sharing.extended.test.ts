@@ -12,9 +12,7 @@ import {
 	type access_control_Subject,
 } from "./access_control.ts";
 import {
-	apply_binding,
 	fixture,
-	insert_installation,
 	link_on,
 	mock_share_storage,
 	read_links,
@@ -582,44 +580,6 @@ test("an account grant on an item inside a restricted folder makes it an extende
 	expect((await get_node(f, folderId)).parentExtendedScopeNodeId).toBe(null);
 	expect(await can(f, subject, fileId)).toBe(true);
 	expect(await can(f, subject, otherId)).toBe(false);
-});
-
-test("binding a restricted folder to a private space replaces its people and keeps its apps", async () => {
-	const f = await fixture();
-	const folderId = await seed_folder(f, "/b");
-	const serviceAccountId = await create_account(f);
-	expect((await share_with(f, folderId, "read"))._nay).toBeUndefined();
-	expect((await share_with_account(f, folderId, serviceAccountId, "write"))._nay).toBeUndefined();
-	const installationId = await insert_installation(f);
-
-	// A plugin binds only a restricted folder. The restrict keeps the list.
-	await set_restricted(f, folderId, true);
-	await apply_binding(f, { installationId, folderId, readScopeId: "team" });
-
-	// The private space has no members yet, so no person is left on the folder. Updating readers keeps apps.
-	expect(await account_levels(f, folderId)).toEqual(["content.read", "content.write"]);
-	expect(await can(f, member(f), folderId)).toBe(false);
-	expect(await get_node(f, folderId)).toMatchObject({ restrictedScopeNodeId: folderId, extendedScopeNodeId: null });
-});
-
-test("binding an open file with added people to a private space removes them and ends its chain", async () => {
-	const f = await fixture();
-	const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/f.md" });
-	const serviceAccountId = await create_account(f);
-	expect((await share_with(f, fileId, "read"))._nay).toBeUndefined();
-	expect((await share_with_account(f, fileId, serviceAccountId, "write"))._nay).toBeUndefined();
-	expect(await get_node(f, fileId)).toMatchObject({ parentExtendedScopeNodeId: null, extendedScopeNodeId: fileId });
-	expect(await account_levels(f, fileId)).toEqual(["content.read", "content.write"]);
-	const installationId = await insert_installation(f);
-
-	// A file needs no restrict first, so the bind itself must drop the accounts added on it.
-	await apply_binding(f, { installationId, folderId: fileId, readScopeId: "team" });
-
-	expect(await account_levels(f, fileId)).toEqual([]);
-	expect(await can(f, member(f), fileId)).toBe(false);
-	const node = await get_node(f, fileId);
-	expect(node).toMatchObject({ restrictedScopeNodeId: fileId, extendedScopeNodeId: null });
-	expect(node.parentExtendedScopeNodeId).toBeUndefined();
 });
 
 test("manage is refused for an account on an Add-people item", async () => {

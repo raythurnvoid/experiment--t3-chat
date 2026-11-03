@@ -488,7 +488,6 @@ describe("ai_chat_context_discover_sources", () => {
 				acceptedMcpServersFingerprint: "mcp-servers-hash",
 				acceptedSkillNames: [skill.name],
 				outboundOriginsAcceptedAt: now,
-				sandbox: { roots: [], rebuild: null },
 				installedBy: userId,
 				updatedBy: userId,
 				updatedAt: now,

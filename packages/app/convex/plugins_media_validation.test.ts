@@ -3,7 +3,6 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 
@@ -103,7 +102,6 @@ async function fixture() {
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
-			sandbox: { roots: [], rebuild: null },
 			installedBy: membership.userId,
 			updatedBy: membership.userId,
 			updatedAt: now,
@@ -194,8 +192,6 @@ async function snapshot(f: Awaited<ReturnType<typeof fixture>>) {
 		clocks: await ctx.db.query("files_media_validation_versions").collect(),
 		grants: await ctx.db.query("access_control_permission_grants").collect(),
 		nodes: await ctx.db.query("files_nodes").collect(),
-		bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
-		externalBindings: await ctx.db.query("plugins_external_file_bindings").collect(),
 	}));
 }
 
@@ -220,268 +216,7 @@ function file_grants(records: Awaited<ReturnType<typeof snapshot>>, nodeId: Id<"
 	return records.grants.filter((grant) => grant.resourceKind === "file" && grant.resourceId === String(nodeId));
 }
 
-/** With `open`, the folder stays open and the account manages the whole workspace. */
-async function store_fixture(args: { open?: boolean } = {}) {
-	const f = await fixture();
-	const runToken = `plr_${"d".repeat(64)}`;
-	const started = await f.t.mutation(internal.plugins_runtime.start_invoke_run, {
-		organizationId: f.db.organizationId,
-		workspaceId: f.db.workspaceId,
-		serviceAccountId: f.db.serviceAccountId,
-		installationId: f.db.installationId,
-		pluginVersionId: f.db.pluginVersionId,
-		userId: f.db.userId,
-		endpointId: "echo",
-		callerSerializationKey: null,
-		apiTokenHash: await crypto_sha256_hex(runToken),
-	});
-	if (started._nay) throw new Error(started._nay.message);
-	const nodeId = await f.t.run(async (ctx) => {
-		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			userId: f.db.userId,
-			parentId: "root",
-			path: ROOT,
-			kind: "folder",
-			now: Date.now(),
-			createdNodesMetadata: [{ key: "plugin-name", value: "reader-probe" }],
-		});
-		if (created._nay) throw new Error(created._nay.message);
-		return created._yay;
-	});
-	// An account can manage only the workspace or a restricted root.
-	if (!args.open) {
-		expect(
-			await f.owner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }),
-		).toEqual({ _yay: null });
-	}
-	expect(
-		await f.owner.mutation(api.access_control.set_service_account_grant, {
-			membershipId: f.db.membershipId,
-			serviceAccountId: f.db.serviceAccountId,
-			resource: args.open ? { kind: "workspace" } : { kind: "file", nodeId },
-			level: "manage",
-		}),
-	).toEqual({ _yay: null });
-	expect(
-		(
-			await f.page.mutation(api.plugins_data.user_manage_scope, {
-				action: { kind: "create", scopeId: "private", collections: ["notes"], keyPrefix: "private/" },
-			})
-		)._nay,
-	).toBeUndefined();
-	return { ...f, nodeId, runToken };
-}
-
-async function set_binding(f: Awaited<ReturnType<typeof store_fixture>>, readScopeId: string | null) {
-	return await f.t.fetch("/api/v1/files/plugin-access/set", {
-		method: "POST",
-		headers: { Authorization: `Bearer ${f.runToken}`, "Content-Type": "application/json" },
-		body: JSON.stringify({ path: ROOT, access: { readScopeId } }),
-	});
-}
-
-async function external_writer(
-	f: Awaited<ReturnType<typeof fixture>>,
-	readers: { userId: Id<"users">; membershipLifetime: number }[] = [],
-) {
-	const result = await f.t.mutation(internal.plugins_external_files.ensure_writer, {
-		...f.credentials,
-		path: ROOT,
-		resourceKey: "output",
-		rootNodeId: null,
-		readOnly: false,
-		readers,
-	});
-	if (result._nay) throw new Error(result._nay.message);
-	return result._yay;
-}
-
 describe("plugin file media validation clocks", () => {
-	// A plugin binds only a restricted folder, so an open folder is refused and the clock stays.
-	test("refuses a binding on an open folder and keeps the workspace clock", async () => {
-		const f = await store_fixture({ open: true });
-		const before = await snapshot(f);
-		const response = await set_binding(f, "private");
-		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({
-			message: "Restrict this item first, then a plugin can decide who reads it",
-		});
-		const after = await snapshot(f);
-		expect(after.nodes).toEqual(before.nodes);
-		expect(after.bindings).toEqual([]);
-		await expect_clock({ f, before, changed: false });
-	});
-
-	test("advances the workspace clock for initial mirrored readers and preserves account grants", async () => {
-		const f = await store_fixture();
-		const before = await snapshot(f);
-		const response = await set_binding(f, "private");
-		expect(response.status, await response.clone().text()).toBe(200);
-		const grants = file_grants(await snapshot(f), f.nodeId);
-		expect(grants.filter((grant) => grant.principalKind === "user")).toMatchObject([
-			{ userId: f.db.userId, permission: "content.read" },
-		]);
-		expect(grants.filter((grant) => grant.principalKind === "service_account")).toEqual(file_grants(before, f.nodeId));
-		await expect_clock({ f, before, changed: true });
-	});
-
-	test.each(["add", "remove"])("advances the workspace clock for grant-only binding %s", async (change) => {
-		const f = await store_fixture();
-		expect(
-			(
-				await f.page.mutation(api.plugins_data.user_manage_scope, {
-					action: { kind: "create", scopeId: "second", collections: ["notes"], keyPrefix: "second/" },
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			(
-				await f.page.mutation(api.plugins_data.user_manage_scope, {
-					action: { kind: "set_principal", scopeId: "second", userId: f.db.readerId, level: "member" },
-				})
-			)._nay,
-		).toBeUndefined();
-		expect((await set_binding(f, change === "add" ? "private" : "second")).status).toBe(200);
-		const before = await snapshot(f);
-		const response = await set_binding(f, change === "add" ? "second" : "private");
-		expect(response.status, await response.clone().text()).toBe(200);
-		const after = await snapshot(f);
-		expect(after.nodes).toEqual(before.nodes);
-		const grants = file_grants(after, f.nodeId);
-		expect(
-			grants
-				.filter((grant) => grant.principalKind === "user")
-				.map((grant) => grant.userId)
-				.sort(),
-		).toEqual((change === "add" ? [f.db.userId, f.db.readerId] : [f.db.userId]).sort());
-		expect(grants.filter((grant) => grant.principalKind === "service_account")).toEqual(
-			file_grants(before, f.nodeId).filter((grant) => grant.principalKind === "service_account"),
-		);
-		await expect_clock({ f, before, changed: true });
-	});
-
-	test.each(["same", "detach", "absent", "denied", "missing-scope"])(
-		"keeps the workspace clock for %s binding access",
-		async (change) => {
-			const f = await store_fixture();
-			if (change !== "absent") expect((await set_binding(f, "private")).status).toBe(200);
-			if (change === "denied")
-				await f.t.run((ctx) =>
-					ctx.db.patch("plugins_workspace_installations", f.db.installationId, { status: "disabled" }),
-				);
-			const before = await snapshot(f);
-			const response = await set_binding(
-				f,
-				change === "detach" || change === "absent" ? null : change === "missing-scope" ? "missing" : "private",
-			);
-			expect(response.status).toBe(change === "denied" ? 401 : change === "missing-scope" ? 404 : 200);
-			const after = await snapshot(f);
-			expect(after.nodes).toEqual(before.nodes);
-			expect(after.grants).toEqual(before.grants);
-			if (change === "detach" || change === "absent") expect(after.bindings).toEqual([]);
-			await expect_clock({ f, before, changed: false });
-		},
-	);
-
-	test.each(["add", "remove", "delete", "leave", "cleanup"])(
-		"advances the workspace clock for bound scope %s",
-		async (change) => {
-			const f = await store_fixture();
-			if (change === "remove")
-				expect(
-					(
-						await f.page.mutation(api.plugins_data.user_manage_scope, {
-							action: { kind: "set_principal", scopeId: "private", userId: f.db.readerId, level: "member" },
-						})
-					)._nay,
-				).toBeUndefined();
-			expect((await set_binding(f, "private")).status).toBe(200);
-			if (change === "cleanup")
-				await f.t.run((ctx) => ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false }));
-			const before = await snapshot(f);
-			if (change === "cleanup") {
-				await f.t.mutation(internal.plugins_data.cleanup_stranded_scopes, {
-					scopes: [{ installationId: f.db.installationId, scopeId: "private" }],
-				});
-			} else {
-				const result = await f.page.mutation(api.plugins_data.user_manage_scope, {
-					action:
-						change === "add"
-							? { kind: "set_principal", scopeId: "private", userId: f.db.readerId, level: "member" }
-							: change === "delete"
-								? { kind: "delete", scopeId: "private" }
-								: {
-										kind: "remove_principal",
-										scopeId: "private",
-										userId: change === "leave" ? f.db.userId : f.db.readerId,
-									},
-				});
-				expect(result._nay).toBeUndefined();
-			}
-			const after = await snapshot(f);
-			const users = file_grants(after, f.nodeId)
-				.filter((grant) => grant.principalKind === "user")
-				.map((grant) => grant.userId);
-			expect(users.sort()).toEqual(
-				(change === "add" ? [f.db.userId, f.db.readerId] : change === "remove" ? [f.db.userId] : []).sort(),
-			);
-			expect(after.nodes).toEqual(before.nodes);
-			if (["delete", "leave", "cleanup"].includes(change)) expect(after.bindings).toEqual([]);
-			await expect_clock({ f, before, changed: true });
-		},
-	);
-
-	// A Move that an API key bound to the account started pins this clock, so a lost account grant must move it.
-	test("advances the workspace clock when a scope teardown removes only an account grant", async () => {
-		const f = await store_fixture();
-		expect((await set_binding(f, "private")).status).toBe(200);
-		// Member removal deletes the member's own file grants. Then only the account's grant is left.
-		await f.t.run(async (ctx) => {
-			await ctx.db.patch("organizations_workspaces_users", f.db.membershipId, { active: false });
-			for (const grant of await ctx.db.query("access_control_permission_grants").collect())
-				if (grant.principalKind === "user" && grant.resourceId === String(f.nodeId))
-					await ctx.db.delete("access_control_permission_grants", grant._id);
-		});
-		const before = await snapshot(f);
-		const accountGrants = file_grants(before, f.nodeId);
-		expect(accountGrants.length).toBeGreaterThan(0);
-		expect(accountGrants.every((grant) => grant.principalKind === "service_account")).toBe(true);
-
-		await f.t.mutation(internal.plugins_data.cleanup_stranded_scopes, {
-			scopes: [{ installationId: f.db.installationId, scopeId: "private" }],
-		});
-		expect(file_grants(await snapshot(f), f.nodeId)).toEqual([]);
-		await expect_clock({ f, before, changed: true });
-	});
-
-	test.each(["level", "absent-reader", "unbound", "denied"])(
-		"keeps the workspace clock for a %s scope edit",
-		async (change) => {
-			const f = await store_fixture();
-			if (change !== "unbound") expect((await set_binding(f, "private")).status).toBe(200);
-			const before = await snapshot(f);
-			const result = await f.page.mutation(api.plugins_data.user_manage_scope, {
-				action:
-					change === "absent-reader"
-						? { kind: "remove_principal", scopeId: "private", userId: f.db.readerId }
-						: {
-								kind: "set_principal",
-								scopeId: "private",
-								userId: change === "unbound" ? f.db.readerId : f.db.userId,
-								level: change === "denied" || change === "unbound" ? "member" : "manage",
-							},
-			});
-			if (change === "denied") expect(result._nay?.message).toBe("You cannot lower your own private space access");
-			else expect(result._nay).toBeUndefined();
-			const after = await snapshot(f);
-			expect(file_grants(after, f.nodeId)).toEqual(file_grants(before, f.nodeId));
-			expect(after.nodes).toEqual(before.nodes);
-			await expect_clock({ f, before, changed: false });
-		},
-	);
-
 	test("keeps the workspace clock for a plugin-store-only document write", async () => {
 		const f = await fixture();
 		const before = await snapshot(f);
@@ -500,208 +235,35 @@ describe("plugin file media validation clocks", () => {
 		await expect_clock({ f, before, changed: false });
 	});
 
-	test("initial external leaf restriction advances the workspace clock, the ordinary create does not", async () => {
-		const deltas = [];
-		for (const privateRoot of [false, true]) {
-			const f = await fixture();
-			const before = await snapshot(f);
-			const beforeContentRevision = await f.t.run(async (ctx) =>
-				(await ctx.db
-					.query("files_content_versions")
-					.withIndex("by_organization_workspace", (q) =>
-						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-					)
-					.first())?.revision ?? 0,
-			);
-			const result = await f.t.mutation(internal.plugins_external_files.ensure_writer, {
-				...f.credentials,
-				path: ROOT,
-				resourceKey: "output",
-				rootNodeId: null,
-				readOnly: false,
-				...(privateRoot ? { readers: [] } : {}),
-			});
-			expect(result._nay).toBeUndefined();
-			const after = await snapshot(f);
-			expect(after.nodes).toHaveLength(1);
-			expect(after.nodes[0]?.restrictedScopeNodeId).toBe(privateRoot ? result._yay!.folderNodeId : null);
-			expect(file_grants(after, result._yay!.folderNodeId).filter((grant) => grant.principalKind === "user")).toEqual(
-				[],
-			);
-			expect(after.externalBindings).toHaveLength(privateRoot ? 1 : 0);
-			const afterContentRevision = await f.t.run(async (ctx) =>
-				(await ctx.db
-					.query("files_content_versions")
-					.withIndex("by_organization_workspace", (q) =>
-						q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
-					)
-					.first())?.revision ?? 0,
-			);
-			expect(afterContentRevision, "External folder creation keeps its content clock")
-				.toBe(beforeContentRevision);
-			const delta =
-				after.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision -
-				before.clocks.find((clock) => clock.workspaceId === f.db.workspaceId)!.revision;
-			if (privateRoot) expect(delta, "Initial restriction advances the access clock").toBeGreaterThan(0);
-			else expect(delta, "Ordinary creation leaves the access clock unchanged").toBe(0);
-			await expect_clock({ f, before, changed: privateRoot });
-			deltas.push(delta);
-		}
-		// Creation keeps both clocks. The restriction changes access.
-		expect(deltas[1], "Initial restriction advances access beyond ordinary creation").toBeGreaterThan(deltas[0]!);
-	});
-
-	test.each(["add", "remove", "same"])("advances the workspace clock when external readers %s", async (change) => {
-		const f = await fixture();
-		const writer = await external_writer(f, change === "add" ? [] : [f.reader]);
-		const before = await snapshot(f);
-		const result = await f.t.mutation(internal.plugins_external_files.change_scope, {
-			...f.credentials,
-			writerId: writer.writerId,
-			operationId: "readers",
-			writerGeneration: 1,
-			change: { kind: "readers", expectedReaderRevision: 1, readers: change === "remove" ? [] : [f.reader] },
-		});
-		expect(result._yay).toMatchObject({ operation: "readers", readerRevision: 2 });
-		const after = await snapshot(f);
-		const grants = file_grants(after, writer.folderNodeId);
-		expect(
-			grants
-				.filter((grant) => grant.principalKind === "user")
-				.map((grant) => ({ userId: grant.userId, lifetime: grant.externalPluginMembershipLifetime })),
-		).toEqual(change === "remove" ? [] : [{ userId: f.reader.userId, lifetime: 1 }]);
-		const oldGrants = file_grants(before, writer.folderNodeId);
-		expect(grants.filter((grant) => grant.principalKind === "service_account")).toEqual(
-			oldGrants.filter((grant) => grant.principalKind === "service_account"),
-		);
-		if (change === "same")
-			expect(grants.filter((grant) => grant.principalKind === "user")[0]?._id).not.toBe(
-				oldGrants.find((grant) => grant.principalKind === "user")?._id,
-			);
-		await expect_clock({ f, before, changed: true });
-	});
-
-	test.each(["empty", "replay", "denied", "stale-lifetime", "ensure-replay"])(
-		"keeps the workspace clock for external %s",
-		async (change) => {
-			const f = await fixture();
-			const writer = await external_writer(f);
-			const args = {
-				...f.credentials,
-				writerId: writer.writerId,
-				operationId: "readers",
-				writerGeneration: 1,
-				change: {
-					kind: "readers" as const,
-					expectedReaderRevision: 1,
-					readers: change === "stale-lifetime" ? [{ ...f.reader, membershipLifetime: 2 }] : [],
-				},
-			};
-			if (change === "replay")
-				expect((await f.t.mutation(internal.plugins_external_files.change_scope, args))._nay).toBeUndefined();
-			const before = await snapshot(f);
-			const result =
-				change === "ensure-replay"
-					? await f.t.mutation(internal.plugins_external_files.ensure_writer, {
-							...f.credentials,
-							path: ROOT,
-							resourceKey: "output",
-							rootNodeId: null,
-							readOnly: false,
-							readers: [],
-						})
-					: await f.t.mutation(internal.plugins_external_files.change_scope, {
-							...args,
-							...(change === "denied" ? { serviceSecretHash: "wrong" } : {}),
-						});
-			if (change === "denied" || change === "stale-lifetime") expect(result._nay).toBeDefined();
-			else expect(result._nay).toBeUndefined();
-			const after = await snapshot(f);
-			expect(after.grants).toEqual(before.grants);
-			expect(after.nodes).toEqual(before.nodes);
-			await expect_clock({ f, before, changed: false });
-		},
-	);
-
-	test("denied external setup leaves files, grants and the workspace clock unchanged", async () => {
+	test("an external folder create keeps the content and access clocks", async () => {
 		const f = await fixture();
 		const before = await snapshot(f);
+		const content_revision = () =>
+			f.t.run(
+				async (ctx) =>
+					(
+						await ctx.db
+							.query("files_content_versions")
+							.withIndex("by_organization_workspace", (q) =>
+								q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId),
+							)
+							.first()
+					)?.revision ?? 0,
+			);
+		const beforeContentRevision = await content_revision();
 		const result = await f.t.mutation(internal.plugins_external_files.ensure_writer, {
 			...f.credentials,
 			path: ROOT,
 			resourceKey: "output",
 			rootNodeId: null,
 			readOnly: false,
-			readers: [{ ...f.reader, membershipLifetime: 2 }],
 		});
-		expect(result._nay?.message).toBe("The file readers changed");
+		expect(result._nay).toBeUndefined();
 		const after = await snapshot(f);
-		expect(after.nodes).toEqual(before.nodes);
-		expect(after.grants).toEqual(before.grants);
-		expect(after.externalBindings).toEqual(before.externalBindings);
+		expect(after.nodes).toHaveLength(1);
+		expect(after.nodes[0]?.restrictedScopeNodeId).toBeNull();
+		expect(file_grants(after, result._yay!.folderNodeId)).toEqual([]);
+		expect(await content_revision(), "External folder creation keeps its content clock").toBe(beforeContentRevision);
 		await expect_clock({ f, before, changed: false });
-	});
-
-	test.each(["cancel", "denied"])("keeps the workspace clock for reader rollback %s", async (change) => {
-		const f = await fixture();
-		const writer = await external_writer(f, [f.reader]);
-		const before = await snapshot(f);
-		const result = await f.t.mutation(internal.plugins_external_file_readers.rollback, {
-			writerId: writer.writerId,
-			operationId: "undo",
-			writerGeneration: 1,
-			originalReaderOperationId: "unseen",
-			tokenHash: f.credentials.tokenHash,
-			serviceSecretHash: change === "denied" ? "wrong" : f.credentials.serviceSecretHash,
-		});
-		if (change === "denied") expect(result._nay?.message).toBe("Unauthenticated");
-		else {
-			expect(result._yay).toMatchObject({ readerRevision: 1, restored: true });
-			expect(await f.t.run((ctx) => ctx.db.query("plugins_external_file_receipts").collect())).toMatchObject([
-				{ operation: "cancel_readers", operationId: "unseen" },
-				{ operation: "rollback_readers", operationId: "undo" },
-			]);
-		}
-		const after = await snapshot(f);
-		expect(after.nodes).toEqual(before.nodes);
-		expect(after.grants).toEqual(before.grants);
-		expect(after.externalBindings).toEqual(before.externalBindings);
-		await expect_clock({ f, before, changed: false });
-	});
-
-	test("rollback restores human readers, keeps account grants, and advances the workspace clock once per real undo", async () => {
-		const f = await fixture();
-		const writer = await external_writer(f, [f.reader]);
-		const removed = await f.t.mutation(internal.plugins_external_files.change_scope, {
-			...f.credentials,
-			writerId: writer.writerId,
-			operationId: "remove",
-			writerGeneration: 1,
-			change: { kind: "readers", expectedReaderRevision: 1, readers: [] },
-		});
-		if (removed._nay) throw new Error(removed._nay.message);
-		const args = {
-			writerId: writer.writerId,
-			operationId: "undo",
-			writerGeneration: 1,
-			receiptId: removed._yay._id,
-			tokenHash: f.credentials.tokenHash,
-			serviceSecretHash: f.credentials.serviceSecretHash,
-		};
-		const before = await snapshot(f);
-		const result = await f.t.mutation(internal.plugins_external_file_readers.rollback, args);
-		expect(result._yay).toMatchObject({ readerRevision: 3, detached: false, restored: true });
-		const after = await snapshot(f);
-		const grants = file_grants(after, writer.folderNodeId);
-		expect(grants.filter((grant) => grant.principalKind === "user")).toMatchObject([
-			{ userId: f.reader.userId, externalPluginMembershipLifetime: 1 },
-		]);
-		expect(grants.filter((grant) => grant.principalKind === "service_account")).toEqual(
-			file_grants(before, writer.folderNodeId),
-		);
-		await expect_clock({ f, before, changed: true });
-		expect(await f.t.mutation(internal.plugins_external_file_readers.rollback, args)).toEqual(result);
-		expect((await snapshot(f)).grants).toEqual(after.grants);
-		await expect_clock({ f, before: after, changed: false });
 	});
 });

@@ -507,8 +507,7 @@ describe("list_private_folder_children", () => {
 
 	// Guard = floor(3,000 index ranges / index ranges read by the worst row). The worst row is a saved
 	// node moved into the folder that is its own restricted scope, so each row runs a fresh access
-	// check. The member reads it through their second role and also has an old plugin grant on it: the
-	// check reads that grant, then the live membership lifetime, then the roles.
+	// check. The member reads it through their second role, so the check reads the roles.
 	test("the page guard fits the measured reads of the worst row", async () => {
 		const f = await fixture();
 		const member = await add_member(f);
@@ -524,10 +523,6 @@ describe("list_private_folder_children", () => {
 				for (const [principal, permission] of [
 					[{ principalKind: "role" as const, role: "member" as const }, "content.read"],
 					[{ principalKind: "role" as const, role: "member" as const }, "content.write"],
-					[
-						{ principalKind: "user" as const, userId: member.userId, externalPluginMembershipLifetime: 1 },
-						"content.read",
-					],
 				] as const) {
 					await ctx.db.insert("access_control_permission_grants", {
 						organizationId: f.db.organizationId,

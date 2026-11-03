@@ -2092,9 +2092,9 @@ function format_capability_label(value: string, payerName = "the workspace owner
 		return "Create and update files and folders marked for this plugin, and move them to Trash. Members can edit their labels.";
 	}
 
-	// Explain both the plugin's access controls and the member's manage permission.
+	// Keep a label for immutable version history. The capability grants nothing now.
 	if (value === "workspace.files.own-access") {
-		return "Set readers for its output. Members with manage permission can change sharing.";
+		return "Set readers for its output (no longer used)";
 	}
 
 	// The plain rule writes "Agent Mcp Connect", which does not say who calls what. The chat agent
@@ -2821,12 +2821,7 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 		resource.kind === "workspace" ? "workspace" : resource.nodeId;
 
 	const handleAddGrant = () => {
-		if (
-			disabled ||
-			!grantManagement?.canManage ||
-			!grantManagement.grantableLevels.includes(level) ||
-			grants.length >= 20
-		) {
+		if (disabled || !grantManagement?.canManage || !grantManagement.grantableLevels.includes(level)) {
 			return;
 		}
 
@@ -2925,12 +2920,7 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 			</MySelect>
 			<MyButton
 				variant="outline"
-				disabled={
-					disabled ||
-					!grantManagement?.canManage ||
-					!grantManagement.grantableLevels.includes(level) ||
-					grants.length >= 20
-				}
+				disabled={disabled || !grantManagement?.canManage || !grantManagement.grantableLevels.includes(level)}
 				onClick={handleAddGrant}
 			>
 				Add reviewed grant
@@ -4187,15 +4177,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(invokeLabel).not.toBe(format_access_label("plugin.backend.invoke"));
 		});
 
-		test("explains editable labels and member control for plugin file capabilities", () => {
+		test("explains editable labels for the plugin file capability", () => {
 			const ownWriteLabel = format_capability_label("workspace.files.own-write");
 			expect(ownWriteLabel).toBe(
 				"Create and update files and folders marked for this plugin, and move them to Trash. Members can edit their labels.",
 			);
-			const ownAccessLabel = format_capability_label("workspace.files.own-access");
-			expect(ownAccessLabel).toBe("Set readers for its output. Members with manage permission can change sharing.");
 			expect(ownWriteLabel).not.toBe(format_capability_label("workspace.files.write"));
-			expect(ownAccessLabel).not.toBe(ownWriteLabel);
 		});
 
 		test("spells out every other capability with the shared rule", () => {

@@ -69,7 +69,6 @@ import {
 	access_control_db_authorize_service_account_grant,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
-import { plugins_db_schedule_sandbox_rebuild, plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { rate_limiter_get_plugin_volume_daily_files_left, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2, r2_fetch_object_from_bucket, r2_put_object } from "./r2_client.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
@@ -3933,9 +3932,6 @@ export const install_version = mutation({
 			.first();
 
 		const grants = args.serviceAccountGrants ?? [];
-		if (grants.length > 20) {
-			return Result({ _nay: { message: "Set at most 20 grants during installation" } });
-		}
 		if (
 			(!existingInstallation && binding) ||
 			(existingInstallation && !binding) ||
@@ -4052,10 +4048,6 @@ export const install_version = mutation({
 				}),
 				...existingHandlers.map((handler) => ctx.db.delete("plugins_workspace_event_handlers", handler._id)),
 			]);
-			// The grant writes above kept the roots in sync only when the account stayed the same.
-			if (existingInstallation.serviceAccountId !== serviceAccountId) {
-				await plugins_db_schedule_sandbox_rebuild(ctx, { installationId });
-			}
 		} else {
 			installationId = await ctx.db.insert("plugins_workspace_installations", {
 				organizationId: installationScope.organizationId,
@@ -4073,7 +4065,6 @@ export const install_version = mutation({
 				acceptedUiOutboundOrigins: pluginVersion.uiOutboundOrigins,
 				acceptedMcpServersFingerprint: pluginVersion.mcpServersFingerprint,
 				acceptedSkillNames: pluginVersion.skills.map((skill) => skill.name),
-				sandbox: { roots: [], rebuild: null },
 				installedBy: installationScope.userId,
 				updatedBy: installationScope.userId,
 				updatedAt: now,
@@ -4086,20 +4077,6 @@ export const install_version = mutation({
 				});
 			}
 			installationCreatedAt = installation._creationTime;
-			// The grant writes above ran before this installation existed. A new account holds only
-			// those grants. An older account may hold many more, so a job reads them all.
-			if (account) {
-				await plugins_db_schedule_sandbox_rebuild(ctx, { installationId });
-			} else {
-				for (const grant of grants) {
-					const synced = await plugins_db_sync_sandbox_root(ctx, {
-						...installationScope,
-						serviceAccountId,
-						...grant,
-					});
-					if (synced._nay) throw convex_error(synced._nay);
-				}
-			}
 			if (installationScope.userId !== authorization._yay.organization.ownerUserId) {
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: installationScope.organizationId,
@@ -4302,7 +4279,6 @@ export const set_installation_service_account = mutation({
 				installationId: installation._id,
 				serviceAccountId: account._id,
 			});
-			await plugins_db_schedule_sandbox_rebuild(ctx, { installationId: installation._id });
 			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "installation", installationId: installation._id },
@@ -6384,8 +6360,6 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		// outside service decides how many grants it mints, so the count is bounded on purpose and
 		// the operator must see `100+` instead of a number that looks exact.
 		pluginServiceGrantsTruncated: v.boolean(),
-		fileAccessBindings: v.number(),
-		fileAccessBindingsTruncated: v.boolean(),
 		pluginScopeGrants: v.number(),
 		pluginScopeGrantsTruncated: v.boolean(),
 		pluginDataScopeRows: v.number(),
@@ -6466,8 +6440,6 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let pluginDataMemberUsageTruncated = false;
 		let pluginServiceGrants = 0;
 		let pluginServiceGrantsTruncated = false;
-		let fileAccessBindings = 0;
-		let fileAccessBindingsTruncated = false;
 		let pluginScopeGrants = 0;
 		let pluginScopeGrantsTruncated = false;
 		let pluginDataScopeRows = 0;
@@ -6685,8 +6657,6 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 				// One capped installation makes the whole sum a lower bound, and several installations
 				// hide that twice over. Carry the flag up so the sum is never read as exact.
 				pluginServiceGrantsTruncated ||= pluginData.serviceGrantsTruncated;
-				fileAccessBindings += pluginData.fileAccessBindings;
-				fileAccessBindingsTruncated ||= pluginData.fileAccessBindingsTruncated;
 				pluginScopeGrants += pluginData.pluginScopeGrants;
 				pluginScopeGrantsTruncated ||= pluginData.pluginScopeGrantsTruncated;
 				pluginDataScopeRows += pluginData.pluginDataScopeRows;
@@ -6766,8 +6736,6 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			pluginDataMemberUsageTruncated,
 			pluginServiceGrants,
 			pluginServiceGrantsTruncated,
-			fileAccessBindings,
-			fileAccessBindingsTruncated,
 			pluginScopeGrants,
 			pluginScopeGrantsTruncated,
 			pluginDataScopeRows,

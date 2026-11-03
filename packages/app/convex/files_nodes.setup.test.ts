@@ -117,7 +117,7 @@ export async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>
 
 		const grant = async (
 			nodeId: Id<"files_nodes">,
-			principal: { userId: Id<"users">; externalPluginMembershipLifetime?: number } | { role: "admin" | "member" },
+			principal: { userId: Id<"users"> } | { role: "admin" | "member" },
 		) => {
 			await ctx.db.insert("access_control_permission_grants", {
 				organizationId: owner.organizationId,
@@ -190,8 +190,6 @@ export async function seed_tree_access_fixture(t: ReturnType<typeof test_convex>
 		// `member` is the admin's organization role and `admin` their workspace role. Both must count.
 		await grant(teamId, { role: "member" });
 		await grant(opsId, { role: "admin" });
-		// A plugin-managed grant from an older membership lifetime no longer gives access.
-		await grant(pluginId, { userId: admin.userId, externalPluginMembershipLifetime: 1 });
 		await ctx.db.insert("organizations_membership_lifetimes", {
 			organizationId: owner.organizationId,
 			workspaceId: owner.workspaceId,
@@ -517,10 +515,7 @@ export async function seed_folder_table(options: Parameters<typeof test_convex>[
 	 * Give a user or a role the grant doc of a Can view share on each node, and write its share row.
 	 * Many shares through the sharing mutation would run into its rate limit.
 	 */
-	const grant_read = (
-		principal: { userId: Id<"users">; externalPluginMembershipLifetime?: number } | { role: "member" },
-		nodeIds: Array<Id<"files_nodes">>,
-	) =>
+	const grant_read = (principal: { userId: Id<"users"> } | { role: "member" }, nodeIds: Array<Id<"files_nodes">>) =>
 		test_run_with_flush(t, async (ctx) => {
 			for (const nodeId of nodeIds) {
 				await ctx.db.insert("access_control_permission_grants", {

@@ -1,18 +1,20 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api, components, internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { test_convex, test_rename_node, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { Id } from "./_generated/dataModel";
 import type { plugins_Capability } from "../shared/plugins.ts";
-import { access_control_db_can_act_on_file_node } from "./access_control.ts";
+import { access_control_db_can_act_on_file_node, type access_control_Subject } from "./access_control.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
+import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
+import { plugins_sandbox_subject } from "./plugins_service_accounts.ts";
 
 const SECRET = "external-files-test-secret";
 const ROOT = "/chitchat-fresh-test";
 
-async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
+async function setup(options?: { publicWriter: true }) {
 	const t = test_convex();
 	const pluginName = options?.publicWriter ? "project-notes" : "chitchat";
 	const rootPath = options?.publicWriter ? "/project-notes" : ROOT;
@@ -94,7 +96,6 @@ async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
 			outboundOriginsAcceptedAt: now,
-			sandbox: { roots: [], rebuild: null },
 			installedBy: membership.userId,
 			updatedBy: membership.userId,
 			updatedAt: now,
@@ -151,7 +152,7 @@ async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
 			force: true,
 			path: rootPath,
 			writer: { resourceKey: "export output, 2026", rootNodeId: null },
-			access: { readOnly: true, ...(options?.privateRoot ? { readers: [] } : {}) },
+			access: { readOnly: true },
 		}),
 	});
 	expect(response.status, await response.clone().text()).toBe(200);
@@ -161,8 +162,6 @@ async function setup(options?: { publicWriter: true; privateRoot?: boolean }) {
 			rootNodeId: Id<"files_nodes">;
 			folderNodeId: Id<"files_nodes">;
 			writerGeneration: number;
-			readerRevision: number | null;
-			detached: boolean;
 		};
 		created: boolean;
 	};
@@ -219,7 +218,6 @@ describe("public conditional file writes", () => {
 				sequence: 1,
 				expectedNodeId: null,
 				expectedContentRevision: null,
-				expectedReaderRevision: null,
 				contentHash: await crypto_sha256_hex(content),
 			},
 		};
@@ -244,7 +242,6 @@ describe("public conditional file writes", () => {
 				1,
 				body.writer.contentHash,
 				root.folderNodeId,
-				null,
 				null,
 				null,
 				"text/plain;charset=utf-8",
@@ -345,7 +342,6 @@ describe("public conditional file writes", () => {
 					sequence: 1,
 					expectedNodeId: null,
 					expectedContentRevision: null,
-					expectedReaderRevision: null,
 					contentHash: await crypto_sha256_hex("Notes"),
 					contentType: "text/plain;charset=utf-8",
 					nonCollaborative: true,
@@ -419,7 +415,6 @@ describe("public conditional file writes", () => {
 			"/api/v1/files/plugin-folders/ensure",
 			"/api/v1/files/plugin-access/set",
 			"/api/v1/files/plugin-archive",
-			"/api/v1/files/plugin-access/undo",
 			"/api/v1/files/plugin-writers/advance",
 		]) {
 			const invalid = await t.fetch(route, { method: "POST", headers, body: "{}" });
@@ -430,72 +425,6 @@ describe("public conditional file writes", () => {
 });
 
 describe("public plugin writer access", () => {
-	test("undoes a private root's reader operation with a new grant after an upgrade", async () => {
-		const { t, fixture, owner, root, token, rootPath } = await setup({ publicWriter: true, privateRoot: true });
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: root.rootNodeId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
-		const headers = {
-			Authorization: `Bearer ${token}`,
-			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-			"Content-Type": "application/json",
-		};
-
-		const applied = await t.fetch("/api/v1/files/plugin-access/set", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({
-				path: rootPath,
-				access: { readers: [] },
-				writer: {
-					writerId: root.writerId,
-					operationId: "root-readers",
-					writerGeneration: 1,
-					expectedReaderRevision: 1,
-				},
-			}),
-		});
-		expect(applied.status, await applied.clone().text()).toBe(200);
-
-		await t.run(async (ctx) => {
-			const version = await ctx.db.get("plugins_versions", fixture.pluginVersionId);
-			const { _id: _oldId, _creationTime: _oldTime, ...fields } = version!;
-			const versionId = await ctx.db.insert("plugins_versions", { ...fields, version: "2.0.0" });
-			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { pluginVersionId: versionId });
-		});
-		const minted = await t.mutation(internal.public_api.create_plugin_service_grant, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			installationId: fixture.installationId,
-			actorUserId: fixture.userId,
-			requestedScopes: ["files:write"],
-			destinationPathPrefix: rootPath,
-			phase: "processing",
-			now: Date.now(),
-		});
-		if (minted._nay) throw new Error(minted._nay.message);
-
-		const undo = await t.fetch("/api/v1/files/plugin-access/undo", {
-			method: "POST",
-			headers: { ...headers, Authorization: `Bearer ${minted._yay.token}` },
-			body: JSON.stringify({
-				writerId: root.writerId,
-				operationId: "root-undo",
-				writerGeneration: 1,
-				originalReaderOperationId: "root-readers",
-			}),
-		});
-		expect(undo.status, await undo.clone().text()).toBe(200);
-		expect(await undo.json()).toMatchObject({ restored: true, readerRevision: 3, detached: false });
-	});
-
 	test("two plugins in one workspace cannot use each other's writer or service proof", async () => {
 		const { t, fixture, owner, root, token, rootPath } = await setup({ publicWriter: true });
 		const other = await t.run(async (ctx) => {
@@ -607,189 +536,6 @@ describe("public plugin writer access", () => {
 			});
 			expect(result.status, await result.clone().text()).toBe(request.status);
 		}
-	});
-
-	test("creates a private writer, recovers its exact folder, changes readers and undoes after an upgrade", async () => {
-		const { t, fixture, root, token, rootPath } = await setup({ publicWriter: true });
-		install_object_uploads();
-		const headers = {
-			Authorization: `Bearer ${token}`,
-			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-			"Content-Type": "application/json",
-		};
-		const path = `${rootPath}/restricted`;
-		const reader = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "project-member" });
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				active: true,
-				pendingOrganizationRemoval: false,
-				updatedAt: Date.now(),
-				displayName: "",
-				sortDisplayName: "",
-			});
-			await ctx.db.insert("organizations_membership_lifetimes", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				membershipId,
-				active: true,
-				lifetime: 1,
-			});
-			return { userId, membershipLifetime: 1 };
-		});
-		const ensureBody = {
-			path,
-			writer: { resourceKey: "restricted project notes", rootNodeId: root.rootNodeId },
-			access: { readers: [reader], readOnly: true },
-		};
-
-		const ensured = await t.fetch("/api/v1/files/plugin-folders/ensure", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ force: true, ...ensureBody }),
-		});
-		expect(ensured.status, await ensured.clone().text()).toBe(200);
-		const ensuredFolder = (await ensured.json()) as {
-			nodeId: Id<"files_nodes">;
-			writer: { writerId: Id<"plugins_external_file_writers"> };
-		};
-
-		const retry = await t.fetch("/api/v1/files/plugin-folders/ensure", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ force: true, ...ensureBody }),
-		});
-		expect(retry.status, await retry.clone().text()).toBe(200);
-		expect(await retry.json()).toMatchObject({ nodeId: ensuredFolder.nodeId, created: false });
-
-		const filePath = `${path}/notes.txt`;
-		const inspected = await t.fetch("/api/v1/files/plugin-writers/inspect", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ writerId: ensuredFolder.writer.writerId, path: filePath, maxBytes: 1000 }),
-		});
-		expect(inspected.status, await inspected.clone().text()).toBe(200);
-		expect(await inspected.json()).toMatchObject({
-			nodeId: null,
-			expectedParentNodeId: ensuredFolder.nodeId,
-			readerRevision: 1,
-		});
-
-		const written = await t.fetch("/api/v1/files/write", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({
-				force: true,
-				path: filePath,
-				content: "Private project notes",
-				contentType: "text/plain",
-				nonCollaborative: true,
-				expectedParentNodeId: ensuredFolder.nodeId,
-				writer: {
-					writerId: ensuredFolder.writer.writerId,
-					operationId: "private-notes",
-					writerGeneration: 1,
-					sequence: 1,
-					expectedNodeId: null,
-					expectedContentRevision: null,
-					expectedReaderRevision: 1,
-					contentHash: await crypto_sha256_hex("Private project notes"),
-				},
-			}),
-		});
-		expect(written.status, await written.clone().text()).toBe(200);
-		const savedFile = (await written.json()) as { nodeId: Id<"files_nodes"> };
-
-		const savedAccess = await t.run(async (ctx) => ({
-			file: await ctx.db.get("files_nodes", savedFile.nodeId),
-			grants: (await ctx.db.query("access_control_permission_grants").collect())
-				.filter((grant) => grant.resourceId === ensuredFolder.nodeId)
-				.map((grant) => ({
-					principalKind: grant.principalKind,
-					userId: grant.userId,
-					serviceAccountId: grant.serviceAccountId,
-					permission: grant.permission,
-				})),
-		}));
-		expect(savedAccess.file?.restrictedScopeNodeId).toBe(ensuredFolder.nodeId);
-		expect(savedAccess.grants).toEqual(
-			expect.arrayContaining([
-				{ principalKind: "user", userId: reader.userId, serviceAccountId: undefined, permission: "content.read" },
-				...(["content.read", "content.write", "content.permissions.manage"] as const).map((permission) => ({
-					principalKind: "service_account",
-					userId: undefined,
-					serviceAccountId: fixture.serviceAccountId,
-					permission,
-				})),
-			]),
-		);
-		expect(savedAccess.grants).toHaveLength(4);
-
-		const access = await t.fetch("/api/v1/files/plugin-access/set", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({
-				path,
-				access: { readers: [] },
-				writer: {
-					writerId: ensuredFolder.writer.writerId,
-					operationId: "remove-reader",
-					writerGeneration: 1,
-					expectedReaderRevision: 1,
-				},
-			}),
-		});
-		expect(access.status, await access.clone().text()).toBe(200);
-		const applied = (await access.json()) as { receipt: { _id: string } };
-
-		await t.run(async (ctx) => {
-			const version = await ctx.db.get("plugins_versions", fixture.pluginVersionId);
-			const { _id: _oldId, _creationTime: _oldTime, ...fields } = version!;
-			const versionId = await ctx.db.insert("plugins_versions", { ...fields, version: "2.0.0" });
-			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { pluginVersionId: versionId });
-		});
-		const minted = await t.mutation(internal.public_api.create_plugin_service_grant, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			installationId: fixture.installationId,
-			actorUserId: fixture.userId,
-			requestedScopes: ["files:write"],
-			destinationPathPrefix: rootPath,
-			phase: "processing",
-			now: Date.now(),
-		});
-		if (minted._nay) throw new Error(minted._nay.message);
-		const currentHeaders = { ...headers, Authorization: `Bearer ${minted._yay.token}` };
-		const undoBody = {
-			writerId: ensuredFolder.writer.writerId,
-			operationId: "undo-readers",
-			writerGeneration: 1,
-			receiptId: applied.receipt._id,
-		};
-
-		const undo = await t.fetch("/api/v1/files/plugin-access/undo", {
-			method: "POST",
-			headers: currentHeaders,
-			body: JSON.stringify(undoBody),
-		});
-		expect(undo.status, await undo.clone().text()).toBe(200);
-		expect(await undo.json()).toMatchObject({ restored: true, readerRevision: 3, detached: false });
-
-		const advance = await t.fetch("/api/v1/files/plugin-writers/advance", {
-			method: "POST",
-			headers: currentHeaders,
-			body: JSON.stringify({
-				writerId: ensuredFolder.writer.writerId,
-				operationId: "restart-export",
-				writerGeneration: 1,
-				nextGeneration: 2,
-			}),
-		});
-		expect(advance.status, await advance.clone().text()).toBe(200);
-		expect(await advance.json()).toMatchObject({ writerGeneration: 2 });
 	});
 });
 
@@ -978,7 +724,6 @@ describe("external file writes", () => {
 				sequence: 1,
 				expectedNodeId: null,
 				expectedContentRevision: null,
-				expectedReaderRevision: null,
 				contentHash: await crypto_sha256_hex("# general\n\nHello\n"),
 			},
 		};
@@ -1086,7 +831,6 @@ describe("external file writes", () => {
 				sequence: 100,
 				expectedNodeId: null,
 				expectedContentRevision: null,
-				expectedReaderRevision: null,
 				contentHash: await crypto_sha256_hex("# general\n\nOriginal\n"),
 			},
 		};
@@ -1257,286 +1001,6 @@ describe("external file writes", () => {
 		).not.toBeNull();
 	});
 
-	test("replays a committed write after a reader change but refuses a new stale-reader write", async () => {
-		const { t, fixture, credentials, owner, token, root } = await setup();
-		install_object_uploads();
-		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
-			force: true,
-			...credentials,
-			path: `${ROOT}/team`,
-			readOnly: true,
-			readers: [],
-			resourceKey: "private",
-			rootNodeId: root.rootNodeId,
-		});
-		if (ensured._nay) throw new Error(ensured._nay.message);
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: ensured._yay.folderNodeId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
-		const headers = {
-			Authorization: `Bearer ${token}`,
-			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-			"Content-Type": "application/json",
-		};
-		const request = {
-			path: `${ROOT}/team/team.md`,
-			force: true,
-			expectedParentNodeId: ensured._yay.folderNodeId,
-			content: "Hello\n",
-			nonCollaborative: true,
-			writer: {
-				writerId: ensured._yay.writerId,
-				operationId: "saved-write",
-				writerGeneration: 1,
-				sequence: 1,
-				expectedNodeId: null,
-				expectedContentRevision: null,
-				expectedReaderRevision: 1,
-				contentHash: await crypto_sha256_hex("Hello\n"),
-			},
-		};
-		const options = { method: "POST", headers, body: JSON.stringify(request) };
-
-		const sent = await t.fetch("/api/v1/files/write", options);
-		expect(sent.status, await sent.clone().text()).toBe(200);
-		const receipt = (await sent.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
-
-		const readers = await t.fetch("/api/v1/files/plugin-access/set", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({
-				path: `${ROOT}/team`,
-				access: { readers: [] },
-				writer: {
-					writerId: ensured._yay.writerId,
-					operationId: "readers",
-					writerGeneration: 1,
-					expectedReaderRevision: 1,
-				},
-			}),
-		});
-		expect(readers.status, await readers.clone().text()).toBe(200);
-
-		const saved = await t.run(async (ctx) => ({
-			nodes: await ctx.db.query("files_nodes").collect(),
-			receipts: await ctx.db.query("plugins_external_file_receipts").collect(),
-		}));
-		const replayed = await t.fetch("/api/v1/files/write", options);
-		expect(replayed.status, await replayed.clone().text()).toBe(200);
-		expect((await replayed.json()).receipt).toEqual(receipt);
-
-		const stale = await t.fetch("/api/v1/files/write", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({
-				...request,
-				writer: {
-					...request.writer,
-					operationId: "new-stale-write",
-					sequence: 2,
-					expectedNodeId: receipt.nodeId,
-					expectedContentRevision: receipt.contentRevision,
-				},
-			}),
-		});
-		expect(stale.status, await stale.clone().text()).toBe(409);
-		expect(await stale.json()).toEqual({ message: "The file readers changed" });
-
-		expect(
-			await t.run(async (ctx) => ({
-				nodes: await ctx.db.query("files_nodes").collect(),
-				receipts: await ctx.db.query("plugins_external_file_receipts").collect(),
-			})),
-		).toEqual(saved);
-	});
-
-	test("the plugin writes to its own folder while its human can only read it", async () => {
-		const { t, fixture, credentials, owner, token, root } = await setup();
-		install_object_uploads();
-		// A reader needs a membership lifetime, which the fixture does not create for the sponsor.
-		const sponsor = await t.run(async (ctx) => {
-			await ctx.db.insert("organizations_membership_lifetimes", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId: fixture.userId,
-				membershipId: fixture.membershipId,
-				active: true,
-				lifetime: 1,
-			});
-			return { userId: fixture.userId, membershipLifetime: 1 };
-		});
-		const reader = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "folder-reader" });
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				active: true,
-				pendingOrganizationRemoval: false,
-				updatedAt: Date.now(),
-				displayName: "",
-				sortDisplayName: "",
-			});
-			await ctx.db.insert("organizations_membership_lifetimes", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				membershipId,
-				active: true,
-				lifetime: 1,
-			});
-			return { userId, membershipLifetime: 1 };
-		});
-		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
-			force: true,
-			...credentials,
-			path: `${ROOT}/team`,
-			readOnly: true,
-			readers: [reader, sponsor],
-			resourceKey: "private",
-			rootNodeId: root.rootNodeId,
-		});
-		if (ensured._nay) throw new Error(ensured._nay.message);
-		const folderNodeId = ensured._yay.folderNodeId;
-		const headers = {
-			Authorization: `Bearer ${token}`,
-			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-			"Content-Type": "application/json",
-		};
-		const write = async (operationId: string, sequence: number, content: string, expected: object) =>
-			await t.fetch("/api/v1/files/write", {
-				method: "POST",
-				headers,
-				body: JSON.stringify({
-					force: true,
-					path: `${ROOT}/team/team.md`,
-					expectedParentNodeId: folderNodeId,
-					content,
-					nonCollaborative: true,
-					writer: {
-						writerId: ensured._yay.writerId,
-						operationId,
-						writerGeneration: 1,
-						sequence,
-						contentHash: await crypto_sha256_hex(content),
-						...expected,
-					},
-				}),
-			});
-		const sent = await write("first", 1, "One\n", {
-			expectedNodeId: null,
-			expectedContentRevision: null,
-			expectedReaderRevision: 1,
-		});
-		expect(sent.status, await sent.clone().text()).toBe(200);
-		const receipt = (await sent.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
-
-		// The sponsor stops being the owner, so they only read the private folder.
-		const nextOwner = await t.run(
-			async (ctx) => await test_mocks_fill_db_with.membership(ctx, { organizationName: "next-owner" }),
-		);
-		expect(
-			(
-				await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userIdToAdd: nextOwner.userId,
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			(
-				await owner.mutation(api.access_control.transfer_organization_ownership, {
-					organizationId: fixture.organizationId,
-					newOwnerUserId: nextOwner.userId,
-				})
-			)._nay,
-		).toBeUndefined();
-		const human_can = (
-			userId: Id<"users">,
-			permission: "content.read" | "content.write" | "content.permissions.manage",
-		) =>
-			t.run(async (ctx) =>
-				access_control_db_can_act_on_file_node(ctx, {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					subject: { kind: "user", userId, plugin: null },
-					fileNode: (await ctx.db.get("files_nodes", folderNodeId))!,
-					permission,
-				}),
-			);
-		expect(await human_can(fixture.userId, "content.read")).toBe(true);
-		expect(await human_can(fixture.userId, "content.write")).toBe(false);
-		// Only the owner manages a plugin's private folder. A reader only reads.
-		expect(await human_can(reader.userId, "content.read")).toBe(true);
-		expect(await human_can(reader.userId, "content.permissions.manage")).toBe(false);
-
-		// A reader sync still works and keeps the plugin able to write.
-		const synced = await t.fetch("/api/v1/files/plugin-access/set", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({
-				path: `${ROOT}/team`,
-				access: { readers: [reader, sponsor] },
-				writer: {
-					writerId: ensured._yay.writerId,
-					operationId: "sync",
-					writerGeneration: 1,
-					expectedReaderRevision: 1,
-				},
-			}),
-		});
-		expect(synced.status, await synced.clone().text()).toBe(200);
-
-		// The overwrite finds the file its human cannot write, so the node id stays.
-		const updated = await write("second", 2, "Two\n", {
-			expectedNodeId: receipt.nodeId,
-			expectedContentRevision: receipt.contentRevision,
-			expectedReaderRevision: 2,
-		});
-		expect(updated.status, await updated.clone().text()).toBe(200);
-		const second = (await updated.json()) as { nodeId: Id<"files_nodes">; receipt: { contentRevision: string } };
-		expect(second.nodeId).toBe(receipt.nodeId);
-
-		const inspected = await t.fetch("/api/v1/files/plugin-writers/inspect", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ writerId: ensured._yay.writerId, path: `${ROOT}/team/team.md`, maxBytes: 1000 }),
-		});
-		expect(inspected.status, await inspected.clone().text()).toBe(200);
-		expect(await inspected.json()).toMatchObject({ nodeId: receipt.nodeId, content: "Two\n" });
-
-		// Without read the sponsor is refused, so the plugin never writes or reads for them there.
-		const dropped = await t.fetch("/api/v1/files/plugin-access/set", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({
-				path: `${ROOT}/team`,
-				access: { readers: [reader] },
-				writer: {
-					writerId: ensured._yay.writerId,
-					operationId: "drop",
-					writerGeneration: 1,
-					expectedReaderRevision: 2,
-				},
-			}),
-		});
-		expect(dropped.status, await dropped.clone().text()).toBe(200);
-		const refused = await write("third", 3, "Three\n", {
-			expectedNodeId: receipt.nodeId,
-			expectedContentRevision: second.receipt.contentRevision,
-			expectedReaderRevision: 3,
-		});
-		expect(refused.status, await refused.clone().text()).toBe(403);
-	});
-
 	test("a writer fence rejects an already prepared write without publishing content", async () => {
 		const { t, fixture, credentials, root } = await setup();
 		const path = `${ROOT}/general.md`;
@@ -1559,7 +1023,6 @@ describe("external file writes", () => {
 				contentHash: await crypto_sha256_hex("old"),
 				expectedNodeId: null,
 				expectedContentRevision: null,
-				expectedReaderRevision: null,
 				contentType: "text/markdown;charset=utf-8",
 				nonCollaborative: true,
 				requestReadOnly: false,
@@ -1633,7 +1096,6 @@ describe("archive", () => {
 				sequence: 1,
 				expectedNodeId: null,
 				expectedContentRevision: null,
-				expectedReaderRevision: null,
 				contentHash: await crypto_sha256_hex("# general\n\nSaved\n"),
 			},
 		};
@@ -1750,7 +1212,6 @@ describe("archive", () => {
 						sequence: 1,
 						expectedNodeId: null,
 						expectedContentRevision: null,
-						expectedReaderRevision: null,
 						contentHash: await crypto_sha256_hex("Saved"),
 					},
 				}),
@@ -1871,7 +1332,6 @@ describe("archive", () => {
 						sequence: 1,
 						expectedNodeId: null,
 						expectedContentRevision: null,
-						expectedReaderRevision: null,
 						contentHash: await crypto_sha256_hex(name),
 					},
 				}),
@@ -1943,15 +1403,9 @@ describe("archive", () => {
 });
 
 describe("ensure_writer", () => {
-	test("changes Read-only without changing readers on a locked writer root", async () => {
-		const { t, credentials, root } = await setup({ publicWriter: true, privateRoot: true });
-		const before = await t.run(async (ctx) => ({
-			grants: await ctx.db.query("access_control_permission_grants").collect(),
-			binding: await ctx.db
-				.query("plugins_external_file_bindings")
-				.withIndex("by_writer", (q) => q.eq("writerId", root.writerId))
-				.unique(),
-		}));
+	test("changes Read-only without changing grants on a locked writer root", async () => {
+		const { t, credentials, root } = await setup({ publicWriter: true });
+		const grantsBefore = await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect());
 		const request = {
 			...credentials,
 			writerId: root.writerId,
@@ -1959,7 +1413,6 @@ describe("ensure_writer", () => {
 			writerGeneration: 1,
 			change: { kind: "read_only" as const, readOnly: false },
 		};
-		expect(before.binding).toMatchObject({ revision: 1 });
 		const changed = await t.mutation(internal.plugins_external_files.change_scope, request);
 		expect(changed._nay).toBeUndefined();
 		expect(await t.mutation(internal.plugins_external_files.change_scope, request)).toEqual(changed);
@@ -1967,139 +1420,15 @@ describe("ensure_writer", () => {
 			readOnly: false,
 			readOnlyDecisionId: null,
 		});
-		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(before.grants);
-		expect(
-			await t.run((ctx) =>
-				ctx.db
-					.query("plugins_external_file_bindings")
-					.withIndex("by_writer", (q) => q.eq("writerId", root.writerId))
-					.unique(),
-			),
-		).toEqual(before.binding);
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(grantsBefore);
 	});
 
-	test.each(["workspace.service_accounts.manage", "content.permissions.manage", "content.read"])(
-		"refuses private setup without the actor's %s before creating anything",
-		async (missingPermission) => {
-			const { t, fixture, token, root, rootPath } = await setup({ publicWriter: true });
-			await t.run(async (ctx) => {
-				const nextOwnerId = await ctx.db.insert("users", { clerkUserId: "next-owner" });
-				await ctx.db.insert("organizations_workspaces_users", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userId: nextOwnerId,
-					active: true,
-					pendingOrganizationRemoval: false,
-					updatedAt: Date.now(),
-					displayName: "",
-					sortDisplayName: "",
-				});
-				await ctx.db.patch("organizations", fixture.organizationId, { ownerUserId: nextOwnerId });
-				const roleId = await ctx.db.insert("access_control_roles", {
-					organizationId: fixture.organizationId,
-					name: "File setup",
-					normalizedName: "file setup",
-					description: "File setup permissions",
-					permissions: (
-						[
-							"workspace.service_accounts.manage",
-							"content.read",
-							"content.write",
-							"content.permissions.manage",
-						] as const
-					).filter((permission) => permission !== missingPermission),
-					createdBy: nextOwnerId,
-					createdAt: Date.now(),
-					updatedAt: Date.now(),
-				});
-				await ctx.db.insert("access_control_role_assignments", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userId: fixture.userId,
-					role: roleId,
-					createdAt: Date.now(),
-					updatedAt: Date.now(),
-				});
-			});
-
-			const before = await t.run(async (ctx) => ({
-				nodes: await ctx.db.query("files_nodes").collect(),
-				writers: await ctx.db.query("plugins_external_file_writers").collect(),
-				bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-				grants: await ctx.db.query("access_control_permission_grants").collect(),
-			}));
-			const denied = await t.fetch("/api/v1/files/plugin-folders/ensure", {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${token}`,
-					"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					force: true,
-					path: `${rootPath}/private/team`,
-					writer: { resourceKey: "private-team", rootNodeId: root.rootNodeId },
-					access: { readers: [], readOnly: true },
-				}),
-			});
-			expect(denied.status, await denied.clone().text()).toBe(403);
-
-			expect(
-				await t.run(async (ctx) => ({
-					nodes: await ctx.db.query("files_nodes").collect(),
-					writers: await ctx.db.query("plugins_external_file_writers").collect(),
-					bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-					grants: await ctx.db.query("access_control_permission_grants").collect(),
-				})),
-			).toEqual(before);
-		},
-	);
-
-	test("refuses private setup inside a folder whose readers a plugin already decides", async () => {
+	test("recovers a lost setup response without new rows", async () => {
 		const { t, token, root } = await setup();
-		const ensure = (path: string, resourceKey: string) =>
-			t.fetch("/api/v1/files/plugin-folders/ensure", {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${token}`,
-					"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					force: true,
-					path,
-					access: { readers: [] },
-					writer: { resourceKey, rootNodeId: root.rootNodeId },
-				}),
-			});
-		const team = await ensure(`${ROOT}/private/team`, "team");
-		expect(team.status, await team.clone().text()).toBe(200);
-		const before = await t.run(async (ctx) => ({
-			nodes: await ctx.db.query("files_nodes").collect(),
-			writers: await ctx.db.query("plugins_external_file_writers").collect(),
-			bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-		}));
-
-		const inner = await ensure(`${ROOT}/private/team/inner`, "inner");
-		expect(inner.status).toBe(400);
-		expect(await inner.json()).toEqual({
-			message: "A plugin already decides who can read the folder around this item",
-		});
-		expect(
-			await t.run(async (ctx) => ({
-				nodes: await ctx.db.query("files_nodes").collect(),
-				writers: await ctx.db.query("plugins_external_file_writers").collect(),
-				bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-			})),
-		).toEqual(before);
-	});
-
-	test("recovers a lost private setup response without restoring a removed account grant", async () => {
-		const { t, fixture, owner, token, credentials, root } = await setup();
 		const request = {
 			path: `${ROOT}/private/team`,
 			force: true,
-			access: { readOnly: true, readers: [] },
+			access: { readOnly: true },
 			writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 		};
 		const options = {
@@ -2114,21 +1443,10 @@ describe("ensure_writer", () => {
 
 		const sent = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(sent.status, await sent.clone().text()).toBe(200);
-		const created = (await sent.json()) as { nodeId: Id<"files_nodes"> };
 
-		expect(
-			(
-				await owner.mutation(api.access_control.remove_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: created.nodeId },
-				})
-			)._nay,
-		).toBeUndefined();
 		const saved = await t.run(async (ctx) => ({
 			nodes: await ctx.db.query("files_nodes").collect(),
 			writers: await ctx.db.query("plugins_external_file_writers").collect(),
-			bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
 			grants: await ctx.db.query("access_control_permission_grants").collect(),
 		}));
 		const writer = saved.writers.find((writer) => writer.resourceKey === "private")!;
@@ -2145,8 +1463,6 @@ describe("ensure_writer", () => {
 				rootNodeId: writer.rootNodeId,
 				folderNodeId: writer.folderNodeId,
 				writerGeneration: 1,
-				readerRevision: 1,
-				detached: false,
 			},
 		});
 
@@ -2154,23 +1470,12 @@ describe("ensure_writer", () => {
 			await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
 				writers: await ctx.db.query("plugins_external_file_writers").collect(),
-				bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
 				grants: await ctx.db.query("access_control_permission_grants").collect(),
 			})),
 		).toEqual(saved);
-
-		expect(
-			(
-				await t.query(internal.plugins_external_files.inspect, {
-					...credentials,
-					writerId: writer._id,
-					path: `${request.path}/team.md`,
-				})
-			)._nay?.message,
-		).toBe("Permission denied");
 	});
 
-	test.each(["moved", "replaced", "nonempty"])("refuses recovery after the folder becomes %s", async (change) => {
+	test.each(["moved", "replaced"])("refuses recovery after the folder becomes %s", async (change) => {
 		const { t, token, fixture, owner, root } = await setup();
 		const path = `${ROOT}/team`;
 		const options = {
@@ -2182,7 +1487,7 @@ describe("ensure_writer", () => {
 			},
 			body: JSON.stringify({
 				path,
-				access: { readOnly: false, readers: [] },
+				access: { readOnly: false },
 				force: true,
 				writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 			}),
@@ -2202,15 +1507,6 @@ describe("ensure_writer", () => {
 		);
 		expect(
 			(
-				await owner.mutation(api.access_control.remove_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: writer!.folderNodeId },
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			(
 				await owner.mutation(api.files_nodes.read_only_set, {
 					membershipId: fixture.membershipId,
 					nodeId: root.rootNodeId,
@@ -2225,37 +1521,25 @@ describe("ensure_writer", () => {
 		await t.finishAllScheduledFunctions(vi.runAllTimers);
 		vi.useRealTimers();
 
-		if (change === "nonempty") {
+		expect(
+			(
+				await test_rename_node(t, owner, {
+					membershipId: fixture.membershipId,
+					nodeId: writer!.folderNodeId,
+					path: `${ROOT}/moved-team`,
+				})
+			)._nay,
+		).toBeUndefined();
+		if (change === "replaced") {
 			expect(
 				(
 					await owner.mutation(api.files_nodes.create_folder_node, {
 						membershipId: fixture.membershipId,
-						parentId: writer!.folderNodeId,
-						path: "manual-folder",
+						parentId: root.rootNodeId,
+						path: "team",
 					})
 				)._nay,
 			).toBeUndefined();
-		} else {
-			expect(
-				(
-					await test_rename_node(t, owner, {
-						membershipId: fixture.membershipId,
-						nodeId: writer!.folderNodeId,
-						path: `${ROOT}/moved-team`,
-					})
-				)._nay,
-			).toBeUndefined();
-			if (change === "replaced") {
-				expect(
-					(
-						await owner.mutation(api.files_nodes.create_folder_node, {
-							membershipId: fixture.membershipId,
-							parentId: root.rootNodeId,
-							path: "team",
-						})
-					)._nay,
-				).toBeUndefined();
-			}
 		}
 
 		const before = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
@@ -2265,8 +1549,8 @@ describe("ensure_writer", () => {
 		expect(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).toEqual(before);
 	});
 
-	test.each(["deleted", "read access lost"])("refuses setup recovery when the sponsor is %s", async (change) => {
-		const { t, token, fixture, owner, root } = await setup();
+	test("refuses setup recovery when the sponsor is deleted", async () => {
+		const { t, token, fixture, root } = await setup();
 		const options = {
 			method: "POST",
 			headers: {
@@ -2276,7 +1560,7 @@ describe("ensure_writer", () => {
 			},
 			body: JSON.stringify({
 				path: `${ROOT}/team`,
-				access: { readOnly: true, readers: [] },
+				access: { readOnly: true },
 				force: true,
 				writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 			}),
@@ -2285,1008 +1569,159 @@ describe("ensure_writer", () => {
 		const sent = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(sent.status, await sent.clone().text()).toBe(200);
 
-		if (change === "deleted") {
-			await t.mutation(internal.data_deletion.init_user_deletion, { userId: fixture.userId, nowTs: Date.now() });
-		} else {
-			const nextOwner = await t.run(
-				async (ctx) => await test_mocks_fill_db_with.membership(ctx, { organizationName: "next-owner" }),
-			);
-			expect(
-				(
-					await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.workspaceId,
-						userIdToAdd: nextOwner.userId,
-					})
-				)._nay,
-			).toBeUndefined();
-			expect(
-				(
-					await owner.mutation(api.access_control.transfer_organization_ownership, {
-						organizationId: fixture.organizationId,
-						newOwnerUserId: nextOwner.userId,
-					})
-				)._nay,
-			).toBeUndefined();
-			expect(
-				await t.run(async (ctx) => (await ctx.db.get("organizations_workspaces_users", fixture.membershipId))?.active),
-			).toBe(true);
-		}
+		await t.mutation(internal.data_deletion.init_user_deletion, { userId: fixture.userId, nowTs: Date.now() });
 
 		const repeated = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
-		expect(repeated.status, await repeated.clone().text()).toBe(change === "deleted" ? 401 : 403);
+		expect(repeated.status, await repeated.clone().text()).toBe(401);
 	});
-});
 
-describe("rollback_readers", () => {
-	test.each(["applied", "unseen", "manual", "write-only", "expired", "wrong-root", "newer-readers", "policy"])(
-		"uses current authority after an upgrade with %s reader work",
-		async (condition) => {
-			const { t, fixture, owner, credentials, token, root } = await setup();
-			const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
-				force: true,
-				...credentials,
-				path: `${ROOT}/team`,
-				readOnly: true,
-				readers: [],
-				resourceKey: "private",
-				rootNodeId: root.rootNodeId,
-			});
-			if (ensured._nay) throw new Error(ensured._nay.message);
-			const folder = ensured._yay;
-			expect(
-				(
-					await owner.mutation(api.access_control.set_service_account_grant, {
-						membershipId: fixture.membershipId,
-						serviceAccountId: fixture.serviceAccountId,
-						resource: { kind: "file", nodeId: folder.folderNodeId },
-						level: "manage",
-					})
-				)._nay,
-			).toBeUndefined();
-
-			if (condition !== "unseen") {
-				expect(
-					(
-						await t.mutation(internal.plugins_external_files.change_scope, {
-							...credentials,
-							writerId: folder.writerId,
-							operationId: "before-upgrade",
-							writerGeneration: 1,
-							change: { kind: "readers", expectedReaderRevision: 1, readers: [] },
-						})
-					)._nay,
-				).toBeUndefined();
-			}
-
-			const next = await t.run(async (ctx) => {
-				const version = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
-				const { _id, _creationTime, ...fields } = version;
-				return {
-					id: await ctx.db.insert("plugins_versions", { ...fields, version: "1.0.1" }),
-					capabilities: fields.capabilities,
-				};
-			});
-			expect(
-				(
-					await owner.mutation(api.plugins.install_version, {
-						membershipId: fixture.membershipId,
-						pluginVersionId: next.id,
-						acceptedCapabilities: next.capabilities,
-						acceptedOutboundOrigins: [],
-						acceptedUiOutboundOrigins: [],
-						acceptedMcpServersFingerprint: "mcp-servers-hash",
-						acceptedSkillNames: [],
-					})
-				)._nay,
-			).toBeUndefined();
-
-			const current = await t.mutation(internal.public_api.create_plugin_service_grant, {
+	/**
+	 * Make `${ROOT}/private` a restricted folder and give the plugin's account Can edit on it. The
+	 * account's workspace grant from `setup` does not reach inside a restricted folder.
+	 *
+	 * The folder carries the plugin's name, like a folder the plugin made. The plugin writes only
+	 * below folders with its name.
+	 */
+	async function seed_private_area(f: Awaited<ReturnType<typeof setup>>) {
+		const { t, fixture, owner, root } = f;
+		const privateId = await test_run_with_flush(t, async (ctx) => {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				actorUserId: fixture.userId,
-				requestedScopes: ["files:write"],
-				destinationPathPrefix: condition === "wrong-root" ? `${ROOT}/other` : ROOT,
-				phase: "processing",
+				userId: fixture.userId,
+				parentId: root.folderNodeId,
+				path: "private",
+				kind: "folder",
+				createdNodesMetadata: [
+					{ key: "source", value: "plugin" },
+					{ key: "plugin-name", value: "chitchat" },
+				],
 				now: Date.now(),
+				// The writer root is read-only, so the owner sets the folder up with force.
+				writeContext: {
+					subject: { kind: "user", userId: fixture.userId, plugin: null },
+					actorUserId: fixture.userId,
+					resourceScope: { kind: "workspace" },
+					force: true,
+				},
 			});
-			if (current._nay) throw new Error(current._nay.message);
-			const headers = {
-				Authorization: `Bearer ${token}`,
-				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-				"Content-Type": "application/json",
-			};
-			const options = {
-				method: "POST",
-				headers,
-				body: JSON.stringify({
-					writerId: folder.writerId,
-					writerGeneration: 1,
-					operationId: "undo-upgrade",
-					originalReaderOperationId: "before-upgrade",
-				}),
-			};
-
-			const old = await t.fetch("/api/v1/files/plugin-access/undo", options);
-			expect(old.status, await old.clone().text()).toBe(401);
-			expect(await old.json()).toEqual({ message: "Unauthenticated", code: "reader_proof_mismatch" });
-
-			if (condition === "manual") {
-				const reader = await t.run(
-					async (ctx) => await test_mocks_fill_db_with.membership(ctx, { organizationName: "manual-reader" }),
-				);
-				expect(
-					(
-						await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
-							organizationId: fixture.organizationId,
-							workspaceId: fixture.workspaceId,
-							userIdToAdd: reader.userId,
-						})
-					)._nay,
-				).toBeUndefined();
-				expect(
-					(
-						await owner.mutation(api.files_sharing.set_node_share_grant, {
-							membershipId: fixture.membershipId,
-							nodeId: folder.folderNodeId,
-							principal: { kind: "user", userId: reader.userId },
-							level: "write",
-						})
-					)._nay,
-				).toBeUndefined();
-			} else if (condition === "write-only") {
-				expect(
-					(
-						await owner.mutation(api.access_control.set_service_account_grant, {
-							membershipId: fixture.membershipId,
-							serviceAccountId: fixture.serviceAccountId,
-							resource: { kind: "file", nodeId: folder.folderNodeId },
-							level: "write",
-						})
-					)._nay,
-				).toBeUndefined();
-			} else if (condition === "newer-readers") {
-				expect(
-					(
-						await t.mutation(internal.plugins_external_files.change_scope, {
-							grantId: current._yay.grantId,
-							tokenHash: await crypto_sha256_hex(current._yay.token),
-							serviceSecretHash: credentials.serviceSecretHash,
-							writerId: folder.writerId,
-							operationId: "newer-readers",
-							writerGeneration: 1,
-							change: { kind: "readers", expectedReaderRevision: 2, readers: [] },
-						})
-					)._nay,
-				).toBeUndefined();
-			} else if (condition === "policy") {
-				expect(
-					(
-						await owner.mutation(api.files_nodes.read_only_set, {
-							membershipId: fixture.membershipId,
-							nodeId: folder.folderNodeId,
-							readOnly: true,
-						})
-					)._nay,
-				).toBeUndefined();
-			} else if (condition === "expired") {
-				vi.spyOn(Date, "now").mockReturnValue(current._yay.expiresAt + 1);
-			}
-
-			const before = await t.run(async (ctx) => ({
-				grants: await ctx.db.query("access_control_permission_grants").collect(),
-				bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-			}));
-			headers.Authorization = `Bearer ${current._yay.token}`;
-
-			const result = await t.fetch("/api/v1/files/plugin-access/undo", options);
-			const expectedStatus =
-				condition === "expired"
-					? 401
-					: condition === "write-only" || condition === "wrong-root"
-						? 403
-						: condition === "newer-readers"
-							? 409
-							: 200;
-			expect(result.status, await result.clone().text()).toBe(expectedStatus);
-			if (expectedStatus !== 200 || condition === "manual" || condition === "unseen") {
-				expect(
-					await t.run(async (ctx) => ({
-						grants: await ctx.db.query("access_control_permission_grants").collect(),
-						bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-					})),
-				).toEqual(before);
-			}
-
-			if (expectedStatus === 200) {
-				const receipt = await result.json();
-				expect(receipt).toMatchObject({
-					detached: condition === "manual",
-					restored: condition !== "manual",
-					readerRevision: condition === "unseen" ? 1 : 3,
-				});
-				const repeated = await t.fetch("/api/v1/files/plugin-access/undo", options);
-				expect(repeated.status, await repeated.clone().text()).toBe(200);
-				expect(await repeated.json()).toEqual(receipt);
-			}
-		},
-	);
-
-	test.each(["receipt", "operation"])(
-		"restores readers by %s after sponsor access and bearer expiry",
-		async (lookup) => {
-			const { t, fixture, owner, credentials, token, root } = await setup();
-			const readers = await t.run(async (ctx) => {
-				const readers: { userId: Id<"users">; membershipLifetime: number }[] = [];
-				for (const name of ["before", "added"]) {
-					const userId = await ctx.db.insert("users", { clerkUserId: name });
-					const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.workspaceId,
-						userId,
-						active: true,
-						pendingOrganizationRemoval: false,
-						updatedAt: Date.now(),
-						displayName: "",
-						sortDisplayName: "",
-					});
-					await ctx.db.insert("organizations_membership_lifetimes", {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.workspaceId,
-						userId,
-						membershipId,
-						active: true,
-						lifetime: 1,
-					});
-					readers.push({ userId, membershipLifetime: 1 });
-				}
-				return readers;
-			});
-
-			const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
-				force: true,
-				...credentials,
-				path: `${ROOT}/team`,
-				readOnly: true,
-				readers: readers.slice(0, 1),
-				resourceKey: "private",
-				rootNodeId: root.rootNodeId,
-			});
-			if (ensured._nay) throw new Error(ensured._nay.message);
-			const nodeId = ensured._yay.folderNodeId;
-			expect(
-				(
-					await owner.mutation(api.access_control.set_service_account_grant, {
-						membershipId: fixture.membershipId,
-						serviceAccountId: fixture.serviceAccountId,
-						resource: { kind: "file", nodeId },
-						level: "manage",
-					})
-				)._nay,
-			).toBeUndefined();
-			const headers = {
-				Authorization: `Bearer ${token}`,
-				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-				"Content-Type": "application/json",
-			};
-
-			const changed = await t.fetch("/api/v1/files/plugin-access/set", {
-				method: "POST",
-				headers,
-				body: JSON.stringify({
-					path: `${ROOT}/team`,
-					access: { readers },
-					writer: {
-						writerId: ensured._yay.writerId,
-						operationId: "add-reader",
-						writerGeneration: 1,
-						expectedReaderRevision: 1,
-					},
-				}),
-			});
-			expect(changed.status, await changed.clone().text()).toBe(200);
-			const receipt = (await changed.json()).receipt as { _id: string; readerRevision: number };
-
-			const rotated = await t.mutation(internal.public_api.rotate_plugin_service_grant, {
-				presented: token,
-				now: Date.now(),
-			});
-			if (rotated._nay) throw new Error(rotated._nay.message);
-			const nextOwner = await t.run(
-				async (ctx) => await test_mocks_fill_db_with.membership(ctx, { organizationName: "next-owner" }),
-			);
-			expect(
-				(
-					await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.workspaceId,
-						userIdToAdd: nextOwner.userId,
-					})
-				)._nay,
-			).toBeUndefined();
-			expect(
-				(
-					await owner.mutation(api.access_control.transfer_organization_ownership, {
-						organizationId: fixture.organizationId,
-						newOwnerUserId: nextOwner.userId,
-					})
-				)._nay,
-			).toBeUndefined();
-
-			const ordinary = await t.fetch("/api/v1/files/plugin-access/set", {
-				method: "POST",
-				headers: { ...headers, Authorization: `Bearer ${rotated._yay.token}` },
-				body: JSON.stringify({
-					path: `${ROOT}/team`,
-					access: { readers: readers.slice(0, 1) },
-					writer: {
-						writerId: ensured._yay.writerId,
-						operationId: "ordinary-rollback",
-						writerGeneration: 1,
-						expectedReaderRevision: receipt.readerRevision,
-					},
-				}),
-			});
-			expect(ordinary.status, await ordinary.clone().text()).toBe(403);
-
-			vi.spyOn(Date, "now").mockReturnValue(rotated._yay.expiresAt + 1);
-			const options = {
-				method: "POST",
-				headers,
-				body: JSON.stringify({
-					writerId: ensured._yay.writerId,
-					operationId: "rollback",
-					writerGeneration: 1,
-					...(lookup === "receipt" ? { receiptId: receipt._id } : { originalReaderOperationId: "add-reader" }),
-				}),
-			};
-
-			const rolledBack = await t.fetch("/api/v1/files/plugin-access/undo", options);
-			expect(rolledBack.status, await rolledBack.clone().text()).toBe(200);
-			expect(await rolledBack.json()).toMatchObject({
-				restored: true,
-				detached: false,
-				readerRevision: receipt.readerRevision + 1,
-			});
-
-			const grants = await t.run(
-				async (ctx) =>
-					await ctx.db
-						.query("access_control_permission_grants")
-						.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-							q
-								.eq("organizationId", fixture.organizationId)
-								.eq("workspaceId", fixture.workspaceId)
-								.eq("resourceKind", "file")
-								.eq("resourceId", String(nodeId)),
-						)
-						.collect(),
-			);
-			expect(grants.filter((grant) => grant.principalKind === "user").map((grant) => grant.userId)).toEqual([
-				readers[0]!.userId,
-			]);
-			expect(grants.filter((grant) => grant.principalKind === "service_account")).toHaveLength(3);
-
-			const repeated = await t.fetch("/api/v1/files/plugin-access/undo", options);
-			expect(repeated.status, await repeated.clone().text()).toBe(200);
-			expect(await repeated.json()).toMatchObject({ restored: true, readerRevision: receipt.readerRevision + 1 });
-		},
-	);
-
-	test.each(["live", "rotated", "policy"])(
-		"cancels an unseen reader operation with %s credentials before a delayed apply",
-		async (condition) => {
-			const { t, fixture, owner, credentials, token, root } = await setup();
-			const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
-				force: true,
-				...credentials,
-				path: `${ROOT}/team`,
-				readOnly: true,
-				readers: [],
-				resourceKey: "private",
-				rootNodeId: root.rootNodeId,
-			});
-			if (ensured._nay) throw new Error(ensured._nay.message);
-			expect(
-				(
-					await owner.mutation(api.access_control.set_service_account_grant, {
-						membershipId: fixture.membershipId,
-						serviceAccountId: fixture.serviceAccountId,
-						resource: { kind: "file", nodeId: ensured._yay.folderNodeId },
-						level: "manage",
-					})
-				)._nay,
-			).toBeUndefined();
-
-			const headers = {
-				Authorization: `Bearer ${token}`,
-				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
-				"Content-Type": "application/json",
-			};
-			const before = await t.run(async (ctx) => ({
-				grants: await ctx.db.query("access_control_permission_grants").collect(),
-				bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-			}));
-			const options = {
-				method: "POST",
-				headers,
-				body: JSON.stringify({
-					writerId: ensured._yay.writerId,
-					operationId: "cancel",
-					writerGeneration: 1,
-					originalReaderOperationId: "delayed-readers",
-				}),
-			};
-
-			if (condition === "rotated") {
-				const rotated = await t.mutation(internal.public_api.rotate_plugin_service_grant, {
-					presented: token,
-					now: Date.now(),
-				});
-				if (rotated._nay) throw new Error(rotated._nay.message);
-				const unknown = await t.fetch("/api/v1/files/plugin-access/undo", options);
-				expect(unknown.status, await unknown.clone().text()).toBe(401);
-				expect(await unknown.json()).toEqual({ message: "Unauthenticated", code: "reader_proof_mismatch" });
-				headers.Authorization = `Bearer ${rotated._yay.token}`;
-			} else if (condition === "policy") {
-				expect(
-					(
-						await owner.mutation(api.files_nodes.read_only_set, {
-							membershipId: fixture.membershipId,
-							nodeId: ensured._yay.folderNodeId,
-							readOnly: true,
-						})
-					)._nay,
-				).toBeUndefined();
-			}
-
-			const cancelled = await t.fetch("/api/v1/files/plugin-access/undo", options);
-			expect(cancelled.status, await cancelled.clone().text()).toBe(200);
-			const acknowledgement = await cancelled.json();
-			expect(acknowledgement).toMatchObject({ restored: true, detached: false, readerRevision: 1 });
-
-			const delayed = await t.fetch("/api/v1/files/plugin-access/set", {
-				method: "POST",
-				headers,
-				body: JSON.stringify({
-					path: `${ROOT}/team`,
-					access: { readers: [] },
-					writer: {
-						writerId: ensured._yay.writerId,
-						operationId: "delayed-readers",
-						writerGeneration: 1,
-						expectedReaderRevision: 1,
-					},
-				}),
-			});
-			expect(delayed.status, await delayed.clone().text()).toBe(409);
-			expect(
-				await t.run(async (ctx) => ({
-					grants: await ctx.db.query("access_control_permission_grants").collect(),
-					bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
-				})),
-			).toEqual(before);
-
-			const repeated = await t.fetch("/api/v1/files/plugin-access/undo", options);
-			expect(repeated.status, await repeated.clone().text()).toBe(200);
-			expect(await repeated.json()).toEqual(acknowledgement);
-		},
-	);
-
-	test.each([
-		"manual",
-		"newer-readers",
-		"newer-writer",
-		"wrong-token",
-		"wrong-secret",
-		"wrong-token-and-secret",
-		"revoked-account",
-		"uninstalled",
-		"old-lifetime",
-		"target-policy",
-		"ancestor-policy",
-	])("keeps reader rollback bounded after %s", async (change) => {
-		const { t, fixture, owner, credentials, token, root } = await setup();
-		const reader = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "prior-reader" });
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+			if (created._nay) throw new Error(created._nay.message);
+			await files_nodes_db_set_restricted_scope({
+				ctx,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				userId,
-				active: true,
-				pendingOrganizationRemoval: false,
-				updatedAt: Date.now(),
-				displayName: "",
-				sortDisplayName: "",
+				nodeId: created._yay,
+				restrictedScopeNodeId: created._yay,
 			});
-			const lifetimeId = await ctx.db.insert("organizations_membership_lifetimes", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				membershipId,
-				active: true,
-				lifetime: 1,
-			});
-			return { userId, lifetimeId };
+			return created._yay;
 		});
+		expect(
+			(
+				await owner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: privateId },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		return privateId;
+	}
+
+	test("a plugin and a key of its account open a folder the account has a grant on, also one ensure made", async () => {
+		const f = await setup();
+		const { t, fixture, credentials, token, root } = f;
+		install_object_uploads();
+		await seed_private_area(f);
 
 		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
 			force: true,
 			...credentials,
-			path: `${ROOT}/team`,
-			readOnly: true,
-			readers: [{ userId: reader.userId, membershipLifetime: 1 }],
+			path: `${ROOT}/private/team`,
+			readOnly: false,
 			resourceKey: "private",
 			rootNodeId: root.rootNodeId,
 		});
-		if (ensured._nay) throw new Error(ensured._nay.message);
-		const nodeId = ensured._yay.folderNodeId;
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
+		expect(ensured._nay, "the plugin may create a folder where its account has a grant").toBeUndefined();
+		const writer = ensured._yay!;
 
-		const applied = await t.mutation(internal.plugins_external_files.change_scope, {
-			...credentials,
-			writerId: ensured._yay.writerId,
-			operationId: "remove-reader",
-			writerGeneration: 1,
-			change: { kind: "readers", expectedReaderRevision: 1, readers: [] },
-		});
-		if (applied._nay) throw new Error(applied._nay.message);
-
-		if (change === "manual") {
-			expect(
-				(
-					await owner.mutation(api.files_sharing.set_node_share_grant, {
-						membershipId: fixture.membershipId,
-						nodeId,
-						principal: { kind: "user", userId: reader.userId },
-						level: "write",
-					})
-				)._nay,
-			).toBeUndefined();
-		} else if (change === "newer-readers") {
-			expect(
-				(
-					await t.mutation(internal.plugins_external_files.change_scope, {
-						...credentials,
-						writerId: ensured._yay.writerId,
-						operationId: "later-reader-change",
-						writerGeneration: 1,
-						change: { kind: "readers", expectedReaderRevision: 2, readers: [] },
-					})
-				)._nay,
-			).toBeUndefined();
-		} else if (change === "newer-writer") {
-			expect(
-				(
-					await t.mutation(internal.plugins_external_files.change_scope, {
-						...credentials,
-						writerId: ensured._yay.writerId,
-						operationId: "fence",
-						writerGeneration: 1,
-						change: { kind: "fence", nextGeneration: 2 },
-					})
-				)._nay,
-			).toBeUndefined();
-		} else if (change === "old-lifetime") {
-			await t.run(
-				async (ctx) => await ctx.db.patch("organizations_membership_lifetimes", reader.lifetimeId, { lifetime: 2 }),
-			);
-		} else if (change === "revoked-account") {
-			expect(
-				(
-					await owner.mutation(api.access_control.revoke_service_account, {
-						membershipId: fixture.membershipId,
-						serviceAccountId: fixture.serviceAccountId,
-					})
-				)._nay,
-			).toBeUndefined();
-		} else if (change === "uninstalled") {
-			expect(
-				(
-					await owner.mutation(api.plugins.uninstall_version, {
-						membershipId: fixture.membershipId,
-						installationId: fixture.installationId,
-					})
-				)._nay,
-			).toBeUndefined();
-		} else if (change === "target-policy" || change === "ancestor-policy") {
-			expect(
-				(
-					await owner.mutation(api.files_nodes.read_only_set, {
-						membershipId: fixture.membershipId,
-						nodeId: change === "target-policy" ? nodeId : ensured._yay.rootNodeId,
-						readOnly: true,
-					})
-				)._nay,
-			).toBeUndefined();
-		}
-
-		const before = await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect());
-		const result = await t.fetch("/api/v1/files/plugin-access/undo", {
+		const content = "# team\n";
+		const sent = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${change.startsWith("wrong-token") ? "psg_wrong" : token}`,
-				"X-Bonobo-Service-Authorization": `Bearer ${change.endsWith("secret") ? "wrong" : SECRET}`,
+				Authorization: `Bearer ${token}`,
+				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				writerId: ensured._yay.writerId,
-				operationId: "undo",
-				writerGeneration: 1,
-				receiptId: applied._yay._id,
+				force: true,
+				path: `${ROOT}/private/team/team.md`,
+				expectedParentNodeId: writer.folderNodeId,
+				content,
+				nonCollaborative: true,
+				writer: {
+					writerId: writer.writerId,
+					operationId: "first",
+					writerGeneration: 1,
+					sequence: 1,
+					expectedNodeId: null,
+					expectedContentRevision: null,
+					contentHash: await crypto_sha256_hex(content),
+				},
 			}),
 		});
+		expect(sent.status, await sent.clone().text()).toBe(200);
+		const fileNodeId = ((await sent.json()).receipt as { nodeId: Id<"files_nodes"> }).nodeId;
 
-		const expectedStatus =
-			change === "manual" || change === "old-lifetime" || change === "ancestor-policy" || change === "target-policy"
-				? 200
-				: change.startsWith("wrong-") || change === "revoked-account" || change === "uninstalled"
-					? 401
-					: 409;
-		expect(result.status, await result.clone().text()).toBe(expectedStatus);
-		if (expectedStatus === 401)
-			expect(await result.json()).toEqual({
-				message: "Unauthenticated",
-				...(change === "wrong-token" ? { code: "reader_proof_mismatch" } : {}),
+		const can = (subject: access_control_Subject, nodeId: Id<"files_nodes">) =>
+			t.run(async (ctx) =>
+				access_control_db_can_act_on_file_node(ctx, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					subject,
+					fileNode: await ctx.db.get("files_nodes", nodeId),
+					permission: "content.read",
+				}),
+			);
+		const installation = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId)))!;
+		expect(await can(plugins_sandbox_subject(installation, fixture.userId), writer.folderNodeId)).toBe(true);
+		expect(await can({ kind: "service_account", serviceAccountId: fixture.serviceAccountId }, fileNodeId)).toBe(true);
+	});
+
+	test("a folder ensure makes gets its parent's access", async () => {
+		const f = await setup();
+		const { t, credentials, root } = f;
+		const privateId = await seed_private_area(f);
+		const grantsBefore = await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect());
+
+		const ensure = (path: string, resourceKey: string) =>
+			t.mutation(internal.plugins_external_files.ensure_writer, {
+				force: true,
+				...credentials,
+				path,
+				readOnly: false,
+				resourceKey,
+				rootNodeId: root.rootNodeId,
 			});
-		if (change === "manual") expect(await result.json()).toMatchObject({ restored: false, detached: true, _id: null });
-		if (change === "old-lifetime") expect(await result.json()).toMatchObject({ restored: true, detached: false });
-		if (change === "ancestor-policy") expect(await result.json()).toMatchObject({ restored: true, detached: false });
-		if (change === "target-policy") expect(await result.json()).toMatchObject({ restored: true, detached: false });
-		if (change === "ancestor-policy" || change === "target-policy") return;
-		expect(await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect())).toEqual(
-			before,
-		);
+		const node = (nodeId: Id<"files_nodes">) => t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+
+		const inRestricted = await ensure(`${ROOT}/private/team`, "private");
+		if (inRestricted._nay) throw new Error(inRestricted._nay.message);
+		expect(await node(inRestricted._yay.folderNodeId), "the new folder is inside the restricted folder").toMatchObject({
+			restrictedScopeNodeId: privateId,
+			isRestrictedScopeRoot: false,
+		});
+
+		const inOpen = await ensure(`${ROOT}/open-team`, "open");
+		if (inOpen._nay) throw new Error(inOpen._nay.message);
+		expect(await node(inOpen._yay.folderNodeId)).toMatchObject({ restrictedScopeNodeId: null });
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(grantsBefore);
 	});
 });
 
-describe("external file readers", () => {
-	test("reserves one own-account slot beside 50 attached readers and keeps the normal sharing cap", async () => {
-		const { t, fixture, credentials, owner, root } = await setup();
-		const readers = await t.run(async (ctx) => {
-			const readers: { userId: Id<"users">; membershipLifetime: number }[] = [];
-			for (let index = 0; index < 51; index++) {
-				const userId = await ctx.db.insert("users", { clerkUserId: `reader-${index}` });
-				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userId,
-					active: true,
-					pendingOrganizationRemoval: false,
-					updatedAt: Date.now(),
-					displayName: "",
-					sortDisplayName: "",
-				});
-				await ctx.db.insert("organizations_membership_lifetimes", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userId,
-					membershipId,
-					lifetime: 1,
-					active: true,
-				});
-				readers.push({ userId, membershipLifetime: 1 });
-			}
-			return readers;
-		});
-		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {
-			force: true,
-			...credentials,
-			path: `${ROOT}/private/team`,
-			readOnly: true,
-			readers: readers.slice(0, 50),
-			resourceKey: "large-private",
-			rootNodeId: root.rootNodeId,
-		});
-		if (privateScope._nay) throw new Error(privateScope._nay.message);
-		const nodeId = privateScope._yay.folderNodeId;
-
-		const otherAccount = await t.run(
-			async (ctx) =>
-				await ctx.db.insert("access_control_service_accounts", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					name: "Other",
-					createdBy: fixture.userId,
-					createdAt: Date.now(),
-					updatedAt: Date.now(),
-					revokedAt: null,
-				}),
-		);
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: otherAccount,
-					resource: { kind: "file", nodeId },
-					level: "read",
-				})
-			)._nay,
-		).toBeDefined();
-
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
-
-		expect(
-			(
-				await owner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: fixture.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: readers[50]!.userId },
-					level: "read",
-				})
-			)._nay,
-		).toBeDefined();
-
-		expect(
-			(
-				await owner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: fixture.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: readers[0]!.userId },
-					level: "write",
-				})
-			)._nay,
-		).toBeUndefined();
-
-		const grants = await t.run(
-			async (ctx) =>
-				await ctx.db
-					.query("access_control_permission_grants")
-					.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-						q
-							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId)
-							.eq("resourceKind", "file")
-							.eq("resourceId", String(nodeId)),
-					)
-					.collect(),
-		);
-		expect(
-			grants.filter((grant) => grant.principalKind === "user" && grant.permission === "content.read"),
-		).toHaveLength(50);
-		expect(grants.filter((grant) => grant.principalKind === "service_account")).toHaveLength(3);
-
-		for (const reader of readers.slice(0, 50)) {
-			// files_sharing_write holds 8 tokens, so 50 sequential shares need a reset per call.
-			await t.run(
-				async (ctx) =>
-					await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
-						name: "files_sharing_write",
-						key: fixture.userId,
-					}),
-			);
-			expect(
-				(
-					await owner.mutation(api.files_sharing.set_node_share_grant, {
-						membershipId: fixture.membershipId,
-						nodeId,
-						principal: { kind: "user", userId: reader.userId },
-						level: "manage",
-					})
-				)._nay,
-			).toBeUndefined();
-		}
-
-		const promoted = await t.run(
-			async (ctx) =>
-				await ctx.db
-					.query("access_control_permission_grants")
-					.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-						q
-							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId)
-							.eq("resourceKind", "file")
-							.eq("resourceId", String(nodeId)),
-					)
-					.collect(),
-		);
-		expect(promoted).toHaveLength(153);
-		const lastUserId = promoted.filter((grant) => grant.principalKind === "user").at(-1)!.userId!;
-
-		expect(
-			(
-				await owner.mutation(api.files_sharing.remove_node_share_grant, {
-					membershipId: fixture.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: lastUserId },
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			await t.run(
-				async (ctx) =>
-					await ctx.db
-						.query("access_control_permission_grants")
-						.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-							q
-								.eq("organizationId", fixture.organizationId)
-								.eq("workspaceId", fixture.workspaceId)
-								.eq("resourceKind", "file")
-								.eq("resourceId", String(nodeId))
-								.eq("principalKind", "user")
-								.eq("userId", lastUserId),
-						)
-						.collect(),
-			),
-		).toEqual([]);
-
-		// A detached folder uses the normal cap, including the remaining account.
-		expect(
-			(
-				await owner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: fixture.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: lastUserId },
-					level: "read",
-				})
-			)._nay,
-		).toBeDefined();
-
-		expect(
-			(
-				await owner.mutation(api.access_control.remove_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId },
-				})
-			)._nay,
-		).toBeUndefined();
-
-		expect(
-			(
-				await owner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: fixture.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: lastUserId },
-					level: "read",
-				})
-			)._nay,
-		).toBeUndefined();
-
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeDefined();
-	});
-
-	test("share rows copy the readers' membership lifetime until a manual share takes over", async () => {
-		const { t, fixture, credentials, owner, root } = await setup();
-		const readers = await t.run(async (ctx) => {
-			const readers: { userId: Id<"users">; membershipLifetime: number }[] = [];
-			for (let index = 0; index < 2; index++) {
-				const userId = await ctx.db.insert("users", { clerkUserId: `row-reader-${index}` });
-				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userId,
-					active: true,
-					pendingOrganizationRemoval: false,
-					updatedAt: Date.now(),
-					displayName: "",
-					sortDisplayName: "",
-				});
-				await ctx.db.insert("organizations_membership_lifetimes", {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					userId,
-					membershipId,
-					lifetime: 1,
-					active: true,
-				});
-				readers.push({ userId, membershipLifetime: 1 });
-			}
-			return readers;
-		});
-		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {
-			force: true,
-			...credentials,
-			path: `${ROOT}/private/rows`,
-			readOnly: true,
-			readers,
-			resourceKey: "rows",
-			rootNodeId: root.rootNodeId,
-		});
-		if (privateScope._nay) throw new Error(privateScope._nay.message);
-		const nodeId = privateScope._yay.folderNodeId;
-		const rows = async () =>
-			(
-				await t.run((ctx) =>
-					ctx.db
-						.query("files_share_rows")
-						.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-						.collect(),
-				)
-			)
-				.map((row) => ({ principalKey: row.principalKey, lifetime: row.externalPluginMembershipLifetime }))
-				.sort((a, b) => (a.principalKey < b.principalKey ? -1 : 1));
-		const keys = readers.map((reader) => `user:${reader.userId}`).sort();
-		// The plugin's service account reads the folder too, with no membership lifetime.
-		const plugin = { principalKey: expect.stringMatching(/^service_account:/), lifetime: null };
-		expect(await rows()).toEqual([plugin, ...keys.map((principalKey) => ({ principalKey, lifetime: 1 }))]);
-
-		// A manual share detaches the folder: the grants lose their lifetime, and so do the rows.
-		expect(
-			(
-				await owner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: fixture.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: readers[0]!.userId },
-					level: "write",
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(await rows()).toEqual([plugin, ...keys.map((principalKey) => ({ principalKey, lifetime: null }))]);
-		const differences: string[] = [];
-		let cursor: string | null = null;
-		do {
-			const page: { differences: string[]; cursor: string | null } = await t.query(
-				internal.files_pending_overlay.check_share_rows,
-				{ organizationId: fixture.organizationId, workspaceId: fixture.workspaceId, cursor },
-			);
-			differences.push(...page.differences);
-			cursor = page.cursor;
-		} while (cursor);
-		expect(differences).toEqual([]);
-	});
-
-	test("workspace content purge drains external file and grant receipt docs", async () => {
-		const { t, fixture, credentials, root, owner } = await setup();
-		const privateScope = await t.mutation(internal.plugins_external_files.ensure_writer, {
-			force: true,
-			...credentials,
-			path: `${ROOT}/private/team`,
-			readOnly: true,
-			readers: [],
-			resourceKey: "private",
-			rootNodeId: root.rootNodeId,
-		});
-		if (privateScope._nay) throw new Error(privateScope._nay.message);
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: privateScope._yay.folderNodeId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(
-			(
-				await t.mutation(internal.plugins_external_files.change_scope, {
-					...credentials,
-					writerId: privateScope._yay.writerId,
-					operationId: "reader-proof",
-					writerGeneration: 1,
-					change: { kind: "readers", expectedReaderRevision: 1, readers: [] },
-				})
-			)._nay,
-		).toBeUndefined();
+describe("workspace content purge", () => {
+	test("drains external file writer and grant receipt docs", async () => {
+		const { t, fixture, credentials, root } = await setup();
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.change_scope, {
@@ -3321,9 +1756,7 @@ describe("external file readers", () => {
 		).toBeUndefined();
 
 		const tables = [
-			"plugins_external_file_reader_changes",
 			"plugins_external_file_writers",
-			"plugins_external_file_bindings",
 			"plugins_external_file_receipts",
 			"plugin_service_grant_requests",
 		] as const;
@@ -3349,139 +1782,5 @@ describe("external file readers", () => {
 		expect(done).toBe(true);
 
 		for (const table of tables) expect(await t.run(async (ctx) => await ctx.db.query(table).collect())).toEqual([]);
-	});
-
-	test("old readers stay refused after removal and reinvitation, while account grants stay independent", async () => {
-		const { t, fixture, credentials, owner, root } = await setup();
-		const user = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "external-reader" });
-			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				active: true,
-				pendingOrganizationRemoval: false,
-				updatedAt: Date.now(),
-				displayName: "",
-				sortDisplayName: "",
-			});
-			const lifetimeId = await ctx.db.insert("organizations_membership_lifetimes", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				membershipId,
-				active: true,
-				lifetime: 1,
-			});
-			return { userId, membershipId, lifetimeId };
-		});
-		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
-			force: true,
-			...credentials,
-			path: `${ROOT}/private/team`,
-			readOnly: true,
-			readers: [{ userId: user.userId, membershipLifetime: 1 }],
-			resourceKey: "private",
-			rootNodeId: root.rootNodeId,
-		});
-		if (ensured._nay) throw new Error(ensured._nay.message);
-		const nodeId = ensured._yay.folderNodeId;
-
-		const canRead = async () =>
-			await t.run(
-				async (ctx) =>
-					await access_control_db_can_act_on_file_node(ctx, {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.workspaceId,
-						subject: { kind: "user", userId: user.userId, plugin: null },
-						fileNode: (await ctx.db.get("files_nodes", nodeId))!,
-						permission: "content.read",
-					}),
-			);
-		expect(await canRead()).toBe(true);
-
-		await t.run(
-			async (ctx) =>
-				await ctx.db.patch("organizations_membership_lifetimes", user.lifetimeId, { active: false, lifetime: 2 }),
-		);
-		expect(await canRead()).toBe(false);
-
-		await t.run(
-			async (ctx) => await ctx.db.patch("organizations_membership_lifetimes", user.lifetimeId, { active: true }),
-		);
-		expect(await canRead()).toBe(false);
-
-		expect(
-			(
-				await owner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId },
-					level: "manage",
-				})
-			)._nay,
-		).toBeUndefined();
-
-		expect(
-			(
-				await t.mutation(internal.plugins_external_files.change_scope, {
-					...credentials,
-					writerId: ensured._yay.writerId,
-					operationId: "stale-readers",
-					writerGeneration: 1,
-					change: {
-						kind: "readers",
-						expectedReaderRevision: 1,
-						readers: [{ userId: user.userId, membershipLifetime: 1 }],
-					},
-				})
-			)._nay?.name,
-		).toBe("stale_write");
-
-		const binding = await t.run(
-			async (ctx) =>
-				await ctx.db
-					.query("plugins_external_file_bindings")
-					.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-					.first(),
-		);
-		expect(binding?.detachedAt).toBeNull();
-
-		expect(
-			(
-				await owner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: fixture.membershipId,
-					nodeId,
-					principal: { kind: "user", userId: user.userId },
-					level: "write",
-				})
-			)._nay,
-		).toBeUndefined();
-		expect(await canRead()).toBe(true);
-
-		const repeated = await t.mutation(internal.plugins_external_files.ensure_writer, {
-			force: true,
-			...credentials,
-			path: `${ROOT}/private/team`,
-			readOnly: true,
-			readers: [{ userId: user.userId, membershipLifetime: 2 }],
-			resourceKey: "private",
-			rootNodeId: root.rootNodeId,
-		});
-		expect(repeated._yay?.detached).toBe(true);
-
-		expect(
-			(
-				await t.mutation(internal.plugins_external_files.change_scope, {
-					...credentials,
-					writerId: ensured._yay.writerId,
-					operationId: "detached-readers",
-					writerGeneration: 1,
-					change: { kind: "readers", expectedReaderRevision: 1, readers: [] },
-				})
-			)._nay?.name,
-		).toBe("stale_write");
-
-		expect(await canRead()).toBe(true);
 	});
 });

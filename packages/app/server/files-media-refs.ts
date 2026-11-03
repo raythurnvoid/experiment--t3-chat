@@ -69,7 +69,7 @@ export function files_media_refs_added(args: {
 }
 
 /**
- * Refuse refs the plugin cannot read: as its member inside its sandbox roots, or the file an upload run
+ * Refuse refs the plugin cannot read: as its member within its account's grants, or the file an upload run
  * was started for. Otherwise knowing an id would be enough to show a locked file, for example on the
  * document's public page. A write that adds more refs than the public page shows is refused, so the
  * check stays small.

@@ -12,7 +12,6 @@ import { files_pending_nodes_db_discard } from "./files_pending_nodes.ts";
 import { files_pending_updates_db_discard_saved } from "./files_pending_updates.ts";
 import { files_share_links_db_delete_for_node } from "./files_share_links_db.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
-import { plugins_db_sync_sandbox_root } from "./plugins_service_accounts.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { files_content_retention_db_uses_asset } from "../server/files-content-retention.ts";
@@ -423,17 +422,6 @@ export async function files_purge_db_drain_node_batch(
 		...shareGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)),
 		...saveRequests.map((doc) => ctx.db.delete("files_content_save_requests", doc._id)),
 	]);
-	// A deleted account grant frees its plugin folder slot.
-	for (const grant of shareGrants) {
-		if (grant.principalKind !== "service_account" || !grant.serviceAccountId) continue;
-		await plugins_db_sync_sandbox_root(ctx, {
-			organizationId,
-			workspaceId,
-			serviceAccountId: grant.serviceAccountId,
-			resource: { kind: "file", nodeId },
-			level: null,
-		});
-	}
 	if (yjsLastSequences.length + fileStats.length + folderSorts.length + shareGrants.length + saveRequests.length > 0) {
 		return { kind: "more" as const };
 	}
@@ -461,23 +449,11 @@ export async function files_purge_db_drain_node_batch(
 	await files_share_links_db_delete_for_node(ctx, { organizationId, workspaceId, nodeId });
 	await files_updated_by_db_delete_for_node(ctx, { nodeId });
 	await cancel_file_content_materialization(ctx, { nodeId });
-	const [accessBinding, externalBinding, heads] = await Promise.all([
-		ctx.db
-			.query("plugins_file_access_bindings")
-			.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-			.first(),
-		ctx.db
-			.query("plugins_external_file_bindings")
-			.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-			.first(),
-		// A file has only a few heads: old ones retire soon after each save, and discard deletes them.
-		ctx.db
-			.query("files_saved_content_heads")
-			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
-			.collect(),
-	]);
-	if (accessBinding) await ctx.db.delete("plugins_file_access_bindings", accessBinding._id);
-	if (externalBinding) await ctx.db.delete("plugins_external_file_bindings", externalBinding._id);
+	// A file has only a few heads: old ones retire soon after each save, and discard deletes them.
+	const heads = await ctx.db
+		.query("files_saved_content_heads")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+		.collect();
 
 	// Deleting the node also deletes its current head (`server/files-content-heads.ts`).
 	await ctx.db.delete("files_nodes", nodeId);
