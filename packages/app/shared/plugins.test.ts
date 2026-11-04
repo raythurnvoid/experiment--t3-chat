@@ -1384,20 +1384,6 @@ describe("plugins_validate_manifest", () => {
 		});
 	});
 
-	// TODO(migration): delete in phase B with the capability literal.
-	test("rejects the removed own-access capability in new manifests", () => {
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["workspace.files.write", "workspace.files.own-access"] }),
-			}),
-		).toEqual({
-			_nay: {
-				message:
-					"The workspace.files.own-access capability was removed. Share folders with the plugin's service account instead",
-			},
-		});
-	});
-
 	test("requires workspace.files.write for workspace.files.manage-read-only", () => {
 		expect(
 			plugins_validate_manifest({ ...manifest_json(), capabilities: ["workspace.files.manage-read-only"] }),
@@ -2058,12 +2044,7 @@ describe("plugins_Capability", () => {
 
 		const sdkCapabilities = [...(union?.[1] ?? "").matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
 		expect([...sdkCapabilities].sort()).toEqual(
-			capabilities
-				.filter(
-					(capability) =>
-						capability !== "workspace.files.create-read-only" && capability !== "workspace.files.own-access",
-				)
-				.sort(),
+			capabilities.filter((capability) => capability !== "workspace.files.create-read-only").sort(),
 		);
 	});
 

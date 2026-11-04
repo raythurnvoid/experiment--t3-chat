@@ -6871,9 +6871,6 @@ const write_file_body_validator = z
 				sequence: z.number().int().positive(),
 				expectedNodeId: z.string().nullable(),
 				expectedContentRevision: z.string().nullable(),
-				// TODO(migration): delete in phase B. Accepted and ignored, so a Chitchat release that still
-				// sends `null` keeps writing while the host and the plugin switch.
-				expectedReaderRevision: z.null().optional(),
 				contentHash: z.string().regex(/^[a-f0-9]{64}$/),
 			})
 			.strict()
@@ -7128,8 +7125,7 @@ export async function public_api_http_write_file(args: {
 			} as const;
 		}
 
-		// TODO(migration): drop the ignored `expectedReaderRevision` with its body field in phase B.
-		const { expectedReaderRevision: _expectedReaderRevision, ...writer } = body._yay.writer;
+		const writer = body._yay.writer;
 		overwrite = writer.expectedNodeId === null ? "fail" : "replace";
 		if (
 			!body._yay.expectedParentNodeId ||

@@ -259,14 +259,6 @@ describe("public conditional file writes", () => {
 		const omitted = await t.fetch("/api/v1/files/write", { method: "POST", headers, body: JSON.stringify(body) });
 		expect(omitted.status).toBe(200);
 		expect(await omitted.json()).toEqual(saved);
-		// TODO(migration): delete in phase B. A Chitchat release that still sends the old null field replays too.
-		const withOldField = await t.fetch("/api/v1/files/write", {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ ...body, writer: { ...body.writer, expectedReaderRevision: null } }),
-		});
-		expect(withOldField.status, await withOldField.clone().text()).toBe(200);
-		expect(await withOldField.json()).toEqual(saved);
 
 		for (const changed of [
 			{ force: true },

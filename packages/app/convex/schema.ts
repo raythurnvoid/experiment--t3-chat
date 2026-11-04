@@ -136,19 +136,6 @@ const playwriter_command_identity_validator = v.object({
 });
 
 /**
- * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
- */
-const plugins_sandbox_root_validator = v.object({
-	target: v.union(
-		// Open content only: nodes whose live restricted scope is null. Stops at every restricted folder.
-		v.object({ kind: v.literal("open") }),
-		// This node and what is below it in the same restricted area. A file root reaches only that file.
-		v.object({ kind: v.literal("folder"), nodeId: v.id("files_nodes") }),
-	),
-	level: v.union(v.literal("read"), v.literal("write"), v.literal("manage")),
-});
-
-/**
  * Which MCP server a doc is about: a server a plugin declares, or a server a member added. Every doc
  * that names an MCP server keeps it in one `target` field, and indexes use its nested paths.
  */
@@ -2210,10 +2197,6 @@ const app_convex_schema = defineSchema({
 				contentHash: v.string(),
 				expectedNodeId: v.union(v.id("files_nodes"), v.null()),
 				expectedContentRevision: v.union(v.string(), v.null()),
-				/**
-				 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-				 */
-				expectedReaderRevision: v.optional(v.union(v.number(), v.null())),
 				serviceSecretHash: v.string(),
 				tokenHash: v.string(),
 				contentType: v.string(),
@@ -4695,10 +4678,6 @@ const app_convex_schema = defineSchema({
 		 * The node's `_creationTime`, so the created sort follows the node, not the share.
 		 */
 		nodeCreationTime: v.number(),
-		/**
-		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-		 */
-		externalPluginMembershipLifetime: v.optional(v.union(v.number(), v.null())),
 	})
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		// A member's restricted children of one folder by name, for the folder table's custom-field
@@ -7750,19 +7729,6 @@ const app_convex_schema = defineSchema({
 		 * The skill names the install dialog showed.
 		 */
 		acceptedSkillNames: v.array(v.string()),
-		/**
-		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-		 */
-		sandbox: v.optional(
-			v.object({
-				roots: v.array(plugins_sandbox_root_validator),
-				rebuild: v.union(
-					v.null(),
-					v.object({ status: v.literal("running"), leaseUntil: v.number() }),
-					v.object({ status: v.literal("too_many_folders") }),
-				),
-			}),
-		),
 		installedBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
@@ -8473,21 +8439,6 @@ const app_convex_schema = defineSchema({
 		.index("by_installation_collection_prefix", ["installationId", "collectionName", "keyPrefix"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
-	/**
-	 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-	 */
-	plugins_file_access_bindings: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		scopeId: v.string(),
-		nodeId: v.id("files_nodes"),
-		updatedAt: v.number(),
-	})
-		.index("by_installation_scopeId", ["installationId", "scopeId"])
-		.index("by_node", ["nodeId"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
 	// #endregion plugins data
 
 	// #region plugins services
@@ -8522,23 +8473,6 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-	 */
-	plugins_external_file_bindings: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		writerId: v.id("plugins_external_file_writers"),
-		nodeId: v.id("files_nodes"),
-		revision: v.number(),
-		detachedAt: v.union(v.number(), v.null()),
-		updatedAt: v.number(),
-	})
-		.index("by_writer", ["writerId"])
-		.index("by_node", ["nodeId"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/**
 	 * Compact results commit with the file change. They hold no file text.
 	 */
 	plugins_external_file_receipts: defineTable({
@@ -8552,10 +8486,6 @@ const app_convex_schema = defineSchema({
 			v.literal("read_only"),
 			v.literal("fence"),
 			v.literal("archive"),
-			// TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-			v.literal("readers"),
-			v.literal("rollback_readers"),
-			v.literal("cancel_readers"),
 		),
 		fingerprint: v.string(),
 		path: v.string(),
@@ -8563,10 +8493,6 @@ const app_convex_schema = defineSchema({
 		writerGeneration: v.number(),
 		nodeId: v.id("files_nodes"),
 		contentRevision: v.union(v.string(), v.null()),
-		/**
-		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-		 */
-		readerRevision: v.optional(v.union(v.number(), v.null())),
 		createdAt: v.number(),
 	})
 		.index("by_writer_operationId", ["writerId", "operationId"])
@@ -8603,27 +8529,6 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 	})
 		.index("by_principal_request", ["principalKey", "requestId"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/**
-	 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-	 */
-	plugins_external_file_reader_changes: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		writerId: v.id("plugins_external_file_writers"),
-		receiptId: v.id("plugins_external_file_receipts"),
-		grantId: v.id("plugin_service_grants"),
-		tokenHash: v.string(),
-		pluginVersionId: v.id("plugins_versions"),
-		serviceAccountId: v.id("access_control_service_accounts"),
-		actorUserId: v.id("users"),
-		previousReaders: v.array(v.object({ userId: v.id("users"), membershipLifetime: v.number() })),
-		nextReaders: v.array(v.object({ userId: v.id("users"), membershipLifetime: v.number() })),
-		rollbackReceiptId: v.union(v.id("plugins_external_file_receipts"), v.null()),
-	})
-		.index("by_receipt", ["receiptId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
@@ -10095,10 +10000,6 @@ const app_convex_schema = defineSchema({
 			v.literal("workspace"),
 		),
 		userId: v.optional(v.id("users")),
-		/**
-		 * TODO(migration): one-time. Old data only. `migrations.ts` erases it; then delete this.
-		 */
-		externalPluginMembershipLifetime: v.optional(v.number()),
 		role: v.optional(access_control_role_ref_validator),
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		permission: access_control_grant_permission_validator,

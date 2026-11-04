@@ -96,7 +96,7 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 - `plugin.data.user-write` requires `plugin.data.read` for the same reason.
 - `workspace.files.manage-read-only` requires `workspace.files.write`. It grants flag management and explicit force, subject to current Can edit and every existing caller limit.
 - `workspace.files.own-write` requires `workspace.files.write` — it is a narrower door on the same file surface, and keeping the base capability visible keeps the consent honest.
-- `workspace.files.own-access` is removed. A new manifest that asks for it is refused with "Share folders with the plugin's service account instead". The literal stays in `plugins_CAPABILITIES` only until phase B (see "Rollout of the plugin access removal").
+- `workspace.files.own-access` is removed. A manifest that asks for it is refused as an unknown capability. To let a plugin use a folder, share the folder with the plugin's service account.
 - `plugin.service.connect` requires `plugin.data.read`, `workspace.files.write`, or `workspace.members.read`. A service using only identity and members may register with `scopes: []`. This grants no Files or data access. `outbound.fetch` does not satisfy the dependency.
 - `plugin.backend.invoke` and `backend.endpoints` require each other in both directions, like `ui.outbound.fetch` and its origins: the capability needs a `backend` block with at least one endpoint, and declared endpoints need the capability.
 - `userWritableCollections` requires `plugin.data.user-write`: the list narrows the user-write door, so without that door it means nothing.
@@ -174,14 +174,6 @@ One exception: upload-run sibling writes check the person only, beside the sourc
 - Billing does not change. The paying user pays for plugin writes. When the balance is out, neither the person nor the plugin can write.
 
 **Design principle: no plugin-only access rules.** A plugin never gets a plugin-only access rule. When a plugin needs files that people in this workspace must not read, the fix is a folder the user chooses in another workspace (for example their personal one), or normal sharing that the plugin sets through the sharing API. Reason: each plugin-only rule (reader lists, sandbox roots, output-folder bindings) needed its own checks in lists, links, Move, restore, and deletion, and each of those checks was one more place where access could go wrong.
-
-### Rollout of the plugin access removal (temporary)
-
-Delete this section when phase B ships. The removal ships in three host steps:
-
-1. Phase A: the old fields and tables stay optional, marked `TODO(migration)` in `schema.ts`. During phase A, `files/write` accepts and ignores `writer.expectedReaderRevision: null`, so Chitchat keeps writing while the host and the plugin switch.
-2. Run `migrations:run_erase_plugin_file_access` (command in `migrations.ts`). It opens every folder a plugin still managed: it deletes all grants on it and gives it its parent's access. A folder in the Trash keeps its restriction and only loses its grants, so only the organization owner opens it after a restore. A folder whose sharing a person took over (a detached binding) keeps its grants; only the binding is deleted. The run also deletes every plugin reader grant, strips the old fields, and removes `workspace.files.own-access` from stored capability lists. It never deletes files. Run it right after the phase A deploy: phase A no longer detaches a binding, so a sharing change that a person makes on a plugin folder before the run is erased too.
-3. Phase B: search the app, the SDK, and these skills for `TODO(migration)` and delete each item: the strict schema, the migration and its test, the capability literal and its manifest check, and the old `files/write` field. Release a Chitchat version that no longer sends `expectedReaderRevision` first. Host phase B refuses that field, so an older Chitchat release would stop writing.
 
 ## Plugin-labeled files (`workspace.files.own-write`)
 
@@ -938,6 +930,12 @@ Live checks covered all three modes, same-code recovery, waiting without a seat,
 denial and denied reloads. A real host and approved guest joined through the shipped room UI.
 The host's Allow button and End for all flow passed. All three dashboard assets matched the
 reviewed commit. Test rooms were closed without recording; the five old artifact rows were kept.
+
+SDK 0.25.2 was mirrored on 2026-11-04 at `9a4ece792b5058402b16f60eea0dc420e2ede902`.
+Its tree equals `6afadd85:packages/bonobo-plugin-sdk`. Only types and docs changed: plugin reader
+lists, `workspace.files.own-access` and `/api/v1/files/plugin-access/undo` are gone, and
+`files/write` accepts `expectedReaderRevision` only as `null`. Typecheck and 51 SDK tests pass.
+Chitchat `8db95c3e6f27addabab013825bddef350eb005c9` pins it and stops sending that field.
 
 SDK 0.25.1 was mirrored on 2026-11-01 at `854e9dccca48101f6e59a0b854bdb6ce318c7447`.
 Its tree equals `e46c7af0:packages/bonobo-plugin-sdk`. Only types and docs changed: the last
