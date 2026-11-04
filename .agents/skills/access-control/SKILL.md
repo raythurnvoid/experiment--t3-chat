@@ -28,29 +28,10 @@ Membership says where you are. Access control says what you may do there.
   still checks ACL and resource scope. See `../files-read-only/SKILL.md`.
 - Setting or clearing Read-only needs `content.write` on the target only. Sharing still needs
   `content.permissions.manage`. A folder's flag guards its direct child list, not deeper content.
-- Human/role sharing changes detach the node's `plugins_file_access_bindings` only when they
-  change sharing. Service-account grant edits preserve that reader binding. Unrestricting keeps
-  every grant, lowered to view or edit (see "Add people").
-- Plugin reader refreshes preserve service-account grants. Editable metadata and plugin names
-  never grant authority.
-- Plugin-managed file grants may carry `externalPluginMembershipLifetime`. The human grant
-  lookup reads `organizations_membership_lifetimes` and accepts that grant only while its lifetime is active. Removing
-  and reinviting an account does not restore its old private Files access. A real manual sharing
-  change detaches `plugins_external_file_bindings` and clears these tags on remaining grants.
-  Account grant edits and uninstall preserve the tags; old untagged grants keep their rules.
-  A role change that removes workspace content access does not remove a separate Files
-  grant while workspace membership remains active and the file grant still exists. Files grants are allow-only.
-  An attached external binding with 50 tagged human readers reserves one additional slot for its
-  own live installation account. Normal Files management and grant ceilings still apply. Other
-  accounts and a 51st human stay refused. Manual detachment restores the normal cap and keeps
-  existing grants; it does not remove an account that was already granted access.
-  If an external service cannot commit after its Files readers were applied, public
-  `/api/v1/files/plugin-access/undo` may restore the saved previous readers without the lost sponsor ACL.
-  It requires the original reader receipt or operation ID and bearer proof, plus live
-  installation/version/account/service checks. Restoring applied readers checks the exact attached
-  revision and writer generation. An unapplied operation may be cancelled without changing readers.
-  Only current membership lifetimes are restored. Manual or newer sharing is never overwritten,
-  and account grants stay independent.
+- Unrestricting keeps every grant, lowered to view or edit (see "Add people"). Editable metadata
+  and plugin names never grant authority. Plugins get no special file grants (see "Service accounts").
+- A role change that removes workspace content access does not remove a separate Files grant while
+  workspace membership remains active and the file grant still exists. Files grants are allow-only.
 
 ## Access changes for external services
 
@@ -107,8 +88,7 @@ not permission caches. Final publication still checks current access.
   advance the organization version in the same transaction.
 - Human/role file grants, root restriction, membership lifetime, saved media, placement, and write
   policy changes advance the workspace version. Unchanged or refused writes do not advance it.
-- Plugin mirrored human readers follow the same rule, including rollback and empty-reader root
-  restriction. Store-only changes are not human media access.
+- Plugin data store changes do not advance it. They change no file access.
 - A service-account grant that is removed or lowered, and a changed account role that had one
   before, advance the workspace version. A Move that a key bound to the account started pins this
   workspace version, so the change makes the Move ask for review.
@@ -162,24 +142,20 @@ Service accounts are workspace identities for software. They are not users and h
 owner rights, billing rights, public fallback, or private plugin-data scope rights. Their
 `createdBy` field is audit data, not authority.
 
-- Every file check acts as one **subject** (`access_control_Subject`). No check asks two
-  principals.
+- Every file check acts as one **subject** (`access_control_Subject`). Only a plugin subject asks
+  two principals (see "Locked, not hidden").
   - A person (UI, Bash, chat, jobs): `{ kind: "user", userId, plugin: null }`.
-  - A plugin run, page or service grant: its human plus `plugin: { installationId, roots }`, built
-    by `plugins_sandbox_subject`.
+  - A plugin run, page or service grant: its person plus
+    `plugin: { installationId, serviceAccountId }`, built by `plugins_file_subject`. Upload-run sibling
+    writes are the one exception: they check the person only (see the plugin-system skill).
   - An account-bound API key: `{ kind: "service_account", serviceAccountId }`. The key acts as the
     account. Its sponsor's own access does not matter. So a person who may manage service accounts
-    can act as any account through a key, except inside plugin output folders. A delete, move, or
-    copy job the key starts acts as the account at every step. The job reads the account from the
+    can act as any account through a key. A delete, move, copy, or restore job the key starts acts
+    as the account at every step. The job reads the account from the
     key it stores (`public_api_credentials_db_get_write_context`), because a key never changes its
     account. Activity, billing, and the one-transfer-at-a-time slot still belong to the person.
-  - A plugin writer request (write, inspect, ensure, reader set and undo) inside this installation's
-    own private output folder: `{ kind: "service_account", serviceAccountId, installationId }`,
-    built by `plugins_external_files_db_request_subject` only while its human can still read the
-    folder. The account's own `manage` grant there decides, so the plugin writes where its human
-    only reads. A human who cannot read the folder gets the human subject, so the plugin never
-    reads or writes there for them. Only the owner, not a reader, manages that folder. The route
-    gate still checks the human's workspace content permission.
+    The key also lists the Trash (`files/trash/list`, `files/trash/areas`) as the account: its
+    Trash areas come from the account's own share rows and its role's share rows.
 - `access_control_db_has_permission` accepts either the existing user/public input or an exclusive
   `serviceAccountId`. The account branch runs before the human owner shortcut. It requires an
   active same-tenant account and its own content grant.
@@ -187,18 +163,14 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   it an Add people root. A folder grant then covers its descendants until a restricted boundary;
   a file grant covers that file. Restricted content requires a grant at the nearest live restricted
   scope. A workspace grant never crosses that boundary.
-- A plugin subject reaches a node only when its human can, and the node is inside one of the
-  installation's **sandbox roots** at a level that gives the permission. An `open` root covers open
-  content only. A folder root covers that folder and what is below it in the same restricted area;
-  it stops at every restricted folder inside. A file root covers only that file (its `treePath` is
-  not a prefix test). A root on a deleted or trashed node gives nothing. Roots are empty while
-  they rebuild, and after a rebuild that found more than 20 folders.
-- The installation's own output folders (a live `plugins_external_file_bindings` row of this
-  installation on the restricted folder) count as roots and take no slot. Their level is the
-  account's live grant there, so lowering or removing that grant limits the plugin at once. They
-  also work during a rebuild. The human must still reach them.
-- An account subject reaches a plugin output folder only with that installation's
-  `installationId`, so a key bound to a plugin's account cannot read that plugin's private folders.
+- A plugin subject reaches a node only when its person can **and** the installation's service
+  account can, each through the normal check above (workspace grant, Add people chain, restricted
+  scope grant, account role shares). Both are index lookups; there is no list of plugin folders.
+  It is like a GitHub app acting for a user: the app gets no more than the user, and no more than
+  the app was given. To let a plugin use a folder, share it with the plugin's service account.
+- Plugins have no other file access. A folder a plugin creates is a regular folder with its
+  parent's access, and the plugin cannot choose its readers. Billing does not change: the paying
+  user pays, and when the balance is out neither the person nor the plugin can write.
 - A create or replace checks the folder where the item lands with the full subject. A folder above
   it passes when the actor or the full subject can write it (the recursive create, used by
   `ensure_writer` and app creates, and the public API replace). The public API create starts at
@@ -218,8 +190,8 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   Creating an account gives no grants or credentials.
 - An account may hold one role (`role` on the account, missing = none). The role gives only the
   restricted-folder shares that name it, as it does for a member, never the role's workspace
-  permission list. Lists read the role's share rows too. Plugin sandbox roots never include role
-  shares. `set_service_account_role` needs `workspace.service_accounts.manage`, the member-role rule
+  permission list. Lists read the role's share rows too, and so does a plugin check of that
+  account. `set_service_account_role` needs `workspace.service_accounts.manage`, the member-role rule
   of `set_user_role`, and the same ceiling (`db_caller_cannot_assign_role`): a key bound to the
   account acts as the account, so nobody may give it more than they could give a member.
   Anyone with `workspace.service_accounts.manage` can mint a key for the account and so use the
@@ -244,12 +216,10 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
 
 An allowed plugin installer may create an empty identity for a fresh trusted tuple. It gives no
 file grants. Choosing an account, adding grants, or reusing a retained binding after uninstall
-still needs account management. Install/update grants are explicit input, with at most 20 resources and the same actor
+still needs account management. Install/update grants are explicit input, with the same actor
 ceiling. Omitted grants stay unchanged. Updates, ensure calls, and reinstall never recreate grants
 or reactivate an account. Explicit installation rebind changes only its trusted tuple binding and
 installation pin. It does not move policies, copy grants, or rewrite old run/session/grant pins.
-It rebuilds the installation's sandbox roots (a copy of the account's grants) in a background
-job; see "Sandbox roots" in `../plugin-system/SKILL.md`.
 `plugins_db_get_live_service_account` checks the active account, saved pin, current version, and
 exact publisher/source tuple without repairing them.
 
@@ -336,20 +306,8 @@ has no `public` arm. A `workspace` grant has no id field and is only `content.re
 root (see "Everyone in this workspace can view" under "File sharing"). A file share also has a share
 row (see "Share rows" under "File sharing").
 
-The declarative access bindings (`plugins_file_access_bindings` in `plugins_data.ts`) are the
-host-maintained file-grant mirror: a plugin binds one of its owned nodes to one of its private scopes
-(`access.readScopeId` on the plugin file doors), and the host restricts the node and keeps exactly one
-`content.read` grant per scope member on it — at most 4 bound nodes per scope, readers bounded by the
-50-person scope cap. BOTH directions are synchronous inside
-`user_manage_scope` (`db_sync_file_access_bindings`): no file write interleaves, so adds
-do not wait for a sync, and a removed member loses the bound files in the same transaction. The
-mirror hands out only `content.read` (a file `manage` grant would let a channel manager unrestrict or
-re-share the node). Scope deletion and stranded-scope cleanup (`cleanup_stranded_scopes`, after
-account or organization teardown empties a scope) delete the mirrored grants and the binding rows; the
-node stays restricted, so nothing widens when the readers go away. Uninstall drains only the binding
-rows and leaves the mirrored grants with their files — member removal and workspace purge find those
-grants through their own tenant indexes. The organization owner still reads
-everything. Plugins never name users — the only principal input is a scope id.
+Plugin private scopes (`plugin_scope` grants) cover plugin-store records only, never files. Plugins
+never name users — the only principal input is a scope id.
 
 `plugins_data.user_manage_scope` writes the `plugin_scope` grants. `resourceId` is
 `"<installationId>:<scopeId>"` — the installation is part of it because two installations may mint the
@@ -902,8 +860,10 @@ Files work like a file system. Everyone who can open a folder sees all of its it
 cannot open is a **locked row**: name, type, size and created/updated dates only. Opening it answers
 403 / "Permission denied". Inside a locked folder every path answers the same 403, whether it exists
 or not. Recursive reads (`ls -R`, `find`, `tree`, API `recursive: true`) stop at locked folders and
-say "Permission denied". One subject per request: a user or a service account, never both checked per
-row.
+say "Permission denied". One subject per request: a user or a service account. The one exception is
+a plugin: it acts as its person and is also limited by its service account (like a GitHub app acting
+for a user), so its check asks both, from index lookups only. Its read budgets are sized for both
+checks; the plugin cases in the `internal_search_name_saved` cost tests measure the worst one.
 
 **Why hiding was removed. Do not bring it back.**
 
@@ -911,8 +871,8 @@ row.
   an index already holds "what this reader can see". That multiplies by files × readers, and every
   share change rewrites it. Reading a page and dropping rows instead gives short or empty pages and
   cursors that show where hidden rows are.
-- A plugin list checks every row, because its sandbox roots have no share rows that an index could
-  read. Under hiding that per-row filter gives short or empty pages.
+- A plugin list would need a second per-row filter for its account. Under hiding that filter gives
+  short or empty pages.
 - With locked rows, a folder list reads one index range for everyone. A recursive read only has to
   check the restricted folders on its way, not every row.
 
@@ -924,9 +884,9 @@ row.
 - POSIX / GNU: `ls` on a folder shows every name; opening an item you cannot read fails with
   `EACCES` ("Permission denied"); `find` prints `find: '<path>': Permission denied` and goes on. Samba
   has `hide unreadable`, off by default.
-- Linux Landlock: a sandboxed process gets a set of allowed folders (roots) on top of its user's
-  rights. Plugin requests work this way here: every file check of a plugin run, page or service
-  grant also needs one of the installation's sandbox roots (see "Service accounts").
+- Linux Landlock: a sandboxed process gets a set of allowed folders on top of its user's rights.
+  Plugin requests work like this here: every file check of a plugin run, page or service grant also
+  needs the plugin's service account to pass (see "Service accounts").
 - Do not add a hide switch (access-based enumeration) to Files. It brings back every problem above.
 
 **The leak rule.** A locked row is visible; its content, custom fields and members are not. Any output
@@ -1123,16 +1083,15 @@ doors live in `convex/files_sharing_db.ts`. See "Public file links" below.
 The model:
 
 - A node is restricted exactly when `restrictedScopeNodeId === _id`. Everything under it points at
-  the same id. `restrict_node` and `unrestrict_node` set the node's own scope now, then start a scope
-  job with `files_subtree_ops_db_start_rebuild` (kind `scope`). The plugin access binding
-  (`plugins_data_db_apply_file_access_binding`, which takes the acting `userId`) and plugin external
-  files (`plugins_external_files.ts`) do the same. The job walks children by `parentId` and writes
-  each child's `restrictedScopeNodeId` from its live parent. A child that is its own restricted folder
-  keeps its own scope. The first step runs inside the request, so a small folder is done at once,
-  unless a Move holds the workspace: then every step, the first one too, waits for the Move. A
-  bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so the recover
-  cron finds the op. A Move does not use this walk: it publishes its items with their new scope (see
-  below).
+  the same id. `restrict_node` and `unrestrict_node` set the node's own scope now, then start a
+  scope job with `files_subtree_ops_db_start_rebuild` (kind `scope`). Plugins never restrict a node:
+  a folder a plugin creates gets its parent's access. The job walks children by `parentId` and
+  writes each child's `restrictedScopeNodeId` from its live parent. A child that is its own
+  restricted folder keeps its own scope. The first step runs inside the request, so a small folder
+  is done at once, unless a Move holds the workspace: then every step, the first one too, waits for
+  the Move. A bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so
+  the recover cron finds the op. A Move does not use this walk: it publishes its items with their
+  new scope (see below).
 - Until a scope job writes a child, the child keeps its stored scope. Every permission check, for
   reads and writes, trusts that stored scope. So a child of a newly restricted folder keeps its old
   access until the job rewrites it. This per-file timing is the chosen design: each file follows its
@@ -1173,8 +1132,9 @@ no id field, and only `content.read`. Decided 2026-10-27.
   added on the list keep their own level, so "everyone can view, these people can edit" is the list
   plus this grant.
 - **Users only.** Service accounts get nothing from it, and plugin sessions get nothing on their own:
-  a plugin session acts as its human, but still needs its app on the list (a sandbox root). Add an
-  app to the list to give it access. The extended chain (added people) and the public-link checks never read it.
+  a plugin session acts as its person, but its service account must also pass, and this grant does
+  not reach an account. Share the item with the plugin's service account to give it access. The
+  extended chain (added people) and the public-link checks never read it.
 - **Only where the workspace has access above.** `set_node_workspace_view` turns it on only when
   the item's parent area is open, or is a restricted folder that has this grant too. Inside any
   other restricted folder it refuses: it would open the item past that folder's list, and members
@@ -1230,8 +1190,6 @@ inside it. Everybody who had access before keeps it: added people only add acces
   apps: the person restricting chose that list, and the dialog shows it. Then it gives the caller
   `manage`, without a second copy of a permission they already hold. Before any write it refuses a
   non-owner caller who is not listed when the list already has `MAX_FILE_SHARE_PRINCIPALS` entries.
-  The plugin binding restrict is different: the plugin's readers become the whole list, so people
-  and accounts added there lose access.
 - **Unrestrict keeps the list too.** `unrestrict_node` keeps every grant, so an item with any grant
   becomes an extended root. Added people hold only view or edit, so each kept `manage` drops to
   `write` (an account through the account writer, a user or role by deleting its manage doc). The
@@ -1334,11 +1292,7 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
   `workspace:<workspaceId>`. A role share is one row, not one row per member, and so is a workspace
   share.
 - A row copies the node's list fields (parent, kind, Trash state, names, `treePath`, `updatedAt`,
-  extension, size, creation time) and the grant's `externalPluginMembershipLifetime` (`null` when
-  missing).
-- A re-invite schedules `plugins_external_files.delete_old_reader_grants`, which deletes the member's
-  plugin reader grants of older lifetimes in that workspace (100 a page), so their rows go too. Until it
-  ends, the share readers drop those rows.
+  extension, size, creation time).
 - Nothing writes rows by hand. The pending overlay flush keeps them true in the writer's transaction
   (grants are one of its source tables): a file grant insert, patch or delete syncs that grant's row,
   and a write to a node that is or was a scope root syncs the node's rows. Outside a Move another
@@ -1348,8 +1302,7 @@ the folder table. Code: `packages/app/server/files-share-rows.ts`.
 - A node sync reads the node's `content.read` grants in the node's own workspace with one range
   (`by_resource_permission`). The share caps (`MAX_FILE_SHARE_PRINCIPALS`, 50 people and roles, in
   `files_sharing.ts`, the same 50 with service accounts in
-  `access_control_db_set_service_account_grant`, and `MAX_READERS`, 50 plugin readers, in
-  `plugins_external_files.ts`) bound it to about 100 rows.
+  `access_control_db_set_service_account_grant`) bound it to about 100 rows.
 - Move stages share docs in pages before the group switch. Ordinary selections and connected
   Pending Save groups use the same worker. Share docs count in each transaction's measured
   budget. They do not create a total selection cap.
@@ -1468,10 +1421,9 @@ content). The share page is `/share/<token>`; the auth skill describes its publi
   - no Move mark on the file itself (`moveCohortId`), else `move_busy`. A file the Move has not
     reached yet can get a link: Move link staging reads every held file's link after all captures,
     so the switch still ends it. This check reads no folder above the file.
-- `files_share_links_db_check_scope` (`server/files-share-links.ts`) reads the stored scope node and its plugin bindings, at most 5 docs. `dead`
+- `files_share_links_db_check_scope` (`server/files-share-links.ts`) reads the stored scope node, one doc. `dead`
   means the node is gone, in another tenant, or no longer its own restricted root, and On refuses
-  with "Wait until the access change of a folder above finishes". `bound` means a plugin decides
-  who reads the area, and On refuses. A null scope is always fine.
+  with "Wait until the access change of a folder above finishes". A null scope is always fine.
 - Off needs only the manage permission. It skips On's file checks, so a manager can turn a link off
   while a job runs or after the file is in Trash. A missing link is a success.
 - Agents, bash tools, API keys, and `/api/v1` never reach this mutation.
@@ -1491,9 +1443,7 @@ scope node changes.** So every read checks:
    trashed.
 2. The file's stored `restrictedScopeNodeId` equals the doc's.
 3. `files_share_links_db_check_scope` answers `ok`: the scope is null, or the scope node is a live restricted root of
-   the same tenant with no `plugins_file_access_bindings` doc and no attached
-   `plugins_external_file_bindings` doc (`detachedAt === null`). A plugin reader list would be
-   bypassed by a public link.
+   the same tenant.
 4. The organization and workspace exist, the workspace has no `pluginDataPurgeStartedAt`, and
    `data_deletion_requests` has no doc for the organization and no doc for this workspace. Both
    are exact lookups: a deletion of another workspace in the organization does not hide the file.
@@ -1503,7 +1453,7 @@ scope node changes.** So every read checks:
 6. The whole view stays inside a read budget (1,500 calls, 16,000 docs, 8 MiB) and returns at most
    1,000,000 bytes. Past a budget the view refuses, or the rest of the embeds show as unavailable.
 
-A folder above that is in Trash, restricted, or bound while its job runs does not hide the file at
+A folder above that is in Trash or restricted while its job runs does not hide the file at
 once. This is the per-file timing rule (see the scope job above): the file shows until the job
 writes it, and that write ends the link. Until then a manager of the old area can still turn its
 link on, and the job ends that link too. The window grows with the folder size, and lasts longer
@@ -1576,7 +1526,7 @@ shows a gray box, and the descriptor is `{ index, available: false }`, which tel
    and it matches the node: an image node needs an image file, a video node needs a video file.
 4. E is not in Trash and has a finished asset.
 5. E is public: `E.isPublic` is `true` ("The public flag", below).
-6. `files_share_links_db_check_scope` on E's **own** restricted area answers `ok`: not dead and not plugin-bound.
+6. `files_share_links_db_check_scope` on E's **own** restricted area answers `ok`: not dead.
 
 E may sit in any restricted area. D's area does not matter. Code: `db_check_media_node` in
 `files_share_links.ts`. Every read is reserved in the view budget.
@@ -1589,7 +1539,7 @@ it is public. Only the link and upload doors in "The public flag" below set the 
 no images, so it stays fast.
 
 A plugin write that adds a new `bonobo-file://` ref to a file the plugin cannot read itself (its
-member inside its sandbox roots) is refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
+person and its service account must both read it) is refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
 `file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs the file already had stay,
 and an upload run may embed the file it was started for. A write that keeps old refs is refused
 with 409 when the file changed after the route read them. A plugin service upload of Markdown with
@@ -1632,7 +1582,7 @@ flag. Folders never do, so nothing is public by inheritance.
   nothing. It charges `files_sharing_write` first (app and API).
 - On also needs: a file that is not in Trash and a live workspace; no Move mark on the file and no
   Move reservation for it (`move_busy`); no running subtree op on the file or a folder above it
-  (`not_ready`); and `files_share_links_db_check_scope` `ok` (not dead, not bound). The move to Trash,
+  (`not_ready`); and `files_share_links_db_check_scope` `ok` (not dead). The move to Trash,
   workspace and scope checks are `files_share_links_db_check_live_node` in `server/files-share-links.ts`.
 - Off works during a Move: `files_nodes_db_set_public` patches both Move views too, so the Move end
   does not write the old value back.
@@ -1649,10 +1599,6 @@ not change. New nodes start not public, copies included. Writers: `files_nodes_d
   that file. Restricting a file clears its own flag.
 - A Move keeps the flag only when the area stays the same.
 - Restore uses the same rule. Restore to the same place, or into the same area, keeps the flag.
-- A plugin bind of a restricted file (`plugins_data_db_apply_file_access_binding`) clears its flag.
-  Flags of files inside a bound folder stay, and an upload there can still set one. The view hides
-  them while the area is bound, and they show again after a detach. A detach does not bring a
-  cleared flag back.
 - Ending a link changes no public flag. The flag belongs to the file, not to a link, so other linked
   pages still show the image.
 - A URL signed before Off still works for up to 15 minutes.
@@ -1682,9 +1628,8 @@ token. There are two helpers in `files_share_links_db.ts`:
 - `files_share_links_db_delete_for_node` deletes the link of one exact file.
 - `files_share_links_db_delete_for_scope` deletes every link whose stored scope is one node, on
   `by_organization_workspace_scope`. It reads at most 501 docs and throws past 500, which the
-  workspace cap makes unreachable. Call it when the node becomes or stops being a restricted root,
-  or gets a plugin binding: the files inside keep the same scope id then, so no job deletes their
-  links.
+  workspace cap makes unreachable. Call it when the node becomes or stops being a restricted root:
+  the files inside keep the same scope id then, so no job deletes their links.
 
 A link inside a folder never needs a walk to end. Each job that changes the files below a folder
 ends each file's link when it writes that file. Only the scope node's own change needs the area
@@ -1703,7 +1648,6 @@ lifecycle or access-control module, so every caller can import it without a cycl
 | Restore from Trash | `files_nodes_db_restore_node`. A restored file comes back with no link |
 | Move to Trash and create replacement | The Trash helpers above. This covers a replacing upload (`create_upload_node`, `create_upload_nodes`, `/api/v1/files/upload-urls`, `data_import`), `/api/v1/files/write` over a stored file, and plugin and service paths that move to Trash and recreate. The new file has no link |
 | Remove a failed file creation | `files_nodes_db_hard_delete_node` |
-| A plugin reader list takes over a file or a restricted folder | `plugins_data_db_apply_file_access_binding`: the node's own link and every link of its area. A folder must already be a restricted root whose scope job has ended and that holds no restricted folder, so its area is the whole folder. A file binds in one step, and the restrict in the bind ends its link |
 | An exact service-account `content.write` grant on the file is removed or lowered to View | `access_control_db_set_service_account_grant`, before it deletes the grant. This existing link-lifetime rule still applies |
 | Workspace or organization purge | The `data_deletion.ts` content purge drains `files_share_links` in batches, before grants and file nodes. The deletion request, or `pluginDataPurgeStartedAt` for a preserved-home data reset, already hides every link before the purge starts |
 
@@ -1722,38 +1666,8 @@ What keeps a link:
 - The creator leaving, losing rights, or deleting their account.
 - Copies. A copy is a new file with no link.
 
-- A plugin binding that is detached or cleaned up (`db_detach_file_access_binding`,
-  `db_sync_file_access_bindings` with `removeUserIds: "all"`, and the uninstall binding drain).
-  A bound area holds no links, because the bind ended them and On refuses there, so there is
-  nothing to end.
-
 A file node that is gone or trashed without a hook still shows nothing, because the view reads
 the file on every read.
-
-**A bound area holds no other restricted item.** A bound area is an area whose scope node has a
-plugin binding. The plugin decides who reads the whole area. A restricted item inside would have its
-own reader list, and once it has no binding of its own it could get links again. So these refuse:
-
-- `restrict_node` on an item inside a bound area, or on an item that a Move has staged into one
-  (its "after" place): "A plugin decides who can read this item, so it cannot be restricted on its
-  own".
-- A Move that puts a restricted item, or a folder that holds one, into a bound area
-  (`files_move_cohorts.ts`, checked for every moved node that lands in a new area): "A plugin
-  decides who can read the destination, so a restricted item cannot move there." A destination
-  folder that does not move is not checked.
-- A restore that brings a restricted item back into a bound area (`db_land_node` in
-  `files_archive_runs.ts`): "A plugin decides who can read the folder it comes back to, so a
-  restricted item cannot be restored there."
-- A bind inside a bound area, for an existing node, a new one, or one a Move has staged into a bound
-  area (`plugins_data_db_prepare_file_access_binding`
-  and `plugins_external_files.ensure_writer`): "A plugin already decides who can read the folder
-  around this item".
-- A bind of a folder that holds a restricted item, read on
-  `by_org_ws_parentScope_archive_treePath` and, while a Move holds the workspace, on both Move views
-  of `files_saved_places`.
-
-Data from before these rules may still hold a restricted item inside a bound area. On 2026-10-20 the
-dev deployment had none.
 
 ### Seeing links inside Files
 

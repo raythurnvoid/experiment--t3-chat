@@ -301,9 +301,9 @@ export async function insert_saved_node(
 }
 
 /**
- * Share a restricted root 100 times. The share caps allow 50 shares on one node
- * (MAX_FILE_SHARE_PRINCIPALS in files_sharing.ts, MAX_READERS in plugins_external_files.ts). This is
- * twice that: 50 users and 50 roles, each with the three grants of a "manage" share.
+ * Share a restricted root 100 times. The share cap allows 50 shares on one node
+ * (MAX_FILE_SHARE_PRINCIPALS in files_sharing.ts). This is twice that: 50 users and 50 roles, each
+ * with the three grants of a "manage" share.
  */
 export async function share_100_times(t: ReturnType<typeof test_convex>, db: Db, nodeId: Id<"files_nodes">) {
 	await test_run_with_flush(t, async (ctx) => {

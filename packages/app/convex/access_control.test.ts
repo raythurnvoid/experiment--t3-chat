@@ -25,7 +25,7 @@ import {
 	access_control_db_set_service_account_grant,
 	type access_control_Subject,
 } from "./access_control.ts";
-import { plugins_sandbox_subject } from "./plugins_service_accounts.ts";
+import { plugins_file_subject } from "./plugins_service_accounts.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import {
 	organizations_db_create,
@@ -1289,7 +1289,7 @@ describe("plugin subject", () => {
 		const installation = (await t.run(
 			async (ctx) => await ctx.db.get("plugins_workspace_installations", installationId),
 		))!;
-		const plugin = (userId: Id<"users">) => plugins_sandbox_subject(installation, userId);
+		const plugin = (userId: Id<"users">) => plugins_file_subject(installation, userId);
 		const can = (
 			subject: access_control_Subject,
 			fileNode: Doc<"files_nodes"> | null,
@@ -1311,7 +1311,7 @@ describe("plugin subject", () => {
 		return { t, fixture, installationId, insert, nodes, scope, plugin, can, grant };
 	}
 
-	test("a plugin cannot open a folder its account has no grant on, even when its human can", async () => {
+	test("a plugin cannot open a folder its account has no grant on, even when its person can", async () => {
 		const { nodes, plugin, can, grant, fixture } = await seed();
 		expect(await can({ kind: "user", userId: fixture.ownerId, plugin: null }, nodes.x)).toBe(true);
 		expect(await can(plugin(fixture.ownerId), nodes.x), "the account has no grant on /r").toBe(false);
@@ -1321,7 +1321,7 @@ describe("plugin subject", () => {
 		expect(await can(plugin(fixture.ownerId), nodes.x, "content.write")).toBe(false);
 	});
 
-	test("a plugin never reaches beyond its human", async () => {
+	test("a plugin never reaches beyond its person", async () => {
 		const { nodes, plugin, can, grant, fixture } = await seed();
 		expect((await grant({ kind: "file", nodeId: nodes.r._id }, "manage"))._nay).toBeUndefined();
 		// The member cannot read `/r`, so its plugin cannot either, whatever the account's grant says.
@@ -1375,7 +1375,6 @@ describe("plugin subject", () => {
 		expect(paths).toContain("/o/new/n.md");
 		expect(paths).not.toContain("/r/new");
 	});
-
 
 	test("an account write passes a folder above it that only the account can write", async () => {
 		const { t, nodes, scope, fixture, installationId } = await seed();

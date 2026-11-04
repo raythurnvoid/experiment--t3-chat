@@ -57,7 +57,6 @@ async function fixture() {
 		"workspace.files.read",
 		"workspace.files.write",
 		"workspace.files.own-write",
-		"workspace.files.own-access",
 	];
 	// Seed reviewed artifacts only. Sessions, grants, writers and files use public doors below.
 	const pluginVersionId = await t.run(async (ctx) => {

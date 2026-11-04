@@ -668,10 +668,10 @@ export type plugins_service_http_verify_live_Body = z.infer<typeof verify_live_b
  * scope this map calls readable while that one calls it writable is answered 200 here and
  * `Permission denied` at the very call the service asked about.
  *
- * `files:write` is not in step. The file doors check write on each node, not on the workspace, and
- * in the plugin's own output folder the plugin writes as its account while its person can read. So a
- * member who lost workspace write can still write there through the grant. This map still asks for
- * workspace write, so it can answer 409 for a write the door would allow. That only refuses more.
+ * `files:write` is not in step. The file doors check write on each node, for the person and for the
+ * plugin's account, not on the workspace. So a member without workspace write can still write in a
+ * folder shared with them. This map still asks for workspace write, so it can answer 409 for a write
+ * the door would allow. That only refuses more.
  *
  * That check skips one kind of caller, and it does so deliberately: a `plugin_run` principal. A run
  * has no user of its own, so its principal carries no `contentPermissions` for the check to read.

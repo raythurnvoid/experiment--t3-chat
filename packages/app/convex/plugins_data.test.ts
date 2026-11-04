@@ -1852,7 +1852,6 @@ describe("invoke file write preconditions", () => {
 		const userId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "invoke-file-writer" }));
 		const capabilities: plugins_Capability[] = [
 			"workspace.files.own-write",
-			"workspace.files.own-access",
 			"workspace.files.manage-read-only",
 		];
 		const fixture = await seed_installation(t, { userId, acceptedCapabilities: capabilities, plan: "Pay As You Go" });

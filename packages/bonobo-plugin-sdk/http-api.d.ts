@@ -699,6 +699,7 @@ export type BonoboHttpApi = {
 					expectedNodeId: string | null;
 					expectedContentRevision: string | null;
 					contentHash: string;
+					expectedReaderRevision?: null | undefined;
 				} | undefined;
 			};
 			response: {

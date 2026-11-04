@@ -67,7 +67,7 @@ import {
 } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
-import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import {
 	files_move_reservations_db_check,
@@ -249,7 +249,7 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 			workspace,
 			defaultWorkspaceId: organization.defaultWorkspaceId,
 			serviceAccountId: grant.serviceAccountId,
-			subject: plugins_sandbox_subject(installation, grant.actorUserId),
+			subject: plugins_file_subject(installation, grant.actorUserId),
 		},
 	});
 }

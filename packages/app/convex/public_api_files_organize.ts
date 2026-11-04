@@ -993,7 +993,14 @@ export async function public_api_files_organize_http_trash_list(args: {
 	if (view.migrationDirection === "to_normal") sources.reverse();
 
 	// The area and folder are in the scope, so a cursor works only for the place it was made for.
-	const scope = JSON.stringify([principal.principalKey, principal.subject, membership, areaNodeId, folderNodeId, sources]);
+	const scope = JSON.stringify([
+		principal.principalKey,
+		principal.subject,
+		membership,
+		areaNodeId,
+		folderNodeId,
+		sources,
+	]);
 	// Like `files/list`, only this error has a code: clients restart with `cursor: null` on it.
 	const invalid_cursor = {
 		status: 400,
@@ -1243,14 +1250,15 @@ export const list_trash_areas_page = internalQuery({
 						account?.role !== undefined ? files_share_rows_principal_key("role", account.role) : null,
 					][args.principalIndex] ?? null;
 			} else {
-				principalKey = (
-					await files_tree_db_get_share_principal_keys(ctx, {
-						userAuth: { id: args.userId },
-						membership,
-						defaultWorkspaceId: organization.defaultWorkspaceId!,
-						hasWorkspaceRead: true,
-					})
-				)[args.principalIndex] ?? null;
+				principalKey =
+					(
+						await files_tree_db_get_share_principal_keys(ctx, {
+							userAuth: { id: args.userId },
+							membership,
+							defaultWorkspaceId: organization.defaultWorkspaceId!,
+							hasWorkspaceRead: true,
+						})
+					)[args.principalIndex] ?? null;
 			}
 			if (!principalKey) return empty;
 			const { tag } = saved;
@@ -1324,8 +1332,9 @@ export type public_api_files_organize_http_trash_areas_Body = z.infer<typeof tra
 /**
  * `files/trash/areas`: the Trash areas the key can open, for `files/trash/list`. The first page starts
  * with the open part of the workspace (`areaNodeId: null`) when the key can open the workspace root.
- * Then come the restricted folders the key can open, by path. Each page merges the principal streams of `list_trash_areas_page` for the normal
- * saved stream and, during a Move, the Move view, like `files_saved_list_page` does for a folder list.
+ * Then come the restricted folders the key can open, by path. Each page merges the principal streams
+ * of `list_trash_areas_page` for the normal saved stream and, during a Move, the Move view, like
+ * `files_saved_list_page` does for a folder list.
  */
 export async function public_api_files_organize_http_trash_areas(args: {
 	ctx: ActionCtx;

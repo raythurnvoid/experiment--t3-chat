@@ -153,7 +153,7 @@ can still reach its idle deadline. This existing limitation is not a new scalabl
   Existing request fingerprints encode force only when true. False and omission keep the same
   ordinary request identity; changing to true needs a new request ID.
 - Scope may be workspace, subtree, exact node, or creation at a pinned parent and path. Parent-ID
-  lineage, seals, registered-writer generation, content/reader revision, and target identity remain
+  lineage, seals, registered-writer generation, content revision, and target identity remain
   required. Force never broadens those bounds.
 - Final content, Yjs, create, snapshot, repair, and pending transactions repeat current checks.
   Accepted upload completion is separate: the first accepted bytes may finish after a later flag.

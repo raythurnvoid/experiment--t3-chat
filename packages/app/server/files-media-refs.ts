@@ -5,7 +5,7 @@ import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import { access_control_create_file_checker } from "../convex/access_control.ts";
 import { files_pending_nodes_db_resolve_read_target } from "../convex/files_pending_nodes_db.ts";
-import { plugins_sandbox_subject } from "../convex/plugins_service_accounts.ts";
+import { plugins_file_subject } from "../convex/plugins_service_accounts.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
 import type { files_YjsRootKind } from "../shared/files.ts";
 import { files_share_rich_text_MAX_MEDIA, files_share_rich_text_prepare } from "../shared/files-share-rich-text.ts";
@@ -69,7 +69,7 @@ export function files_media_refs_added(args: {
 }
 
 /**
- * Refuse refs the plugin cannot read: as its member within its account's grants, or the file an upload run
+ * Refuse refs the plugin cannot read: as its person within its account's grants, or the file an upload run
  * was started for. Otherwise knowing an id would be enough to show a locked file, for example on the
  * document's public page. A write that adds more refs than the public page shows is refused, so the
  * check stays small.
@@ -98,7 +98,7 @@ export async function files_media_refs_db_check_plugin_added(
 	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId };
 	const checker = access_control_create_file_checker(ctx, {
 		...scope,
-		subject: plugins_sandbox_subject(args.installation, args.userId),
+		subject: plugins_file_subject(args.installation, args.userId),
 	});
 	for (const src of args.addedFileRefs) {
 		const parsed = files_media_parse_src(src);

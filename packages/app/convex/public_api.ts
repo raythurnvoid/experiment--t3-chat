@@ -134,7 +134,7 @@ import {
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
-import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
@@ -1447,7 +1447,7 @@ export const resolve_principal = internalQuery({
 				/**
 				 * Always null: a plugin run has no destination seal. The read routes call
 				 * `public_api_is_path_inside_prefix(path, principal.pathPrefix)`, which treats null as
-				 * "anywhere" — right here, because the run's real boundary is its `subject`: the actor,
+				 * "anywhere" — right here, because the run's real boundary is its `subject`: the person,
 				 * limited by the grants of the plugin's service account.
 				 */
 				pathPrefix: v.null(),
@@ -1635,7 +1635,7 @@ export const resolve_principal = internalQuery({
 				}
 			}
 			// Any run may read files under the same consent a frame reads with. The backend runs the
-			// same publisher code either way, the run reads as its actor within its account's grants, and
+			// same publisher code either way, the run reads as its person within its account's grants, and
 			// without this an invoke endpoint could not read the files it maintains. `files:download`
 			// stays source-only.
 			if (acceptedCapabilities.includes("workspace.files.read")) {
@@ -1660,7 +1660,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_run" as const,
 					serviceAccountId: pluginRun.serviceAccountId,
-					subject: plugins_sandbox_subject(installation, pluginRun.actorUserId),
+					subject: plugins_file_subject(installation, pluginRun.actorUserId),
 					organizationId: pluginRun.organizationId,
 					workspaceId: pluginRun.workspaceId,
 					runId: pluginRun._id,
@@ -1742,7 +1742,7 @@ export const resolve_principal = internalQuery({
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: session.organizationId,
 				workspaceId: session.workspaceId,
-				subject: plugins_sandbox_subject(installation, session.userId),
+				subject: plugins_file_subject(installation, session.userId),
 			});
 
 			// Workspace file reads are consent-gated; UI sessions never get secrets or outbound scopes.
@@ -1767,7 +1767,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_ui" as const,
 					serviceAccountId: session.serviceAccountId,
-					subject: plugins_sandbox_subject(installation, session.userId),
+					subject: plugins_file_subject(installation, session.userId),
 					organizationId: session.organizationId,
 					workspaceId: session.workspaceId,
 					userId: session.userId,
@@ -1850,7 +1850,7 @@ export const resolve_principal = internalQuery({
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
-				subject: plugins_sandbox_subject(installation, grant.actorUserId),
+				subject: plugins_file_subject(installation, grant.actorUserId),
 			});
 
 			// The grant is issued with the scopes the exchange asked for, but the installation's accepted
@@ -1887,7 +1887,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_service" as const,
 					serviceAccountId: grant.serviceAccountId,
-					subject: plugins_sandbox_subject(installation, grant.actorUserId),
+					subject: plugins_file_subject(installation, grant.actorUserId),
 					organizationId: grant.organizationId,
 					workspaceId: grant.workspaceId,
 					grantId: grant._id,
@@ -2501,7 +2501,7 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
-					subject: plugins_sandbox_subject(live._yay.installation, run.actorUserId),
+					subject: plugins_file_subject(live._yay.installation, run.actorUserId),
 					fileNode: node,
 					permission: "content.read",
 				}))
@@ -2641,7 +2641,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			if (!invokeActorMembership) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			const subject = plugins_sandbox_subject(installation, args.userId);
+			const subject = plugins_file_subject(installation, args.userId);
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
@@ -2843,7 +2843,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		const subject = plugins_sandbox_subject(installation, args.userId);
+		const subject = plugins_file_subject(installation, args.userId);
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
@@ -6871,6 +6871,9 @@ const write_file_body_validator = z
 				sequence: z.number().int().positive(),
 				expectedNodeId: z.string().nullable(),
 				expectedContentRevision: z.string().nullable(),
+				// TODO(migration): delete in phase B. Accepted and ignored, so a Chitchat release that still
+				// sends `null` keeps writing while the host and the plugin switch.
+				expectedReaderRevision: z.null().optional(),
 				contentHash: z.string().regex(/^[a-f0-9]{64}$/),
 			})
 			.strict()
@@ -7125,7 +7128,8 @@ export async function public_api_http_write_file(args: {
 			} as const;
 		}
 
-		const writer = body._yay.writer;
+		// TODO(migration): drop the ignored `expectedReaderRevision` with its body field in phase B.
+		const { expectedReaderRevision: _expectedReaderRevision, ...writer } = body._yay.writer;
 		overwrite = writer.expectedNodeId === null ? "fail" : "replace";
 		if (
 			!body._yay.expectedParentNodeId ||

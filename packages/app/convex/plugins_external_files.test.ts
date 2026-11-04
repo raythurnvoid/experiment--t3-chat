@@ -9,7 +9,7 @@ import { access_control_db_can_act_on_file_node, type access_control_Subject } f
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
-import { plugins_sandbox_subject } from "./plugins_service_accounts.ts";
+import { plugins_file_subject } from "./plugins_service_accounts.ts";
 
 const SECRET = "external-files-test-secret";
 const ROOT = "/chitchat-fresh-test";
@@ -25,7 +25,6 @@ async function setup(options?: { publicWriter: true }) {
 			"plugin.service.connect",
 			"workspace.files.write",
 			"workspace.files.own-write",
-			"workspace.files.own-access",
 			"workspace.files.manage-read-only",
 		];
 		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
@@ -260,6 +259,14 @@ describe("public conditional file writes", () => {
 		const omitted = await t.fetch("/api/v1/files/write", { method: "POST", headers, body: JSON.stringify(body) });
 		expect(omitted.status).toBe(200);
 		expect(await omitted.json()).toEqual(saved);
+		// TODO(migration): delete in phase B. A Chitchat release that still sends the old null field replays too.
+		const withOldField = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ ...body, writer: { ...body.writer, expectedReaderRevision: null } }),
+		});
+		expect(withOldField.status, await withOldField.clone().text()).toBe(200);
+		expect(await withOldField.json()).toEqual(saved);
 
 		for (const changed of [
 			{ force: true },
@@ -1684,7 +1691,7 @@ describe("ensure_writer", () => {
 				}),
 			);
 		const installation = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId)))!;
-		expect(await can(plugins_sandbox_subject(installation, fixture.userId), writer.folderNodeId)).toBe(true);
+		expect(await can(plugins_file_subject(installation, fixture.userId), writer.folderNodeId)).toBe(true);
 		expect(await can({ kind: "service_account", serviceAccountId: fixture.serviceAccountId }, fileNodeId)).toBe(true);
 	});
 

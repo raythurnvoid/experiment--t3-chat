@@ -191,7 +191,7 @@ An embed shows only when all of these hold (`db_read_media_node`, `db_check_medi
    video node needs `video/*`. SVG and other types are unavailable.
 3. It has a finished asset.
 4. It is public: `isPublic` is `true` ("The public flag", below).
-5. Its own restricted area is live and not plugin-bound (`files_share_links_db_check_scope` answers `ok`).
+5. Its own restricted area is live (`files_share_links_db_check_scope` answers `ok`).
 
 Otherwise the view returns `{ index, available: false }`, with no type, name, ID, or reason. The page
 shows a gray box, "This image is not shared" or "This video is not shared", from the node's own kind.

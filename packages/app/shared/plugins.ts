@@ -1732,6 +1732,15 @@ export function plugins_validate_manifest(input: unknown) {
 			_nay: { message: "Use workspace.files.manage-read-only instead of workspace.files.create-read-only" },
 		});
 	}
+	// TODO(migration): delete in phase B with the literal. Until then the schema still accepts it.
+	if (capabilities.has("workspace.files.own-access" satisfies plugins_Capability)) {
+		return Result({
+			_nay: {
+				message:
+					"The workspace.files.own-access capability was removed. Share folders with the plugin's service account instead",
+			},
+		});
+	}
 	if (
 		capabilities.has("workspace.files.manage-read-only" satisfies plugins_Capability) &&
 		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
@@ -1829,15 +1838,6 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	if (endpointIds.size > 0 && !capabilities.has("plugin.backend.invoke" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "Backend endpoints require the plugin.backend.invoke capability" } });
-	}
-	// Old immutable versions may name this capability. It grants nothing, so new versions cannot ask for it.
-	if (capabilities.has("workspace.files.own-access" satisfies plugins_Capability)) {
-		return Result({
-			_nay: {
-				message:
-					"The workspace.files.own-access capability was removed. Share folders with the plugin's service account instead",
-			},
-		});
 	}
 	// Own-write is a narrower door on the same file surface, and keeping the base capability
 	// visible keeps the consent honest.

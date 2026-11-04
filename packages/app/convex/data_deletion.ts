@@ -2853,7 +2853,7 @@ async function db_drain_user_inbox_batch(ctx: MutationCtx, args: { userId: Id<"u
 
 /**
  * Deletes one indexed batch of direct grants before finalization. A plugin-scope grant also queues
- * the existing scope cleanup so the scope's file access bindings follow the surviving principals.
+ * the existing scope cleanup, so a plugin data scope keeps a manager or is deleted.
  */
 async function db_drain_user_direct_permission_grants_batch(
 	ctx: MutationCtx,

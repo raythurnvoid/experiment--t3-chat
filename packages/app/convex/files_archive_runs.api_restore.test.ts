@@ -894,9 +894,10 @@ describe("files/restore", () => {
 			status: 200,
 			body: { refused: [{ nodeId: itemId, message: "Permission denied" }] },
 		});
-		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, body), "the person can write there").toMatchObject(
-			{ status: 200, body: { refused: [] } },
-		);
+		expect(
+			await post(f, "/api/v1/files/restore", ownerKey.credential, body),
+			"the person can write there",
+		).toMatchObject({ status: 200, body: { refused: [] } });
 	});
 
 	test("an account key needs Can manage to bring an item out of its restricted folder, like a person", async () => {

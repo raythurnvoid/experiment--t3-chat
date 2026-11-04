@@ -9,7 +9,7 @@ import {
 	access_control_db_set_service_account_grant,
 	type access_control_Subject,
 } from "../convex/access_control.ts";
-import { insert_installation, type Fixture } from "../convex/files_share_links.setup.test.ts";
+import { insert_installation } from "../convex/files_share_links.setup.test.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
@@ -526,7 +526,7 @@ describe("the walk at 500 levels", () => {
 
 	test("a list from the deepest folder stays under the limits, for a member and a plugin", async () => {
 		const { t, db, deepest, ctx, calls, args } = await seed_chain();
-		const installationId = await insert_installation({ t, db } as unknown as Fixture);
+		const installationId = await insert_installation({ t, db });
 		const serviceAccountId = await t.run(async (ctx) => {
 			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
 			const granted = await access_control_db_set_service_account_grant(ctx, {
@@ -891,6 +891,36 @@ describe("the walk on a real database", () => {
 		return { ...seeded, documents };
 	}
 
+	/**
+	 * A plugin acting for the member, whose account can read only /reports.
+	 */
+	async function seed_plugin_with_reports_grant(team: Awaited<ReturnType<typeof seed_team>>) {
+		const { t, seeded, ownerRunner, member } = team;
+		const installationId = await insert_installation({ t, db: seeded });
+		const reportsId = await get_seeded_node_id(ownerRunner, "/reports");
+		const serviceAccountId = await t.run(async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+			const granted = await access_control_db_set_service_account_grant(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				serviceAccountId: installation.serviceAccountId,
+				resource: { kind: "file", nodeId: reportsId },
+				level: "read",
+			});
+			if (granted._nay) throw new Error(granted._nay.message);
+			return installation.serviceAccountId;
+		});
+		await drain_scheduled_continuations(ownerRunner);
+		return {
+			...member,
+			subject: {
+				kind: "user" as const,
+				userId: member.visibilityUserId,
+				plugin: { installationId, serviceAccountId },
+			},
+		};
+	}
+
 	// The read counts come first: the check of each row would hide the files too.
 	test("a list reads no row under a locked folder", async () => {
 		const { list, member, documents } = await seed_many();
@@ -994,6 +1024,32 @@ describe("the walk on a real database", () => {
 		const fromRoot = await list(member);
 		expect(fromRoot.paths).not.toContain("/docs/nested/deep.md");
 		expect(fromRoot.denied).toEqual(["/docs"]);
+	});
+
+	test("a plugin lists only the folders its account can read, and the root is Permission denied", async () => {
+		const team = await seed_team();
+		const plugin = await seed_plugin_with_reports_grant(team);
+
+		// The account has no grant on the workspace, so the root is locked for the plugin.
+		await expect(team.list(plugin)).rejects.toThrow("Permission denied");
+		expect(await team.list(plugin, { folderPath: "/reports" })).toEqual({ paths: ["/reports/summary.md"], denied: [] });
+	});
+
+	test("find -mmin in a folder the plugin's account can read reads no row outside it", async () => {
+		const now = Date.now();
+		const team = await seed_team(
+			Array.from({ length: 100 }, (_, index) => ({ path: `/r-${index}.md`, updatedAt: now - 60_000 })),
+		);
+		const plugin = await seed_plugin_with_reports_grant(team);
+		team.calls.length = 0;
+
+		const listed = await team.list(plugin, { folderPath: "/reports", updated: { from: now - 3_600_000, to: null } });
+
+		const documents = team.calls
+			.filter((call) => call.name === "files_visible:internal_list_subtree_recent_saved")
+			.reduce((sum, call) => sum + call.documents, 0);
+		expect(documents, "the per-folder read skips the 100 recent docs outside the account's folder").toBeLessThan(50);
+		expect(listed).toEqual({ paths: ["/reports/summary.md"], denied: [] });
 	});
 
 	test("a depth walk lists each folder's levels in order over any page size and stops at the limit", async () => {

@@ -551,9 +551,8 @@ and `find` also keep raw name order.
     custom-field text filter, a missing role, and a folder the caller cannot read (the root is
     allowed, so a grant-only member gets their root shares).
   - Each row is a copy, so each one is checked again: its node must be a restricted root of the
-    reader's workspace, still under this parent, active, and readable. A plugin grant's row must
-    also carry the member's live membership lifetime, so an old grant reads nothing after a
-    re-invite. A row that fails or does not match is dropped, so a page can be short.
+    reader's workspace, still under this parent, active, and readable. A row that fails or does not
+    match is dropped, so a page can be short.
   - The row's copied node fields must still match the node. A copy out of step is a bug: the row
     is dropped and logged.
   - Page guard 111 (`TREE_SHARE_FILTER_PAGE_MAX_ITEMS`, also the page size cap): a published Move
@@ -1122,10 +1121,9 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   per site). An area is the open part of the workspace (`Workspace`) or one restricted folder the
   person can open. A restricted file holds no other items, so it is no area. One rule for
   everybody: the picker reads `files_tree.list_archive_areas`. The owner pages restricted folders by
-  `by_archive_restricted_kind_tree`; a member pages their share rows by `isRestrictedScopeRoot`,
-  `kind` and the plugin membership lifetime, in five streams: their own shares, their two roles,
-  everyone, and their plugin grants of the live lifetime. So the index never reads a restricted file
-  or a grant of an old lifetime. Guests get no areas and an empty list. A gone area falls back to
+  `by_archive_restricted_kind_tree`; a member pages their share rows by `isRestrictedScopeRoot`
+  and `kind`, in four streams: their own shares, their two roles, and everyone. So the index never
+  reads a restricted file. Guests get no areas and an empty list. A gone area falls back to
   `Workspace`.
 - The list (`files_tree.list_trash_entries`) shows the Trash entries of the area (`files_trash_entries`,
   `server/files-trash-entries.ts`), newest delete first, then by the path the item had when it moved

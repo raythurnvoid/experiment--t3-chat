@@ -2,7 +2,7 @@
 // and `/api/v1/files/plugin-access/set` (routes in `public_api_plugin_files_http_routes.ts`).
 //
 // Editable `plugin-name` metadata selects the files and folders a plugin can use.
-// Current capabilities, the actor's permissions, the normal grants of the plugin's service account,
+// Current capabilities, the person's permissions, the normal grants of the plugin's service account,
 // and write policies control each operation.
 
 import { v, type Infer } from "convex/values";
@@ -14,7 +14,7 @@ import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
-import { plugins_sandbox_subject } from "./plugins_service_accounts.ts";
+import { plugins_file_subject } from "./plugins_service_accounts.ts";
 import { files_nodes_db_require_read_only_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_set_read_only } from "./files_nodes.ts";
 import {
@@ -72,9 +72,9 @@ async function db_get_active_node_at_path(
 }
 
 /**
- * Finish access checks before creating a folder or changing its write policy.
+ * Check that the plugin may set Read-only on this node, before creating a folder or changing its flag.
  */
-async function db_prepare_plugin_access(
+async function db_check_plugin_read_only(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
@@ -82,48 +82,21 @@ async function db_prepare_plugin_access(
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		writeContext: files_nodes_WriteContext;
-		readOnly?: boolean;
 	},
 ) {
-	if (
-		args.readOnly !== undefined &&
-		!args.installation.acceptedCapabilities.includes("workspace.files.manage-read-only")
-	) {
+	if (!args.installation.acceptedCapabilities.includes("workspace.files.manage-read-only")) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	if (args.readOnly !== undefined) {
-		const parentNode =
-			args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
-		const managed = await files_nodes_db_require_read_only_management(ctx, {
-			organizationId: args.installation.organizationId,
-			workspaceId: args.installation.workspaceId,
-			writeContext: args.writeContext,
-			target: args.node ? { kind: "node", node: args.node } : { kind: "create", parentNode, path: args.path },
-		});
-		if (managed._nay) return managed;
-	}
-	return Result({ _yay: { readOnly: args.readOnly } });
-}
-
-async function db_apply_plugin_access(
-	ctx: MutationCtx,
-	args: {
-		node: Doc<"files_nodes">;
-		writeContext: files_nodes_WriteContext;
-		prepared: NonNullable<Awaited<ReturnType<typeof db_prepare_plugin_access>>["_yay"]>;
-	},
-) {
-	if (args.prepared.readOnly !== undefined) {
-		const managed = await files_nodes_db_set_read_only(ctx, {
-			node: args.node,
-			writeContext: args.writeContext,
-			readOnly: args.prepared.readOnly,
-		});
-		if (managed._nay) {
-			return managed;
-		}
-	}
+	const parentNode =
+		args.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.parentId);
+	const managed = await files_nodes_db_require_read_only_management(ctx, {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		writeContext: args.writeContext,
+		target: args.node ? { kind: "node", node: args.node } : { kind: "create", parentNode, path: args.path },
+	});
+	if (managed._nay) return managed;
 
 	return Result({ _yay: null });
 }
@@ -191,7 +164,7 @@ export const ensure_plugin_folder = internalMutation({
 		}
 
 		const writeContext: files_nodes_WriteContext = {
-			subject: plugins_sandbox_subject(installation, args.userId),
+			subject: plugins_file_subject(installation, args.userId),
 			force: args.force === true,
 			actorUserId: args.userId,
 			resourceScope:
@@ -267,20 +240,17 @@ export const ensure_plugin_folder = internalMutation({
 			}
 			nodeId = deepest._id;
 		} else {
-			let preparedAccess: NonNullable<Awaited<ReturnType<typeof db_prepare_plugin_access>>["_yay"]> | null = null;
 			if (args.readOnly !== undefined) {
-				const prepared = await db_prepare_plugin_access(ctx, {
+				const checked = await db_check_plugin_read_only(ctx, {
 					installation,
 					node: null,
 					parentId: deepest?._id ?? files_ROOT_ID,
 					path: args.path,
 					writeContext,
-					readOnly: args.readOnly,
 				});
-				if (prepared._nay) {
-					return prepared;
+				if (checked._nay) {
+					return checked;
 				}
-				preparedAccess = prepared._yay;
 			}
 
 			// Create below the checked folder; its parents may be locked.
@@ -292,7 +262,7 @@ export const ensure_plugin_folder = internalMutation({
 				path: segments.slice(firstMissingIndex).join("/"),
 				kind: "folder",
 				writeContext,
-				readOnly: preparedAccess?.readOnly,
+				readOnly: args.readOnly,
 				createdNodesMetadata: [
 					{ key: "source", value: "plugin" },
 					{ key: "plugin-name", value: installation.pluginName },
@@ -393,7 +363,7 @@ export const archive_plugin_path = internalMutation({
 			}
 			principalKey = `plugin_archive:${installation._id}:${args.userId}`;
 			writeContext = {
-				subject: plugins_sandbox_subject(installation, args.userId),
+				subject: plugins_file_subject(installation, args.userId),
 				actorUserId: args.userId,
 				resourceScope: { kind: "workspace" },
 				force: args.force === true,
@@ -497,7 +467,7 @@ export const set_plugin_access = internalMutation({
 		runId: v.id("plugins_event_runs"),
 		callId: v.id("plugins_event_run_calls"),
 		path: v.string(),
-		readOnly: v.optional(v.boolean()),
+		readOnly: v.boolean(),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -508,7 +478,7 @@ export const set_plugin_access = internalMutation({
 			userId: args.userId,
 			principalRef: { kind: "plugin_run", runId: args.runId, callId: args.callId },
 			path: args.path,
-			requestReadOnly: args.readOnly !== undefined,
+			requestReadOnly: true,
 			now,
 		});
 		if (revalidated._nay) {
@@ -534,19 +504,18 @@ export const set_plugin_access = internalMutation({
 
 		const writeContext = revalidated._yay.writeContext;
 
-		const prepared = await db_prepare_plugin_access(ctx, {
+		const checked = await db_check_plugin_read_only(ctx, {
 			installation,
 			node,
 			parentId: node.parentId,
 			path: args.path,
 			writeContext,
-			readOnly: args.readOnly,
 		});
-		if (prepared._nay) {
-			return prepared;
+		if (checked._nay) {
+			return checked;
 		}
 
-		const applied = await db_apply_plugin_access(ctx, { node, writeContext, prepared: prepared._yay });
+		const applied = await files_nodes_db_set_read_only(ctx, { node, writeContext, readOnly: args.readOnly });
 		if (applied._nay) {
 			return applied;
 		}

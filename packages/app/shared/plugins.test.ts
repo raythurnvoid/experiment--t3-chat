@@ -1384,6 +1384,20 @@ describe("plugins_validate_manifest", () => {
 		});
 	});
 
+	// TODO(migration): delete in phase B with the capability literal.
+	test("rejects the removed own-access capability in new manifests", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["workspace.files.write", "workspace.files.own-access"] }),
+			}),
+		).toEqual({
+			_nay: {
+				message:
+					"The workspace.files.own-access capability was removed. Share folders with the plugin's service account instead",
+			},
+		});
+	});
+
 	test("requires workspace.files.write for workspace.files.manage-read-only", () => {
 		expect(
 			plugins_validate_manifest({ ...manifest_json(), capabilities: ["workspace.files.manage-read-only"] }),
@@ -1631,25 +1645,13 @@ describe("plugins_validate_manifest", () => {
 		).toEqual({ _nay: { message: "Backend endpoints require the plugin.backend.invoke capability" } });
 	});
 
-	test("rejects workspace.files.own-write without workspace.files.write and the removed own-access", () => {
+	test("rejects workspace.files.own-write without workspace.files.write", () => {
 		expect(
 			plugins_validate_manifest({
 				...manifest_json({ capabilities: ["workspace.files.own-write"] }),
 			}),
 		).toEqual({
 			_nay: { message: "The workspace.files.own-write capability requires the workspace.files.write capability" },
-		});
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({
-					capabilities: ["workspace.files.write", "workspace.files.own-write", "workspace.files.own-access"],
-				}),
-			}),
-		).toEqual({
-			_nay: {
-				message:
-					"The workspace.files.own-access capability was removed. Share folders with the plugin's service account instead",
-			},
 		});
 	});
 

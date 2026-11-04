@@ -876,7 +876,6 @@ async function review_seed_all_workspace_content(
 			"workspace.files.read",
 			"workspace.files.write",
 			"workspace.files.own-write",
-			"workspace.files.own-access",
 			"plugin.secrets.read",
 			"plugin.data.read",
 			"plugin.data.write",

@@ -100,7 +100,10 @@ export type Fixture = Awaited<ReturnType<typeof fixture>>;
 /**
  * A plugin installation in the fixture workspace.
  */
-export async function insert_installation(f: Fixture) {
+export async function insert_installation(f: {
+	t: Fixture["t"];
+	db: Pick<Fixture["db"], "organizationId" | "workspaceId" | "userId">;
+}) {
 	const installationId = await f.t.run(async (ctx) =>
 		ctx.db.insert("plugins_workspace_installations", {
 			serviceAccountId: await ctx.db.insert("access_control_service_accounts", {

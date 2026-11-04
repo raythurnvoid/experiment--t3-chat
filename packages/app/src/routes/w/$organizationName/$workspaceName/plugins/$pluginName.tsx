@@ -2092,11 +2092,6 @@ function format_capability_label(value: string, payerName = "the workspace owner
 		return "Create and update files and folders marked for this plugin, and move them to Trash. Members can edit their labels.";
 	}
 
-	// Keep a label for immutable version history. The capability grants nothing now.
-	if (value === "workspace.files.own-access") {
-		return "Set readers for its output (no longer used)";
-	}
-
 	// The plain rule writes "Agent Mcp Connect", which does not say who calls what. The chat agent
 	// calls the outside servers listed on this screen.
 	if (value === "agent.mcp.connect") {

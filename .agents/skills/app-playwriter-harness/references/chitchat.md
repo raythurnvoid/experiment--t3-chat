@@ -32,8 +32,7 @@ An older installed bundle may still use the old backend even when the working tr
 - After selecting a channel, wait for its exact heading before clicking Connect or Reconnect Files.
   That shared control can still belong to the previous channel while the new selection is loading.
   Read back the chosen channel's grant and status; clicking an identical button is not enough.
-- Test Files sharing takeover, removed account grants, human/parent locks, and a lost reader result.
-  A blocked copy must not be shown as saved. A cancelled original reader operation cannot apply later.
+- Test removed account grants and human/parent locks. A blocked copy must not be shown as saved.
   A message already saved in native chat remains saved when Files sync is blocked.
 - Re-check accessible names and current frame selectors before using a selector from the older
   recipes below. The current React tests are the starting map, not a substitute for live QA.
@@ -47,10 +46,10 @@ claim that the new installed frame has passed these checks.
   `/api/v1/plugins/access/changes`. Its verified lease issuer is `<Bonobo Senate HTTP URL>/plugins-services`
   and its audience is `bonobo-plugin:chitchat`. Never use the removed private bridge for QA.
 - Service grants and conditional Files writes use the documented public SDK contracts. Bonobo Senate owns
-  folder access and writer proofs. Chitchat owns channel readers, Markdown, paths, and rollover.
-- Test a fresh private folder through Connect Files without manually adding service-account grants.
-  Require the first real Markdown write to finish. A setup test that injects grants can hide a broken
-  private-folder creation path.
+  folder access and writer proofs. Chitchat owns channel membership, Markdown, paths, and rollover.
+- Test a fresh transcript root of a public channel through Connect Files. The plugin's service
+  account needs a normal grant where the root is created; a folder the plugin creates gets its
+  parent's access. Require the first real Markdown write to finish.
 - Keep an edit open while at least 51 new messages move its original row out of the live page.
   Require the exact draft text to survive, then cancel it and confirm the saved message did not change.
 - A second owned browser tab can leave the plugin frame in the background and stall OOPIF mouse
@@ -104,19 +103,15 @@ claim that the new installed frame has passed these checks.
 - After an update, the first lease can answer 503 `syncing` once while Chitchat catches up, then
   200. The frame retries by itself after 2 s. Seen once on the 0.8.11 to 0.8.12 update.
 
-### Reader recovery across an update
+### Private channels write no transcript (since 2026-11)
 
-- Use an owned private channel with a readable Files copy and a second workspace member. Save its
-  folder policy, destination IDs, reader revision, and current file hash before changing anything.
-- Set only that channel folder to Read-only through the normal Files policy mutation. Remove the
-  second member through People. Require a saved pending change and a blocked reader job.
-- Update the existing installation in place. Restore the exact folder policy, then use Reconnect
-  Files. Confirm that the saved grant's request ID and update time changed; a button click alone
-  does not prove an exchange happened. Never log grant secrets.
-- A prior refusal can delay the next reader attempt by up to 30 seconds. Require the same pending
-  change to complete with a host receipt, the reader run to drain, and the same destination, root,
-  folder, writer, and transcript file IDs to remain. Read the actual Files copy and prove the removed
-  member cannot read it or the native private channel.
+- A transcript is a regular file that everybody who can open its folder reads, so Chitchat writes
+  none for private channels. Send in a private channel and check that no new Files node appears.
+  The transcript status, Connect Files, Retry, and Rebuild must refuse for a private channel.
+- Member changes in a private channel apply at once. No Files step has to finish first.
+- After an update, use Reconnect Files on a public channel. Confirm that the saved grant's request
+  ID and update time changed; a button click alone does not prove an exchange happened. Never log
+  grant secrets.
 - Normal login renewal can leave Files buttons enabled while a request is briefly unavailable.
   Connect, Retry sync, and Rebuild copies must show the reconnect alert if that happens. For a
   deterministic check, delay only the owned frame's next `/auth/lease` fetch, activate a Files
@@ -183,8 +178,6 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 - Keep the actual edit DOM node in session memory. Send 51 fresh roots from the second workspace member. The edited root can remain as one extra row outside the 50-message head; require the same editor node and draft. History page bounds still apply to the other rows.
 - Use a private channel and a member with no prior read position. Viewing roots must not clear an unopened reply. Open that thread to clear its own reply position. With a narrow thread covering the root log, send a new root from the other member and require its stored root position to stay behind.
 - **Transcript details** is a native `summary` disclosure. Use its exact text or a `summary` locator, not a button-role locator. Its Rebuild copies button is inside the disclosure.
-- A locked tail file also blocks the reader worker's prepare step. To check deletion after reader removal, restore the file policy, retry, wait for `deletionPhase: "copy"`, then lock the owned file while accepted copies are still pending. Require no move to Trash and a restricted Files sync recovery entry. Restore the captured policy before finishing the test.
-- After recovery, read the exact trashed node through `files_nodes_content.get_non_collaborative_file_content`, the normal Files editor query. The signed-download action refuses trashed nodes. Require the queued final message and every expected message marker in the Markdown. Check Trash flag separately. The transcript file is in Trash; its container stays active.
 - At a 512×384 host viewport, minimize the Bonobo Senate sidebar through its normal control before judging the plugin's usable width. Record both the host viewport and the frame's actual size. This is a zoom-layout equivalent, not a claim that browser zoom changed.
 
 ## Historical recipes through 0.7.x
@@ -849,34 +842,31 @@ the stylesheet, and compare the name's right edge with the link's content box to
 ### Current service-account permission checks
 
 Verified 2026-09-08 with installed Chitchat 0.7.7 and the service-account file policy model.
-Keep this check on a unique private channel. Do not unlock a shared transcript root to make QA pass.
+Keep this check on a unique public channel. Do not unlock a shared transcript root to make QA pass.
+Since 2026-11 a plugin file check needs the person and the plugin's service account, both through
+normal grants. A folder the plugin creates is a regular folder with its parent's access.
 
 - Read the installed version on the detail page. The catalog version may be newer.
 - Read `projection/__root__` through the frame's plugin client before finding files. The saved
   `rootPath` may be `/chitchat-<digest>`, while an unrelated `/chitchat` folder also exists.
 - A selected service account in a file policy still needs access grants. A grant on an
   unrestricted folder (added people) covers that folder and what is inside it, at view or edit only.
-  It never grants manage access. Creating the private parent can succeed, then creating the channel
-  folder can return 403 because that parent has no manage grant. This is a setup refusal, not a
-  failed schema migration.
-- If scoped setup is authorized, use the Service accounts grant dialog to add temporary Can manage
-  access on the exact private parent. After the unique channel folder exists, add its own account
-  grant on that restricted scope. Remove the temporary parent grant. Record the original grants and
-  compare their IDs after setup and cleanup. Do not add workspace Can manage just for this test.
-- Establish a positive transcript through the public reader before changing policy. Keep its bytes
+  It never grants manage access. A write the account cannot do returns 403; this is a setup
+  refusal, not a failed schema migration.
+- If scoped setup is authorized, use the Service accounts grant dialog to add a temporary grant on
+  the exact transcript root. Record the original grants and compare their IDs after setup and
+  cleanup. Do not add workspace Can manage just for this test.
+- Establish a positive transcript through a reader before changing policy: a second non-owner
+  member who can only read the transcript folder (a seeded account, `second-user-fixtures.md`). Keep its bytes
   in memory and record only SHA-256, byte size, and message-marker counts. Then use Properties to set
   the unique channel folder to Read-only. A native send must keep its source message and return
   `transcriptUpdated: false`. Replay the same `clientRequestId`: the message key must stay the same,
   the source count must not grow, and the transcript hash must stay unchanged.
-- For private reads, use a separate anonymous browser identity invited through the normal membership
-  door. The channel must be hidden before People membership, readable after adding that person, and
-  hidden after removal. Pair the hidden UI with an empty scoped message query. The owner alone
-  cannot prove this refusal. Check that reader refresh keeps explicit service-account grant IDs.
-- Test the reader's write limit separately: restore the selected-account policy, prove the reader
+- Test that member's write limit separately: restore the selected-account policy, prove the member
   can read the transcript, then send from that person's native composer. The source must persist
   while the mirror returns `transcriptUpdated: false` and keeps the same file hash. This proves the
-  actor's read grant cannot borrow the plugin account's write grant.
-- Cleanup removes the reader membership and the unique account grant through normal app doors.
+  person's read grant cannot borrow the plugin account's write grant.
+- Cleanup removes the unique account grant through normal app doors.
   A protected ancestor can still refuse a move to Trash. Report retained QA files instead of changing a
   shared parent policy to remove them. Keep the existing account and its original grants.
 
@@ -910,9 +900,9 @@ proof that this backend wrote the file now.
   `(message deleted)` and hide the body, reactions show as `reactions:`.
 - Messages inside one file are oldest first. Send unique older then newer markers; the older
   marker must appear first in the file text.
-- Private channels do not appear next to the public files. They live under
-  `/chitchat/private/<slug>-<digest8>/` — see the next section. Expand `Show more` before treating
-  a missing name as proof.
+- Private channels get no transcript since 2026-11. Older private copies under
+  `/chitchat/private/<slug>-<digest8>/` stay in place — see the next section. Expand `Show more`
+  before treating a missing name as proof.
 - The workspace agent can `cat` those paths with bash and is refused on write
   (`cannot write '...': This item is read-only.`).
 - The store and the file system commit separately, so a backend run can crash between them. The
@@ -974,52 +964,45 @@ proof that this backend wrote the file now.
 > **The user decided on 2026-09-01 to leave those files as they are.** Treat the pre-0.6.1
 > transcripts as expected state, not as a bug to report or repair.
 
-## Private transcripts (`/chitchat/private/<slug>-<digest8>/` in Files)
+## Old private transcripts and the plugin-label flow
 
-A private channel's transcript lives in its own restricted folder,
-`/chitchat/private/<slug>-<digest8(channelKey)>/<slug>-<digest8>.md`, readable by the channel's
-scope members initially — and by the organization owner, who reads every restricted file in the workspace,
-which is why an owner-only run proves nothing. The digest suffix comes from the channel key (a
-client UUID), so two same-named private channels get separate folders and a guessed channel name
-cannot be confirmed by probing the path. The backend binds the folder to the channel's data scope
-(`access.readScopeId`, binding table `plugins_file_access_bindings`), and the host mirrors one
-`content.read` grant per scope member onto it. Adds and removals are BOTH synchronous inside the
-scope mutation while the binding remains attached. A Files manager can change transcript sharing;
-an actual manual sharing change detaches the binding. Later channel member changes leave that manual
-sharing alone. Metadata edits do not detach it.
+Since 2026-11 Chitchat writes no private transcripts ("Private channels" in the Chitchat README).
+Older ones stay under `/chitchat/private/<slug>-<digest8>/`. Before 2026-11 the host restricted each
+of those folders and copied the channel's members onto it as readers. That model is gone. In 2026-11
+a one-time migration deleted those grants and gave each folder its parent's access, so the old
+copies now follow the sharing of `/chitchat/private`. A folder whose sharing a person had already
+changed kept it. Chitchat does not delete or move them; file managers decide.
 
 For the editable plugin-label flow, verify these cases through the app and read back the stored docs:
 
 - Unlock `/chitchat` through Properties. Metadata and sharing controls follow ordinary permissions.
   Reopen the channel and send: ensure keeps the root unlocked and keeps its current metadata.
-- Change a private transcript folder's sharing. Reopen the channel and send: ensure does not reattach
-  the binding, and the next transcript update keeps the manual sharing. Use a second non-owner member
-  to prove visibility; an owner-only check cannot prove private access.
-- As a private-channel member with chat write access but only read access to its Files folder,
-  send and reply through the composer. A fresh folder ensure may return 403, but each source message
-  must still commit once. The invoke returns 200 with `transcriptUpdated: false`, and the mirrors
-  stay unchanged. Check the source message key as well as the file content.
+- As a member with chat write access but only read access to the transcript folder, send and reply
+  through the composer in a public channel. A fresh folder ensure may return 403, but each source
+  message must still commit once. The invoke returns 200 with `transcriptUpdated: false`, and the
+  mirrors stay unchanged. Check the source message key as well as the file content.
 - Remove `plugin-name` from a transcript or unlock then relock it. A later mirror write refuses.
   A source-store write that already succeeded keeps its message key and reports
   `transcriptUpdated: false`. Check both the source message and unchanged file content.
-- Recreate a missing private folder through a normal Chitchat invoke. Its initial reader binding must
-  exist before transcript publication. The fresh folder ID is passed as `expectedParentNodeId` on
-  every private write. Staged host tests cover a parent move, move to Trash, or replacement during that gap.
+- Recreate a missing channel folder through a normal Chitchat invoke. The fresh folder ID is passed
+  as `expectedParentNodeId` on every write. Staged host tests cover a parent move, move to Trash, or
+  replacement during that gap.
 - Relock an outer folder while a nested plugin lock remains. Nested ensure, write, access, and
   moves to Trash still succeed. A create whose immediate parent is that outer lock must refuse.
 
 For recovery after uninstall, use only an installation created for the test. Record its output,
-metadata, grants, and locks first. Uninstall through the detail page, then check that output remains
-and bindings drain. Unlock the leaf and folder through Properties, change the folder's labels and
+metadata, grants, and locks first. Uninstall through the detail page, then check that output and
+its sharing remain. Unlock the leaf and folder through Properties, change the folder's labels and
 sharing, and move it by dragging its `.FilesSidebarTreeItemPrimaryAction` onto another folder's
 primary action. Verify the new parent and path in stored readbacks. Move to Trash through the row menu.
 Reinstall the same published version and check that those member choices remain. A fresh install
 has an empty plugin store; do not mistake the empty channel list for lost Files output.
 
-**Proven live 2026-09-01, after the fix below.** A private channel created in `personal/home` now
-projects to `/chitchat/private/<slug>-<digest8>/<slug>-<digest8>.md` within a few seconds, holding the
-message and the disclosure header, and one `plugins_file_access_bindings` row appears for the
-channel's scope. Before the fix that table was empty across the whole deployment.
+**Historical, before 2026-11.** Proven live 2026-09-01, after the fix below: a private channel
+created in `personal/home` projected to `/chitchat/private/<slug>-<digest8>/<slug>-<digest8>.md`
+within a few seconds, holding the message and the disclosure header, and one plugin reader binding
+row appeared for the channel's scope. Before the fix that table was empty across the whole
+deployment.
 
 > **This was broken from 0.6.0 until 2026-09-01, in the APP, not the plugin.** Worth knowing, because
 > the older private folders in dev (`secretfeed`, `projqapriv0826`) carry **no digest suffix** — they
@@ -1057,14 +1040,8 @@ Two things that will mislead you while setting this up, both hit 2026-09-01:
   (an "Update" button means you are behind) or read the installation's `acceptedCapabilities` from
   `plugins_workspace_installations`.
 
-- The file opens read-only like the public ones. The disclosure line naming who can read it sits in
-  the file header, on the third line, not at the end. The `/chitchat/private` container above the
-  channel folders is plugin-locked but not restricted, so every member's tree can show it.
-- Full second-identity cycle (needs `second-user-fixtures.md`): the viewer's files tree shows the
-  `private` container but no channel folder inside it — the container is unrestricted, so assert on
-  the channel name, not on `private` being absent → add the viewer via the People dialog → the
-  viewer sees the channel folder and can open the file, disclosure included → remove the viewer →
-  the folder disappears without a reload.
+- The `/chitchat/private` container is plugin-locked but not restricted, so every member's tree can
+  show it, and after the migration its old channel folders too.
 - Archiving the channel (the plugin's "delete channel") does NOT move its transcript folder to Trash or
   file. The `channel-manage` `update` action stamps `archivedAt` and refreshes the projection; the
   only `files_archive` call in the backend drops surplus rollover files. So the archived channel just

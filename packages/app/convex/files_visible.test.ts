@@ -11,6 +11,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import type { files_PendingParent } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
+import { insert_installation } from "./files_share_links.setup.test.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -1297,13 +1298,25 @@ describe("internal_search_name_saved", () => {
 	 * item in `chains`, `depth` folders deep, with the member added again only at its top. Each deepest
 	 * folder holds `hits` files the member cannot open. The search starts at `/t/m`, since a walk
 	 * from `/` stops at the locked `/t`.
+	 *
+	 * With `plugin`, a plugin's account gets the same grants as the member, so a plugin subject walks
+	 * each chain twice: once for the member and once for the account. The account also has a role, so
+	 * its walk reads role grants too, like the member's.
 	 */
 	async function seed_deep_chains(
 		f: Awaited<ReturnType<typeof fixture>>,
-		args: { chains: Array<{ name: string; depth: number }>; hits: number },
+		args: { chains: Array<{ name: string; depth: number }>; hits: number; plugin: boolean },
 	) {
-		const { chains, hits } = args;
+		const { chains, hits, plugin } = args;
 		const member = await add_member(f);
+		const installationId = plugin ? await insert_installation({ t: f.t, db: f.db }) : null;
+		const serviceAccountId = installationId
+			? await f.t.run(async (ctx) => {
+					const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+					await ctx.db.patch("access_control_service_accounts", installation.serviceAccountId, { role: "member" });
+					return installation.serviceAccountId;
+				})
+			: null;
 		await f.t.run(async (ctx) => {
 			// Keep this synthetic access chain, while creating normal content owners for its files.
 			const content = files_content_heads_db_wrap(ctx);
@@ -1349,7 +1362,22 @@ describe("internal_search_name_saved", () => {
 				extendedScopeNodeId: mId,
 				parentExtendedScopeNodeId: null,
 			});
+			const grant_account = async (nodeId: Id<"files_nodes">) => {
+				if (!serviceAccountId) return;
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					resourceKind: "file",
+					resourceId: String(nodeId),
+					principalKind: "service_account",
+					serviceAccountId,
+					permission: "content.read",
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			};
 			await grant(mId, member.userId);
+			await grant_account(mId);
 			for (const chain of chains) {
 				let parent = { _id: mId, path: "/t/m" };
 				for (let depth = 0; depth < chain.depth; depth++) {
@@ -1363,6 +1391,7 @@ describe("internal_search_name_saved", () => {
 						ancestor2: mId,
 					});
 					await grant(nodeId, depth === 0 ? member.userId : strangerId);
+					if (depth === 0) await grant_account(nodeId);
 					parent = { _id: nodeId, path };
 				}
 				for (let index = 0; index < hits; index++) {
@@ -1379,12 +1408,17 @@ describe("internal_search_name_saved", () => {
 			}
 			await content.flush();
 		});
-		return member;
+		const subject = {
+			kind: "user" as const,
+			userId: member.userId,
+			plugin: installationId && serviceAccountId ? { installationId, serviceAccountId } : null,
+		};
+		return { ...member, subject };
 	}
 
 	async function search(
 		f: Awaited<ReturnType<typeof fixture>>,
-		member: Awaited<ReturnType<typeof add_member>>,
+		member: Awaited<ReturnType<typeof seed_deep_chains>>,
 		args: { overlay: boolean; numItems: number; cursor: string | null },
 	) {
 		return await member.as.run(async (ctx) => {
@@ -1393,7 +1427,7 @@ describe("internal_search_name_saved", () => {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				visibilityUserId: member.userId,
-				subject: { kind: "user", userId: member.userId, plugin: null },
+				subject: member.subject,
 				...(args.overlay ? { overlayUserId: member.userId } : {}),
 				folderPath: "/t/m",
 				query: "hit",
@@ -1407,12 +1441,16 @@ describe("internal_search_name_saved", () => {
 	}
 
 	// The owner's reader resolves each hit's path within its own read limit, so its chain is shorter.
+	// A plugin still checks the folder once, but that check walks the chain for the member and for its
+	// account. So its chain is shorter too: after a 500-level check of a plugin, no other hit fits the
+	// same call, and each call returns one hit.
 	test.each([
-		{ overlay: true, depth: 200 },
-		{ overlay: false, depth: 500 },
-	])("ten locked hits in one deep folder check the folder once (%o)", async ({ overlay, depth }) => {
+		{ overlay: true, depth: 200, plugin: false },
+		{ overlay: false, depth: 500, plugin: false },
+		{ overlay: false, depth: 400, plugin: true },
+	])("ten locked hits in one deep folder check the folder once (%o)", async ({ overlay, depth, plugin }) => {
 		const f = await fixture();
-		const member = await seed_deep_chains(f, { chains: [{ name: "x", depth }], hits: 10 });
+		const member = await seed_deep_chains(f, { chains: [{ name: "x", depth }], hits: 10, plugin });
 
 		const result = await search(f, member, { overlay, numItems: 100, cursor: null });
 		expect(result.retrySmaller).toBe(false);
@@ -1425,12 +1463,16 @@ describe("internal_search_name_saved", () => {
 	// Without the reader, the checks of x and y end under the 3,000 row budget, so a third deep check
 	// would pass 4,096.
 	test.each([
-		{ overlay: true, depths: [200, 100, 200] },
-		{ overlay: false, depths: [500, 220, 500] },
-	])("locked hits in three deep folders never pass the Convex limit (%o)", async ({ overlay, depths }) => {
+		{ overlay: true, depths: [200, 100, 200], plugin: false },
+		{ overlay: false, depths: [500, 220, 500], plugin: false },
+		{ overlay: false, depths: [500, 220, 500], plugin: true },
+		// After the 180-level check, a plugin's 500-level check would pass 4,096. So it waits for the
+		// next call.
+		{ overlay: false, depths: [180, 500, 1], plugin: true },
+	])("locked hits in three deep folders never pass the Convex limit (%o)", async ({ overlay, depths, plugin }) => {
 		const f = await fixture();
 		const chains = ["x", "y", "z"].map((name, index) => ({ name, depth: depths[index]! }));
-		const member = await seed_deep_chains(f, { chains, hits: 1 });
+		const member = await seed_deep_chains(f, { chains, hits: 1, plugin });
 
 		// First parent checks that may not fit one call end the page, and it is asked again smaller,
 		// like `files_pending_overlay_search_name` does. No call passes the limit, and every hit shows.

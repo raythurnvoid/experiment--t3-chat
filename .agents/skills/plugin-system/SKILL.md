@@ -79,7 +79,6 @@ Capabilities are the consent set. `CAPABILITIES` in `packages/app/shared/plugins
 | `workspace.files.write`            | Put `files:write` on a service grant, capped by its destination prefix             |
 | `workspace.files.manage-read-only` | Set or clear Read-only, create flagged items, and explicitly force allowed file changes |
 | `workspace.files.own-write`        | Create and update files and folders marked for this plugin, and move them to Trash; members may edit their labels |
-| `workspace.files.own-access`       | Set locks and readers on matching output; members with manage permission may change them |
 | `plugin.data.read`                 | Read this installation's stored documents                                          |
 | `plugin.data.write`                | Create, change, and delete them                                                    |
 | `plugin.data.user-write`           | Pages and file views may store and change them as the acting member, via the app   |
@@ -97,7 +96,7 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 - `plugin.data.user-write` requires `plugin.data.read` for the same reason.
 - `workspace.files.manage-read-only` requires `workspace.files.write`. It grants flag management and explicit force, subject to current Can edit and every existing caller limit.
 - `workspace.files.own-write` requires `workspace.files.write` — it is a narrower door on the same file surface, and keeping the base capability visible keeps the consent honest.
-- `workspace.files.own-access` requires `workspace.files.own-write`. It changes policy on the same labeled nodes that own-write maintains.
+- `workspace.files.own-access` is removed. A new manifest that asks for it is refused with "Share folders with the plugin's service account instead". The literal stays in `plugins_CAPABILITIES` only until phase B (see "Rollout of the plugin access removal").
 - `plugin.service.connect` requires `plugin.data.read`, `workspace.files.write`, or `workspace.members.read`. A service using only identity and members may register with `scopes: []`. This grants no Files or data access. `outbound.fetch` does not satisfy the dependency.
 - `plugin.backend.invoke` and `backend.endpoints` require each other in both directions, like `ui.outbound.fetch` and its origins: the capability needs a `backend` block with at least one endpoint, and declared endpoints need the capability.
 - `userWritableCollections` requires `plugin.data.user-write`: the list narrows the user-write door, so without that door it means nothing.
@@ -150,52 +149,55 @@ screen's copy, change the other in the same edit.
 
 `workspace.files.write` lets a sealed processing-phase service grant carrying `files:write` use the `/api/v1/files/service-uploads/*` pipeline (see `../public-api/SKILL.md#service-upload-routes`). It also permits `/api/v1/files/write` for Markdown and `/api/v1/files/plugin-archive` for one matching file strictly inside the seal. Existing files must have exact `plugin-name` metadata matching the installation. Same-plugin invoke output and member-labeled files can match too. There is no service-origin fallback. The live grant, capabilities, actor permissions, destination, and locks still apply. Other generic `/api/v1/files/*` routes refuse service grants. Removing a label stops generic writes; it does not cancel an accepted upload or change its separate target cleanup rules. Moving to Trash is what "delete a file" means in this product — see `../data-deletion/SKILL.md`.
 
-`workspace.files.manage-read-only` permits explicit Read-only set/clear, create-true and `force: true`. It adds no service-token scope; each final write checks current accepted capability and ordinary Can edit. It does not bypass ACLs, sandbox roots, seals, writer generations or exact receipts. Old `workspace.files.create-read-only` remains readable only in immutable version history and is rejected in new manifests; it grants no new authority.
+`workspace.files.manage-read-only` permits explicit Read-only set/clear, create-true and `force: true`. It adds no service-token scope; each final write checks current accepted capability and ordinary Can edit. It does not bypass ACLs (person or account), seals, writer generations or exact receipts. Old `workspace.files.create-read-only` remains readable only in immutable version history and is rejected in new manifests; it grants no new authority.
 
 ## Installation service accounts
 
 Every installation has a required `serviceAccountId`. `plugins_service_account_bindings` keeps that account attached to one exact trusted tuple: organization, workspace, plugin name, publisher user, and source repository URL. Display labels and editable file metadata never establish that tuple.
 
-`install_version` accepts optional `serviceAccountId` and `serviceAccountGrants: [{resource, level}]`. A resource is `{kind:"workspace"}` or `{kind:"file",nodeId}`; a level is `read`, `write`, or `manage`. A new tuple creates an empty account unless an active same-tenant account is chosen. A first empty install with no retained binding, account choice, or grants needs only plugin setup access; choosing an account or adding grants also needs `workspace.service_accounts.manage`. Each explicit grant also requires the actor's manage permission and every granted permission at that resource. A file-only grant needs no workspace content grant. All grant writes use `access_control_db_set_service_account_grant`, shared with account controls and Files sharing. At most 20 distinct resources may be granted in one install.
+`install_version` accepts optional `serviceAccountId` and `serviceAccountGrants: [{resource, level}]`. A resource is `{kind:"workspace"}` or `{kind:"file",nodeId}`; a level is `read`, `write`, or `manage`. A new tuple creates an empty account unless an active same-tenant account is chosen. A first empty install with no retained binding, account choice, or grants needs only plugin setup access; choosing an account or adding grants also needs `workspace.service_accounts.manage`. Each explicit grant also requires the actor's manage permission and every granted permission at that resource. A file-only grant needs no workspace content grant. All grant writes use `access_control_db_set_service_account_grant`, shared with account controls and Files sharing.
 
-An ordinary update or reinstall reuses the exact tuple's account without adding grants. Reinstall creates a new installation, so it still needs `workspace.service_accounts.manage` even when the binding survived uninstall. An update with the same binding and no account or grant input does not need that extra permission. No ensure, mint, retry, or update recreates removed grants or revives a revoked account. A revoked binding requires an explicit active replacement. `set_installation_service_account` checks plugin and account management, updates the trusted binding and installation pin, and changes no runs, sessions, grants, file policies, or installation settings. It rebuilds the installation's sandbox roots (below) in a background job. Account and binding docs survive uninstall; bounded workspace deletion removes them after dependent file and grant state.
+An ordinary update or reinstall reuses the exact tuple's account without adding grants. Reinstall creates a new installation, so it still needs `workspace.service_accounts.manage` even when the binding survived uninstall. An update with the same binding and no account or grant input does not need that extra permission. No ensure, mint, retry, or update recreates removed grants or revives a revoked account. A revoked binding requires an explicit active replacement. `set_installation_service_account` checks plugin and account management, updates the trusted binding and installation pin, and changes no runs, sessions, grants, file policies, or installation settings. Account and binding docs survive uninstall; bounded workspace deletion removes them after dependent file and grant state.
 
-Runs, UI sessions, and service grants keep the account ID present when they were minted. `plugins_db_get_live_service_account` checks that pin against the current installation, active same-tenant account, and exact current tuple. It only reads. A rebind therefore invalidates old credentials instead of moving their authority. Run capabilities are also limited by both their saved set and the installation's current accepted set. File operations act as the actor inside the installation's sandbox roots (`plugins_sandbox_subject`). In its own output folders the account's live grant sets the root level. Writer requests (write, inspect, ensure, reader set and undo) inside the installation's own private output folder act as the account instead (`plugins_external_files_db_request_subject`) while the actor can still read the folder: the account's own `manage` grant decides, so the plugin writes where the actor only reads. An actor who cannot read the folder gets the actor subject and is refused. The route gate still checks the actor's workspace content permission. Upload-run sibling writes keep their human-only check beside the source file. A file ref (`bonobo-file://`) that a plugin write adds must point at a file the actor can read inside the sandbox roots, for every plugin principal, upload runs included; see `../access-control/SKILL.md` "Automatic publishing". Account grants do not change plugin-store ownership, private scopes, or member-write rules.
+Runs, UI sessions, and service grants keep the account ID present when they were minted. `plugins_db_get_live_service_account` checks that pin against the current installation, active same-tenant account, and exact current tuple. It only reads. A rebind therefore invalidates old credentials instead of moving their authority. Run capabilities are also limited by both their saved set and the installation's current accepted set. File operations act as the person limited by the installation's account (`plugins_file_subject`; see "Plugin file access" below). Writer requests use the same check. Upload-run sibling writes keep their person-only check beside the source file. A file ref (`bonobo-file://`) that a plugin write adds must point at a file the person and the account can both read, for every plugin principal, upload runs included; see `../access-control/SKILL.md` "Automatic publishing". Account grants do not change plugin-store ownership, private scopes, or member-write rules.
 
-### Sandbox roots
+### Plugin file access
 
-`plugins_workspace_installations.sandbox.roots` is a copy of the installation's service account grants: a workspace grant becomes `{kind:"open"}`, a grant on a node becomes `{kind:"folder",nodeId}`, with the grant's level. At most 20, the same cap as install grants. Every file check of a plugin run, page or service grant reads them: the plugin acts as its human, limited to these roots (see "Service accounts" in `../access-control/SKILL.md`).
+A plugin has no file access of its own. Every file check of a plugin run, page, or service grant uses `plugins_file_subject` (`plugins_service_accounts.ts`): the person it acts for must pass, and the installation's service account must pass too. Both are the normal checks from "Service accounts" in `../access-control/SKILL.md`, and both read only indexes, never a list of plugin folders. It works like a GitHub app acting for a user: the plugin gets no more than its person and no more than its account.
 
-- **Kept in sync per grant.** `access_control_db_set_service_account_grant` calls `plugins_db_sync_sandbox_root` before any write, so a 21st root refuses the whole change: "A plugin can use at most 20 folders. Remove one on the plugin page first." The other account-grant deletes call it too: node hard delete, the plugin-data delete-all path, and an output folder detach (which skips the root and logs when the plugin already has 20, so a sharing change is never refused for a plugin limit).
-- **Plugin output folders are never stored in `roots`.** A node with a live `plugins_external_file_bindings` row (any installation) belongs to its plugin, which reaches it without a slot, at the account's live grant there.
-- **A root does not judge access.** It depends only on the grant, the binding and the node existing. Whether a root inside a restricted area gives anything is decided where the roots are read.
-- **Rebuild job.** A rebind, an install that reuses an existing account, and an upgrade that changes the account call `plugins_db_schedule_sandbox_rebuild`. It sets `roots: []` and `rebuild: {status:"running",leaseUntil}`, and `plugins_service_accounts.sandbox_rebuild_step` reads the account's grants one page at a time. The lease is the token; each page renews it. The cron "recover plugin sandbox rebuilds" restarts a chain whose lease expired. More than 20 roots ends with `rebuild: {status:"too_many_folders"}`; the next removed grant of the account starts the job again, since only a removal can bring it under the cap. Until the job ends the plugin reaches no folder. A fresh install with a new account writes its roots directly from its install grants.
+This is the only check that asks two principals. The read budgets are sized for it: in `files_visible.ts`, a name search keeps `SEARCH_PARENT_CHECK_MAX_RANGES_PLUGIN` (3,200) free before a plugin starts a folder check, and `SEARCH_PARENT_CHECK_MAX_RANGES` (2,300) for one principal. The worst deep Add-people chain measured about 3,100 index ranges for a plugin whose account has a role, and about 2,100 for a person.
 
-## Plugin-labeled files (`workspace.files.own-write` / `workspace.files.own-access`)
+One exception: upload-run sibling writes check the person only, beside the source file (see above). They are a plugin-only rule from before this design, so treat them as a candidate for removal, not as a pattern.
 
-Only an exact string `plugin-name` metadata value equal to the installation's plugin name selects a node. `source: plugin` describes its origin; it grants nothing. Both keys are ordinary editable metadata on files and folders. A member with content-write permission may remove or change them while the item is writable, including opting a member-created item into a plugin. Neither key is reserved. A matching label grants no account access and bypasses no Read-only flag. There is no creator, ancestor-label, or service-target fallback for this selection.
+- To let a plugin use a folder, share the folder with the plugin's service account through normal sharing (Files Sharing, the account's grant controls, or install grants). A workspace grant covers the open part of the workspace.
+- A folder a plugin creates (`plugin-folders/ensure`, a writer's folder) is a regular folder. It gets its parent's access, like a folder a person creates. The plugin cannot restrict it or choose who reads it.
+- Billing does not change. The paying user pays for plugin writes. When the balance is out, neither the person nor the plugin can write.
 
-An existing target checks its own label. A missing target checks the deepest existing folder before creating the rest of the path; workspace-root creation keeps its current create rules. Invoke ensure, write, touch, access, and delete keep their capability, actor ACL, and lock checks. A bounded delete preflights its limit; ordinary calls are atomic, while explicit forced calls keep allowed branches and return durable partial results. Upload-triggered runs retain their sibling write/touch rule and cannot use invoke-only ensure, delete, or access. See `../public-api/SKILL.md#plugin-file-doors`.
+**Design principle: no plugin-only access rules.** A plugin never gets a plugin-only access rule. When a plugin needs files that people in this workspace must not read, the fix is a folder the user chooses in another workspace (for example their personal one), or normal sharing that the plugin sets through the sharing API. Reason: each plugin-only rule (reader lists, sandbox roots, output-folder bindings) needed its own checks in lists, links, Move, restore, and deletion, and each of those checks was one more place where access could go wrong.
 
-Invoke ensure starts at that checked folder and adds only the missing path parts. Its stored scope controls access for the actor inside the sandbox roots. Locked folders above it add no permission check. The response keeps the full requested path. Live-run, label, capability, Read-only, and reader-binding checks still apply.
+### Rollout of the plugin access removal (temporary)
+
+Delete this section when phase B ships. The removal ships in three host steps:
+
+1. Phase A: the old fields and tables stay optional, marked `TODO(migration)` in `schema.ts`. During phase A, `files/write` accepts and ignores `writer.expectedReaderRevision: null`, so Chitchat keeps writing while the host and the plugin switch.
+2. Run `migrations:run_erase_plugin_file_access` (command in `migrations.ts`). It opens every folder a plugin still managed: it deletes all grants on it and gives it its parent's access. A folder in the Trash keeps its restriction and only loses its grants, so only the organization owner opens it after a restore. A folder whose sharing a person took over (a detached binding) keeps its grants; only the binding is deleted. The run also deletes every plugin reader grant, strips the old fields, and removes `workspace.files.own-access` from stored capability lists. It never deletes files. Run it right after the phase A deploy: phase A no longer detaches a binding, so a sharing change that a person makes on a plugin folder before the run is erased too.
+3. Phase B: search the app, the SDK, and these skills for `TODO(migration)` and delete each item: the strict schema, the migration and its test, the capability literal and its manifest check, and the old `files/write` field. Release a Chitchat version that no longer sends `expectedReaderRevision` first. Host phase B refuses that field, so an older Chitchat release would stop writing.
+
+## Plugin-labeled files (`workspace.files.own-write`)
+
+Only an exact string `plugin-name` metadata value equal to the installation's plugin name selects a node. `source: plugin` describes its origin; it grants nothing. Both keys are ordinary editable metadata on files and folders. A member with content-write permission may remove or change them while the item is writable, including opting a member-created item into a plugin. Neither key is reserved. A matching label grants no access and bypasses no Read-only flag. There is no creator, ancestor-label, or service-target fallback for this selection.
+
+An existing target checks its own label. A missing target checks the deepest existing folder before creating the rest of the path; workspace-root creation keeps its current create rules. Invoke ensure, write, touch, access, and delete keep their capability, file access (person and account), and lock checks. A bounded delete preflights its limit; ordinary calls are atomic, while explicit forced calls keep allowed branches and return durable partial results. Upload-triggered runs retain their sibling write/touch rule and cannot use invoke-only ensure, delete, or access. See `../public-api/SKILL.md#plugin-file-doors`.
+
+Invoke ensure starts at that checked folder and adds only the missing path parts. Its stored scope controls access: the person and the plugin's account both need write there. Locked folders above it add no permission check. The response keeps the full requested path. Live-run, label, capability, and Read-only checks still apply.
 
 Every newly created plugin file and folder gets `source: plugin` and `plugin-name: <name>` in the creation transaction. Extra import metadata such as `original-name` stays on the leaf. Reused ancestors and existing files keep their maps. In-place updates, retries, touch, access changes, and repeated ensure never restore a removed label. Final write publication reads the current label, including when the bytes have not changed.
 
 Members with Can edit may set or clear Read-only. Can manage remains the separate sharing permission. Plugins need `workspace.files.manage-read-only` for explicit flag changes or force. The flag is local; changing a direct child list checks the parent too. Content-only changes deeper in a folder do not check every ancestor. Metadata changes never clear flags. See `../files-read-only/SKILL.md`.
 
-Ensure applies requested access only when it creates the final folder. A reused folder keeps its locks and sharing, and a detached reader binding stays detached. Any existing binding must belong to this installation and match a supplied read scope. Explicit `plugin-access/set` on an existing node requires the actor's live manage permission and cannot release a member lock. Replacing an existing binary/noneditable file with a new node also requires manage permission: the trashed node retains its grants and binding, while the replacement inherits parent sharing. Complete all refusal checks before moving to Trash or access writes. An in-place text update keeps its node and sharing.
+Ensure applies the optional Read-only flag only when it creates the final folder. A reused folder keeps its locks and sharing. `plugin-access/set` only sets or clears Read-only; it needs Can edit and cannot release a member lock. Replacing an existing binary/noneditable file with a new node requires manage permission: the trashed node keeps its grants, while the replacement inherits parent sharing. Complete all refusal checks before moving to Trash. An in-place text update keeps its node and sharing.
 
-`access.readScopeId` binds readers to one live private scope of the same installation. The host restricts the node and mirrors one `content.read` grant per scope member (`plugins_file_access_bindings`, at most 4 nodes per scope, `MAX_SCOPE_PRINCIPALS` = 50 readers). `user_manage_scope` updates attached human reader lists and preserves independent service-account grants. An actual human sharing change removes only that node's binding and keeps the remaining grants; an account grant edit does not detach it. A denied or no-op change, a metadata edit, or a child-only change does not detach an unrelated binding. Future scope changes leave manual sharing alone. Explicit `readScopeId: null` detaches the binding and preserves restriction, grants, and write policy. Unrestricting is a separate Files management action. A binding from another installation refuses until it drains or is detached.
-
-Scope deletion and account/org teardown remove attached mirrored grants and bindings; the node stays restricted. Uninstall instead removes bindings and preserves file grants. Reinstall may reuse matching labels after the old binding drains, but does not restore old sharing through ensure. The organization owner still reads everything. Plugins must disclose that Files managers control transcript readers, including later updates. These file rules do not change the plugin document store's separate `ownership` field.
-
-Public file links ("Anyone with the link can view", `files_share_links`) never go around a plugin reader list. A link checks the binding of its file's stored scope node only (see "Public file links" in the access-control skill), so a binding must cover its whole area:
-
-- A folder binds in two steps. A Files manager restricts it first, and its scope job must end. `plugins_data_db_prepare_file_access_binding` then refuses an open folder ("Restrict this item first, then a plugin can decide who reads it"), a folder whose scope job still runs ("Wait until the access change of this folder finishes"), and a folder that holds a restricted item ("An item inside has its own restricted access, so a plugin cannot decide who reads this folder"). A file and a new node bind in one step, because they hold nothing.
-- `plugins_data_db_apply_file_access_binding` deletes the node's own link and every link of its area before it binds. For a file that is not restricted yet, the restrict in the bind does the same deletes.
-- A binding cannot start inside a bound area, for an existing node or a new one, on this door or on `plugins_external_files.ensure_writer` ("A plugin already decides who can read the folder around this item"). While the area is bound, restrict, Move, and restore refuse to put a restricted item inside it. So a detach never leaves a plain restricted item in a bound area.
-- Ending a binding deletes no links: explicit `readScopeId: null`, a human sharing change (`db_detach_file_access_binding`), scope deletion (`db_sync_file_access_bindings` with `removeUserIds: "all"`), `cleanup_stranded_scopes`, and the uninstall or purge drain. The bind already ended them and turn-on refuses while bound, so the area holds none. A manager turns a link on again after the detach, which creates a new token.
-- `plugins_external_files.ensure_writer` adds no link work: it binds readers only on the new folder it creates, and a new folder has no links.
+Uninstall leaves plugin files and their sharing as they are. Reinstall may reuse matching labels. These file rules do not change the plugin document store's separate `ownership` field. Public file links work as for any file, because a plugin folder is a regular folder.
 
 ## Plugin run lifecycle
 
@@ -258,7 +260,7 @@ A guest (an active member without workspace `content.read`) gets no plugins: plu
 volume mounts and volume reads, Bash `/.plugins` source mounts, plugin skills in chat, plugin data,
 and backend invoke still need workspace read or write. A plugin run that acts as a guest can open only
 what the guest can open, so its list of `/` answers 403. So does the list of `/` of any plugin whose
-sandbox roots are only folders or files: the root is above them.
+service account has only folder or file grants: the root is above them.
 
 The minute dispatcher reads at most 20 due handlers. It admits four live chains globally and one per
 organization. Scheduled work uses its own Workpool with parallelism two. A live chain delays another
@@ -312,7 +314,7 @@ reuse the same request ID after plugin 5xx and uncertain transport results.
 The plugin-data transaction keeps `credentialRef.runId` and checks its Activity status and
 deadline, plus token expiry, actor, version, tenant, and pinned service account before a write commits.
 
-A page or file view calls `POST /api/v1/plugin-backend/invoke` with its `plu_` token to run the plugin's own reviewed backend synchronously — route contract in `../public-api/SKILL.md#invoke-door`. The run is a normal `plugins_event_runs` record with event `ui.invoke.requested`: same runner, same `plr_` token, same `MAX_API_CALLS = 20`, same call ledger and retention. The plugin's `fetch()` now serves two callers: plugin-declared endpoint paths handle invokes, and host events arrive on the reserved `/__bonobo_senate/run` path. Manifest validation and the runner accept only `/` or slash-separated lowercase letters, digits, and dashes, at most 256 characters. Trailing or duplicate slashes, dots, escapes, and underscores are refused. This grammar keeps declared endpoints separate from the reserved host-event path. The run's `actorUserId` is the member behind the `plu_` session, host-verified and delivered only in the event envelope — never inside the page's `input` — so backends enforce authorship from the envelope alone; the same id lands on the `plugin_run` principal, so store writes record that member as `createdBy`/`updatedBy`. Serialization: at most one live invoke run per `(installationId, lockKey)` — the default is one lock for the whole installation, and an endpoint declared `serialization: "caller-key"` uses the caller's `serializationKey`; a concurrent second invoke answers 409 `busy` with `retryAfterMs`. File reads for runs (`files:read` + `files:list`) are gated on accepted `workspace.files.read` for BOTH invoke and upload runs, and a run acts as its actor inside the sandbox roots, so it never sees inside a restricted folder that member cannot open.
+A page or file view calls `POST /api/v1/plugin-backend/invoke` with its `plu_` token to run the plugin's own reviewed backend synchronously — route contract in `../public-api/SKILL.md#invoke-door`. The run is a normal `plugins_event_runs` record with event `ui.invoke.requested`: same runner, same `plr_` token, same `MAX_API_CALLS = 20`, same call ledger and retention. The plugin's `fetch()` now serves two callers: plugin-declared endpoint paths handle invokes, and host events arrive on the reserved `/__bonobo_senate/run` path. Manifest validation and the runner accept only `/` or slash-separated lowercase letters, digits, and dashes, at most 256 characters. Trailing or duplicate slashes, dots, escapes, and underscores are refused. This grammar keeps declared endpoints separate from the reserved host-event path. The run's `actorUserId` is the member behind the `plu_` session, host-verified and delivered only in the event envelope — never inside the page's `input` — so backends enforce authorship from the envelope alone; the same id lands on the `plugin_run` principal, so store writes record that member as `createdBy`/`updatedBy`. Serialization: at most one live invoke run per `(installationId, lockKey)` — the default is one lock for the whole installation, and an endpoint declared `serialization: "caller-key"` uses the caller's `serializationKey`; a concurrent second invoke answers 409 `busy` with `retryAfterMs`. File reads for runs (`files:read` + `files:list`) are gated on accepted `workspace.files.read` for BOTH invoke and upload runs, and a run acts as its person limited by its service account, so it never sees inside a restricted folder that person or that account cannot open.
 
 `plugin.service.connect` is the only capability whose holder is not code the app runs. It lets a plugin frame exchange its `plu_` token for an installation-bound `psg_` service grant, so the publisher's own server keeps working while nobody has the plugin open. A file view drives that exchange exactly as a page does: `plugins_service.ts` accepts any `plu_` UI token, and a page and a file view both carry one. So the capability row above says "pages and file views", and both consent screens must say the same thing, under the same both-screens rule as the UI outbound warning. A dialog that names only the page understates this capability by half.
 
@@ -602,26 +604,21 @@ Plugins write workspace files through host file APIs. The old store-to-file engi
 the 2026-08 migration. Invoke plugins may use `/api/v1/files/plugin-folders/ensure`, `/api/v1/files/write`,
 `/api/v1/files/plugin-archive`, and `/api/v1/files/plugin-access/set`. Registered sealed services use
 the same doors with optional writer conditions and their current service secret. General writer
-inspection, generation advance, and reader undo also live under `/api/v1/files/`. See
+inspection and generation advance also live under `/api/v1/files/`. See
 [public API](../public-api/SKILL.md#plugin-file-doors) for their contracts and limits.
 
 Chitchat persists a fresh dataset root, exact folder IDs, file IDs, revisions, and writer generations
 in its own database. Its Markdown copies keep the existing inner layout and 100,000-byte part limit.
 Old Files content is left alone. Repeated setup does not adopt a moved or replaced folder, restore
-labels, or restore removed grants. Private setup creates the empty restricted folder before text.
-Existing manual sharing governs later copies after automatic reader sync detaches.
-
-First-time registered writer setup with explicit readers grants its bound account **Can manage**
-on the new private folder. The actor must be allowed to manage service accounts and grant that full
-level on the nearest parent or workspace root. The account must pass parent write and management
-checks too. Creation, restriction, readers, and this exact account grant commit together. Human
-readers keep their requested access. Setting Read-only creates no access grant. Repeated
-setup never restores a removed grant or changes manual sharing; normal Files sharing owns recovery.
+labels, or restore removed grants. Chitchat writes transcripts for public channels only. A writer's
+folder is a regular folder with its parent's access; the plugin needs a grant for its service account
+there (see "Plugin file access"). Setting Read-only creates no access grant. Normal Files sharing
+owns recovery of a removed grant.
 
 Both invoke and conditional service writes pin `expectedParentNodeId`. Their final publication checks
 the exact active parent. A missing, moved, trashed, or replaced pinned parent refuses the write.
 Conditional writes also check saved root/folder IDs, labels, writer generation, current
-authority, file policies, and content/reader revisions. Its receipt commits with the file change.
+authority, file policies, and content revisions. Its receipt commits with the file change.
 
 A plugin write in place keeps the file's public link ("Anyone with the link can view"). A text update
 or fill keeps the node, so the link and its token stay, and the page shows the new committed text.
@@ -629,8 +626,7 @@ A write that moves the old file to Trash and creates a new node ends the old lin
 link. A plugin move to Trash or delete ends the link too. A plugin write never makes an image or video
 public. An image it adds shows on the page only when a person made that image public (its public
 flag, see `../files-rich-text-embeds/SKILL.md`). A plugin cannot turn that on: the API scope
-`files:publish` is for a person's own key only. Media inside a plugin-bound folder never show, because
-the page refuses every node on or under a binding.
+`files:publish` is for a person's own key only.
 
 These file updates are one-way. Chitchat's native database is the source of chat. A message and its
 transcript job commit together; a later Files refusal does not undo the message. Transcript status
@@ -655,8 +651,8 @@ checks need no new Worker deployment by themselves.
 # Service grant exchange
 
 External plugin backends use public service-grant and Files APIs. See
-`../public-api/SKILL.md#plugin-file-doors` for output writers, exact receipts, attached membership
-lifetimes, and manual Files takeover. Ordinary service writes keep their existing limits.
+`../public-api/SKILL.md#plugin-file-doors` for writers and exact receipts. Ordinary service writes
+keep their existing limits.
 
 Identity and roster access use `/api/v1/plugins/identity/exchange`, `members/list`, and `access/changes`.
 The installation owns the service connection. A valid page exchange binds its exact registration,
@@ -899,7 +895,7 @@ Chitchat is a separate Git repository and Convex project, embedded as one React 
 
 The frame uses its own authenticated Convex client. The SDK client stays pointed at Bonobo Senate. There is no second login. Chitchat uses the general public identity exchange and member/change pages. Its server does not poll: it declares `workspace.access.changed` and pulls the feed when a signed notice arrives (see [Access change notices](#access-change-notices-workspaceaccesschanged)). Before admitting a lease, it catches up to the fresh signed required revision. A ready installation already at that revision or later skips the immediate feed read; admission still checks current local access. Keep this shortcut in the lease route, since the notices bring later changes. The signed lease expires within 30 seconds; native expiry jobs also invalidate idle subscriptions. Failed renewal closes access. Internet is required; keep drafts and exact uncertain request IDs, but do not queue new offline sends.
 
-The manifest has no generic store or invoke capability and no backend runner artifact. It declares `plugin.service.connect`, `ui.outbound.fetch`, Files read/write/own-write/own-access, and workspace members read. Its exact HTTPS cloud, HTTPS action, and WSS cloud origins require install consent.
+The manifest has no generic store or invoke capability and no backend runner artifact. It declares `plugin.service.connect`, `ui.outbound.fetch`, Files read/write/own-write/manage-read-only, and workspace members read. Its exact HTTPS cloud, HTTPS action, and WSS cloud origins require install consent.
 
 Use bounded indexed queries for channels, history, per-thread replies, and overview pages. Keep truthful reply summaries and unread counts. No generic document-key parsers, whole-channel companion scans, or timestamp change-feed workarounds remain. Private channel controls distinguish read, write, and manage access. The organization owner can read private channels; lists only show joined private channels.
 
@@ -920,21 +916,11 @@ Attachment links request `download: true` from the existing Files URL route and 
 download anchor without opening a popup. Expired links must offer refresh before navigation can
 replace the chat frame. File access and signed URL lifetime checks remain in Bonobo Senate.
 
+Only public channels get a transcript. A transcript is a regular file that everybody who can open its folder reads, so Chitchat writes none for private channels and leaves older private copies as they are. Two future fixes are noted as a TODO in Chitchat: a per-user folder in another workspace, or sharing set through the normal sharing API. See "Private channels" in the Chitchat README.
+
 A fresh dataset uses a new `/chitchat-<generation>` Files root. Old Files and store data are left alone. Keep the existing inner layout, Markdown markers, UTC times, author snapshots, reply indentation, and 100,000-byte rollover. Durable ordered transcript jobs publish through public Files writer APIs. Current account/actor access, labels, locks, pinned paths and IDs, content revision, writer generation, and operation receipts are checked at publication. Explicit rebuild replaces manual edits only after its UI confirmation.
 
-Once Files setup has started, private reader changes wait for its acknowledgement and use recorded compensation if the native change cannot complete. Before any Files connection exists, they may complete locally. An uncertain reader call is either rolled back by its saved receipt or cancelled under its original operation ID before a late apply can land. Current file policies still apply. Real Files sharing changes detach automatic readers. Membership lifetime tags stop removal/reinvite from restoring old grants. Uninstall retires writer authority and leaves output and sharing intact. The owning host contracts are in the auth, access-control, Files, and public-api skills.
-
-After an upgrade, recovery of a saved reader operation can use a new sealed grant for the same
-installation and exact root, with current Files write and sharing-management access. Old credentials
-cannot authorize new work. Private deletion removes access first, finishes transcript copies through
-its fixed deletion sequence, then moves exact saved transcript files to Trash with durable progress.
-It keeps the container and unrelated files in Files. Blocked deletion stays available in a restricted
-recovery view for the current owner or the same-lifetime original delete actor. Deleted messages
-stay inaccessible. Rebuild is unavailable once moving files to Trash begins; Retry and Reconnect still
-enforce current Files permissions. Manual sharing stops automatic moves to Trash.
-
-Last-member workspace cleanup saves owner-only Files recovery before its reader request. The old
-sponsor may already have lost permission. A channel that never started Files setup needs no entry.
+Uninstall retires writer authority and leaves output and sharing intact. Chitchat never changes sharing. The owning host contracts are in the auth, access-control, Files, and public-api skills.
 
 Live QA must use the installed frame and read back stored chat and raw transcript text. Unit mocks cannot prove CSP, lease refresh, Markdown marker survival, or cross-backend permissions. Publish the exact reviewed commit, update the installation, and verify served version and bytes before committing the parent gitlink.
 
@@ -1384,7 +1370,7 @@ added to the `chitchat-qa` allowlist and installed in `chitchat-qa/xfer-qa-0914`
 (`hx7k1ccsn7kqq2g8wb2jsyjjqs8grbzn`) with a workspace read grant. As `qa.perm.member` the page showed
 `/g4-media/shapes.png` and `speakers.mp4` as locked tiles, and the only `download-urls` call named the
 two open images. A CLI `install_version` without `serviceAccountGrants` gives a new account no
-grant, so its sandbox has no roots and every list answers 403 "Permission denied: /". Pass
+grant, so the plugin check fails at the root and every list answers 403 "Permission denied: /". Pass
 `serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }]`, as the UI picker does.
 
 Gmail 0.2.4 was published and installed in `personal/home` on 2026-10-11 the same way (plugin commit
@@ -1501,9 +1487,9 @@ matched before and after each update. The disabled 0.6.0 installation stayed unc
 Press remains on `grand-finch-267`; native chat uses the separate `chitchat` project's development
 deployment `exuberant-hippopotamus-790`. No old chat data was migrated or deleted. New transcripts
 use a fresh root. After an update, use **Reconnect Files** for existing transcript connections;
-updates revoke prior service grants. Reconnection still requires current access: the actor inside
-the sandbox roots, or the account's own grant in the plugin's own output folder while the actor can still read it. It does not
-restore removed grants.
+updates revoke prior service grants. Reconnection still requires current access. Since 2026-11, that
+access is the person plus the plugin's service account, both through normal grants. Reconnection
+does not restore removed grants.
 
 Verification passed full Press lint and its 6,366-test baseline, followed by focused checks and
 full lint for later host changes; SDK TypeScript and 48 tests; native TypeScript, formatting,

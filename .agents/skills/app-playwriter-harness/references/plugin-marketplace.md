@@ -299,13 +299,13 @@ instead of touching a pre-existing one, and never uninstall an installation you 
    owner passes every permission check, so that 404 can only come from the installation-tenant check.
 5. Write a few documents under the scratch installation, snapshot the row counts, then `Uninstall` it
    from its plugin page. The drain finishes in seconds: poll until the scratch installation has zero
-   rows in all twelve installation-scoped tables the drain walks — `plugins_ui_sessions`,
+   rows in all eleven installation-scoped tables the drain walks — `plugins_ui_sessions`,
    `plugins_data_reservations`, `plugins_data_append_replay_receipts`,
    `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`,
-   `plugins_file_access_bindings`, `access_control_permission_grants` (`resourceKind:
+   `access_control_permission_grants` (`resourceKind:
 "plugin_scope"`), `plugins_data_scopes`, `plugins_data_released_scope_ranges`,
    `plugins_data_member_usage`, `plugins_data_usage` — and confirm the other installation's rows are
-   untouched. Counting a subset passes while scopes, grants, bindings, or receipts survive.
+   untouched. Counting a subset passes while scopes, grants, or receipts survive.
 6. Clean up: delete any QA documents under an installation you will keep, revoke both keys, and delete
    the scratch workspace through the switcher's `More actions for workspace: <name>` -> `Delete` (it
    deletes immediately, with no confirmation step). Do not call `/delete` for the scratch installation

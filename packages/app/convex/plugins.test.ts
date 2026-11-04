@@ -7524,7 +7524,6 @@ describe("plugins metadata file doors", () => {
 		"plugin.backend.invoke",
 		"workspace.files.write",
 		"workspace.files.own-write",
-		"workspace.files.own-access",
 		"workspace.files.manage-read-only",
 	];
 
@@ -8136,8 +8135,7 @@ describe("plugins metadata file doors", () => {
 		const fixture = await install_file_doors_plugin(t);
 		const run = await start_file_invoke_run({ t, fixture });
 
-		// The shape every plugin with a locked root uses: lock the root, then build subfolders inside
-		// it. Chitchat does this for `/chitchat/private/<channel>`.
+		// The shape every plugin with a locked root uses: lock the root, then build subfolders inside it.
 		const root = await door_call({
 			t,
 			path: "/api/v1/files/plugin-folders/ensure",

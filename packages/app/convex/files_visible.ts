@@ -102,8 +102,13 @@ const STREAM_RECENT_READ_PAGE = 100;
 
 // The most index ranges one folder access check can read: a folder 500 levels deep in an Add-people
 // chain with the grant only at its top. The cost test under `internal_search_name_saved` measured
-// about 2,000. A name search starts a new one only while it still fits the Convex limit of 4,096.
+// about 2,100 for a person.
+//
+// A plugin walks the chain for its person and for its account, and an account with a role also reads
+// role grants: about 3,100. A name search starts a new check only while it still fits the Convex
+// limit of 4,096, so a plugin search starts fewer checks per call.
 const SEARCH_PARENT_CHECK_MAX_RANGES = 2_300;
+const SEARCH_PARENT_CHECK_MAX_RANGES_PLUGIN = 3_200;
 
 /**
  * Whether a private node is still preparing: it has no create intent yet, or it is a text file whose
@@ -975,7 +980,8 @@ async function db_stream_frame_lists_locked(
 
 /**
  * Whether the opened folder is a workspace root the caller cannot open (a guest, or a plugin whose
- * account has only folder grants). A walk or a name search of it is "Permission denied", like the folder list of the root.
+ * account has only folder grants). A walk or a name search of it is "Permission denied", like the
+ * folder list of the root.
  */
 async function db_stream_root_locked(
 	ctx: QueryCtx,
@@ -2169,11 +2175,12 @@ export const internal_list_subtree_moved_in_folders = internalQuery({
  * only matching rows (`files_pending_overlay_list`).
  *
  * The time index serves a frame only when the subject can open its whole area. Otherwise (a folder
- * opened through Add people, or a plugin whose account has a grant only inside an area) the start frame reads its
- * folders in path order and each folder's recent children, so it reads no row the subject cannot
- * open. A workspace root the subject cannot open is refused before this (`internal_get_walk_start`).
- * That rule skips the global organization and reserved workspaces. There a per-folder read of the root
- * would read every folder, so a root keeps the time index and checks each row, like the walk does.
+ * opened through Add people, or a plugin whose account has a grant only inside an area) the start
+ * frame reads its folders in path order and each folder's recent children, so it reads no row the
+ * subject cannot open. A workspace root the subject cannot open is refused before this
+ * (`internal_get_walk_start`). That rule skips the global organization and reserved workspaces. There
+ * a per-folder read of the root would read every folder, so a root keeps the time index and checks
+ * each row, like the walk does.
  *
  * Under the owner's overlay each row reads its hide and its path through the user's reader. Rows
  * inside a folder the user moved here by a draft from another area are not read.
@@ -2532,6 +2539,10 @@ export const internal_search_name_saved = internalQuery({
 		// A locked hit shows, name only, when its parent folder is readable, like in `ls`. Each parent
 		// is checked once, and the checks share one checker, so hits in one folder read its chain once.
 		const checker = access_control_create_file_checker(ctx, args);
+		const checkMaxRanges =
+			args.subject.kind === "user" && args.subject.plugin
+				? SEARCH_PARENT_CHECK_MAX_RANGES_PLUGIN
+				: SEARCH_PARENT_CHECK_MAX_RANGES;
 		const parentChecks = new Map<Doc<"files_nodes">["parentId"], Promise<boolean>>();
 		const parent_readable = async (parentId: Doc<"files_nodes">["parentId"]) => {
 			if (parentId === files_ROOT_ID) return await (reader ? reader.canRead(null) : checker.can(null, "content.read"));
@@ -2551,7 +2562,7 @@ export const internal_search_name_saved = internalQuery({
 				// A new parent check can read a long chain after the budget check of the row. End the page
 				// instead when it might not fit; the first row always has room.
 				const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
-				if (index > 0 && used + SEARCH_PARENT_CHECK_MAX_RANGES > 4_096) return "retry";
+				if (index > 0 && used + checkMaxRanges > 4_096) return "retry";
 				check = parent_readable(parentId);
 				parentChecks.set(parentId, check);
 			}
@@ -2595,7 +2606,7 @@ export const internal_search_name_saved = internalQuery({
 			if (!areaId) return false;
 			if (!areaChecks.has(areaId)) {
 				const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
-				if (index > 0 && used + SEARCH_PARENT_CHECK_MAX_RANGES > 4_096) return "retry";
+				if (index > 0 && used + checkMaxRanges > 4_096) return "retry";
 			}
 			return await area_reached(areaId);
 		};

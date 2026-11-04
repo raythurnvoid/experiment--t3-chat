@@ -25,7 +25,6 @@ async function fixture() {
 			"plugin.data.user-write",
 			"workspace.files.write",
 			"workspace.files.own-write",
-			"workspace.files.own-access",
 		];
 		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
 			organizationId: membership.organizationId,

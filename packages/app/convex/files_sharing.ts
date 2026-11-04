@@ -226,7 +226,9 @@ const share_entry_validator = v.object({
 	principal: share_principal_validator,
 	level: share_level_validator,
 	serviceAccountName: v.union(v.string(), v.null()),
-	/** The plugin this account serves here, if any. Its grants also limit that plugin. */
+	/**
+	 * The plugin this account serves here, if any. Its grants also limit that plugin.
+	 */
 	servicePluginName: v.union(v.string(), v.null()),
 });
 
@@ -448,7 +450,6 @@ async function db_set_principal_level(
 			workspaceId: args.workspaceId,
 		});
 	}
-	return changed;
 }
 
 /**

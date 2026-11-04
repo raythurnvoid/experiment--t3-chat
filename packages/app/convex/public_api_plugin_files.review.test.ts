@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_finish_file_index, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
@@ -188,6 +188,8 @@ describe("ensure_plugin_folder", () => {
 					metadataYaml: "plugin-name: probe",
 				}),
 			).toEqual({ _yay: null });
+			// The label write queues an index job. Finish it, so it cannot land during the refused call below.
+			await test_finish_file_index(t, fixture.parentId);
 			const apiToken = `plr_${"d".repeat(64)}`;
 			const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
 				serviceAccountId: fixture.serviceAccountId,

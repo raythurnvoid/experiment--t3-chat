@@ -3,7 +3,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
-import { plugins_db_get_live_service_account, plugins_sandbox_subject } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
 import { crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { files_db_get_visible_node_by_path, files_ROOT_ID } from "../server/files.ts";
 import {
@@ -137,7 +137,7 @@ export async function plugins_external_files_db_authorize(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 	const writeContext: files_nodes_WriteContext = {
-		subject: plugins_sandbox_subject(installation, grant.actorUserId),
+		subject: plugins_file_subject(installation, grant.actorUserId),
 		force: args.force === true,
 		actorUserId: grant.actorUserId,
 		resourceScope: node

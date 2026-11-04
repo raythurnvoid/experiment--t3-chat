@@ -1160,14 +1160,14 @@ async function db_has_account_scope_grant(
 
 /**
  * Who one request acts as. Every file check takes one subject: a person, a person acting through a
- * plugin, or a service account alone. A check never asks about a user and an account together.
+ * plugin, or a service account alone. Only a plugin subject asks about a user and an account together.
  */
 export const access_control_subject_validator = v.union(
 	v.object({
 		kind: v.literal("user"),
 		userId: v.id("users"),
 		/**
-		 * Set for plugin credentials. The plugin acts as its human, and it is also limited by the normal
+		 * Set for plugin credentials. The plugin acts as its person, and it is also limited by the normal
 		 * grants of the installation's service account. Null for people (UI, Bash, chat).
 		 */
 		plugin: v.union(
@@ -1190,7 +1190,7 @@ export const access_control_subject_validator = v.union(
 export type access_control_Subject = Infer<typeof access_control_subject_validator>;
 
 /**
- * One principal the checker asks about. A plugin subject asks about two: its human and its account.
+ * One principal the checker asks about. A plugin subject asks about two: its person and its account.
  */
 type CheckedPrincipal =
 	| { kind: "user"; userId: Id<"users"> }
@@ -1384,8 +1384,8 @@ export function access_control_create_file_checker(
 		if (!(await scope_allows(tenant, { kind: "user", userId: subject.userId }, node, scopeNodeId, permission))) {
 			return false;
 		}
-		// A plugin acts as its human and is also limited by its account's normal grants, the same ones
-		// an API key bound to that account uses. Both checks read only indexed grant rows.
+		// A plugin acts as its person and is also limited by its account's normal grants, the same ones
+		// an API key bound to that account uses. Both checks read only indexed grant docs.
 		return (
 			subject.plugin === null ||
 			(await scope_allows(
