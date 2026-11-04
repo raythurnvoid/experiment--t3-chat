@@ -158,7 +158,7 @@ export const erase_plugins_external_file_receipts_readers = app_migrations.defin
  * Run this before `erase_files_share_rows_externalPluginMembershipLifetime`. The flush deletes or
  * rewrites the grant's share rows, but a rewrite keeps the old tag on the row.
  */
-export const erase_access_control_permission_grants_externalPluginMembershipLifetime = app_migrations.define({
+export const erase_permission_grants_externalPluginMembershipLifetime = app_migrations.define({
 	table: "access_control_permission_grants",
 	migrateOne: async (ctx, grant) => {
 		if (grant.externalPluginMembershipLifetime === undefined) return;
@@ -257,7 +257,7 @@ export const run_erase_plugin_file_access = app_migrations.runner([
 	internal.migrations.erase_plugins_external_file_bindings,
 	internal.migrations.erase_plugins_external_file_reader_changes,
 	internal.migrations.erase_plugins_external_file_receipts_readers,
-	internal.migrations.erase_access_control_permission_grants_externalPluginMembershipLifetime,
+	internal.migrations.erase_permission_grants_externalPluginMembershipLifetime,
 	internal.migrations.erase_files_share_rows_externalPluginMembershipLifetime,
 	internal.migrations.erase_plugins_workspace_installations_sandbox,
 	internal.migrations.erase_public_api_file_write_stages_expectedReaderRevision,

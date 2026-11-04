@@ -94,6 +94,7 @@ export default defineSchema({
 - Use `query`, `mutation`, and `action` to register public functions. These functions are part of the public API and are exposed to the public Internet. Do NOT use `query`, `mutation`, or `action` to register sensitive internal functions that should be kept private.
 - You CANNOT register a function through the `api` or `internal` objects.
 - ALWAYS include `args` and `returns` validators for all Convex functions. This includes all of `query`, `internalQuery`, `mutation`, `internalMutation`, `action`, and `internalAction`. Use `returns: v.null()` when a function has no result payload.
+- Keep every exported function name at 64 characters or fewer, migration steps too. Convex refuses the whole push (`Identifier is too long`), and `convex-test`, TypeScript and lint do not check it. Seen 2026-11-04 with a 71-character migration step name.
 
 ## Function Calling
 

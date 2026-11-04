@@ -75,7 +75,7 @@ test("the erase opens a plugin-bound folder and deletes every plugin reader gran
 	const args = { oneBatchOnly: true, cursor: null, batchSize: 100, dryRun: false };
 	await t.mutation(internal.migrations.erase_plugins_file_access_bindings, args);
 	await t.mutation(internal.migrations.erase_plugins_external_file_bindings, args);
-	await t.mutation(internal.migrations.erase_access_control_permission_grants_externalPluginMembershipLifetime, args);
+	await t.mutation(internal.migrations.erase_permission_grants_externalPluginMembershipLifetime, args);
 	await t.mutation(internal.migrations.erase_files_share_rows_externalPluginMembershipLifetime, args);
 
 	const after = await t.run(async (ctx) => ({
