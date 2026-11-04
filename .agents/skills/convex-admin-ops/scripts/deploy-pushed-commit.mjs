@@ -72,11 +72,13 @@ try {
 } finally {
 	// rmdir removes the pnpm junctions without following them into the store. Right after the install, a
 	// scanner can still hold a few new files open, so the first try can leave folders behind.
+	// cmd reads a forward-slash path like `C:/Users` as an option, so pass it with backslashes.
+	const windowsDir = path.resolve(dir);
 	for (let attempt = 0; attempt < 5 && fs.existsSync(dir); attempt++) {
 		if (attempt > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);
-		spawnSync("cmd", ["/c", "rmdir", "/s", "/q", dir]);
+		spawnSync("cmd", ["/c", "rmdir", "/s", "/q", windowsDir]);
 	}
-	if (fs.existsSync(dir)) console.error(`Could not remove ${dir}. Run: cmd /c rmdir /s /q "${dir}"`);
+	if (fs.existsSync(dir)) console.error(`Could not remove ${dir}. Run: cmd /c rmdir /s /q "${windowsDir}"`);
 	git(repo, "worktree", "prune");
 }
 process.exit(exitCode);

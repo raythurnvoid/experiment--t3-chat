@@ -931,6 +931,20 @@ denial and denied reloads. A real host and approved guest joined through the shi
 The host's Allow button and End for all flow passed. All three dashboard assets matched the
 reviewed commit. Test rooms were closed without recording; the five old artifact rows were kept.
 
+Chitchat 0.8.14 was published on 2026-11-04 from `6f4ba9e65776665233d6ffcc7926068280d6f6d6`
+as `hn7rdc84y5tcskkqjhjgbgrv1x8hkrkg`. It pins SDK 0.25.3, drops `workspace.files.own-access`, and
+writes no transcripts for private channels. Review passed, and all three served files match the
+reviewed build. Both enabled installations (`chitchat-qa/home` and `chitchat-qa/metadata-qa-0906`)
+were updated through the normal Update dialog. Their service accounts, capabilities, origins and
+grants stayed the same. Before that, its backend on `exuberant-hippopotamus-790` ran the one-time
+reader data erase (`01379ee`), then took the strict schema (`8db95c3`). Reconnect Files on a public
+channel renewed its grant, and a private channel shows no Files controls.
+
+SDK 0.25.3 was mirrored on 2026-11-04 at `2e8aff84b3fc3218f8defa8a92bec388ab4bb94b`.
+Its tree equals `7bd8f6d3:packages/bonobo-plugin-sdk`. Only types and docs changed: `files/write`
+no longer has `expectedReaderRevision`, and write receipts lose `readerRevision` and the reader
+operations. Typecheck and 51 SDK tests pass.
+
 SDK 0.25.2 was mirrored on 2026-11-04 at `9a4ece792b5058402b16f60eea0dc420e2ede902`.
 Its tree equals `6afadd85:packages/bonobo-plugin-sdk`. Only types and docs changed: plugin reader
 lists, `workspace.files.own-access` and `/api/v1/files/plugin-access/undo` are gone, and
