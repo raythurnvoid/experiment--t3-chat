@@ -151,6 +151,15 @@ describe("personal plugin file grants", () => {
 			(await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, args))._nay?.message,
 			"an unfinished upload cannot hold plugin consent",
 		).toContain("still uploading");
+		expect(
+			(
+				await f.asGrantOnly.mutation(api.plugins_access.grant_file_access_as_me, {
+					...args,
+					membershipId: f.grantOnly.membershipId,
+				})
+			)._nay?.message,
+			"an unreadable upload must not reveal its path or upload state",
+		).toBe("You cannot read this item. Ask for Can view access first.");
 		await f.t.run((ctx) => ctx.db.patch("files_r2_assets", assetId, { r2Key: "finished-upload" }));
 		expect((await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, args))._yay).toBeDefined();
 	});
@@ -168,19 +177,88 @@ describe("personal plugin file grants", () => {
 		await f.t.run(async (ctx) => {
 			const run = await ctx.db.query("files_archive_runs").first();
 			if (!run) throw new Error("Expected an archive run");
-			await ctx.db.patch("files_nodes", f.nodes.grantedId, { purgeRunId: run._id });
+			await ctx.db.patch("files_nodes", f.nodes.hiddenId, { purgeRunId: run._id });
 		});
 		expect(
 			(
 				await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
 					membershipId: f.owner.membershipId,
 					installationId: f.installationId,
-					rootNodeId: f.nodes.grantedId,
+					rootNodeId: f.nodes.hiddenId,
 					level: "read",
 				})
 			)._nay?.message,
 			"a deleting node cannot gain new personal consent",
 		).toContain("is being deleted");
+		expect(
+			(
+				await f.asGrantOnly.mutation(api.plugins_access.grant_file_access_as_me, {
+					membershipId: f.grantOnly.membershipId,
+					installationId: f.installationId,
+					rootNodeId: f.nodes.hiddenId,
+					level: "read",
+				})
+			)._nay?.message,
+			"an unreadable deleting item must not reveal its path or deletion state",
+		).toBe("You cannot read this item. Ask for Can view access first.");
+	});
+
+	test("keeps ended consent without revealing later names inside a locked folder", async () => {
+		const f = await fixture();
+		const args = { membershipId: f.grantOnly.membershipId, installationId: f.installationId };
+		const granted = await f.asGrantOnly.mutation(api.plugins_access.grant_file_access_as_me, {
+			...args,
+			rootNodeId: f.nodes.grantedFileId,
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		const list = () =>
+			f.asGrantOnly.query(api.plugins_access.list_my_file_grants, {
+				...args,
+				paginationOpts: { numItems: 20, cursor: null },
+			});
+		expect((await list()).page[0]).toMatchObject({
+			path: "/top/hidden/granted/doc.md",
+			kind: "file",
+			state: "applied",
+		});
+		expect(
+			await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+				membershipId: f.owner.membershipId,
+				nodeId: f.nodes.grantedId,
+				principal: { kind: "user", userId: f.grantOnly.userId },
+			}),
+		).toEqual({ _yay: null });
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect((await list()).page[0]).toMatchObject({ state: "ended", appliedLevel: null });
+		expect(
+			(
+				await f.asOwner.mutation(api.files_nodes.rename_node, {
+					membershipId: f.owner.membershipId,
+					requestId: crypto.randomUUID(),
+					nodeId: f.nodes.grantedFileId,
+					path: "private-name.md",
+				})
+			)._nay,
+		).toBeUndefined();
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodes.grantedFileId)))?.path).toBe(
+			"/top/hidden/granted/private-name.md",
+		);
+		expect((await list()).page, "ended consent must keep its history without current file details").toMatchObject([
+			{ consentId: granted._yay.consentId, path: null, kind: null, state: "ended" },
+		]);
+		expect(
+			(
+				await f.asGrantOnly.mutation(api.plugins_access.grant_file_access_as_me, {
+					...args,
+					rootNodeId: f.nodes.grantedFileId,
+					level: "read",
+				})
+			)._nay?.message,
+			"a refused grant must not reveal a renamed file inside a locked folder",
+		).toBe("You cannot read this item. Ask for Can view access first.");
 	});
 
 	test("keeps personal consent separate from other people, installations and run consent", async () => {

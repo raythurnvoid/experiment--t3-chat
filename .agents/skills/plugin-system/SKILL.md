@@ -168,6 +168,7 @@ installation. It offers a saved-path lookup, Can view / Can edit, Save, Remove,
 and Load more. Run consent stays separate. Only the signed-in person can change
 their selections. The list shows chosen access, applied access and pending or
 ended state. Removal works after the person loses access to the item.
+Ended consent shows "Unavailable item" instead of a current file path.
 
 This first release prepares selections; existing plugin credentials still use
 the account checks below. The controls say that current access has not changed.

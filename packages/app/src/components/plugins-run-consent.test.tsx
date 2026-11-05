@@ -414,7 +414,7 @@ describe("PluginsMyFilePermissions", () => {
 								},
 								{
 									consentId: "consent_2",
-									path: "/old",
+									path: null,
 									requestedLevel: "read",
 									appliedLevel: null,
 									state: "ended",
@@ -436,6 +436,7 @@ describe("PluginsMyFilePermissions", () => {
 		expect(screen.getByText("Current: Can view")).not.toBeNull();
 		expect(screen.getByText("Change pending.")).not.toBeNull();
 		expect(screen.getByText("Ended. Access ended.")).not.toBeNull();
+		expect(screen.queryByText("Unavailable item"), "a missing path must not claim the item was deleted").not.toBeNull();
 		expect(screen.getByText("Current: No access")).not.toBeNull();
 		expect(loadMore, "render must not drain the whole list").not.toHaveBeenCalled();
 		fireEvent.click(screen.getByRole("button", { name: "Load more" }));

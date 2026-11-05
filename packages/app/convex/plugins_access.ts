@@ -601,7 +601,8 @@ export const list_my_file_grants = query({
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, 100) });
 		const page = await Promise.all(
 			consents.page.map(async (consent) => {
-				const node = await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId);
+				// Keep history without following later names after consent ends.
+				const node = consent.open ? await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId) : null;
 				return {
 					consentId: consent._id,
 					rootNodeId: consent.rootNodeId,
@@ -645,18 +646,18 @@ export const grant_file_access_as_me = mutation({
 		const node = await files_saved_placement_db_get_node(ctx.db, args.rootNodeId);
 		if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId)
 			return Result({ _nay: { message: "Not found" } });
-		if (node.purgeRunId !== undefined)
-			return Result({ _nay: { message: `${node.path} is being deleted. Choose another item.` } });
-		const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
-		if (asset?.kind === "upload" && asset.r2Key === undefined)
-			return Result({ _nay: { message: `${node.path} is still uploading. Wait for it to finish.` } });
 		const checker = access_control_create_file_checker(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			subject: { kind: "user", userId: userAuth.id, plugin: null },
 		});
 		if (!(await checker.can(node, "content.read")))
-			return Result({ _nay: { message: `You cannot read ${node.path}. Ask for Can view access first.` } });
+			return Result({ _nay: { message: "You cannot read this item. Ask for Can view access first." } });
+		if (node.purgeRunId !== undefined)
+			return Result({ _nay: { message: `${node.path} is being deleted. Choose another item.` } });
+		const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		if (asset?.kind === "upload" && asset.r2Key === undefined)
+			return Result({ _nay: { message: `${node.path} is still uploading. Wait for it to finish.` } });
 		if (args.level === "write" && !(await checker.can(node, "content.write")))
 			return Result({ _nay: { message: `You cannot edit ${node.path}. Ask for Can edit access first.` } });
 

@@ -589,7 +589,7 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 						className={"PluginsMyFilePermissions-item" satisfies PluginsMyFilePermissions_ClassNames}
 						data-state={grant.state}
 					>
-						<p>{grant.path ?? "Deleted item"}</p>
+						<p>{grant.path ?? "Unavailable item"}</p>
 						<p>Chosen: {grant.requestedLevel === "write" ? "Can edit" : "Can view"}</p>
 						<p>
 							Current:{" "}
@@ -602,7 +602,7 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 								variant="ghost_destructive"
 								aria-disabled={pending !== null || undefined}
 								aria-busy={pending === grant.consentId || undefined}
-								aria-label={`Remove permission for ${grant.path ?? "deleted item"}`}
+								aria-label={`Remove permission for ${grant.path ?? "unavailable item"}`}
 								onClick={() => handleRevoke(grant.consentId)}
 							>
 								Remove

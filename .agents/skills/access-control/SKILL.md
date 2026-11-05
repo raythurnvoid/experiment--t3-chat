@@ -151,6 +151,9 @@ pending with no applied access. A fresh selection after removal gets a new doc.
 The personal doors in `plugins_access.ts` resolve the signed-in person; managers
 cannot select files for somebody else. Lists use `by_pair` pages, including ended
 and unreadable selections, so a person can still remove them.
+Ended consent keeps its history but returns no current file path or type.
+New consent checks Read before reporting file state. A denied check must not
+reveal a current path inside a locked folder.
 
 **Gradual access is intentional.** Changes to a person's access reach these grants
 in small background steps. Both reads and writes use the applied level until its
