@@ -649,6 +649,9 @@ describe("service upload authorization", () => {
 		expect((await read_targets(t))[0]!.filePairId, "the accepted upload keeps its credential pair").toBe(
 			personal.pair._id,
 		);
+		expect((await read_targets(t))[0]!.serviceAccountId, "the accepted upload keeps its original account").toBe(
+			fixture.serviceAccountId,
+		);
 		const retryBody = { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey };
 		await t.run((ctx) => ctx.db.patch("plugins_file_consents", personal.consentId, { appliedLevel: "read" }));
 		for (const path of [CREATE_TARGET_PATH, REMINT_PATH, FINALIZE_PATH]) {

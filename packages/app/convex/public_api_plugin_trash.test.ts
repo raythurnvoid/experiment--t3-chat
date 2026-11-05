@@ -4,7 +4,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { activities_db_start } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { list_plugin_trash_areas_page } from "./public_api_files_organize.ts";
+import { list_plugin_trash_areas_page, list_trash_page } from "./public_api_files_organize.ts";
 import { fixture, add_member, folder, archive, run_to_end, type Fixture } from "./files_archive_runs.setup.test.ts";
 import { insert_installation, reset_rate_limits } from "./files_share_links.setup.test.ts";
 import {
@@ -14,7 +14,7 @@ import {
 	test_run_with_flush,
 	test_spy_handler,
 } from "./setup.test.ts";
-import { transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
+import { expect_under_convex_limits, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 
@@ -206,7 +206,7 @@ async function post(f: Fixture, token: string, route: "list" | "areas" | "restor
 			cursor?: string | null;
 			isDone?: boolean;
 			areas?: Array<{ areaNodeId: string | null; path: string }>;
-			items?: Array<{ nodeId: string; changedBy: string | null; locked: boolean }>;
+			items?: Array<{ nodeId: string; path: string; changedBy: string | null; locked: boolean }>;
 		},
 	};
 }
@@ -421,6 +421,109 @@ test("areas page only the pair's applied rows without a live human filter or acc
 		"area cursors stay with their pair",
 	).toBe("invalid_cursor");
 	expect((await post(f, p.token, "areas", { cursor: "wrong" })).body.errorCode).toBe("invalid_cursor");
+});
+
+test.each(["token", "runToken"] as const)(
+	"%s returns full 100-area pages within transaction limits",
+	async (credential) => {
+		const f = await fixture({ transactionLimits: true });
+		const p = await plugin(f);
+		const roots: Id<"files_nodes">[] = [];
+		for (let i = 0; i < 105; i++) {
+			const nodeId = await folder(f, `/full-area-${i}`);
+			await f.t.run((ctx) =>
+				ctx.db.patch("files_nodes", nodeId, {
+					isRestrictedScopeRoot: true,
+					restrictedScopeNodeId: nodeId,
+				}),
+			);
+			await select(f, p.pairId, nodeId, true);
+			roots.push(nodeId);
+		}
+		test_spy_handler(list_plugin_trash_areas_page, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			expect_under_convex_limits(transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+			return result;
+		});
+		const ids: string[] = [];
+		const sizes: number[] = [];
+		let cursor: string | null = null;
+		do {
+			const page = await post(f, p[credential], "areas", { limit: 100, cursor });
+			expect(page.status, "a full plugin area page succeeds").toBe(200);
+			ids.push(...page.body.areas!.map((area) => area.areaNodeId!));
+			sizes.push(page.body.areas!.length);
+			cursor = page.body.cursor ?? null;
+		} while (cursor);
+		expect(sizes, "area pages fill the supported limit").toEqual([100, 5]);
+		expect(ids, "full area pages return every consent once").toEqual(roots);
+	},
+);
+
+test("full folder Trash pages use the published Move before physical cleanup", async () => {
+	const f = await fixture({ transactionLimits: true });
+	const p = await plugin(f);
+	const root = await folder(f, "/before/folder");
+	const target = await folder(f, "/after");
+	await select(f, p.pairId, root);
+	const children: Id<"files_nodes">[] = [];
+	for (let i = 0; i < 205; i++) {
+		children.push(await folder(f, `/before/folder/item-${String(i).padStart(3, "0")}`));
+	}
+	const archived = await archive(f, children);
+	expect(archived._nay).toBeUndefined();
+	if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
+	await finish_path_jobs(f);
+	await test_finish_saved_scope_jobs(f.t);
+	test_spy_handler(list_trash_page, async (handler, ctx, args) => {
+		const before = await ctx.meta.getTransactionMetrics();
+		const result = await handler(ctx, args);
+		expect_under_convex_limits(transaction_cost(before, await ctx.meta.getTransactionMetrics()));
+		return result;
+	});
+	const check_pages = async (prefix: string) => {
+		for (const credential of [p.token, p.runToken]) {
+			const items = [];
+			const sizes: number[] = [];
+			let cursor: string | null = null;
+			do {
+				const page = await post(f, credential, "list", { folderNodeId: root, limit: 100, cursor });
+				expect(page.status, "a full plugin folder page succeeds").toBe(200);
+				items.push(...page.body.items!);
+				sizes.push(page.body.items!.length);
+				cursor = page.body.cursor ?? null;
+			} while (cursor);
+			expect(sizes, "folder pages fill the supported limit during Move").toEqual([100, 100, 5]);
+			expect(
+				items.map((item) => item.nodeId),
+				"folder pages return every child once during Move",
+			).toEqual([...children].reverse());
+			expect(
+				items.map((item) => item.path),
+				"folder Trash uses published paths during Move",
+			).toEqual(children.map((_, i) => `${prefix}/item-${String(i).padStart(3, "0")}`).reverse());
+		}
+	};
+	await check_pages("/before/folder");
+	let checked = false;
+	const moved = await test_move_nodes(f.t, f.asOwner, {
+		membershipId: f.db.membershipId,
+		itemIds: [root],
+		targetParentId: target,
+		onStep: async () => {
+			if (checked) return;
+			const placement = await f.t.run(async (ctx) => ({
+				physical: await ctx.db.get("files_nodes", root),
+				saved: await files_saved_placement_db_get_node(ctx.db, root),
+			}));
+			if (placement.physical?.path !== "/before/folder" || placement.saved?.path !== "/after/folder") return;
+			await check_pages("/after/folder");
+			checked = true;
+		},
+	});
+	expect(moved._nay).toBeUndefined();
+	expect(checked, "full folder pages were checked before physical cleanup").toBe(true);
 });
 
 test("area paths use the published Move before physical cleanup", async () => {

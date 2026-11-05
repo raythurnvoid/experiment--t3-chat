@@ -96,7 +96,7 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 - `plugin.data.user-write` requires `plugin.data.read` for the same reason.
 - `workspace.files.manage-read-only` requires `workspace.files.write`. It grants flag management and explicit force, subject to current Can edit and every existing caller limit.
 - `workspace.files.own-write` requires `workspace.files.write` — it is a narrower door on the same file surface, and keeping the base capability visible keeps the consent honest.
-- `workspace.files.own-access` is removed. A manifest that asks for it is refused as an unknown capability. To let a plugin use a folder, share the folder with the plugin's service account.
+- `workspace.files.own-access` is removed. A manifest that asks for it is refused as an unknown capability. For personal installations, select the folder in **My file permissions**. Sharing with the service account applies only to old installations before their audited switch.
 - `plugin.service.connect` requires `plugin.data.read`, `workspace.files.write`, or `workspace.members.read`. A service using only identity and members may register with `scopes: []`. This grants no Files or data access. `outbound.fetch` does not satisfy the dependency.
 - `plugin.backend.invoke` and `backend.endpoints` require each other in both directions, like `ui.outbound.fetch` and its origins: the capability needs a `backend` block with at least one endpoint, and declared endpoints need the capability.
 - `userWritableCollections` requires `plugin.data.user-write`: the list narrows the user-write door, so without that door it means nothing.
@@ -211,6 +211,10 @@ During rollout, accepted file stages and upload targets keep their original pair
 pin, or old authority if they have none. Completion must match that pin. Once an
 installation switches, old credentials cannot accept new writes, seals or renewals.
 The switch waits for live runs to finish. Remove this bridge after the final audit.
+
+New service upload targets also keep their original account ID. Background text
+conversion checks that account's live trusted binding before adding file references.
+A revoked or replaced account leaves the accepted bytes as a stored file.
 
 ## Plugin-labeled files (`workspace.files.own-write`)
 
@@ -641,9 +645,9 @@ Chitchat persists a fresh dataset root, exact folder IDs, file IDs, revisions, a
 in its own database. Its Markdown copies keep the existing inner layout and 100,000-byte part limit.
 Old Files content is left alone. Repeated setup does not adopt a moved or replaced folder, restore
 labels, or restore removed grants. Chitchat writes transcripts for public channels only. A writer's
-folder is a regular folder with its parent's access; the plugin needs a grant for its service account
-there (see "Plugin file access"). Setting Read-only creates no access grant. Normal Files sharing
-owns recovery of a removed grant.
+folder is a regular folder with its parent's access. Personal installations need applied Edit
+there through **My file permissions**. Old installations still need their account grants until
+the switch. Setting Read-only creates no access grant. Reconnection never restores removed consent.
 
 Both invoke and conditional service writes pin `expectedParentNodeId`. Their final publication checks
 the exact active parent. A missing, moved, trashed, or replaced pinned parent refuses the write.
@@ -1538,8 +1542,9 @@ Press remains on `grand-finch-267`; native chat uses the separate `chitchat` pro
 deployment `exuberant-hippopotamus-790`. No old chat data was migrated or deleted. New transcripts
 use a fresh root. After an update, use **Reconnect Files** for existing transcript connections;
 updates revoke prior service grants. Reconnection still requires current access. Since 2026-11, that
-access is the person plus the plugin's service account, both through normal grants. Reconnection
-does not restore removed grants.
+old-model access is the person plus the plugin's service account, both through normal grants.
+Personal installations use applied consent from **My file permissions**. Reconnection does not
+restore removed grants or consent.
 
 Verification passed full Press lint and its 6,366-test baseline, followed by focused checks and
 full lint for later host changes; SDK TypeScript and 48 tests; native TypeScript, formatting,

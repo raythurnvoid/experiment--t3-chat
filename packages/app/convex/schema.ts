@@ -8800,6 +8800,8 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		// Keep the accepted pair through upload settlement. Missing means old-model work during rollout.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
+		// Keep the accepted account for conversion. Missing means a target made before this rollout.
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		/**
 		 * The upload run this file belongs to, chosen by the service. One processing run reuses one
 		 * key for all its files, so the same `targetKey` in a later run is a different file.

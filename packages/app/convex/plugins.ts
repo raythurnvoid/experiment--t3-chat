@@ -4064,7 +4064,7 @@ export const install_version = mutation({
 				serviceAccountId,
 				pluginName: pluginVersion.name,
 				status: "enabled",
-				// Existing installations keep their model until the audited switch.
+				// New installs start personal. Existing installations keep their model until the audited switch.
 				fileAccessModel: "personal",
 				managementAccess: "selected",
 				configurationYaml,

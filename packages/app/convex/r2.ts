@@ -47,6 +47,7 @@ import {
 	access_control_subject_validator,
 } from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import {
@@ -800,6 +801,16 @@ async function db_check_service_upload_file_refs(
 	const target = await ctx.db.get("plugin_service_storage_targets", args.targetId);
 	const installation = target ? await ctx.db.get("plugins_workspace_installations", target.installationId) : null;
 	if (!target || !installation) return "The plugin installation is gone";
+	// Conversion has no live token resolver. Keep its original account gate beside the pair check.
+	if (
+		(target.filePairId && !target.serviceAccountId) ||
+		!(await plugins_db_get_live_service_account(ctx, {
+			installation,
+			serviceAccountId: target.serviceAccountId ?? installation.serviceAccountId,
+		}))
+	) {
+		return "This plugin's service account has changed or ended";
+	}
 	const checked = await files_media_refs_db_check_plugin_added(ctx, {
 		organizationId: target.organizationId,
 		workspaceId: target.workspaceId,

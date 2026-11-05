@@ -4395,6 +4395,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				workspaceId: db.workspaceId,
 				installationId,
 				idempotencyKey: "meeting-1",
+				serviceAccountId: installation.serviceAccountId,
 				targetKey: "transcript",
 				requestFingerprint: "non-collaborative-test",
 				readOnly: true,
@@ -4478,7 +4479,13 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(changeApplied).toBe(true);
 	}
 
-	test.each([false, true])("service text conversion uses its saved pair for media read: %s", async (canRead) => {
+	test.each([
+		{ canRead: false, accountChange: "none" },
+		{ canRead: true, accountChange: "none" },
+		{ canRead: true, accountChange: "revoke" },
+		{ canRead: true, accountChange: "replace" },
+	])("service text conversion uses its saved pair for media read: %j", async (testCase) => {
+		const { canRead, accountChange } = testCase;
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture({
@@ -4544,6 +4551,37 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			content: `# Transcript\n\n![media](bonobo-file://${mediaId})`,
 			messageId: "personal-service-media",
 		});
+		if (accountChange !== "none") {
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const target = (await t.run((ctx) => ctx.db.get("plugin_service_storage_targets", targetId)))!;
+			if (accountChange === "revoke") {
+				expect(
+					await asOwner.mutation(api.access_control.revoke_service_account, {
+						membershipId: db.membershipId,
+						serviceAccountId: target.serviceAccountId!,
+					}),
+				).toEqual({ _yay: null });
+			} else {
+				const accountId = await t.run((ctx) =>
+					ctx.db.insert("access_control_service_accounts", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						name: "Replacement",
+						createdBy: db.userId,
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+						revokedAt: null,
+					}),
+				);
+				expect(
+					await asOwner.mutation(api.plugins.set_installation_service_account, {
+						membershipId: db.membershipId,
+						installationId: target.installationId,
+						serviceAccountId: accountId,
+					}),
+				).toEqual({ _yay: null });
+			}
+		}
 		await t.action(internal.r2.finalize_uploaded_text_file, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -4551,6 +4589,12 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			eventId: "personal-service-media",
 		});
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", upload.nodeId));
+		if (accountChange !== "none") {
+			expect(node?.textKind, "account changes refuse added media during conversion").toBeNull();
+			expect(node?.assetId, "refused conversion preserves the accepted upload").toBe(upload.assetId);
+			expect(r2Objects.has(upload.key), "the accepted bytes remain stored").toBe(true);
+			return;
+		}
 		expect(node?.textKind, "conversion follows the accepted target pair, not account grants").toBe(
 			canRead ? "rich_text" : null,
 		);

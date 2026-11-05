@@ -988,7 +988,7 @@ export async function public_api_files_organize_http_trash_list(args: {
 	const { principal, pluginCallId } = auth._yay;
 	const userId = public_api_visibility_user_id(principal);
 
-	// Close the claimed plugin call before returning a refusal, like the other Files routes.
+	// A run fails if a claimed call stays open. Close it before every refusal.
 	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
@@ -1001,7 +1001,7 @@ export async function public_api_files_organize_http_trash_list(args: {
 	};
 
 	if (principal.kind !== "user_api_key") {
-		if (principal.subject.kind !== "plugin_pair")
+		if (principal.subject.kind !== "plugin_pair") {
 			return {
 				status: 403,
 				body: await fail({
@@ -1010,17 +1010,19 @@ export async function public_api_files_organize_http_trash_list(args: {
 					errorCode: "permission_denied",
 				}),
 			} as const;
+		}
 		const denied: string | null = await ctx.runQuery(internal.public_api_files_organize.get_plugin_trash_access, {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId,
 			pairId: principal.subject.pairId,
 		});
-		if (denied !== null)
+		if (denied !== null) {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: denied, errorCode: "permission_denied" }),
 			} as const;
+		}
 	}
 	const body = await server_request_json_parse_and_validate(request, trash_list_body_validator);
 	if (body._nay) {
@@ -1274,7 +1276,7 @@ const TRASH_AREAS_MAX_ITEMS = 100;
 
 /**
  * Page every eligible consent for one pair, in consent order, using saved folder paths.
- * Human access changes reach this index through the worker. Do not filter the page again.
+ * The worker applies human access changes to by_pair_areaEligible. Do not filter the page again.
  */
 export const list_plugin_trash_areas_page = internalQuery({
 	args: {
@@ -1514,7 +1516,7 @@ export async function public_api_files_organize_http_trash_areas(args: {
 	const { principal, pluginCallId } = auth._yay;
 	const userId = public_api_visibility_user_id(principal);
 
-	// Close the claimed plugin call before returning a refusal, like the other Files routes.
+	// A run fails if a claimed call stays open. Close it before every refusal.
 	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
@@ -1527,7 +1529,7 @@ export async function public_api_files_organize_http_trash_areas(args: {
 	};
 
 	if (principal.kind !== "user_api_key") {
-		if (principal.subject.kind !== "plugin_pair")
+		if (principal.subject.kind !== "plugin_pair") {
 			return {
 				status: 403,
 				body: await fail({
@@ -1536,17 +1538,19 @@ export async function public_api_files_organize_http_trash_areas(args: {
 					errorCode: "permission_denied",
 				}),
 			} as const;
+		}
 		const denied: string | null = await ctx.runQuery(internal.public_api_files_organize.get_plugin_trash_access, {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId,
 			pairId: principal.subject.pairId,
 		});
-		if (denied !== null)
+		if (denied !== null) {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: denied, errorCode: "permission_denied" }),
 			} as const;
+		}
 	}
 	const body = await server_request_json_parse_and_validate(request, trash_areas_body_validator);
 	if (body._nay) {
@@ -1632,6 +1636,7 @@ export async function public_api_files_organize_http_trash_areas(args: {
 			if (!validate(v.object({ cursor: v.string() }), opened)) return await invalid_cursor();
 			cursor = opened.cursor;
 		}
+
 		let result: list_plugin_trash_areas_page_Result;
 		try {
 			result = await ctx.runQuery(internal.public_api_files_organize.list_plugin_trash_areas_page, {
@@ -1650,11 +1655,14 @@ export async function public_api_files_organize_http_trash_areas(args: {
 				throw error;
 			return await invalid_cursor();
 		}
-		if (result.status === "denied")
+		if (result.status === "denied") {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 			} as const;
+		}
+
+		// Any saved-view change can change these paths. Compare the full view before closing the page.
 		const [currentView, currentMembership] = await Promise.all([
 			ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
 			ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
@@ -1663,13 +1671,16 @@ export async function public_api_files_organize_http_trash_areas(args: {
 			!currentView ||
 			JSON.stringify(currentView) !== JSON.stringify(view) ||
 			JSON.stringify(currentMembership) !== JSON.stringify(membership)
-		)
+		) {
 			return await invalid_cursor();
+		}
+
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "succeeded",
 			responseStatus: 200,
 		});
+
 		return {
 			status: 200,
 			body: {
@@ -1686,6 +1697,7 @@ export async function public_api_files_organize_http_trash_areas(args: {
 			headers: { "Cache-Control": "no-store" },
 		} as const;
 	}
+
 	let afterKey: TrashAreaKey | null = null;
 	if (body._yay.cursor != null) {
 		let opened: unknown;
@@ -1695,8 +1707,9 @@ export async function public_api_files_organize_http_trash_areas(args: {
 			if (!(error instanceof ConvexError)) throw error;
 			return await invalid_cursor();
 		}
-		if (!validate(v.object({ afterKey: v.union(trash_area_key_validator, v.null()) }), opened))
+		if (!validate(v.object({ afterKey: v.union(trash_area_key_validator, v.null()) }), opened)) {
 			return await invalid_cursor();
+		}
 		afterKey = opened.afterKey;
 	}
 

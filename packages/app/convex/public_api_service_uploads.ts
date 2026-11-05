@@ -1143,6 +1143,7 @@ export const create_upload_target = internalMutation({
 			workspaceId: args.principal.workspaceId,
 			installationId: installation._id,
 			filePairId: authorized._yay.filePairId,
+			serviceAccountId: authorized._yay.serviceAccountId,
 			idempotencyKey: idempotencyKey._yay,
 			targetKey: targetKey._yay,
 			requestFingerprint,

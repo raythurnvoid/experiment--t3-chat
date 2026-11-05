@@ -3,7 +3,7 @@ import { importSPKI, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
-import { api, internal } from "./_generated/api.js";
+import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
@@ -736,6 +736,11 @@ describe("personal file session pins", () => {
 				)
 				.unique();
 			await ctx.db.patch("organizations_membership_lifetimes", lifetime!._id, { lifetime: lifetime!.lifetime + 1 });
+			// Isolate the lifetime check from the successful refresh above.
+			await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "plugins_ui_session_mint",
+				key: fixture.membership.userId,
+			});
 		});
 		expect(
 			(

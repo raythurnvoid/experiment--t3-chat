@@ -169,6 +169,10 @@ write, seal or token renewal. Switching waits for the installation's live runs t
 finish. Audit accepted work before switching, then remove the old checks after it
 settles. Non-Files permissions keep their own live human checks.
 
+New upload targets also pin their service account. Background conversion checks
+the live trusted binding before adding file references. Revocation or replacement
+keeps the accepted upload as a stored file; account grants never expand personal consent.
+
 The exclusive `{ kind: "plugin_pair", pairId }` file subject reads only open
 consents for that pair. It has no owner, role, account, public or workspace fallback,
 and never grants permission management. A selected file grants only that file.
@@ -916,10 +920,9 @@ Files work like a file system. Everyone who can open a folder sees all of its it
 cannot open is a **locked row**: name, type, size and created/updated dates only. Opening it answers
 403 / "Permission denied". Inside a locked folder every path answers the same 403, whether it exists
 or not. Recursive reads (`ls -R`, `find`, `tree`, API `recursive: true`) stop at locked folders and
-say "Permission denied". One subject per request: a user or a service account. The one exception is
-a plugin: it acts as its person and is also limited by its service account (like a GitHub app acting
-for a user), so its check asks both, from index lookups only. Its read budgets are sized for both
-checks; the plugin cases in the `internal_search_name_saved` cost tests measure the worst one.
+say "Permission denied". Each request uses one subject: a user, a service account, or a personal
+plugin pair. Personal plugins use applied consent. Old-model plugins check both the person and
+account until their audited switch. All checks use index lookups.
 
 **Why hiding was removed. Do not bring it back.**
 
@@ -927,7 +930,7 @@ checks; the plugin cases in the `internal_search_name_saved` cost tests measure 
   an index already holds "what this reader can see". That multiplies by files × readers, and every
   share change rewrites it. Reading a page and dropping rows instead gives short or empty pages and
   cursors that show where hidden rows are.
-- A plugin list would need a second per-row filter for its account. Under hiding that filter gives
+- An old-model plugin list would need a second per-row filter for its account. Under hiding that filter gives
   short or empty pages.
 - With locked rows, a folder list reads one index range for everyone. A recursive read only has to
   check the restricted folders on its way, not every row.
@@ -941,8 +944,8 @@ checks; the plugin cases in the `internal_search_name_saved` cost tests measure 
   `EACCES` ("Permission denied"); `find` prints `find: '<path>': Permission denied` and goes on. Samba
   has `hide unreadable`, off by default.
 - Linux Landlock: a sandboxed process gets a set of allowed folders on top of its user's rights.
-  Plugin requests work like this here: every file check of a plugin run, page or service grant also
-  needs the plugin's service account to pass (see "Service accounts").
+  Personal plugin consent here also names allowed files and folders. Human access changes reach
+  applied consent through the worker (see "Personal plugin file grants").
 - Do not add a hide switch (access-based enumeration) to Files. It brings back every problem above.
 
 **The leak rule.** A locked row is visible; its content, custom fields and members are not. Any output
@@ -1187,10 +1190,10 @@ no id field, and only `content.read`. Decided 2026-10-27.
 - **View only, never more.** It never gives `content.write` or `content.permissions.manage`. People
   added on the list keep their own level, so "everyone can view, these people can edit" is the list
   plus this grant.
-- **Users only.** Service accounts get nothing from it, and plugin sessions get nothing on their own:
-  a plugin session acts as its person, but its service account must also pass, and this grant does
-  not reach an account. Share the item with the plugin's service account to give it access. The
-  extended chain (added people) and the public-link checks never read it.
+- **Users only.** Service accounts and personal plugin pairs get nothing from this grant.
+  A person can select a readable item in **My file permissions** for a personal plugin.
+  Old-model plugins still need their account grant too. The extended chain (added people)
+  and the public-link checks never read this grant.
 - **Only where the workspace has access above.** `set_node_workspace_view` turns it on only when
   the item's parent area is open, or is a restricted folder that has this grant too. Inside any
   other restricted folder it refuses: it would open the item past that folder's list, and members
@@ -1595,10 +1598,11 @@ change this: a key without `files:download` can add a reference, and visitors se
 it is public. Only the link and upload doors in "The public flag" below set the flag. A save reads
 no images, so it stays fast.
 
-A plugin write that adds a new `bonobo-file://` ref to a file the plugin cannot read itself (its
-person and its service account must both read it) is refused with 403 `file_reference_denied`, and one that adds more than 50 new refs with 400
+A plugin write that adds a new `bonobo-file://` ref needs applied Read on the referenced file.
+Old-model plugins check both the person and account instead. A denied ref gets 403
+`file_reference_denied`, and more than 50 new refs get 400
 `file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs the file already had stay,
-and an upload run may embed the file it was started for. A write that keeps old refs is refused
+and only an old-model upload run has the source-file exception. A write that keeps old refs is refused
 with 409 when the file changed after the route read them. A plugin service upload of Markdown with
 such a ref stays a stored file. The check reads the plugin's text
 and that text after one rebuild from the document, because the rebuild is not always the same text
@@ -1808,7 +1812,7 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   `allowDbFilesMkdir: false` refuses all app-file writes while leaving thread `/tmp` writable.
   Code execution uses separate current/home read grants with one shared byte budget. The public
   API checks each grant and its original source again. New internal callers must keep these checks.
-- **Plugin runs have platform file scopes, but writes still answer to the actor and source file.** A
+- **Old-model plugin runs still use actor/source and account grants until their audited switch.** A
   run gets the platform baseline needed to download its exact triggering upload and write Markdown
   siblings. `db_revalidate_file_write_principal` then reloads the run, installation, source node, and
   actor's active membership in both the prepare and publish transactions. It requires the actor's
@@ -1816,7 +1820,9 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   write-policy check also protects the output destination, even for an owner-backed run. The pinned
   service account must independently hold the required grant on the actual target. This does not turn
   accepted plugin capabilities into ACL permissions; it is a live actor/source ceiling on the
-  platform baseline.
+  platform baseline. Personal runs use applied consent from **My file permissions** instead.
+  They need applied Read for source metadata and applied Edit on the parent for a new sibling.
+  Their live credential, tenant, account binding and membership checks still apply.
 - **The global presence roster is readable by any account, and the `listRoom` gate does not change
   that.** Read this bullet as one fact, not two: `listRoom` refuses a caller with no identity and
   refuses `app_presence_GLOBAL_ROOM_ID` outright, and **that closes one door of two**. The other door
