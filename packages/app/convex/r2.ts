@@ -788,8 +788,8 @@ export const get_service_upload_target_by_asset_id = internalQuery({
 });
 
 /**
- * Why a plugin service upload may not add these app file refs, or null when it may: the plugin's own
- * write rule (`files_media_refs_db_check_plugin_added`). The upload's author is the grant's member.
+ * Check the upload's original account binding and saved file access before adding app file refs.
+ * Return a refusal message, or null when both checks pass.
  */
 async function db_check_service_upload_file_refs(
 	ctx: MutationCtx,
@@ -801,7 +801,8 @@ async function db_check_service_upload_file_refs(
 	const target = await ctx.db.get("plugin_service_storage_targets", args.targetId);
 	const installation = target ? await ctx.db.get("plugins_workspace_installations", target.installationId) : null;
 	if (!target || !installation) return "The plugin installation is gone";
-	// Conversion has no live token resolver. Keep its original account gate beside the pair check.
+	// Conversion has no live token resolver. Refuse personal targets without a saved account.
+	// Old targets use the installation's account. Remove that fallback after the rollout audit.
 	if (
 		(target.filePairId && !target.serviceAccountId) ||
 		!(await plugins_db_get_live_service_account(ctx, {

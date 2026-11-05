@@ -4394,8 +4394,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				installationId,
-				idempotencyKey: "meeting-1",
 				serviceAccountId: installation.serviceAccountId,
+				idempotencyKey: "meeting-1",
 				targetKey: "transcript",
 				requestFingerprint: "non-collaborative-test",
 				readOnly: true,
@@ -4484,7 +4484,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		{ canRead: true, accountChange: "none" },
 		{ canRead: true, accountChange: "revoke" },
 		{ canRead: true, accountChange: "replace" },
-	])("service text conversion uses its saved pair for media read: %j", async (testCase) => {
+	])("service text conversion checks consent and its original account: %j", async (testCase) => {
 		const { canRead, accountChange } = testCase;
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
