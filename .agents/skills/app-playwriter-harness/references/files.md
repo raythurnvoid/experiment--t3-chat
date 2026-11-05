@@ -1210,6 +1210,22 @@ account and folder. New accounts and keys are data writes and need task authoriz
 5. Clear only authorized QA state and revoke newly created keys/accounts. Keep QA tabs open.
    Never print secrets, key reveal text, or private file bodies into logs.
 
+### Service Account Key And Trash
+
+Done 2026-11-04 in `chitchat-qa/xfer-qa-0914` (catalog entry in `qa-data`). A revoked service
+account cannot come back, so each run makes a new one.
+
+1. Setup as the owner, without the UI: `files_sharing:restrict_node`,
+   `access_control:create_service_account` and `access_control:set_service_account_grant`
+   through `convex run --identity` (the shape is in `snippets.md`). Give the account one grant
+   on one restricted folder. Move one file inside it and one file outside it to Trash.
+2. Make the key in the UI: pick the account in the Identity combobox (`api-keys.md`). Run every
+   check in the one PowerShell call that moves the key from the clipboard into `T3_API_KEY`.
+3. Expect: `trash/areas` lists only that folder; `trash/list` of the open area and of other
+   restricted areas is 403; area and folder mode list the inside file; restore of the outside
+   file is refused with `Permission denied` and `path: null`; restore of the inside file works.
+4. Revoke the key and the account, move the fixture to Trash, and add a catalog line.
+
 ### Non-Collaborative File Fixture
 
 Use this when a check needs a file with collaboration turned off (a Council-note-shaped file). Build your own; never edit or delete the read-only Council meeting notes under `/meetings/`, they are shared QA fixtures.
