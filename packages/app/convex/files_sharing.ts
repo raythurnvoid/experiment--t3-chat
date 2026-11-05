@@ -44,6 +44,7 @@ import {
 import { files_nodes_db_resolve_parent_restricted_scope } from "./files_write_policy_db.ts";
 import {
 	files_nodes_db_set_extended_scope,
+	files_nodes_db_has_extended_grants,
 	files_nodes_db_set_restricted_scope,
 	files_sharing_db_set_node_public,
 } from "./files_sharing_db.ts";
@@ -1447,12 +1448,7 @@ export const remove_node_share_grant = mutation({
 
 		if (node.parentExtendedScopeNodeId !== undefined) {
 			// Read after the delete above. A mutation sees its own writes.
-			const left = await db_list_scope_grants(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				scopeNodeId: node._id,
-			});
-			if (left.length === 0) {
+			if (!(await files_nodes_db_has_extended_grants(ctx, { nodeId: node._id }))) {
 				await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: false });
 				await files_subtree_ops_db_start_rebuild(ctx, {
 					kind: "scope",
@@ -1793,9 +1789,9 @@ export const unrestrict_node = mutation({
 			workspaceId: membership.workspaceId,
 			scopeNodeId: node._id,
 		});
-		// The list stays, so the item keeps its people, roles, and service accounts as added people: it
-		// becomes an extended root. Added people can view or edit only, so a kept manage becomes edit.
-		if (group_grants_into_entries(grants).length > 0) {
+		// Named shares and open plugin selections keep this anchor. Added people can view or edit only,
+		// so a kept manage becomes edit.
+		if (await files_nodes_db_has_extended_grants(ctx, { nodeId: node._id })) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 		}
 		for (const grant of grants) {

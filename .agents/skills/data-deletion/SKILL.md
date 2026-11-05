@@ -21,6 +21,17 @@ Load each companion skill that owns the affected boundary:
 - Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
+- Personal plugin file consents drain before their pair, installation or saved
+  root. Pair cleanup reads `plugins_file_consents.by_pair` in batches. User,
+  installation and workspace cleanup select pairs through `by_user`,
+  `by_installation_user_lifetime` and `by_organization_workspace`. Saved-root
+  purge uses the `by_rootNode_open(rootNodeId)` prefix, including ended consents.
+  The purge marker refuses new selections while it drains. Cleanup queues one
+  empty-root check per affected node; ordinary shares or other open consents
+  keep that root alive. Uninstall and user cleanup preserve saved Files.
+  Workspace cleanup removes grant jobs and authority clocks after pairs. The
+  organization-wide job and clock go beside the organization doc. Late workers
+  stop on the missing tenant or workspace purge marker.
 - Subtree op deletion also removes its covered-path records. Large sets leave a path cleanup job.
   Workspace purge drains these jobs after the ops, including their saved input chunks. Cleanup must
   finish even when the original Activity is gone. Never delete only the job marker: incomplete

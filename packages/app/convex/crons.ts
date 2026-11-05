@@ -23,6 +23,8 @@ crons.cron("cleanup unconfirmed comments", "10 * * * *", internal.channels_messa
 
 crons.cron("retry messages jobs", "* * * * *", internal.channels_notifications.retry_due_jobs, {});
 
+crons.cron("retry plugin file access updates", "* * * * *", internal.plugins_file_grants.recover_due, {});
+
 // Once daily at 05:00 UTC.
 crons.cron("cleanup old snapshots", "0 5 * * *", internal.files_nodes.cleanup_old_snapshots, {});
 

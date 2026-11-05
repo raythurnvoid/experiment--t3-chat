@@ -45,6 +45,7 @@ import {
 } from "./plugins_data.ts";
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
+import { plugins_file_grants_db_drain_pair } from "./plugins_file_grants_cleanup.ts";
 import { plugins_mcp_db_delete_user_batch, plugins_mcp_db_revoke_grant } from "./plugins_mcp.ts";
 import { value_store_db_delete_user_batch } from "./value_store.ts";
 import { files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
@@ -1239,6 +1240,23 @@ async function db_purge_organization_workspace_content_batch(
 		}
 	}
 
+	const pluginFilePair = await ctx.db
+		.query("plugins_file_pairs")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.first();
+	if (pluginFilePair) return await plugins_file_grants_db_drain_pair(ctx, { pair: pluginFilePair, batchSize });
+	for (const table of ["plugins_file_grant_jobs", "plugins_file_authority_versions"] as const) {
+		const row = await ctx.db
+			.query(table)
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+			)
+			.first();
+		if (row) await ctx.db.delete(table, row._id);
+	}
+
 	// Stored plugin documents, their reservations, tombstones, accounting docs, and service grants.
 	// One pass covers every installation in the workspace, and it runs before the installations
 	// below so no row is left pointing at an installation that is already gone.
@@ -2058,8 +2076,13 @@ async function db_delete_organization_batch(
 			)
 			.unique();
 		if (accessVersion) await ctx.db.delete("files_access_versions", accessVersion._id);
-		// Organization-wide Messages work has no workspace purge to remove it.
-		for (const table of ["channels_authority_jobs", "channels_authority_versions"] as const) {
+		// Organization-wide work has no workspace purge to remove it.
+		for (const table of [
+			"channels_authority_jobs",
+			"channels_authority_versions",
+			"plugins_file_grant_jobs",
+			"plugins_file_authority_versions",
+		] as const) {
 			const row = await ctx.db
 				.query(table)
 				.withIndex("by_organization_workspace", (q) =>
@@ -3134,6 +3157,14 @@ async function db_drain_user_finalization_batch(
 	const serviceGrantCount = await db_drain_user_plugin_service_grants_batch(ctx, args);
 	if (serviceGrantCount > 0) {
 		return { done: false, deletedCount: serviceGrantCount };
+	}
+
+	const pluginFilePair = await ctx.db
+		.query("plugins_file_pairs")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.first();
+	if (pluginFilePair) {
+		return await plugins_file_grants_db_drain_pair(ctx, { pair: pluginFilePair, batchSize: args.batchSize });
 	}
 
 	const membershipCount = await db_drain_user_memberships_batch(ctx, args);

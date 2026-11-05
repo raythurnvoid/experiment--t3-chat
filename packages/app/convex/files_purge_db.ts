@@ -185,6 +185,14 @@ export async function files_purge_db_drain_node_batch(
 		await ctx.db.patch("files_nodes", nodeId, { purgeRunId: runId });
 	}
 
+	// Include ended consents. This node cannot accept new ones after the purge starts.
+	const pluginConsents = await ctx.db
+		.query("plugins_file_consents")
+		.withIndex("by_rootNode_open", (q) => q.eq("rootNodeId", nodeId))
+		.take(DRAIN_BATCH_SIZE);
+	for (const consent of pluginConsents) await ctx.db.delete("plugins_file_consents", consent._id);
+	if (pluginConsents.length > 0) return { kind: "more" as const };
+
 	// Drafts on the node, of every user. Discard releases their replacement files and Yjs states.
 	// Temporary, capture and retired Yjs states stay with their owners, which expire or clean them
 	// up on their own, like after `files_nodes_db_hard_delete_node`.

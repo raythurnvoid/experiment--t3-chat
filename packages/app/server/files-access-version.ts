@@ -1,14 +1,14 @@
-// Permission answers may live in a saved resolver frame. These clocks cover every database field
-// used by the human Files permission check. User, chat and source authority is checked live too.
-//
-// Account grants and service account roles stay out on purpose. Only saved `find --content-type`
-// frames read these clocks, and only a person acting alone starts one. If an account or a plugin can
-// ever start a type query, add those fields here first.
+// Human authority changes update Files resolver clocks, Messages summaries and personal plugin
+// grants. Each has its own field set. Plugin readers use applied grants while their worker catches up.
+// Account grants and account roles are not human authority. Credential checks stay separate.
+// Saved `find --content-type` frames still cover people only. Add account authority fields before
+// allowing accounts or plugins to start those queries.
 
 import type { Id, TableNames } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { channels_notifications_db_advance_authority } from "./channels-notifications.ts";
+import { plugins_file_grants_db_advance_authority } from "./plugins-file-grants.ts";
 
 const FIELDS: Partial<Record<TableNames, readonly string[]>> = {
 	organizations: ["ownerUserId", "defaultWorkspaceId"],
@@ -57,6 +57,17 @@ const MESSAGES_FIELDS = {
 	files_saved_places: [...MESSAGES_FILE_FIELDS, "cohortId", "view"],
 };
 
+const PLUGIN_FILE_FIELDS = [...MESSAGES_FILE_FIELDS, "isRestrictedScopeRoot", "treePath", "archiveOperationId"];
+const PLUGIN_FIELDS: Partial<Record<TableNames, readonly string[]>> = {
+	...FIELDS,
+	organizations_workspaces: ["organizationId", "pluginDataPurgeStartedAt"],
+	organizations_workspaces_users: [...FIELDS.organizations_workspaces_users!, "pendingOrganizationRemoval"],
+	files_nodes: [...PLUGIN_FILE_FIELDS, "moveCohortId"],
+	files_saved_places: [...PLUGIN_FILE_FIELDS, "cohortId", "view"],
+	files_move_cohorts: ["visibleView"],
+	plugins_file_consents: ["requestedLevel", "revision", "open"],
+};
+
 type Fields = Record<string, unknown>;
 type Scope = { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> | null };
 
@@ -98,12 +109,17 @@ export async function files_access_version_db_get(
 export function files_access_version_db_wrap(ctx: MutationCtx) {
 	const scopes = new Map<string, Scope>();
 	const messageScopes = new Map<string, Scope>();
+	const pluginScopes = new Map<string, Scope>();
 	const raw = ctx.db;
 	function mark(into: Map<string, Scope>, table: TableNames, value: Fields | null, id: string) {
 		if (!value) return;
 		if (
 			table === "access_control_permission_grants" &&
-			(value.permission !== "content.read" || value.principalKind === "service_account")
+			(value.principalKind === "service_account" ||
+				(into === pluginScopes
+					? !["content.read", "content.write", "content.permissions.manage"].includes(String(value.permission)) ||
+						!["organization", "workspace", "file"].includes(String(value.resourceKind))
+					: value.permission !== "content.read"))
 		)
 			return;
 		const organizationId = raw.normalizeId(
@@ -138,6 +154,14 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 						mark(scopes, table, value, id);
 						mark(messageScopes, table, value, id);
 					}
+					if (
+						PLUGIN_FIELDS[table] &&
+						table !== "files_nodes" &&
+						table !== "files_saved_places" &&
+						table !== "files_move_cohorts" &&
+						(table !== "plugins_file_consents" || value.open === true)
+					)
+						mark(pluginScopes, table, value, id);
 					return id;
 				};
 			if (property === "patch" || property === "replace" || property === "delete")
@@ -145,7 +169,7 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 					const write = Reflect.get(target, property) as (...args: unknown[]) => Promise<void>;
 					const tableFirst = args.length === (property === "delete" ? 2 : 3);
 					if (!tableFirst) {
-						for (const table of Object.keys(MESSAGES_FIELDS) as TableNames[])
+						for (const table of Object.keys(PLUGIN_FIELDS) as TableNames[])
 							if (raw.normalizeId(table, String(args[0])))
 								throw should_never_happen("Authority writes must name their table", { table, id: args[0] });
 						return await Reflect.apply(write, target, args);
@@ -154,18 +178,41 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 					const id = args[1] as Id<TableNames>;
 					const fields = FIELDS[table];
 					const messageFields = MESSAGES_FIELDS[table];
+					const pluginFields = PLUGIN_FIELDS[table];
 					const value = property === "delete" ? null : (args[2] as Fields);
 					const captureFiles = fields && (property !== "patch" || fields.some((field) => field in value!));
 					const captureMessages =
 						messageFields && (property !== "patch" || messageFields.some((field) => field in value!));
-					if (!captureFiles && !captureMessages)
-						return await Reflect.apply(write, target, args);
+					const capturePlugins =
+						pluginFields && (property !== "patch" || pluginFields.some((field) => field in value!));
+					if (!captureFiles && !captureMessages && !capturePlugins) return await Reflect.apply(write, target, args);
 					const old = (await raw.get(table, id)) as Fields | null;
 					await Reflect.apply(write, target, args);
 					const next = property === "delete" ? null : property === "replace" ? value : { ...old, ...value };
 					if (captureFiles && fields.some((field) => JSON.stringify(old?.[field]) !== JSON.stringify(next?.[field]))) {
 						mark(scopes, table, old, id);
 						mark(scopes, table, next, id);
+					}
+					if (capturePlugins) {
+						let beforePlugin = old;
+						let afterPlugin = next;
+						let changed = pluginFields.some((field) => JSON.stringify(old?.[field]) !== JSON.stringify(next?.[field]));
+						if (table === "files_nodes" && (old?.moveCohortId || next?.moveCohortId)) changed = false;
+						else if (table === "files_saved_places") {
+							if (property === "delete") changed = false;
+							else {
+								[beforePlugin, afterPlugin] = await Promise.all([selected_place(old), selected_place(next)]);
+								changed = PLUGIN_FILE_FIELDS.some(
+									(field) => JSON.stringify(beforePlugin?.[field]) !== JSON.stringify(afterPlugin?.[field]),
+								);
+							}
+						} else if (table === "files_move_cohorts" && property === "delete") changed = false;
+						// Closed consent already clears its own grant. Worker apply must not queue itself.
+						else if (table === "plugins_file_consents" && next?.open !== true) changed = false;
+						if (changed) {
+							mark(pluginScopes, table, beforePlugin, id);
+							mark(pluginScopes, table, afterPlugin, id);
+						}
 					}
 					if (!captureMessages) return;
 					if (table === "files_nodes") {
@@ -212,6 +259,9 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 			for (const scope of messageScopes.values())
 				await channels_notifications_db_advance_authority({ db: raw, scheduler: ctx.scheduler }, scope);
 			messageScopes.clear();
+			for (const scope of pluginScopes.values())
+				await plugins_file_grants_db_advance_authority({ db: raw, scheduler: ctx.scheduler }, scope);
+			pluginScopes.clear();
 		},
 	};
 }

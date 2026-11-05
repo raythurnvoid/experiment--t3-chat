@@ -49,4 +49,84 @@
 			color: var(--color-red-09);
 		}
 	}
+
+	.PluginsMyFilePermissions {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 12px;
+		min-width: 0;
+		padding-block: 24px;
+		border-block-end: 1px solid var(--color-base-1-06);
+		overflow-wrap: anywhere;
+
+		& > h2,
+		& > p {
+			margin: 0;
+		}
+
+		& > h2 {
+			font-size: 18px;
+		}
+
+		& > .MyInput {
+			align-self: stretch;
+		}
+
+		& > [role="alert"] {
+			color: var(--color-red-11);
+		}
+	}
+
+	.PluginsMyFilePermissions-target {
+		max-width: 100%;
+		height: auto;
+		min-height: 36px;
+		white-space: normal;
+		text-align: start;
+	}
+
+	.PluginsMyFilePermissions-choices {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.PluginsMyFilePermissions-note,
+	.PluginsMyFilePermissions-feedback {
+		font-size: 15px;
+		line-height: 1.5;
+		color: var(--color-fg-08);
+	}
+
+	.PluginsMyFilePermissions-list {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		align-self: stretch;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.PluginsMyFilePermissions-item {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
+		min-width: 0;
+		padding-block-start: 12px;
+		border-block-start: 1px solid var(--color-base-1-06);
+
+		& > p {
+			margin: 0;
+			font-size: 15px;
+			color: var(--color-fg-08);
+		}
+
+		& > p:first-child {
+			font-size: 16px;
+			color: var(--color-fg-11);
+		}
+	}
 }

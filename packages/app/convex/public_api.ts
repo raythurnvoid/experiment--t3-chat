@@ -460,6 +460,8 @@ async function get_workspace_content_permissions(
 	},
 ) {
 	const { subject } = args;
+	// Personal plugin selections give no workspace-wide permission.
+	if (subject.kind === "plugin_pair") return { read: false, write: false };
 	if (subject.kind === "service_account") {
 		// An account often holds folder grants only. The route needs to know only that the account
 		// reaches some file. Each file check then decides with the account's own grants.

@@ -136,6 +136,49 @@ not import registered Convex handlers. Private channel member changes use that m
 authority revision. Live membership and channel/file access checks remain required; clocks never
 grant access. See the channels spec for counts, restore work and exact membership lifetime pins.
 
+## Personal plugin file grants
+
+The first release adds personal selections and their worker. Existing plugin
+credentials still use the person and installation account until the audited switch.
+The new controls say this. Do not copy account grants into personal consent.
+
+`plugins_file_pairs` binds one person, installation and exact membership lifetime.
+`plugins_file_consents` stores each selected saved item, requested View/Edit level,
+applied level, open/ended state and Trash-area eligibility. A new selection starts
+pending with no applied access. A fresh selection after removal gets a new doc.
+The personal doors in `plugins_access.ts` resolve the signed-in person; managers
+cannot select files for somebody else. Lists use `by_pair` pages, including ended
+and unreadable selections, so a person can still remove them.
+
+**Gradual access is intentional.** Changes to a person's access reach these grants
+in small background steps. Both reads and writes use the applied level until its
+step finishes. Do not add a workspace-wide pause or a second live-person check.
+The worker updates applied access and indexed eligibility together. Credential,
+tenant and membership-lifetime checks remain separate live gates.
+
+The exclusive `{ kind: "plugin_pair", pairId }` file subject reads only open
+consents for that pair. It has no owner, role, account, public or workspace fallback,
+and never grants permission management. A selected file grants only that file.
+A folder follows the existing extended-scope chain up to a restricted boundary;
+a separately selected restricted root starts its own area. Ordinary shares and
+open plugin consents keep the same extended root alive.
+
+`server/files-access-version.ts` captures human read/write/manage, membership,
+role, owner and saved scope changes in its existing mutation wrapper. It also
+captures selected Move publication, Trash state and requested consent changes.
+Account grants and applied-only updates do not request a new pass.
+`plugins_file_authority_versions` pins each source scope. The worker in
+`plugins_file_grants.ts` pages open consents, then checks Read, checks Edit when
+needed, and applies the result in separate transactions. It checks source pins
+and consent revision before applying. These pins order work; readers do not wait
+for them. Lost Edit lowers applied access to View while keeping requested Edit.
+Lost View ends consent. Later access does not reopen it or create child consent.
+Finished jobs are deleted; `recover_due` retries failed callbacks by `by_dueAt`.
+
+Cleanup drains consents before their pair or saved root. User, installation and
+workspace drains use their pair indexes. Empty extended roots retire through the
+normal scope worker. See the [deletion spec](../data-deletion/SKILL.md).
+
 ## Service accounts
 
 Service accounts are workspace identities for software. They are not users and have no roles,
@@ -1181,8 +1224,9 @@ inside it. Everybody who had access before keeps it: added people only add acces
   root for a grant. A pointer at a node that is no longer an extended root (its job still runs)
   follows that node's own pointer, at most 8 dead hops in a row. The chain stops closed at a missing
   node, another tenant, a root not above the node, or a root in another restricted area. There is no
-  depth cap: the 500-level cost test in `files_sharing.extended.test.ts` stays under the limits. The
-  checker caches each root's answer per request.
+  depth cap. The checker caches each root's answer per request. Cost tests in
+  `files_sharing.extended.test.ts` use 64 nested folders, following the
+  [Files depth test rule](../../../AGENTS.md#reads-must-scale-no-scans).
 - Levels: added people get **Can view** or **Can edit** only. `manage` is only on a restricted root
   or from the workspace, so `content.permissions.manage` never comes from the chain. Message:
   `access_control_ADDED_PEOPLE_LEVEL_MESSAGE`.

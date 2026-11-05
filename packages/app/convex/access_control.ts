@@ -38,6 +38,7 @@ import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_share_links_db_delete_for_node } from "./files_share_links_db.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import {
 	organizations_membership_lifetimes_db_get,
 	organizations_membership_lifetimes_db_record,
@@ -1159,8 +1160,8 @@ async function db_has_account_scope_grant(
 }
 
 /**
- * Who one request acts as. Every file check takes one subject: a person, a person acting through a
- * plugin, or a service account alone. Only a plugin subject asks about a user and an account together.
+ * Who one request acts as. People and service accounts use ordinary sharing. Old plugin credentials
+ * check their person and account together. New plugin credentials use their own applied file grants.
  */
 export const access_control_subject_validator = v.union(
 	v.object({
@@ -1185,16 +1186,21 @@ export const access_control_subject_validator = v.union(
 		kind: v.literal("service_account"),
 		serviceAccountId: v.id("access_control_service_accounts"),
 	}),
+	v.object({
+		kind: v.literal("plugin_pair"),
+		pairId: v.id("plugins_file_pairs"),
+	}),
 );
 
 export type access_control_Subject = Infer<typeof access_control_subject_validator>;
 
 /**
- * One principal the checker asks about. A plugin subject asks about two: its person and its account.
+ * One principal the checker asks about. Old plugin subjects still ask about a person and an account.
  */
 type CheckedPrincipal =
 	| { kind: "user"; userId: Id<"users"> }
-	| { kind: "service_account"; serviceAccountId: Id<"access_control_service_accounts"> };
+	| { kind: "service_account"; serviceAccountId: Id<"access_control_service_accounts"> }
+	| { kind: "plugin_pair"; pairId: Id<"plugins_file_pairs"> };
 
 type FileNodeRef = {
 	_id: Id<"files_nodes">;
@@ -1259,6 +1265,21 @@ export function access_control_create_file_checker(
 	const get_node = (nodeId: Id<"files_nodes">) =>
 		once(`node:${nodeId}`, () => files_saved_placement_db_get_node(ctx.db, nodeId));
 
+	const pair_root_allows = async (
+		pairId: Id<"plugins_file_pairs">,
+		rootNodeId: Id<"files_nodes">,
+		permission: access_control_Permission,
+	) => {
+		if (permission !== "content.read" && permission !== "content.write") return false;
+		const consent = await once(`consent:${pairId}:${rootNodeId}`, () =>
+			ctx.db
+				.query("plugins_file_consents")
+				.withIndex("by_pair_rootNode_open", (q) => q.eq("pairId", pairId).eq("rootNodeId", rootNodeId).eq("open", true))
+				.first(),
+		);
+		return consent?.appliedLevel === "write" || (permission === "content.read" && consent?.appliedLevel === "read");
+	};
+
 	/** "Add people": a grant on an extended root at or above the node. Each root's answer is shared. */
 	const chain_allows = async (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
@@ -1282,6 +1303,9 @@ export function access_control_create_file_checker(
 			get_node,
 			root_allows: (rootId) =>
 				once(`root:${principal.kind}:${rootId}:${permission}`, async () => {
+					if (principal.kind === "plugin_pair") {
+						return await pair_root_allows(principal.pairId, rootId, permission);
+					}
 					if (principal.kind === "user") {
 						const userId = principal.userId;
 						return await has_restricted_file_permission(ctx, {
@@ -1315,6 +1339,22 @@ export function access_control_create_file_checker(
 		scopeNodeId: Id<"files_nodes"> | null,
 		permission: access_control_Permission,
 	) => {
+		if (principal.kind === "plugin_pair") {
+			if (!node) return false;
+			if (await pair_root_allows(principal.pairId, node._id, permission)) return true;
+			if (scopeNodeId) {
+				const scope = await get_node(scopeNodeId);
+				const full = node.treePath === undefined ? await get_node(node._id) : node;
+				if (
+					scope?.kind === "folder" &&
+					full?.treePath?.startsWith(scope.treePath) &&
+					(await pair_root_allows(principal.pairId, scopeNodeId, permission))
+				) {
+					return true;
+				}
+			}
+			return await chain_allows(tenant, principal, node, permission);
+		}
 		if (principal.kind === "service_account") {
 			const base = await once(`account:${scopeNodeId}:${permission}`, () =>
 				access_control_db_has_permission(ctx, {
@@ -1377,6 +1417,24 @@ export function access_control_create_file_checker(
 			return subject.kind === "user" && subject.plugin === null;
 		}
 
+		if (subject.kind === "plugin_pair") {
+			if (!node || (permission !== "content.read" && permission !== "content.write")) return false;
+			const pair = await once("pair", () => plugins_file_grants_db_validate_pair(ctx, { pairId: subject.pairId }));
+			if (!pair || pair.organizationId !== tenant.organizationId || pair.workspaceId !== tenant.workspaceId) {
+				return false;
+			}
+			const saved = await get_node(node._id);
+			if (!saved || saved.organizationId !== tenant.organizationId || saved.workspaceId !== tenant.workspaceId) {
+				return false;
+			}
+			return await scope_allows(
+				tenant,
+				subject,
+				saved,
+				await live_scope(tenant, saved.restrictedScopeNodeId),
+				permission,
+			);
+		}
 		const scopeNodeId = node ? await live_scope(tenant, node.restrictedScopeNodeId) : null;
 		if (subject.kind === "service_account") {
 			return await scope_allows(tenant, subject, node, scopeNodeId, permission);

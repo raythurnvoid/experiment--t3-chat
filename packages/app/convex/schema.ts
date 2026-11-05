@@ -7742,6 +7742,74 @@ const app_convex_schema = defineSchema({
 		.index("by_pluginName_status", ["pluginName", "status"])
 		.index("by_pluginName", ["pluginName"]),
 
+	plugins_file_pairs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
+		createdAt: v.number(),
+	})
+		.index("by_installation_user_lifetime", ["installationId", "userId", "membershipLifetime"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_user", ["userId"]),
+
+	plugins_file_consents: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		pairId: v.id("plugins_file_pairs"),
+		rootNodeId: v.id("files_nodes"),
+		requestedLevel: v.union(v.literal("read"), v.literal("write")),
+		appliedLevel: v.union(v.literal("read"), v.literal("write"), v.null()),
+		areaEligible: v.boolean(),
+		open: v.boolean(),
+		revision: v.number(),
+		state: v.union(v.literal("pending"), v.literal("applied"), v.literal("ended")),
+		endedReason: v.union(v.string(), v.null()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_pair_rootNode_open", ["pairId", "rootNodeId", "open"])
+		.index("by_pair", ["pairId"])
+		.index("by_rootNode_open", ["rootNodeId", "open"])
+		.index("by_organization_workspace_open", ["organizationId", "workspaceId", "open"])
+		.index("by_organization_open_workspace", ["organizationId", "open", "workspaceId"])
+		.index("by_pair_areaEligible", ["pairId", "areaEligible"]),
+
+	plugins_file_authority_versions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.null()),
+		revision: v.number(),
+	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	plugins_file_grant_jobs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.null()),
+		requestedRevision: v.number(),
+		passRevision: v.number(),
+		phase: v.union(v.literal("next"), v.literal("read"), v.literal("write"), v.literal("apply")),
+		cursor: v.union(v.string(), v.null()),
+		passDone: v.boolean(),
+		consentId: v.union(v.id("plugins_file_consents"), v.null()),
+		consentRevision: v.union(v.number(), v.null()),
+		readAllowed: v.union(v.boolean(), v.null()),
+		writeAllowed: v.union(v.boolean(), v.null()),
+		organizationAuthorityPin: v.union(
+			v.object({ id: v.id("plugins_file_authority_versions"), revision: v.number() }),
+			v.null(),
+		),
+		workspaceAuthorityPin: v.union(
+			v.object({ id: v.id("plugins_file_authority_versions"), revision: v.number() }),
+			v.null(),
+		),
+		step: v.number(),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_dueAt", ["dueAt"]),
+
 	plugins_mounts: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),

@@ -132,6 +132,8 @@ import type * as plugins_data_http from "../plugins_data_http.js";
 import type * as plugins_data_http_routes from "../plugins_data_http_routes.js";
 import type * as plugins_external_files from "../plugins_external_files.js";
 import type * as plugins_external_files_access from "../plugins_external_files_access.js";
+import type * as plugins_file_grants from "../plugins_file_grants.js";
+import type * as plugins_file_grants_cleanup from "../plugins_file_grants_cleanup.js";
 import type * as plugins_follow_up_http from "../plugins_follow_up_http.js";
 import type * as plugins_follow_up_http_routes from "../plugins_follow_up_http_routes.js";
 import type * as plugins_invoke from "../plugins_invoke.js";
@@ -319,6 +321,8 @@ declare const fullApi: ApiFromModules<{
   plugins_data_http_routes: typeof plugins_data_http_routes;
   plugins_external_files: typeof plugins_external_files;
   plugins_external_files_access: typeof plugins_external_files_access;
+  plugins_file_grants: typeof plugins_file_grants;
+  plugins_file_grants_cleanup: typeof plugins_file_grants_cleanup;
   plugins_follow_up_http: typeof plugins_follow_up_http;
   plugins_follow_up_http_routes: typeof plugins_follow_up_http_routes;
   plugins_invoke: typeof plugins_invoke;

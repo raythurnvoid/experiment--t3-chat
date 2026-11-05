@@ -7,7 +7,7 @@
 // files_share_links.ts or files_subtree_ops.ts.
 
 import type { Doc, Id } from "./_generated/dataModel.js";
-import type { MutationCtx } from "./_generated/server.js";
+import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { files_metadata_db_patch_file_scope } from "./files_metadata_db.ts";
 import { files_share_links_db_delete_for_node, files_share_links_db_delete_for_scope } from "./files_share_links_db.ts";
 import { files_subtree_ops_busy_tree_paths } from "./files_subtree_ops_db.ts";
@@ -125,6 +125,40 @@ export async function files_nodes_db_set_restricted_scope(args: {
 		nodeId: args.nodeId,
 	});
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.nodeId });
+}
+
+/**
+ * An anchor stays while ordinary sharing or personal plugin consent still uses it.
+ */
+export async function files_nodes_db_has_extended_grants(
+	ctx: QueryCtx | MutationCtx,
+	args: { nodeId: Id<"files_nodes"> },
+) {
+	const node = await ctx.db.get("files_nodes", args.nodeId);
+	if (!node) return false;
+	const organizationId = ctx.db.normalizeId("organizations", node.organizationId);
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", node.workspaceId);
+	if (!organizationId || !workspaceId) return false;
+	for (const principalKind of ["user", "role", "service_account"] as const) {
+		const grant = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("resourceKind", "file")
+					.eq("resourceId", node._id)
+					.eq("principalKind", principalKind),
+			)
+			.first();
+		if (grant) return true;
+	}
+	return (
+		(await ctx.db
+			.query("plugins_file_consents")
+			.withIndex("by_rootNode_open", (q) => q.eq("rootNodeId", node._id).eq("open", true))
+			.first()) !== null
+	);
 }
 
 /**

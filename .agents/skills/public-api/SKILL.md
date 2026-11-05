@@ -31,6 +31,12 @@ Optional top-level force is supported on write, write-many, edit, append, touch,
 
 Public API scopes and app permissions are separate concepts and use separate values. API scopes use colon names such as `files:read`; app permissions use dot names such as `content.read`. Several file scopes can map to the same app permission, so do not make their values identical or pass the permission from each route.
 
+Personal plugin file selections are being added before the credential switch.
+Existing tokens still use the account rules below. The new `plugin_pair` subject
+has no workspace-wide permission. At cutover, Files calls must reach their exact
+target check even with a narrow selection; non-Files scope checks stay separate.
+See [personal plugin file grants](../access-control/SKILL.md#personal-plugin-file-grants).
+
 API key `lastUsedAt` is display data. It lives in its own table, `api_credentials_last_used` (one doc per key). `mark_credential_used` lives in `packages/app/convex/public_api_credential_usage.ts`, so this small write skips the file API's editor imports. It writes on first use, then at most once per minute, and never moves the time backward. It never writes the `api_credentials` doc, because every file publish reads that doc to check revocation, so parallel writes there would conflict. `api_credentials_list` shows the usage doc's time, or the old `api_credentials.lastUsedAt` when the key has no usage doc yet. Every request and final file mutation still checks live credentials and permissions.
 
 - `user_api_key` (`pk_<keyId>.<secret>`): key minted on the API keys page by a signed-in Clerk user. `serviceAccountId: null` is a personal key. A bound key acts as the account: it uses only the account's file grants, the restricted-folder shares of its role, and its live account identity. The sponsor's own access does not count. It also lists the Trash and restores as the account (see "Trash list" and "Trash areas" below). Bound keys accept only `files:list`, `files:read`, `files:write`, `files:download`, `files:permissions`, and `files:read-only`. Personal keys also accept `files:publish`, `plugin_data:read`, and `plugin_data:write`. Binding requires current account-management permission and an active account in the same workspace. Rotation preserves that binding and revokes the original credential ID; a new token cannot revive a staged write from the old key.

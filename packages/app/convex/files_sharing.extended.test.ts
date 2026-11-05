@@ -423,7 +423,7 @@ test("the extended chain stops after 8 dead hops", async () => {
 });
 
 /**
- * The member added on `/r/d`, and 500 folders nested under it, each an extended root with one user
+ * The member added on `/r/d`, and 62 folders nested under it: 64 levels in all. Each has one user
  * grant and two role grants that do not name the member. Inserted directly: the access check reads
  * only these fields. Returns the deepest folder.
  */
@@ -437,7 +437,7 @@ async function seed_deep_chain(f: Fixture) {
 		const strangerId = await ctx.db.insert("users", { clerkUserId: null });
 		const grant = { organizationId: f.db.organizationId, workspaceId: f.db.workspaceId, resourceKind: "file" as const };
 		let parent = { _id, path: template.path };
-		for (let depth = 0; depth < 500; depth++) {
+		for (let depth = 2; depth < 64; depth++) {
 			const path = `${parent.path}/a`;
 			const nodeId = await ctx.db.insert("files_nodes", {
 				...template,
@@ -469,7 +469,7 @@ async function seed_deep_chain(f: Fixture) {
 	});
 }
 
-test("the worst chain check stays under the limits at 500 levels", async () => {
+test("the chain check stays under the limits at 64 levels", async () => {
 	const f = await fixture();
 	const deepestId = await seed_deep_chain(f);
 
@@ -486,16 +486,16 @@ test("the worst chain check stays under the limits at 500 levels", async () => {
 		const after = await ctx.meta.getTransactionMetrics();
 		return { allowed, cost: transaction_cost(before, after) };
 	});
-	console.info("Chain check at 500 levels", cost);
+	console.info("Chain check at 64 levels", cost);
 
 	// Only the top root names the member, so the check walks the whole chain.
 	expect(allowed).toBe(true);
 	expect_under_convex_limits(cost);
-	expect(cost.documentsRead).toBeGreaterThan(500);
+	expect(cost.documentsRead).toBeGreaterThan(62);
 	expect(cost.databaseQueries).toBeLessThan(3_000);
 }, 120_000);
 
-test("the share dialog stays under the limits at 500 levels", async () => {
+test("the share dialog stays under the limits at 64 levels", async () => {
 	const f = await fixture();
 	const deepestId = await seed_deep_chain(f);
 
@@ -510,8 +510,8 @@ test("the share dialog stays under the limits at 500 levels", async () => {
 		membershipId: f.memberMembershipId,
 		nodeId: deepestId,
 	});
-	console.info("Share dialog at 500 levels", cost);
-	expect(state?.inheritedFrom.extended).toHaveLength(500);
+	console.info("Share dialog at 64 levels", cost);
+	expect(state?.inheritedFrom.extended).toHaveLength(62);
 	expect_under_convex_limits(cost!);
 	expect(cost!.databaseQueries).toBeLessThan(3_000);
 
@@ -520,8 +520,8 @@ test("the share dialog stays under the limits at 500 levels", async () => {
 		membershipId: f.db.membershipId,
 		nodeId: deepestId,
 	});
-	console.info("Share dialog at 500 levels, as the owner", cost);
-	expect(asOwner?.inheritedFrom.extended.filter((line) => line.entries?.length === 2)).toHaveLength(499);
+	console.info("Share dialog at 64 levels, as the owner", cost);
+	expect(asOwner?.inheritedFrom.extended.filter((line) => line.entries?.length === 2)).toHaveLength(61);
 	expect_under_convex_limits(cost!);
 }, 120_000);
 

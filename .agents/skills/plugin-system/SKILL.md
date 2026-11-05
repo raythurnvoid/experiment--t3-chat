@@ -163,6 +163,19 @@ Runs, UI sessions, and service grants keep the account ID present when they were
 
 ### Plugin file access
 
+The new **My file permissions** section prepares grants for each person and
+installation. It offers a saved-path lookup, Can view / Can edit, Save, Remove,
+and Load more. Run consent stays separate. Only the signed-in person can change
+their selections. The list shows chosen access, applied access and pending or
+ended state. Removal works after the person loses access to the item.
+
+This first release prepares selections; existing plugin credentials still use
+the account checks below. The controls say that current access has not changed.
+Switch credentials only after the migration audit preserves accepted writes and
+collects real personal consent. Do not infer consent from account grants.
+See [personal plugin file grants](../access-control/SKILL.md#personal-plugin-file-grants)
+for the gradual update rule, worker and exact membership lifetime.
+
 A plugin has no file access of its own. Every file check of a plugin run, page, or service grant uses `plugins_file_subject` (`plugins_service_accounts.ts`): the person it acts for must pass, and the installation's service account must pass too. Both are the normal checks from "Service accounts" in `../access-control/SKILL.md`, and both read only indexes, never a list of plugin folders. It works like a GitHub app acting for a user: the plugin gets no more than its person and no more than its account.
 
 This is the only check that asks two principals. The read budgets are sized for it: in `files_visible.ts`, a name search keeps `SEARCH_PARENT_CHECK_MAX_RANGES_PLUGIN` (3,200) free before a plugin starts a folder check, and `SEARCH_PARENT_CHECK_MAX_RANGES` (2,300) for one principal. The worst deep Add-people chain measured about 3,100 index ranges for a plugin whose account has a role, and about 2,100 for a person.

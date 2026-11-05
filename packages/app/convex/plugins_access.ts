@@ -1,5 +1,5 @@
 import { v, type Infer } from "convex/values";
-import { paginationOptsValidator } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 
@@ -7,20 +7,32 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { mutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
-import { access_control_db_caller_cannot_share_with_role, access_control_db_has_permission } from "./access_control.ts";
+import {
+	access_control_create_file_checker,
+	access_control_db_caller_cannot_share_with_role,
+	access_control_db_has_permission,
+} from "./access_control.ts";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { files_nodes_db_set_extended_scope } from "./files_sharing_db.ts";
+import { files_subtree_ops_db_start_rebuild, files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import {
+	organizations_membership_lifetimes_db_ensure,
+	organizations_membership_lifetimes_db_get,
+} from "./organizations_membership_lifetimes.ts";
 import {
 	plugins_scheduled_access_db_validate_consent,
 	plugins_scheduled_access_db_validate_grant,
 } from "./plugins_scheduled_access.ts";
 import { plugins_schedules_db_cancel } from "./plugins_schedules_db.ts";
+import { plugins_file_grants_db_retire_anchor } from "./plugins_file_grants_cleanup.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { access_control_is_system_role } from "../shared/access-control.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { plugins_file_grants_db_ensure_pair, plugins_file_grants_db_get_pair } from "../server/plugins-file-grants.ts";
 
 export const experimental_reuseContext = true;
 
@@ -541,6 +553,205 @@ export const revoke_run_as_me = mutation({
 		if (grant) await ctx.db.delete("access_control_permission_grants", grant._id);
 		if (installation.scheduledRunUserId === userAuth.id)
 			await ctx.db.patch("plugins_workspace_installations", installation._id, { scheduledRunGrantId: undefined });
+		return Result({ _yay: null });
+	},
+});
+
+export const list_my_file_grants = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(
+		v.object({
+			consentId: v.id("plugins_file_consents"),
+			rootNodeId: v.id("files_nodes"),
+			path: v.union(v.string(), v.null()),
+			kind: v.union(doc(app_convex_schema, "files_nodes").fields.kind, v.null()),
+			requestedLevel: doc(app_convex_schema, "plugins_file_consents").fields.requestedLevel,
+			appliedLevel: doc(app_convex_schema, "plugins_file_consents").fields.appliedLevel,
+			open: v.boolean(),
+			state: doc(app_convex_schema, "plugins_file_consents").fields.state,
+			endedReason: doc(app_convex_schema, "plugins_file_consents").fields.endedReason,
+		}),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) throw convex_error({ message: "Unauthenticated" });
+		const context = await plugins_access_db_authorize_membership(ctx, { ...args, userId: userAuth.id });
+		if (context._nay?.message === "Unauthenticated") throw convex_error(context._nay);
+		if (context._nay || !context._yay.installation) return { page: [], continueCursor: "", isDone: true };
+		const { membership, installation } = context._yay;
+		const lifetime = await organizations_membership_lifetimes_db_get(ctx, {
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		});
+		if (!lifetime?.active || lifetime.membershipId !== membership._id)
+			return { page: [], continueCursor: "", isDone: true };
+		const pair = await plugins_file_grants_db_get_pair(ctx, {
+			installationId: installation._id,
+			userId: userAuth.id,
+			membershipLifetime: lifetime.lifetime,
+		});
+		if (!pair || pair.membershipId !== membership._id) return { page: [], continueCursor: "", isDone: true };
+		const consents = await ctx.db
+			.query("plugins_file_consents")
+			.withIndex("by_pair", (q) => q.eq("pairId", pair._id))
+			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, 100) });
+		const page = await Promise.all(
+			consents.page.map(async (consent) => {
+				const node = await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId);
+				return {
+					consentId: consent._id,
+					rootNodeId: consent.rootNodeId,
+					path: node?.path ?? null,
+					kind: node?.kind ?? null,
+					requestedLevel: consent.requestedLevel,
+					appliedLevel: consent.appliedLevel,
+					open: consent.open,
+					state: consent.state,
+					endedReason: consent.endedReason,
+				};
+			}),
+		);
+		return { ...consents, page };
+	},
+});
+
+export const grant_file_access_as_me = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+		rootNodeId: v.id("files_nodes"),
+		level: doc(app_convex_schema, "plugins_file_consents").fields.requestedLevel,
+	},
+	returns: v_result({ _yay: v.object({ consentId: v.id("plugins_file_consents") }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
+		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
+		const context = await plugins_access_db_authorize_membership(ctx, { ...args, userId: userAuth.id });
+		if (context._nay) return context;
+		const { membership, installation } = context._yay;
+		if (!installation) return Result({ _nay: { message: "Not found" } });
+		const deletionFence = await ctx.db
+			.query("plugins_registry_deletion_fences")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", installation.pluginName))
+			.first();
+		if (deletionFence)
+			return Result({ _nay: { message: `${installation.pluginName} is being removed. Choose another plugin.` } });
+		const node = await files_saved_placement_db_get_node(ctx.db, args.rootNodeId);
+		if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId)
+			return Result({ _nay: { message: "Not found" } });
+		if (node.purgeRunId !== undefined)
+			return Result({ _nay: { message: `${node.path} is being deleted. Choose another item.` } });
+		const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		if (asset?.kind === "upload" && asset.r2Key === undefined)
+			return Result({ _nay: { message: `${node.path} is still uploading. Wait for it to finish.` } });
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			subject: { kind: "user", userId: userAuth.id, plugin: null },
+		});
+		if (!(await checker.can(node, "content.read")))
+			return Result({ _nay: { message: `You cannot read ${node.path}. Ask for Can view access first.` } });
+		if (args.level === "write" && !(await checker.can(node, "content.write")))
+			return Result({ _nay: { message: `You cannot edit ${node.path}. Ask for Can edit access first.` } });
+
+		const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
+		const previous = await ctx.db
+			.query("plugins_file_consents")
+			.withIndex("by_pair_rootNode_open", (q) => q.eq("pairId", pair._id).eq("rootNodeId", node._id).eq("open", true))
+			.unique();
+		const now = Date.now();
+		let consentId: Id<"plugins_file_consents">;
+		if (previous) {
+			consentId = previous._id;
+			// Keep applied access until the worker reaches this new choice.
+			await ctx.db.patch("plugins_file_consents", consentId, {
+				requestedLevel: args.level,
+				revision: previous.revision + 1,
+				state: "pending",
+				updatedAt: now,
+			});
+		} else {
+			consentId = await ctx.db.insert("plugins_file_consents", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				pairId: pair._id,
+				rootNodeId: node._id,
+				requestedLevel: args.level,
+				appliedLevel: null,
+				areaEligible: false,
+				open: true,
+				revision: 1,
+				state: "pending",
+				endedReason: null,
+				createdAt: now,
+				updatedAt: now,
+			});
+		}
+		if (node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
+			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
+			await files_subtree_ops_db_start_rebuild(ctx, {
+				kind: "scope",
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+				membership,
+				roots: [{ node, oldTreePath: node.treePath }],
+				budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
+				now,
+			});
+		}
+		return Result({ _yay: { consentId } });
+	},
+});
+
+export const revoke_file_access_as_me = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+		consentId: v.id("plugins_file_consents"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
+		const context = await plugins_access_db_authorize_membership(ctx, { ...args, userId: userAuth.id });
+		if (context._nay) return context;
+		const { membership, installation } = context._yay;
+		if (!installation) return Result({ _nay: { message: "Not found" } });
+		const lifetime = await organizations_membership_lifetimes_db_get(ctx, {
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+		});
+		if (!lifetime?.active || lifetime.membershipId !== membership._id)
+			return Result({ _nay: { message: "Not found" } });
+		const pair = await plugins_file_grants_db_get_pair(ctx, {
+			installationId: installation._id,
+			userId: userAuth.id,
+			membershipLifetime: lifetime.lifetime,
+		});
+		const consent = await ctx.db.get("plugins_file_consents", args.consentId);
+		if (!pair || pair.membershipId !== membership._id || consent?.pairId !== pair._id)
+			return Result({ _nay: { message: "Not found" } });
+		if (!consent.open) return Result({ _yay: null });
+		const now = Date.now();
+		await ctx.db.patch("plugins_file_consents", consent._id, {
+			open: false,
+			appliedLevel: null,
+			areaEligible: false,
+			revision: consent.revision + 1,
+			state: "ended",
+			endedReason: "You removed this permission.",
+			updatedAt: now,
+		});
+		// Giving up access must work after the person loses access to the item.
+		await plugins_file_grants_db_retire_anchor(ctx, { nodeId: consent.rootNodeId, userId: userAuth.id });
 		return Result({ _yay: null });
 	},
 });

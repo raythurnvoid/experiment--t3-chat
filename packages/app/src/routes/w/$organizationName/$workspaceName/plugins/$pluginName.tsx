@@ -79,6 +79,7 @@ import { PluginsPublishButton } from "@/components/plugins-publish-button.tsx";
 import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
 import { PluginsManagementAccess } from "@/components/plugins-management-access.tsx";
 import {
+	PluginsMyFilePermissions,
 	PluginsMyRunPermissions,
 	PluginsRunConsent,
 	type PluginsRunConsent_Value,
@@ -3620,6 +3621,13 @@ function RoutePluginsPlugin() {
 						organizationId={organizationId}
 						installationId={installedItem.installation._id}
 						onSaved={() => heroTitleRef.current?.focus()}
+					/>
+				) : null}
+				{installationId ? (
+					<PluginsMyFilePermissions
+						key={`file-permissions:${installationId}`}
+						membershipId={membershipId}
+						installationId={installationId}
 					/>
 				) : null}
 				{installationId ? (

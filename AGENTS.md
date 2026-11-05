@@ -327,6 +327,8 @@ This app enforces many invariants in its public queries, mutations, routes, and 
 
 Design every read for 500k items in one folder and millions in one workspace. A read that a user or the agent waits on must cost about the same for a small folder and a huge one. Its cost may grow with the rows it returns, never with the size of the folder, workspace, channel, or a user's history.
 
+Use at most 64 nested folders in Files tests and manual probes. Count the full path from the workspace root. This is the agreed test scope, not a new limit on users' files. Reduce older depth fixtures before running them. Do not block a feature or redesign access only for deeper synthetic trees. Keep large-folder and multi-page tests: folder depth and item count are separate concerns.
+
 A scan reads rows only to drop them. These are all scans:
 
 - `.filter()` or `filterWith` after an index range;

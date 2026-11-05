@@ -15,6 +15,7 @@ import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
+import { plugins_file_grants_db_drain_installation } from "./plugins_file_grants_cleanup.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -6360,6 +6361,12 @@ export const drain_uninstalled_installation = internalMutation({
 				batchSize: 200,
 			});
 			drained = volumes;
+		}
+		if (drained.done) {
+			drained = await plugins_file_grants_db_drain_installation(ctx, {
+				installationId: args.installationId,
+				batchSize: DELETION_BATCH_SIZE,
+			});
 		}
 		if (!drained.done && !args._test_disableReschedule) {
 			await ctx.scheduler.runAfter(0, internal.plugins_data.drain_uninstalled_installation, {

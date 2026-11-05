@@ -13,20 +13,19 @@ const { queryMock, consentMock, mutationMock, store } = vi.hoisted(() => ({
 
 vi.mock("convex/react", async () => {
 	const { useSyncExternalStore } = await import("react");
-	return {
-		useQuery: (...args: unknown[]) => {
-			const revision = useSyncExternalStore(
-				(listener) => {
-					store.listeners.add(listener);
-					return () => {
-						store.listeners.delete(listener);
-					};
-				},
-				() => store.revision,
-			);
-			return revision < 0 ? undefined : queryMock(...args);
-		},
+	const useQuery = (...args: unknown[]) => {
+		const revision = useSyncExternalStore(
+			(listener) => {
+				store.listeners.add(listener);
+				return () => {
+					store.listeners.delete(listener);
+				};
+			},
+			() => store.revision,
+		);
+		return revision < 0 ? undefined : queryMock(...args);
 	};
+	return { useQuery, usePaginatedQuery: useQuery };
 });
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -38,14 +37,21 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		access_control: { get_current_user_workspace_permission: "workspace_permission" },
 		files_nodes: { get_visible_target_by_path: "visible_target" },
 		plugins: { list_published_plugins: "catalog" },
-		plugins_access: { get_my_run_as_grant: "my_grant", grant_run_as_me: "grant_me", revoke_run_as_me: "revoke_me" },
+		plugins_access: {
+			get_my_run_as_grant: "my_grant",
+			grant_run_as_me: "grant_me",
+			revoke_run_as_me: "revoke_me",
+			list_my_file_grants: "file_grants",
+			grant_file_access_as_me: "grant_file",
+			revoke_file_access_as_me: "revoke_file",
+		},
 	},
 }));
 
 import { useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { PluginsMyRunPermissions, PluginsRunConsent } from "./plugins-run-consent.tsx";
+import { PluginsMyFilePermissions, PluginsMyRunPermissions, PluginsRunConsent } from "./plugins-run-consent.tsx";
 
 function TestConsent(props: { capabilities?: string[]; canManage?: boolean }) {
 	const { membershipId } = AppTenantProvider.useContext();
@@ -64,6 +70,14 @@ function TestMyPermissions() {
 	const plugin = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId })?.at(0);
 	return plugin?.installationId ? (
 		<PluginsMyRunPermissions membershipId={membershipId} installationId={plugin.installationId} canManage={false} />
+	) : null;
+}
+
+function TestMyFilePermissions() {
+	const { membershipId } = AppTenantProvider.useContext();
+	const plugin = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId })?.at(0);
+	return plugin?.installationId ? (
+		<PluginsMyFilePermissions membershipId={membershipId} installationId={plugin.installationId} />
 	) : null;
 }
 
@@ -341,5 +355,152 @@ describe("PluginsMyRunPermissions", () => {
 		expect(
 			await screen.findByText("Your run permissions were revoked. Work running as you was stopped."),
 		).not.toBeNull();
+	});
+});
+
+describe("PluginsMyFilePermissions", () => {
+	test("requires an explicit saved target and saves file consent without run consent", async () => {
+		let target = { target: { kind: "saved", id: "folder_1" }, kind: "folder" };
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1" }]
+				: query === "file_grants"
+					? { results: [], status: "Exhausted", loadMore: vi.fn() }
+					: query === "visible_target"
+						? target
+						: null,
+		);
+		render(<TestMyFilePermissions />);
+		expect(
+			screen.getByText("These choices will apply after the access update. Current plugin access has not changed yet."),
+		).not.toBeNull();
+		const path = screen.getByRole("textbox", { name: "File or folder path" });
+		fireEvent.change(path, { target: { value: "/shared" } });
+		const save = screen.getByRole("button", { name: "Save" });
+		expect(save, "lookup alone must not select the target").toHaveProperty("disabled", true);
+		fireEvent.click(screen.getByRole("button", { name: "Use this folder: /shared" }));
+		fireEvent.click(screen.getByRole("radio", { name: "Can edit" }));
+		fireEvent.click(save);
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("grant_file", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+				rootNodeId: "folder_1",
+				level: "write",
+			}),
+		);
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+		const feedback = await screen.findByText("Your file permission was saved. The change is pending.");
+		await waitFor(() => expect(document.activeElement, "Save must focus its feedback").toBe(feedback));
+		expect(screen.queryByRole("checkbox", { name: /Allow this plugin to run/ })).toBeNull();
+		target = { target: { kind: "saved", id: "folder_2" }, kind: "folder" };
+		refreshQueries();
+		expect(save, "a replaced saved target needs a new explicit choice").toHaveProperty("disabled", true);
+	});
+
+	test("shows chosen and current access, pending and ended text, and loads only the next page", () => {
+		const loadMore = vi.fn();
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1" }]
+				: query === "file_grants"
+					? {
+							results: [
+								{
+									consentId: "consent_1",
+									path: "/shared",
+									requestedLevel: "write",
+									appliedLevel: "read",
+									state: "pending",
+									open: true,
+									endedReason: null,
+								},
+								{
+									consentId: "consent_2",
+									path: "/old",
+									requestedLevel: "read",
+									appliedLevel: null,
+									state: "ended",
+									open: false,
+									endedReason: "Access ended.",
+								},
+							],
+							status: "CanLoadMore",
+							loadMore,
+						}
+					: null,
+		);
+		render(<TestMyFilePermissions />);
+		expect(screen.getByText("Chosen: Can edit")).not.toBeNull();
+		expect(screen.getByText("Current: Can view")).not.toBeNull();
+		expect(screen.getByText("Change pending.")).not.toBeNull();
+		expect(screen.getByText("Ended. Access ended.")).not.toBeNull();
+		expect(screen.getByText("Current: No access")).not.toBeNull();
+		expect(loadMore, "render must not drain the whole list").not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+		expect(loadMore).toHaveBeenCalledExactlyOnceWith(20);
+		expect(queryMock).toHaveBeenCalledWith(
+			"file_grants",
+			{
+				membershipId: "membership_1",
+				installationId: "installation_1",
+			},
+			{ initialNumItems: 20 },
+		);
+	});
+
+	test("removes a selection without looking up its file and focuses the result", async () => {
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1" }]
+				: query === "file_grants"
+					? {
+							results: [
+								{
+									consentId: "consent_1",
+									path: "/unreadable",
+									requestedLevel: "read",
+									appliedLevel: "read",
+									state: "applied",
+									open: true,
+									endedReason: null,
+								},
+							],
+							status: "Exhausted",
+							loadMore: vi.fn(),
+						}
+					: null,
+		);
+		render(<TestMyFilePermissions />);
+		fireEvent.click(screen.getByRole("button", { name: "Remove permission for /unreadable" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("revoke_file", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+				consentId: "consent_1",
+			}),
+		);
+		const feedback = await screen.findByText("Your file permission was removed.");
+		await waitFor(() => expect(document.activeElement, "Remove must focus its feedback").toBe(feedback));
+		expect(queryMock).toHaveBeenCalledWith("visible_target", "skip");
+	});
+
+	test("refuses a private draft as a selected saved target", () => {
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1" }]
+				: query === "file_grants"
+					? { results: [], status: "Exhausted", loadMore: vi.fn() }
+					: query === "visible_target"
+						? { target: { kind: "private", id: "draft_1" }, kind: "file" }
+						: null,
+		);
+		render(<TestMyFilePermissions />);
+		const path = screen.getByRole("textbox", { name: "File or folder path" });
+		fireEvent.change(path, { target: { value: "/draft" } });
+		fireEvent.blur(path);
+		expect(screen.getByRole("alert")).toHaveProperty("textContent", "Choose a saved file or folder you can read.");
+		expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+		expect(screen.queryByRole("button", { name: /Use this/ })).toBeNull();
 	});
 });

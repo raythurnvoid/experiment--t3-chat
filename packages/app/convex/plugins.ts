@@ -82,6 +82,7 @@ import {
 } from "./plugins_data.ts";
 import { plugins_mcp_db_drain_installation_batch, plugins_mcp_db_sync_installation_servers } from "./plugins_mcp.ts";
 import { plugins_volumes_db_drain_batch, plugins_volumes_db_schedule_volume_drain } from "./plugins_volumes.ts";
+import { plugins_file_grants_db_drain_installation } from "./plugins_file_grants_cleanup.ts";
 import { organizations_integration_policy_db_plugin_version_status } from "./organizations_integration_policy.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
@@ -6872,6 +6873,12 @@ export const hard_delete_plugin_from_registry = internalMutation({
 				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
 				.first();
 			if (installation) {
+				const fileGrants = await plugins_file_grants_db_drain_installation(ctx, {
+					installationId: installation._id,
+					batchSize: budget,
+				});
+				if (!fileGrants.done) return { done: false, deleted: fileGrants.deletedCount };
+
 				const handlers = await ctx.db
 					.query("plugins_workspace_event_handlers")
 					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))

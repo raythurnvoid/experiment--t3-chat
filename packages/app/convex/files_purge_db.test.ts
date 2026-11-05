@@ -5,6 +5,7 @@ import { add_member } from "./files_archive_runs.setup.test.ts";
 import { insert_tree_node } from "./files_nodes.setup.test.ts";
 import { mock_nodes_content_storage } from "./files_nodes_content.setup.test.ts";
 import { files_purge_db_delete_asset, files_purge_db_drain_node_batch } from "./files_purge_db.ts";
+import { insert_installation } from "./files_share_links.setup.test.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import {
 	test_convex,
@@ -74,6 +75,58 @@ async function fixture() {
 }
 
 describe("files_purge_db_drain_node_batch", () => {
+	test("drains open and ended plugin consents over several pages before deleting a file", async () => {
+		const f = await fixture();
+		const fileId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/selected.md" });
+		const installationId = await insert_installation(f);
+		await f.t.run(async (ctx) => {
+			const pairId = await ctx.db.insert("plugins_file_pairs", {
+				...f.scope,
+				installationId,
+				userId: f.db.userId,
+				membershipId: f.db.membershipId,
+				membershipLifetime: 1,
+				createdAt: Date.now(),
+			});
+			for (let i = 0; i < 65; i++) {
+				await ctx.db.insert("plugins_file_consents", {
+					...f.scope,
+					pairId,
+					rootNodeId: fileId,
+					requestedLevel: "read",
+					appliedLevel: i === 0 ? "read" : null,
+					areaEligible: false,
+					open: i === 0,
+					revision: 1,
+					state: i === 0 ? "applied" : "ended",
+					endedReason: i === 0 ? null : "Removed",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+			}
+		});
+		expect(await f.drain(fileId)).toBe("more");
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("plugins_file_consents")
+					.withIndex("by_rootNode_open", (q) => q.eq("rootNodeId", fileId))
+					.collect(),
+			),
+			"one purge step must drain one consent page",
+		).toHaveLength(1);
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", fileId))).not.toBeNull();
+		expect((await f.drain_until_done(fileId)).at(-1)).toBe("deleted");
+		expect(
+			await f.t.run((ctx) =>
+				ctx.db
+					.query("plugins_file_consents")
+					.withIndex("by_rootNode_open", (q) => q.eq("rootNodeId", fileId))
+					.collect(),
+			),
+		).toEqual([]);
+	});
+
 	test("deletes the file, its history, and other people's drafts in the folder, over several calls", async () => {
 		const f = await fixture();
 		const fileId = await test_create_saved_text_file(f.t, {
