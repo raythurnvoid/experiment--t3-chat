@@ -353,7 +353,9 @@ The key comes from the Convex env var `LIST_CURSOR_SECRET` (32 random bytes as h
 
 ## Service upload routes
 
-The five `/api/v1/files/service-uploads/*` routes are registered in `public_api_service_uploads_http_routes.ts`, implemented in `public_api_service_uploads_http.ts`, with the storage mutations in `public_api_service_uploads.ts`. All are POST, scope `files:write`, `allowedKinds: ["plugin_service"]`, and the route refuses any grant whose phase is not `processing`. The mutations re-check the grant doc, installation state, capabilities (`plugin.service.connect` + `workspace.files.write`), actor liveness/membership, and workspace `content.write` inside the transaction. A new Read-only target also requires `workspace.files.manage-read-only` and current Can edit.
+The five `/api/v1/files/service-uploads/*` routes are registered in `public_api_service_uploads_http_routes.ts`, implemented in `public_api_service_uploads_http.ts`, with the storage mutations in `public_api_service_uploads.ts`. All are POST, scope `files:write`, `allowedKinds: ["plugin_service"]`, and the route refuses any grant whose phase is not `processing`. The mutations re-check the grant doc, installation state, capabilities (`plugin.service.connect` + `workspace.files.write`), actor liveness/membership, and trusted account binding inside the transaction.
+
+Personal grants use their pair's applied Can edit on the target or creation parent. They do not need human workspace `content.write`. Old-model grants still require that human permission and account access. A new Read-only target also requires `workspace.files.manage-read-only` and current Can edit.
 
 | Route                                               | Body                                                     | Answer                                                                                                                        |
 | --------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -429,7 +431,7 @@ The existing grant expiry cron drains grants and budgets within one indexed batc
 
 Registered external services use the same public Files contracts as other plugins, with optional writer conditions. `public_api_plugin_files.ts` and `public_api.ts` own the HTTP handlers; `plugins_external_files.ts` owns writer transactions. Writer requests need a live sealed service bearer, current service secret, and `workspace.files.own-write` alongside normal file consents. Ordinary requests without writer conditions keep their existing limits.
 
-A writer and its folder give no access. Every writer request passes the normal plugin file check: the actor can do it, and the plugin's service account can do it. To let a plugin write in a folder, share that folder with the plugin's service account through normal sharing.
+A writer and its folder give no access. Personal writers need applied Can edit through **My file permissions**, on the target or on the parent for a new file. Account sharing adds no personal plugin access. Old-model writers still need both actor and account access; sharing the folder with the service account applies only to that old model.
 
 `POST /api/v1/files/plugin-folders/ensure` accepts `{path,writer:{resourceKey,rootNodeId},access?:{readOnly?}}`. The resource key is an opaque string of 1–512 characters. Bonobo Senate never parses product IDs from it. A null root ID creates an unused sealed root; a supplied ID must identify the writer's exact labeled root. Repeating a key returns its saved writer and folder IDs without adopting another folder or restoring metadata, policy, or sharing. A new folder is a regular folder: it gets its parent's access, like a folder a person creates.
 

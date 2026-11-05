@@ -816,6 +816,7 @@ async function db_check_service_upload_file_refs(
 		organizationId: target.organizationId,
 		workspaceId: target.workspaceId,
 		installation,
+		// The upload author is the member behind the accepted grant.
 		userId: target.createdBy,
 		filePairId: target.filePairId,
 		addedFileRefs: args.addedFileRefs,

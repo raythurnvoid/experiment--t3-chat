@@ -4545,10 +4545,11 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				});
 			return nodeId;
 		});
+		const content = `# Transcript\n\n![media](bonobo-file://${mediaId})`;
 		await confirm_upload_put({
 			t,
 			upload,
-			content: `# Transcript\n\n![media](bonobo-file://${mediaId})`,
+			content,
 			messageId: "personal-service-media",
 		});
 		if (accountChange !== "none") {
@@ -4592,11 +4593,79 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		if (accountChange !== "none") {
 			expect(node?.textKind, "account changes refuse added media during conversion").toBeNull();
 			expect(node?.assetId, "refused conversion preserves the accepted upload").toBe(upload.assetId);
-			expect(r2Objects.has(upload.key), "the accepted bytes remain stored").toBe(true);
+			const jobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+			expect(jobs, "refused conversion queues its unpublished output for cleanup").toHaveLength(1);
+			await flush_scheduled(t);
+			expect(r2Objects.get(upload.key), "cleanup keeps the accepted bytes unchanged").toEqual(
+				new TextEncoder().encode(content),
+			);
+			for (const job of jobs) {
+				expect(r2Objects.has(job.r2Key), "cleanup removes the refused conversion output").toBe(false);
+			}
+			expect(await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(0);
 			return;
 		}
 		expect(node?.textKind, "conversion follows the accepted target pair, not account grants").toBe(
 			canRead ? "rich_text" : null,
+		);
+	});
+
+	test.each([true, false])("old service targets without pins check the live account: %s", async (accountLive) => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture({
+			t,
+			db,
+			filename: "old-service-transcript.md",
+			contentType: "text/markdown;charset=utf-8",
+		});
+		const { targetId } = await seed_non_collaborative_service_target({ t, db, upload });
+		const { mediaId, accountId } = await test_run_with_flush(t, async (ctx) => {
+			const target = (await ctx.db.get("plugin_service_storage_targets", targetId))!;
+			const installation = (await ctx.db.get("plugins_workspace_installations", target.installationId))!;
+			// Targets accepted before the rollout have neither pin.
+			await ctx.db.patch("plugin_service_storage_targets", targetId, {
+				filePairId: undefined,
+				serviceAccountId: undefined,
+			});
+			const mediaId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				kind: "file",
+				name: "old-media.png",
+				path: "/old-media.png",
+				treePath: "/old-media.png/",
+				contentType: "image/png",
+			});
+			return { mediaId, accountId: installation.serviceAccountId };
+		});
+		const content = `# Old transcript\n\n![media](bonobo-file://${mediaId})`;
+		await confirm_upload_put({ t, upload, content, messageId: "old-service-media" });
+		if (!accountLive) {
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			expect(
+				await asOwner.mutation(api.access_control.revoke_service_account, {
+					membershipId: db.membershipId,
+					serviceAccountId: accountId,
+				}),
+			).toEqual({ _yay: null });
+		}
+		await t.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+			eventId: "old-service-media",
+		});
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", upload.nodeId));
+		expect(node?.textKind, "old target conversion uses its live installation account").toBe(
+			accountLive ? "rich_text" : null,
+		);
+		await flush_scheduled(t);
+		expect(r2Objects.get(upload.key), "old target cleanup keeps the accepted bytes unchanged").toEqual(
+			new TextEncoder().encode(content),
 		);
 	});
 
