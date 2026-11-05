@@ -6,7 +6,7 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 type WriteContext = Pick<MutationCtx, "db" | "scheduler">;
 type Scope = { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> | null };
 
-export const plugins_file_grants_JOB_WATCHDOG_MS = 60_000;
+const JOB_WATCHDOG_MS = 60_000;
 
 export async function plugins_file_grants_db_get_pair(
 	ctx: Pick<QueryCtx, "db">,
@@ -61,19 +61,10 @@ export async function plugins_file_grants_db_ensure_pair(
 
 export async function plugins_file_grants_db_validate_pair(
 	ctx: Pick<QueryCtx, "db">,
-	args: {
-		pairId: Id<"plugins_file_pairs">;
-		installationId?: Id<"plugins_workspace_installations">;
-		userId?: Id<"users">;
-	},
+	args: { pairId: Id<"plugins_file_pairs"> },
 ) {
 	const pair = await ctx.db.get("plugins_file_pairs", args.pairId);
-	if (
-		!pair ||
-		(args.installationId && pair.installationId !== args.installationId) ||
-		(args.userId && pair.userId !== args.userId)
-	)
-		return null;
+	if (!pair) return null;
 	const [installation, organization, workspace, membership, lifetime, user] = await Promise.all([
 		ctx.db.get("plugins_workspace_installations", pair.installationId),
 		ctx.db.get("organizations", pair.organizationId),
@@ -144,7 +135,7 @@ export async function plugins_file_grants_db_schedule(
 	await ctx.db.patch("plugins_file_grant_jobs", job._id, {
 		step,
 		scheduledId,
-		dueAt: Date.now() + plugins_file_grants_JOB_WATCHDOG_MS,
+		dueAt: Date.now() + JOB_WATCHDOG_MS,
 	});
 }
 
@@ -199,7 +190,7 @@ export async function plugins_file_grants_db_advance_authority(ctx: WriteContext
 		organizationAuthorityPin: null,
 		workspaceAuthorityPin: null,
 		step: 0,
-		dueAt: Date.now() + plugins_file_grants_JOB_WATCHDOG_MS,
+		dueAt: Date.now() + JOB_WATCHDOG_MS,
 		scheduledId: null,
 	});
 	await plugins_file_grants_db_schedule(ctx, { _id: jobId, step: 0, phase: "next" });

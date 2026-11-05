@@ -411,7 +411,8 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 	const groupName = useId();
 	const [path, setPath] = useState("");
 	const [selectedFileId, setSelectedFileId] = useState<app_convex_Id<"files_nodes"> | null>(null);
-	const [level, setLevel] = useState<"read" | "write">("read");
+	const [level, setLevel] =
+		useState<app_convex_FunctionArgs<typeof app_convex_api.plugins_access.grant_file_access_as_me>["level"]>("read");
 	const [showPathError, setShowPathError] = useState(false);
 	const [pending, setPending] = useState<"grant" | app_convex_Id<"plugins_file_consents"> | null>(null);
 	const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
@@ -495,13 +496,14 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 		>
 			<h2>My file permissions</h2>
 			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
-				These choices will apply after the access update. Current plugin access has not changed yet.
+				Plugins do not use these choices yet. They will after a later update.
 			</p>
 			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
 				Choose the saved files and folders this plugin may use for you. This does not allow scheduled runs.
 			</p>
 			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
-				Access changes apply in the background. The plugin keeps its current access until each change finishes.
+				After that update, access changes will apply in the background. The plugin will keep its current access until
+				each change finishes.
 			</p>
 			<MyInput displayValidationMessage={showPathError ? pathMessage : undefined}>
 				<MyInputLabel>File or folder path</MyInputLabel>
@@ -576,7 +578,7 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 					{feedback.message}
 				</p>
 			) : null}
-			{grants.status === "LoadingFirstPage" ? <p role="status">Loading My file permissions...</p> : null}
+			{grants.status === "LoadingFirstPage" ? <p role="status">Loading My file permissions…</p> : null}
 			{grants.status !== "LoadingFirstPage" && grants.results.length === 0 ? (
 				<p>No files or folders selected.</p>
 			) : null}

@@ -53,7 +53,7 @@
 	.PluginsMyFilePermissions {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
+		align-items: start;
 		gap: 12px;
 		min-width: 0;
 		padding-block: 24px;
@@ -66,7 +66,7 @@
 		}
 
 		& > h2 {
-			font-size: 18px;
+			font-size: 16px;
 		}
 
 		& > .MyInput {
@@ -74,7 +74,7 @@
 		}
 
 		& > [role="alert"] {
-			color: var(--color-red-11);
+			color: var(--color-red-09);
 		}
 	}
 
@@ -112,7 +112,7 @@
 	.PluginsMyFilePermissions-item {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
+		align-items: start;
 		gap: 8px;
 		min-width: 0;
 		padding-block-start: 12px;

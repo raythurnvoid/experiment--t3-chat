@@ -469,6 +469,7 @@ async function seed_deep_chain(f: Fixture) {
 	});
 }
 
+// These two cost checks guard platform limits, not a fixed number of reads per folder.
 test("the chain check stays under the limits at 64 levels", async () => {
 	const f = await fixture();
 	const deepestId = await seed_deep_chain(f);

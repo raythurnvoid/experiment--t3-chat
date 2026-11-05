@@ -7761,8 +7761,11 @@ const app_convex_schema = defineSchema({
 		pairId: v.id("plugins_file_pairs"),
 		rootNodeId: v.id("files_nodes"),
 		requestedLevel: v.union(v.literal("read"), v.literal("write")),
+		// Readers use this level while a new choice is pending. Null grants no access.
 		appliedLevel: v.union(v.literal("read"), v.literal("write"), v.null()),
+		// Applied read access to an active restricted folder, for the Phase 2 Trash area index.
 		areaEligible: v.boolean(),
+		// Closed consent stays as history and never reopens. State also shows pending work.
 		open: v.boolean(),
 		revision: v.number(),
 		state: v.union(v.literal("pending"), v.literal("applied"), v.literal("ended")),

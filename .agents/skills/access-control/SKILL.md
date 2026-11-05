@@ -141,6 +141,8 @@ grant access. See the channels spec for counts, restore work and exact membershi
 The first release adds personal selections and their worker. Existing plugin
 credentials still use the person and installation account until the audited switch.
 The new controls say this. Do not copy account grants into personal consent.
+**My file permissions** is the user name for these `plugins_file_consents` docs.
+Each doc records consent for a selected saved item; its applied level is the grant.
 
 `plugins_file_pairs` binds one person, installation and exact membership lifetime.
 `plugins_file_consents` stores each selected saved item, requested View/Edit level,

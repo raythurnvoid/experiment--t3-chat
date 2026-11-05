@@ -12,9 +12,9 @@ import {
 	plugins_file_grants_db_validate_pair,
 } from "../server/plugins-file-grants.ts";
 
-type Job = Doc<"plugins_file_grant_jobs">;
+type GrantJob = Doc<"plugins_file_grant_jobs">;
 
-function pins_match(job: Job, pins: Pick<Job, "organizationAuthorityPin" | "workspaceAuthorityPin">) {
+function pins_match(job: GrantJob, pins: Pick<GrantJob, "organizationAuthorityPin" | "workspaceAuthorityPin">) {
 	return (
 		job.organizationAuthorityPin?.id === pins.organizationAuthorityPin?.id &&
 		job.organizationAuthorityPin?.revision === pins.organizationAuthorityPin?.revision &&
@@ -23,7 +23,7 @@ function pins_match(job: Job, pins: Pick<Job, "organizationAuthorityPin" | "work
 	);
 }
 
-async function check(
+async function db_check_root(
 	ctx: MutationCtx,
 	consent: Doc<"plugins_file_consents">,
 	permission: "content.read" | "content.write",
@@ -46,7 +46,7 @@ async function check(
 	}).can(root, permission);
 }
 
-async function next(ctx: MutationCtx, job: Job) {
+async function db_finish_consent(ctx: MutationCtx, job: GrantJob) {
 	await ctx.db.patch("plugins_file_grant_jobs", job._id, {
 		phase: "next",
 		consentId: null,
@@ -145,12 +145,12 @@ export const advance = internalMutation({
 		}
 		const consent = job.consentId ? await ctx.db.get("plugins_file_consents", job.consentId) : null;
 		if (!consent?.open) {
-			await next(ctx, job);
+			await db_finish_consent(ctx, job);
 			return null;
 		}
 		const pins = await plugins_file_grants_db_get_authority_pins(ctx.db, consent);
 		if (job.phase === "read") {
-			const readAllowed = await check(ctx, consent, "content.read");
+			const readAllowed = await db_check_root(ctx, consent, "content.read");
 			const phase = readAllowed && consent.requestedLevel === "write" ? "write" : "apply";
 			await ctx.db.patch("plugins_file_grant_jobs", job._id, {
 				...pins,
@@ -168,7 +168,7 @@ export const advance = internalMutation({
 			return null;
 		}
 		if (job.phase === "write") {
-			const writeAllowed = await check(ctx, consent, "content.write");
+			const writeAllowed = await db_check_root(ctx, consent, "content.write");
 			await ctx.db.patch("plugins_file_grant_jobs", job._id, { writeAllowed, phase: "apply" });
 			await plugins_file_grants_db_schedule(ctx, { ...job, phase: "apply" });
 			return null;
@@ -208,7 +208,7 @@ export const advance = internalMutation({
 			if (previousPair)
 				await plugins_file_grants_db_retire_anchor(ctx, { nodeId: consent.rootNodeId, userId: previousPair.userId });
 		}
-		await next(ctx, job);
+		await db_finish_consent(ctx, job);
 		return null;
 	},
 });

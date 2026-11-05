@@ -371,9 +371,6 @@ describe("PluginsMyFilePermissions", () => {
 						: null,
 		);
 		render(<TestMyFilePermissions />);
-		expect(
-			screen.getByText("These choices will apply after the access update. Current plugin access has not changed yet."),
-		).not.toBeNull();
 		const path = screen.getByRole("textbox", { name: "File or folder path" });
 		fireEvent.change(path, { target: { value: "/shared" } });
 		const save = screen.getByRole("button", { name: "Save" });
@@ -432,6 +429,10 @@ describe("PluginsMyFilePermissions", () => {
 		);
 		render(<TestMyFilePermissions />);
 		expect(screen.getByText("Chosen: Can edit")).not.toBeNull();
+		expect(
+			screen.queryByText("Plugins do not use these choices yet. They will after a later update."),
+			"the rollout note must say these choices are not active yet",
+		).not.toBeNull();
 		expect(screen.getByText("Current: Can view")).not.toBeNull();
 		expect(screen.getByText("Change pending.")).not.toBeNull();
 		expect(screen.getByText("Ended. Access ended.")).not.toBeNull();

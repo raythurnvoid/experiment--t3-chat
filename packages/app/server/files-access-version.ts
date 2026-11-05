@@ -111,12 +111,12 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 	const messageScopes = new Map<string, Scope>();
 	const pluginScopes = new Map<string, Scope>();
 	const raw = ctx.db;
-	function mark(into: Map<string, Scope>, table: TableNames, value: Fields | null, id: string) {
+	function mark(kind: "files" | "messages" | "plugins", table: TableNames, value: Fields | null, id: string) {
 		if (!value) return;
 		if (
 			table === "access_control_permission_grants" &&
 			(value.principalKind === "service_account" ||
-				(into === pluginScopes
+				(kind === "plugins"
 					? !["content.read", "content.write", "content.permissions.manage"].includes(String(value.permission)) ||
 						!["organization", "workspace", "file"].includes(String(value.resourceKind))
 					: value.permission !== "content.read"))
@@ -137,6 +137,7 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 				);
 		if (!organizationScope && !workspaceId) return;
 		const scope = { organizationId, workspaceId };
+		const into = kind === "files" ? scopes : kind === "messages" ? messageScopes : pluginScopes;
 		into.set(JSON.stringify(scope), scope);
 	}
 	async function selected_place(value: Fields | null) {
@@ -151,8 +152,8 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 					const id = await target.insert(table, value as never);
 					// A new file has a new identity. No previous answer can name its scope pointer.
 					if (FIELDS[table] && table !== "files_nodes" && table !== "files_saved_places") {
-						mark(scopes, table, value, id);
-						mark(messageScopes, table, value, id);
+						mark("files", table, value, id);
+						mark("messages", table, value, id);
 					}
 					if (
 						PLUGIN_FIELDS[table] &&
@@ -161,7 +162,7 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 						table !== "files_move_cohorts" &&
 						(table !== "plugins_file_consents" || value.open === true)
 					)
-						mark(pluginScopes, table, value, id);
+						mark("plugins", table, value, id);
 					return id;
 				};
 			if (property === "patch" || property === "replace" || property === "delete")
@@ -190,8 +191,8 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 					await Reflect.apply(write, target, args);
 					const next = property === "delete" ? null : property === "replace" ? value : { ...old, ...value };
 					if (captureFiles && fields.some((field) => JSON.stringify(old?.[field]) !== JSON.stringify(next?.[field]))) {
-						mark(scopes, table, old, id);
-						mark(scopes, table, next, id);
+						mark("files", table, old, id);
+						mark("files", table, next, id);
 					}
 					if (capturePlugins) {
 						let beforePlugin = old;
@@ -210,8 +211,8 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 						// Closed consent already clears its own grant. Worker apply must not queue itself.
 						else if (table === "plugins_file_consents" && next?.open !== true) changed = false;
 						if (changed) {
-							mark(pluginScopes, table, beforePlugin, id);
-							mark(pluginScopes, table, afterPlugin, id);
+							mark("plugins", table, beforePlugin, id);
+							mark("plugins", table, afterPlugin, id);
 						}
 					}
 					if (!captureMessages) return;
@@ -227,8 +228,8 @@ export function files_access_version_db_wrap(ctx: MutationCtx) {
 					} else if (!messageFields.some((field) => JSON.stringify(old?.[field]) !== JSON.stringify(next?.[field]))) {
 						return;
 					}
-					mark(messageScopes, table, old, id);
-					mark(messageScopes, table, next, id);
+					mark("messages", table, old, id);
+					mark("messages", table, next, id);
 				};
 			const value: unknown = Reflect.get(target, property);
 			return typeof value === "function" ? value.bind(target) : value;
