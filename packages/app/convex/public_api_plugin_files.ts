@@ -2,8 +2,7 @@
 // and `/api/v1/files/plugin-access/set` (routes in `public_api_plugin_files_http_routes.ts`).
 //
 // Editable `plugin-name` metadata selects the files and folders a plugin can use.
-// Current capabilities, the person's permissions, the normal grants of the plugin's service account,
-// and write policies control each operation.
+// Current capabilities, the credential's file consent, and write policies control each operation.
 
 import { v, type Infer } from "convex/values";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
@@ -126,6 +125,7 @@ export const ensure_plugin_folder = internalMutation({
 			workspaceId: args.workspaceId,
 			runId: args.runId,
 			now,
+			requiredScope: "files:write",
 		});
 		if (liveRun._nay) {
 			return liveRun;
@@ -164,7 +164,7 @@ export const ensure_plugin_folder = internalMutation({
 		}
 
 		const writeContext: files_nodes_WriteContext = {
-			subject: plugins_file_subject(installation, args.userId),
+			subject: plugins_file_subject(installation, args.userId, pluginRun.filePairId),
 			force: args.force === true,
 			actorUserId: args.userId,
 			resourceScope:
@@ -363,7 +363,7 @@ export const archive_plugin_path = internalMutation({
 			}
 			principalKey = `plugin_archive:${installation._id}:${args.userId}`;
 			writeContext = {
-				subject: plugins_file_subject(installation, args.userId),
+				subject: plugins_file_subject(installation, args.userId, run.filePairId),
 				actorUserId: args.userId,
 				resourceScope: { kind: "workspace" },
 				force: args.force === true,

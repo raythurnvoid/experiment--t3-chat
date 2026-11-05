@@ -3933,6 +3933,14 @@ export const install_version = mutation({
 			.first();
 
 		const grants = args.serviceAccountGrants ?? [];
+		if ((!existingInstallation || existingInstallation.fileAccessModel === "personal") && grants.length > 0) {
+			return Result({
+				_nay: {
+					message:
+						"Choose this plugin's files in My file permissions. Change ordinary account grants in service account sharing.",
+				},
+			});
+		}
 		if (
 			(!existingInstallation && binding) ||
 			(existingInstallation && !binding) ||
@@ -4020,6 +4028,7 @@ export const install_version = mutation({
 		if (existingInstallation) {
 			installationId = existingInstallation._id;
 			installationCreatedAt = existingInstallation._creationTime;
+			// Only the audited switch changes an existing installation's file access model.
 
 			// Only an upgrade has previous-version handlers to clear; a fresh install starts empty.
 			const existingHandlers = await ctx.db
@@ -4057,6 +4066,7 @@ export const install_version = mutation({
 				serviceAccountId,
 				pluginName: pluginVersion.name,
 				status: "enabled",
+				fileAccessModel: "personal",
 				managementAccess: "selected",
 				configurationYaml,
 				acceptedCapabilities: pluginVersion.capabilities,
@@ -4839,6 +4849,7 @@ export const list_published_plugins = query({
 			canInstall: v.boolean(),
 			canManage: v.boolean(),
 			installationId: v.union(v.id("plugins_workspace_installations"), v.null()),
+			fileAccessModel: doc(app_convex_schema, "plugins_workspace_installations").fields.fileAccessModel,
 			configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
 			mounts: doc(app_convex_schema, "plugins_versions").fields.mounts,
 			events: doc(app_convex_schema, "plugins_versions").fields.events,
@@ -4927,6 +4938,7 @@ export const list_published_plugins = query({
 					canInstall: installation === null && workspaceCanInstall,
 					canManage,
 					installationId: installation?._id ?? null,
+					fileAccessModel: installation?.fileAccessModel,
 					configuration: version.configuration,
 					mounts: version.mounts,
 					events: version.events,

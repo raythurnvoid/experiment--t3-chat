@@ -138,11 +138,12 @@ grant access. See the channels spec for counts, restore work and exact membershi
 
 ## Personal plugin file grants
 
-The first release adds personal selections and their worker. Existing plugin
-credentials still use the person and installation account until the audited switch.
-The new controls say this. Do not copy account grants into personal consent.
+New installations use personal consent. Their runs, frame sessions and service
+grants pin one `filePairId` when created. Existing installations keep the old
+person-and-account checks until their audited switch. Never retag an old token
+or copy account grants into personal consent.
 **My file permissions** is the user name for these `plugins_file_consents` docs.
-Each doc records consent for a selected saved item; its applied level is the grant.
+Each doc records consent for a selected saved item. Its applied level is the grant.
 
 `plugins_file_pairs` binds one person, installation and exact membership lifetime.
 `plugins_file_consents` stores each selected saved item, requested View/Edit level,
@@ -151,7 +152,7 @@ pending with no applied access. A fresh selection after removal gets a new doc.
 The personal doors in `plugins_access.ts` resolve the signed-in person; managers
 cannot select files for somebody else. Lists use `by_pair` pages, including ended
 and unreadable selections, so a person can still remove them.
-Ended consent keeps its history but returns no current file path or type.
+Ended consent keeps its history but returns no current file path or kind.
 New consent checks Read before reporting file state. A denied check must not
 reveal a current path inside a locked folder.
 
@@ -160,6 +161,13 @@ in small background steps. Both reads and writes use the applied level until its
 step finishes. Do not add a workspace-wide pause or a second live-person check.
 The worker updates applied access and indexed eligibility together. Credential,
 tenant and membership-lifetime checks remain separate live gates.
+
+Accepted file stages and upload targets keep the credential's pair ID. Publication
+must match that ID and check its applied access. After an installation switches,
+an old token may finish accepted work under its old checks. It cannot start a new
+write, seal or token renewal. Switching waits for the installation's live runs to
+finish. Audit accepted work before switching, then remove the old checks after it
+settles. Non-Files permissions keep their own live human checks.
 
 The exclusive `{ kind: "plugin_pair", pairId }` file subject reads only open
 consents for that pair. It has no owner, role, account, public or workspace fallback,
@@ -190,12 +198,11 @@ Service accounts are workspace identities for software. They are not users and h
 owner rights, billing rights, public fallback, or private plugin-data scope rights. Their
 `createdBy` field is audit data, not authority.
 
-- Every file check acts as one **subject** (`access_control_Subject`). Only a plugin subject asks
-  two principals (see "Locked, not hidden").
+- Every file check acts as one **subject** (`access_control_Subject`).
   - A person (UI, Bash, chat, jobs): `{ kind: "user", userId, plugin: null }`.
-  - A plugin run, page or service grant: its person plus
-    `plugin: { installationId, serviceAccountId }`, built by `plugins_file_subject`. Upload-run sibling
-    writes are the one exception: they check the person only (see the plugin-system skill).
+  - A personal-model plugin run, page or service grant: `{ kind: "plugin_pair", pairId }`,
+    built by `plugins_file_subject` from its stored pin. It uses applied personal consent.
+    Old credentials keep the person-and-account subject only during the audited rollout.
   - An account-bound API key: `{ kind: "service_account", serviceAccountId }`. The key acts as the
     account. Its sponsor's own access does not matter. So a person who may manage service accounts
     can act as any account through a key. A delete, move, copy, or restore job the key starts acts
@@ -211,11 +218,9 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   it an Add people root. A folder grant then covers its descendants until a restricted boundary;
   a file grant covers that file. Restricted content requires a grant at the nearest live restricted
   scope. A workspace grant never crosses that boundary.
-- A plugin subject reaches a node only when its person can **and** the installation's service
-  account can, each through the normal check above (workspace grant, Add people chain, restricted
-  scope grant, account role shares). Both are index lookups; there is no list of plugin folders.
-  It is like a GitHub app acting for a user: the app gets no more than the user, and no more than
-  the app was given. To let a plugin use a folder, share it with the plugin's service account.
+- Personal plugin file consent is separate from service-account sharing. Select saved files or
+  folders in **My file permissions**. Account grants never expand a personal plugin subject.
+  The account still identifies the installation and must pass its live trusted-binding check.
 - Plugins have no other file access. A folder a plugin creates is a regular folder with its
   parent's access, and the plugin cannot choose its readers. Billing does not change: the paying
   user pays, and when the balance is out neither the person nor the plugin can write.
@@ -223,6 +228,9 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
   it passes when the actor or the full subject can write it (the recursive create, used by
   `ensure_writer` and app creates, and the public API replace). The public API create starts at
   the nearest existing folder, so it walks no folder above it.
+- A personal upload run needs applied Read on its source before receiving file metadata.
+  Creating a sibling also needs applied Edit on the parent. File-only consent cannot grant that.
+  Added `bonobo-file://` references need applied Read, including on accepted writes.
 - Credentials, capabilities, source limits, and write policies remain separate limits. Do not
   require workspace-wide account access before a file check: an account may have only one
   restricted-folder grant.

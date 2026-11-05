@@ -53,13 +53,14 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { PluginsMyFilePermissions, PluginsMyRunPermissions, PluginsRunConsent } from "./plugins-run-consent.tsx";
 
-function TestConsent(props: { capabilities?: string[]; canManage?: boolean }) {
+function TestConsent(props: { capabilities?: string[]; canManage?: boolean; fileAccessModel?: "personal" }) {
 	const { membershipId } = AppTenantProvider.useContext();
 	return (
 		<PluginsRunConsent
 			membershipId={membershipId}
 			capabilities={props.capabilities ?? ["workspace.files.read"]}
 			canManage={props.canManage ?? true}
+			fileAccessModel={props.fileAccessModel}
 			onChange={consentMock}
 		/>
 	);
@@ -69,7 +70,12 @@ function TestMyPermissions() {
 	const { membershipId } = AppTenantProvider.useContext();
 	const plugin = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId })?.at(0);
 	return plugin?.installationId ? (
-		<PluginsMyRunPermissions membershipId={membershipId} installationId={plugin.installationId} canManage={false} />
+		<PluginsMyRunPermissions
+			membershipId={membershipId}
+			installationId={plugin.installationId}
+			canManage={false}
+			fileAccessModel={plugin.fileAccessModel}
+		/>
 	) : null;
 }
 
@@ -77,7 +83,11 @@ function TestMyFilePermissions() {
 	const { membershipId } = AppTenantProvider.useContext();
 	const plugin = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId })?.at(0);
 	return plugin?.installationId ? (
-		<PluginsMyFilePermissions membershipId={membershipId} installationId={plugin.installationId} />
+		<PluginsMyFilePermissions
+			membershipId={membershipId}
+			installationId={plugin.installationId}
+			fileAccessModel={plugin.fileAccessModel}
+		/>
 	) : null;
 }
 
@@ -101,6 +111,49 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("PluginsRunConsent", () => {
+	test("allows personal file operations without a workspace or file proof", async () => {
+		queryMock.mockImplementation((query: string) => (query === "workspace_permission" ? false : null));
+		render(<TestConsent fileAccessModel="personal" />);
+		expect(
+			queryMock.mock.calls.filter(([query, args]) => query === "workspace_permission" && args !== "skip"),
+			"personal Files consent must skip the workspace Read query",
+		).toEqual([]);
+		expect(
+			screen.queryByRole("textbox", { name: "Readable file or folder path" }),
+			"personal run consent must not show a file proof path",
+		).toBeNull();
+		expect(screen.getByRole("checkbox", { name: "List my selected files" })).toHaveProperty("checked", true);
+		expect(screen.getByRole("checkbox", { name: "Read my selected files" })).toHaveProperty("checked", true);
+		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
+		await waitFor(() =>
+			expect(consentMock, "personal run consent must not need a file proof").toHaveBeenLastCalledWith({
+				scopes: ["files:list", "files:read"],
+				filesReadProof: undefined,
+			}),
+		);
+	});
+
+	test("keeps stored data checks separate from personal file operations", async () => {
+		queryMock.mockImplementation((query: string) => (query === "workspace_permission" ? false : null));
+		render(
+			<TestConsent
+				fileAccessModel="personal"
+				capabilities={["workspace.files.read", "plugin.data.read", "plugin.data.write"]}
+				canManage={false}
+			/>,
+		);
+		expect(queryMock).toHaveBeenCalledWith("workspace_permission", {
+			membershipId: "membership_1",
+			permission: "content.read",
+		});
+		expect(screen.getByRole("checkbox", { name: "Read this plugin's stored data" })).toHaveProperty("disabled", true);
+		expect(screen.getByRole("checkbox", { name: "Write this plugin's stored data" })).toHaveProperty("disabled", true);
+		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
+		await waitFor(() =>
+			expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["files:list", "files:read"], filesReadProof: undefined }),
+		);
+	});
+
 	test("keeps consent empty until the user explicitly allows Me", async () => {
 		render(<TestConsent />);
 		expect(consentMock).toHaveBeenLastCalledWith(null);
@@ -298,6 +351,28 @@ describe("PluginsRunConsent", () => {
 });
 
 describe("PluginsMyRunPermissions", () => {
+	test("uses the installation's personal model for saved run permissions", () => {
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1", fileAccessModel: "personal" }]
+				: query === "my_grant"
+					? {
+							capabilities: ["workspace.files.read"],
+							isAssigned: true,
+							grant: { grantId: "grant_1", scopes: ["files:list", "files:read"], valid: true },
+						}
+					: null,
+		);
+		render(<TestMyPermissions />);
+		expect(
+			screen.queryByRole("checkbox", { name: "Read my selected files" }),
+			"saved personal run controls must use selected-file labels",
+		).not.toBeNull();
+		expect(
+			screen.getByText("Permission granted for this workspace membership. File access comes from My file permissions."),
+		).not.toBeNull();
+	});
+
 	test("saves only the member's direct consent and shows a refusal inline", async () => {
 		const permission = {
 			pluginName: "importer",
@@ -359,6 +434,30 @@ describe("PluginsMyRunPermissions", () => {
 });
 
 describe("PluginsMyFilePermissions", () => {
+	test("changes the rollout text when the installation switches to personal access", () => {
+		let personal = false;
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1", fileAccessModel: personal ? "personal" : undefined }]
+				: query === "file_grants"
+					? { results: [], status: "Exhausted", loadMore: vi.fn() }
+					: null,
+		);
+		render(<TestMyFilePermissions />);
+		expect(screen.getByText("Plugins do not use these choices yet. They will after a later update.")).not.toBeNull();
+		personal = true;
+		refreshQueries();
+		expect(
+			screen.queryByText("Plugins do not use these choices yet. They will after a later update."),
+			"personal file controls must not claim that choices are inactive",
+		).toBeNull();
+		expect(
+			screen.getByText(
+				"Access changes apply in the background. The plugin keeps its current access until each change finishes.",
+			),
+		).not.toBeNull();
+	});
+
 	test("requires an explicit saved target and saves file consent without run consent", async () => {
 		let target = { target: { kind: "saved", id: "folder_1" }, kind: "folder" };
 		queryMock.mockImplementation((query: string) =>

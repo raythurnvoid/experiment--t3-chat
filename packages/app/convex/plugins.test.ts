@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import type { MutationCtx } from "./_generated/server.js";
+import { access_control_db_set_service_account_grant } from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import * as activities from "./activities_db.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
@@ -44,6 +46,7 @@ import {
 	runner_success_response,
 	register_media_plugin,
 	media_plugin_consent,
+	grant_plugin_file_access,
 	drain_scheduled_work,
 	drain_plugin_registry_delete,
 } from "./plugins.setup.test.ts";
@@ -54,6 +57,24 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 });
+
+// Raw runs in this file keep the old source-only read and root sibling-write contract.
+// Real new-install and event-dispatch flows below keep personal access.
+async function insert_legacy_plugin_run(ctx: MutationCtx, args: Parameters<typeof insert_plugin_run>[1]) {
+	const installation = (await ctx.db.get("plugins_workspace_installations", args.installationId))!;
+	if (installation.fileAccessModel === "personal") {
+		await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: undefined });
+		const granted = await access_control_db_set_service_account_grant(ctx, {
+			organizationId: installation.organizationId,
+			workspaceId: installation.workspaceId,
+			serviceAccountId: installation.serviceAccountId,
+			resource: { kind: "workspace" },
+			level: "manage",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+	}
+	return await insert_plugin_run(ctx, args);
+}
 
 describe("install_version service accounts", () => {
 	beforeEach(() => {
@@ -73,7 +94,6 @@ describe("install_version service accounts", () => {
 			membershipId: membership.membershipId,
 			pluginVersionId: firstVersion.pluginVersionId,
 			...media_plugin_consent,
-			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
 		});
 		if (first._nay) {
 			throw new Error(first._nay.message);
@@ -82,6 +102,18 @@ describe("install_version service accounts", () => {
 			ctx.db.get("plugins_workspace_installations", first._yay.installationId),
 		))!;
 		const serviceAccountId = installation.serviceAccountId;
+		// Keep the existing account-model contract during the switch.
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: undefined }),
+		);
+		expect(
+			await asOwner.mutation(api.access_control.set_service_account_grant, {
+				membershipId: membership.membershipId,
+				serviceAccountId,
+				resource: { kind: "workspace" },
+				level: "write",
+			}),
+		).toEqual({ _yay: null });
 
 		expect(
 			(
@@ -226,14 +258,28 @@ describe("install_version service accounts", () => {
 		const installed = await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins.install_version, {
 			...args,
 			membershipId: membership.membershipId,
-			serviceAccountGrants: [
-				{ resource: { kind: "workspace" }, level: "write" },
-				{ resource: { kind: "file", nodeId: folder._yay.nodeId }, level: "read" },
-			],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
+		// Account updates below exercise the legacy install contract.
+		const installation = await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", installed._yay.installationId, {
+				fileAccessModel: undefined,
+			});
+			return (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!;
+		});
+		for (const grant of [
+			{ resource: { kind: "workspace" as const }, level: "write" as const },
+			{ resource: { kind: "file" as const, nodeId: folder._yay.nodeId }, level: "read" as const },
+		])
+			expect(
+				await asOwner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: membership.membershipId,
+					serviceAccountId: installation.serviceAccountId,
+					...grant,
+				}),
+			).toEqual({ _yay: null });
 		vi.advanceTimersByTime(60_000);
 		expect(
 			(
@@ -330,7 +376,7 @@ describe("install_version service accounts", () => {
 		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(retained.grants);
 	});
 
-	test("checks every explicit grant before writing and supports a file-only account setup", async () => {
+	test("checks every explicit legacy grant before writing and supports a file-only account setup", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const version = await register_media_plugin({ t, userId: membership.userId, events: [] });
@@ -394,7 +440,17 @@ describe("install_version service accounts", () => {
 			...media_plugin_consent,
 		};
 
-		const before = await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect());
+		const initial = await asOperator.mutation(api.plugins.install_version, args);
+		if (initial._nay) throw new Error(initial._nay.message);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", initial._yay.installationId, { fileAccessModel: undefined }),
+		);
+		const before = await t.run(async (ctx) => ({
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+			accounts: await ctx.db.query("access_control_service_accounts").collect(),
+			bindings: await ctx.db.query("plugins_service_account_bindings").collect(),
+			installations: await ctx.db.query("plugins_workspace_installations").collect(),
+		}));
 		expect(
 			(
 				await asOperator.mutation(api.plugins.install_version, {
@@ -403,11 +459,16 @@ describe("install_version service accounts", () => {
 				})
 			)._nay?.message,
 		).toContain("Edit workspace content");
-		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(before);
-		expect(await t.run((ctx) => ctx.db.query("access_control_service_accounts").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_service_account_bindings").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
+		expect(
+			await t.run(async (ctx) => ({
+				grants: await ctx.db.query("access_control_permission_grants").collect(),
+				accounts: await ctx.db.query("access_control_service_accounts").collect(),
+				bindings: await ctx.db.query("plugins_service_account_bindings").collect(),
+				installations: await ctx.db.query("plugins_workspace_installations").collect(),
+			})),
+		).toEqual(before);
 
+		vi.advanceTimersByTime(60_000);
 		const installed = await asOperator.mutation(api.plugins.install_version, {
 			...args,
 			serviceAccountGrants: [{ resource: { kind: "file", nodeId }, level: "read" }],
@@ -551,7 +612,7 @@ describe("plugins Phase 0", () => {
 		const { t, fixture } = args;
 
 		return t.run(async (ctx) =>
-			insert_plugin_run(ctx, {
+			insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
 					.serviceAccountId,
 				organizationId: fixture.membership.organizationId,
@@ -575,6 +636,7 @@ describe("plugins Phase 0", () => {
 		);
 	}
 
+	// Legacy upload-run fixture: these checks cover source-only reads and root-level sibling writes.
 	// A running run reachable through the host/public API with a live `plr_` token. `tokenSeed` is a
 	// single hex char repeated to a valid 64-hex token, so a test needing two runs passes distinct seeds.
 	async function start_running_plugin_run(
@@ -609,7 +671,7 @@ describe("plugins Phase 0", () => {
 			throw new Error(upload._nay.message);
 		}
 		const runId = await t.run(async (ctx) =>
-			insert_plugin_run(ctx, {
+			insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -1130,7 +1192,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -1222,7 +1284,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2176,7 +2238,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2309,7 +2371,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2479,7 +2541,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2596,7 +2658,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2729,7 +2791,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2862,7 +2924,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -2950,7 +3012,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3059,7 +3121,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3683,7 +3745,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3922,7 +3984,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -3979,7 +4041,7 @@ describe("plugins Phase 0", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -6236,7 +6298,7 @@ describe("plugins get_installation_health", () => {
 			nextUpdatedAt += 1000;
 			const updatedAt = nextUpdatedAt;
 			return t.run(async (ctx) =>
-				insert_plugin_run(ctx, {
+				insert_legacy_plugin_run(ctx, {
 					serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
 						.serviceAccountId,
 					organizationId: fixture.membership.organizationId,
@@ -7031,7 +7093,7 @@ describe("plugins outbound origins consent", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
-			return await insert_plugin_run(ctx, {
+			return await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -7530,6 +7592,7 @@ describe("plugins metadata file doors", () => {
 	async function install_file_doors_plugin(
 		t: ReturnType<typeof test_convex>,
 		capabilities: plugins_Capability[] = FILE_CAPABILITIES,
+		fileAccessModel: "legacy" | "personal" = "legacy",
 	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin({
@@ -7550,10 +7613,27 @@ describe("plugins metadata file doors", () => {
 			acceptedUiOutboundOrigins: [],
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
-			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
+		}
+		const installation = (await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		))!;
+		// Legacy root-creation and actor/account checks need the old workspace grant.
+		// Existing selected-folder cases below use personal consent instead.
+		if (fileAccessModel === "legacy") {
+			await t.run((ctx) =>
+				ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: undefined }),
+			);
+			expect(
+				await asOwner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: membership.membershipId,
+					serviceAccountId: installation.serviceAccountId,
+					resource: { kind: "workspace" },
+					level: "manage",
+				}),
+			).toEqual({ _yay: null });
 		}
 		return {
 			membership,
@@ -7591,13 +7671,32 @@ describe("plugins metadata file doors", () => {
 		 */
 		userId?: Id<"users">;
 		tokenSeed?: string;
+		filePairId?: Id<"plugins_file_pairs">;
 	}) {
 		const { t, fixture } = args;
 
 		const apiToken = `plr_${(args.tokenSeed ?? "d").repeat(64)}`;
+		const serviceAccountId = (await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", fixture.installationId),
+		))!.serviceAccountId;
+		const sessionId = await t.run((ctx) =>
+			ctx.db.insert("plugins_ui_sessions", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				installationId: fixture.installationId,
+				pluginVersionId: fixture.pluginVersionId,
+				serviceAccountId,
+				userId: args.userId ?? fixture.membership.userId,
+				filePairId: args.filePairId,
+				tokenHash: "file-invoke-frame-hash",
+				createdAt: Date.now(),
+				expiresAt: Date.now() + 30 * 60_000,
+			}),
+		);
 		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
-			serviceAccountId: (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId)))!
-				.serviceAccountId,
+			sessionId,
+			sessionTokenHash: "file-invoke-frame-hash",
+			serviceAccountId,
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			installationId: fixture.installationId,
@@ -7954,9 +8053,17 @@ describe("plugins metadata file doors", () => {
 		["null", "plugin-name: null", false],
 	] as const)("folder selection refuses %s metadata", async (_name, metadataYaml, valid) => {
 		const t = test_convex();
-		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run({ t, fixture });
+		const fixture = await install_file_doors_plugin(t, FILE_CAPABILITIES, "personal");
 		const nodeId = await seed_member_folder({ t, fixture, name: "member-folder" });
+		const consent = await grant_plugin_file_access({
+			t,
+			userId: fixture.membership.userId,
+			membershipId: fixture.membership.membershipId,
+			installationId: fixture.installationId,
+			rootNodeId: nodeId,
+			level: "write",
+		});
+		const run = await start_file_invoke_run({ t, fixture, filePairId: consent.pairId });
 		const edited = await fixture.asOwner.mutation(api.files_metadata.set_entries, {
 			membershipId: fixture.membership.membershipId,
 			fileNodeId: nodeId,
@@ -7977,11 +8084,19 @@ describe("plugins metadata file doors", () => {
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
 	});
 
-	test("a member can opt a folder in using only an exact plugin-name label", async () => {
+	test("a member can opt a selected folder in using an exact plugin-name label", async () => {
 		const t = test_convex();
-		const fixture = await install_file_doors_plugin(t);
-		const run = await start_file_invoke_run({ t, fixture });
+		const fixture = await install_file_doors_plugin(t, FILE_CAPABILITIES, "personal");
 		const nodeId = await seed_member_folder({ t, fixture, name: "member-folder" });
+		const consent = await grant_plugin_file_access({
+			t,
+			userId: fixture.membership.userId,
+			membershipId: fixture.membership.membershipId,
+			installationId: fixture.installationId,
+			rootNodeId: nodeId,
+			level: "write",
+		});
+		const run = await start_file_invoke_run({ t, fixture, filePairId: consent.pairId });
 
 		expect(
 			await fixture.asOwner.mutation(api.files_metadata.set_entries, {
@@ -11058,7 +11173,18 @@ describe("plugins admin hard delete", () => {
 			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
 			subject: pageSession._yay.sessionId,
 		});
+		const serviceSecretHash = await crypto_sha256_hex("delete-plugin-service-test");
+		await t.run((ctx) =>
+			ctx.db.insert("plugins_service_registrations", {
+				pluginName: "media",
+				exchangeSecretHash: serviceSecretHash,
+				scopes: ["plugin_data:read", "plugin_data:write"],
+				createdBy: membership.userId,
+				updatedAt: Date.now(),
+			}),
+		);
 		const serviceGrant = await t.mutation(internal.public_api.create_plugin_service_grant, {
+			lifecycle: { presented: pageSession._yay.token, serviceSecretHash },
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			installationId: installed._yay.installationId,
@@ -11128,6 +11254,7 @@ describe("plugins admin hard delete", () => {
 		expect(
 			(
 				await t.mutation(internal.public_api.create_plugin_service_grant, {
+					lifecycle: { presented: pageSession._yay.token, serviceSecretHash },
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					installationId: installed._yay.installationId,
@@ -11138,11 +11265,12 @@ describe("plugins admin hard delete", () => {
 					now: Date.now(),
 				})
 			)._nay?.message,
-		).toBe("Not found");
+		).toBe("Unauthenticated");
 		expect(
 			(
 				await t.mutation(internal.public_api.rotate_plugin_service_grant, {
 					presented: serviceGrant._yay.token,
+					lifecycle: { serviceSecretHash },
 					now: Date.now(),
 				})
 			)._nay?.message,
@@ -11216,7 +11344,7 @@ describe("plugins admin hard delete", () => {
 			throw new Error(upload._nay.message);
 		}
 		const runId = await t.run(async (ctx) =>
-			insert_plugin_run(ctx, {
+			insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,
@@ -11543,7 +11671,7 @@ describe("plugins admin hard delete", () => {
 				collectionName: "meetings",
 				keyPrefix: "sibling-released/",
 			});
-			const runId = await insert_plugin_run(ctx, {
+			const runId = await insert_legacy_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!
 					.serviceAccountId,
 				organizationId: membership.organizationId,

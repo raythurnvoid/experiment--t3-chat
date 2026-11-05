@@ -193,7 +193,22 @@ async function fixture(
 	const runId = options.scheduled
 		? await start_scheduled_run({ t, asOwner, owner, installationId, tokenHash })
 		: await (async () => {
+				const sessionId = await t.run((ctx) =>
+					ctx.db.insert("plugins_ui_sessions", {
+						organizationId: owner.organizationId,
+						workspaceId: owner.workspaceId,
+						installationId,
+						pluginVersionId,
+						serviceAccountId: installation.serviceAccountId,
+						userId: owner.userId,
+						tokenHash: "volume-frame",
+						createdAt: Date.now(),
+						expiresAt: Date.now() + 60_000,
+					}),
+				);
 				const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
+					sessionId,
+					sessionTokenHash: "volume-frame",
 					organizationId: owner.organizationId,
 					workspaceId: owner.workspaceId,
 					serviceAccountId: installation.serviceAccountId,
@@ -540,7 +555,22 @@ async function restart_run(f: Awaited<ReturnType<typeof fixture>>, userId: Id<"u
 	});
 	const installation = await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.installationId));
 	if (!installation) throw new Error("Expected installation");
+	const sessionId = await f.t.run((ctx) =>
+		ctx.db.insert("plugins_ui_sessions", {
+			organizationId: f.owner.organizationId,
+			workspaceId: f.owner.workspaceId,
+			installationId: installation._id,
+			pluginVersionId: f.pluginVersionId,
+			serviceAccountId: installation.serviceAccountId,
+			userId,
+			tokenHash: "volume-restart-frame",
+			createdAt: Date.now(),
+			expiresAt: Date.now() + 60_000,
+		}),
+	);
 	const started = await f.t.mutation(internal.plugins_runtime.start_invoke_run, {
+		sessionId,
+		sessionTokenHash: "volume-restart-frame",
 		organizationId: f.owner.organizationId,
 		workspaceId: f.owner.workspaceId,
 		serviceAccountId: installation.serviceAccountId,

@@ -1,6 +1,7 @@
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, components } from "./_generated/api.js";
+import { grant_plugin_file_access } from "./plugins.setup.test.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
@@ -8,7 +9,7 @@ import type { plugins_Capability } from "../shared/plugins.ts";
 
 const PLUGIN_NAME = "private-notes";
 const SERVICE_SECRET = "personal-scope-test-secret";
-const ROOT = "/plugin-imports";
+const ROOT = "/imports/plugin-imports";
 const PATH = `${ROOT}/notes.txt`;
 const r2Objects = new Map<string, BodyInit>();
 
@@ -114,6 +115,9 @@ async function fixture() {
 	});
 
 	async function connect(scope: typeof personal) {
+		await t.run((ctx) =>
+			ctx.runMutation(components.rate_limiter.lib.resetRateLimit, { name: "plugins_manage", key: scope.userId }),
+		);
 		const installed = await actor.mutation(api.plugins.install_version, {
 			membershipId: scope.membershipId,
 			pluginVersionId,
@@ -122,9 +126,31 @@ async function fixture() {
 			acceptedUiOutboundOrigins: [],
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
-			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
+			serviceAccountGrants: [],
 		});
 		if (installed._nay) throw new Error(installed._nay.message);
+		const selected = await actor.mutation(api.files_nodes.create_folder_node, {
+			membershipId: scope.membershipId,
+			parentId: "root",
+			path: "/imports",
+		});
+		if (selected._nay) throw new Error(selected._nay.message);
+		// Own-write also needs the plugin label on the existing parent.
+		expect(
+			await actor.mutation(api.files_metadata.set_entries, {
+				membershipId: scope.membershipId,
+				fileNodeId: selected._yay.nodeId,
+				metadataYaml: `plugin-name: ${PLUGIN_NAME}`,
+			}),
+		).toEqual({ _yay: null });
+		await grant_plugin_file_access({
+			t,
+			userId: scope.userId,
+			membershipId: scope.membershipId,
+			installationId: installed._yay.installationId,
+			rootNodeId: selected._yay.nodeId,
+			level: "write",
+		});
 		const session = await actor.action(api.plugins_ui.mint_page_session, {
 			membershipId: scope.membershipId,
 			pluginName: PLUGIN_NAME,

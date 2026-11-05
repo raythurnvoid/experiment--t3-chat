@@ -7,7 +7,10 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { activities_db_finish, activities_db_start } from "./activities_db.ts";
 import { plugins_schedules_db_cancel, plugins_scheduled_runs_workpool } from "./plugins_schedules_db.ts";
-import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
+import {
+	plugins_runtime_db_enqueue_manual_run,
+	plugins_runtime_db_enqueue_upload_completed_runs,
+} from "./plugins_runtime.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import * as crypto_utils from "../server/crypto-utils.ts";
 import { z } from "zod";
@@ -251,6 +254,364 @@ const successful_outcome = {
 	runnerErrorMessage: null,
 	pluginStatus: 200,
 } as const;
+
+describe("personal file credential pins", () => {
+	async function personal_fixture() {
+		const f = await fixture();
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
+		);
+		return f;
+	}
+
+	async function invoke_fixture(personal = true) {
+		const f = personal ? await personal_fixture() : await fixture();
+		await f.t.run(async (ctx) => {
+			const installation = await ctx.db.get("plugins_workspace_installations", f.installationId);
+			await ctx.db.patch("plugins_workspace_installations", f.installationId, {
+				acceptedCapabilities: [...installation!.acceptedCapabilities, "plugin.backend.invoke"],
+			});
+			await ctx.db.patch("plugins_versions", f.pluginVersionId, {
+				pages: [{ id: "page", title: "Page", entry: "index.html", navItem: null }],
+				endpoints: [{ id: "echo", path: "/echo", serialization: "installation" }],
+			});
+		});
+		const minted = await f.asOwner.mutation(internal.plugins_ui.insert_page_session, {
+			membershipId: f.owner.membershipId,
+			pluginName: f.name,
+		});
+		if (minted._nay) throw new Error(minted._nay.message);
+		const session = (await f.t.run((ctx) => ctx.db.get("plugins_ui_sessions", minted._yay.sessionId)))!;
+		return {
+			f,
+			session,
+			args: {
+				sessionId: session._id,
+				sessionTokenHash: session.tokenHash,
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				installationId: f.installationId,
+				serviceAccountId: session.serviceAccountId,
+				pluginVersionId: f.pluginVersionId,
+				userId: f.owner.userId,
+				endpointId: "echo",
+				callerSerializationKey: null,
+				apiTokenHash: "personal-invoke",
+			},
+		};
+	}
+
+	test("pins scheduled roots and follow-ups without creating file consent", async () => {
+		const f = await personal_fixture();
+		const root = await root_run(f);
+		expect(root.filePairId, "a newly queued schedule must pin its pair").toBeDefined();
+		const { token, run } = await start_run(f, root._id);
+		expect(run.filePairId).toBe(root.filePairId);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
+		await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome });
+		const docs = await f.t.run(async (ctx) => ({
+			runs: await ctx.db.query("plugins_event_runs").collect(),
+			consents: await ctx.db.query("plugins_file_consents").collect(),
+		}));
+		expect(docs.runs.find((item) => item._id !== root._id)?.filePairId, "a follow-up must keep the original pair").toBe(
+			root.filePairId,
+		);
+		expect(docs.consents).toEqual([]);
+	});
+
+	test("starts an old queued run without changing its authority and refuses a new follow-up", async () => {
+		const f = await fixture();
+		const root = await root_run(f);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
+		);
+		const { run, tokenHash } = await start_run(f, root._id);
+		expect(run.filePairId, "an old queue must not acquire a fresh pair").toBeUndefined();
+		const call = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: root._id,
+			kind: "api_request",
+			route: "/api/v1/plugin-runs/follow-up",
+			requiredScope: "runs:follow_up",
+		});
+		expect(call._nay).toBeUndefined();
+		expect(
+			(
+				await f.t.mutation(internal.plugins_runtime.request_follow_up, {
+					runId: root._id,
+					callId: call._yay!.callId,
+					apiTokenHash: tokenHash,
+					state: "{}",
+				})
+			)._nay?.message,
+			"a legacy token cannot request a new run after the switch",
+		).toBe("File access changed. Start a new plugin run.");
+	});
+
+	test("does not mint a follow-up when the model changes after its request", async () => {
+		const f = await fixture();
+		const root = await root_run(f);
+		const { token } = await start_run(f, root._id);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
+		);
+		const finished = await f.t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId: root._id,
+			outcome: successful_outcome,
+		});
+		expect(finished._yay?.errorMessage, "finish must recheck the model before creating another token").toBe(
+			"File access changed. Start a new plugin run.",
+		);
+		expect(await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toHaveLength(1);
+	});
+
+	test("checks pair Read before returning an upload source to the runner", async () => {
+		const f = await personal_fixture();
+		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key) => ({
+			key: key ?? "source",
+			url: "https://files.test/upload",
+		}));
+		const uploaded = await f.asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: f.owner.membershipId,
+			parentId: "root",
+			filename: "source.png",
+			contentType: "image/png",
+			size: 1024,
+		});
+		if (uploaded._nay) throw new Error(uploaded._nay.message);
+		const queued = await f.t.run(async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", f.installationId))!;
+			const asset = (await ctx.db.get("files_r2_assets", uploaded._yay.assetId))!;
+			const fileNode = (await ctx.db.get("files_nodes", uploaded._yay.nodeId))!;
+			return await plugins_runtime_db_enqueue_manual_run(ctx, { installation, asset, fileNode });
+		});
+		if (queued._nay) throw new Error(queued._nay.message);
+		const run = (await f.t.run((ctx) => ctx.db.get("plugins_event_runs", queued._yay.runId)))!;
+		expect(run.filePairId, "manual runs must pin personal authority").toBeDefined();
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", f.pluginVersionId, {
+				events: [{ type: "files.upload.completed", contentTypes: ["image/png"], filters: [] }],
+			});
+			await ctx.db.insert("plugins_workspace_event_handlers", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				installationId: f.installationId,
+				pluginVersionId: f.pluginVersionId,
+				pluginName: f.name,
+				event: "files.upload.completed",
+				contentType: "image/png",
+				installationCreatedAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("files_r2_assets", uploaded._yay.assetId, { r2Key: "source-ready" });
+			const asset = (await ctx.db.get("files_r2_assets", uploaded._yay.assetId))!;
+			const fileNode = (await ctx.db.get("files_nodes", uploaded._yay.nodeId))!;
+			expect(
+				await plugins_runtime_db_enqueue_upload_completed_runs(ctx, { asset, fileNode, eventId: "ready" }),
+			).toEqual({ enqueued: 1 });
+		});
+		const automatic = await f.t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_asset_event_installation", (q) =>
+					q
+						.eq("assetId", uploaded._yay.assetId)
+						.eq("event", "files.upload.completed")
+						.eq("installationId", f.installationId),
+				)
+				.unique(),
+		);
+		expect(automatic?.filePairId, "automatic upload runs must pin the same pair").toBe(run.filePairId);
+		const denied = await f.t.mutation(internal.plugins_runtime.start_event_run, {
+			runId: run._id,
+			apiTokenHash: "source-token",
+		});
+		expect(denied._nay?.message, "no source metadata leaves the host without applied read").toContain(
+			"The plugin cannot read /source.png",
+		);
+		await f.t.run((ctx) =>
+			ctx.db.insert("plugins_file_consents", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				pairId: run.filePairId!,
+				rootNodeId: uploaded._yay.nodeId,
+				requestedLevel: "read",
+				appliedLevel: "read",
+				areaEligible: false,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		const allowed = await f.t.mutation(internal.plugins_runtime.start_event_run, {
+			runId: run._id,
+			apiTokenHash: "source-token",
+		});
+		expect(allowed._yay?.fileNode?._id, "applied read lets the runner receive its source").toBe(uploaded._yay.nodeId);
+	});
+
+	test("invoke pins the exact source frame pair", async () => {
+		const { f, session, args } = await invoke_fixture();
+		const result = await f.t.mutation(internal.plugins_runtime.start_invoke_run, args);
+		expect(session.filePairId).toBeDefined();
+		expect(result._yay?.pluginRun.filePairId, "invoke must keep the source frame's immutable pair").toBe(
+			session.filePairId,
+		);
+	});
+
+	test("a queued personal run cannot move to a new membership lifetime", async () => {
+		const f = await personal_fixture();
+		const root = await root_run(f);
+		await f.t.run(async (ctx) => {
+			const pair = (await ctx.db.get("plugins_file_pairs", root.filePairId!))!;
+			await ctx.db.patch("plugins_file_pairs", pair._id, { membershipLifetime: pair.membershipLifetime + 1 });
+		});
+		expect(
+			(await f.t.mutation(internal.plugins_runtime.start_event_run, { runId: root._id, apiTokenHash: "new-lifetime" }))
+				._nay?.message,
+			"start must validate its queued pair",
+		).toBe("Unauthorized");
+	});
+
+	test.each(["rotated", "revoked", "lifetime", "other person"] as const)(
+		"invoke refuses a %s source frame",
+		async (change) => {
+			const { f, session, args } = await invoke_fixture();
+			await f.t.run(async (ctx) => {
+				if (change === "rotated")
+					await ctx.db.patch("plugins_ui_sessions", session._id, { tokenHash: "new-frame-token" });
+				else if (change === "revoked") await ctx.db.delete("plugins_ui_sessions", session._id);
+				else if (change === "other person") {
+					const userId = await ctx.db.insert("users", { clerkUserId: "other-frame-person" });
+					await ctx.db.patch("plugins_ui_sessions", session._id, { userId });
+				} else {
+					const pair = (await ctx.db.get("plugins_file_pairs", session.filePairId!))!;
+					await ctx.db.patch("plugins_file_pairs", pair._id, { membershipLifetime: pair.membershipLifetime + 1 });
+				}
+			});
+			expect(
+				(await f.t.mutation(internal.plugins_runtime.start_invoke_run, args))._nay,
+				"a changed source frame must not mint a run",
+			).toBeDefined();
+			expect(await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toEqual([]);
+		},
+	);
+
+	test("an old frame cannot mint personal authority after the switch", async () => {
+		const { f, args } = await invoke_fixture(false);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
+		);
+		expect(
+			(await f.t.mutation(internal.plugins_runtime.start_invoke_run, args))._nay?.message,
+			"legacy frames must reopen before invoke",
+		).toBe("File access changed. Reopen this plugin.");
+	});
+
+	test("invoke keeps the person's write permission separate from file consent", async () => {
+		const { f, args } = await invoke_fixture();
+		const reader = await f.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "invoke-reader" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				displayName: "",
+				sortDisplayName: "",
+				updatedAt: Date.now(),
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				resourceKind: "workspace",
+				resourceId: String(f.owner.workspaceId),
+				principalKind: "user",
+				userId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asReader = f.t.withIdentity({ issuer: "https://clerk.test", external_id: reader.userId });
+		const session = await asReader.mutation(internal.plugins_ui.insert_page_session, {
+			membershipId: reader.membershipId,
+			pluginName: f.name,
+		});
+		if (session._nay) throw new Error(session._nay.message);
+		const started = await f.t.mutation(internal.plugins_runtime.start_invoke_run, {
+			...args,
+			userId: reader.userId,
+			sessionId: session._yay.sessionId,
+			sessionTokenHash: await crypto_sha256_hex(session._yay.token),
+		});
+		expect(started._nay?.message, "a reader cannot invoke even with a valid personal pair").toBe("Permission denied");
+	});
+
+	test("scheduled Trash calls give a clear refusal before consuming a slot", async () => {
+		const f = await personal_fixture();
+		const root = await root_run(f);
+		const { token } = await start_run(f, root._id);
+		const denied = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: root._id,
+			kind: "api_request",
+			route: "/api/v1/files/trash/list",
+			requiredScope: "files:list",
+		});
+		expect(denied._nay?.message, "scheduled Trash must explain the unsupported route").toBe(
+			"Scheduled plugin runs cannot use Trash yet.",
+		);
+		const response = await f.t.fetch("/api/v1/files/trash/list", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: "{}",
+		});
+		expect(response.status, "the scheduled Trash refusal is permission denied, not expired auth").toBe(403);
+		expect((await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id)))?.apiCallCount).toBe(0);
+	});
+
+	test.each(["request", "finish"] as const)("follow-up %s checks the original pair lifetime", async (step) => {
+		const f = await personal_fixture();
+		const root = await root_run(f);
+		const { tokenHash } = await start_run(f, root._id);
+		const call = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: root._id,
+			kind: "api_request",
+			route: "/api/v1/plugin-runs/follow-up",
+			requiredScope: "runs:follow_up",
+		});
+		if (call._nay) throw new Error(call._nay.message);
+		const args = { runId: root._id, callId: call._yay.callId, apiTokenHash: tokenHash, state: "{}" };
+		if (step === "finish")
+			expect(await f.t.mutation(internal.plugins_runtime.request_follow_up, args)).toEqual({ _yay: null });
+		await f.t.run(async (ctx) => {
+			const pair = (await ctx.db.get("plugins_file_pairs", root.filePairId!))!;
+			await ctx.db.patch("plugins_file_pairs", pair._id, { membershipLifetime: pair.membershipLifetime + 1 });
+		});
+		if (step === "request") {
+			expect(
+				(await f.t.mutation(internal.plugins_runtime.request_follow_up, args))._nay?.message,
+				"follow-up request must keep the original lifetime",
+			).toBe("Unauthorized");
+		} else {
+			expect(
+				(
+					await f.t.mutation(internal.plugins_runtime.finish_event_run, {
+						runId: root._id,
+						outcome: successful_outcome,
+					})
+				)._yay?.errorMessage,
+				"follow-up mint must keep the original lifetime",
+			).toBe("Unauthorized");
+		}
+		expect(await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toHaveLength(1);
+	});
+});
 
 describe("dispatch_due_schedules", () => {
 	test("queues a hidden root with exact consent and membership pins", async () => {
@@ -1345,6 +1706,7 @@ describe("follow-up HTTP schema", () => {
 				| "Choose a scheduled user with their own permission grant"
 				| "This schedule is not available"
 				| "The scheduled assignment changed"
+				| "File access changed. Start a new plugin run."
 				| "Plugin run chain limit exceeded"
 				| "A follow-up is already requested"
 				| "Follow-up state must be at most 16 KiB"

@@ -21,8 +21,20 @@ export type PluginsRunConsent_Value = Pick<
 >;
 
 const SCOPE_CHOICES = [
-	{ scope: "files:list", capability: "workspace.files.read", label: "List files I can read", management: false },
-	{ scope: "files:read", capability: "workspace.files.read", label: "Read files I can read", management: false },
+	{
+		scope: "files:list",
+		capability: "workspace.files.read",
+		label: "List my selected files",
+		legacyLabel: "List files I can read",
+		management: false,
+	},
+	{
+		scope: "files:read",
+		capability: "workspace.files.read",
+		label: "Read my selected files",
+		legacyLabel: "Read files I can read",
+		management: false,
+	},
 	{
 		scope: "plugin_data:read",
 		capability: "plugin.data.read",
@@ -69,11 +81,12 @@ export const PluginsRunConsent = memo(function PluginsRunConsent(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	capabilities: readonly string[];
 	canManage: boolean;
+	fileAccessModel?: "personal";
 	initialScopes?: PluginsRunConsent_Value["scopes"];
 	disabled?: boolean;
 	onChange: (consent: PluginsRunConsent_Value | null) => void;
 }) {
-	const { membershipId, capabilities, canManage, initialScopes, disabled, onChange } = props;
+	const { membershipId, capabilities, canManage, fileAccessModel, initialScopes, disabled, onChange } = props;
 	const groupName = useId();
 	const choices = SCOPE_CHOICES.filter((choice) => capabilities.includes(choice.capability));
 	const [scopes, setScopes] = useState<PluginsRunConsent_Value["scopes"]>(() =>
@@ -89,7 +102,7 @@ export const PluginsRunConsent = memo(function PluginsRunConsent(props: {
 	const needsPluginDataWrite = capabilities.includes("plugin.data.write");
 	const canReadWorkspace = useQuery(
 		app_convex_api.access_control.get_current_user_workspace_permission,
-		capabilities.includes("workspace.files.read") || needsPluginDataRead
+		(fileAccessModel !== "personal" && capabilities.includes("workspace.files.read")) || needsPluginDataRead
 			? { membershipId, permission: "content.read" }
 			: "skip",
 	);
@@ -116,7 +129,8 @@ export const PluginsRunConsent = memo(function PluginsRunConsent(props: {
 			),
 		[scopes, capabilities, canManage, canReadPluginData, canWritePluginData],
 	);
-	const needsFilesProof = selectedScopes.includes("files:list") || selectedScopes.includes("files:read");
+	const needsFilesProof =
+		fileAccessModel !== "personal" && (selectedScopes.includes("files:list") || selectedScopes.includes("files:read"));
 	const target = useQuery(
 		app_convex_api.files_nodes.get_visible_target_by_path,
 		needsFilesProof && canReadWorkspace === false && path.trim() ? { membershipId, path: path.trim() } : "skip",
@@ -160,8 +174,9 @@ export const PluginsRunConsent = memo(function PluginsRunConsent(props: {
 	return (
 		<div className={"PluginsRunConsent" satisfies PluginsRunConsent_ClassNames}>
 			<p className={"PluginsRunConsent-note" satisfies PluginsRunConsent_ClassNames}>
-				A manager may select you for scheduled runs. Each operation checks your current access and this plugin's
-				accepted permissions. File reads also need the installation account's access.
+				{fileAccessModel === "personal"
+					? "A manager may select you for scheduled runs. File operations use your choices in My file permissions. Other operations still check your current access and this plugin's accepted permissions."
+					: "A manager may select you for scheduled runs. Each operation checks your current access and this plugin's accepted permissions. File reads also need the installation account's access."}
 			</p>
 			<div className={"PluginsRunConsent-scopes" satisfies PluginsRunConsent_ClassNames}>
 				{choices.map((choice) => (
@@ -188,14 +203,16 @@ export const PluginsRunConsent = memo(function PluginsRunConsent(props: {
 							)
 						}
 					>
-						{choice.label}
+						{fileAccessModel !== "personal" && "legacyLabel" in choice ? choice.legacyLabel : choice.label}
 					</MyCheckboxButton>
 				))}
 			</div>
 			{checkingPluginData ? <p role="status">Checking stored data access…</p> : null}
 			{needsPluginDataRead && canReadWorkspace === false ? (
 				<p className={"PluginsRunConsent-note" satisfies PluginsRunConsent_ClassNames}>
-					Stored data needs workspace read access. You can still grant access to files you can read.
+					{fileAccessModel === "personal"
+						? "Stored data needs workspace read access. You can still allow file operations; choose their files in My file permissions."
+						: "Stored data needs workspace read access. You can still grant access to files you can read."}
 				</p>
 			) : null}
 			{needsPluginDataWrite && canReadWorkspace === true && canWriteWorkspace === false ? (
@@ -271,8 +288,9 @@ export const PluginsMyRunPermissions = memo(function PluginsMyRunPermissions(pro
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	installationId: app_convex_Id<"plugins_workspace_installations">;
 	canManage: boolean;
+	fileAccessModel?: "personal";
 }) {
-	const { membershipId, installationId, canManage } = props;
+	const { membershipId, installationId, canManage, fileAccessModel } = props;
 	const permission = useQuery(app_convex_api.plugins_access.get_my_run_as_grant, { membershipId, installationId });
 	const [consent, setConsent] = useState<PluginsRunConsent_Value | null>(null);
 	const [pending, setPending] = useState<"grant" | "revoke" | null>(null);
@@ -345,7 +363,9 @@ export const PluginsMyRunPermissions = memo(function PluginsMyRunPermissions(pro
 			{permission.grant ? (
 				<p>
 					{permission.grant.valid
-						? "Permission granted for this workspace membership. Each operation still checks your current access."
+						? fileAccessModel === "personal"
+							? "Permission granted for this workspace membership. File access comes from My file permissions."
+							: "Permission granted for this workspace membership. Each operation still checks your current access."
 						: "Your permission must be granted again."}
 				</p>
 			) : (
@@ -356,6 +376,7 @@ export const PluginsMyRunPermissions = memo(function PluginsMyRunPermissions(pro
 				membershipId={membershipId}
 				capabilities={permission.capabilities}
 				canManage={canManage}
+				fileAccessModel={fileAccessModel}
 				initialScopes={permission.grant?.scopes}
 				disabled={pending !== null}
 				onChange={handleConsentChange}
@@ -406,8 +427,9 @@ type PluginsMyFilePermissions_ClassNames =
 export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(props: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	installationId: app_convex_Id<"plugins_workspace_installations">;
+	fileAccessModel?: "personal";
 }) {
-	const { membershipId, installationId } = props;
+	const { membershipId, installationId, fileAccessModel } = props;
 	const groupName = useId();
 	const [path, setPath] = useState("");
 	const [selectedFileId, setSelectedFileId] = useState<app_convex_Id<"files_nodes"> | null>(null);
@@ -495,15 +517,18 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 			aria-label="My file permissions"
 		>
 			<h2>My file permissions</h2>
-			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
-				Plugins do not use these choices yet. They will after a later update.
-			</p>
+			{fileAccessModel !== "personal" ? (
+				<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
+					Plugins do not use these choices yet. They will after a later update.
+				</p>
+			) : null}
 			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
 				Choose the saved files and folders this plugin may use for you. This does not allow scheduled runs.
 			</p>
 			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
-				After that update, access changes will apply in the background. The plugin will keep its current access until
-				each change finishes.
+				{fileAccessModel === "personal"
+					? "Access changes apply in the background. The plugin keeps its current access until each change finishes."
+					: "After that update, access changes will apply in the background. The plugin will keep its current access until each change finishes."}
 			</p>
 			<MyInput displayValidationMessage={showPathError ? pathMessage : undefined}>
 				<MyInputLabel>File or folder path</MyInputLabel>

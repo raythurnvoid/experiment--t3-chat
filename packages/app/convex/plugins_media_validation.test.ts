@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
+import { files_media_refs_db_check_plugin_added } from "../server/files-media-refs.ts";
 
 const ROOT = "/reader-probe";
 const SECRET = "media-clock-test-secret";
@@ -167,6 +170,25 @@ async function fixture() {
 			level: "manage",
 		}),
 	).toEqual({ _yay: null });
+	const sourceToken = `psg_${"1".repeat(64)}`;
+	await t.run(async (ctx) => {
+		await ctx.db.insert("plugin_service_grants", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			serviceAccountId: db.serviceAccountId,
+			installationId: db.installationId,
+			pluginVersionId: db.pluginVersionId,
+			pluginName: "reader-probe",
+			actorUserId: db.userId,
+			tokenHash: await crypto_sha256_hex(sourceToken),
+			scopes: [],
+			principalKey: `plugin_service:${db.installationId}`,
+			phase: "interactive",
+			destinationPathPrefix: null,
+			expiresAt: Date.now() + 60_000,
+			updatedAt: Date.now(),
+		});
+	});
 	const minted = await t.mutation(internal.public_api.create_plugin_service_grant, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
@@ -175,6 +197,7 @@ async function fixture() {
 		requestedScopes: ["files:write"],
 		destinationPathPrefix: ROOT,
 		phase: "processing",
+		lifecycle: { presented: sourceToken, serviceSecretHash: await crypto_sha256_hex(SECRET) },
 		now: Date.now(),
 	});
 	if (minted._nay) throw new Error(minted._nay.message);
@@ -216,6 +239,60 @@ function file_grants(records: Awaited<ReturnType<typeof snapshot>>, nodeId: Id<"
 }
 
 describe("plugin file media validation clocks", () => {
+	test("a personal pair needs read consent even for an upload source reference", async () => {
+		const f = await fixture();
+		const saved = await test_run_with_flush(f.t, async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", f.db.installationId))!;
+			const membership = (await ctx.db.get("organizations_workspaces_users", f.db.membershipId))!;
+			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				kind: "file",
+				name: "source.png",
+				path: "/source.png",
+				treePath: "/source.png/",
+				contentType: "image/png",
+			});
+			return { installation, pair, nodeId };
+		});
+		const check = () =>
+			f.t.run((ctx) =>
+				files_media_refs_db_check_plugin_added(ctx, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					installation: saved.installation,
+					userId: f.db.userId,
+					filePairId: saved.pair._id,
+					sourceNodeId: saved.nodeId,
+					addedFileRefs: [`bonobo-file://${saved.nodeId}`],
+				}),
+			);
+		expect((await check())._nay?.name, "source identity alone grants no pair read").toBe("file_reference_denied");
+		await f.t.run((ctx) =>
+			ctx.db.insert("plugins_file_consents", {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				pairId: saved.pair._id,
+				rootNodeId: saved.nodeId,
+				requestedLevel: "read",
+				appliedLevel: "read",
+				areaEligible: false,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		expect(await check(), "applied read permits the source reference").toEqual({ _yay: null });
+	});
+
 	test("keeps the workspace clock for a plugin-store-only document write", async () => {
 		const f = await fixture();
 		const before = await snapshot(f);

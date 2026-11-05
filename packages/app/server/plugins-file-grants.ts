@@ -61,10 +61,19 @@ export async function plugins_file_grants_db_ensure_pair(
 
 export async function plugins_file_grants_db_validate_pair(
 	ctx: Pick<QueryCtx, "db">,
-	args: { pairId: Id<"plugins_file_pairs"> },
+	args: {
+		pairId: Id<"plugins_file_pairs">;
+		installationId?: Id<"plugins_workspace_installations">;
+		userId?: Id<"users">;
+	},
 ) {
 	const pair = await ctx.db.get("plugins_file_pairs", args.pairId);
-	if (!pair) return null;
+	if (
+		!pair ||
+		(args.installationId !== undefined && pair.installationId !== args.installationId) ||
+		(args.userId !== undefined && pair.userId !== args.userId)
+	)
+		return null;
 	const [installation, organization, workspace, membership, lifetime, user] = await Promise.all([
 		ctx.db.get("plugins_workspace_installations", pair.installationId),
 		ctx.db.get("organizations", pair.organizationId),

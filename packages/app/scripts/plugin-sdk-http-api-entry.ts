@@ -64,6 +64,8 @@ export const bonobo_http_api =
 			| "/api/v1/plugin-data/write-batch"
 			| "/api/v1/plugin-data/delete"
 			| "/api/v1/files/list"
+			| "/api/v1/files/trash/list"
+			| "/api/v1/files/trash/areas"
 			| "/api/v1/files/read"
 			| "/api/v1/files/write"
 			| "/api/v1/files/touch"

@@ -3,7 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
 import { vi } from "vitest";
 
-import { internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { plugins_ai_review } from "./plugins.ts";
@@ -325,9 +325,44 @@ export const media_plugin_consent: {
 	acceptedUiOutboundOrigins: [],
 	acceptedMcpServersFingerprint: "mcp-servers-hash",
 	acceptedSkillNames: [],
-	// File runtime fixtures explicitly authorize their test account's content operations.
-	serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
+	serviceAccountGrants: [],
 };
+
+export async function grant_plugin_file_access(args: {
+	t: ReturnType<typeof test_convex>;
+	userId: Id<"users">;
+	membershipId: Id<"organizations_workspaces_users">;
+	installationId: Id<"plugins_workspace_installations">;
+	rootNodeId: Id<"files_nodes">;
+	level: "read" | "write";
+}) {
+	const { t, userId, ...grantArgs } = args;
+	const granted = await t
+		.withIdentity(user_identity(userId))
+		.mutation(api.plugins_access.grant_file_access_as_me, grantArgs);
+	if (granted._nay) throw new Error(granted._nay.message);
+	const consent = await t.run((ctx) => ctx.db.get("plugins_file_consents", granted._yay.consentId));
+	if (!consent) throw new Error("Expected personal file consent");
+	// Run only grant jobs. Advancing all timers can expire the fixture's credentials.
+	for (const workspaceId of [null, consent.workspaceId]) {
+		for (let step = 0; step < 1_000; step++) {
+			const job = await t.run((ctx) =>
+				ctx.db
+					.query("plugins_file_grant_jobs")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", consent.organizationId).eq("workspaceId", workspaceId),
+					)
+					.first(),
+			);
+			if (!job) break;
+			await t.mutation(internal.plugins_file_grants.advance, { jobId: job._id, step: job.step, phase: job.phase });
+			if (step === 999) throw new Error("Personal file consent did not finish");
+		}
+	}
+	const applied = await t.run((ctx) => ctx.db.get("plugins_file_consents", consent._id));
+	if (applied?.appliedLevel !== args.level) throw new Error("Personal file consent was not applied");
+	return applied;
+}
 
 export async function sha256_text(value: string) {
 	return `sha256:${await crypto_sha256_hex(value)}`;

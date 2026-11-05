@@ -2041,7 +2041,7 @@ function format_capability_label(value: string, payerName = "the workspace owner
 		return `Add read-only mount folders to this workspace. Everyone who can read workspace files can read them through the chat agent. Folder sharing limits do not apply to these folders. The content comes from outside sources. Each new stored file costs half a cent (0.5 cents), at most 10,000 files per day. Scheduled writes are billed to ${payerName}. Other writes use this installation's billing settings.`;
 	}
 	if (value === "plugin.schedule.run") {
-		return "Run its backend on a schedule as the selected workspace user. It can use only that user's current access and the permissions granted to this plugin. It can run while that user is signed out. Choose another user if they leave the workspace.";
+		return "Run its backend on a schedule as the selected workspace user. It can use only its granted operations and file access. It can run while that user is signed out. Choose another user if they leave the workspace.";
 	}
 	// Keep the old label for immutable version history. It grants no new force access.
 	if (value === "workspace.files.create-read-only") {
@@ -2766,6 +2766,7 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		canInstall: false,
 		canManage: false,
 		installationId: null,
+		fileAccessModel: undefined,
 		configuration: version.configuration,
 		mounts: version.mounts,
 		events: version.events,
@@ -3004,6 +3005,9 @@ function RoutePluginsPlugin() {
 	const installedItem = installations?.find((item) => item.installation.pluginName === plugin?.name) ?? null;
 	const installedVersion = installedItem?.version;
 	const installationId = plugin?.installationId ?? installedItem?.installation._id ?? null;
+	const fileAccessModel = installationId
+		? (installedItem?.installation.fileAccessModel ?? plugin?.fileAccessModel)
+		: "personal";
 	const hasSchedule = plugin?.events.some((event) => event.type === "schedule.interval.elapsed") ?? false;
 	const installConfiguration = plugin?.configuration
 		? plugins_parse_installation_configuration_yaml({
@@ -3234,7 +3238,8 @@ function RoutePluginsPlugin() {
 			(hasSchedule && !installRunUser && !installConsent) ||
 			(hasSchedule && installRunUser && !installRunUserValid) ||
 			installConfiguration?._nay ||
-			(canManageAccounts !== true && (installAccountId !== undefined || installGrants.length > 0))
+			(canManageAccounts !== true &&
+				(installAccountId !== undefined || (fileAccessModel !== "personal" && installGrants.length > 0)))
 		) {
 			return;
 		}
@@ -3263,7 +3268,7 @@ function RoutePluginsPlugin() {
 						}
 					: {}),
 				...(installAccountId ? { serviceAccountId: installAccountId } : {}),
-				...(installGrants.length > 0 ? { serviceAccountGrants: installGrants } : {}),
+				...(fileAccessModel !== "personal" && installGrants.length > 0 ? { serviceAccountGrants: installGrants } : {}),
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -3628,6 +3633,7 @@ function RoutePluginsPlugin() {
 						key={`file-permissions:${installationId}`}
 						membershipId={membershipId}
 						installationId={installationId}
+						fileAccessModel={fileAccessModel}
 					/>
 				) : null}
 				{installationId ? (
@@ -3636,6 +3642,7 @@ function RoutePluginsPlugin() {
 						membershipId={membershipId}
 						installationId={installationId}
 						canManage={installedItem !== null}
+						fileAccessModel={fileAccessModel}
 					/>
 				) : null}
 				{installedItem ? (
@@ -3833,6 +3840,7 @@ function RoutePluginsPlugin() {
 										membershipId={membershipId}
 										capabilities={plugin.capabilities}
 										canManage
+										fileAccessModel={fileAccessModel}
 										disabled={installing}
 										onChange={handleInstallConsentChange}
 									/>
@@ -3861,17 +3869,19 @@ function RoutePluginsPlugin() {
 								}}
 							/>
 							<p>
-								{installedItem
-									? "Updates keep existing grants unless you add a reviewed grant below."
-									: "New accounts start without file access. Choose an existing account to review its grants here."}
+								{fileAccessModel === "personal"
+									? "Each person chooses this plugin's files in My file permissions. The service account identifies the installation; its grants do not give this plugin file access."
+									: "Updates keep existing grants unless you add a reviewed grant below."}
 							</p>
 							{!installedItem && canManageAccounts !== true ? (
 								<p>
-									You can install with a new empty account. Choosing an existing account or adding file grants needs
-									permission to manage service accounts.
+									You can install with a new empty account. Choosing an existing account needs permission to manage
+									service accounts.
 								</p>
 							) : null}
-							{canManageAccounts === true && (installAccountId ?? installedItem?.installation.serviceAccountId) ? (
+							{fileAccessModel !== "personal" &&
+							canManageAccounts === true &&
+							(installAccountId ?? installedItem?.installation.serviceAccountId) ? (
 								<RoutePluginsServiceAccountGrants
 									key={installAccountId ?? installedItem?.installation.serviceAccountId}
 									serviceAccountId={(installAccountId ?? installedItem?.installation.serviceAccountId)!}
@@ -3883,8 +3893,9 @@ function RoutePluginsPlugin() {
 						</div>
 						{plugin.canProcessFiles ? (
 							<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
-								This plugin can read the triggering upload and create Markdown files beside it when its account grants
-								allow it.
+								{fileAccessModel === "personal"
+									? "This plugin can read the triggering upload with Can view on it or its folder. Creating files beside it also needs Can edit on its folder."
+									: "This plugin can read the triggering upload and create Markdown files beside it when its account grants allow it."}
 							</p>
 						) : null}
 
@@ -4091,7 +4102,8 @@ function RoutePluginsPlugin() {
 										((hasSchedule && !installRunUser && !installConsent) ||
 											(hasSchedule && !!installRunUser && !installRunUserValid) ||
 											!!installConfiguration?._nay)) ||
-									(canManageAccounts !== true && (installAccountId !== undefined || installGrants.length > 0))
+									(canManageAccounts !== true &&
+										(installAccountId !== undefined || (fileAccessModel !== "personal" && installGrants.length > 0)))
 								}
 								aria-busy={installing}
 								onClick={() => handleAcceptAndInstall(plugin)}

@@ -44,6 +44,11 @@ import {
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import {
+	plugins_file_grants_db_ensure_pair,
+	plugins_file_grants_db_validate_pair,
+} from "../server/plugins-file-grants.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2, r2_fetch_object_from_bucket } from "./r2_client.ts";
 import { users_ANONYMOUS_JWT_DEFAULT_KID, users_get_anonymous_jwt_private_key } from "./users.ts";
@@ -236,7 +241,7 @@ export const insert_page_session = internalMutation({
 		// Opening an installed page is not managing plugins, so we do not ask for
 		// `workspace.plugins.manage`. But the token created here can read files through the public API,
 		// so it must not go to someone who cannot read the workspace: a guest gets no plugin pages.
-		// Public file routes also check each file for the person on every request.
+		// File permissions are separate from this host-page check.
 		const authorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
@@ -280,6 +285,14 @@ export const insert_page_session = internalMutation({
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
+		const filePair =
+			installation.fileAccessModel === "personal"
+				? await plugins_file_grants_db_ensure_pair(ctx, {
+						installation,
+						membership,
+						membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+					})
+				: null;
 		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -287,6 +300,7 @@ export const insert_page_session = internalMutation({
 			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: installation.pluginVersionId,
 			userId: userAuth.id,
+			filePairId: filePair?._id,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt,
@@ -448,6 +462,14 @@ export const insert_file_view_session = internalMutation({
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
+		const filePair =
+			installation.fileAccessModel === "personal"
+				? await plugins_file_grants_db_ensure_pair(ctx, {
+						installation,
+						membership,
+						membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+					})
+				: null;
 		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -455,6 +477,7 @@ export const insert_file_view_session = internalMutation({
 			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: installation.pluginVersionId,
 			userId: userAuth.id,
+			filePairId: filePair?._id,
 			fileNodeId: fileNode._id,
 			fileViewId: fileView.id,
 			tokenHash: await crypto_sha256_hex(token),
@@ -565,6 +588,20 @@ export const rotate_ui_session = internalMutation({
 		}
 		if (!(await db_plugin_workspace_is_live(ctx, session))) {
 			return Result({ _nay: { message: "Not found" } });
+		}
+		// Refresh keeps the original authority. Reopen an old frame after the switch.
+		if (installation.fileAccessModel === "personal" && !session.filePairId) {
+			return Result({ _nay: { message: "File access changed. Reopen this plugin." } });
+		}
+		if (
+			session.filePairId &&
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: session.filePairId,
+				installationId: installation._id,
+				userId: session.userId,
+			}))
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "plugins_ui_session_mint",

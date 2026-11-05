@@ -68,6 +68,7 @@ import {
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import { files_saved_placement_db_get_node, files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
 import {
 	files_move_reservations_db_check,
@@ -197,8 +198,17 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 	if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
+	if (
+		grant.filePairId &&
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: grant.filePairId,
+			installationId: installation._id,
+			userId: grant.actorUserId,
+		}))
+	)
+		return Result({ _nay: { message: "Unauthenticated" } });
 
-	// The grant acts for its actor, so the files it writes are judged with the actor's permissions.
+	// The actor must stay live. Personal grants use the pair for Files permissions.
 	const actor = await ctx.db.get("users", grant.actorUserId);
 	if (!actor || actor.deletedAt != null) {
 		return Result({ _nay: { message: "Unauthenticated" } });
@@ -229,18 +239,20 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	const allowed = await access_control_db_has_permission(ctx, {
-		organizationId: organization._id,
-		workspaceId: workspace._id,
-		defaultWorkspaceId: organization.defaultWorkspaceId,
-		organizationOwnerUserId: organization.ownerUserId,
-		resource: { kind: "workspace", id: String(workspace._id) },
-		permission: "content.write",
-		userId: grant.actorUserId,
-	});
-	if (!allowed) {
+	// Personal grants are checked on the destination, including narrow shared folders.
+	if (
+		!grant.filePairId &&
+		!(await access_control_db_has_permission(ctx, {
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+			defaultWorkspaceId: organization.defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: { kind: "workspace", id: String(workspace._id) },
+			permission: "content.write",
+			userId: grant.actorUserId,
+		}))
+	)
 		return Result({ _nay: { message: "Permission denied" } });
-	}
 
 	return Result({
 		_yay: {
@@ -249,7 +261,9 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 			workspace,
 			defaultWorkspaceId: organization.defaultWorkspaceId,
 			serviceAccountId: grant.serviceAccountId,
-			subject: plugins_file_subject(installation, grant.actorUserId),
+			filePairId: grant.filePairId,
+			legacyAfterSwitch: !grant.filePairId && installation.fileAccessModel === "personal",
+			subject: plugins_file_subject(installation, grant.actorUserId, grant.filePairId),
 		},
 	});
 }
@@ -257,6 +271,13 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 // #endregion shared
 
 // #region targets
+
+function target_has_matching_file_authority(
+	target: Doc<"plugin_service_storage_targets">,
+	args: { filePairId?: Id<"plugins_file_pairs">; legacyAfterSwitch: boolean; actorUserId: Id<"users"> },
+) {
+	return target.filePairId === args.filePairId && (!args.legacyAfterSwitch || target.createdBy === args.actorUserId);
+}
 
 async function db_get_target(
 	ctx: MutationCtx,
@@ -812,8 +833,8 @@ export const create_upload_target = internalMutation({
 			return Result({ _nay: { message: "Only editable text files can be non-collaborative" } });
 		}
 
-		// The seal is the consent: files may land under this prefix and nowhere else. The prefix
-		// itself is a folder, so a path equal to it is refused too.
+		// The seal bounds the location. The destination still needs write access.
+		// The prefix itself is a folder, so a path equal to it is refused too.
 		if (
 			!public_api_is_path_inside_prefix(args.path, args.principal.pathPrefix) ||
 			args.path === args.principal.pathPrefix
@@ -842,6 +863,13 @@ export const create_upload_target = internalMutation({
 			targetKey: targetKey._yay,
 		});
 		if (existingTarget) {
+			if (
+				!target_has_matching_file_authority(existingTarget, {
+					...authorized._yay,
+					actorUserId: args.principal.actorUserId,
+				})
+			)
+				return Result({ _nay: { message: "Permission denied" } });
 			if (existingTarget.destinationPath !== args.principal.pathPrefix) {
 				return Result({ _nay: { message: "Not found" } });
 			}
@@ -910,6 +938,9 @@ export const create_upload_target = internalMutation({
 			// does not stop it. Cancel (discard + release) is the stop button, not the lock.
 			return await db_remint_pending_target(ctx, { target: liveTarget, asset, now });
 		}
+
+		// Only a stored target may continue under old authority after the switch.
+		if (authorized._yay.legacyAfterSwitch) return Result({ _nay: { message: "Permission denied" } });
 
 		// A service never overwrites. A meeting's files land on fresh paths; a collision means either a
 		// replay under a new target key (a caller bug) or a member's file, and both must survive.
@@ -1111,6 +1142,7 @@ export const create_upload_target = internalMutation({
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			installationId: installation._id,
+			filePairId: authorized._yay.filePairId,
 			idempotencyKey: idempotencyKey._yay,
 			targetKey: targetKey._yay,
 			requestFingerprint,
@@ -1263,6 +1295,8 @@ export const remint_upload_target = internalMutation({
 		if (!target) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (!target_has_matching_file_authority(target, { ...authorized._yay, actorUserId: args.principal.actorUserId }))
+			return Result({ _nay: { message: "Permission denied" } });
 		if (target.destinationPath !== args.principal.pathPrefix) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -1365,6 +1399,8 @@ export const finalize_upload_target = internalMutation({
 		if (!target) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (!target_has_matching_file_authority(target, { ...authorized._yay, actorUserId: args.principal.actorUserId }))
+			return Result({ _nay: { message: "Permission denied" } });
 		if (target.destinationPath !== args.principal.pathPrefix) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -1498,6 +1534,7 @@ export const delete_upload_target = internalMutation({
 		if (authorized._nay) {
 			return authorized;
 		}
+		if (authorized._yay.legacyAfterSwitch) return Result({ _nay: { message: "Permission denied" } });
 		const installation = authorized._yay.installation;
 		if (args.force === true && !installation.acceptedCapabilities.includes("workspace.files.manage-read-only"))
 			return Result({ _nay: { message: "Permission denied" } });
@@ -1763,6 +1800,7 @@ export const archive_destination = internalMutation({
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_service_upload(ctx, args.principal);
 		if (authorized._nay) return authorized;
+		if (authorized._yay.legacyAfterSwitch) return Result({ _nay: { message: "Permission denied" } });
 		const { installation, subject } = authorized._yay;
 		if (args.force === true && !installation.acceptedCapabilities.includes("workspace.files.manage-read-only"))
 			return Result({ _nay: { message: "Permission denied" } });

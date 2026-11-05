@@ -14,8 +14,8 @@ import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 
 import { internal } from "./_generated/api.js";
-import { internalQuery, type ActionCtx } from "./_generated/server.js";
-import type { Doc } from "./_generated/dataModel";
+import { internalQuery, type ActionCtx, type QueryCtx } from "./_generated/server.js";
+import type { Doc, Id } from "./_generated/dataModel";
 import type {
 	public_api_create_plugin_service_grant_Result,
 	public_api_resolve_principal_Result,
@@ -31,6 +31,10 @@ import { files_normalize_name } from "../shared/files.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX, public_api_PLUGIN_UI_TOKEN_REGEX } from "../shared/public-api.ts";
+import { access_control_db_can_act_on_file_node } from "./access_control.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { files_db_create_path_lookups } from "../server/files.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 
 // #region shared
 
@@ -152,6 +156,7 @@ async function authorize_service_request<Body>(args: {
 			acceptedCapabilities: installation._yay.acceptedCapabilities,
 			registeredScopes: installation._yay.registration.scopes,
 			serviceSecretHash: installation._yay.registration.hash,
+			fileAccessModel: installation._yay.fileAccessModel,
 		},
 	});
 }
@@ -191,6 +196,7 @@ export const get_installation_capabilities = internalQuery({
 	returns: v_result({
 		_yay: v.object({
 			pluginName: v.string(),
+			fileAccessModel: v.optional(v.literal("personal")),
 			acceptedCapabilities: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedCapabilities,
 			registration: v.union(
 				v.object({
@@ -226,6 +232,7 @@ export const get_installation_capabilities = internalQuery({
 		return Result({
 			_yay: {
 				pluginName: installation.pluginName,
+				fileAccessModel: installation.fileAccessModel,
 				acceptedCapabilities: installation.acceptedCapabilities,
 				registration: registration ? { hash: registration.exchangeSecretHash, scopes: registration.scopes } : null,
 			},
@@ -237,6 +244,70 @@ type get_installation_capabilities_Result =
 	typeof get_installation_capabilities extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+export async function plugins_service_db_can_write_destination(
+	ctx: QueryCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		actorUserId: Id<"users">;
+		filePairId: Id<"plugins_file_pairs">;
+		destinationPathPrefix: string;
+	},
+) {
+	if (
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: args.filePairId,
+			installationId: args.installation._id,
+			userId: args.actorUserId,
+		}))
+	)
+		return false;
+	const lookups = await files_db_create_path_lookups(ctx, args.installation);
+	const node =
+		(await lookups.get(args.destinationPathPrefix)) ??
+		(await lookups.find_existing_parent(args.destinationPathPrefix)).node;
+	if (node && node.kind !== "folder") return false;
+	return await access_control_db_can_act_on_file_node(ctx, {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		subject: { kind: "plugin_pair", pairId: args.filePairId },
+		fileNode: node,
+		permission: "content.write",
+	});
+}
+
+export const can_write_destination = internalQuery({
+	args: { grantId: v.id("plugin_service_grants"), tokenHash: v.string() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const grant = await ctx.db.get("plugin_service_grants", args.grantId);
+		if (
+			!grant?.filePairId ||
+			grant.revokedAt != null ||
+			grant.expiresAt <= Date.now() ||
+			grant.tokenHash !== args.tokenHash ||
+			!grant.scopes.includes("files:write") ||
+			!grant.destinationPathPrefix
+		)
+			return false;
+		const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			installation.pluginVersionId !== grant.pluginVersionId ||
+			!installation.acceptedCapabilities.includes("plugin.service.connect") ||
+			!installation.acceptedCapabilities.includes("workspace.files.write") ||
+			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))
+		)
+			return false;
+		return await plugins_service_db_can_write_destination(ctx, {
+			installation,
+			actorUserId: grant.actorUserId,
+			filePairId: grant.filePairId,
+			destinationPathPrefix: grant.destinationPathPrefix,
+		});
+	},
+});
 
 /**
  * The refusals the grant mutations can return, and the status each one is.
@@ -333,13 +404,11 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 			// The service holds this one while a member is watching the frame. A `processing` grant is
 			// what outlives them, and it is minted by the seal flow, not by an exchange.
 			phase: "interactive",
-			lifecycle: auth._yay.body.requestId
-				? {
-						presented: auth._yay.presentedToken,
-						requestId: auth._yay.body.requestId,
-						serviceSecretHash: auth._yay.serviceSecretHash,
-					}
-				: undefined,
+			lifecycle: {
+				presented: auth._yay.presentedToken,
+				requestId: auth._yay.body.requestId,
+				serviceSecretHash: auth._yay.serviceSecretHash,
+			},
 			now,
 		},
 	);
@@ -410,9 +479,7 @@ export async function plugins_service_http_renew(ctx: ActionCtx, request: Reques
 		internal.public_api.rotate_plugin_service_grant,
 		{
 			presented: auth._yay.presentedToken,
-			lifecycle: auth._yay.body.requestId
-				? { requestId: auth._yay.body.requestId, serviceSecretHash: auth._yay.serviceSecretHash }
-				: undefined,
+			lifecycle: { requestId: auth._yay.body.requestId, serviceSecretHash: auth._yay.serviceSecretHash },
 			now,
 		},
 	);
@@ -508,9 +575,11 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 		}
 	}
 
-	// The member behind the grant must still be allowed to write workspace content, because the files
-	// the service uploads are written as that member.
-	if (!principal.contentPermissions.write) {
+	// Personal Files access is checked at the destination in the mint transaction.
+	if (
+		principal.subject.kind !== "plugin_pair" &&
+		(auth._yay.fileAccessModel === "personal" || !principal.contentPermissions.write)
+	) {
 		return { status: 403, body: { message: "Permission denied" } } as const;
 	}
 
@@ -539,13 +608,11 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 			requireAllRequestedScopes: true,
 			destinationPathPrefix,
 			phase: "processing",
-			lifecycle: auth._yay.body.requestId
-				? {
-						presented: auth._yay.presentedToken,
-						requestId: auth._yay.body.requestId,
-						serviceSecretHash: auth._yay.serviceSecretHash,
-					}
-				: undefined,
+			lifecycle: {
+				presented: auth._yay.presentedToken,
+				requestId: auth._yay.body.requestId,
+				serviceSecretHash: auth._yay.serviceSecretHash,
+			},
 			now,
 		},
 	);
@@ -659,33 +726,12 @@ const verify_live_body_validator = z
 
 export type plugins_service_http_verify_live_Body = z.infer<typeof verify_live_body_validator>;
 
-/**
- * Which workspace content permission the member behind the grant needs for each claimed scope.
- *
- * For the `plugin_data:*` scopes, `REQUIRED_APP_PERMISSION_BY_SCOPE` in `public_api_http_auth.ts` says
- * the same thing, and `public_api_resolve_live_principal` applies it to a service grant on every
- * `/api/v1/*` route the grant can reach, before that route does the work. Keep the two in step. A
- * scope this map calls readable while that one calls it writable is answered 200 here and
- * `Permission denied` at the very call the service asked about.
- *
- * `files:write` is not in step. The file doors check write on each node, for the person and for the
- * plugin's account, not on the workspace. So a member without workspace write can still write in a
- * folder shared with them. This map still asks for workspace write, so it can answer 409 for a write
- * the door would allow. That only refuses more.
- *
- * That check skips one kind of caller, and it does so deliberately: a `plugin_run` principal. A run
- * has no user of its own, so its principal carries no `contentPermissions` for the check to read.
- * Narrower rules bound it instead. It may download only the upload that started it, and it may write
- * only next to that file. Its plugin-document calls are judged too, with the content permission of
- * the person whose upload started it, by `db_authorize` in `plugins_data.ts`, inside the same
- * transaction as the read or write. A service grant is not skipped, so for `plugin_data:*` what this
- * map asks for here is what the grant really meets later.
- */
+// Plugin data keeps the same human workspace gates as public_api_http_auth.ts.
+// Personal Files access is checked on the sealed destination instead.
 const REQUIRED_CONTENT_PERMISSION_BY_SCOPE = {
 	"plugin_data:read": "read",
 	"plugin_data:write": "write",
-	"files:write": "write",
-} as const satisfies Record<plugins_service_http_verify_live_Body["scopes"][number], "read" | "write">;
+} as const;
 
 export async function plugins_service_http_verify_live(ctx: ActionCtx, request: Request) {
 	const auth = await authorize_service_request({
@@ -729,13 +775,20 @@ export async function plugins_service_http_verify_live(ctx: ActionCtx, request: 
 	if (expected.scopes.some((scope) => !liveScopes.includes(scope))) {
 		return { status: 409, body: { message: "This grant no longer has the scopes it needs" } } as const;
 	}
-	// A scope the member behind the grant may no longer use is not a scope the service can rely on.
-	// An admin can move that member to the `viewer` role while a meeting runs. The member stays in the
-	// workspace, so every check above still passes, but `content.write` is gone. The `/api/v1/*` doors
-	// refuse `plugin_data:write` from then on, and `files:write` everywhere but the plugin's own output
-	// folder. Without this the host answers 200 to the question the service asks before it starts
-	// recording, and the meeting fails on the upload after everyone left.
-	if (expected.scopes.some((scope) => !principal.contentPermissions[REQUIRED_CONTENT_PERMISSION_BY_SCOPE[scope]])) {
+	const filesAllowed =
+		!expected.scopes.includes("files:write") ||
+		(principal.subject.kind === "plugin_pair"
+			? await ctx.runQuery(internal.plugins_service.can_write_destination, {
+					grantId: principal.grantId,
+					tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
+				})
+			: auth._yay.fileAccessModel !== "personal" && principal.contentPermissions.write);
+	if (
+		!filesAllowed ||
+		expected.scopes.some(
+			(scope) => scope !== "files:write" && !principal.contentPermissions[REQUIRED_CONTENT_PERMISSION_BY_SCOPE[scope]],
+		)
+	) {
 		return {
 			status: 409,
 			body: { message: "This grant's member can no longer use the scopes it needs" },

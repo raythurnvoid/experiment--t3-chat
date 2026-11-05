@@ -191,7 +191,22 @@ describe("ensure_plugin_folder", () => {
 			// The label write queues an index job. Finish it, so it cannot land during the refused call below.
 			await test_finish_file_index(t, fixture.parentId);
 			const apiToken = `plr_${"d".repeat(64)}`;
+			const sessionId = await t.run((ctx) =>
+				ctx.db.insert("plugins_ui_sessions", {
+					organizationId: fixture.owner.organizationId,
+					workspaceId: fixture.owner.workspaceId,
+					installationId: fixture.installationId,
+					pluginVersionId: fixture.pluginVersionId,
+					serviceAccountId: fixture.serviceAccountId,
+					userId: fixture.userId,
+					tokenHash: "review-frame",
+					createdAt: Date.now(),
+					expiresAt: Date.now() + 60_000,
+				}),
+			);
 			const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
+				sessionId,
+				sessionTokenHash: "review-frame",
 				serviceAccountId: fixture.serviceAccountId,
 				organizationId: fixture.owner.organizationId,
 				workspaceId: fixture.owner.workspaceId,

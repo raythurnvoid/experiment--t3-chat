@@ -5220,6 +5220,7 @@ describe("plugins backend invoke runs", () => {
 			displayName: "Probe",
 			capabilities: ["plugin.backend.invoke"],
 			configurable: false,
+			pages: [{ id: "probe", title: "Probe", entry: "dist/frontend/index.html", navItem: null }],
 			endpoints: args?.endpoints ?? [
 				{ id: "echo", path: "/echo", serialization: "installation" },
 				{ id: "send", path: "/send", serialization: "caller-key" },
@@ -5234,14 +5235,25 @@ describe("plugins backend invoke runs", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
+		const serviceAccountId = (await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		))!.serviceAccountId;
+		const minted = await asOwner.mutation(internal.plugins_ui.insert_page_session, {
+			membershipId: membership.membershipId,
+			pluginName: "probe",
+		});
+		if (minted._nay) throw new Error(minted._nay.message);
+		const sessionId = minted._yay.sessionId;
+		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", sessionId, { tokenHash: "invoke-frame-hash" }));
+		const session = (await t.run((ctx) => ctx.db.get("plugins_ui_sessions", sessionId)))!;
 		return {
 			membership,
 			asOwner,
+			sessionId,
+			filePairId: session.filePairId,
 			installationId: installed._yay.installationId,
 			pluginVersionId: registered.pluginVersionId,
-			serviceAccountId: (await t.run((ctx) =>
-				ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
-			))!.serviceAccountId,
+			serviceAccountId,
 		};
 	}
 
@@ -5250,6 +5262,8 @@ describe("plugins backend invoke runs", () => {
 		args?: { endpointId?: string; callerSerializationKey?: string | null; apiTokenHash?: string },
 	) {
 		return {
+			sessionId: fixture.sessionId,
+			sessionTokenHash: "invoke-frame-hash",
 			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
@@ -5285,8 +5299,23 @@ describe("plugins backend invoke runs", () => {
 			(await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture)))._nay,
 		).toBeDefined();
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toEqual([]);
+		const sessionId = await t.run((ctx) =>
+			ctx.db.insert("plugins_ui_sessions", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				installationId: fixture.installationId,
+				pluginVersionId: fixture.pluginVersionId,
+				serviceAccountId: replacement._yay.serviceAccountId,
+				userId: fixture.membership.userId,
+				filePairId: fixture.filePairId,
+				tokenHash: "invoke-frame-hash",
+				createdAt: Date.now(),
+				expiresAt: Date.now() + 30 * 60_000,
+			}),
+		);
 		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
 			...start_invoke_args(fixture),
+			sessionId,
 			serviceAccountId: replacement._yay.serviceAccountId,
 		});
 		expect(started._yay?.pluginRun.serviceAccountId).toBe(replacement._yay.serviceAccountId);
@@ -5675,6 +5704,7 @@ describe("plugins backend invoke runs", () => {
 				installationId: fixture.installationId,
 				pluginVersionId: fixture.pluginVersionId,
 				userId: fixture.membership.userId,
+				filePairId: fixture.filePairId,
 				tokenHash: await crypto_sha256_hex(token),
 				createdAt: now,
 				expiresAt: now + 30 * 60 * 1000,

@@ -212,19 +212,31 @@ async function install_gallery_plugin(
 		acceptedUiOutboundOrigins: args.uiOutboundOrigins ?? [],
 		acceptedMcpServersFingerprint: "mcp-servers-hash",
 		acceptedSkillNames: [],
-		serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }],
 	});
 	if (installed._nay) {
 		throw new Error(installed._nay.message);
 	}
+	// These existing session checks start with an installation from before the switch.
+	const installation = await t.run(async (ctx) => {
+		await ctx.db.patch("plugins_workspace_installations", installed._yay.installationId, {
+			fileAccessModel: undefined,
+		});
+		return (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!;
+	});
+	expect(
+		await asOwner.mutation(api.access_control.set_service_account_grant, {
+			membershipId: membership.membershipId,
+			serviceAccountId: installation.serviceAccountId,
+			resource: { kind: "workspace" },
+			level: "read",
+		}),
+	).toEqual({ _yay: null });
 	return {
 		membership,
 		asOwner,
 		pluginVersionId: registered.pluginVersionId,
 		installationId: installed._yay.installationId,
-		serviceAccountId: (await t.run((ctx) =>
-			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
-		))!.serviceAccountId,
+		serviceAccountId: installation.serviceAccountId,
 	};
 }
 
@@ -645,6 +657,95 @@ describe("plugin ui manifest file views", () => {
 		expect(plugins_validate_manifest(manifest)).toMatchObject({
 			_nay: { message: 'Plugin file view "player" entry must be a text/html file' },
 		});
+	});
+});
+
+describe("personal file session pins", () => {
+	test("pins new page and file-view sessions without creating consent", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, {
+			fileViews: [{ id: "player", title: "Player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] }],
+		});
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
+		);
+		const page = await fixture.asOwner.mutation(internal.plugins_ui.insert_page_session, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "gallery",
+		});
+		const upload = await seed_upload_node({ t, fixture, filename: "pin.mp4", contentType: "video/mp4" });
+		const view = await fixture.asOwner.mutation(internal.plugins_ui.insert_file_view_session, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "gallery",
+			fileViewId: "player",
+			fileNodeId: upload.nodeId,
+		});
+		expect(page._nay).toBeUndefined();
+		expect(view._nay).toBeUndefined();
+		const docs = await t.run(async (ctx) => ({
+			page: await ctx.db.get("plugins_ui_sessions", page._yay!.sessionId),
+			view: await ctx.db.get("plugins_ui_sessions", view._yay!.sessionId),
+			consents: await ctx.db.query("plugins_file_consents").collect(),
+		}));
+		expect(docs.page?.filePairId, "a new personal page must pin its pair").toBeDefined();
+		expect(docs.view?.filePairId, "a file view must use the same person's pair").toBe(docs.page?.filePairId);
+		expect(docs.consents, "minting does not grant any file").toEqual([]);
+	});
+
+	test("cannot renew a legacy session after the installation switches", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
+		);
+		const rotated = await fixture.asOwner.mutation(internal.plugins_ui.rotate_ui_session, {
+			membershipId: fixture.membership.membershipId,
+			sessionId: session.sessionId,
+		});
+		expect(rotated._nay?.message, "legacy refresh must ask for a new frame").toBe(
+			"File access changed. Reopen this plugin.",
+		);
+		expect((await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId)))?.filePairId).toBeUndefined();
+	});
+
+	test("refresh keeps its pair and refuses a later membership lifetime", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
+		);
+		const session = await mint_session_token(fixture);
+		const original = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
+		expect(
+			(
+				await fixture.asOwner.mutation(internal.plugins_ui.rotate_ui_session, {
+					membershipId: fixture.membership.membershipId,
+					sessionId: session.sessionId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId)))?.filePairId).toBe(
+			original?.filePairId,
+		);
+		await t.run(async (ctx) => {
+			const lifetime = await ctx.db
+				.query("organizations_membership_lifetimes")
+				.withIndex("by_workspace_user", (q) =>
+					q.eq("workspaceId", fixture.membership.workspaceId).eq("userId", fixture.membership.userId),
+				)
+				.unique();
+			await ctx.db.patch("organizations_membership_lifetimes", lifetime!._id, { lifetime: lifetime!.lifetime + 1 });
+		});
+		expect(
+			(
+				await fixture.asOwner.mutation(internal.plugins_ui.rotate_ui_session, {
+					membershipId: fixture.membership.membershipId,
+					sessionId: session.sessionId,
+				})
+			)._nay?.message,
+			"refresh must not adopt the new membership lifetime",
+		).toBe("Unauthorized");
 	});
 });
 

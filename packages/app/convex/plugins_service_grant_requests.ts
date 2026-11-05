@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import {
 	crypto_decrypt_secret_value,
 	crypto_encrypt_secret_value,
@@ -22,6 +23,7 @@ async function live_installation(
 		serviceAccountId: Id<"access_control_service_accounts">;
 		actorUserId: Id<"users">;
 		serviceSecretHash: string;
+		filePairId?: Id<"plugins_file_pairs">;
 	},
 ) {
 	const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
@@ -34,6 +36,17 @@ async function live_installation(
 	) {
 		return null;
 	}
+	// A retry must keep its original file authority. It cannot revive the old model.
+	if (
+		args.filePairId
+			? !(await plugins_file_grants_db_validate_pair(ctx, {
+					pairId: args.filePairId,
+					installationId: installation._id,
+					userId: args.actorUserId,
+				}))
+			: installation.fileAccessModel === "personal"
+	)
+		return null;
 	const [workspace, actor, registration, membership] = await Promise.all([
 		ctx.db.get("organizations_workspaces", installation.workspaceId),
 		ctx.db.get("users", args.actorUserId),
@@ -59,6 +72,7 @@ async function live_installation(
 		!actor ||
 		actor.deletedAt != null ||
 		!membership ||
+		membership.pendingOrganizationRemoval ||
 		!registration ||
 		!crypto_timing_safe_equal(registration.exchangeSecretHash, args.serviceSecretHash)
 	)
@@ -94,7 +108,7 @@ export async function plugins_service_grant_requests_db_source(
 			actorUserId: session.userId,
 			serviceSecretHash: args.serviceSecretHash,
 		});
-		return live ? { ...live, actorUserId: session.userId } : null;
+		return live ? { ...live, actorUserId: session.userId, filePairId: session.filePairId } : null;
 	}
 	const grant = await ctx.db
 		.query("plugin_service_grants")
@@ -109,7 +123,7 @@ export async function plugins_service_grant_requests_db_source(
 		return null;
 	const live = await live_installation(ctx, { ...grant, serviceSecretHash: args.serviceSecretHash });
 	return live && grant.scopes.every((scope) => live.registeredScopes.includes(scope))
-		? { ...live, actorUserId: grant.actorUserId }
+		? { ...live, actorUserId: grant.actorUserId, filePairId: grant.filePairId }
 		: null;
 }
 

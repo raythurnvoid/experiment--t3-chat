@@ -49,6 +49,9 @@ import {
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import * as pending_overlay from "../server/files-pending-overlay.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
+import { access_control_db_set_service_account_grant } from "./access_control.ts";
 
 vi.mock("ai", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("ai")>();
@@ -422,11 +425,23 @@ async function install_upload_plugin(
 		acceptedUiOutboundOrigins: [],
 		acceptedMcpServersFingerprint: "mcp-servers-hash",
 		acceptedSkillNames: [],
-		serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
 	});
 	if (installed._nay) {
 		throw new Error(installed._nay.message);
 	}
+	// These upload-event fixtures keep the old model. Personal media cases set their own pair below.
+	await t.run(async (ctx) => {
+		const installation = (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!;
+		await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: undefined });
+		const granted = await access_control_db_set_service_account_grant(ctx, {
+			organizationId: installation.organizationId,
+			workspaceId: installation.workspaceId,
+			serviceAccountId: installation.serviceAccountId,
+			resource: { kind: "workspace" },
+			level: "write",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+	});
 	return installed._yay.installationId;
 }
 
@@ -4462,6 +4477,84 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		});
 		expect(changeApplied).toBe(true);
 	}
+
+	test.each([false, true])("service text conversion uses its saved pair for media read: %s", async (canRead) => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture({
+			t,
+			db,
+			filename: "service-transcript.md",
+			contentType: "text/markdown;charset=utf-8",
+		});
+		const { targetId } = await seed_non_collaborative_service_target({ t, db, upload });
+		const mediaId = await test_run_with_flush(t, async (ctx) => {
+			const target = (await ctx.db.get("plugin_service_storage_targets", targetId))!;
+			const installation = (await ctx.db.get("plugins_workspace_installations", target.installationId))!;
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
+			await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
+			await ctx.db.patch("plugin_service_storage_targets", targetId, { filePairId: pair._id });
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				kind: "file",
+				name: "media.png",
+				path: "/media.png",
+				treePath: "/media.png/",
+				contentType: "image/png",
+			});
+			// Legacy account read is broad. The target's pair must still control this conversion.
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				principalKind: "service_account",
+				serviceAccountId: installation.serviceAccountId,
+				resourceKind: "workspace",
+				resourceId: db.workspaceId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			if (canRead)
+				await ctx.db.insert("plugins_file_consents", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					pairId: pair._id,
+					rootNodeId: nodeId,
+					requestedLevel: "read",
+					appliedLevel: "read",
+					areaEligible: false,
+					open: true,
+					revision: 1,
+					state: "applied",
+					endedReason: null,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+			return nodeId;
+		});
+		await confirm_upload_put({
+			t,
+			upload,
+			content: `# Transcript\n\n![media](bonobo-file://${mediaId})`,
+			messageId: "personal-service-media",
+		});
+		await t.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+			eventId: "personal-service-media",
+		});
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", upload.nodeId));
+		expect(node?.textKind, "conversion follows the accepted target pair, not account grants").toBe(
+			canRead ? "rich_text" : null,
+		);
+	});
 
 	test("keeps a service upload stored when it adds a file ref the plugin cannot read", async () => {
 		const t = test_convex();

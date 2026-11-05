@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX } from "../shared/public-api.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
@@ -255,6 +257,221 @@ async function exchange_token(
 	const body = (await response.json()) as { token: string };
 	return body.token;
 }
+
+async function pin_personal_page(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_installation>>,
+	pageToken: string,
+) {
+	return await t.run(async (ctx) => {
+		const tokenHash = await crypto_sha256_hex(pageToken);
+		const session = (await ctx.db
+			.query("plugins_ui_sessions")
+			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+			.first())!;
+		const membership = (await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", session.userId)
+					.eq("organizationId", fixture.organizationId)
+					.eq("workspaceId", fixture.workspaceId),
+			)
+			.first())!;
+		const installation = (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!;
+		const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
+		await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
+		await ctx.db.patch("plugins_ui_sessions", session._id, { filePairId: pair._id });
+		const rootNodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			createdBy: fixture.userId,
+			updatedBy: fixture.userId,
+			name: "meetings",
+			path: "/meetings",
+			treePath: "/meetings/",
+			isRestrictedScopeRoot: true,
+		});
+		await ctx.db.patch("files_nodes", rootNodeId, { restrictedScopeNodeId: rootNodeId });
+		const consentId = await ctx.db.insert("plugins_file_consents", {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			pairId: pair._id,
+			rootNodeId,
+			requestedLevel: "write",
+			appliedLevel: "write",
+			areaEligible: true,
+			open: true,
+			revision: 1,
+			state: "applied",
+			endedReason: null,
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+		});
+		return { pair, consentId };
+	});
+}
+
+describe("personal service file authority", () => {
+	test("a narrow pair seals and verifies Files without granting plugin-data write", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const pageToken = await seed_member_page_token({ t, fixture });
+		const { pair, consentId } = await pin_personal_page(t, fixture, pageToken);
+		const exchanged = await exchange({ t, pageToken });
+		expect(exchanged.status).toBe(200);
+		const interactive = (await exchanged.json()) as { token: string };
+		const seal = (destinationPathPrefix: string) =>
+			t.fetch(SEAL_PROCESSING_PATH, {
+				method: "POST",
+				headers: service_headers(interactive.token),
+				body: JSON.stringify({ destinationPathPrefix }),
+			});
+		const sealed = await seal("/meetings");
+		expect(sealed.status, "pair write can seal without human workspace write").toBe(200);
+		const processing = (await sealed.json()) as { token: string };
+		expect((await read_grants(t)).every((grant) => grant.filePairId === pair._id)).toBe(true);
+		const verify = (scopes: string[]) =>
+			t.fetch(VERIFY_LIVE_PATH, {
+				method: "POST",
+				headers: service_headers(processing.token),
+				body: JSON.stringify({
+					installationId: fixture.installationId,
+					phase: "processing",
+					destinationPathPrefix: "/meetings",
+					scopes,
+				}),
+			});
+		expect((await verify(["files:write"])).status, "verify-live uses the pair destination").toBe(200);
+		expect((await verify(["plugin_data:write"])).status, "pair write grants no plugin-data write").toBe(409);
+		expect((await seal("/outside")).status, "the seal cannot leave selected folders").toBe(403);
+		expect((await seal("/meetings/new")).status, "a new destination uses its nearest saved parent").toBe(200);
+		await t.run((ctx) => ctx.db.patch("plugins_file_consents", consentId, { appliedLevel: "read" }));
+		expect((await verify(["files:write"])).status, "applied read cannot verify write").toBe(409);
+		expect((await seal("/meetings")).status, "applied read cannot seal write").toBe(403);
+	});
+
+	test("personal renewal keeps its pair and recovery refuses an ended membership lifetime", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const pageToken = await seed_member_page_token({ t, fixture });
+		const { pair } = await pin_personal_page(t, fixture, pageToken);
+		const exchanged = await exchange({ t, pageToken });
+		expect(exchanged.status).toBe(200);
+		const interactive = (await exchanged.json()) as { token: string };
+		const renewed = await t.fetch(RENEW_PATH, {
+			method: "POST",
+			headers: service_headers(interactive.token),
+			body: JSON.stringify({ requestId: "renew-personal" }),
+		});
+		expect(renewed.status, "personal renewal keeps working").toBe(200);
+		expect((await read_grants(t))[0]?.filePairId, "renewal keeps the original pair").toBe(pair._id);
+		await t.run(async (ctx) => {
+			const lifetime = (await ctx.db
+				.query("organizations_membership_lifetimes")
+				.withIndex("by_workspace_user", (q) => q.eq("workspaceId", fixture.workspaceId).eq("userId", pair.userId))
+				.first())!;
+			await ctx.db.patch("organizations_membership_lifetimes", lifetime._id, { lifetime: lifetime.lifetime + 1 });
+		});
+		const recovered = await t.fetch("/api/v1/plugins/service-grants/recover", {
+			method: "POST",
+			headers: service_headers(interactive.token),
+			body: JSON.stringify({ operation: "renew", requestId: "renew-personal" }),
+		});
+		expect(recovered.status, "recovery cannot revive an ended membership lifetime").toBe(401);
+	});
+
+	test("response recovery refuses a member whose removal has started", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const pageToken = await seed_page_token({ t, fixture });
+		const exchanged = await t.fetch(EXCHANGE_PATH, {
+			method: "POST",
+			headers: service_headers(pageToken),
+			body: JSON.stringify({ requestId: "connect-removal" }),
+		});
+		expect(exchanged.status).toBe(200);
+		await t.run((ctx) =>
+			ctx.db.patch("organizations_workspaces_users", fixture.membershipId, { pendingOrganizationRemoval: true }),
+		);
+		const recovered = await t.fetch("/api/v1/plugins/service-grants/recover", {
+			method: "POST",
+			headers: service_headers(pageToken),
+			body: JSON.stringify({ operation: "exchange", requestId: "connect-removal" }),
+		});
+		expect(recovered.status, "response recovery stops when removal starts").toBe(401);
+	});
+
+	test("the switch blocks old response recovery and new credentials while keeping non-Files calls", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const pageToken = await seed_page_token({ t, fixture });
+		const exchanged = await t.fetch(EXCHANGE_PATH, {
+			method: "POST",
+			headers: service_headers(pageToken),
+			body: JSON.stringify({ requestId: "connect" }),
+		});
+		expect(exchanged.status).toBe(200);
+		const interactive = (await exchanged.json()) as { token: string };
+		const renewed = await t.fetch(RENEW_PATH, {
+			method: "POST",
+			headers: service_headers(interactive.token),
+			body: JSON.stringify({ requestId: "renew" }),
+		});
+		expect(renewed.status).toBe(200);
+		const current = (await renewed.json()) as { token: string };
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
+		);
+		const recovered = await t.fetch("/api/v1/plugins/service-grants/recover", {
+			method: "POST",
+			headers: service_headers(interactive.token),
+			body: JSON.stringify({ operation: "renew", requestId: "renew" }),
+		});
+		expect(recovered.status, "recovery must not return old usable file authority").toBe(401);
+		const earlyReplay = await t.mutation(internal.public_api.rotate_plugin_service_grant, {
+			presented: interactive.token,
+			lifecycle: { requestId: "renew", serviceSecretHash: await crypto_sha256_hex(EXCHANGE_SECRET) },
+			now: Date.now(),
+		});
+		expect(earlyReplay._nay?.message, "rotation checks cutover before its receipt return").toBe("Unauthenticated");
+		for (const requestId of [undefined, "connect"]) {
+			const response = await t.fetch(EXCHANGE_PATH, {
+				method: "POST",
+				headers: service_headers(pageToken),
+				body: JSON.stringify({ requestId }),
+			});
+			expect(response.status, "exchange source is checked with or without a retry ID").toBe(401);
+		}
+		expect(
+			(await t.fetch(RENEW_PATH, { method: "POST", headers: service_headers(current.token), body: "{}" })).status,
+		).toBe(401);
+		expect(
+			(
+				await t.fetch(SEAL_PROCESSING_PATH, {
+					method: "POST",
+					headers: service_headers(current.token),
+					body: JSON.stringify({ destinationPathPrefix: "/meetings" }),
+				})
+			).status,
+		).toBe(403);
+		const dataOnly = await t.fetch(VERIFY_LIVE_PATH, {
+			method: "POST",
+			headers: service_headers(current.token),
+			body: JSON.stringify({
+				installationId: fixture.installationId,
+				phase: "interactive",
+				destinationPathPrefix: null,
+				scopes: ["plugin_data:read"],
+			}),
+		});
+		expect(dataOnly.status, "the Files switch keeps non-Files human access").toBe(200);
+		expect(await read_grants(t)).toHaveLength(1);
+	});
+});
 
 describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("a files-only service can exchange, seal, and recover a lost renewal response", async () => {
@@ -1103,15 +1320,12 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		expect(await read_grants(t)).toHaveLength(1);
 	});
 
-	test("the seal's mint refuses outright when a scope it promised is no longer available", async () => {
+	test("the seal's mint rechecks its source when a promised scope is removed", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
+		const interactive = await exchange_token(t, fixture);
 
-		// The route pre-checks the capabilities and refuses first, so this asks the mint directly: it
-		// is the backstop for a capability the workspace takes back BETWEEN that pre-check and this
-		// mutation. Without `requireAllRequestedScopes` the mint would quietly narrow `files:write`
-		// away and hand back a two-scope processing grant, which fails at the upload after the
-		// meeting ended and the member left.
+		// The capability changes after the route check but before the accepting mutation.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
 				acceptedCapabilities: ["plugin.service.connect", "plugin.data.read", "plugin.data.write"],
@@ -1127,10 +1341,11 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 			requireAllRequestedScopes: true,
 			destinationPathPrefix: "/meetings",
 			phase: "processing",
+			lifecycle: { presented: interactive, serviceSecretHash: await crypto_sha256_hex(EXCHANGE_SECRET) },
 			now: Date.now(),
 		});
-		expect(minted._nay?.message).toBe("Permission denied");
-		expect(await read_grants(t)).toHaveLength(0);
+		expect(minted._nay?.message).toBe("Unauthenticated");
+		expect(await read_grants(t)).toHaveLength(1);
 	});
 
 	test("refuses a destination with a non-canonical folder name; the service normalizes before sealing", async () => {

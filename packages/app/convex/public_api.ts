@@ -135,6 +135,8 @@ import {
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
+import { plugins_service_db_can_write_destination } from "./plugins_service.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
@@ -706,7 +708,11 @@ export const create_plugin_service_grant = internalMutation({
 		requireAllRequestedScopes: v.optional(v.boolean()),
 		destinationPathPrefix: v.union(v.string(), v.null()),
 		phase: v.union(v.literal("interactive"), v.literal("processing")),
-		lifecycle: v.optional(v.object({ presented: v.string(), requestId: v.string(), serviceSecretHash: v.string() })),
+		lifecycle: v.object({
+			presented: v.string(),
+			requestId: v.optional(v.string()),
+			serviceSecretHash: v.string(),
+		}),
 		now: v.number(),
 	},
 	returns: v_result({
@@ -719,30 +725,32 @@ export const create_plugin_service_grant = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const lifecycle = args.lifecycle
-			? {
-					...args.lifecycle,
-					operation: args.phase === "interactive" ? ("exchange" as const) : ("seal" as const),
-					fingerprint:
-						args.phase === "interactive" ? "{}" : JSON.stringify({ destinationPathPrefix: args.destinationPathPrefix }),
-				}
-			: null;
-		if (lifecycle) {
-			const prior = await plugins_service_grant_requests_db_recover(ctx, lifecycle);
+		const lifecycle = {
+			...args.lifecycle,
+			operation: args.phase === "interactive" ? ("exchange" as const) : ("seal" as const),
+			fingerprint:
+				args.phase === "interactive" ? "{}" : JSON.stringify({ destinationPathPrefix: args.destinationPathPrefix }),
+		};
+		if (lifecycle.requestId !== undefined) {
+			const prior = await plugins_service_grant_requests_db_recover(ctx, {
+				...lifecycle,
+				requestId: lifecycle.requestId,
+			});
 			if (prior._nay) return prior;
 			if (prior._yay) {
 				const { token, grantId, principalKey, scopes, expiresAt } = prior._yay;
 				return Result({ _yay: { token, grantId, principalKey, scopes, expiresAt } });
 			}
-			const source = await plugins_service_grant_requests_db_source(ctx, lifecycle);
-			if (
-				!source ||
-				source.installation._id !== args.installationId ||
-				source.actorUserId !== args.actorUserId ||
-				args.requestedScopes.some((scope) => !source.registeredScopes.includes(scope))
-			) {
-				return Result({ _nay: { message: "Unauthenticated" } });
-			}
+		}
+		// Source proof is required even when the caller does not ask for a retry receipt.
+		const source = await plugins_service_grant_requests_db_source(ctx, lifecycle);
+		if (
+			!source ||
+			source.installation._id !== args.installationId ||
+			source.actorUserId !== args.actorUserId ||
+			args.requestedScopes.some((scope) => !source.registeredScopes.includes(scope))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const [installation, workspace] = await Promise.all([
 			ctx.db.get("plugins_workspace_installations", args.installationId),
@@ -806,6 +814,17 @@ export const create_plugin_service_grant = internalMutation({
 			if (destinationPathPrefix == null) {
 				return Result({ _nay: { message: "A file-write grant requires a destination path prefix" } });
 			}
+			if (
+				source.filePairId &&
+				!(await plugins_service_db_can_write_destination(ctx, {
+					installation,
+					actorUserId: args.actorUserId,
+					filePairId: source.filePairId,
+					destinationPathPrefix,
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
 			scopes.push("files:write");
 		}
 
@@ -848,6 +867,7 @@ export const create_plugin_service_grant = internalMutation({
 		const expiresAt =
 			args.now + (args.phase === "processing" ? PLUGIN_SERVICE_PROCESSING_GRANT_TTL_MS : PLUGIN_SERVICE_GRANT_TTL_MS);
 		const grantId = await ctx.db.insert("plugin_service_grants", {
+			filePairId: source.filePairId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			installationId: args.installationId,
@@ -863,9 +883,10 @@ export const create_plugin_service_grant = internalMutation({
 			expiresAt,
 			updatedAt: args.now,
 		});
-		if (lifecycle) {
+		if (lifecycle.requestId !== undefined) {
 			await plugins_service_grant_requests_db_save(ctx, {
 				...lifecycle,
+				requestId: lifecycle.requestId,
 				grant: (await ctx.db.get("plugin_service_grants", grantId))!,
 				token,
 			});
@@ -902,7 +923,7 @@ export const create_plugin_service_grant = internalMutation({
 export const rotate_plugin_service_grant = internalMutation({
 	args: {
 		presented: v.string(),
-		lifecycle: v.optional(v.object({ requestId: v.string(), serviceSecretHash: v.string() })),
+		lifecycle: v.object({ requestId: v.optional(v.string()), serviceSecretHash: v.string() }),
 		now: v.number(),
 	},
 	returns: v_result({
@@ -915,19 +936,20 @@ export const rotate_plugin_service_grant = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const lifecycle = args.lifecycle
-			? { ...args.lifecycle, presented: args.presented, operation: "renew" as const, fingerprint: "{}" }
-			: null;
-		if (lifecycle) {
-			const prior = await plugins_service_grant_requests_db_recover(ctx, lifecycle);
+		const lifecycle = { ...args.lifecycle, presented: args.presented, operation: "renew" as const, fingerprint: "{}" };
+		if (lifecycle.requestId !== undefined) {
+			const prior = await plugins_service_grant_requests_db_recover(ctx, {
+				...lifecycle,
+				requestId: lifecycle.requestId,
+			});
 			if (prior._nay) return prior;
 			if (prior._yay) {
 				const { token, grantId, principalKey, scopes, expiresAt } = prior._yay;
 				return Result({ _yay: { token, grantId, principalKey, scopes, expiresAt } });
 			}
-			if (!(await plugins_service_grant_requests_db_source(ctx, lifecycle)))
-				return Result({ _nay: { message: "Unauthenticated" } });
 		}
+		if (!(await plugins_service_grant_requests_db_source(ctx, lifecycle)))
+			return Result({ _nay: { message: "Unauthenticated" } });
 		const presentedHash = await crypto_sha256_hex(args.presented);
 		const grant = await ctx.db
 			.query("plugin_service_grants")
@@ -999,9 +1021,10 @@ export const rotate_plugin_service_grant = internalMutation({
 			expiresAt,
 			updatedAt: args.now,
 		});
-		if (lifecycle) {
+		if (lifecycle.requestId !== undefined) {
 			await plugins_service_grant_requests_db_save(ctx, {
 				...lifecycle,
+				requestId: lifecycle.requestId,
 				grant: (await ctx.db.get("plugin_service_grants", grant._id))!,
 				token,
 			});
@@ -1562,6 +1585,15 @@ export const resolve_principal = internalQuery({
 			if (!actor || actor.deletedAt != null || !membership || membership.pendingOrganizationRemoval) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
+			if (
+				pluginRun.filePairId &&
+				!(await plugins_file_grants_db_validate_pair(ctx, {
+					pairId: pluginRun.filePairId,
+					installationId: installation._id,
+					userId: pluginRun.actorUserId,
+				}))
+			)
+				return Result({ _nay: { message: "Unauthenticated" } });
 			const scheduledAssignment =
 				pluginRun.event === "schedule.interval.elapsed"
 					? await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run: pluginRun })
@@ -1658,11 +1690,16 @@ export const resolve_principal = internalQuery({
 			const effectiveScopes: Infer<typeof plugin_run_scopes_validator> = scheduledAssignment
 				? [...scopes.filter((scope) => consentScopes.includes(scope)), "runs:follow_up"]
 				: scopes;
+			// Old tokens may finish accepted writes, but cannot start another Files read after the switch.
+			const liveScopes =
+				installation.fileAccessModel === "personal" && !pluginRun.filePairId
+					? effectiveScopes.filter((scope) => !["files:read", "files:list", "files:download"].includes(scope))
+					: effectiveScopes;
 			return Result({
 				_yay: {
 					kind: "plugin_run" as const,
 					serviceAccountId: pluginRun.serviceAccountId,
-					subject: plugins_file_subject(installation, pluginRun.actorUserId),
+					subject: plugins_file_subject(installation, pluginRun.actorUserId, pluginRun.filePairId),
 					organizationId: pluginRun.organizationId,
 					workspaceId: pluginRun.workspaceId,
 					runId: pluginRun._id,
@@ -1675,7 +1712,7 @@ export const resolve_principal = internalQuery({
 					outputParentPath,
 					// The HTTP layer checks this clock after cache retrieval. Never cache a live-time verdict.
 					apiTokenExpiresAt: Math.min(pluginRun.apiTokenExpiresAt, activity.deadlineAt),
-					scopes: effectiveScopes,
+					scopes: liveScopes,
 					principalKey: `plugin_run:${pluginRun._id}`,
 					pathPrefix: null,
 				},
@@ -1738,19 +1775,28 @@ export const resolve_principal = internalQuery({
 						.eq("workspaceId", session.workspaceId),
 				)
 				.first();
-			if (!membership) {
+			if (!membership || membership.pendingOrganizationRemoval) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
+			if (
+				session.filePairId &&
+				!(await plugins_file_grants_db_validate_pair(ctx, {
+					pairId: session.filePairId,
+					installationId: installation._id,
+					userId: session.userId,
+				}))
+			)
+				return Result({ _nay: { message: "Unauthenticated" } });
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: session.organizationId,
 				workspaceId: session.workspaceId,
-				subject: plugins_file_subject(installation, session.userId),
+				subject: { kind: "user", userId: session.userId, plugin: null },
 			});
 
 			// Workspace file reads are consent-gated; UI sessions never get secrets or outbound scopes.
-			const scopes: Infer<typeof plugin_ui_scopes_validator> = installation.acceptedCapabilities.includes(
-				"workspace.files.read",
-			)
+			const scopes: Infer<typeof plugin_ui_scopes_validator> =
+				installation.acceptedCapabilities.includes("workspace.files.read") &&
+				(installation.fileAccessModel !== "personal" || session.filePairId !== undefined)
 				? ["files:list", "files:read", "files:download"]
 				: [];
 			// A frame may show what its plugin stored, but never write it. A UI session can belong to an
@@ -1769,7 +1815,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_ui" as const,
 					serviceAccountId: session.serviceAccountId,
-					subject: plugins_file_subject(installation, session.userId),
+					subject: plugins_file_subject(installation, session.userId, session.filePairId),
 					organizationId: session.organizationId,
 					workspaceId: session.workspaceId,
 					userId: session.userId,
@@ -1846,13 +1892,22 @@ export const resolve_principal = internalQuery({
 			// A grant acts for its actor, so the actor has to still be a member. Both phases need that,
 			// including `processing`. Being sealed to one destination path prefix bounds where a grant
 			// writes, not whether its member may still write, so it earns no exemption here.
-			if (!membership) {
+			if (!membership || membership.pendingOrganizationRemoval) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
+			if (
+				grant.filePairId &&
+				!(await plugins_file_grants_db_validate_pair(ctx, {
+					pairId: grant.filePairId,
+					installationId: installation._id,
+					userId: grant.actorUserId,
+				}))
+			)
+				return Result({ _nay: { message: "Unauthenticated" } });
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
-				subject: plugins_file_subject(installation, grant.actorUserId),
+				subject: { kind: "user", userId: grant.actorUserId, plugin: null },
 			});
 
 			// The grant is issued with the scopes the exchange asked for, but the installation's accepted
@@ -1889,7 +1944,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_service" as const,
 					serviceAccountId: grant.serviceAccountId,
-					subject: plugins_file_subject(installation, grant.actorUserId),
+					subject: plugins_file_subject(installation, grant.actorUserId, grant.filePairId),
 					organizationId: grant.organizationId,
 					workspaceId: grant.workspaceId,
 					grantId: grant._id,
@@ -2385,6 +2440,7 @@ export async function public_api_db_revalidate_live_plugin_run(
 		runId: Id<"plugins_event_runs">;
 		now: number;
 		requiredScope?: public_api_Scope;
+		acceptedFilePairId?: Id<"plugins_file_pairs"> | null;
 	},
 ) {
 	const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
@@ -2422,6 +2478,26 @@ export async function public_api_db_revalidate_live_plugin_run(
 		!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: pluginRun.serviceAccountId }))
 	) {
 		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+	if (
+		pluginRun.filePairId &&
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: pluginRun.filePairId,
+			installationId: installation._id,
+			userId: pluginRun.actorUserId,
+		}))
+	) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+	if (
+		(args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== (pluginRun.filePairId ?? null)) ||
+		(installation.fileAccessModel === "personal" &&
+			!pluginRun.filePairId &&
+			(args.requiredScope === "files:read" ||
+				args.requiredScope === "files:list" ||
+				(args.requiredScope === "files:write" && args.acceptedFilePairId === undefined)))
+	) {
+		return Result({ _nay: { message: "Permission denied" } });
 	}
 	if (pluginRun.event === "schedule.interval.elapsed") {
 		const requiredScope = args.requiredScope;
@@ -2503,7 +2579,7 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
-					subject: plugins_file_subject(live._yay.installation, run.actorUserId),
+					subject: plugins_file_subject(live._yay.installation, run.actorUserId, run.filePairId),
 					fileNode: node,
 					permission: "content.read",
 				}))
@@ -2553,6 +2629,10 @@ export async function public_api_db_revalidate_file_write_principal(
 		path: string;
 		expectedParentNodeId?: Id<"files_nodes">;
 		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
+		/**
+		 * Only publication passes the stage's saved pin. Null means accepted legacy work.
+		 */
+		acceptedFilePairId?: Id<"plugins_file_pairs"> | null;
 		now: number;
 		/** The caller's lookups for this path, so a mutation reads each folder once. */
 		lookups?: Awaited<ReturnType<typeof files_db_create_path_lookups>>;
@@ -2572,6 +2652,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			path: args.path,
 			expectedParentNodeId: args.expectedParentNodeId,
 			write: args.externalFileWrite,
+			acceptedFilePairId: args.acceptedFilePairId,
 		});
 		if (checked._nay) return checked;
 		if (
@@ -2597,6 +2678,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			runId: args.principalRef.runId,
 			now: args.now,
 			requiredScope: "files:write",
+			acceptedFilePairId: args.acceptedFilePairId,
 		});
 		if (liveRun._nay) {
 			return liveRun;
@@ -2628,8 +2710,7 @@ export async function public_api_db_revalidate_file_write_principal(
 
 			// An existing target needs its own label. A create uses the nearest existing ancestor.
 			const labelledNode = ancestorNode;
-			// The run writes as the member who invoked it, so that member must still be one, and
-			// must still be allowed to write where the output lands.
+			// Membership stays live. File access comes from the credential's saved authority.
 			const invokeActorMembership = await ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_active_user_organization_workspace", (q) =>
@@ -2640,10 +2721,10 @@ export async function public_api_db_revalidate_file_write_principal(
 						.eq("workspaceId", args.workspaceId),
 				)
 				.first();
-			if (!invokeActorMembership) {
+			if (!invokeActorMembership || invokeActorMembership.pendingOrganizationRemoval) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			const subject = plugins_file_subject(installation, args.userId);
+			const subject = plugins_file_subject(installation, args.userId, pluginRun.filePairId);
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
@@ -2711,11 +2792,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// A plugin run writes as the person whose upload started it, so that person still has to be
-		// allowed to write here. A run can outlive them: a member is removed, or their role is taken
-		// away, while the run is still going. Asked against the source file rather than the workspace,
-		// because the output lands beside it — a grant on a restricted folder is often the only reason
-		// the actor could write there at all.
+		// A run can outlive its member. Removing membership ends the credential.
 		const actorMembership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_user_organization_workspace", (q) =>
@@ -2726,19 +2803,25 @@ export async function public_api_db_revalidate_file_write_principal(
 					.eq("workspaceId", args.workspaceId),
 			)
 			.first();
-		if (!actorMembership) {
+		if (!actorMembership || actorMembership.pendingOrganizationRemoval) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		// An upload run writes only beside the file the person uploaded, so it acts as that person
-		// there, without the service account's grants.
-		const subject: access_control_Subject = { kind: "user", userId: args.userId, plugin: null };
+		// Personal consent on the source alone cannot create a sibling. Its parent needs write.
+		const subject: access_control_Subject = pluginRun.filePairId
+			? plugins_file_subject(installation, args.userId, pluginRun.filePairId)
+			: { kind: "user", userId: args.userId, plugin: null };
+		const writeNode = pluginRun.filePairId
+			? sourceFileNode.parentId === files_ROOT_ID
+				? null
+				: await files_saved_placement_db_get_node(ctx.db, sourceFileNode.parentId)
+			: sourceFileNode;
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				subject,
 				permission: "content.write",
-				fileNode: sourceFileNode,
+				...(writeNode ? { fileNode: writeNode } : {}),
 			}))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -2803,6 +2886,22 @@ export async function public_api_db_revalidate_file_write_principal(
 		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+		if (
+			grant.filePairId &&
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: grant.filePairId,
+				installationId: installation._id,
+				userId: grant.actorUserId,
+			}))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (
+			(args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== (grant.filePairId ?? null)) ||
+			(installation.fileAccessModel === "personal" && !grant.filePairId && args.acceptedFilePairId === undefined)
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		const actor = await ctx.db.get("users", grant.actorUserId);
 		if (!actor || actor.deletedAt != null) {
 			return Result({ _nay: { message: "Unauthenticated" } });
@@ -2814,10 +2913,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// The grant acts for its member, so that member must still be one, and must still be
-		// allowed to write where the file lands. Asked against the target or the deepest existing
-		// ancestor, so a grant inside a restricted folder is judged by the grant that let the
-		// actor in — both fill and create under a restricted folder are covered.
+		// Keep membership live, then check file access on the target or its deepest saved parent.
 		const actorMembership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_user_organization_workspace", (q) =>
@@ -2828,7 +2924,7 @@ export async function public_api_db_revalidate_file_write_principal(
 					.eq("workspaceId", args.workspaceId),
 			)
 			.first();
-		if (!actorMembership) {
+		if (!actorMembership || actorMembership.pendingOrganizationRemoval) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 		const aclNode = ancestorNode;
@@ -2845,7 +2941,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		const subject = plugins_file_subject(installation, args.userId);
+		const subject = plugins_file_subject(installation, args.userId, grant.filePairId);
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
@@ -2975,7 +3071,8 @@ async function db_check_plugin_added_file_refs(
 		workspaceId: args.stage.workspaceId,
 		installation,
 		userId: args.stage.userId,
-		// Upload runs write beside the file they were started for, and may embed it.
+		filePairId: args.stage.filePairId,
+		// Legacy upload runs may embed their source. Personal runs need applied read consent.
 		...(args.facts.pluginRun && args.facts.pluginRun.event !== "ui.invoke.requested" && args.facts.pluginRun.fileNodeId
 			? { sourceNodeId: args.facts.pluginRun.fileNodeId }
 			: {}),
@@ -3354,6 +3451,7 @@ export const prepare_file_write = internalMutation({
 		]);
 
 		const stageId = await ctx.db.insert("public_api_file_write_stages", {
+			filePairId: revalidated._yay.pluginRun?.filePairId ?? revalidated._yay.serviceGrant?.filePairId,
 			force: args.force === true,
 			requestReadOnly: args.requestReadOnly === true,
 			organizationId: args.organizationId,
@@ -3449,6 +3547,7 @@ export const publish_file_write = internalMutation({
 			requestReadOnly: stage.requestReadOnly,
 			expectedParentNodeId: stage.expectedParentNodeId,
 			externalFileWrite: stage.externalFileWrite,
+			acceptedFilePairId: stage.filePairId ?? null,
 			now,
 			lookups,
 		});
@@ -3869,6 +3968,7 @@ export const publish_file_fill = internalMutation({
 			requestReadOnly: stage.requestReadOnly,
 			expectedParentNodeId: stage.expectedParentNodeId,
 			externalFileWrite: stage.externalFileWrite,
+			acceptedFilePairId: stage.filePairId ?? null,
 			now,
 		});
 		if (revalidated._nay) {
@@ -4168,6 +4268,7 @@ export const publish_file_touch = internalMutation({
 			force: stage.force,
 			requestReadOnly: stage.requestReadOnly,
 			path: stage.path,
+			acceptedFilePairId: stage.filePairId ?? null,
 			now,
 			lookups,
 		});

@@ -385,6 +385,7 @@ function published_plugin(overrides: {
 	canInstall?: boolean;
 	canManage?: boolean;
 	installationId?: string | null;
+	fileAccessModel?: "personal";
 	configuration?: { description: string; defaultYaml: string } | null;
 	mounts?: NonNullable<PublishedPlugin["mounts"]>;
 	events?: PublishedPlugin["events"];
@@ -419,6 +420,7 @@ function published_plugin(overrides: {
 		canInstall: overrides.canInstall ?? true,
 		canManage: overrides.canManage ?? false,
 		installationId: overrides.installationId ?? null,
+		fileAccessModel: overrides.fileAccessModel,
 		configuration: overrides.configuration ?? null,
 		mounts: overrides.mounts ?? [],
 		events: overrides.events ?? [],
@@ -440,6 +442,7 @@ function installed_item(plugin: ReturnType<typeof published_plugin>) {
 			serviceAccountId: "account_1",
 			_id: "installation_1",
 			pluginName: plugin.name,
+			fileAccessModel: plugin.fileAccessModel,
 			status: "enabled",
 			configurationYaml: "note: server\n",
 		},
@@ -666,6 +669,60 @@ describe("RoutePluginsPluginConsentModal", () => {
 		expect(args).not.toHaveProperty("serviceAccountGrants");
 	});
 
+	test("a fresh install keeps account choice separate from personal file grants", async () => {
+		setQueries({ plugin: published_plugin({ name: "media", canProcessFiles: true }) });
+		mutationMock.mockResolvedValue({ _yay: { installationId: "installation_1" } });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		fireEvent.click(screen.getByRole("combobox", { name: "Service account" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Media worker" }));
+		expect(
+			screen.queryByRole("button", { name: "Add reviewed grant" }),
+			"a personal install must not offer account file grants",
+		).toBeNull();
+		expect(screen.getByRole("dialog").textContent).toContain(
+			"Each person chooses this plugin's files in My file permissions.",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Accept and install" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock.mock.calls[0]![1]).toHaveProperty("serviceAccountId", "account_1");
+		expect(mutationMock.mock.calls[0]![1]).not.toHaveProperty("serviceAccountGrants");
+	});
+
+	test("personal settings and updates use the selected-file controls", () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true, fileAccessModel: "personal" });
+		const installed = installed_item(plugin);
+		installed.version.version = "0.1.0";
+		setQueries({ plugin, installations: [installed] });
+		render(<PageComponent />);
+		expect(
+			screen.queryByText("Plugins do not use these choices yet. They will after a later update."),
+			"personal settings must show active file choices",
+		).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		expect(screen.queryByRole("button", { name: "Add reviewed grant" })).toBeNull();
+		expect(screen.getByRole("dialog").textContent).toContain(
+			"Creating files beside it also needs Can edit on its folder.",
+		);
+	});
+
+	test("members see the personal model from the public catalog", () => {
+		const plugin = published_plugin({
+			name: "media",
+			canProcessFiles: true,
+			installationId: "installation_1",
+			fileAccessModel: "personal",
+		});
+		setQueries({ plugin, installations: [], canManageAccounts: false });
+		render(<PageComponent />);
+		expect(
+			screen.queryByText(
+				"Access changes apply in the background. The plugin keeps its current access until each change finishes.",
+			),
+			"members must see the actual installation model",
+		).not.toBeNull();
+	});
+
 	test("updates an exact managed installation without account or install permission", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true, canInstall: false });
 		const installed = installed_item(plugin);
@@ -720,6 +777,25 @@ describe("RoutePluginsPluginConsentModal", () => {
 				expect.objectContaining({ serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }] }),
 			),
 		);
+	});
+
+	test("drops old account choices when an open update switches to personal access", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		const installed = installed_item(plugin);
+		installed.version.version = "0.1.0";
+		setQueries({ plugin, installations: [installed] });
+		mutationMock.mockResolvedValue({ _yay: null });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		fireEvent.click(screen.getByRole("button", { name: "Add reviewed grant" }));
+		installed.installation.fileAccessModel = "personal";
+		setQueries({ plugin: { ...plugin, fileAccessModel: "personal" }, installations: [installed] });
+		fireEvent.click(screen.getByRole("button", { name: "Accept and update" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(
+			mutationMock.mock.calls[0]![1],
+			"a personal update must not submit old account grant choices",
+		).not.toHaveProperty("serviceAccountGrants");
 	});
 
 	test("rebinds only through the explicit account action", async () => {
@@ -860,6 +936,34 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		cleanup();
 		modalOptions.keepMounted = false;
 		vi.clearAllMocks();
+	});
+
+	test("first install asks for personal file operations without a proof path", async () => {
+		const plugin = scheduled_plugin();
+		plugin.capabilities = ["plugin.schedule.run", "workspace.files.read"];
+		setQueries({ plugin, canManageAccounts: false });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		const dialog = screen.getByRole("dialog");
+		expect(
+			within(dialog).queryByRole("checkbox", { name: "Read my selected files" }),
+			"first install must pass personal mode into run consent",
+		).not.toBeNull();
+		expect(within(dialog).queryByRole("textbox", { name: "Readable file or folder path" })).toBeNull();
+		fireEvent.click(
+			within(dialog).getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }),
+		);
+		const accept = within(dialog).getByRole("button", { name: "Accept and install" });
+		await waitFor(() => expect(accept).toHaveProperty("disabled", false));
+		fireEvent.click(accept);
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith(
+				"plugins.install_version",
+				expect.objectContaining({
+					scheduledRun: { kind: "me", scopes: ["files:list", "files:read"], filesReadProof: undefined },
+				}),
+			),
+		);
 	});
 
 	test("requires explicit Me consent and submits the edited first-install YAML", async () => {

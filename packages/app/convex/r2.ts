@@ -794,7 +794,6 @@ async function db_check_service_upload_file_refs(
 	ctx: MutationCtx,
 	args: {
 		targetId: Id<"plugin_service_storage_targets">;
-		userId: Id<"users">;
 		addedFileRefs: string[];
 	},
 ) {
@@ -805,7 +804,8 @@ async function db_check_service_upload_file_refs(
 		organizationId: target.organizationId,
 		workspaceId: target.workspaceId,
 		installation,
-		userId: args.userId,
+		userId: target.createdBy,
+		filePairId: target.filePairId,
 		addedFileRefs: args.addedFileRefs,
 	});
 	return checked._nay ? checked._nay.message : null;
@@ -1061,7 +1061,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		const refusal =
 			lost || !args.serviceUploadFileRefs
 				? null
-				: await db_check_service_upload_file_refs(ctx, { ...args.serviceUploadFileRefs, userId: args.userId });
+				: await db_check_service_upload_file_refs(ctx, args.serviceUploadFileRefs);
 		if (lost || refusal !== null) {
 			// The action lost its node while writing R2, or the plugin may not add these refs. Delete only
 			// its unpublished output.

@@ -140,6 +140,8 @@ export async function plugins_invoke_http_invoke(args: {
 	// complete token is hashed, so a leaked hash is useless without the prefix-bearing original.
 	const apiToken = `plr_${crypto_random_hex(32)}`;
 	const started = (await ctx.runMutation(internal.plugins_runtime.start_invoke_run, {
+		sessionId: principal.sessionId,
+		sessionTokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
 		installationId: principal.installationId,

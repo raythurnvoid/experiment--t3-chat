@@ -285,7 +285,22 @@ async function plugin_tokens(f: Fixture) {
 		ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
 	))!;
 	const invokeToken = `plr_${crypto_random_hex(32)}`;
+	const sessionId = await f.t.run((ctx) =>
+		ctx.db.insert("plugins_ui_sessions", {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			installationId: installation._id,
+			pluginVersionId,
+			serviceAccountId: installation.serviceAccountId,
+			userId: f.db.userId,
+			tokenHash: "chat-frame",
+			createdAt: Date.now(),
+			expiresAt: Date.now() + 60_000,
+		}),
+	);
 	const invoked = await f.t.mutation(internal.plugins_runtime.start_invoke_run, {
+		sessionId,
+		sessionTokenHash: "chat-frame",
 		organizationId: f.db.organizationId,
 		workspaceId: f.db.workspaceId,
 		userId: f.db.userId,

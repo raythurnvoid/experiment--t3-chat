@@ -159,7 +159,7 @@ export async function plugins_scheduled_access_db_authorize_assignment(
 			});
 			if (!allowed) return Result({ _nay: { message: "Permission denied" } });
 		}
-		// Files callers check the actual nodes against the user and installation account.
+		// Files callers check each node with the credential's saved file authority.
 	}
 	return Result({ _yay: { ...context._yay, version, account } });
 }
@@ -204,7 +204,12 @@ export async function plugins_scheduled_access_db_validate_consent(
 		)
 			return Result({ _nay: { message: "This plugin has not been granted that permission" } });
 	}
-	if (scopes.includes("files:read") || scopes.includes("files:list")) {
+	// New installs use personal selections. Old installs keep proof until their audit switches them.
+	if (
+		installation &&
+		installation.fileAccessModel !== "personal" &&
+		(scopes.includes("files:read") || scopes.includes("files:list"))
+	) {
 		if (!filesReadProof) return Result({ _nay: { message: "Choose a readable file or workspace as proof" } });
 		if (filesReadProof.kind === "file") {
 			const allowed = await access_control_db_authorize_node(ctx, {

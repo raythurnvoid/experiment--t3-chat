@@ -12,6 +12,7 @@ import {
 } from "../server/files-saved-placement.ts";
 import { server_path_parent_of } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 
 export async function plugins_external_files_db_get_node(
 	ctx: QueryCtx,
@@ -31,6 +32,7 @@ export async function plugins_external_files_db_authorize(
 		force?: boolean;
 		requestReadOnly?: boolean;
 		exactNodeId?: Id<"files_nodes">;
+		acceptedFilePairId?: Id<"plugins_file_pairs"> | null;
 	},
 ) {
 	const now = Date.now();
@@ -46,7 +48,6 @@ export async function plugins_external_files_db_authorize(
 	) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
-
 	const [installation, workspace, actor, registration] = await Promise.all([
 		ctx.db.get("plugins_workspace_installations", grant.installationId),
 		ctx.db.get("organizations_workspaces", grant.workspaceId),
@@ -74,6 +75,17 @@ export async function plugins_external_files_db_authorize(
 	) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
+	if (
+		(args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== (grant.filePairId ?? null)) ||
+		(args.acceptedFilePairId === undefined && !grant.filePairId && installation.fileAccessModel === "personal") ||
+		(grant.filePairId &&
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: grant.filePairId,
+				installationId: installation._id,
+				userId: grant.actorUserId,
+			})))
+	)
+		return Result({ _nay: { message: "Permission denied" } });
 	if (
 		!["plugin.service.connect", "workspace.files.write", "workspace.files.own-write"].every((capability) =>
 			installation.acceptedCapabilities.some((accepted) => accepted === capability),
@@ -137,7 +149,7 @@ export async function plugins_external_files_db_authorize(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 	const writeContext: files_nodes_WriteContext = {
-		subject: plugins_file_subject(installation, grant.actorUserId),
+		subject: plugins_file_subject(installation, grant.actorUserId, grant.filePairId),
 		force: args.force === true,
 		actorUserId: grant.actorUserId,
 		resourceScope: node
@@ -174,12 +186,14 @@ export async function plugins_external_files_db_check_write(
 		path: string;
 		expectedParentNodeId: Id<"files_nodes">;
 		write: NonNullable<Doc<"public_api_file_write_stages">["externalFileWrite"]>;
+		acceptedFilePairId?: Id<"plugins_file_pairs"> | null;
 	},
 ) {
 	const facts = await plugins_external_files_db_authorize(ctx, {
 		...args.write,
 		grantId: args.grantId,
 		path: args.path,
+		acceptedFilePairId: args.acceptedFilePairId,
 	});
 	if (facts._nay) return facts;
 

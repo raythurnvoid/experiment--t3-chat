@@ -11,6 +11,8 @@ import {
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { quotas_db_ensure } from "./quotas.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import { quotas } from "../shared/quotas.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import {
@@ -269,6 +271,7 @@ async function seed_page_token(args: {
 	t: ReturnType<typeof test_convex>;
 	fixture: Awaited<ReturnType<typeof seed_installation>>;
 	actorUserId?: Id<"users">;
+	filePairId?: Id<"plugins_file_pairs">;
 }) {
 	const { t, fixture, actorUserId = fixture.userId } = args;
 
@@ -282,6 +285,7 @@ async function seed_page_token(args: {
 			installationId: fixture.installationId,
 			pluginVersionId: fixture.pluginVersionId,
 			userId: actorUserId,
+			filePairId: args.filePairId,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt: now + 30 * 60 * 1000,
@@ -305,10 +309,11 @@ async function exchange_token(args: {
 	t: ReturnType<typeof test_convex>;
 	fixture: Awaited<ReturnType<typeof seed_installation>>;
 	actorUserId?: Id<"users">;
+	filePairId?: Id<"plugins_file_pairs">;
 }) {
 	const { t, fixture, actorUserId = fixture.userId } = args;
 
-	const pageToken = await seed_page_token({ t, fixture, actorUserId });
+	const pageToken = await seed_page_token({ t, fixture, actorUserId, filePairId: args.filePairId });
 	const response = await t.fetch("/api/v1/plugins/service-grants/exchange", {
 		method: "POST",
 		headers: service_headers(pageToken),
@@ -328,10 +333,11 @@ async function seal_token(args: {
 	fixture: Awaited<ReturnType<typeof seed_installation>>;
 	destinationPathPrefix?: string;
 	actorUserId?: Id<"users">;
+	filePairId?: Id<"plugins_file_pairs">;
 }) {
 	const { t, fixture, destinationPathPrefix = "/meetings", actorUserId = fixture.userId } = args;
 
-	const interactive = await exchange_token({ t, fixture, actorUserId });
+	const interactive = await exchange_token({ t, fixture, actorUserId, filePairId: args.filePairId });
 	const response = await t.fetch(SEAL_PROCESSING_PATH, {
 		method: "POST",
 		headers: service_headers(interactive),
@@ -510,6 +516,158 @@ async function write_note(args: { t: ReturnType<typeof test_convex>; sealed: str
 }
 
 describe("service upload authorization", () => {
+	test("the switch keeps the actor's accepted legacy upload and refuses new work", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture });
+		const otherActor = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...fixture, userId, role: "member", now: Date.now() });
+			return userId;
+		});
+		const otherGrant = await seal_token({ t, fixture, actorUserId: otherActor });
+		const body = target_body();
+		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
+		);
+		const retryBody = { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey };
+		for (const path of [REMINT_PATH, FINALIZE_PATH]) {
+			expect(
+				(await call({ t, path, bearer: otherGrant, body: retryBody })).status,
+				"another actor cannot finish accepted legacy work",
+			).toBe(403);
+			expect(
+				(await call({ t, path, bearer: sealed, body: retryBody })).status,
+				"the original actor can finish accepted legacy work",
+			).toBe(200);
+		}
+		expect(
+			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status,
+			"an exact old create replay keeps its target",
+		).toBe(200);
+		expect(
+			(
+				await call({
+					t,
+					path: CREATE_TARGET_PATH,
+					bearer: sealed,
+					body: target_body({ targetKey: "new", path: "/meetings/new.mp4" }),
+				})
+			).status,
+			"old authority cannot accept a new target",
+		).toBe(403);
+		expect(
+			(await call({ t, path: DELETE_PATH, bearer: sealed, body: retryBody })).status,
+			"a new delete is not upload completion",
+		).toBe(403);
+		expect(
+			(await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: "new-archive" } })).status,
+			"a new archive is not upload completion",
+		).toBe(403);
+		expect(await read_targets(t)).toHaveLength(1);
+		expect((await read_targets(t))[0]!.filePairId).toBeUndefined();
+	});
+
+	test("a narrow personal upload pins its pair and rechecks applied access on retries", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const personal = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: null });
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pro" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
+			});
+			await access_control_db_ensure_role_assignment(ctx, { ...fixture, userId, role: "viewer", now: Date.now() });
+			const membership = (await ctx.db.get("organizations_workspaces_users", membershipId))!;
+			const installation = (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!;
+			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				...fixture,
+				parentId: files_ROOT_ID,
+				path: "/meetings",
+				kind: "folder",
+				now: Date.now(),
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const rootNodeId = created._yay;
+			await ctx.db.patch("files_nodes", rootNodeId, { isRestrictedScopeRoot: true, restrictedScopeNodeId: rootNodeId });
+			for (const permission of ["content.read", "content.write"] as const)
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					principalKind: "user",
+					userId,
+					resourceKind: "file",
+					resourceId: rootNodeId,
+					permission,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+			const consentId = await ctx.db.insert("plugins_file_consents", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				pairId: pair._id,
+				rootNodeId,
+				requestedLevel: "write",
+				appliedLevel: "write",
+				areaEligible: true,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
+			return { userId, pair, consentId };
+		});
+		const sealed = await seal_token({ t, fixture, actorUserId: personal.userId, filePairId: personal.pair._id });
+		const body = target_body();
+		const created = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body });
+		expect(created.status, `pair write uploads without human workspace write: ${await created.clone().text()}`).toBe(
+			200,
+		);
+		expect((await read_targets(t))[0]!.filePairId, "the accepted upload keeps its credential pair").toBe(
+			personal.pair._id,
+		);
+		const retryBody = { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey };
+		await t.run((ctx) => ctx.db.patch("plugins_file_consents", personal.consentId, { appliedLevel: "read" }));
+		for (const path of [CREATE_TARGET_PATH, REMINT_PATH, FINALIZE_PATH]) {
+			expect(
+				(await call({ t, path, bearer: sealed, body: path === CREATE_TARGET_PATH ? body : retryBody })).status,
+				"applied read cannot continue an upload",
+			).toBe(403);
+		}
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_file_consents", personal.consentId, { appliedLevel: "write" });
+			const target = (await ctx.db.query("plugin_service_storage_targets").collect())[0]!;
+			await ctx.db.patch("plugin_service_storage_targets", target._id, { filePairId: undefined });
+		});
+		expect(
+			(await call({ t, path: REMINT_PATH, bearer: sealed, body: retryBody })).status,
+			"a personal grant cannot adopt an old target",
+		).toBe(403);
+	});
+
 	test("refuses a page token on every service upload route", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -1453,7 +1611,7 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
-	test("folder limits: a file and 32 new folders go into an existing folder about 470 levels deep during a Move, and a new path over 1,024 characters answers 400", async () => {
+	test("folder limits: a Move allows a path through 64 folders and refuses a path over 1,024 characters", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
@@ -1478,16 +1636,15 @@ describe("service upload targets", () => {
 			await test_db_hold_move_source(ctx, fixture, { kind: "saved", id: ids[1]! });
 			return ids[0]!;
 		});
-		// The deepest chain of one-letter folders that still leaves room for 32 new folders and the file name.
-		const depth =
-			Math.floor((files_PATH_MAX_LENGTH - "/meetings".length - "/x.mp4".length) / 2) - files_NEW_FOLDER_DEPTH_MAX;
+		// Keep all test paths within 64 folders from workspace root.
+		const depth = 64 - files_NEW_FOLDER_DEPTH_MAX;
 		const { path: deepPath } = await test_seed_folder_chain(t, {
 			scope: fixture,
 			createdBy: fixture.userId,
 			parentId: meetingsId,
 			parentPath: "/meetings",
 			startDepth: 2,
-			depth: depth + 1,
+			depth,
 			restrictedScopeNodeId: null,
 		});
 
@@ -1513,7 +1670,10 @@ describe("service upload targets", () => {
 			t,
 			path: CREATE_TARGET_PATH,
 			bearer: sealed,
-			body: target_body({ targetKey: "long", path: `${deepPath}/${"l".repeat(100)}.mp4` }),
+			body: target_body({
+				targetKey: "long",
+				path: `${deepPath}/${Array<string>(4).fill("l".repeat(240)).join("/")}/x.mp4`,
+			}),
 		});
 		expect(tooLong.status, "a new path over the limit").toBe(400);
 		expect(await tooLong.json()).toEqual({ message: "Paths can have at most 1,024 characters." });

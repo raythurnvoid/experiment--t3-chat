@@ -31,7 +31,11 @@ import { files_transfer_status_db_require_activity } from "./files_transfer_stat
 import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
 import { public_api_db_revalidate_file_write_principal, public_api_get_invalid_name_message } from "./public_api.ts";
 import { public_api_validate_canonical_folder_path } from "./public_api_plugin_files.ts";
-import { public_api_authorize_request } from "./public_api_http_auth.ts";
+import {
+	public_api_authorize_request,
+	public_api_settle_plugin_call_best_effort,
+	public_api_visibility_user_id,
+} from "./public_api_http_auth.ts";
 import { public_api_credentials_db_get_write_context } from "./public_api_credentials_db.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
 import { rate_limiter_limit_by_key, rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
@@ -43,6 +47,7 @@ import { files_index_range_apply, files_index_range_phases } from "../server/fil
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import { files_share_rows_principal_key } from "../server/files-share-rows.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import {
 	files_archive_operation_id_time,
@@ -663,6 +668,29 @@ const trash_key_validator = v.object({
 	nodeId: v.string(),
 });
 
+export const get_plugin_trash_access = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		pairId: v.id("plugins_file_pairs"),
+	},
+	returns: v.union(v.string(), v.null()),
+	handler: async (ctx, args) => {
+		const pair = await plugins_file_grants_db_validate_pair(ctx, { pairId: args.pairId, userId: args.userId });
+		if (!pair || pair.organizationId !== args.organizationId || pair.workspaceId !== args.workspaceId)
+			return "Permission denied";
+		// Guests have no Trash. This checks the route once, not each selected file.
+		const membership = (await ctx.db.get("organizations_workspaces_users", pair.membershipId))!;
+		const allowed = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.read",
+		});
+		return allowed._nay ? "Permission denied" : null;
+	},
+});
+
 /**
  * One page of one index stream of `files/trash/list`: the archived docs of one area or one folder
  * below `upperKey`, newest archive operation first. `public_api_files_organize_http_trash_list` merges
@@ -947,221 +975,292 @@ export async function public_api_files_organize_http_trash_list(args: {
 		ctx,
 		request,
 		requiredScope: "files:list" satisfies public_api_Scope,
-		allowedKinds: ["user_api_key"],
+		allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
 		route: path,
 	});
 	if (auth._nay) {
 		return auth._nay;
 	}
-	const principal = auth._yay.principal;
+	const { principal, pluginCallId } = auth._yay;
+	const userId = public_api_visibility_user_id(principal);
 
-	const body = await server_request_json_parse_and_validate(request, trash_list_body_validator);
-	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-	if (body._yay.areaNodeId !== undefined && body._yay.folderNodeId !== undefined) {
-		return { status: 400, body: { message: "Send either areaNodeId or folderNodeId." } } as const;
-	}
-	const numItems = body._yay.limit ?? TRASH_LIST_MAX_ITEMS;
-	const areaNodeId = body._yay.areaNodeId ?? null;
-	const folderNodeId = body._yay.folderNodeId ?? null;
-
-	const viewArgs = {
-		organizationId: principal.organizationId,
-		workspaceId: principal.workspaceId,
-		visibilityUserId: principal.userId,
-		subject: principal.subject,
-		folderPath: "/",
-	};
-	const memberArgs = {
-		organizationId: principal.organizationId,
-		workspaceId: principal.workspaceId,
-		userId: principal.userId,
-	};
-	const [view, membership] = await Promise.all([
-		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
-		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
-	]);
-	if (!view || !membership) {
-		return { status: 403, body: { message: "Permission denied" } } as const;
-	}
-	const sources: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
-	if (view.cohortId !== null && view.view !== null) {
-		sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
-	}
-	// Source order follows migration. A doc moved between these reads is seen at least once.
-	if (view.migrationDirection === "to_normal") sources.reverse();
-
-	// The area and folder are in the scope, so a cursor works only for the place it was made for.
-	const scope = JSON.stringify([
-		principal.principalKey,
-		principal.subject,
-		membership,
-		areaNodeId,
-		folderNodeId,
-		sources,
-	]);
-	// Like `files/list`, only this error has a code: clients restart with `cursor: null` on it.
-	const invalid_cursor = {
-		status: 400,
-		body: { message: "This Trash cursor changed. Start a new page.", errorCode: "invalid_cursor" as const },
-	} as const;
-	let upperKey: TrashKey | null = null;
-	if (body._yay.cursor != null) {
-		let opened: unknown;
-		try {
-			opened = await crypto_open_cursor({ purpose: "files_trash_list", scope, cursor: body._yay.cursor });
-		} catch (error) {
-			if (!(error instanceof ConvexError)) throw error;
-			return invalid_cursor;
+	// Authorizing claimed a plugin run's call slot. A run that ends with a call still open fails, so settle
+	// it on every answer below.
+	const answer = await (async (/* iife */) => {
+		if (principal.kind !== "user_api_key") {
+			if (principal.subject.kind !== "plugin_pair")
+				return {
+					status: 403,
+					body: { message: "Switch this plugin to personal file permissions to use Trash." },
+				} as const;
+			const denied: string | null = await ctx.runQuery(internal.public_api_files_organize.get_plugin_trash_access, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				userId,
+				pairId: principal.subject.pairId,
+			});
+			if (denied !== null) return { status: 403, body: { message: denied } } as const;
 		}
-		if (!validate(v.object({ upperKey: trash_key_validator }), opened)) return invalid_cursor;
-		upperKey = opened.upperKey;
-	}
+		const body = await server_request_json_parse_and_validate(request, trash_list_body_validator);
+		if (body._nay) {
+			return { status: 400, body: { message: body._nay.message } } as const;
+		}
+		if (body._yay.areaNodeId !== undefined && body._yay.folderNodeId !== undefined) {
+			return { status: 400, body: { message: "Send either areaNodeId or folderNodeId." } } as const;
+		}
+		const numItems = body._yay.limit ?? TRASH_LIST_MAX_ITEMS;
+		const areaNodeId = body._yay.areaNodeId ?? null;
+		const folderNodeId = body._yay.folderNodeId ?? null;
 
-	type Row = Extract<list_trash_page_Result, { status: "page" }>["rows"][number];
-	const key_of = (row: Row): TrashKey => ({
-		archiveOperationId: row.archiveOperationId,
-		treePathOrName: row.treePathOrName,
-		createdAt: row.createdAt,
-		nodeId: row.nodeId,
-	});
-	const page: Row[] = [];
-	let isDone = false;
-	// A page can be short with a cursor: rows past the first unfinished stream wait for the next round.
-	for (let round = 0; round < 8 && page.length < numItems; round++) {
-		const batches: Array<{ rows: Row[]; frontier: TrashKey | null; done: boolean }> = [];
-		for (const source of sources) {
-			for (const stream of folderNodeId !== null ? (["children"] as const) : (["items", "folders"] as const)) {
-				for (let phase = 0; ; phase++) {
-					let result: list_trash_page_Result;
-					try {
-						result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_page, {
-							organizationId: principal.organizationId,
-							workspaceId: principal.workspaceId,
-							userId: principal.userId,
-							subject: principal.subject,
-							savedStream: source,
-							areaNodeId,
-							folderNodeId,
-							stream,
-							upperKey,
-							phase,
-							numItems: numItems - page.length,
-						})) as list_trash_page_Result;
-					} catch (error) {
-						if (
-							!(error instanceof ConvexError) ||
-							!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
-						)
-							throw error;
-						return invalid_cursor;
-					}
-					if (result.status === "area_not_found") {
-						return { status: 404, body: { message: "Area not found" } } as const;
-					}
-					if (result.status === "folder_not_found") {
-						return { status: 404, body: { message: "Folder not found" } } as const;
-					}
-					if (result.status === "not_a_folder") {
-						return { status: 400, body: { message: "folderNodeId must name a folder." } } as const;
-					}
-					if (result.status === "denied" || result.status === "area_locked") {
-						return { status: 403, body: { message: "Permission denied" } } as const;
-					}
-					if (result.status === "not_an_area") {
-						return {
-							status: 400,
-							body: { message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace." },
-						} as const;
-					}
-					const done = result.isDone && phase + 1 >= result.phaseCount;
-					if (result.frontier || done) {
-						batches.push({ rows: result.rows, frontier: done ? null : result.frontier, done });
-						break;
+		const viewArgs = {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			visibilityUserId: userId,
+			subject: principal.subject,
+			folderPath: "/",
+		};
+		const memberArgs = {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId,
+		};
+		const [view, membership] = await Promise.all([
+			ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+			ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+		]);
+		if (!view || !membership) {
+			return { status: 403, body: { message: "Permission denied" } } as const;
+		}
+		const sources: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
+		if (view.cohortId !== null && view.view !== null) {
+			sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
+		}
+		// Source order follows migration. A doc moved between these reads is seen at least once.
+		if (view.migrationDirection === "to_normal") sources.reverse();
+
+		// The area and folder are in the scope, so a cursor works only for the place it was made for.
+		const scope = JSON.stringify([
+			principal.principalKey,
+			principal.subject,
+			membership,
+			areaNodeId,
+			folderNodeId,
+			sources,
+		]);
+		// Like `files/list`, only this error has a code: clients restart with `cursor: null` on it.
+		const invalid_cursor = {
+			status: 400,
+			body: { message: "This Trash cursor changed. Start a new page.", errorCode: "invalid_cursor" as const },
+		} as const;
+		let upperKey: TrashKey | null = null;
+		if (body._yay.cursor != null) {
+			let opened: unknown;
+			try {
+				opened = await crypto_open_cursor({ purpose: "files_trash_list", scope, cursor: body._yay.cursor });
+			} catch (error) {
+				if (!(error instanceof ConvexError)) throw error;
+				return invalid_cursor;
+			}
+			if (!validate(v.object({ upperKey: trash_key_validator }), opened)) return invalid_cursor;
+			upperKey = opened.upperKey;
+		}
+
+		type Row = Extract<list_trash_page_Result, { status: "page" }>["rows"][number];
+		const key_of = (row: Row): TrashKey => ({
+			archiveOperationId: row.archiveOperationId,
+			treePathOrName: row.treePathOrName,
+			createdAt: row.createdAt,
+			nodeId: row.nodeId,
+		});
+		const page: Row[] = [];
+		let isDone = false;
+		// A page can be short with a cursor: rows past the first unfinished stream wait for the next round.
+		for (let round = 0; round < 8 && page.length < numItems; round++) {
+			const batches: Array<{ rows: Row[]; frontier: TrashKey | null; done: boolean }> = [];
+			for (const source of sources) {
+				for (const stream of folderNodeId !== null ? (["children"] as const) : (["items", "folders"] as const)) {
+					for (let phase = 0; ; phase++) {
+						let result: list_trash_page_Result;
+						try {
+							result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_page, {
+								organizationId: principal.organizationId,
+								workspaceId: principal.workspaceId,
+								userId,
+								subject: principal.subject,
+								savedStream: source,
+								areaNodeId,
+								folderNodeId,
+								stream,
+								upperKey,
+								phase,
+								numItems: numItems - page.length,
+							})) as list_trash_page_Result;
+						} catch (error) {
+							if (
+								!(error instanceof ConvexError) ||
+								!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+							)
+								throw error;
+							return invalid_cursor;
+						}
+						if (result.status === "area_not_found") {
+							return { status: 404, body: { message: "Area not found" } } as const;
+						}
+						if (result.status === "folder_not_found") {
+							return { status: 404, body: { message: "Folder not found" } } as const;
+						}
+						if (result.status === "not_a_folder") {
+							return { status: 400, body: { message: "folderNodeId must name a folder." } } as const;
+						}
+						if (result.status === "denied" || result.status === "area_locked") {
+							return { status: 403, body: { message: "Permission denied" } } as const;
+						}
+						if (result.status === "not_an_area") {
+							return {
+								status: 400,
+								body: { message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace." },
+							} as const;
+						}
+						const done = result.isDone && phase + 1 >= result.phaseCount;
+						if (result.frontier || done) {
+							batches.push({ rows: result.rows, frontier: done ? null : result.frontier, done });
+							break;
+						}
 					}
 				}
 			}
+			// Keep only rows above the highest unfinished frontier: a stream may still hold rows before it.
+			const frontiers = batches.flatMap((batch) => (!batch.done && batch.frontier ? [batch.frontier] : []));
+			frontiers.sort((a, b) => compare_trash_keys(b, a));
+			const windowEnd = frontiers[0] ?? null;
+			const rows = batches
+				.flatMap((batch) => batch.rows)
+				.filter((row) => windowEnd === null || compare_trash_keys(key_of(row), windowEnd) >= 0)
+				.sort((a, b) => compare_trash_keys(key_of(b), key_of(a)));
+			// Staging or cleanup may expose the same node in both sources.
+			const seen = new Set<Id<"files_nodes">>(page.map((row) => row.nodeId));
+			const unique = rows.filter((row) => {
+				if (seen.has(row.nodeId)) return false;
+				seen.add(row.nodeId);
+				return true;
+			});
+			const remaining = numItems - page.length;
+			if (unique.length > remaining) {
+				page.push(...unique.slice(0, remaining));
+				upperKey = key_of(page.at(-1)!);
+				break;
+			}
+			page.push(...unique);
+			isDone = batches.every((batch) => batch.done);
+			upperKey = windowEnd ?? (page.length > 0 ? key_of(page.at(-1)!) : upperKey);
+			if (isDone) break;
 		}
-		// Keep only rows above the highest unfinished frontier: a stream may still hold rows before it.
-		const frontiers = batches.flatMap((batch) => (!batch.done && batch.frontier ? [batch.frontier] : []));
-		frontiers.sort((a, b) => compare_trash_keys(b, a));
-		const windowEnd = frontiers[0] ?? null;
-		const rows = batches
-			.flatMap((batch) => batch.rows)
-			.filter((row) => windowEnd === null || compare_trash_keys(key_of(row), windowEnd) >= 0)
-			.sort((a, b) => compare_trash_keys(key_of(b), key_of(a)));
-		// Staging or cleanup may expose the same node in both sources.
-		const seen = new Set<Id<"files_nodes">>(page.map((row) => row.nodeId));
-		const unique = rows.filter((row) => {
-			if (seen.has(row.nodeId)) return false;
-			seen.add(row.nodeId);
-			return true;
-		});
-		const remaining = numItems - page.length;
-		if (unique.length > remaining) {
-			page.push(...unique.slice(0, remaining));
-			upperKey = key_of(page.at(-1)!);
-			break;
+
+		// A Move that started or ended during the page changes the sources, so the page could miss rows.
+		const [currentView, currentMembership] = await Promise.all([
+			ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+			ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+		]);
+		if (
+			!currentView ||
+			currentView.generation !== view.generation ||
+			currentView.cohortId !== view.cohortId ||
+			currentView.view !== view.view ||
+			currentView.migrationDirection !== view.migrationDirection ||
+			JSON.stringify(currentMembership) !== JSON.stringify(membership)
+		) {
+			return invalid_cursor;
 		}
-		page.push(...unique);
-		isDone = batches.every((batch) => batch.done);
-		upperKey = windowEnd ?? (page.length > 0 ? key_of(page.at(-1)!) : upperKey);
-		if (isDone) break;
-	}
 
-	// A Move that started or ended during the page changes the sources, so the page could miss rows.
-	const [currentView, currentMembership] = await Promise.all([
-		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
-		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
-	]);
-	if (
-		!currentView ||
-		currentView.generation !== view.generation ||
-		currentView.cohortId !== view.cohortId ||
-		currentView.view !== view.view ||
-		currentView.migrationDirection !== view.migrationDirection ||
-		JSON.stringify(currentMembership) !== JSON.stringify(membership)
-	) {
-		return invalid_cursor;
-	}
+		const assetIds = page.flatMap((row) => (row.kind === "file" && row.assetId ? [row.assetId] : []));
+		const assetStates: r2_get_assets_ready_states_Result =
+			assetIds.length > 0 ? await ctx.runQuery(internal.r2.get_assets_ready_states, { assetIds }) : {};
 
-	const assetIds = page.flatMap((row) => (row.kind === "file" && row.assetId ? [row.assetId] : []));
-	const assetStates: r2_get_assets_ready_states_Result =
-		assetIds.length > 0 ? await ctx.runQuery(internal.r2.get_assets_ready_states, { assetIds }) : {};
-
-	return {
-		status: 200,
-		body: {
-			items: page.map((row) => {
-				const assetState = row.assetId ? assetStates[row.assetId] : undefined;
-				return {
-					path: row.path,
-					name: row.name,
-					kind: row.kind,
-					nodeId: row.nodeId,
-					contentType: row.contentType,
-					updatedAt: row.updatedAt,
-					size: assetState ? assetState.size : null,
-					locked: row.locked,
-					archiveOperationId: row.archiveOperationId,
-					// The time inside the archive operation id.
-					operationAt: files_archive_operation_id_time(row.archiveOperationId),
-					// The last person who changed the item, the app's "Changed by". Usually this is who deleted it.
-					// After a restore with Skip, it is who restored it, because Skip puts the item in a new delete.
-					changedBy: row.updatedBy,
-					top: row.top,
-				};
-			}),
-			// `upperKey` can name a row the caller cannot open, so the cursor hides it.
-			cursor: isDone ? null : await crypto_seal_cursor({ purpose: "files_trash_list", scope, payload: { upperKey } }),
-			isDone,
-		},
-		headers: { "Cache-Control": "no-store" },
-	} as const;
+		return {
+			status: 200,
+			body: {
+				items: page.map((row) => {
+					const assetState = row.assetId ? assetStates[row.assetId] : undefined;
+					return {
+						path: row.path,
+						name: row.name,
+						kind: row.kind,
+						nodeId: row.nodeId,
+						contentType: row.contentType,
+						updatedAt: row.updatedAt,
+						size: assetState ? assetState.size : null,
+						locked: row.locked,
+						archiveOperationId: row.archiveOperationId,
+						// The time inside the archive operation id.
+						operationAt: files_archive_operation_id_time(row.archiveOperationId),
+						// The last person who changed the item, the app's "Changed by". Usually this is who deleted it.
+						// After a restore with Skip, it is who restored it, because Skip puts the item in a new delete.
+						changedBy: row.updatedBy,
+						top: row.top,
+					};
+				}),
+				// `upperKey` can name a row the caller cannot open, so the cursor hides it.
+				cursor: isDone ? null : await crypto_seal_cursor({ purpose: "files_trash_list", scope, payload: { upperKey } }),
+				isDone,
+			},
+			headers: { "Cache-Control": "no-store" },
+		} as const;
+	})();
+	await public_api_settle_plugin_call_best_effort(ctx, {
+		callId: pluginCallId,
+		status: answer.status === 200 ? "succeeded" : "failed",
+		responseStatus: answer.status,
+		...(answer.status === 200 ? {} : { errorMessage: answer.body.message }),
+	});
+	return answer;
 }
 
 const TRASH_AREAS_MAX_ITEMS = 100;
+
+// Applied eligibility owns this page. Human access changes reach it through the grant worker.
+export const list_plugin_trash_areas_page = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		pairId: v.id("plugins_file_pairs"),
+		savedStream: files_saved_stream_validator,
+		cursor: v.union(v.string(), v.null()),
+		numItems: v.number(),
+	},
+	returns: v.union(
+		v.object({ status: v.literal("denied") }),
+		v.object({
+			status: v.literal("page"),
+			rows: v.array(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+			cursor: v.string(),
+			isDone: v.boolean(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const pair = await plugins_file_grants_db_validate_pair(ctx, { pairId: args.pairId });
+		if (!pair || pair.organizationId !== args.organizationId || pair.workspaceId !== args.workspaceId)
+			return { status: "denied" as const };
+		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
+		const result = await ctx.db
+			.query("plugins_file_consents")
+			.withIndex("by_pair_areaEligible", (q) => q.eq("pairId", args.pairId).eq("areaEligible", true))
+			.paginate({ cursor: args.cursor, numItems: args.numItems });
+		const rows = await Promise.all(
+			result.page.map(async (consent) => {
+				const node = await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId, saved.tag);
+				// Purge drains consent before deleting the saved node.
+				if (!node) throw should_never_happen("Plugin Trash area has no saved node", { consentId: consent._id });
+				return { nodeId: node._id, path: node.path };
+			}),
+		);
+		return { status: "page" as const, rows, cursor: result.continueCursor, isDone: result.isDone };
+	},
+});
+
+type list_plugin_trash_areas_page_Result =
+	typeof list_plugin_trash_areas_page extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 const trash_area_key_validator = v.object({ treePath: v.string(), nodeId: v.string() });
 
@@ -1335,6 +1434,7 @@ export type public_api_files_organize_http_trash_areas_Body = z.infer<typeof tra
  * Then come the restricted folders the key can open, by path. Each page merges the principal streams
  * of `list_trash_areas_page` for the normal saved stream and, during a Move, the Move view, like
  * `files_saved_list_page` does for a folder list.
+ * Plugins page their applied folder consents in consent order, with paths from the saved view.
  */
 export async function public_api_files_organize_http_trash_areas(args: {
 	ctx: ActionCtx;
@@ -1347,174 +1447,266 @@ export async function public_api_files_organize_http_trash_areas(args: {
 		ctx,
 		request,
 		requiredScope: "files:list" satisfies public_api_Scope,
-		allowedKinds: ["user_api_key"],
+		allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
 		route: path,
 	});
 	if (auth._nay) {
 		return auth._nay;
 	}
-	const principal = auth._yay.principal;
+	const { principal, pluginCallId } = auth._yay;
+	const userId = public_api_visibility_user_id(principal);
 
-	const body = await server_request_json_parse_and_validate(request, trash_areas_body_validator);
-	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-	// The open part of the workspace counts as one item of the first page. It needs read at the workspace
-	// root, which an account with only folder grants does not have. The root answers "missing" when the
-	// caller can open it. A guest gets 403 from the streams below.
-	const withOpenArea =
-		body._yay.cursor == null &&
-		(
-			await ctx.runQuery(internal.files_nodes.get_path_access, {
+	// Authorizing claimed a plugin run's call slot. A run that ends with a call still open fails, so settle
+	// it on every answer below.
+	const answer = await (async (/* iife */) => {
+		if (principal.kind !== "user_api_key") {
+			if (principal.subject.kind !== "plugin_pair")
+				return {
+					status: 403,
+					body: { message: "Switch this plugin to personal file permissions to use Trash." },
+				} as const;
+			const denied: string | null = await ctx.runQuery(internal.public_api_files_organize.get_plugin_trash_access, {
 				organizationId: principal.organizationId,
 				workspaceId: principal.workspaceId,
-				subject: principal.subject,
-				path: "/",
-			})
-		).status === "missing";
-	const numItems = (body._yay.limit ?? TRASH_AREAS_MAX_ITEMS) - (withOpenArea ? 1 : 0);
-
-	const viewArgs = {
-		organizationId: principal.organizationId,
-		workspaceId: principal.workspaceId,
-		visibilityUserId: principal.userId,
-		subject: principal.subject,
-		folderPath: "/",
-	};
-	const memberArgs = {
-		organizationId: principal.organizationId,
-		workspaceId: principal.workspaceId,
-		userId: principal.userId,
-	};
-	const [view, membership] = await Promise.all([
-		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
-		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
-	]);
-	if (!view || !membership) {
-		return { status: 403, body: { message: "Permission denied" } } as const;
-	}
-	const sources: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
-	if (view.cohortId !== null && view.view !== null) {
-		sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
-	}
-	// Source order follows migration. A doc moved between these reads is seen at least once.
-	if (view.migrationDirection === "to_normal") sources.reverse();
-
-	const scope = JSON.stringify([principal.principalKey, principal.subject, membership, sources]);
-	// Like `files/trash/list`, only this error has a code: clients restart with `cursor: null` on it.
-	const invalid_cursor = {
-		status: 400,
-		body: { message: "This Trash cursor changed. Start a new page.", errorCode: "invalid_cursor" as const },
-	} as const;
-	let afterKey: TrashAreaKey | null = null;
-	if (body._yay.cursor != null) {
-		let opened: unknown;
-		try {
-			opened = await crypto_open_cursor({ purpose: "files_trash_areas", scope, cursor: body._yay.cursor });
-		} catch (error) {
-			if (!(error instanceof ConvexError)) throw error;
-			return invalid_cursor;
+				userId,
+				pairId: principal.subject.pairId,
+			});
+			if (denied !== null) return { status: 403, body: { message: denied } } as const;
 		}
-		if (!validate(v.object({ afterKey: v.union(trash_area_key_validator, v.null()) }), opened)) return invalid_cursor;
-		afterKey = opened.afterKey;
-	}
+		const body = await server_request_json_parse_and_validate(request, trash_areas_body_validator);
+		if (body._nay) {
+			return { status: 400, body: { message: body._nay.message } } as const;
+		}
+		// The open part of the workspace counts as one item of the first page. It needs read at the workspace
+		// root, which an account with only folder grants does not have. The root answers "missing" when the
+		// caller can open it. A guest gets 403 from the streams below.
+		const withOpenArea =
+			principal.subject.kind !== "plugin_pair" &&
+			body._yay.cursor == null &&
+			(
+				await ctx.runQuery(internal.files_nodes.get_path_access, {
+					organizationId: principal.organizationId,
+					workspaceId: principal.workspaceId,
+					subject: principal.subject,
+					path: "/",
+				})
+			).status === "missing";
+		const numItems = (body._yay.limit ?? TRASH_AREAS_MAX_ITEMS) - (withOpenArea ? 1 : 0);
 
-	type Row = Extract<list_trash_areas_page_Result, { status: "page" }>["rows"][number];
-	const key_of = (row: Row): TrashAreaKey => ({ treePath: row.treePath, nodeId: row.nodeId });
-	const page: Row[] = [];
-	let isDone = false;
-	// A page can be short with a cursor: rows past the first unfinished stream wait for the next round.
-	// The first round runs even with `limit: 1`, so a guest still gets 403.
-	for (let round = 0; round < 8 && (round === 0 || page.length < numItems); round++) {
-		const batches: Array<{ rows: Row[]; frontier: TrashAreaKey | null; done: boolean }> = [];
-		for (const source of sources) {
-			for (const principalIndex of [0, 1, 2, 3] as const) {
-				let result: list_trash_areas_page_Result;
+		const viewArgs = {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			visibilityUserId: userId,
+			subject: principal.subject,
+			folderPath: "/",
+		};
+		const memberArgs = {
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId,
+		};
+		const [view, membership] = await Promise.all([
+			ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+			ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+		]);
+		if (!view || !membership) {
+			return { status: 403, body: { message: "Permission denied" } } as const;
+		}
+		const sources: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
+		if (view.cohortId !== null && view.view !== null) {
+			sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
+		}
+		// Source order follows migration. A doc moved between these reads is seen at least once.
+		if (view.migrationDirection === "to_normal") sources.reverse();
+
+		const scope = JSON.stringify([principal.principalKey, principal.subject, membership, sources]);
+		// Like `files/trash/list`, only this error has a code: clients restart with `cursor: null` on it.
+		const invalid_cursor = {
+			status: 400,
+			body: { message: "This Trash cursor changed. Start a new page.", errorCode: "invalid_cursor" as const },
+		} as const;
+		if (principal.subject.kind === "plugin_pair") {
+			const pluginScope = JSON.stringify([path, principal.organizationId, principal.workspaceId, scope]);
+			let cursor: string | null = null;
+			if (body._yay.cursor != null) {
+				let opened: unknown;
 				try {
-					result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_areas_page, {
-						organizationId: principal.organizationId,
-						workspaceId: principal.workspaceId,
-						userId: principal.userId,
-						subject: principal.subject,
-						savedStream: source,
-						principalIndex,
-						afterKey,
-						// One more, because the first row can be the cursor row itself.
-						numItems: numItems - page.length + 1,
-					})) as list_trash_areas_page_Result;
+					opened = await crypto_open_cursor({
+						purpose: "files_trash_areas",
+						scope: pluginScope,
+						cursor: body._yay.cursor,
+					});
 				} catch (error) {
-					// A Move that started or ended during the page changes its saved view.
-					if (
-						!(error instanceof ConvexError) ||
-						!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
-					)
-						throw error;
+					if (!(error instanceof ConvexError)) throw error;
 					return invalid_cursor;
 				}
-				if (result.status === "denied") {
-					return { status: 403, body: { message: "Permission denied" } } as const;
-				}
-				batches.push({ rows: result.rows, frontier: result.isDone ? null : result.frontier, done: result.isDone });
+				if (!validate(v.object({ cursor: v.string() }), opened)) return invalid_cursor;
+				cursor = opened.cursor;
 			}
+			let result: list_plugin_trash_areas_page_Result;
+			try {
+				result = await ctx.runQuery(internal.public_api_files_organize.list_plugin_trash_areas_page, {
+					organizationId: principal.organizationId,
+					workspaceId: principal.workspaceId,
+					pairId: principal.subject.pairId,
+					savedStream: sources.find((source) => source.kind === "cohort") ?? sources[0]!,
+					cursor,
+					numItems,
+				});
+			} catch (error) {
+				if (
+					!(error instanceof ConvexError) ||
+					!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+				)
+					throw error;
+				return invalid_cursor;
+			}
+			if (result.status === "denied") return { status: 403, body: { message: "Permission denied" } } as const;
+			const [currentView, currentMembership] = await Promise.all([
+				ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+				ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+			]);
+			if (
+				!currentView ||
+				JSON.stringify(currentView) !== JSON.stringify(view) ||
+				JSON.stringify(currentMembership) !== JSON.stringify(membership)
+			)
+				return invalid_cursor;
+			return {
+				status: 200,
+				body: {
+					areas: result.rows.map((row) => ({ areaNodeId: row.nodeId as string | null, path: row.path })),
+					cursor: result.isDone
+						? null
+						: await crypto_seal_cursor({
+								purpose: "files_trash_areas",
+								scope: pluginScope,
+								payload: { cursor: result.cursor },
+							}),
+					isDone: result.isDone,
+				},
+				headers: { "Cache-Control": "no-store" },
+			} as const;
 		}
-		// Keep only rows up to the lowest unfinished frontier: a stream may still hold rows before it.
-		const frontiers = batches.flatMap((batch) => (!batch.done && batch.frontier ? [batch.frontier] : []));
-		frontiers.sort(compare_trash_area_keys);
-		const windowEnd = frontiers[0] ?? null;
-		const rows = batches
-			.flatMap((batch) => batch.rows)
-			.filter((row) => windowEnd === null || compare_trash_area_keys(key_of(row), windowEnd) <= 0)
-			.sort((a, b) => compare_trash_area_keys(key_of(a), key_of(b)));
-		// A folder shared with several principals is in several streams. Staging or cleanup may expose the
-		// same folder in both sources too.
-		const seen = new Set<Id<"files_nodes">>(page.map((row) => row.nodeId));
-		const unique = rows.filter((row) => {
-			if (seen.has(row.nodeId)) return false;
-			seen.add(row.nodeId);
-			return true;
-		});
-		const remaining = numItems - page.length;
-		if (unique.length > remaining) {
-			page.push(...unique.slice(0, remaining));
-			// With `limit: 1` the first page holds only the open area, so the next page starts at the top.
-			if (page.length > 0) afterKey = key_of(page.at(-1)!);
-			break;
+		let afterKey: TrashAreaKey | null = null;
+		if (body._yay.cursor != null) {
+			let opened: unknown;
+			try {
+				opened = await crypto_open_cursor({ purpose: "files_trash_areas", scope, cursor: body._yay.cursor });
+			} catch (error) {
+				if (!(error instanceof ConvexError)) throw error;
+				return invalid_cursor;
+			}
+			if (!validate(v.object({ afterKey: v.union(trash_area_key_validator, v.null()) }), opened)) return invalid_cursor;
+			afterKey = opened.afterKey;
 		}
-		page.push(...unique);
-		isDone = batches.every((batch) => batch.done);
-		afterKey = windowEnd ?? (page.length > 0 ? key_of(page.at(-1)!) : afterKey);
-		if (isDone) break;
-	}
 
-	// A Move that started or ended during the page changes the sources, so the page could miss rows.
-	const [currentView, currentMembership] = await Promise.all([
-		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
-		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
-	]);
-	if (
-		!currentView ||
-		currentView.generation !== view.generation ||
-		currentView.cohortId !== view.cohortId ||
-		currentView.view !== view.view ||
-		currentView.migrationDirection !== view.migrationDirection ||
-		JSON.stringify(currentMembership) !== JSON.stringify(membership)
-	) {
-		return invalid_cursor;
-	}
+		type Row = Extract<list_trash_areas_page_Result, { status: "page" }>["rows"][number];
+		const key_of = (row: Row): TrashAreaKey => ({ treePath: row.treePath, nodeId: row.nodeId });
+		const page: Row[] = [];
+		let isDone = false;
+		// A page can be short with a cursor: rows past the first unfinished stream wait for the next round.
+		// The first round runs even with `limit: 1`, so a guest still gets 403.
+		for (let round = 0; round < 8 && (round === 0 || page.length < numItems); round++) {
+			const batches: Array<{ rows: Row[]; frontier: TrashAreaKey | null; done: boolean }> = [];
+			for (const source of sources) {
+				for (const principalIndex of [0, 1, 2, 3] as const) {
+					let result: list_trash_areas_page_Result;
+					try {
+						result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_areas_page, {
+							organizationId: principal.organizationId,
+							workspaceId: principal.workspaceId,
+							userId,
+							subject: principal.subject,
+							savedStream: source,
+							principalIndex,
+							afterKey,
+							// One more, because the first row can be the cursor row itself.
+							numItems: numItems - page.length + 1,
+						})) as list_trash_areas_page_Result;
+					} catch (error) {
+						// A Move that started or ended during the page changes its saved view.
+						if (
+							!(error instanceof ConvexError) ||
+							!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+						)
+							throw error;
+						return invalid_cursor;
+					}
+					if (result.status === "denied") {
+						return { status: 403, body: { message: "Permission denied" } } as const;
+					}
+					batches.push({ rows: result.rows, frontier: result.isDone ? null : result.frontier, done: result.isDone });
+				}
+			}
+			// Keep only rows up to the lowest unfinished frontier: a stream may still hold rows before it.
+			const frontiers = batches.flatMap((batch) => (!batch.done && batch.frontier ? [batch.frontier] : []));
+			frontiers.sort(compare_trash_area_keys);
+			const windowEnd = frontiers[0] ?? null;
+			const rows = batches
+				.flatMap((batch) => batch.rows)
+				.filter((row) => windowEnd === null || compare_trash_area_keys(key_of(row), windowEnd) <= 0)
+				.sort((a, b) => compare_trash_area_keys(key_of(a), key_of(b)));
+			// A folder shared with several principals is in several streams. Staging or cleanup may expose the
+			// same folder in both sources too.
+			const seen = new Set<Id<"files_nodes">>(page.map((row) => row.nodeId));
+			const unique = rows.filter((row) => {
+				if (seen.has(row.nodeId)) return false;
+				seen.add(row.nodeId);
+				return true;
+			});
+			const remaining = numItems - page.length;
+			if (unique.length > remaining) {
+				page.push(...unique.slice(0, remaining));
+				// With `limit: 1` the first page holds only the open area, so the next page starts at the top.
+				if (page.length > 0) afterKey = key_of(page.at(-1)!);
+				break;
+			}
+			page.push(...unique);
+			isDone = batches.every((batch) => batch.done);
+			afterKey = windowEnd ?? (page.length > 0 ? key_of(page.at(-1)!) : afterKey);
+			if (isDone) break;
+		}
 
-	return {
-		status: 200,
-		body: {
-			areas: [
-				...(withOpenArea ? [{ areaNodeId: null, path: "/" }] : []),
-				...page.map((row) => ({ areaNodeId: row.nodeId as string | null, path: row.path })),
-			],
-			// `afterKey` can name a folder the caller cannot open, so the cursor hides it.
-			cursor: isDone ? null : await crypto_seal_cursor({ purpose: "files_trash_areas", scope, payload: { afterKey } }),
-			isDone,
-		},
-		headers: { "Cache-Control": "no-store" },
-	} as const;
+		// A Move that started or ended during the page changes the sources, so the page could miss rows.
+		const [currentView, currentMembership] = await Promise.all([
+			ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+			ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+		]);
+		if (
+			!currentView ||
+			currentView.generation !== view.generation ||
+			currentView.cohortId !== view.cohortId ||
+			currentView.view !== view.view ||
+			currentView.migrationDirection !== view.migrationDirection ||
+			JSON.stringify(currentMembership) !== JSON.stringify(membership)
+		) {
+			return invalid_cursor;
+		}
+
+		return {
+			status: 200,
+			body: {
+				areas: [
+					...(withOpenArea ? [{ areaNodeId: null, path: "/" }] : []),
+					...page.map((row) => ({ areaNodeId: row.nodeId as string | null, path: row.path })),
+				],
+				// `afterKey` can name a folder the caller cannot open, so the cursor hides it.
+				cursor: isDone
+					? null
+					: await crypto_seal_cursor({ purpose: "files_trash_areas", scope, payload: { afterKey } }),
+				isDone,
+			},
+			headers: { "Cache-Control": "no-store" },
+		} as const;
+	})();
+	await public_api_settle_plugin_call_best_effort(ctx, {
+		callId: pluginCallId,
+		status: answer.status === 200 ? "succeeded" : "failed",
+		responseStatus: answer.status,
+		...(answer.status === 200 ? {} : { errorMessage: answer.body.message }),
+	});
+	return answer;
 }
 
 /**

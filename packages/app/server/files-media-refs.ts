@@ -12,6 +12,7 @@ import { files_share_rich_text_MAX_MEDIA, files_share_rich_text_prepare } from "
 import { files_headless_tiptap_editor_create, files_headless_tiptap_editor_get_markdown } from "../shared/files-tiptap.ts";
 import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
 import { files_transfer_rewrite_media_refs } from "./files-transfer-media.ts";
+import { plugins_file_grants_db_validate_pair } from "./plugins-file-grants.ts";
 
 /**
  * The app file refs that `content` adds to `previousContent`, and whether it keeps any old ones. Read
@@ -69,10 +70,8 @@ export function files_media_refs_added(args: {
 }
 
 /**
- * Refuse refs the plugin cannot read: as its person within its account's grants, or the file an upload run
- * was started for. Otherwise knowing an id would be enough to show a locked file, for example on the
- * document's public page. A write that adds more refs than the public page shows is refused, so the
- * check stays small.
+ * Refuse refs the plugin cannot read under its saved authority. Knowing an id must not show a
+ * locked file on the document's public page. Refuse more refs than the public page can show.
  */
 export async function files_media_refs_db_check_plugin_added(
 	ctx: QueryCtx | MutationCtx,
@@ -81,7 +80,8 @@ export async function files_media_refs_db_check_plugin_added(
 		workspaceId: Id<"organizations_workspaces">;
 		installation: Doc<"plugins_workspace_installations">;
 		userId: Id<"users">;
-		/** An upload run's source file. The run may already download it. */
+		filePairId?: Id<"plugins_file_pairs">;
+		/** Only legacy upload runs may use their source-file exception. */
 		sourceNodeId?: Id<"files_nodes">;
 		addedFileRefs: string[];
 	},
@@ -94,11 +94,20 @@ export async function files_media_refs_db_check_plugin_added(
 			},
 		});
 	}
+	if (
+		args.filePairId &&
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: args.filePairId,
+			installationId: args.installation._id,
+			userId: args.userId,
+		}))
+	)
+		return Result({ _nay: { name: "file_reference_denied", message: "This plugin's file access has ended" } });
 
 	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId };
 	const checker = access_control_create_file_checker(ctx, {
 		...scope,
-		subject: plugins_file_subject(args.installation, args.userId),
+		subject: plugins_file_subject(args.installation, args.userId, args.filePairId),
 	});
 	for (const src of args.addedFileRefs) {
 		const parsed = files_media_parse_src(src);
@@ -122,7 +131,7 @@ export async function files_media_refs_db_check_plugin_added(
 			node.workspaceId !== scope.workspaceId ||
 			node.archiveOperationId !== null ||
 			node.kind !== "file" ||
-			(node._id !== args.sourceNodeId && !(await checker.can(node, "content.read")))
+			((args.filePairId !== undefined || node._id !== args.sourceNodeId) && !(await checker.can(node, "content.read")))
 		) {
 			return Result({
 				_nay: {

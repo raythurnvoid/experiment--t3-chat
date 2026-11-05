@@ -14,6 +14,7 @@ import {
 	plugins_data_parse_append_key_at,
 } from "./plugins_data.ts";
 import { files_ROOT_ID } from "../server/files.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
@@ -151,7 +152,45 @@ async function seed_installation(
 			updatedBy: membership.userId,
 			updatedAt: now,
 		});
-		return { ...membership, pluginVersionId, installationId, serviceAccountId } as const;
+		const sourceToken = `plu_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
+		const serviceSecretHash = await crypto_sha256_hex("plugin-data-service-test");
+		const registration = await ctx.db
+			.query("plugins_service_registrations")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", "council"))
+			.first();
+		if (!registration) {
+			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+			await ctx.db.insert("plugins_service_registrations", {
+				pluginName: "council",
+				exchangeSecretHash: serviceSecretHash,
+				scopes: [
+					...(installation.acceptedCapabilities.includes("plugin.data.read") ? ["plugin_data:read" as const] : []),
+					...(installation.acceptedCapabilities.includes("plugin.data.write") ? ["plugin_data:write" as const] : []),
+					...(installation.acceptedCapabilities.includes("workspace.files.write") ? ["files:write" as const] : []),
+				],
+				createdBy: membership.userId,
+				updatedAt: now,
+			});
+		}
+		await ctx.db.insert("plugins_ui_sessions", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			installationId,
+			serviceAccountId,
+			pluginVersionId,
+			userId: membership.userId,
+			tokenHash: await crypto_sha256_hex(sourceToken),
+			createdAt: now,
+			expiresAt: now + 60 * 60 * 1000,
+		});
+		return {
+			...membership,
+			pluginVersionId,
+			installationId,
+			serviceAccountId,
+			sourceToken,
+			serviceSecretHash,
+		} as const;
 	});
 }
 
@@ -163,32 +202,47 @@ async function mint_service_grant(args: {
 	phase?: "interactive" | "processing";
 }) {
 	const { t, fixture } = args;
-
-	return await t.mutation(internal.public_api.create_plugin_service_grant, {
+	const mintArgs = {
 		organizationId: fixture.organizationId,
 		workspaceId: fixture.workspaceId,
 		installationId: fixture.installationId,
 		actorUserId: fixture.userId,
-		requestedScopes: args.requestedScopes ?? ["plugin_data:read", "plugin_data:write"],
+		requestedScopes: args.requestedScopes ?? ["plugin_data:read" as const, "plugin_data:write" as const],
 		destinationPathPrefix: args.destinationPathPrefix ?? null,
 		phase: args.phase ?? "interactive",
+		lifecycle: { presented: fixture.sourceToken, serviceSecretHash: fixture.serviceSecretHash },
 		now: Date.now(),
+	} as const;
+	if (mintArgs.phase === "interactive")
+		return await t.mutation(internal.public_api.create_plugin_service_grant, mintArgs);
+	const source = await t.mutation(internal.public_api.create_plugin_service_grant, {
+		...mintArgs,
+		phase: "interactive",
 	});
+	if (source._nay) return source;
+	const sealed = await t.mutation(internal.public_api.create_plugin_service_grant, {
+		...mintArgs,
+		lifecycle: { ...mintArgs.lifecycle, presented: source._yay.token },
+	});
+	// This fixture exposes only the final grant, like the old direct mint did.
+	await t.run((ctx) => ctx.db.delete("plugin_service_grants", source._yay.grantId));
+	return sealed;
 }
 
 describe("create_plugin_service_grant", () => {
-	test("stores only the token hash and narrows the requested scopes to accepted capabilities", async () => {
+	test("stores only the token hash and refuses scopes outside the registered consent", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, {
 			acceptedCapabilities: ["plugin.data.read", "plugin.service.connect"],
 		});
 
-		const minted = await mint_service_grant({ t, fixture });
+		expect((await mint_service_grant({ t, fixture }))._nay?.message).toBe("Unauthenticated");
+		const minted = await mint_service_grant({ t, fixture, requestedScopes: ["plugin_data:read"] });
 		if (minted._nay) {
 			throw new Error(minted._nay.message);
 		}
 		expect(public_api_PLUGIN_SERVICE_TOKEN_REGEX.test(minted._yay.token)).toBe(true);
-		// The write capability was never accepted, so the write scope is dropped instead of granted.
+		// Only the registered and accepted read scope reaches the mint.
 		expect(minted._yay.scopes).toEqual(["plugin_data:read"]);
 
 		const stored = await t.run(async (ctx) => await ctx.db.get("plugin_service_grants", minted._yay.grantId));
@@ -244,7 +298,7 @@ describe("create_plugin_service_grant", () => {
 			requestedScopes: ["files:write"],
 			destinationPathPrefix: "/Meetings",
 		});
-		expect(minted._nay?.message).toBe("At least one scope is required");
+		expect(minted._nay?.message).toBe("Unauthenticated");
 		expect(await t.run(async (ctx) => (await ctx.db.query("plugin_service_grants").collect()).length)).toBe(0);
 
 		// Losing the capability on upgrade narrows an already-issued grant too, so a grant minted while
@@ -252,6 +306,15 @@ describe("create_plugin_service_grant", () => {
 		const live = await seed_installation(t, {
 			organizationName: "files-write-cap",
 			acceptedCapabilities: ["plugin.data.read", "workspace.files.write", "plugin.service.connect"],
+		});
+		await t.run(async (ctx) => {
+			const registration = await ctx.db
+				.query("plugins_service_registrations")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", "council"))
+				.first();
+			await ctx.db.patch("plugins_service_registrations", registration!._id, {
+				scopes: ["plugin_data:read", "files:write"],
+			});
 		});
 		const grant = await mint_service_grant({
 			t,
@@ -284,13 +347,14 @@ describe("create_plugin_service_grant", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" });
 		});
-		expect((await mint_service_grant({ t, fixture }))._nay?.message).toBe("Not found");
+		expect((await mint_service_grant({ t, fixture }))._nay?.message).toBe("Unauthenticated");
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "enabled" });
 		});
 
 		// The installation exists, but not in the organization and workspace the caller claims.
 		const crossTenant = await t.mutation(internal.public_api.create_plugin_service_grant, {
+			lifecycle: { presented: fixture.sourceToken, serviceSecretHash: fixture.serviceSecretHash },
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			installationId: otherFixture.installationId,
@@ -300,10 +364,11 @@ describe("create_plugin_service_grant", () => {
 			phase: "interactive",
 			now: Date.now(),
 		});
-		expect(crossTenant._nay?.message).toBe("Not found");
+		expect(crossTenant._nay?.message).toBe("Unauthenticated");
 
 		const strangerId = await t.run(async (ctx) => await ctx.db.insert("users", { clerkUserId: "clerk-stranger" }));
 		const stranger = await t.mutation(internal.public_api.create_plugin_service_grant, {
+			lifecycle: { presented: fixture.sourceToken, serviceSecretHash: fixture.serviceSecretHash },
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			installationId: fixture.installationId,
@@ -313,7 +378,7 @@ describe("create_plugin_service_grant", () => {
 			phase: "interactive",
 			now: Date.now(),
 		});
-		expect(stranger._nay?.message).toBe("Unauthorized");
+		expect(stranger._nay?.message).toBe("Unauthenticated");
 
 		const grantCount = await t.run(async (ctx) => (await ctx.db.query("plugin_service_grants").collect()).length);
 		expect(grantCount).toBe(0);
@@ -527,7 +592,7 @@ describe("resolve_principal", () => {
 		// Without the capability the install-consent dialog never showed the paragraph about a
 		// publisher's server acting for the workspace, so no grant may exist at all.
 		const minted = await mint_service_grant({ t, fixture });
-		expect(minted._nay?.message).toBe("Permission denied");
+		expect(minted._nay?.message).toBe("Unauthenticated");
 		expect(await t.run(async (ctx) => (await ctx.db.query("plugin_service_grants").collect()).length)).toBe(0);
 	});
 
@@ -616,6 +681,7 @@ async function start_plugin_run(args: {
 	const { t, fixture } = args;
 
 	const runId = await t.run(async (ctx) => {
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 		const now = Date.now();
 		await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
 			acceptedCapabilities: args.acceptedCapabilities,
@@ -9349,9 +9415,9 @@ describe("plugins_data_db_drain_batch", () => {
 			});
 		}
 
-		// Documents, usage, and the producer grant each need a pass, followed by an empty pass.
+		// The source frame, documents, usage and producer grant each need a pass, then an empty pass.
 		const passes = await drain_until_done(t, fixture);
-		expect(passes).toBe(4);
+		expect(passes).toBe(5);
 		expect(await read_all_store_tables(t, fixture)).toEqual({
 			documents: 0,
 			reservations: 0,
@@ -9394,6 +9460,15 @@ describe("plugins_data_db_drain_batch", () => {
 			}
 		});
 
+		// The exchange source frame drains before store documents.
+		expect(
+			await t.mutation(internal.plugins_data.drain_uninstalled_installation, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				installationId: fixture.installationId,
+				_test_disableReschedule: true,
+			}),
+		).toEqual({ done: false, deletedCount: 1 });
 		const firstPass = await t.mutation(internal.plugins_data.drain_uninstalled_installation, {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -9542,6 +9617,8 @@ describe("plugins_data_db_drain_batch", () => {
 				};
 			});
 
+		// The exchange source frame drains before private-scope grants.
+		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
 		for (const deletedCount of [100, 1]) {
 			expect(await pass()).toEqual({ done: false, deletedCount });
 		}

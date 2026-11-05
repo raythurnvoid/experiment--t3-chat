@@ -35,7 +35,13 @@ import {
 	activities_db_start,
 	activities_is_active,
 } from "./activities_db.ts";
-import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
+import { access_control_create_file_checker, access_control_db_authorize_membership } from "./access_control.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import {
+	plugins_file_grants_db_ensure_pair,
+	plugins_file_grants_db_validate_pair,
+} from "../server/plugins-file-grants.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_scheduled_runs_workpool } from "./plugins_schedules_db.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
@@ -52,6 +58,7 @@ import {
 import { organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { files_db_resolve_scope } from "./files_scopes.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -98,6 +105,37 @@ async function db_plugin_workspace_is_live(
 ) {
 	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
 	return workspace?.organizationId === args.organizationId && workspace.pluginDataPurgeStartedAt === undefined;
+}
+
+async function db_ensure_file_pair(
+	ctx: MutationCtx,
+	args: { installation: Doc<"plugins_workspace_installations">; userId: Id<"users"> },
+) {
+	const { installation, userId } = args;
+	if (installation.fileAccessModel !== "personal") return Result({ _yay: undefined });
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_user_organization_workspace_active", (q) =>
+			q
+				.eq("userId", userId)
+				.eq("organizationId", installation.organizationId)
+				.eq("workspaceId", installation.workspaceId)
+				.eq("active", true),
+		)
+		.first();
+	if (!membership || membership.pendingOrganizationRemoval) return Result({ _nay: { message: "Unauthorized" } });
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: { id: userId },
+		membership,
+		permission: null,
+	});
+	if (authorized._nay) return authorized;
+	const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+		installation,
+		membership,
+		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+	});
+	return Result({ _yay: pair._id });
 }
 
 /**
@@ -331,6 +369,8 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 		if (existingPluginRun) {
 			continue;
 		}
+		const filePair = await db_ensure_file_pair(ctx, { installation: candidate.installation, userId: createdBy });
+		if (filePair._nay) continue;
 
 		// Create a run with a work id that allows the queued work to be cancelled later.
 		const runId = await ctx.db.insert("plugins_event_runs", {
@@ -339,6 +379,7 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 			assetId: args.asset._id,
 			fileNodeId: args.fileNode._id,
 			actorUserId: createdBy,
+			filePairId: filePair._yay,
 			installationId: candidate.installation._id,
 			serviceAccountId: candidate.installation.serviceAccountId,
 			pluginVersionId: candidate.version._id,
@@ -432,6 +473,11 @@ export async function plugins_runtime_db_enqueue_manual_run(
 		}
 	}
 
+	const filePair = await db_ensure_file_pair(ctx, {
+		installation: args.installation,
+		userId: args.installation.installedBy,
+	});
+	if (filePair._nay) return filePair;
 	const runId = await ctx.db.insert("plugins_event_runs", {
 		organizationId: args.installation.organizationId,
 		workspaceId: args.installation.workspaceId,
@@ -440,6 +486,7 @@ export async function plugins_runtime_db_enqueue_manual_run(
 		// Unlike the upload path (asset creator), admin-triggered manual runs attribute output writes
 		// to the plugin's installer.
 		actorUserId: args.installation.installedBy,
+		filePairId: filePair._yay,
 		installationId: args.installation._id,
 		serviceAccountId: args.installation.serviceAccountId,
 		pluginVersionId: version._id,
@@ -606,10 +653,23 @@ async function db_enqueue_scheduled_run(
 	},
 ) {
 	const { installation, version, membership, grant, parent, now } = args;
+	// A follow-up keeps its parent's pin. Queued work never adopts a new pair.
+	const filePairId = parent
+		? parent.filePairId
+		: installation.fileAccessModel === "personal"
+			? (
+					await plugins_file_grants_db_ensure_pair(ctx, {
+						installation,
+						membership,
+						membershipLifetime: grant.runAs!.membershipLifetime,
+					})
+				)._id
+			: undefined;
 	const runId = await ctx.db.insert("plugins_event_runs", {
 		organizationId: installation.organizationId,
 		workspaceId: installation.workspaceId,
 		actorUserId: membership.userId,
+		filePairId,
 		installationId: installation._id,
 		serviceAccountId: installation.serviceAccountId,
 		pluginVersionId: version._id,
@@ -788,7 +848,7 @@ export const start_event_run = internalMutation({
 
 		const [asset, fileNode, installation, version, workspace] = await Promise.all([
 			pluginRun.assetId ? ctx.db.get("files_r2_assets", pluginRun.assetId) : null,
-			pluginRun.fileNodeId ? ctx.db.get("files_nodes", pluginRun.fileNodeId) : null,
+			pluginRun.fileNodeId ? files_saved_placement_db_get_node(ctx.db, pluginRun.fileNodeId) : null,
 			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
 			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
 			ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
@@ -817,6 +877,32 @@ export const start_event_run = internalMutation({
 			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: pluginRun.serviceAccountId }))
 		) {
 			return Result({ _nay: { message: "Not found" } });
+		}
+		if (pluginRun.filePairId) {
+			if (
+				!(await plugins_file_grants_db_validate_pair(ctx, {
+					pairId: pluginRun.filePairId,
+					installationId: installation._id,
+					userId: pluginRun.actorUserId,
+				}))
+			) {
+				return Result({ _nay: { message: "Unauthorized" } });
+			}
+			// The runner receives source metadata before it makes a Files API call.
+			if (fileNode) {
+				const checker = access_control_create_file_checker(ctx, {
+					organizationId: pluginRun.organizationId,
+					workspaceId: pluginRun.workspaceId,
+					subject: plugins_file_subject(installation, pluginRun.actorUserId, pluginRun.filePairId),
+				});
+				if (!(await checker.can(fileNode, "content.read"))) {
+					return Result({
+						_nay: {
+							message: `The plugin cannot read ${fileNode.path}. Choose this file or its folder in My file permissions.`,
+						},
+					});
+				}
+			}
 		}
 
 		const now = Date.now();
@@ -885,6 +971,8 @@ const INVOKE_CALLER_KEY_REGEX = /^[\x21-\x7E]{1,128}$/u;
  */
 export const start_invoke_run = internalMutation({
 	args: {
+		sessionId: v.id("plugins_ui_sessions"),
+		sessionTokenHash: v.string(),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
@@ -930,6 +1018,33 @@ export const start_invoke_run = internalMutation({
 		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: args.serviceAccountId }))) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		const session = await ctx.db.get("plugins_ui_sessions", args.sessionId);
+		if (
+			!session ||
+			session.tokenHash !== args.sessionTokenHash ||
+			session.expiresAt <= Date.now() ||
+			session.organizationId !== args.organizationId ||
+			session.workspaceId !== args.workspaceId ||
+			session.installationId !== installation._id ||
+			session.pluginVersionId !== args.pluginVersionId ||
+			session.serviceAccountId !== args.serviceAccountId ||
+			session.userId !== args.userId
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (installation.fileAccessModel === "personal" && !session.filePairId) {
+			return Result({ _nay: { message: "File access changed. Reopen this plugin." } });
+		}
+		if (
+			session.filePairId &&
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: session.filePairId,
+				installationId: installation._id,
+				userId: args.userId,
+			}))
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
 		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
 		if (!version || !version.backendEntrypointFile) {
@@ -952,9 +1067,15 @@ export const start_invoke_run = internalMutation({
 					.eq("active", true),
 			)
 			.first();
-		if (!membership) {
+		if (!membership || membership.pendingOrganizationRemoval) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+		const authorized = await access_control_db_authorize_membership(ctx, {
+			userAuth: { id: args.userId },
+			membership,
+			permission: "content.write",
+		});
+		if (authorized._nay) return authorized;
 
 		let lockKey: string;
 		if (endpoint.serialization === "caller-key") {
@@ -999,6 +1120,7 @@ export const start_invoke_run = internalMutation({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			actorUserId: args.userId,
+			filePairId: session.filePairId,
 			installationId: installation._id,
 			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: version._id,
@@ -1189,7 +1311,20 @@ export const finish_event_run = internalMutation({
 			const assignment = installation
 				? await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run: pluginRun })
 				: null;
-			if (!assignment?._yay) {
+			if (installation?.fileAccessModel === "personal" && !pluginRun.filePairId) {
+				succeeded = false;
+				errorMessage = "File access changed. Start a new plugin run.";
+			} else if (
+				pluginRun.filePairId &&
+				!(await plugins_file_grants_db_validate_pair(ctx, {
+					pairId: pluginRun.filePairId,
+					installationId: pluginRun.installationId,
+					userId: pluginRun.actorUserId,
+				}))
+			) {
+				succeeded = false;
+				errorMessage = "Unauthorized";
+			} else if (!assignment?._yay) {
 				succeeded = false;
 				errorMessage = assignment?._nay?.message ?? "The scheduled assignment changed";
 			} else if (pluginRun.chainIndex! + 1 >= MAX_CHAIN_RUNS || pluginRun.chainStartedAt! + CHAIN_TTL_MS <= now) {
@@ -1863,6 +1998,13 @@ export const consume_run_api_call = internalMutation({
 				requiredScope !== "outbound:fetch"
 			)
 				return Result({ _nay: { message: "Permission denied" } });
+			// Scheduled read rechecks support only the active Files routes.
+			if (
+				(requiredScope === "files:list" || requiredScope === "files:read") &&
+				args.route !== "/api/v1/files/list" &&
+				args.route !== "/api/v1/files/read"
+			)
+				return Result({ _nay: { message: "Scheduled plugin runs cannot use Trash yet." } });
 			const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, {
 				installation,
 				run: pluginRun,
@@ -1935,6 +2077,19 @@ export const request_follow_up = internalMutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		const installation = await ctx.db.get("plugins_workspace_installations", run.installationId);
 		if (!installation) return Result({ _nay: { message: "Unauthenticated" } });
+		if (installation.fileAccessModel === "personal" && !run.filePairId) {
+			return Result({ _nay: { message: "File access changed. Start a new plugin run." } });
+		}
+		if (
+			run.filePairId &&
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: run.filePairId,
+				installationId: installation._id,
+				userId: run.actorUserId,
+			}))
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 		const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run });
 		if (assignment._nay) return assignment;
 		if (run.chainIndex! + 1 >= MAX_CHAIN_RUNS || run.chainStartedAt! + CHAIN_TTL_MS <= now)

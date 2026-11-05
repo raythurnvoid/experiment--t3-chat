@@ -12,8 +12,8 @@ Backend run (`fetch(request, env, ctx)`):
 - `outbound.fetch` — native `fetch` to third-party HTTPS origins listed in the manifest's `outboundOrigins`.
 - `plugin.data.read` — read the plugin's own document store.
 - `plugin.data.write` — create, change, and delete documents in that store. Declaring it also requires `plugin.data.read`.
-- `workspace.files.read` — the run's host token also carries `files:list` and `files:read`, so a backend run can call `/api/v1/files/list` and `/api/v1/files/read` with the acting member's access: a file or folder that member cannot open answers `403`, and a missing one answers `404`. A folder list shows the items that member cannot open with `locked: true`; a `recursive` list shows a locked item once and lists nothing under a locked folder. `files/download-urls` stays bound to the triggering upload.
-- `workspace.files.own-write` — an invoke run may create or update files and folders marked for this plugin, or move them to Trash. Only exact string `plugin-name` metadata matching the installed plugin name selects an existing node. Members may edit or remove the label through ordinary metadata controls. Actor permissions and current locks still apply. Declaring it also requires `workspace.files.write`.
+- `workspace.files.read` — the run's host token also carries `files:list` and `files:read`. Files calls use the member's applied choices in **My file permissions**. An unreadable target answers `403`, and a missing one answers `404`. A folder list shows unreadable items with `locked: true`; a `recursive` list shows a locked item once and lists nothing under a locked folder. Runs may also list Trash, except scheduled runs. `files/download-urls` stays bound to the triggering upload.
+- `workspace.files.own-write` — an invoke run may create or update files and folders marked for this plugin, or move them to Trash. Only exact string `plugin-name` metadata matching the installed plugin name selects an existing node. Members may edit or remove the label through ordinary metadata controls. Applied file consent and current locks still apply. Declaring it also requires `workspace.files.write`.
 - `workspace.volumes.write` — write the installation's external Mounts through the five `/api/v1/volumes/*` routes. Workspace readers and the chat agent get read-only access.
 - `plugin.schedule.run` — run at the declared interval and request a follow-up. The selected user must grant their own scopes; every operation still checks their current access.
 
@@ -33,9 +33,9 @@ The host exchange works for any plugin whose publisher registered a service secr
 - `plugin.service.connect` — lets the plugin's UI token from a page or a file view participate in the exchange, but grants no API scope itself. The exchange reads only the session's installation and member, so both frame kinds work the same. The service must also authenticate with the publisher's registered service secret. Declaring it requires `plugin.data.read`, `workspace.files.write`, or `workspace.members.read`. A Files-only registration may receive an empty-scope interactive grant; file authority begins only after sealing.
 - `plugin.data.read` — an eligible service grant may read the plugin's own document store.
 - `plugin.data.write` — an eligible service grant may write the plugin's document store. A frame's UI token never receives this scope, whatever the installation accepted: a UI session can belong to an anonymous identity and is the surface an XSS reaches first, so a write from there would become injected input the backend later acts on with its secrets.
-- `workspace.files.write` — authorizes `files:write` on a sealed processing-phase service grant, capped by an exact destination path prefix. The interactive exchange still never mints this scope; the service gets it by sealing (below). A sealed grant may call the `/api/v1/files/service-uploads/*` routes, `/api/v1/files/write` for editable text, and `/api/v1/files/plugin-archive` for one matching file. Existing files need exact `plugin-name` metadata matching the installation, including same-plugin invoke output or member-labeled files. Live grant, capability, actor permissions, seal, and locks still apply. Registered writer requests also reach the public folder, access, inspection, and generation contracts below. Removing a label does not cancel an accepted upload or change its separate target cleanup rules.
-- `workspace.files.manage-read-only` — permits explicit Read-only set/clear, create-true, and `force: true`. It requires `workspace.files.write`. Ordinary file access, the service account's grants and exact request seals still apply. The old create-read-only capability does not grant this permission.
-- `workspace.files.own-write` — registered services use public Files APIs with a sealed grant and current service secret. Optional writer conditions bind the root, folder IDs, generation, and replay receipts. Current actor/account permissions, labels, and file policies still apply. These contracts are exported in `BonoboHttpApi` and leave ordinary service-upload rules unchanged.
+- `workspace.files.write` — authorizes `files:write` on a sealed processing-phase service grant, capped by an exact destination path prefix. The interactive exchange still never mints this scope; the service gets it by sealing (below). A sealed grant may call the `/api/v1/files/service-uploads/*` routes, `/api/v1/files/write` for editable text, and `/api/v1/files/plugin-archive` for one matching file. Existing files need exact `plugin-name` metadata matching the installation, including same-plugin invoke output or member-labeled files. Live grant, capability, applied file consent, seal, and locks still apply. Registered writer requests also reach the public folder, access, inspection, and generation contracts below. Removing a label does not cancel an accepted upload or change its separate target cleanup rules.
+- `workspace.files.manage-read-only` — permits explicit Read-only set/clear, create-true, and `force: true`. It requires `workspace.files.write`. Applied file consent and exact request seals still apply. The old create-read-only capability does not grant this permission.
+- `workspace.files.own-write` — registered services use public Files APIs with a sealed grant and current service secret. Optional writer conditions bind the root, folder IDs, generation, and replay receipts. Applied file consent, labels, and file policies still apply. These contracts are exported in `BonoboHttpApi` and leave ordinary service-upload rules unchanged.
 
 Chat agent (see [MCP servers and skills](#mcp-servers-and-skills)):
 
@@ -342,12 +342,35 @@ Where a run may write depends on how it started:
   - `files/write` is Markdown-only and writes siblings of the upload: `path` must be an absolute `.md` path whose parent folder equals `event.source.path`'s parent folder.
   - `files/touch` creates those same siblings empty, so users see where the outputs will land before the run fills them. Every path follows the `files/write` rule above, and a later `files/write` fills the node it already made.
 - An invoke run (`event: "ui.invoke.requested"`, started by a frame through `POST /api/v1/plugin-backend/invoke`) has no source file. With `workspace.files.own-write`, create or reuse a folder through `POST /api/v1/files/plugin-folders/ensure` (body `{ path, access?: { readOnly?: boolean } }`, response `{ nodeId, path, created }`; `readOnly` needs `workspace.files.manage-read-only`). Existing targets check their own label. Missing targets check the deepest existing folder; workspace-root creation keeps its current create rules. A new folder is a regular folder: it gets its parent's sharing. Ensure applies access only when creating the final folder. Reused folders keep their labels, locks, and sharing.
-- With `workspace.files.read`, any backend run may also call `POST /api/v1/files/list` and `POST /api/v1/files/read` (the same request and response shapes the developer API uses), reading as the acting person, limited by the plugin's service account.
-- With `workspace.files.manage-read-only`, an invoke run may change a matching node through `POST /api/v1/files/plugin-access/set` (body `{ path, access: { readOnly: boolean } }`; response `{ nodeId }`). The person and the plugin's service account both need Can edit on the node. `readOnly: true` sets a plugin lock and `readOnly: false` releases it. A member lock cannot be released through this door.
+- With `workspace.files.read`, any backend run may also call `POST /api/v1/files/list` and `POST /api/v1/files/read` (the same request and response shapes the developer API uses), using the acting person's applied file consent for this installation.
+- With `workspace.files.manage-read-only`, an invoke run may change a matching node through `POST /api/v1/files/plugin-access/set` (body `{ path, access: { readOnly: boolean } }`; response `{ nodeId }`). The credential needs applied Can edit on the node. `readOnly: true` sets a plugin lock and `readOnly: false` releases it. A member lock cannot be released through this door.
 - `POST /api/v1/files/plugin-archive` (body `{ path }`, response `{ archivedNodes }`) lets an invoke run move a matching folder or file with its subtree to Trash. Every affected node must match and pass current permissions and locks before any changes happen. The call releases permitted plugin locks before moving items to Trash. A sealed service grant may move one matching file inside its destination to Trash. Upload-triggered runs cannot use ensure, access, or moves to Trash, even when their output has matching labels.
 - `activities/start` is optional: a run that never calls it stays out of the workspace activity feed. The host tracks targets from the start, and the run's outcome closes its Activity.
 
-A plugin has no file access of its own. Every plugin file call acts as its person and is also limited by the normal grants of the plugin's service account, the same grants an API key bound to that account uses. To let a plugin use a folder, share the folder with its service account. Members decide who can open plugin folders through normal Files sharing. The organization owner still reads everything.
+Each person chooses saved files or folders in **My file permissions** for this
+installation. Calls use the applied Can view / Can edit level. Changes apply in
+background steps; calls keep the current applied level until its step finishes.
+Account grants and owner rights do not add plugin access. Credentials still require
+a live installation and the same membership lifetime. Ordinary Files sharing decides
+which people can open plugin output.
+
+An upload run needs Can view on its source before receiving file metadata. It also
+needs Can edit on the source's parent to create a sibling. A file-only choice cannot
+grant that parent access. Added `bonobo-file://` references need Can view too.
+
+Old installations keep their earlier account rules until the audited switch.
+New credentials then use personal consent. Old credentials cannot start new file
+writes after the switch; already accepted writes may finish under their saved rules.
+Start a fresh frame or run when the API asks you to do so.
+
+With `workspace.files.read`, runs and frames can call `POST /api/v1/files/trash/list`
+and `/api/v1/files/trash/areas`. Areas page selected folders in consent order.
+Use `{ folderNodeId }` to list deleted children of an ordinary selected folder,
+even when that folder is itself in Trash. `{ areaNodeId }` names a restricted area.
+There is no open-workspace area for plugins. A file-only choice adds no parent access
+or area. Guests and scheduled runs get 403; scheduled runs get the message
+`Scheduled plugin runs cannot use Trash yet.`. Items include `changedBy`.
+Plugin Restore is not available yet.
 
 Chitchat and Council write files one way from their own databases. Files edits never change chat data or Council D1. Chitchat uses durable transcript jobs, saved folder/file IDs, writer generations, and exact write receipts through public Files APIs. A blocked transcript does not undo a saved message; its sync status is separate from the message receipt. Ordinary sync preserves unrelated manual text; a confirmed rebuild may replace it. Council replaces the full note on a later source revision. A refused pending revision can retry after access is restored while its grant remains live; a caught-up note needs another source revision.
 
@@ -672,12 +695,14 @@ With the `workspace.files.read` capability the UI token may call:
 | Route                              | Scope            |
 | ---------------------------------- | ---------------- |
 | `POST /api/v1/files/list`          | `files:list`     |
+| `POST /api/v1/files/trash/list`    | `files:list`     |
+| `POST /api/v1/files/trash/areas`   | `files:list`     |
 | `POST /api/v1/files/read`          | `files:read`     |
 | `POST /api/v1/files/download-urls` | `files:download` |
 
 UI tokens are rejected on `/api/v1/files/write`.
 
-A UI token also reaches `POST /api/v1/plugin-data/read` and `/list` (with `plugin.data.read`), `POST /api/v1/plugin-backend/invoke` (with `plugin.backend.invoke`), and the same-origin `POST /plugins-ui/session-jwt` the SDK uses itself. Those seven routes are the whole UI surface.
+A UI token also reaches `POST /api/v1/plugin-data/read` and `/list` (with `plugin.data.read`), `POST /api/v1/plugin-backend/invoke` (with `plugin.backend.invoke`), and the same-origin `POST /plugins-ui/session-jwt` the SDK uses itself. These routes are the whole UI surface.
 
 Use `client.fetchRaw(path, body, init?)` for file reads and `client.fetchJson(path, body, init?)` for JSON routes. Both set the bearer token and retry once after a 401:
 

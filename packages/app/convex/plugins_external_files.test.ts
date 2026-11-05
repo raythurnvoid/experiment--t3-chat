@@ -10,6 +10,9 @@ import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
 import { plugins_file_subject } from "./plugins_service_accounts.ts";
+import { plugins_external_files_db_authorize } from "./plugins_external_files_access.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 
 const SECRET = "external-files-test-secret";
 const ROOT = "/chitchat-fresh-test";
@@ -123,6 +126,25 @@ async function setup(options?: { publicWriter: true }) {
 			})
 		)._nay,
 	).toBeUndefined();
+	const sourceToken = `psg_${"1".repeat(64)}`;
+	await t.run(async (ctx) => {
+		await ctx.db.insert("plugin_service_grants", {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			serviceAccountId: fixture.serviceAccountId,
+			installationId: fixture.installationId,
+			pluginVersionId: fixture.pluginVersionId,
+			pluginName,
+			actorUserId: fixture.userId,
+			tokenHash: await crypto_sha256_hex(sourceToken),
+			scopes: [],
+			principalKey: `plugin_service:${fixture.installationId}`,
+			phase: "interactive",
+			destinationPathPrefix: null,
+			expiresAt: Date.now() + 60_000,
+			updatedAt: Date.now(),
+		});
+	});
 	const minted = await t.mutation(internal.public_api.create_plugin_service_grant, {
 		organizationId: fixture.organizationId,
 		workspaceId: fixture.workspaceId,
@@ -131,6 +153,7 @@ async function setup(options?: { publicWriter: true }) {
 		requestedScopes: ["files:write"],
 		destinationPathPrefix: rootPath,
 		phase: "processing",
+		lifecycle: { presented: sourceToken, serviceSecretHash: await crypto_sha256_hex(SECRET) },
 		now: Date.now(),
 	});
 	if (minted._nay) throw new Error(minted._nay.message);
@@ -164,7 +187,16 @@ async function setup(options?: { publicWriter: true }) {
 		};
 		created: boolean;
 	};
-	return { t, fixture, owner, token, credentials, root: { ...body.writer, created: body.created }, rootPath };
+	return {
+		t,
+		fixture,
+		owner,
+		token,
+		sourceToken,
+		credentials,
+		root: { ...body.writer, created: body.created },
+		rootPath,
+	};
 }
 
 function install_object_uploads() {
@@ -185,6 +217,56 @@ afterEach(() => {
 });
 
 describe("public conditional file writes", () => {
+	test("personal external writes use the pinned pair instead of account grants", async () => {
+		const { t, fixture, credentials, root } = await setup();
+		const saved = await t.run(async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!;
+			const membership = (await ctx.db.get("organizations_workspaces_users", fixture.membershipId))!;
+			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
+			await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
+			await ctx.db.patch("plugin_service_grants", credentials.grantId, { filePairId: pair._id });
+			const consentId = await ctx.db.insert("plugins_file_consents", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				pairId: pair._id,
+				rootNodeId: root.folderNodeId,
+				requestedLevel: "write",
+				appliedLevel: "read",
+				areaEligible: false,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			return { pair, consentId };
+		});
+		const check = (acceptedFilePairId?: Id<"plugins_file_pairs"> | null) =>
+			t.run((ctx) =>
+				plugins_external_files_db_authorize(ctx, {
+					...credentials,
+					path: ROOT,
+					allowSealRoot: true,
+					acceptedFilePairId,
+				}),
+			);
+		expect((await check())._nay?.message, "account write cannot bypass pair read").toBe("Permission denied");
+		await t.run((ctx) => ctx.db.patch("plugins_file_consents", saved.consentId, { appliedLevel: "write" }));
+		expect((await check())._nay, "applied pair write allows the output").toBeUndefined();
+		expect((await check(null))._nay?.message, "personal authority cannot finish a legacy stage").toBe(
+			"Permission denied",
+		);
+		expect((await check(saved.pair._id))._nay).toBeUndefined();
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_file_consents", saved.consentId, { appliedLevel: null, open: false, state: "ended" }),
+		);
+		expect((await check(saved.pair._id))._nay?.message, "ended consent stops accepted personal writes").toBe(
+			"Permission denied",
+		);
+	});
+
 	test("an unrelated plugin writes plain text above 100 KB with exact receipts and read bounds", async () => {
 		const { t, fixture, owner, token, root, rootPath } = await setup({ publicWriter: true });
 		expect(
@@ -465,7 +547,24 @@ describe("public plugin writer access", () => {
 				createdBy: fixture.userId,
 				updatedAt: Date.now(),
 			});
-			return { installationId, serviceAccountId };
+			const sourceToken = `psg_${"2".repeat(64)}`;
+			await ctx.db.insert("plugin_service_grants", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				serviceAccountId,
+				installationId,
+				pluginVersionId,
+				pluginName: "daily-reports",
+				actorUserId: fixture.userId,
+				tokenHash: await crypto_sha256_hex(sourceToken),
+				scopes: [],
+				principalKey: `plugin_service:${installationId}`,
+				phase: "interactive",
+				destinationPathPrefix: null,
+				expiresAt: Date.now() + 60_000,
+				updatedAt: Date.now(),
+			});
+			return { installationId, serviceAccountId, sourceToken };
 		});
 
 		expect(
@@ -486,6 +585,7 @@ describe("public plugin writer access", () => {
 			requestedScopes: ["files:write"],
 			destinationPathPrefix: "/daily-reports",
 			phase: "processing",
+			lifecycle: { presented: other.sourceToken, serviceSecretHash: await crypto_sha256_hex("report-service-secret") },
 			now: Date.now(),
 		});
 		if (minted._nay) throw new Error(minted._nay.message);
@@ -998,6 +1098,59 @@ describe("external file writes", () => {
 		expect(
 			await t.run(async (ctx) => (await ctx.db.get("files_nodes", firstReceipt.nodeId))?.archiveOperationId),
 		).not.toBeNull();
+	});
+
+	test("a prepared legacy external write finishes after the switch but cannot accept another write", async () => {
+		const { t, fixture, credentials, root } = await setup();
+		const request = {
+			force: true,
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId: fixture.userId,
+			principalRef: { kind: "plugin_service" as const, grantId: credentials.grantId },
+			path: `${ROOT}/accepted.md`,
+			expectedParentNodeId: root.folderNodeId,
+			externalFileWrite: {
+				force: true,
+				tokenHash: credentials.tokenHash,
+				serviceSecretHash: credentials.serviceSecretHash,
+				writerId: root.writerId,
+				writerGeneration: 1,
+				operationId: "accepted",
+				sequence: 1,
+				contentHash: await crypto_sha256_hex("accepted"),
+				expectedNodeId: null,
+				expectedContentRevision: null,
+				contentType: "text/markdown;charset=utf-8",
+				nonCollaborative: true,
+				requestReadOnly: false,
+			},
+			overwrite: "fail" as const,
+			contentSize: 8,
+			yjsSnapshotSize: 0,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text" as const,
+		};
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, request);
+		if (prepared._nay) throw new Error(prepared._nay.message);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
+		);
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay.stageId,
+			targetAnchor: prepared._yay.targetAnchor,
+			content: "accepted",
+			nonCollaborative: true,
+			addedFileRefs: [],
+		});
+		expect(published._nay, "the stored legacy stage can finish").toBeUndefined();
+		const next = await t.mutation(internal.public_api.prepare_file_write, {
+			...request,
+			path: `${ROOT}/next.md`,
+			externalFileWrite: { ...request.externalFileWrite, operationId: "next", sequence: 2 },
+		});
+		expect(next._nay?.message, "the old external grant cannot accept another stage").toBe("Permission denied");
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toHaveLength(0);
 	});
 
 	test("a writer fence rejects an already prepared write without publishing content", async () => {
@@ -1683,7 +1836,7 @@ describe("ensure_writer", () => {
 				}),
 			);
 		const installation = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId)))!;
-		expect(await can(plugins_file_subject(installation, fixture.userId), writer.folderNodeId)).toBe(true);
+		expect(await can(plugins_file_subject(installation, fixture.userId, undefined), writer.folderNodeId)).toBe(true);
 		expect(await can({ kind: "service_account", serviceAccountId: fixture.serviceAccountId }, fileNodeId)).toBe(true);
 	});
 
@@ -1720,7 +1873,7 @@ describe("ensure_writer", () => {
 
 describe("workspace content purge", () => {
 	test("drains external file writer and grant receipt docs", async () => {
-		const { t, fixture, credentials, root } = await setup();
+		const { t, fixture, credentials, root, sourceToken } = await setup();
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.change_scope, {
@@ -1733,21 +1886,10 @@ describe("workspace content purge", () => {
 			)._nay,
 		).toBeUndefined();
 
-		const interactive = await t.mutation(internal.public_api.create_plugin_service_grant, {
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			installationId: fixture.installationId,
-			actorUserId: fixture.userId,
-			requestedScopes: [],
-			destinationPathPrefix: null,
-			phase: "interactive",
-			now: Date.now(),
-		});
-		if (interactive._nay) throw new Error(interactive._nay.message);
 		expect(
 			(
 				await t.mutation(internal.public_api.rotate_plugin_service_grant, {
-					presented: interactive._yay.token,
+					presented: sourceToken,
 					now: Date.now(),
 					lifecycle: { requestId: "renew", serviceSecretHash: credentials.serviceSecretHash },
 				})

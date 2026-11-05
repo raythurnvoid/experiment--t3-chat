@@ -1289,7 +1289,7 @@ describe("plugin subject", () => {
 		const installation = (await t.run(
 			async (ctx) => await ctx.db.get("plugins_workspace_installations", installationId),
 		))!;
-		const plugin = (userId: Id<"users">) => plugins_file_subject(installation, userId);
+		const plugin = (userId: Id<"users">) => plugins_file_subject(installation, userId, undefined);
 		const can = (
 			subject: access_control_Subject,
 			fileNode: Doc<"files_nodes"> | null,

@@ -2185,6 +2185,8 @@ const app_convex_schema = defineSchema({
 		 * Present only for plugin_service writes; publication revalidates the sealed grant.
 		 */
 		grantId: v.optional(v.id("plugin_service_grants")),
+		// Keep the accepted credential's file authority. Missing means the old account model.
+		filePairId: v.optional(v.id("plugins_file_pairs")),
 		/**
 		 * Trusted own-file service preconditions, checked again with publication and its receipt.
 		 */
@@ -2233,6 +2235,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_expiresAt", ["expiresAt"])
 		.index("by_run", ["runId"])
+		.index("by_grant", ["grantId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 	// #endregion public api
 
@@ -7698,6 +7701,8 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		// Missing keeps existing credentials on account access until the audited switch.
+		fileAccessModel: v.optional(v.literal("personal")),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
 		status: v.union(v.literal("enabled"), v.literal("disabled")),
@@ -7951,6 +7956,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		filePairId: v.optional(v.id("plugins_file_pairs")),
 		// The uploaded file the event fired for; plugin-written outputs are ordinary Markdown siblings.
 		// Both are absent for an event that fires on something other than a file.
 		assetId: v.optional(v.id("files_r2_assets")),
@@ -8051,6 +8057,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		filePairId: v.optional(v.id("plugins_file_pairs")),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		userId: v.id("users"),
@@ -8738,6 +8745,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		filePairId: v.optional(v.id("plugins_file_pairs")),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
@@ -8787,6 +8795,8 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
+		// Upload settlement must keep the authority accepted at create time.
+		filePairId: v.optional(v.id("plugins_file_pairs")),
 		/**
 		 * The upload run this file belongs to, chosen by the service. One processing run reuses one
 		 * key for all its files, so the same `targetKey` in a later run is a different file.
@@ -9393,6 +9403,7 @@ const app_convex_schema = defineSchema({
 			"updatedAt",
 		])
 		.index("by_source_installation_updatedAt", ["source.installationId", "updatedAt"])
+		.index("by_source_installation_status", ["source.installationId", "status"])
 		.index("by_source_installation_event_updatedAt", ["source.installationId", "source.event", "updatedAt"])
 		.index("by_source_installation_serializationKey_status", [
 			"source.installationId",
