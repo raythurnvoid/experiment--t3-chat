@@ -95,6 +95,8 @@ while `files/trash/areas` still returns 200. Expect no areas only when no other 
 remains. That control proves the refusal came from lost access. Revoke only the test sessions
 afterward, check 401, clear captured tokens, and leave the QA tab open.
 
+Verified on 2026-11-05 with Gallery in `chitchat-qa/xfer-qa-0914`.
+
 ## Install / update / uninstall
 
 - **Read the installed version before you QA anything.** Publishing a version does not upgrade an
