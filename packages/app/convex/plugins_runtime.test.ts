@@ -269,6 +269,7 @@ describe("personal file credential pins", () => {
 		await f.t.run(async (ctx) => {
 			const installation = await ctx.db.get("plugins_workspace_installations", f.installationId);
 			await ctx.db.patch("plugins_workspace_installations", f.installationId, {
+				fileAccessModel: personal ? "personal" : undefined,
 				acceptedCapabilities: [...installation!.acceptedCapabilities, "plugin.backend.invoke"],
 			});
 			await ctx.db.patch("plugins_versions", f.pluginVersionId, {
@@ -321,6 +322,10 @@ describe("personal file credential pins", () => {
 
 	test("starts an old queued run without changing its authority and refuses a new follow-up", async () => {
 		const f = await fixture();
+		// New installs are personal. Seed the old model before this pre-switch run enters its queue.
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: undefined }),
+		);
 		const root = await root_run(f);
 		await f.t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
@@ -349,6 +354,9 @@ describe("personal file credential pins", () => {
 
 	test("does not mint a follow-up when the model changes after its request", async () => {
 		const f = await fixture();
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: undefined }),
+		);
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
 		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
@@ -566,6 +574,7 @@ describe("personal file credential pins", () => {
 		expect(denied._nay?.message, "scheduled Trash must explain the unsupported route").toBe(
 			"Scheduled plugin runs cannot use Trash yet.",
 		);
+		expect(denied._nay?.name, "scheduled Trash has a stable permission refusal name").toBe("permission_denied");
 		const response = await f.t.fetch("/api/v1/files/trash/list", {
 			method: "POST",
 			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

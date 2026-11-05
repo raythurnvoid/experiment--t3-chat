@@ -4028,8 +4028,6 @@ export const install_version = mutation({
 		if (existingInstallation) {
 			installationId = existingInstallation._id;
 			installationCreatedAt = existingInstallation._creationTime;
-			// Only the audited switch changes an existing installation's file access model.
-
 			// Only an upgrade has previous-version handlers to clear; a fresh install starts empty.
 			const existingHandlers = await ctx.db
 				.query("plugins_workspace_event_handlers")
@@ -4066,6 +4064,7 @@ export const install_version = mutation({
 				serviceAccountId,
 				pluginName: pluginVersion.name,
 				status: "enabled",
+				// Existing installations keep their model until the audited switch.
 				fileAccessModel: "personal",
 				managementAccess: "selected",
 				configurationYaml,

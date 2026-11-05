@@ -2185,7 +2185,7 @@ const app_convex_schema = defineSchema({
 		 * Present only for plugin_service writes; publication revalidates the sealed grant.
 		 */
 		grantId: v.optional(v.id("plugin_service_grants")),
-		// Keep the accepted credential's file authority. Missing means the old account model.
+		// Keep accepted plugin authority. Missing means old-model work during rollout, or a key write.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
 		/**
 		 * Trusted own-file service preconditions, checked again with publication and its receipt.
@@ -7701,7 +7701,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		// Missing keeps existing credentials on account access until the audited switch.
+		// During rollout, missing keeps the old model until the audited switch.
 		fileAccessModel: v.optional(v.literal("personal")),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
@@ -7956,6 +7956,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		// Missing on old-model runs during rollout and on fileless account-deleted events.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
 		// The uploaded file the event fired for; plugin-written outputs are ordinary Markdown siblings.
 		// Both are absent for an event that fires on something other than a file.
@@ -8057,6 +8058,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		// Missing means an old-model session during rollout. Refresh never adds a pair.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
@@ -8745,6 +8747,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
+		// Missing means an old-model grant during rollout. Rotation never adds a pair.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
@@ -8795,7 +8798,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
-		// Upload settlement must keep the authority accepted at create time.
+		// Keep the accepted pair through upload settlement. Missing means old-model work during rollout.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
 		/**
 		 * The upload run this file belongs to, chosen by the service. One processing run reuses one

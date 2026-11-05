@@ -1592,8 +1592,9 @@ export const resolve_principal = internalQuery({
 					installationId: installation._id,
 					userId: pluginRun.actorUserId,
 				}))
-			)
+			) {
 				return Result({ _nay: { message: "Unauthenticated" } });
+			}
 			const scheduledAssignment =
 				pluginRun.event === "schedule.interval.elapsed"
 					? await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run: pluginRun })
@@ -1785,8 +1786,9 @@ export const resolve_principal = internalQuery({
 					installationId: installation._id,
 					userId: session.userId,
 				}))
-			)
+			) {
 				return Result({ _nay: { message: "Unauthenticated" } });
+			}
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: session.organizationId,
 				workspaceId: session.workspaceId,
@@ -1902,8 +1904,9 @@ export const resolve_principal = internalQuery({
 					installationId: installation._id,
 					userId: grant.actorUserId,
 				}))
-			)
+			) {
 				return Result({ _nay: { message: "Unauthenticated" } });
+			}
 			const contentPermissions = await get_workspace_content_permissions(ctx, {
 				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
@@ -2913,7 +2916,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// Keep membership live, then check file access on the target or its deepest saved parent.
+		// Keep membership live. A create checks its deepest saved parent so narrow folder access works.
 		const actorMembership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_user_organization_workspace", (q) =>

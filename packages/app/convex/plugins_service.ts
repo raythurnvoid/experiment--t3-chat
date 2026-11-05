@@ -276,39 +276,6 @@ export async function plugins_service_db_can_write_destination(
 	});
 }
 
-export const can_write_destination = internalQuery({
-	args: { grantId: v.id("plugin_service_grants"), tokenHash: v.string() },
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		const grant = await ctx.db.get("plugin_service_grants", args.grantId);
-		if (
-			!grant?.filePairId ||
-			grant.revokedAt != null ||
-			grant.expiresAt <= Date.now() ||
-			grant.tokenHash !== args.tokenHash ||
-			!grant.scopes.includes("files:write") ||
-			!grant.destinationPathPrefix
-		)
-			return false;
-		const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
-		if (
-			!installation ||
-			installation.status !== "enabled" ||
-			installation.pluginVersionId !== grant.pluginVersionId ||
-			!installation.acceptedCapabilities.includes("plugin.service.connect") ||
-			!installation.acceptedCapabilities.includes("workspace.files.write") ||
-			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))
-		)
-			return false;
-		return await plugins_service_db_can_write_destination(ctx, {
-			installation,
-			actorUserId: grant.actorUserId,
-			filePairId: grant.filePairId,
-			destinationPathPrefix: grant.destinationPathPrefix,
-		});
-	},
-});
-
 /**
  * The refusals the grant mutations can return, and the status each one is.
  */
@@ -697,6 +664,39 @@ export async function plugins_service_http_recover(ctx: ActionCtx, request: Requ
 
 // #region verify live
 
+export const can_write_destination = internalQuery({
+	args: { grantId: v.id("plugin_service_grants"), tokenHash: v.string() },
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const grant = await ctx.db.get("plugin_service_grants", args.grantId);
+		if (
+			!grant?.filePairId ||
+			grant.revokedAt != null ||
+			grant.expiresAt <= Date.now() ||
+			grant.tokenHash !== args.tokenHash ||
+			!grant.scopes.includes("files:write") ||
+			!grant.destinationPathPrefix
+		)
+			return false;
+		const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			installation.pluginVersionId !== grant.pluginVersionId ||
+			!installation.acceptedCapabilities.includes("plugin.service.connect") ||
+			!installation.acceptedCapabilities.includes("workspace.files.write") ||
+			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))
+		)
+			return false;
+		return await plugins_service_db_can_write_destination(ctx, {
+			installation,
+			actorUserId: grant.actorUserId,
+			filePairId: grant.filePairId,
+			destinationPathPrefix: grant.destinationPathPrefix,
+		});
+	},
+});
+
 /**
  * What the service believes about its own grant. Each field is compared with what the grant really
  * says, and any difference refuses the call.
@@ -726,12 +726,19 @@ const verify_live_body_validator = z
 
 export type plugins_service_http_verify_live_Body = z.infer<typeof verify_live_body_validator>;
 
-// Plugin data keeps the same human workspace gates as public_api_http_auth.ts.
-// Personal Files access is checked on the sealed destination instead.
+/**
+ * Keep plugin-data gates in step with REQUIRED_APP_PERMISSION_BY_SCOPE in public_api_http_auth.ts.
+ * A member can lose a role while a service runs, so verify-live repeats those human checks.
+ * Plugin runs check their store access in plugins_data.ts instead of using this service route.
+ * Personal Files access is checked on the sealed destination, including narrow shared folders.
+ */
 const REQUIRED_CONTENT_PERMISSION_BY_SCOPE = {
 	"plugin_data:read": "read",
 	"plugin_data:write": "write",
-} as const;
+} as const satisfies Record<
+	Exclude<plugins_service_http_verify_live_Body["scopes"][number], "files:write">,
+	"read" | "write"
+>;
 
 export async function plugins_service_http_verify_live(ctx: ActionCtx, request: Request) {
 	const auth = await authorize_service_request({

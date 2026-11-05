@@ -272,6 +272,26 @@ test.each(["token", "runToken"] as const)(
 	},
 );
 
+test.each(["list", "areas"] as const)("%s keeps the failed call's cursor error code", async (route) => {
+	const f = await fixture();
+	const p = await plugin(f);
+	const response = await post(f, p.runToken, route, { cursor: "wrong" });
+	expect(response.status).toBe(400);
+	expect(response.body.errorCode).toBe("invalid_cursor");
+	const call = await f.t.run((ctx) =>
+		ctx.db
+			.query("plugins_event_run_calls")
+			.withIndex("by_run_sequence", (q) => q.eq("runId", p.runId))
+			.first(),
+	);
+	expect(call, "Trash cursor failures keep their call error code").toMatchObject({
+		status: "failed",
+		responseStatus: 400,
+		errorCode: "invalid_cursor",
+		errorMessage: response.body.message,
+	});
+});
+
 test("file-only selection gives no Trash area or parent list", async () => {
 	const f = await fixture();
 	const p = await plugin(f);

@@ -2004,7 +2004,7 @@ export const consume_run_api_call = internalMutation({
 				args.route !== "/api/v1/files/list" &&
 				args.route !== "/api/v1/files/read"
 			)
-				return Result({ _nay: { message: "Scheduled plugin runs cannot use Trash yet." } });
+				return Result({ _nay: { name: "permission_denied", message: "Scheduled plugin runs cannot use Trash yet." } });
 			const assignment = await plugins_scheduled_access_db_authorize_assignment(ctx, {
 				installation,
 				run: pluginRun,

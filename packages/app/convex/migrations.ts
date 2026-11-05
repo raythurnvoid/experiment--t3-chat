@@ -17,7 +17,9 @@ const app_migrations = new Migrations(components.migrations, {
  */
 export const run = app_migrations.runner();
 
-// This switch takes one audited installation ID. It is not a table backfill.
+/**
+ * Switch one audited installation after its live runs finish. This is not a table backfill.
+ */
 export const switch_plugin_file_access = internalMutation({
 	args: { installationId: v.id("plugins_workspace_installations") },
 	returns: v_result({ _yay: v.null() }),

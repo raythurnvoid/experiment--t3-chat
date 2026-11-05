@@ -501,7 +501,6 @@ export type BonoboHttpApi = {
 						}[];
 						cursor: string | null;
 						isDone: boolean;
-						message?: undefined;
 					};
 				};
 				400: {
@@ -509,13 +508,10 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "This Trash cursor changed. Start a new page.";
-						errorCode: "invalid_cursor";
-					} | {
 						message: string;
-						items?: undefined;
-						cursor?: undefined;
-						isDone?: undefined;
+					} | {
+						errorCode: "invalid_cursor";
+						message: string;
 					};
 				};
 				403: {
@@ -524,9 +520,6 @@ export type BonoboHttpApi = {
 					};
 					body: {
 						message: string;
-						items?: undefined;
-						cursor?: undefined;
-						isDone?: undefined;
 					} | {
 						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "Scheduled plugin runs cannot use Trash yet." | "Plugin API call limit exceeded";
 						retryAfterMs?: undefined;
@@ -546,15 +539,7 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Area not found";
-						items?: undefined;
-						cursor?: undefined;
-						isDone?: undefined;
-					} | {
-						message: "Folder not found";
-						items?: undefined;
-						cursor?: undefined;
-						isDone?: undefined;
+						message: string;
 					};
 				};
 				429: {
@@ -598,7 +583,6 @@ export type BonoboHttpApi = {
 						})[];
 						cursor: string | null;
 						isDone: boolean;
-						message?: undefined;
 					};
 				};
 				400: {
@@ -606,13 +590,10 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "This Trash cursor changed. Start a new page.";
-						errorCode: "invalid_cursor";
-					} | {
 						message: string;
-						areas?: undefined;
-						cursor?: undefined;
-						isDone?: undefined;
+					} | {
+						errorCode: "invalid_cursor";
+						message: string;
 					};
 				};
 				403: {
@@ -624,9 +605,6 @@ export type BonoboHttpApi = {
 						retryAfterMs?: undefined;
 					} | {
 						message: string;
-						areas?: undefined;
-						cursor?: undefined;
-						isDone?: undefined;
 					};
 				};
 				401: {

@@ -390,8 +390,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 					status:
 						consumed._nay.message === "Plugin API call limit exceeded"
 							? 429
-							: consumed._nay.message === "Permission denied" ||
-								  consumed._nay.message === "Scheduled plugin runs cannot use Trash yet."
+							: consumed._nay.message === "Permission denied" || consumed._nay.name === "permission_denied"
 								? 403
 								: 401,
 					body: { message: consumed._nay.message },
