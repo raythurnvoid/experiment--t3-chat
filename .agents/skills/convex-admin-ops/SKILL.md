@@ -55,6 +55,12 @@ as `_system/frontend/clearTablePage`. A missing-function error makes no changes.
 one-time table erase, use a bounded internal mutation in the owning module when no existing cleanup
 door fits. Fix the table name in its code, verify the empty table, then remove the temporary function.
 
+For read-only system queries such as `_system/frontend/getSchemas` and
+`_system/frontend/indexes`, use `run --watch`, read one valid result, then close only that
+owned subscription. Plain `run` cannot dispatch these queries. The root app's index query
+needs `{ tableName: "<table>", tableNamespace: null }`; without a table name it returns null.
+Use the installed bundled CLI. Importing its unbundled files can fail on absent CLI-only packages.
+
 For a one-shot push in this repo, run `convex dev --once` with `--typecheck disable` after the normal repo lint/type check has passed. There is no `convex/tsconfig.json`; `--typecheck enable` prints that it skipped type checking and can exit successfully before it pushes anything. Require the final `Convex functions ready!` message, then verify the new schema or function with a readback.
 
 # Push Only A Pushed Commit

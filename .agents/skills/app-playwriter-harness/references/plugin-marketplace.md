@@ -58,6 +58,31 @@ Install dialogs can also contain configuration YAML, Mount folders, and Run as c
 current version's visible consent fields. The older simple-dialog recipe below is not a control
 count for every plugin.
 
+## Personal file permissions
+
+An installed plugin's detail page has a `My file permissions` region. Use
+`getByRole("region", { name: "My file permissions", exact: true })` to scope the flow.
+Read the person's current consent with `plugins_access.list_my_file_grants` before changing it.
+Reuse a saved item from the QA catalog. These controls prepare personal consent; the current
+release still uses the old credential authority, as the page note says.
+
+- Fill `File or folder path`. Save stays disabled until `Use this file: <path>` or
+  `Use this folder: <path>` is clicked. An unknown path shows a visible error after blur.
+- Choose `Can view` or `Can edit`, then Save.
+  Wait for `Your file permission was saved. The change is pending.` before reading the stored result.
+  The feedback receives focus.
+  Wait for `Current: Can view` or `Current: Can edit` to prove the worker applied the choice.
+- Find Remove by its full name, `Remove permission for <path>`. After removal, the feedback
+  receives focus and the history row shows `Unavailable item`, `Current: No access`, and its
+  end reason. Read back `open: false`, `appliedLevel: null`, and null path/kind. Keep this history.
+- Check the chosen item's scope fields return to their starting state after removing a new
+  test consent. Do not remove a permission that existed before the test.
+- On a narrow screen, use `Minimize sidebar`, then restore it with `Expand sidebar` afterward.
+  The accessibility screen flags each radio's hidden 1px input. Check the enclosing
+  `label.MyRadioButton` instead: it owns the visible click target. Also test keyboard Space.
+
+Verified with Save, Edit, Remove, persisted readback, and a 390px viewport on 2026-11-05.
+
 ## Install / update / uninstall
 
 - **Read the installed version before you QA anything.** Publishing a version does not upgrade an
