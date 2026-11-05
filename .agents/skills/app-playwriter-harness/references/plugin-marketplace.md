@@ -63,8 +63,8 @@ count for every plugin.
 An installed plugin's detail page has a `My file permissions` region. Use
 `getByRole("region", { name: "My file permissions", exact: true })` to scope the flow.
 Read the person's current consent with `plugins_access.list_my_file_grants` before changing it.
-Reuse a saved item from the QA catalog. These controls prepare personal consent; the current
-release still uses the old credential authority, as the page note says.
+Reuse a saved item from the QA catalog. New installations and installations switched to personal
+access use these choices. Older installations still show the note that these choices are not in use.
 
 - Fill `File or folder path`. Save stays disabled until `Use this file: <path>` or
   `Use this folder: <path>` is clicked. An unknown path shows a visible error after blur.
@@ -82,6 +82,18 @@ release still uses the old credential authority, as the page note says.
   `label.MyRadioButton` instead: it owns the visible click target. Also test keyboard Space.
 
 Verified with Save, Edit, Remove, persisted readback, and a 390px viewport on 2026-11-05.
+
+After an installation switches to personal access, open a fresh plugin frame. Its old token must
+refuse new Files work. Keep captured tokens only in Playwriter memory and remove capture listeners.
+Use `path` for ordinary `files/list`, and `folderNodeId` for `files/trash/list` folder mode.
+A folder selected while already in Trash uses folder mode. To check a positive area list, select an
+active restricted folder. Area eligibility follows the background worker; see the
+[Trash areas spec](../../public-api/SKILL.md#trash-areas).
+
+After removing test consent, use the same token again: reads that depended on that consent refuse,
+while `files/trash/areas` still returns 200. Expect no areas only when no other eligible consent
+remains. That control proves the refusal came from lost access. Revoke only the test sessions
+afterward, check 401, clear captured tokens, and leave the QA tab open.
 
 ## Install / update / uninstall
 
