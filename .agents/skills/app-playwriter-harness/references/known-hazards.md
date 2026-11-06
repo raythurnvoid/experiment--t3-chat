@@ -427,8 +427,9 @@ const csp = "default-src 'none'; script-src 'self' 'sha256-" + hash + "'; …";
 hashing `script` and then writing `"\n" + script + "\n"` produces a hash the browser refuses. The
 console names the hash it wanted, which is the fastest way to notice.
 
-A working runner is
-`experiment--t3-chat-+personal/+ai/chitchat-slack-planning-2026-08-23/runners/swap-plugin-bundle-v3.js`.
+The old scratch runner is no longer available. Follow the
+[bundle-swap recipe](plugin-marketplace.md#checking-an-unpublished-plugin-build-in-the-real-frame)
+and save a new runner in the current personal task folder.
 
 ## A fulfilled body outlives the session that produced it, and the handler still says it fulfilled
 

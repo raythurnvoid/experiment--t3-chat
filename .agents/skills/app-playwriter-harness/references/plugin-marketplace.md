@@ -235,6 +235,12 @@ served HTML instead.
    selector is the cheapest proof, because the CSSOM answers directly:
    `[...document.styleSheets].flatMap((s) => [...s.cssRules]).map((r) => r.selectorText)`.
 
+When inserting asset text with `String.replace`, use a callback: `() => scriptTag`.
+A replacement string treats dollar sequences in the bundle as instructions and can
+change its bytes. Normalize script line endings to LF before hashing and inserting;
+HTML parsing also normalizes them. Check the frame's console for CSP refusals before
+testing its controls. Verified 2026-11-06.
+
 **The same route can shrink a cap so a limit is reachable.** A "you are seeing only the first N"
 notice normally needs N+1 documents. Patching the served bytes — `limit: 100` to `limit: 3` —
 reaches the same code path with five. Assert on the anchor being unique before replacing it, and say
@@ -242,10 +248,9 @@ in the report that the cap was patched. The same trick gives a real break-on-pur
 bundle again with the fix's own line reverted and watch the notice disappear while the data is
 unchanged.
 
-A working runner lives at
-`experiment--t3-chat-+personal/+ai/chitchat-slack-planning-2026-08-23/runners/swap-plugin-bundle-v3.js`. Its v1
-and v2 siblings are the versions that served the published bundle without saying so — keep them
-only as the record of that failure.
+The old `chitchat-slack-planning-2026-08-23/runners/swap-plugin-bundle-v3.js` scratch
+runner is no longer available. Save a new runner in the current personal task folder
+and follow the steps above.
 
 ## Manage secrets dialog
 

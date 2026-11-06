@@ -32,7 +32,7 @@ An older installed bundle may still use the old backend even when the working tr
 - After selecting a channel, wait for its exact heading before clicking Connect or Reconnect Files.
   That shared control can still belong to the previous channel while the new selection is loading.
   Read back the chosen channel's grant and status; clicking an identical button is not enough.
-- Test removed account grants and human/parent locks. A blocked copy must not be shown as saved.
+- Test consent removed in **My file permissions** and human/parent locks. A blocked copy must not be shown as saved.
   A message already saved in native chat remains saved when Files sync is blocked.
 - Re-check accessible names and current frame selectors before using a selector from the older
   recipes below. The current React tests are the starting map, not a substitute for live QA.
@@ -47,9 +47,9 @@ claim that the new installed frame has passed these checks.
   and its audience is `bonobo-plugin:chitchat`. Never use the removed private bridge for QA.
 - Service grants and conditional Files writes use the documented public SDK contracts. Bonobo Senate owns
   folder access and writer proofs. Chitchat owns channel membership, Markdown, paths, and rollover.
-- Test a fresh transcript root of a public channel through Connect Files. The plugin's service
-  account needs a normal grant where the root is created; a folder the plugin creates gets its
-  parent's access. Require the first real Markdown write to finish.
+- Test a fresh transcript root of a public channel through Connect Files. The person needs
+  applied Whole workspace Edit consent to create the root. An existing root can use applied
+  Edit consent for that folder. Require the first real Markdown write to finish.
 - Keep an edit open while at least 51 new messages move its original row out of the live page.
   Require the exact draft text to survive, then cancel it and confirm the saved message did not change.
 - A second owned browser tab can leave the plugin frame in the background and stall OOPIF mouse

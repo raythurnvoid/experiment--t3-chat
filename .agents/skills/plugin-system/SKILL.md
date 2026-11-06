@@ -995,6 +995,14 @@ denial and denied reloads. A real host and approved guest joined through the shi
 The host's Allow button and End for all flow passed. All three dashboard assets matched the
 reviewed commit. Test rooms were closed without recording; the five old artifact rows were kept.
 
+Chitchat 0.8.15 was published on 2026-11-06 from `ebc088654a7ed781261928e876af236a4a01c22f`
+as `hn7wegxvjhgke8ay871t5n33f58hp3p6`, with a passed review. It pins SDK 0.25.4 and
+explains personal file consent in its Files help. Only `chitchat-qa/home` was updated;
+`chitchat-qa/metadata-qa-0906` stays on 0.8.14. All three served files match the reviewed
+build. Reconnect Files renewed the selected public channel's grants with its current
+personal pair. Saved transcripts, paths and all 345 never-connected jobs were kept.
+No Chitchat backend deployment was needed.
+
 Chitchat 0.8.14 was published on 2026-11-04 from `6f4ba9e65776665233d6ffcc7926068280d6f6d6`
 as `hn7rdc84y5tcskkqjhjgbgrv1x8hkrkg`. It pins SDK 0.25.3, drops `workspace.files.own-access`, and
 writes no transcripts for private channels. Review passed, and all three served files match the
@@ -1003,6 +1011,11 @@ were updated through the normal Update dialog. Their service accounts, capabilit
 grants stayed the same. Before that, its backend on `exuberant-hippopotamus-790` ran the one-time
 reader data erase (`01379ee`), then took the strict schema (`8db95c3`). Reconnect Files on a public
 channel renewed its grant, and a private channel shows no Files controls.
+
+SDK 0.25.4 was mirrored on 2026-11-06 at `d1c728887c18e80debeea947d9b8aa2f615afdfd`.
+Its tree equals `723a5908:packages/bonobo-plugin-sdk`. Types and docs now describe
+personal file consent, Whole workspace and nullable Trash areas. The runtime is
+unchanged. Typecheck and 51 SDK tests pass.
 
 SDK 0.25.3 was mirrored on 2026-11-04 at `2e8aff84b3fc3218f8defa8a92bec388ab4bb94b`.
 Its tree equals `7bd8f6d3:packages/bonobo-plugin-sdk`. Only types and docs changed: `files/write`
