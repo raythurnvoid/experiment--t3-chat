@@ -97,7 +97,8 @@ Restricted rows stay locked, and entry stays 403. Removing consent keeps the
 Whole workspace history label and makes dependent Files and Trash reads refuse.
 
 After an installation switches to personal access, open a fresh plugin frame. Its old token must
-refuse new Files work. Keep captured tokens only in Playwriter memory and remove capture listeners.
+refuse new Files work with 403 because it lost its Files scopes. Revoking the session gives 401.
+Check these as separate cases. Keep captured tokens only in Playwriter memory and remove capture listeners.
 Use `path` for ordinary `files/list`, and `folderNodeId` for `files/trash/list` folder mode.
 A folder selected while already in Trash uses folder mode. To check a positive area list, select an
 active restricted folder. Area eligibility follows the background worker; see the

@@ -37,7 +37,7 @@ means look but do not change anything.
 | Workspace | Reached by | Policy | Use it for |
 | --- | --- | --- | --- |
 | `chitchat-qa/xfer-qa-0914` | QA Edge profile (owner) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. Gallery is installed (2026-10-22). |
-| `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.3.0 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
+| `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.4.5 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
 | `chitchat-qa/metadata-qa-0906` | QA Edge profile | reuse | Metadata checks. Chitchat and Council installed. |
 | `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat page and its transcript files. Its plan has no file uploads (seen 2026-10-18). Agent chat has credits; `qa.perm.member` cannot restrict here, only the owner can. Empty GitHub Sources service account `rd7tqp8qb5vkfa0jvnp8kgjj398fbctd` remains without grants after both test uninstalls. Reinstall needs permission to manage this account. |
 | `qa-browser/home` | Former `qa.perm.owner` workspace | retired | Erased in the 2026-10-28 cleanup. Do not use its old files, grants, channels or plugin setup. |
@@ -170,6 +170,19 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Meeting recordings with transcript and summary | `personal/home:/meetings` (11 files after the 2026-10-31 cleanup, all in Council meeting folders) |
 | Chitchat transcripts | `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d` ([chitchat.md](../../app-playwriter-harness/references/chitchat.md)). The old `qa-browser/home:/chitchat` choice was erased. |
 | External repo Mount | `personal/home:/.mounts/github/native-popovers`. GitHub Sources copies the public `<owner>/react-native-popovers` repo. Its first copy has 70 text files. Use Bash to read it; it stays out of the Files sidebar. |
+
+Personal file consent was checked on 2026-11-06 in these QA installations:
+
+- Home Chitchat has Whole workspace View, Edit on its dataset root above, and View
+  on its two restricted old-copy folders. The ready `#qa-files-20260908` channel
+  (`jn76j462x0gsztjv006t5g3fy18e029q`) was reconnected and still says Saved in Files.
+  The never-connected channel `jn757dszpe1dpre3y889ac237d8e1nfb` still has 345 queued
+  jobs and no destination. Do not connect it or clear its jobs for a routine check.
+- Metadata QA Council has Edit on `/meetings`. Its three meetings and saved notes
+  are unchanged. Metadata QA Chitchat has Whole workspace Edit and a ready empty
+  page; no channel or dataset was created.
+- Copy QA Data Probe has Whole workspace View. Its JSON 200 check passed without
+  writing a file. Its weekly schedule and Run as me grant are unchanged.
 
 ### Repo files for uploads
 
