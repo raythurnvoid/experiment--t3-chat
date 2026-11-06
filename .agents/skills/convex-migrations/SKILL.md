@@ -250,6 +250,7 @@ vp env exec pnpm --dir packages/app exec convex run "migrations:run_<migration_n
 - Schema compiles with tightened shape.
 - Updated write paths no longer write legacy field.
 - For a cross-table copy, source and destination counts match the intended mapping and a focused audit verifies every copied row plus foreign references. Do not use a dry-run summary as this proof.
+- Before a live audit, hash the fields that must stay unchanged in a server-side query. Exclude only named fields that normal work may change, and check those changes separately. Keep raw rows out of the output. If an older run has no such hash, state that limit. Do not claim those fields were proved unchanged.
 - No diagnostics in modified files.
 - Keep migration verification separate from regular runtime coverage:
   - Do not make normal feature tests call migration runners or `packages/app/convex/migrations.ts` APIs.

@@ -19,7 +19,9 @@ import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import {
 	mock_share_storage,
 	fixture,
@@ -1056,8 +1058,14 @@ describe("public API", () => {
 			});
 			return installation;
 		});
-		const sessionId = await f.t.run((ctx) =>
-			ctx.db.insert("plugins_ui_sessions", {
+		const sessionId = await f.t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", f.db.membershipId))!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
+			return await ctx.db.insert("plugins_ui_sessions", {
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,
 				installationId,
@@ -1065,10 +1073,11 @@ describe("public API", () => {
 				serviceAccountId: installation.serviceAccountId,
 				userId: f.db.userId,
 				tokenHash: "share-frame",
+				filePairId: pair._id,
 				createdAt: Date.now(),
 				expiresAt: Date.now() + 60_000,
-			}),
-		);
+			});
+		});
 		const started = await f.t.mutation(internal.plugins_runtime.start_invoke_run, {
 			sessionId,
 			sessionTokenHash: "share-frame",

@@ -54,8 +54,8 @@ Ordinary API keys, frame tokens and service grants cannot use the Mounts write r
 Plugin runs, service grants, and UI sessions pin their account when minted. Each use requires that active account to still match the installation and its trusted publisher/source binding. Rebinding refuses old credentials instead of moving them to the new account. Personal credentials also pin `filePairId`: Files uses its applied consent, with live tenant and membership-lifetime checks. Account grants never expand that consent. Downloads repeat the check after signing, before returning URLs. File grants never grant private plugin-data access. Plugin-session JWT store calls validate the same live account pin and keep the existing member/store rules; they are not file-write credentials.
 
 File stages and service upload targets copy the credential's pair ID. Completion checks that
-same pin. Missing or null plugin pairs grant no live authority. Old accepted work must finish
-before its missing pins are changed to null; the rollout does not create replacement authority.
+same pin. Missing or null plugin pairs grant no live authority. Retained run, grant and upload
+history stores explicit null when no pair was accepted. UI sessions always store a pair ID.
 Service exchange always checks its source credential and current service secret, even without
 `requestId`; that ID controls retry receipts only. Invoke mint also checks its source frame.
 

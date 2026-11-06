@@ -310,10 +310,10 @@ describe("personal file credential pins", () => {
 		expect(docs.consents).toEqual([]);
 	});
 
-	test.each([null, undefined])("refuses a queued run with pair %s without minting authority", async (filePairId) => {
+	test("refuses a queued run with a null pair without minting authority", async () => {
 		const f = await fixture();
 		const root = await root_run(f);
-		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", root._id, { filePairId }));
+		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", root._id, { filePairId: null }));
 		const before = await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id));
 		const pairs = await f.t.run((ctx) => ctx.db.query("plugins_file_pairs").collect());
 		expect(
@@ -374,7 +374,6 @@ describe("personal file credential pins", () => {
 	test.each([
 		{ filePairId: null, orphan: false },
 		{ filePairId: null, orphan: true },
-		{ filePairId: undefined, orphan: true },
 	])("keeps finished history after callback replays (case %#)", async ({ filePairId, orphan }) => {
 		const f = await fixture();
 		const root = await root_run(f);
@@ -589,11 +588,11 @@ describe("personal file credential pins", () => {
 
 	test("a frame without a pair cannot mint personal authority", async () => {
 		const { f, args, session } = await invoke_fixture();
-		await f.t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session._id, { filePairId: undefined }));
+		await f.t.run((ctx) => ctx.db.delete("plugins_file_pairs", session.filePairId));
 		expect(
 			(await f.t.mutation(internal.plugins_runtime.start_invoke_run, args))._nay?.message,
-			"a frame without a pair must reopen before invoke",
-		).toBe("File access changed. Reopen this plugin.");
+			"a frame whose pair was deleted must not invoke",
+		).toBe("Unauthorized");
 	});
 
 	test("invoke keeps the person's write permission separate from file consent", async () => {

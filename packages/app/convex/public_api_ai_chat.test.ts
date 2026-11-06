@@ -4,10 +4,12 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { ai_chat_runs_db_insert_node, ai_chat_runs_db_plan_step } from "./ai_chat_runs.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import { ai_chat_message_fits_storage } from "../server/ai-chat-tool-budget.ts";
 import { ai_chat_tool_output_keep, ai_chat_tool_output_reserve } from "../server/ai-chat-tool-output.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 
 const TRANSCRIPT_PATH = "/api/v1/ai-chat/threads/transcript";
 const OUTPUT_PATH = "/api/v1/ai-chat/threads/tool-output/read";
@@ -285,8 +287,14 @@ async function plugin_tokens(f: Fixture) {
 		ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
 	))!;
 	const invokeToken = `plr_${crypto_random_hex(32)}`;
-	const sessionId = await f.t.run((ctx) =>
-		ctx.db.insert("plugins_ui_sessions", {
+	const sessionId = await f.t.run(async (ctx) => {
+		const membership = (await ctx.db.get("organizations_workspaces_users", f.db.membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation,
+			membership,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+		});
+		return await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			installationId: installation._id,
@@ -294,10 +302,11 @@ async function plugin_tokens(f: Fixture) {
 			serviceAccountId: installation.serviceAccountId,
 			userId: f.db.userId,
 			tokenHash: "chat-frame",
+			filePairId: pair._id,
 			createdAt: Date.now(),
 			expiresAt: Date.now() + 60_000,
-		}),
-	);
+		});
+	});
 	const invoked = await f.t.mutation(internal.plugins_runtime.start_invoke_run, {
 		sessionId,
 		sessionTokenHash: "chat-frame",

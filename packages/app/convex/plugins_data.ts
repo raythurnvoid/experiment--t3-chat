@@ -519,7 +519,6 @@ async function db_authorize(
 		const session = await ctx.db.get("plugins_ui_sessions", credentialRef.sessionId);
 		if (
 			!session ||
-			!session.filePairId ||
 			session.expiresAt <= now ||
 			session.organizationId !== installation.organizationId ||
 			session.workspaceId !== installation.workspaceId ||
@@ -2436,7 +2435,7 @@ async function db_authorize_page_write(
 	}
 	// Expiry cleanup can lag behind the clock, so check the stored deadline too.
 	const session = await ctx.db.get("plugins_ui_sessions", pluginSession.sessionId);
-	if (!session || !session.filePairId || session.expiresAt <= Date.now()) {
+	if (!session || session.expiresAt <= Date.now()) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
@@ -5018,7 +5017,7 @@ async function db_authorize_page_read(ctx: QueryCtx) {
 	}
 
 	const session = await ctx.db.get("plugins_ui_sessions", pluginSession.sessionId);
-	if (!session || !session.filePairId || session.expiresAt <= Date.now()) {
+	if (!session || session.expiresAt <= Date.now()) {
 		return null;
 	}
 

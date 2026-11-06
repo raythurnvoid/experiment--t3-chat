@@ -352,6 +352,7 @@ async function access_control_test_seed_activity(args: {
 		});
 		const runId = await ctx.db.insert("plugins_event_runs", {
 			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+			filePairId: null,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			assetId,

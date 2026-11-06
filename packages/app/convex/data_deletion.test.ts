@@ -634,9 +634,21 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		updatedBy: args.userId,
 		updatedAt: now,
 	});
+	const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
+		.first();
+	if (!membership) throw new Error("Expected workspace membership");
+	const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+		installation,
+		membership,
+		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+	});
 	for (let i = 0; i < args.sessionCount; i += 1) {
 		await ctx.db.insert("plugins_ui_sessions", {
 			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+			filePairId: pair._id,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			installationId,
@@ -648,7 +660,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		});
 	}
 
-	return { installationId } as const;
+	return { installationId, filePairId: pair._id } as const;
 }
 
 async function data_deletion_test_seed_workspace_content_bulk(
@@ -2844,8 +2856,22 @@ describe("process_user_deletion_request", () => {
 				updatedBy: collaborator.userId,
 				updatedAt: now,
 			});
+			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", created._yay.defaultWorkspaceId).eq("userId", deletedUser.userId),
+				)
+				.first();
+			if (!membership) throw new Error("Expected workspace membership");
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
 			await ctx.db.insert("plugins_ui_sessions", {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+				filePairId: pair._id,
 				organizationId: created._yay.organizationId,
 				workspaceId: created._yay.defaultWorkspaceId,
 				installationId,
@@ -5042,7 +5068,7 @@ describe("process_workspace_deletion_request", () => {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 			};
-			const { installationId } = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
+			const { installationId, filePairId } = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
 				...scope,
 				userId: user.userId,
 				sessionCount: 0,
@@ -5063,6 +5089,8 @@ describe("process_workspace_deletion_request", () => {
 				force: false,
 				...scope,
 				installationId,
+				filePairId,
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 				idempotencyKey: "purge-order",
 				targetKey: "upload",
 				requestFingerprint: "purge-order",
@@ -5348,8 +5376,22 @@ describe("process_workspace_deletion_request", () => {
 				installationCreatedAt: now,
 				updatedAt: now,
 			});
+			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", user.defaultWorkspaceId).eq("userId", user.userId),
+				)
+				.first();
+			if (!membership) throw new Error("Expected workspace membership");
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
 			await ctx.db.insert("plugins_ui_sessions", {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+				filePairId: pair._id,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				installationId,
@@ -5423,6 +5465,7 @@ describe("process_workspace_deletion_request", () => {
 			});
 			await ctx.db.insert("plugin_service_grants", {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+				filePairId: pair._id,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				installationId,
@@ -5439,6 +5482,7 @@ describe("process_workspace_deletion_request", () => {
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+				filePairId: pair._id,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				assetId,
@@ -6004,8 +6048,22 @@ describe("process_workspace_deletion_request", () => {
 				updatedBy: user.userId,
 				updatedAt: now,
 			});
+			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", user.defaultWorkspaceId).eq("userId", user.userId),
+				)
+				.first();
+			if (!membership) throw new Error("Expected workspace membership");
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+				filePairId: pair._id,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				assetId,
@@ -8608,6 +8666,7 @@ describe("finalize_user_deletion_data", () => {
 					await ctx.db.insert("plugin_service_grants", {
 						serviceAccountId: (await ctx.db.get("plugins_workspace_installations", seeded.installationId))!
 							.serviceAccountId,
+						filePairId: seeded.filePairId,
 						organizationId: user.defaultOrganizationId,
 						workspaceId: user.defaultWorkspaceId,
 						installationId: seeded.installationId,
@@ -10977,7 +11036,8 @@ describe("resolve_user after tombstone", () => {
 		expect(duringFinalization.user?.deletionFinalizationStartedAt).toBe(testNow);
 
 		let finalPass = { done: false, deletedCount: 0 };
-		for (let step = 0; step < 5 && !finalPass.done; step += 1) {
+		// The original pair and membership lifetime also need a deletion pass.
+		for (let step = 0; step < 7 && !finalPass.done; step += 1) {
 			finalPass = await t.run((ctx) =>
 				ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
 					requestId,

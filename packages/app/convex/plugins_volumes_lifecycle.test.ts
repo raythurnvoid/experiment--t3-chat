@@ -316,6 +316,7 @@ async function seed_history(
 		installationId: args.installationId,
 		pluginVersionId: args.pluginVersionId,
 		serviceAccountId: installation.serviceAccountId,
+		filePairId: null,
 		actorUserId: args.userId,
 		event: "ui.invoke.requested",
 		eventId: "history",

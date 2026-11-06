@@ -173,6 +173,8 @@ tenant and membership-lifetime checks remain separate live gates.
 Accepted file stages and upload targets keep the credential's pair ID. Publication
 must match that ID and check its applied access. Missing or null pairs give no live
 authority. Retained null-pair history cannot adopt a current pair or account.
+Stored UI sessions require a pair ID. Runs, grants and upload targets store an ID
+or explicit null; they cannot omit the field.
 Non-Files permissions keep their own live human checks.
 
 Upload targets also pin their service account. Background conversion requires both

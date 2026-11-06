@@ -7701,8 +7701,6 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		// Keep this marker until the history migration removes it. Runtime access uses personal consent.
-		fileAccessModel: v.optional(v.literal("personal")),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
 		status: v.union(v.literal("enabled"), v.literal("disabled")),
@@ -7958,8 +7956,7 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
 		// Null means no Files authority, for finished history or account-deleted events.
-		// Remove optional after the retained-history migration.
-		filePairId: v.optional(v.union(v.id("plugins_file_pairs"), v.null())),
+		filePairId: v.union(v.id("plugins_file_pairs"), v.null()),
 		// The uploaded file the event fired for; plugin-written outputs are ordinary Markdown siblings.
 		// Both are absent for an event that fires on something other than a file.
 		assetId: v.optional(v.id("files_r2_assets")),
@@ -8060,9 +8057,8 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		// Every new session stores its pair. A missing pair gives no access.
-		// Make this required after the retained-history audit.
-		filePairId: v.optional(v.id("plugins_file_pairs")),
+		// Refresh keeps the original pair and its membership lifetime.
+		filePairId: v.id("plugins_file_pairs"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		userId: v.id("users"),
@@ -8751,8 +8747,7 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
 		// Null keeps a revoked credential as history with no live authority.
-		// Remove optional after the retained-history migration.
-		filePairId: v.optional(v.union(v.id("plugins_file_pairs"), v.null())),
+		filePairId: v.union(v.id("plugins_file_pairs"), v.null()),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
@@ -8803,11 +8798,9 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
 		// Null records no accepted personal pair; it grants no access.
-		// Remove optional after the retained-history migration.
-		filePairId: v.optional(v.union(v.id("plugins_file_pairs"), v.null())),
+		filePairId: v.union(v.id("plugins_file_pairs"), v.null()),
 		// Null records no accepted account. Never fill it from today's installation.
-		// Remove optional after the retained-history migration.
-		serviceAccountId: v.optional(v.union(v.id("access_control_service_accounts"), v.null())),
+		serviceAccountId: v.union(v.id("access_control_service_accounts"), v.null()),
 		/**
 		 * The upload run this file belongs to, chosen by the service. One processing run reuses one
 		 * key for all its files, so the same `targetKey` in a later run is a different file.
@@ -8916,9 +8909,6 @@ const app_convex_schema = defineSchema({
 		// The archive route finds one target under the sealed destination without scanning an
 		// installation's full upload history. The stable node id then survives a folder rename.
 		.index("by_organization_workspace_installation_path", ["organizationId", "workspaceId", "installationId", "path"])
-		// The access switch checks pending uploads without reading settled history.
-		// Remove this index with the rollout switch after the final audit.
-		.index("by_organization_workspace_installation_state", ["organizationId", "workspaceId", "installationId", "state"])
 		// The delete route finds targets by key inside the installation; the uninstall/workspace drain
 		// uses the same index as a tenant-scope prefix.
 		.index("by_organization_workspace_installation_targetKey", [

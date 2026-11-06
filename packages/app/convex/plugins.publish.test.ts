@@ -4384,6 +4384,7 @@ describe("plugins uninstall_version", () => {
 			const runId = await insert_plugin_run(ctx, {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
 					.serviceAccountId,
+				filePairId: null,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,

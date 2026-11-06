@@ -734,21 +734,6 @@ describe("personal file session pins", () => {
 		expect(docs.consents, "minting does not grant any file").toEqual([]);
 	});
 
-	test("cannot renew a session without its original pair", async () => {
-		const t = test_convex();
-		const fixture = await install_gallery_plugin(t);
-		const session = await mint_session_token(fixture);
-		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { filePairId: undefined }));
-		const rotated = await fixture.asOwner.mutation(internal.plugins_ui.rotate_ui_session, {
-			membershipId: fixture.membership.membershipId,
-			sessionId: session.sessionId,
-		});
-		expect(rotated._nay?.message, "refresh without a pair must ask for a new frame").toBe(
-			"File access changed. Reopen this plugin.",
-		);
-		expect((await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId)))?.filePairId).toBeUndefined();
-	});
-
 	test("refresh keeps its pair and refuses a later membership lifetime", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);

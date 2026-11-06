@@ -1721,7 +1721,7 @@ export const resolve_principal = internalQuery({
 				.query("plugins_ui_sessions")
 				.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
 				.unique();
-			if (!session || !session.filePairId) {
+			if (!session) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 

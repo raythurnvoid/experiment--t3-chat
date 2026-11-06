@@ -3387,7 +3387,7 @@ export type BonoboHttpApi = {
 						runId?: undefined;
 						code?: undefined;
 					} | {
-						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "Not found" | "File access changed. Reopen this plugin." | "Endpoint not found" | "This endpoint requires a serialization key" | "Serialization keys must be visible ASCII (no spaces) up to 128 characters";
+						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "Not found" | "Endpoint not found" | "This endpoint requires a serialization key" | "Serialization keys must be visible ASCII (no spaces) up to 128 characters";
 						retryAfterMs?: undefined;
 						runId?: undefined;
 						code?: undefined;
@@ -3398,7 +3398,7 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "Not found" | "File access changed. Reopen this plugin." | "Endpoint not found" | "This endpoint requires a serialization key" | "Serialization keys must be visible ASCII (no spaces) up to 128 characters";
+						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "Not found" | "Endpoint not found" | "This endpoint requires a serialization key" | "Serialization keys must be visible ASCII (no spaces) up to 128 characters";
 						retryAfterMs?: undefined;
 						runId?: undefined;
 						code?: undefined;
@@ -3432,7 +3432,7 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "Not found" | "File access changed. Reopen this plugin." | "Endpoint not found" | "This endpoint requires a serialization key" | "Serialization keys must be visible ASCII (no spaces) up to 128 characters";
+						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "Not found" | "Endpoint not found" | "This endpoint requires a serialization key" | "Serialization keys must be visible ASCII (no spaces) up to 128 characters";
 						retryAfterMs?: undefined;
 						runId?: undefined;
 						code?: undefined;

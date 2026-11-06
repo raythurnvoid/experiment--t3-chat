@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { activities_db_require_by_source_id } from "./activities_db.ts";
 import { test_convex, test_finish_file_index, test_mocks_fill_db_with } from "./setup.test.ts";
+import { grant_plugin_file_access } from "./plugins.setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
@@ -171,16 +172,36 @@ describe("ensure_plugin_folder", () => {
 				subject: "ensure-review-member",
 				external_id: fixture.userId,
 			});
-			expect(
-				(
-					await asOwner.mutation(api.access_control.set_service_account_grant, {
-						membershipId: fixture.owner.membershipId,
-						serviceAccountId: fixture.serviceAccountId,
-						resource: { kind: "workspace" },
-						level: "write",
-					})
-				)._nay,
-			).toBeUndefined();
+			const consent = await grant_plugin_file_access({
+				t,
+				userId: fixture.userId,
+				membershipId: fixture.membershipId,
+				installationId: fixture.installationId,
+				rootNodeId: null,
+				level: "write",
+			});
+			// Role changes reach applied consent through grant jobs. Leave session and run timers alone.
+			const drain_grants = async () => {
+				for (const workspaceId of [null, fixture.owner.workspaceId]) {
+					for (let step = 0; step < 1_000; step++) {
+						const job = await t.run((ctx) =>
+							ctx.db
+								.query("plugins_file_grant_jobs")
+								.withIndex("by_organization_workspace", (q) =>
+									q.eq("organizationId", fixture.owner.organizationId).eq("workspaceId", workspaceId),
+								)
+								.first(),
+						);
+						if (!job) break;
+						await t.mutation(internal.plugins_file_grants.advance, {
+							jobId: job._id,
+							step: job.step,
+							phase: job.phase,
+						});
+						if (step === 999) throw new Error("Role change did not reach file consent");
+					}
+				}
+			};
 			expect(
 				await asMember.mutation(api.files_metadata.set_entries, {
 					membershipId: fixture.membershipId,
@@ -200,6 +221,7 @@ describe("ensure_plugin_folder", () => {
 					serviceAccountId: fixture.serviceAccountId,
 					userId: fixture.userId,
 					tokenHash: "review-frame",
+					filePairId: consent.pairId,
 					createdAt: Date.now(),
 					expiresAt: Date.now() + 60_000,
 				}),
@@ -227,6 +249,7 @@ describe("ensure_plugin_folder", () => {
 					role: "viewer",
 				}),
 			).toEqual({ _yay: null });
+			await drain_grants();
 			const before = await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
 				metadata: await ctx.db.query("files_metadata_docs").collect(),
@@ -267,6 +290,7 @@ describe("ensure_plugin_folder", () => {
 					role: "member",
 				}),
 			).toEqual({ _yay: null });
+			await drain_grants();
 			const accepted = await t.fetch("/api/v1/files/plugin-folders/ensure", request);
 			expect(accepted.status).toBe(200);
 			const created = await t.run(async (ctx) =>

@@ -179,7 +179,7 @@ describe("install_version scheduled consent", () => {
 		for (const docs of Object.values(setup)) expect(docs, "refused consent must leave setup empty").toEqual([]);
 	});
 
-	test("starts new installations without a rollout marker or invented file consent", async () => {
+	test("run consent does not grant file access", async () => {
 		const f = await scheduled_fixture();
 		const installed = await f.asOwner.mutation(api.plugins.install_version, {
 			...f.args,
@@ -187,16 +187,8 @@ describe("install_version scheduled consent", () => {
 		});
 		expect(installed._nay, "fresh run consent must not ask for a file proof").toBeUndefined();
 		if (installed._nay) throw new Error(installed._nay.message);
-		const saved = await f.t.run(async (ctx) => ({
-			installation: await ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
-			consents: await ctx.db.query("plugins_file_consents").collect(),
-		}));
-		expect(saved.installation, "a new installation must not write the removed rollout marker").not.toHaveProperty(
-			"fileAccessModel",
-		);
-		expect(saved.consents, "run consent must not create file consent").toEqual([]);
-		const catalog = await f.asMember.query(api.plugins.list_published_plugins, { membershipId: f.membership._id });
-		expect(catalog[0], "the catalog must not return the removed rollout marker").not.toHaveProperty("fileAccessModel");
+		const consents = await f.t.run((ctx) => ctx.db.query("plugins_file_consents").collect());
+		expect(consents, "run consent must not create file consent").toEqual([]);
 	});
 
 	test("rejects the removed account-grant input and preserves ordinary sharing on update", async () => {

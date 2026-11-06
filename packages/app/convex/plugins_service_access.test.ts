@@ -201,7 +201,8 @@ describe("create_lease_facts", () => {
 		expect((await lease({ t, fixture }))._nay).toBeUndefined();
 		await t.run(async (ctx) => {
 			if (change === "missing") {
-				await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { filePairId: undefined });
+				const session = (await ctx.db.get("plugins_ui_sessions", fixture.sessionId))!;
+				await ctx.db.delete("plugins_file_pairs", session.filePairId);
 			} else {
 				const lifetime = (await ctx.db
 					.query("organizations_membership_lifetimes")

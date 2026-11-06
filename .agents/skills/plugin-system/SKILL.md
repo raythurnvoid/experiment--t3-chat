@@ -222,13 +222,10 @@ the same reservation and replay its versioned write without another charge.
 It cannot adopt an old upload request with a null pair. Current consent can still
 delete or archive saved old output through the existing ownership checks.
 
-During the final data migration, the schema still accepts absent pins and the old
-marker. The temporary migrations check terminal runs, settled uploads and text
-stages before changing history. Remove them, their preview, the old switch and
-`by_organization_workspace_installation_state` after the complete preservation audit.
-After that audit, require the stored pair/account fields where the final schema
-calls for them. Keep null on retained history; it grants no authority. Keep the
-shared migrations component runner.
+UI sessions require a pair ID. Runs, service grants and upload targets require a
+pair ID or explicit null. Upload targets also require an account ID or null.
+Null preserves history and grants no authority. API-key text stages may omit the
+plugin pair; accepted plugin text stages require it.
 
 Service upload targets also keep their original account ID. Background text
 conversion requires both original pins and checks the account's live trusted

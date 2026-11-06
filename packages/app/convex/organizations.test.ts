@@ -18,9 +18,11 @@ import { access_control_db_ensure_role_assignment, access_control_db_has_permiss
 import { activities_db_start } from "./activities_db.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { organizations_DESCRIPTION_MAX_LENGTH, organizations_NAME_MAX_LENGTH } from "../shared/organizations.ts";
 import { files_get_utf8_byte_size } from "../server/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -376,6 +378,7 @@ async function organizations_test_seed_live_plugin_authority(
 	});
 	const runId = await ctx.db.insert("plugins_event_runs", {
 		serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+		filePairId: null,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		actorUserId: args.userId,
@@ -2979,6 +2982,22 @@ describe("remove_user_from_organization", () => {
 					updatedAt: now,
 				}),
 			]);
+			const [removedPair, projectPair, keptPair] = await Promise.all(
+				[removedInstallationId, projectInstallationId, keptInstallationId].map(async (installationId) => {
+					const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+					const membership = (await ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_workspace_user_active", (q) =>
+							q.eq("workspaceId", installation.workspaceId).eq("userId", memberId).eq("active", true),
+						)
+						.unique())!;
+					return await plugins_file_grants_db_ensure_pair(ctx, {
+						installation,
+						membership,
+						membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+					});
+				}),
+			);
 			const [removedGrantId, keptGrantId, removedSessionId, keptSessionId, removedServiceGrantId, keptServiceGrantId] =
 				await Promise.all([
 					ctx.db.insert("public_api_grants", {
@@ -3017,6 +3036,7 @@ describe("remove_user_from_organization", () => {
 						organizationId: organization._yay!.organizationId,
 						workspaceId: organization._yay!.defaultWorkspaceId,
 						installationId: removedInstallationId,
+						filePairId: removedPair!._id,
 						pluginVersionId,
 						userId: memberId,
 						tokenHash: "3".repeat(64),
@@ -3029,6 +3049,7 @@ describe("remove_user_from_organization", () => {
 						organizationId: otherOrganization._yay!.organizationId,
 						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
 						installationId: keptInstallationId,
+						filePairId: keptPair!._id,
 						pluginVersionId,
 						userId: memberId,
 						tokenHash: "4".repeat(64),
@@ -3041,6 +3062,7 @@ describe("remove_user_from_organization", () => {
 						organizationId: organization._yay!.organizationId,
 						workspaceId: organization._yay!.defaultWorkspaceId,
 						installationId: removedInstallationId,
+						filePairId: removedPair!._id,
 						pluginVersionId,
 						pluginName: "media",
 						actorUserId: memberId,
@@ -3058,6 +3080,7 @@ describe("remove_user_from_organization", () => {
 						organizationId: otherOrganization._yay!.organizationId,
 						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
 						installationId: keptInstallationId,
+						filePairId: keptPair!._id,
 						pluginVersionId,
 						pluginName: "media",
 						actorUserId: memberId,
@@ -3081,6 +3104,7 @@ describe("remove_user_from_organization", () => {
 					organizationId: organization._yay!.organizationId,
 					workspaceId: inProjectWorkspace ? workspace._yay!.workspaceId : organization._yay!.defaultWorkspaceId,
 					installationId: inProjectWorkspace ? projectInstallationId : removedInstallationId,
+					filePairId: (inProjectWorkspace ? projectPair : removedPair)!._id,
 					pluginVersionId,
 					pluginName: "media",
 					actorUserId: memberId,

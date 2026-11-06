@@ -584,9 +584,6 @@ export const rotate_ui_session = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 		// Refresh keeps the original pair and never gives an old frame new authority.
-		if (!session.filePairId) {
-			return Result({ _nay: { message: "File access changed. Reopen this plugin." } });
-		}
 		if (
 			!(await plugins_file_grants_db_validate_pair(ctx, {
 				pairId: session.filePairId,

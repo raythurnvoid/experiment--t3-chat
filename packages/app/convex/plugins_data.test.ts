@@ -2867,16 +2867,16 @@ describe("plugin-data credential revalidation", () => {
 						if (change === "stale_pair") {
 							const pair = (await ctx.db.get("plugins_file_pairs", fixture.filePairId))!;
 							await ctx.db.patch("plugins_file_pairs", pair._id, { membershipLifetime: pair.membershipLifetime + 1 });
+						} else if (change === "missing_pair") {
+							await ctx.db.delete("plugins_file_pairs", fixture.filePairId);
 						} else if (principal.kind === "plugin_run") {
 							await ctx.db.patch("plugins_event_runs", principal.runId, {
-								filePairId: change === "missing_pair" ? undefined : null,
+								filePairId: null,
 							});
 						} else if (principal.kind === "plugin_service") {
 							await ctx.db.patch("plugin_service_grants", principal.grantId, {
-								filePairId: change === "missing_pair" ? undefined : null,
+								filePairId: null,
 							});
-						} else if (principal.kind === "plugin_ui") {
-							await ctx.db.patch("plugins_ui_sessions", principal.sessionId, { filePairId: undefined });
 						} else {
 							throw new Error("Expected a plugin credential");
 						}
@@ -6992,7 +6992,8 @@ describe("db_authorize_page_write", () => {
 		const before = await read_documents(t, fixture);
 		await t.run(async (ctx) => {
 			if (change === "missing") {
-				await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { filePairId: undefined });
+				const session = (await ctx.db.get("plugins_ui_sessions", fixture.sessionId))!;
+				await ctx.db.delete("plugins_file_pairs", session.filePairId);
 			} else {
 				const lifetime = (await ctx.db
 					.query("organizations_membership_lifetimes")

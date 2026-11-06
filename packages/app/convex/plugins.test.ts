@@ -66,7 +66,10 @@ async function reset_plugin_limit(t: ReturnType<typeof test_convex>, userId: Id<
 }
 
 // Give raw run fixtures the same member pair as the real dispatcher.
-async function insert_personal_plugin_run(ctx: MutationCtx, args: Parameters<typeof insert_plugin_run>[1]) {
+async function insert_personal_plugin_run(
+	ctx: MutationCtx,
+	args: Omit<Parameters<typeof insert_plugin_run>[1], "filePairId">,
+) {
 	const installation = (await ctx.db.get("plugins_workspace_installations", args.installationId))!;
 	const membership = await ctx.db
 		.query("organizations_workspaces_users")
@@ -1920,6 +1923,8 @@ describe("plugins Phase 0", () => {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				installationId: installed._yay.installationId,
+				filePairId: null,
+				serviceAccountId: null,
 				idempotencyKey: "meeting-1",
 				targetKey: "artifact",
 				requestFingerprint: "{}",
@@ -11693,9 +11698,17 @@ describe("plugins admin hard delete", () => {
 				updatedBy: membership.userId,
 				updatedAt: now,
 			});
+			const installation = (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!;
+			const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership: member,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+			});
 			await ctx.db.insert("plugins_ui_sessions", {
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!
 					.serviceAccountId,
+				filePairId: pair._id,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				installationId: installedMedia._yay.installationId,
@@ -11787,6 +11800,7 @@ describe("plugins admin hard delete", () => {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				installationId: installedMedia._yay.installationId,
+				filePairId: pair._id,
 				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!
 					.serviceAccountId,
 				pluginVersionId: media.pluginVersionId,
@@ -12281,11 +12295,18 @@ describe("plugins admin hard delete", () => {
 			if (!installation) {
 				throw new Error("Expected installation");
 			}
+			const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership: member,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+			});
 			for (let index = 0; index < 101; index += 1) {
 				await ctx.db.insert("plugin_service_grants", {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					installationId: installed._yay.installationId,
+					filePairId: pair._id,
 					serviceAccountId: installation.serviceAccountId,
 					pluginVersionId: media.pluginVersionId,
 					pluginName: "media",

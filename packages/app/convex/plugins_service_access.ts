@@ -168,8 +168,7 @@ export const create_lease_facts = internalMutation({
 			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash))
 			.first();
 		const now = Date.now();
-		if (!session || !session.filePairId || session.expiresAt <= now)
-			return Result({ _nay: { message: "Unauthorized" } });
+		if (!session || session.expiresAt <= now) return Result({ _nay: { message: "Unauthorized" } });
 
 		const live = await db_live_installation(ctx, session.installationId);
 		if (

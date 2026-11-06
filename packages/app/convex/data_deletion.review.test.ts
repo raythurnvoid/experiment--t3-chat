@@ -15,6 +15,8 @@ import { hard_delete_user_data } from "./data_deletion.ts";
 import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { files_metadata_stringify_entries_yaml, files_metadata_validate_entries } from "../shared/files-metadata.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_insert_pending_update } from "../server/files.ts";
@@ -235,9 +237,21 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		updatedBy: args.userId,
 		updatedAt: now,
 	});
+	const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+	const membership = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
+		.first();
+	if (!membership) throw new Error("Expected workspace membership");
+	const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+		installation,
+		membership,
+		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+	});
 	for (let i = 0; i < args.sessionCount; i += 1) {
 		await ctx.db.insert("plugins_ui_sessions", {
 			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+			filePairId: pair._id,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			installationId,
@@ -249,7 +263,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		});
 	}
 
-	return { installationId } as const;
+	return { installationId, filePairId: pair._id } as const;
 }
 
 async function data_deletion_test_seed_workspace_content_bulk(
@@ -861,7 +875,7 @@ async function review_seed_all_workspace_content(
 			jobId: `review_materialize_${args.tag}_${i}` as WorkId,
 			targetSequence: 1,
 		});
-		const { installationId } = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
+		const { installationId, filePairId } = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
 			...tenant,
 			userId: args.userId,
 			sessionCount: 2,
@@ -1090,6 +1104,7 @@ async function review_seed_all_workspace_content(
 		await ctx.db.insert("plugin_service_grants", {
 			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", pluginTenant.installationId))!
 				.serviceAccountId,
+			filePairId,
 			...pluginTenant,
 			pluginVersionId,
 			actorUserId: args.userId,
@@ -1151,6 +1166,7 @@ async function review_seed_all_workspace_content(
 		});
 		const runId = await ctx.db.insert("plugins_event_runs", {
 			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
+			filePairId,
 			...tenant,
 			assetId: node.assetId,
 			fileNodeId: node._id,
@@ -1288,6 +1304,8 @@ async function review_seed_all_workspace_content(
 			force: false,
 			...tenant,
 			installationId,
+			filePairId,
+			serviceAccountId: installation.serviceAccountId,
 			idempotencyKey: "upload",
 			targetKey: "image",
 			requestFingerprint: "upload",

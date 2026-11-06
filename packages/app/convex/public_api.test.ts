@@ -35,7 +35,10 @@ import { get_by_path, get_file_content_materialization_state, read_file_content_
 import { stage_trusted_yjs_update } from "./files_pending_updates.ts";
 import { delete_paths, transfer_paths } from "./public_api_files_organize.ts";
 import { mock_transfer_storage } from "./files_transfer.setup.test.ts";
+import { grant_plugin_file_access } from "./plugins.setup.test.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import {
 	files_get_utf8_byte_size,
 	files_INVALID_CONTENT_TYPE_MESSAGE,
@@ -11110,6 +11113,21 @@ describe("service file writes", () => {
 				updatedBy: args.db.userId,
 				updatedAt: now,
 			});
+			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+			const membership = (await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q
+						.eq("workspaceId", args.db.workspaceId)
+						.eq("userId", args.actorUserId ?? args.db.userId)
+						.eq("active", true),
+				)
+				.unique())!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
 			const grantId = await ctx.db.insert("plugin_service_grants", {
 				organizationId: args.db.organizationId,
 				workspaceId: args.db.workspaceId,
@@ -11121,23 +11139,22 @@ describe("service file writes", () => {
 				tokenHash,
 				scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
 				principalKey: `plugin_service:${args.db.organizationId}:${args.db.workspaceId}:${installationId}`,
+				filePairId: pair._id,
 				phase: args.phase ?? "processing",
 				destinationPathPrefix: args.destinationPathPrefix ?? "/meetings",
 				expiresAt: now + 60 * 60 * 1000,
 				updatedAt: now,
 			});
-			return { pluginVersionId, installationId, grantId, serviceAccountId };
+			return { pluginVersionId, installationId, grantId, serviceAccountId, membershipId: membership._id };
 		});
-		const asOwner = args.t.withIdentity({ issuer: "https://clerk.test", external_id: args.db.userId });
-		const granted = await asOwner.mutation(api.access_control.set_service_account_grant, {
-			membershipId: args.db.membershipId,
-			serviceAccountId: seeded.serviceAccountId,
-			resource: { kind: "workspace" },
-			level: "manage",
+		await grant_plugin_file_access({
+			t: args.t,
+			userId: args.actorUserId ?? args.db.userId,
+			membershipId: seeded.membershipId,
+			installationId: seeded.installationId,
+			rootNodeId: null,
+			level: "write",
 		});
-		if (granted._nay) {
-			throw new Error(granted._nay.message);
-		}
 		return { token, ...seeded };
 	}
 

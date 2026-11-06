@@ -1034,9 +1034,6 @@ export const start_invoke_run = internalMutation({
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		if (!session.filePairId) {
-			return Result({ _nay: { message: "File access changed. Reopen this plugin." } });
-		}
 		if (
 			!(await plugins_file_grants_db_validate_pair(ctx, {
 				pairId: session.filePairId,

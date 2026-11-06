@@ -362,9 +362,10 @@ An upload run needs Can view on its source before receiving file metadata. It al
 needs Can edit on the source's parent to create a sibling. A file-only choice cannot
 grant that parent access. Added `bonobo-file://` references need Can view too.
 
-Every live credential needs its original personal pair. A missing or null pair
-cannot use Files or plugin data, renew, seal, or recover a token. Start a fresh
-frame, run, or service connection when the API asks you to do so.
+Every live credential needs its original personal pair. Retained history may have
+a null pair; it grants no access. A missing or null pair cannot use Files or plugin
+data, renew, seal, or recover a token. Start a fresh frame, run, or service connection
+when the API asks you to do so.
 Accepted uploads keep their original pair and account. A fresh connection cannot
 adopt a request with a missing, null, or different pair. It can manage saved old
 output when current consent allows it. Plugin-data reservations keep their
