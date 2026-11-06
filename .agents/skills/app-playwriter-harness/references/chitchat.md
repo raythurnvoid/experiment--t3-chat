@@ -839,12 +839,12 @@ the stylesheet, and compare the name's right edge with the link's content box to
 
 ## Channel transcript files (`/chitchat` in Files) — 0.6.0 backend flow
 
-### Current service-account permission checks
+### Historical service-account permission checks
 
 Verified 2026-09-08 with installed Chitchat 0.7.7 and the service-account file policy model.
 Keep this check on a unique public channel. Do not unlock a shared transcript root to make QA pass.
-Since 2026-11 a plugin file check needs the person and the plugin's service account, both through
-normal grants. A folder the plugin creates is a regular folder with its parent's access.
+This account-grant model is no longer used. Current file checks use the original personal pair
+and its applied consent. Follow the current rebuild contract above for new QA.
 
 - Read the installed version on the detail page. The catalog version may be newer.
 - Read `projection/__root__` through the frame's plugin client before finding files. The saved

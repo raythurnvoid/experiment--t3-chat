@@ -271,6 +271,8 @@ type WriteOk = BonoboHttpApi["/api/v1/files/write"]["POST"]["response"][200]["bo
 type WriteAnswer = BonoboHttpResponse<"/api/v1/files/write">;
 ```
 
+0.25.4 adds the two Trash list routes and their scheduled-run refusal. File access uses personal consent, including Whole workspace. Plugin Restore stays closed. The runtime is unchanged.
+
 0.25.3 removes `expectedReaderRevision` from `/api/v1/files/write`; the host now refuses it. Write receipts no longer have `readerRevision` or the reader operations. The runtime is unchanged.
 
 0.25.2 removes plugin reader lists: the `workspace.files.own-access` capability, the `readers` fields and the `/api/v1/files/plugin-access/undo` route. `expectedReaderRevision` on `/api/v1/files/write` may only be `null` or left out, and the next release removes it. Plugin file calls act as their person, limited by the plugin's service account. The runtime is unchanged.
@@ -404,8 +406,9 @@ bearer and the `X-Bonobo-Service-Authorization` header.
 The opaque resource key is 1–512 characters and belongs to the plugin. A null root ID creates an
 unused sealed root; later writers use its exact root ID. Repeating a key keeps the original IDs
 and sharing. An existing path alone never proves ownership. A new folder is a regular folder: it
-gets its parent's sharing. The member and the plugin's service account must both be able to write
-the nearest existing parent. Share that parent with the service account before the first ensure.
+gets its parent's sharing. The original personal pair needs applied Can edit on the nearest
+existing parent. Choose that parent in My file permissions before the first ensure. Creating a
+folder at the workspace root needs Whole workspace with Can edit.
 
 Persist each operation and its exact conditions before sending it. Replays must keep the same
 normalized text, content hash, content type, non-collaborative creation mode, and create-time policy.
@@ -775,7 +778,7 @@ A status the route does not declare — a gateway `503`, say — resolves like a
 
 `method`, `body` and `redirect` are removed from `init`'s type as well. The three headers cannot be: header names are case-insensitive, so the type cannot name them, and setting them last is the whole enforcement.
 
-The table holds every route a plugin's frame or backend run may reach. It does not hold the service-upload routes above, which only a sealed `psg_` grant may call. Because it holds the backend-run routes too, typing accepts a few paths a UI token cannot use: `/api/v1/files/write` compiles and still answers `403`. The seven routes above are the ones that work.
+The table holds every route a plugin's frame or backend run may reach. It does not hold the service-upload routes above, which only a sealed `psg_` grant may call. Because it holds the backend-run routes too, typing accepts a few paths a UI token cannot use: `/api/v1/files/write` compiles and still answers `403`. The nine routes above are the ones that work.
 
 `files/download-urls` accepts at most 100 file IDs in a 32 KB request, processes the first 20, and returns `{ items, errors, truncated }`.
 Set `download: true` to sign `Content-Disposition: attachment`, including for images and video.
