@@ -217,8 +217,9 @@ Plugin Restore remains closed until its job contract is approved.
 During rollout, accepted file stages and upload targets keep their original pair
 pin, or old authority if they have none. Completion must match that pin. Once an
 installation switches, old credentials cannot accept new writes, seals or renewals.
-The remaining workspace-consent switch rechecks the audited consent, membership
-and trusted binding in the same transaction as the marker write. It waits for live
+The remaining access switch rechecks every audited consent, membership
+and trusted binding in the same transaction as the marker write. Whole workspace
+consent must be area-eligible; a folder choice need not be. It waits for live
 runs, pending service uploads and workspace text stages to finish. Its upload check
 uses `by_organization_workspace_installation_state` and reads no settled history.
 Remove this bridge and its switch-only index after the final audit.

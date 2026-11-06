@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
 import { activities_db_start } from "./activities_db.ts";
-import { fixture } from "./files_archive_runs.setup.test.ts";
+import { fixture, seed_tree } from "./files_archive_runs.setup.test.ts";
 import { insert_installation } from "./files_share_links.setup.test.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
@@ -55,9 +55,7 @@ async function audited_installation() {
 			userId: membership.userId,
 			membershipId: membership._id,
 			membershipLifetime,
-			consentId,
-			consentRevision: 1,
-			level: "write" as const,
+			consents: [{ consentId, consentRevision: 1, rootNodeId: null, level: "write" as const }],
 		};
 	});
 	return { ...f, args: { installationId, expected } };
@@ -131,13 +129,13 @@ test("the access switch refuses consent removed after the audit", async () => {
 		await f.asOwner.mutation(api.plugins_access.revoke_file_access_as_me, {
 			membershipId: f.db.membershipId,
 			installationId: f.args.installationId,
-			consentId: f.args.expected.consentId,
+			consentId: f.args.expected.consents[0].consentId,
 		}),
 	).toEqual({ _yay: null });
 	expect(
 		(await f.t.mutation(internal.migrations.switch_plugin_file_access, f.args))._nay?.message,
 		"a revoke after the audit must stop the switch",
-	).toBe("Workspace consent changed. Audit it again before switching.");
+	).toBe("File consent changed. Audit it again before switching.");
 	expect(
 		(await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.args.installationId)))?.fileAccessModel,
 		"refused consent must leave the old model in place",
@@ -152,14 +150,85 @@ test.each([
 	{ areaEligible: false },
 ])("the access switch refuses changed consent: %j", async (change) => {
 	const f = await audited_installation();
-	await f.t.run((ctx) => ctx.db.patch("plugins_file_consents", f.args.expected.consentId, change));
+	await f.t.run((ctx) => ctx.db.patch("plugins_file_consents", f.args.expected.consents[0].consentId, change));
 	expect(
 		(await f.t.mutation(internal.migrations.switch_plugin_file_access, f.args))._nay?.message,
 		"the switch must use the audited applied consent",
-	).toBe("Workspace consent changed. Audit it again before switching.");
+	).toBe("File consent changed. Audit it again before switching.");
 	expect(
 		(await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.args.installationId)))?.fileAccessModel,
 	).toBeUndefined();
+});
+
+test.each(["applied", "revoked", "wrong_root"] as const)(
+	"the access switch checks each workspace and folder choice: %s",
+	async (change) => {
+		const f = await audited_installation();
+		const folder = await seed_tree(f, { name: "chosen", folderCount: 0, filesPerFolder: 0 });
+		const otherFolder = await seed_tree(f, { name: "other", folderCount: 0, filesPerFolder: 0 });
+		const workspaceChoice = f.args.expected.consents[0];
+		const consentId = await f.t.run(async (ctx) => {
+			const consent = (await ctx.db.get("plugins_file_consents", workspaceChoice.consentId))!;
+			await ctx.db.patch("plugins_file_consents", consent._id, { requestedLevel: "read", appliedLevel: "read" });
+			const { _id, _creationTime, ...fields } = consent;
+			return await ctx.db.insert("plugins_file_consents", {
+				...fields,
+				rootNodeId: folder.topId,
+				areaEligible: false,
+			});
+		});
+		const args = {
+			...f.args,
+			expected: {
+				...f.args.expected,
+				consents: [
+					{ ...workspaceChoice, level: "read" as const },
+					{
+						consentId,
+						consentRevision: 1,
+						rootNodeId: change === "wrong_root" ? otherFolder.topId : folder.topId,
+						level: "write" as const,
+					},
+				],
+			},
+		};
+		if (change === "revoked") {
+			expect(
+				await f.asOwner.mutation(api.plugins_access.revoke_file_access_as_me, {
+					membershipId: f.db.membershipId,
+					installationId: args.installationId,
+					consentId,
+				}),
+			).toEqual({ _yay: null });
+		}
+		const before = await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", args.installationId));
+		const result = await f.t.mutation(internal.migrations.switch_plugin_file_access, args);
+		const after = await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", args.installationId));
+		if (change === "applied") {
+			expect(result, "workspace View and ordinary-folder Edit allow the switch together").toEqual({ _yay: null });
+			expect(after, "mixed consent changes only the access marker").toEqual({ ...before, fileAccessModel: "personal" });
+		} else {
+			expect(result._nay?.message, `the switch must reject the second choice when ${change}`).toBe(
+				"File consent changed. Audit it again before switching.",
+			);
+			expect(after, "a refused later choice must leave the full installation unchanged").toEqual(before);
+		}
+	},
+);
+
+test("the access switch refuses an empty consent audit", async () => {
+	const f = await audited_installation();
+	const before = await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.args.installationId));
+	expect(
+		(
+			await f.t.mutation(internal.migrations.switch_plugin_file_access, {
+				...f.args,
+				expected: { ...f.args.expected, consents: [] },
+			})
+		)._nay?.message,
+		"an empty audit must not switch file access",
+	).toBe("Choose file consent and audit it before switching.");
+	expect(await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.args.installationId))).toEqual(before);
 });
 
 test.each(["installation", "version", "account", "binding", "membership", "lifetime"] as const)(

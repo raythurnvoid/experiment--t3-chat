@@ -37,9 +37,14 @@ export const switch_plugin_file_access = internalMutation({
 			userId: v.id("users"),
 			membershipId: v.id("organizations_workspaces_users"),
 			membershipLifetime: v.number(),
-			consentId: v.id("plugins_file_consents"),
-			consentRevision: v.number(),
-			level: doc(app_convex_schema, "plugins_file_consents").fields.requestedLevel,
+			consents: v.array(
+				v.object({
+					consentId: v.id("plugins_file_consents"),
+					consentRevision: v.number(),
+					rootNodeId: doc(app_convex_schema, "plugins_file_consents").fields.rootNodeId,
+					level: doc(app_convex_schema, "plugins_file_consents").fields.requestedLevel,
+				}),
+			),
 		}),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -58,7 +63,7 @@ export const switch_plugin_file_access = internalMutation({
 		) {
 			return Result({ _nay: { message: "Installation changed. Audit it again before switching." } });
 		}
-		const [account, version, binding, pair, consent] = await Promise.all([
+		const [account, version, binding, pair] = await Promise.all([
 			ctx.db.get("access_control_service_accounts", expected.serviceAccountId),
 			ctx.db.get("plugins_versions", expected.pluginVersionId),
 			ctx.db.get("plugins_service_account_bindings", expected.bindingId),
@@ -67,7 +72,6 @@ export const switch_plugin_file_access = internalMutation({
 				installationId: installation._id,
 				userId: expected.userId,
 			}),
-			ctx.db.get("plugins_file_consents", expected.consentId),
 		]);
 		if (
 			!account ||
@@ -93,20 +97,26 @@ export const switch_plugin_file_access = internalMutation({
 		) {
 			return Result({ _nay: { message: "Personal membership changed. Audit it again before switching." } });
 		}
-		if (
-			!consent ||
-			consent.organizationId !== installation.organizationId ||
-			consent.workspaceId !== installation.workspaceId ||
-			consent.pairId !== pair._id ||
-			consent.rootNodeId !== null ||
-			!consent.open ||
-			consent.requestedLevel !== expected.level ||
-			consent.appliedLevel !== expected.level ||
-			consent.state !== "applied" ||
-			!consent.areaEligible ||
-			consent.revision !== expected.consentRevision
-		) {
-			return Result({ _nay: { message: "Workspace consent changed. Audit it again before switching." } });
+		if (expected.consents.length === 0)
+			return Result({ _nay: { message: "Choose file consent and audit it before switching." } });
+		// Whole workspace needs area eligibility. A saved folder can be an ordinary folder.
+		for (const choice of expected.consents) {
+			const consent = await ctx.db.get("plugins_file_consents", choice.consentId);
+			if (
+				!consent ||
+				consent.organizationId !== installation.organizationId ||
+				consent.workspaceId !== installation.workspaceId ||
+				consent.pairId !== pair._id ||
+				consent.rootNodeId !== choice.rootNodeId ||
+				!consent.open ||
+				consent.requestedLevel !== choice.level ||
+				consent.appliedLevel !== choice.level ||
+				consent.state !== "applied" ||
+				(choice.rootNodeId === null && !consent.areaEligible) ||
+				consent.revision !== choice.consentRevision
+			) {
+				return Result({ _nay: { message: "File consent changed. Audit it again before switching." } });
+			}
 		}
 		// A queued old run must keep its original writes until it ends.
 		for (const status of ["queued", "running", "awaiting_input", "stopping"] as const) {
