@@ -90,6 +90,12 @@ Verified with Save, Edit, Remove, persisted readback, and a 390px viewport on 20
 The workspace choice also passed keyboard Space, Tab into the level group, ArrowRight
 to Can edit, and the 390px layout check on 2026-11-05. The two radio groups stay separate.
 
+Whole workspace Save, View/Edit readback and Remove passed on 2026-11-06 in
+`chitchat-qa/xfer-qa-0914`. Check a folder created after consent too. Workspace
+Trash returns the real null area; follow its cursor even after a full one-row page.
+Restricted rows stay locked, and entry stays 403. Removing consent keeps the
+Whole workspace history label and makes dependent Files and Trash reads refuse.
+
 After an installation switches to personal access, open a fresh plugin frame. Its old token must
 refuse new Files work. Keep captured tokens only in Playwriter memory and remove capture listeners.
 Use `path` for ordinary `files/list`, and `folderNodeId` for `files/trash/list` folder mode.
@@ -103,6 +109,25 @@ remains. That control proves the refusal came from lost access. Revoke only the 
 afterward, check 401, clear captured tokens, and leave the QA tab open.
 
 Verified on 2026-11-05 with Gallery in `chitchat-qa/xfer-qa-0914`.
+
+If a request listener misses the frame token, the signed-in app can call
+`plugins_ui.mint_page_session({membershipId,pluginName})` for a separate test session.
+Keep its token only in Playwriter memory. Revoke that exact `sessionId` through
+`plugins_ui.revoke_ui_session`, verify 401, then clear the token. This does not
+replace checking that the real plugin page loads. Verified on 2026-11-06.
+
+For root upload consent, read the saved output as well as the Activity result.
+Check the run's personal pair and call records. A succeeded Activity alone does
+not prove that the outside service or saved text is correct. Use
+`r2.create_signed_download_url` for collaborative output text; keep the URL in
+page memory. Reuse the [upload fixtures](../../qa-data/references/inventory.md#plugin-output-read-only)
+for read checks. Creating fresh uploads starts paid work.
+
+For Video Player, the Files view picker is a combobox named `View: File details`.
+Choose its `Video player` option, then check the fresh frame's video ready state,
+duration and error. Test Space on the native video control and verify time moves.
+Restore any temporary mute. Gallery lazy media may need the tab in front before
+checking loaded image sizes. Verified on 2026-11-06.
 
 ## Install / update / uninstall
 
