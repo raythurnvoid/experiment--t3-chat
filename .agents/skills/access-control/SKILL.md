@@ -143,16 +143,23 @@ grants pin one `filePairId` when created. Existing installations keep the old
 person-and-account checks until their audited switch. Never retag an old token
 or copy account grants into personal consent.
 **My file permissions** is the user name for these `plugins_file_consents` docs.
-Each doc records consent for a selected saved item. Its applied level is the grant.
+Each doc records consent for a saved item or the whole workspace. Its applied level is the grant.
 
 `plugins_file_pairs` binds one person, installation and exact membership lifetime.
-`plugins_file_consents` stores each selected saved item, requested View/Edit level,
+`plugins_file_consents` stores each target, requested View/Edit level,
 applied level, open/ended state and Trash-area eligibility. A new selection starts
 pending with no applied access. A fresh selection after removal gets a new doc.
 The personal doors in `plugins_access.ts` resolve the signed-in person; managers
 cannot select files for somebody else. Lists use `by_pair` pages, including ended
 and unreadable selections, so a person can still remove them.
-Ended consent keeps its history but returns no current file path or kind.
+Ended saved-item consent keeps its history but returns no current file path or kind.
+`rootNodeId: null` means Whole workspace; an ID means one saved file or folder.
+The target never changes on an existing consent. Whole workspace includes the root
+and current and future saved items in the open area. Restricted folders need their
+own consent, even for an owner's plugin. It adds no private-draft access.
+The person must have workspace Read, and Write for Edit, when choosing this scope.
+Its exact lookup uses `by_pair_rootNode_open(pairId, null, true)`; it creates no
+file anchor or per-file grants. Ended workspace consent still identifies its scope.
 New consent checks Read before reporting file state. A denied check must not
 reveal a current path inside a locked folder.
 
@@ -193,7 +200,8 @@ Lost View ends consent. Later access does not reopen it or create child consent.
 Finished jobs are deleted; `recover_due` retries failed callbacks by `by_dueAt`.
 
 Cleanup drains consents before their pair or saved root. User, installation and
-workspace drains use their pair indexes. Empty extended roots retire through the
+workspace drains use their pair indexes. Workspace consent has no anchor to retire.
+Empty extended roots retire through the
 normal scope worker. See the [deletion spec](../data-deletion/SKILL.md).
 
 ## Service accounts

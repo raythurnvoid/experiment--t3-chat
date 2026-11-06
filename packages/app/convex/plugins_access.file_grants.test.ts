@@ -112,6 +112,174 @@ describe("personal plugin file grants", () => {
 		});
 	});
 
+	test("workspace consent needs the person's workspace Read and Edit", async () => {
+		const f = await fixture();
+		const args = {
+			membershipId: f.grantOnly.membershipId,
+			installationId: f.installationId,
+			rootNodeId: null,
+		};
+		expect(
+			(await f.asGrantOnly.mutation(api.plugins_access.grant_file_access_as_me, { ...args, level: "read" }))._nay
+				?.message,
+			"a folder-only reader cannot grant the whole workspace",
+		).toBe("You cannot read this item. Ask for Can view access first.");
+		await f.t.run((ctx) =>
+			ctx.db.insert("access_control_permission_grants", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				resourceKind: "workspace",
+				resourceId: f.owner.workspaceId,
+				principalKind: "user",
+				userId: f.grantOnly.userId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		const granted = await f.asGrantOnly.mutation(api.plugins_access.grant_file_access_as_me, {
+			...args,
+			level: "read",
+		});
+		expect(granted._yay, "a workspace reader can choose workspace View").toBeDefined();
+		await f.reset(f.grantOnly.userId);
+		expect(
+			(await f.asGrantOnly.mutation(api.plugins_access.grant_file_access_as_me, { ...args, level: "write" }))._nay
+				?.message,
+			"workspace View cannot become Edit without human Write",
+		).toBe("You cannot edit /. Ask for Can edit access first.");
+	});
+
+	test("workspace choices keep their target, applied access and ended history", async () => {
+		const f = await fixture();
+		const args = { membershipId: f.owner.membershipId, installationId: f.installationId, rootNodeId: null };
+		const first = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, { ...args, level: "write" });
+		expect(first._yay, "workspace Edit creates pending consent").toBeDefined();
+		if (first._nay) throw new Error(first._nay.message);
+		expect(await f.t.run((ctx) => ctx.db.get("plugins_file_consents", first._yay.consentId))).toMatchObject({
+			rootNodeId: null,
+			requestedLevel: "write",
+			appliedLevel: null,
+			areaEligible: false,
+			state: "pending",
+		});
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(
+			await f.t.run((ctx) => ctx.db.get("plugins_file_consents", first._yay.consentId)),
+			"the worker applies workspace Edit and its Trash area",
+		).toMatchObject({ appliedLevel: "write", areaEligible: true, state: "applied" });
+		expect(await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, { ...args, level: "read" })).toEqual(
+			first,
+		);
+		expect(await f.t.run((ctx) => ctx.db.get("plugins_file_consents", first._yay.consentId))).toMatchObject({
+			rootNodeId: null,
+			requestedLevel: "read",
+			appliedLevel: "write",
+			state: "pending",
+		});
+		await f.reset(f.owner.userId);
+		const saved = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
+			...args,
+			rootNodeId: f.nodes.grantedId,
+			level: "read",
+		});
+		expect(saved._yay?.consentId, "a saved target must not replace workspace consent").not.toBe(first._yay.consentId);
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		await expect(
+			f.asOwner.mutation(api.plugins_access.revoke_file_access_as_me, {
+				membershipId: args.membershipId,
+				installationId: args.installationId,
+				consentId: first._yay.consentId,
+			}),
+			"workspace consent can be removed without a saved anchor",
+		).resolves.toEqual({ _yay: null });
+		const fresh = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, { ...args, level: "read" });
+		expect(fresh._yay?.consentId, "workspace regrant creates a new consent").not.toBe(first._yay.consentId);
+		const history = await f.asOwner.query(api.plugins_access.list_my_file_grants, {
+			membershipId: args.membershipId,
+			installationId: args.installationId,
+			paginationOpts: { numItems: 20, cursor: null },
+		});
+		expect(history.page, "workspace history preserves the ended choice and separate saved grant").toMatchObject([
+			{ consentId: first._yay.consentId, rootNodeId: null, path: "/", open: false, appliedLevel: null },
+			{ consentId: saved._yay!.consentId, rootNodeId: f.nodes.grantedId, open: true, appliedLevel: "read" },
+			{ consentId: fresh._yay!.consentId, rootNodeId: null, path: "/", state: "pending" },
+		]);
+	});
+
+	test("workspace consent stays with its person, installation, tenant and membership lifetime", async () => {
+		const f = await fixture();
+		const args = { membershipId: f.owner.membershipId, installationId: f.installationId, rootNodeId: null };
+		const granted = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, { ...args, level: "read" });
+		if (granted._nay) throw new Error(granted._nay.message);
+		expect(
+			(await f.asAdmin.mutation(api.plugins_access.grant_file_access_as_me, { ...args, level: "read" }))._nay?.message,
+			"another person cannot choose workspace consent for the owner",
+		).toBe("Unauthorized");
+		expect(
+			(
+				await f.asAdmin.mutation(api.plugins_access.revoke_file_access_as_me, {
+					membershipId: f.admin.membershipId,
+					installationId: args.installationId,
+					consentId: granted._yay.consentId,
+				})
+			)._nay?.message,
+			"another person cannot remove workspace consent",
+		).toBe("Not found");
+		for (const [actor, membershipId, installationId] of [
+			[f.asAdmin, f.admin.membershipId, f.installationId],
+			[f.asOwner, f.owner.membershipId, f.otherInstallationId],
+		] as const) {
+			expect(
+				(
+					await actor.query(api.plugins_access.list_my_file_grants, {
+						membershipId,
+						installationId,
+						paginationOpts: { numItems: 20, cursor: null },
+					})
+				).page,
+				"workspace consent belongs only to its pair",
+			).toEqual([]);
+		}
+		const foreignInstallationId = await f.t.run(async (ctx) => {
+			const foreign = (await ctx.db.get("files_nodes", f.nodes.foreignFolderId))!;
+			const { _id, _creationTime, ...installation } = (await ctx.db.get(
+				"plugins_workspace_installations",
+				f.installationId,
+			))!;
+			return await ctx.db.insert("plugins_workspace_installations", {
+				...installation,
+				organizationId: ctx.db.normalizeId("organizations", foreign.organizationId)!,
+				workspaceId: ctx.db.normalizeId("organizations_workspaces", foreign.workspaceId)!,
+			});
+		});
+		expect(
+			(
+				await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
+					...args,
+					installationId: foreignInstallationId,
+					level: "read",
+				})
+			)._nay?.message,
+			"null targets still require a same-tenant installation",
+		).toBe("Not found");
+		await f.t.run(async (ctx) => {
+			const membership = (await ctx.db.get("organizations_workspaces_users", args.membershipId))!;
+			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: false }]);
+			await organizations_membership_lifetimes_db_record(ctx, [{ membership, active: true }]);
+		});
+		expect(
+			(
+				await f.asOwner.query(api.plugins_access.list_my_file_grants, {
+					membershipId: args.membershipId,
+					installationId: args.installationId,
+					paginationOpts: { numItems: 20, cursor: null },
+				})
+			).page,
+			"membership rejoin does not restore old workspace consent",
+		).toEqual([]);
+	});
+
 	test("refuses unreadable and foreign roots before creating personal consent", async () => {
 		const f = await fixture();
 		for (const rootNodeId of [f.nodes.hiddenId, f.nodes.foreignFolderId]) {
@@ -482,14 +650,17 @@ describe("personal plugin file grants", () => {
 			const unrelated = (await ctx.db.get("plugins_file_consents", other._yay.consentId))!;
 			const ids = [original._id];
 			for (let i = 0; i < 40; i++) {
-				const rootNodeId = await insert_tree_node({
-					ctx,
-					owner: f.owner,
-					parentId: "root",
-					path: `/consent-${i}`,
-					kind: "folder",
-					scope: "self",
-				});
+				const rootNodeId =
+					i === 20 || i === 21
+						? null
+						: await insert_tree_node({
+								ctx,
+								owner: f.owner,
+								parentId: "root",
+								path: `/consent-${i}`,
+								kind: "folder",
+								scope: "self",
+							});
 				ids.push(
 					await ctx.db.insert("plugins_file_consents", {
 						organizationId: original.organizationId,
@@ -511,7 +682,7 @@ describe("personal plugin file grants", () => {
 					organizationId: unrelated.organizationId,
 					workspaceId: unrelated.workspaceId,
 					pairId: unrelated.pairId,
-					rootNodeId,
+					rootNodeId: i === 21 ? f.nodes.openId : rootNodeId,
 					requestedLevel: "read",
 					appliedLevel: "read",
 					areaEligible: true,
@@ -526,6 +697,7 @@ describe("personal plugin file grants", () => {
 			return ids;
 		});
 		const found: Id<"plugins_file_consents">[] = [];
+		let workspaceChoices = 0;
 		let cursor: string | null = null;
 		for (const expectedLength of [20, 20, 1]) {
 			const result = await f.asGrantOnly.run(async (ctx) => {
@@ -543,10 +715,16 @@ describe("personal plugin file grants", () => {
 			expect(page.page, "each page must keep unreadable and ended selections").toHaveLength(expectedLength);
 			expect(result.cost.documentsRead, "a page must not read the other person's selections").toBeLessThan(50);
 			found.push(...page.page.map((grant) => grant.consentId));
+			for (const grant of page.page) {
+				if (grant.rootNodeId !== null) continue;
+				workspaceChoices++;
+				expect(grant.path, "open and ended workspace choices keep their label").toBe("/");
+			}
 			cursor = page.continueCursor;
 			expect(page.isDone).toBe(expectedLength === 1);
 		}
 		expect(found).toEqual(expected);
 		expect(new Set(found).size).toBe(41);
+		expect(workspaceChoices, "mixed history pages include open and ended workspace choices").toBe(2);
 	});
 });

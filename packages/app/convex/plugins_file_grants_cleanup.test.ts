@@ -16,7 +16,12 @@ afterEach(() => {
 
 async function seed(
 	f: Fixture,
-	args: { count: number; membershipId?: Id<"organizations_workspaces_users">; rootNodeId?: Id<"files_nodes"> },
+	args: {
+		count: number;
+		membershipId?: Id<"organizations_workspaces_users">;
+		rootNodeId?: Id<"files_nodes">;
+		withWorkspace?: boolean;
+	},
 ) {
 	const installationId = await insert_installation(f);
 	const pairId = await f.t.run(async (ctx) => {
@@ -35,7 +40,7 @@ async function seed(
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				pairId,
-				rootNodeId: args.rootNodeId ?? f.nodeId,
+				rootNodeId: args.withWorkspace && i % 2 === 0 ? null : (args.rootNodeId ?? f.nodeId),
 				requestedLevel: "read",
 				appliedLevel: i === 0 ? "read" : null,
 				areaEligible: false,
@@ -52,9 +57,9 @@ async function seed(
 	return { installationId, pairId };
 }
 
-test("uninstall drains several pages of open and ended consents before their pair", async () => {
+test("uninstall drains several pages of mixed workspace and saved consents before their pair", async () => {
 	const f = await fixture();
-	const selected = await seed(f, { count: 201 });
+	const selected = await seed(f, { count: 201, withWorkspace: true });
 	const kept = await seed(f, { count: 1 });
 	await f.t.run((ctx) => ctx.db.delete("plugins_workspace_installations", selected.installationId));
 	const args = { ...f.db, installationId: selected.installationId, _test_disableReschedule: true };
@@ -71,6 +76,16 @@ test("uninstall drains several pages of open and ended consents before their pai
 	let done = first.done;
 	for (let i = 0; i < 20 && !done; i++) done = (await drain()).done;
 	expect(done).toBe(true);
+	const anchors = await f.t.run(async (ctx) =>
+		(await ctx.db.system.query("_scheduled_functions").collect()).filter(
+			(job) => job.name === "plugins_file_grants_cleanup:retire_anchor",
+		),
+	);
+	expect(anchors.length, "saved choices still schedule anchor cleanup").toBeGreaterThan(0);
+	for (const anchor of anchors)
+		expect(anchor.args[0], "workspace choices must not schedule a null saved anchor").toMatchObject({
+			nodeId: f.nodeId,
+		});
 	expect(
 		await f.t.run((ctx) =>
 			ctx.db
@@ -87,7 +102,7 @@ test("uninstall drains several pages of open and ended consents before their pai
 
 test("registry deletion drains personal grants before the installation", async () => {
 	const f = await fixture();
-	const selected = await seed(f, { count: 17 });
+	const selected = await seed(f, { count: 17, withWorkspace: true });
 	for (let i = 0; i < 30; i++) {
 		const pair = await f.t.run((ctx) => ctx.db.get("plugins_file_pairs", selected.pairId));
 		if (!pair) break;
@@ -106,7 +121,7 @@ test("registry deletion drains personal grants before the installation", async (
 
 test("user cleanup drains their consents before removing their membership", async () => {
 	const f = await fixture();
-	const selected = await seed(f, { count: 17, membershipId: f.memberMembershipId });
+	const selected = await seed(f, { count: 17, membershipId: f.memberMembershipId, withWorkspace: true });
 	const kept = await seed(f, { count: 1 });
 	for (let i = 0; i < 30; i++) {
 		const before = await f.t.run((ctx) =>
@@ -141,7 +156,7 @@ test("user cleanup drains their consents before removing their membership", asyn
 
 test("workspace cleanup removes pairs and grants before the installation", async () => {
 	const f = await fixture();
-	const selected = await seed(f, { count: 17 });
+	const selected = await seed(f, { count: 17, withWorkspace: true });
 	const requestId = await f.t.run((ctx) =>
 		data_deletion_db_request(ctx, {
 			userId: f.db.userId,

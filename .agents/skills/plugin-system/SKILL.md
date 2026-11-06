@@ -164,11 +164,16 @@ Runs, UI sessions, and service grants keep the account ID present when they were
 ### Plugin file access
 
 The **My file permissions** section records consent for each person and
-installation. It offers a saved-path lookup, Can view / Can edit, Save, Remove,
+installation. It offers File or folder with a saved-path lookup, or Whole workspace,
+then Can view / Can edit, Save, Remove,
 and Load more. Run consent stays separate. Only the signed-in person can change
 their selections. The list shows chosen access, applied access and pending or
 ended state. Removal works after the person loses access to the item.
-Ended consent shows "Unavailable item" instead of a current file path.
+Ended saved-item consent shows "Unavailable item" instead of a current file path.
+Workspace consent keeps the label "Whole workspace". It covers current and future
+open files and the root. Restricted folders need separate consent. The person must
+have workspace Read, and Write for Edit, to choose it. Do not hide these controls
+based on manifest Files capabilities: upload runs have their own Files baseline.
 
 New installations use personal file consent. Old installations keep their account
 checks until the audited switch. The controls show which rule applies. Switch only
@@ -189,7 +194,8 @@ live checks. Do not add a second human check or pause all calls during an update
 
 An upload run needs applied Read before its envelope includes source file metadata.
 Creating a sibling also needs applied Edit on the actual parent. Selecting only the
-source file does not permit sibling writes. Added file references need applied Read.
+source file does not permit sibling writes. A root-level source needs workspace
+Edit for its sibling. Added file references need applied Read.
 
 - To let a plugin use a saved file or folder, select it in **My file permissions**.
 - A folder a plugin creates (`plugin-folders/ensure`, a writer's folder) is a regular folder. It gets its parent's access, like a folder a person creates. The plugin cannot restrict it or choose who reads it.
@@ -202,15 +208,20 @@ output-folder rules out of the platform, so lists, links, Move and Trash agree.
 
 Plugin runs and frames with `workspace.files.read` may list Trash through
 `files/trash/list` and `files/trash/areas`. Applied folder consent is enough,
-including a folder already in Trash. Areas page selected folders in consent order;
-there is no open-workspace area. File-only consent adds no parent access or area.
+including a folder already in Trash. Areas page eligible consents in consent order.
+Applied workspace View or Edit adds the open area (`areaNodeId: null`, path `/`)
+in that same page. File-only consent adds no parent access or area.
 Guests and scheduled runs are refused. `changedBy` is visible to every caller.
 Plugin Restore remains closed until its job contract is approved.
 
 During rollout, accepted file stages and upload targets keep their original pair
 pin, or old authority if they have none. Completion must match that pin. Once an
 installation switches, old credentials cannot accept new writes, seals or renewals.
-The switch waits for live runs to finish. Remove this bridge after the final audit.
+The remaining workspace-consent switch rechecks the audited consent, membership
+and trusted binding in the same transaction as the marker write. It waits for live
+runs, pending service uploads and workspace text stages to finish. Its upload check
+uses `by_organization_workspace_installation_state` and reads no settled history.
+Remove this bridge and its switch-only index after the final audit.
 
 New service upload targets also keep their original account ID. Background text
 conversion checks that account's live trusted binding before adding file references.

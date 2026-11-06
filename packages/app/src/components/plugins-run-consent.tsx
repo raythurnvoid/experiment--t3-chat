@@ -431,6 +431,8 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 }) {
 	const { membershipId, installationId, fileAccessModel } = props;
 	const groupName = useId();
+	const scopeGroupName = useId();
+	const [scope, setScope] = useState<"file" | "workspace">("file");
 	const [path, setPath] = useState("");
 	const [selectedFileId, setSelectedFileId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const [level, setLevel] =
@@ -442,9 +444,12 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 	const [focusFeedback, setFocusFeedback] = useState(false);
 	const target = useQuery(
 		app_convex_api.files_nodes.get_visible_target_by_path,
-		path.trim() ? { membershipId, path: path.trim() } : "skip",
+		scope === "file" && path.trim() ? { membershipId, path: path.trim() } : "skip",
 	);
 	const savedTarget = target?.target.kind === "saved" ? target.target : null;
+	// Null selects the workspace. Undefined means no target was chosen.
+	const selectedRootNodeId =
+		scope === "workspace" ? null : savedTarget && savedTarget.id === selectedFileId ? savedTarget.id : undefined;
 	const grants = usePaginatedQuery(
 		app_convex_api.plugins_access.list_my_file_grants,
 		{ membershipId, installationId },
@@ -458,14 +463,14 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 				: "Choose a saved file or folder you can read."
 		: "Enter the path of a saved file or folder you can read.";
 	const handleGrant = useFn(() => {
-		if (!savedTarget || savedTarget.id !== selectedFileId || pending) return;
+		if (selectedRootNodeId === undefined || pending) return;
 		setPending("grant");
 		setFeedback(null);
 		app_convex
 			.mutation(app_convex_api.plugins_access.grant_file_access_as_me, {
 				membershipId,
 				installationId,
-				rootNodeId: savedTarget.id,
+				rootNodeId: selectedRootNodeId,
 				level,
 			})
 			.then((result) => {
@@ -523,50 +528,82 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 				</p>
 			) : null}
 			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
-				Choose the saved files and folders this plugin may use for you. This does not allow scheduled runs.
+				Choose the files, folders or whole workspace this plugin may use for you. This does not allow scheduled runs.
 			</p>
 			<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
 				{fileAccessModel === "personal"
 					? "Access changes apply in the background. The plugin keeps its current access until each change finishes."
 					: "After that update, access changes will apply in the background. The plugin will keep its current access until each change finishes."}
 			</p>
-			<MyInput displayValidationMessage={showPathError ? pathMessage : undefined}>
-				<MyInputLabel>File or folder path</MyInputLabel>
-				<MyInputArea>
-					<MyInputBox />
-					<MyInputControl
-						value={path}
-						disabled={pending !== null}
-						placeholder="/shared/reports"
-						validationMessage={pathMessage}
-						onChange={(event) => {
-							setPath(event.currentTarget.value);
-							setSelectedFileId(null);
-							setFeedback(null);
-						}}
-						onBlur={() => setShowPathError(true)}
-					/>
-				</MyInputArea>
-			</MyInput>
-			{showPathError && pathMessage ? <p role="alert">{pathMessage}</p> : null}
-			{path.trim() && target === undefined ? <p role="status">Looking up this path...</p> : null}
-			{savedTarget ? (
+			<div className={"PluginsMyFilePermissions-choices" satisfies PluginsMyFilePermissions_ClassNames}>
+				<MyRadioButton
+					name={scopeGroupName}
+					checked={scope === "file"}
+					disabled={pending !== null}
+					onChange={() => {
+						setScope("file");
+						setFeedback(null);
+					}}
+				>
+					<MyRadioButtonLabel>File or folder</MyRadioButtonLabel>
+				</MyRadioButton>
+				<MyRadioButton
+					name={scopeGroupName}
+					checked={scope === "workspace"}
+					disabled={pending !== null}
+					onChange={() => {
+						setScope("workspace");
+						setFeedback(null);
+					}}
+				>
+					<MyRadioButtonLabel>Whole workspace</MyRadioButtonLabel>
+				</MyRadioButton>
+			</div>
+			{scope === "workspace" ? (
+				<p className={"PluginsMyFilePermissions-note" satisfies PluginsMyFilePermissions_ClassNames}>
+					Includes current and future open files. Restricted folders need separate permission.
+				</p>
+			) : (
 				<>
-					<MyButton
-						className={"PluginsMyFilePermissions-target" satisfies PluginsMyFilePermissions_ClassNames}
-						variant="outline"
-						disabled={pending !== null}
-						onClick={() => setSelectedFileId(savedTarget.id)}
-					>
-						Use this {target?.kind}: {path.trim()}
-					</MyButton>
-					{selectedFileId === savedTarget.id ? (
-						<p role="status">
-							Selected {target?.kind}: {path.trim()}
-						</p>
+					<MyInput displayValidationMessage={showPathError ? pathMessage : undefined}>
+						<MyInputLabel>File or folder path</MyInputLabel>
+						<MyInputArea>
+							<MyInputBox />
+							<MyInputControl
+								value={path}
+								disabled={pending !== null}
+								placeholder="/shared/reports"
+								validationMessage={pathMessage}
+								onChange={(event) => {
+									setPath(event.currentTarget.value);
+									setSelectedFileId(null);
+									setFeedback(null);
+								}}
+								onBlur={() => setShowPathError(true)}
+							/>
+						</MyInputArea>
+					</MyInput>
+					{showPathError && pathMessage ? <p role="alert">{pathMessage}</p> : null}
+					{path.trim() && target === undefined ? <p role="status">Looking up this path...</p> : null}
+					{savedTarget ? (
+						<>
+							<MyButton
+								className={"PluginsMyFilePermissions-target" satisfies PluginsMyFilePermissions_ClassNames}
+								variant="outline"
+								disabled={pending !== null}
+								onClick={() => setSelectedFileId(savedTarget.id)}
+							>
+								Use this {target?.kind}: {path.trim()}
+							</MyButton>
+							{selectedFileId === savedTarget.id ? (
+								<p role="status">
+									Selected {target?.kind}: {path.trim()}
+								</p>
+							) : null}
+						</>
 					) : null}
 				</>
-			) : null}
+			)}
 			<div className={"PluginsMyFilePermissions-choices" satisfies PluginsMyFilePermissions_ClassNames}>
 				<MyRadioButton
 					name={groupName}
@@ -585,7 +622,7 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 					<MyRadioButtonLabel>Can edit</MyRadioButtonLabel>
 				</MyRadioButton>
 				<MyButton
-					disabled={(!savedTarget || savedTarget.id !== selectedFileId) && pending !== "grant"}
+					disabled={selectedRootNodeId === undefined && pending !== "grant"}
 					aria-disabled={pending !== null || undefined}
 					aria-busy={pending === "grant" || undefined}
 					onClick={handleGrant}
@@ -605,7 +642,7 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 			) : null}
 			{grants.status === "LoadingFirstPage" ? <p role="status">Loading My file permissions…</p> : null}
 			{grants.status !== "LoadingFirstPage" && grants.results.length === 0 ? (
-				<p>No files or folders selected.</p>
+				<p>No file permissions selected.</p>
 			) : null}
 			<ul className={"PluginsMyFilePermissions-list" satisfies PluginsMyFilePermissions_ClassNames}>
 				{grants.results.map((grant) => (
@@ -614,7 +651,7 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 						className={"PluginsMyFilePermissions-item" satisfies PluginsMyFilePermissions_ClassNames}
 						data-state={grant.state}
 					>
-						<p>{grant.path ?? "Unavailable item"}</p>
+						<p>{grant.rootNodeId === null ? "Whole workspace" : (grant.path ?? "Unavailable item")}</p>
 						<p>Chosen: {grant.requestedLevel === "write" ? "Can edit" : "Can view"}</p>
 						<p>
 							Current:{" "}
@@ -627,7 +664,7 @@ export const PluginsMyFilePermissions = memo(function PluginsMyFilePermissions(p
 								variant="ghost_destructive"
 								aria-disabled={pending !== null || undefined}
 								aria-busy={pending === grant.consentId || undefined}
-								aria-label={`Remove permission for ${grant.path ?? "unavailable item"}`}
+								aria-label={`Remove permission for ${grant.rootNodeId === null ? "whole workspace" : (grant.path ?? "unavailable item")}`}
 								onClick={() => handleRevoke(grant.consentId)}
 							>
 								Remove

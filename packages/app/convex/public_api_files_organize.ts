@@ -1275,7 +1275,7 @@ export async function public_api_files_organize_http_trash_list(args: {
 const TRASH_AREAS_MAX_ITEMS = 100;
 
 /**
- * Page every eligible consent for one pair, in consent order, using saved folder paths.
+ * Page every eligible workspace or folder consent for one pair, in consent order.
  * The worker applies human access changes to by_pair_areaEligible. Do not filter the page again.
  */
 export const list_plugin_trash_areas_page = internalQuery({
@@ -1291,7 +1291,7 @@ export const list_plugin_trash_areas_page = internalQuery({
 		v.object({ status: v.literal("denied") }),
 		v.object({
 			status: v.literal("page"),
-			rows: v.array(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+			rows: v.array(v.object({ nodeId: v.union(v.id("files_nodes"), v.null()), path: v.string() })),
 			cursor: v.string(),
 			isDone: v.boolean(),
 		}),
@@ -1307,6 +1307,7 @@ export const list_plugin_trash_areas_page = internalQuery({
 			.paginate({ cursor: args.cursor, numItems: args.numItems });
 		const rows = await Promise.all(
 			result.page.map(async (consent) => {
+				if (consent.rootNodeId === null) return { nodeId: null, path: "/" };
 				const node = await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId, saved.tag);
 				// Purge drains consent before deleting the saved node.
 				if (!node) throw should_never_happen("Plugin Trash area has no saved node", { consentId: consent._id });
@@ -1494,7 +1495,8 @@ export type public_api_files_organize_http_trash_areas_Body = z.infer<typeof tra
  * Then come the restricted folders the key can open, by path. Each page merges the principal streams
  * of `list_trash_areas_page` for the normal saved stream and, during a Move, the Move view, like
  * `files_saved_list_page` does for a folder list.
- * Plugins page their applied folder consents in consent order, with paths from the saved view.
+ * Plugins page their applied consents in consent order. Folder paths come from the saved view;
+ * workspace consent returns `/`.
  */
 export async function public_api_files_organize_http_trash_areas(args: {
 	ctx: ActionCtx;

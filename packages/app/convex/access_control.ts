@@ -1267,7 +1267,7 @@ export function access_control_create_file_checker(
 
 	const pair_root_allows = async (
 		pairId: Id<"plugins_file_pairs">,
-		rootNodeId: Id<"files_nodes">,
+		rootNodeId: Id<"files_nodes"> | null,
 		permission: access_control_Permission,
 	) => {
 		if (permission !== "content.read" && permission !== "content.write") return false;
@@ -1340,6 +1340,8 @@ export function access_control_create_file_checker(
 		permission: access_control_Permission,
 	) => {
 		if (principal.kind === "plugin_pair") {
+			// Workspace consent stops at a restricted boundary, like an ordinary workspace grant.
+			if (scopeNodeId === null && (await pair_root_allows(principal.pairId, null, permission))) return true;
 			if (!node) return false;
 			if (await pair_root_allows(principal.pairId, node._id, permission)) return true;
 			if (scopeNodeId) {
@@ -1418,11 +1420,12 @@ export function access_control_create_file_checker(
 		}
 
 		if (subject.kind === "plugin_pair") {
-			if (!node || (permission !== "content.read" && permission !== "content.write")) return false;
+			if (permission !== "content.read" && permission !== "content.write") return false;
 			const pair = await once("pair", () => plugins_file_grants_db_validate_pair(ctx, { pairId: subject.pairId }));
 			if (!pair || pair.organizationId !== tenant.organizationId || pair.workspaceId !== tenant.workspaceId) {
 				return false;
 			}
+			if (!node) return await scope_allows(tenant, subject, null, null, permission);
 			const saved = await get_node(node._id);
 			if (!saved || saved.organizationId !== tenant.organizationId || saved.workspaceId !== tenant.workspaceId) {
 				return false;

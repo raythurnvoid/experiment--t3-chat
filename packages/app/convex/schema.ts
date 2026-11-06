@@ -7764,11 +7764,12 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		pairId: v.id("plugins_file_pairs"),
-		rootNodeId: v.id("files_nodes"),
+		// Null selects the open workspace, including future saved files.
+		rootNodeId: v.union(v.id("files_nodes"), v.null()),
 		requestedLevel: v.union(v.literal("read"), v.literal("write")),
 		// Readers use this level while a new choice is pending. Null grants no access.
 		appliedLevel: v.union(v.literal("read"), v.literal("write"), v.null()),
-		// Applied read access to an active restricted folder, for the Phase 2 Trash area index.
+		// Applied read access to the workspace or an active restricted folder, for Trash areas.
 		areaEligible: v.boolean(),
 		// Closed consent stays as history and never reopens. State also shows pending work.
 		open: v.boolean(),
@@ -8910,6 +8911,9 @@ const app_convex_schema = defineSchema({
 		// The archive route finds one target under the sealed destination without scanning an
 		// installation's full upload history. The stable node id then survives a folder rename.
 		.index("by_organization_workspace_installation_path", ["organizationId", "workspaceId", "installationId", "path"])
+		// The access switch checks pending uploads without reading settled history.
+		// Remove this index with the rollout switch after the final audit.
+		.index("by_organization_workspace_installation_state", ["organizationId", "workspaceId", "installationId", "state"])
 		// The delete route finds targets by key inside the installation; the uninstall/workspace drain
 		// uses the same index as a tenant-scope prefix.
 		.index("by_organization_workspace_installation_targetKey", [

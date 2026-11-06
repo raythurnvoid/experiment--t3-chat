@@ -53,6 +53,7 @@ export async function plugins_file_grants_db_drain_pair(
 		.take(args.batchSize);
 	for (const consent of consents) await ctx.db.delete("plugins_file_consents", consent._id);
 	for (const nodeId of new Set(consents.map((consent) => consent.rootNodeId))) {
+		if (nodeId === null) continue;
 		// Each root has its own scope walk and database budget.
 		await ctx.scheduler.runAfter(0, internal.plugins_file_grants_cleanup.retire_anchor, {
 			nodeId,

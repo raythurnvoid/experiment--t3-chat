@@ -143,7 +143,7 @@ async function plugin(f: Fixture, options: { member?: boolean; legacy?: boolean;
 async function select(
 	f: Fixture,
 	pairId: Id<"plugins_file_pairs">,
-	rootNodeId: Id<"files_nodes">,
+	rootNodeId: Id<"files_nodes"> | null,
 	areaEligible = false,
 ) {
 	const consentId = await f.t.run((ctx) =>
@@ -163,7 +163,7 @@ async function select(
 			updatedAt: Date.now(),
 		}),
 	);
-	if (!areaEligible) {
+	if (rootNodeId !== null && !areaEligible) {
 		await f.t.mutation(internal.files_subtree_ops.extend_node, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -292,6 +292,87 @@ test.each(["list", "areas"] as const)("%s keeps the failed call's cursor error c
 	});
 });
 
+test.each(["token", "runToken"] as const)(
+	"%s uses workspace Trash consent without crossing restricted areas",
+	async (credential) => {
+		const f = await fixture();
+		const p = await plugin(f);
+		const workspaceConsent = await select(f, p.pairId, null, true);
+		const selected = await folder(f, "/selected");
+		const hidden = await folder(f, "/hidden");
+		for (const nodeId of [selected, hidden]) {
+			await reset_rate_limits(f.t, [f.db.userId]);
+			expect(
+				(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }))._nay,
+			).toBeUndefined();
+		}
+		await test_finish_saved_scope_jobs(f.t);
+		await select(f, p.pairId, selected, true);
+		const selectedChild = await folder(f, "/selected/child");
+		const hiddenChild = await folder(f, "/hidden/child");
+		const openChildren: Id<"files_nodes">[] = [];
+		for (const name of ["a", "b", "c", "d", "e"]) openChildren.push(await folder(f, `/open-${name}`));
+		const archived = await archive(f, [...openChildren, selectedChild, hiddenChild]);
+		expect(archived._nay).toBeUndefined();
+		if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
+		const areas = [];
+		let cursor: string | null = null;
+		do {
+			const page = await post(f, p[credential], "areas", { limit: 1, cursor });
+			expect(page.status, "workspace and saved areas share one native page").toBe(200);
+			expect(page.body.areas!.length, "a one-area page does not prepend an extra workspace").toBe(1);
+			areas.push(...page.body.areas!);
+			cursor = page.body.cursor ?? null;
+		} while (cursor);
+		expect(areas, "workspace and saved areas appear once in consent order").toEqual([
+			{ areaNodeId: null, path: "/" },
+			{ areaNodeId: selected, path: "/selected" },
+		]);
+		const items = [];
+		const sizes: number[] = [];
+		do {
+			const page = await post(f, p[credential], "list", { areaNodeId: null, limit: 2, cursor });
+			expect(page.status, "workspace consent opens the root Trash area").toBe(200);
+			items.push(...page.body.items!);
+			sizes.push(page.body.items!.length);
+			cursor = page.body.cursor ?? null;
+		} while (cursor);
+		expect(sizes, "open Trash fills more than one page").toEqual([2, 2, 1]);
+		expect(new Set(items.map((item) => item.nodeId)), "root Trash excludes restricted contents").toEqual(
+			new Set(openChildren),
+		);
+		expect(
+			items.every((item) => item.changedBy === f.db.userId && !item.locked),
+			"open Trash keeps changedBy",
+		).toBe(true);
+		expect(
+			(await post(f, p[credential], "list", { areaNodeId: hidden })).status,
+			"workspace consent cannot open a restricted Trash area",
+		).toBe(403);
+		expect(
+			(await post(f, p[credential], "list", { areaNodeId: selected })).body.items?.map((item) => item.nodeId),
+		).toEqual([selectedChild]);
+		expect(
+			(await post(f, p[credential], "restore", { paths: ["/open-a"] })).status,
+			"workspace consent does not open plugin Restore",
+		).toBe(403);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_file_consents", workspaceConsent, {
+				open: false,
+				appliedLevel: null,
+				areaEligible: false,
+				state: "ended",
+			}),
+		);
+		expect((await post(f, p[credential], "list")).status, "removing workspace consent closes root Trash").toBe(403);
+		expect(
+			(await post(f, p[credential], "areas")).body.areas,
+			"the saved restricted area survives workspace removal",
+		).toEqual([{ areaNodeId: selected, path: "/selected" }]);
+		expect((await post(f, p[credential], "list", { areaNodeId: selected })).status).toBe(200);
+	},
+);
+
 test("file-only selection gives no Trash area or parent list", async () => {
 	const f = await fixture();
 	const p = await plugin(f);
@@ -325,8 +406,12 @@ test("areas page only the pair's applied rows without a live human filter or acc
 	const f = await fixture();
 	const p = await plugin(f, { member: true });
 	const other = await plugin(f);
-	const roots: Id<"files_nodes">[] = [];
+	const roots: Array<Id<"files_nodes"> | null> = [];
 	for (let i = 0; i < 7; i++) {
+		if (i === 2) {
+			await select(f, p.pairId, null, true);
+			roots.push(null);
+		}
 		const nodeId = await folder(f, `/area-${6 - i}`);
 		await reset_rate_limits(f.t, [f.db.userId]);
 		await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId });
@@ -428,8 +513,12 @@ test.each(["token", "runToken"] as const)(
 	async (credential) => {
 		const f = await fixture({ transactionLimits: true });
 		const p = await plugin(f);
-		const roots: Id<"files_nodes">[] = [];
+		const roots: Array<Id<"files_nodes"> | null> = [];
 		for (let i = 0; i < 105; i++) {
+			if (i === 52) {
+				await select(f, p.pairId, null, true);
+				roots.push(null);
+			}
 			const nodeId = await folder(f, `/full-area-${i}`);
 			await f.t.run((ctx) =>
 				ctx.db.patch("files_nodes", nodeId, {
@@ -446,17 +535,17 @@ test.each(["token", "runToken"] as const)(
 			expect_under_convex_limits(transaction_cost(before, await ctx.meta.getTransactionMetrics()));
 			return result;
 		});
-		const ids: string[] = [];
+		const ids: Array<string | null> = [];
 		const sizes: number[] = [];
 		let cursor: string | null = null;
 		do {
 			const page = await post(f, p[credential], "areas", { limit: 100, cursor });
 			expect(page.status, "a full plugin area page succeeds").toBe(200);
-			ids.push(...page.body.areas!.map((area) => area.areaNodeId!));
+			ids.push(...page.body.areas!.map((area) => area.areaNodeId));
 			sizes.push(page.body.areas!.length);
 			cursor = page.body.cursor ?? null;
 		} while (cursor);
-		expect(sizes, "area pages fill the supported limit").toEqual([100, 5]);
+		expect(sizes, "area pages fill the supported limit").toEqual([100, 6]);
 		expect(ids, "full area pages return every consent once").toEqual(roots);
 	},
 );
@@ -568,6 +657,7 @@ test.each(["list", "areas"] as const)(
 		const guest = await plugin(f, { member: true });
 		const root = await folder(f, "/guest-folder");
 		await select(f, guest.pairId, root);
+		await select(f, guest.pairId, null, true);
 		await f.asOwner.mutation(api.access_control.set_user_role, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -584,11 +674,13 @@ test.each(["list", "areas"] as const)(
 			"legacy credentials get a clear migration message",
 		).toContain("personal file permissions");
 		const scheduled = await plugin(f, { scheduled: true });
+		await select(f, scheduled.pairId, null, true);
 		expect(await post(f, scheduled.runToken, route), "scheduled Trash gives a clear refusal").toMatchObject({
 			status: 403,
 			body: { message: "Scheduled plugin runs cannot use Trash yet." },
 		});
 		const noCapability = await plugin(f);
+		await select(f, noCapability.pairId, null, true);
 		await f.t.run((ctx) =>
 			ctx.db.patch("plugins_workspace_installations", noCapability.installationId, { acceptedCapabilities: [] }),
 		);

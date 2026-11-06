@@ -29,14 +29,13 @@ async function db_check_root(
 	permission: "content.read" | "content.write",
 ) {
 	const pair = await plugins_file_grants_db_validate_pair(ctx, { pairId: consent.pairId });
-	const root = await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId);
+	const root = consent.rootNodeId !== null ? await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId) : null;
 	if (
 		!pair ||
 		pair.organizationId !== consent.organizationId ||
 		pair.workspaceId !== consent.workspaceId ||
-		!root ||
-		root.organizationId !== consent.organizationId ||
-		root.workspaceId !== consent.workspaceId
+		(consent.rootNodeId !== null &&
+			(!root || root.organizationId !== consent.organizationId || root.workspaceId !== consent.workspaceId))
 	)
 		return false;
 	return await access_control_create_file_checker(ctx, {
@@ -174,22 +173,24 @@ export const advance = internalMutation({
 			return null;
 		}
 		const pair = await plugins_file_grants_db_validate_pair(ctx, { pairId: consent.pairId });
-		const root = await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId);
+		const root =
+			consent.rootNodeId !== null ? await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId) : null;
 		const readAllowed =
 			job.readAllowed &&
 			pair &&
-			root &&
 			pair.organizationId === consent.organizationId &&
 			pair.workspaceId === consent.workspaceId &&
-			root.organizationId === consent.organizationId &&
-			root.workspaceId === consent.workspaceId;
+			(consent.rootNodeId === null ||
+				(root && root.organizationId === consent.organizationId && root.workspaceId === consent.workspaceId));
 		await ctx.db.patch(
 			"plugins_file_consents",
 			consent._id,
 			readAllowed
 				? {
 						appliedLevel: consent.requestedLevel === "write" && job.writeAllowed ? "write" : "read",
-						areaEligible: root.kind === "folder" && root.isRestrictedScopeRoot && root.archiveOperationId === null,
+						areaEligible:
+							consent.rootNodeId === null ||
+							(root?.kind === "folder" && root.isRestrictedScopeRoot && root.archiveOperationId === null),
 						state: "applied",
 						endedReason: null,
 						updatedAt: Date.now(),
@@ -205,7 +206,7 @@ export const advance = internalMutation({
 		);
 		if (!readAllowed) {
 			const previousPair = pair ?? (await ctx.db.get("plugins_file_pairs", consent.pairId));
-			if (previousPair)
+			if (previousPair && consent.rootNodeId !== null)
 				await plugins_file_grants_db_retire_anchor(ctx, { nodeId: consent.rootNodeId, userId: previousPair.userId });
 		}
 		await db_finish_consent(ctx, job);

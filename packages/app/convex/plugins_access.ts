@@ -566,7 +566,7 @@ export const list_my_file_grants = query({
 	returns: paginationResultValidator(
 		v.object({
 			consentId: v.id("plugins_file_consents"),
-			rootNodeId: v.id("files_nodes"),
+			rootNodeId: doc(app_convex_schema, "plugins_file_consents").fields.rootNodeId,
 			path: v.union(v.string(), v.null()),
 			kind: v.union(doc(app_convex_schema, "files_nodes").fields.kind, v.null()),
 			requestedLevel: doc(app_convex_schema, "plugins_file_consents").fields.requestedLevel,
@@ -602,11 +602,14 @@ export const list_my_file_grants = query({
 		const page = await Promise.all(
 			consents.page.map(async (consent) => {
 				// Keep history without following later names after consent ends.
-				const node = consent.open ? await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId) : null;
+				const node =
+					consent.open && consent.rootNodeId !== null
+						? await files_saved_placement_db_get_node(ctx.db, consent.rootNodeId)
+						: null;
 				return {
 					consentId: consent._id,
 					rootNodeId: consent.rootNodeId,
-					path: node?.path ?? null,
+					path: consent.rootNodeId === null ? "/" : (node?.path ?? null),
 					kind: node?.kind ?? null,
 					requestedLevel: consent.requestedLevel,
 					appliedLevel: consent.appliedLevel,
@@ -624,7 +627,7 @@ export const grant_file_access_as_me = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		installationId: v.id("plugins_workspace_installations"),
-		rootNodeId: v.id("files_nodes"),
+		rootNodeId: doc(app_convex_schema, "plugins_file_consents").fields.rootNodeId,
 		level: doc(app_convex_schema, "plugins_file_consents").fields.requestedLevel,
 	},
 	returns: v_result({ _yay: v.object({ consentId: v.id("plugins_file_consents") }) }),
@@ -643,8 +646,11 @@ export const grant_file_access_as_me = mutation({
 			.first();
 		if (deletionFence)
 			return Result({ _nay: { message: `${installation.pluginName} is being removed. Choose another plugin.` } });
-		const node = await files_saved_placement_db_get_node(ctx.db, args.rootNodeId);
-		if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId)
+		const node = args.rootNodeId !== null ? await files_saved_placement_db_get_node(ctx.db, args.rootNodeId) : null;
+		if (
+			args.rootNodeId !== null &&
+			(!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId)
+		)
 			return Result({ _nay: { message: "Not found" } });
 		const checker = access_control_create_file_checker(ctx, {
 			organizationId: membership.organizationId,
@@ -653,19 +659,23 @@ export const grant_file_access_as_me = mutation({
 		});
 		if (!(await checker.can(node, "content.read")))
 			return Result({ _nay: { message: "You cannot read this item. Ask for Can view access first." } });
-		if (node.purgeRunId !== undefined)
-			return Result({ _nay: { message: `${node.path} is being deleted. Choose another item.` } });
-		const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
-		if (asset?.kind === "upload" && asset.r2Key === undefined)
-			return Result({ _nay: { message: `${node.path} is still uploading. Wait for it to finish.` } });
+		if (node) {
+			if (node.purgeRunId !== undefined)
+				return Result({ _nay: { message: `${node.path} is being deleted. Choose another item.` } });
+			const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			if (asset?.kind === "upload" && asset.r2Key === undefined)
+				return Result({ _nay: { message: `${node.path} is still uploading. Wait for it to finish.` } });
+		}
 		if (args.level === "write" && !(await checker.can(node, "content.write")))
-			return Result({ _nay: { message: `You cannot edit ${node.path}. Ask for Can edit access first.` } });
+			return Result({ _nay: { message: `You cannot edit ${node?.path ?? "/"}. Ask for Can edit access first.` } });
 
 		const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
 		const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
 		const previous = await ctx.db
 			.query("plugins_file_consents")
-			.withIndex("by_pair_rootNode_open", (q) => q.eq("pairId", pair._id).eq("rootNodeId", node._id).eq("open", true))
+			.withIndex("by_pair_rootNode_open", (q) =>
+				q.eq("pairId", pair._id).eq("rootNodeId", args.rootNodeId).eq("open", true),
+			)
 			.unique();
 		const now = Date.now();
 		let consentId: Id<"plugins_file_consents">;
@@ -683,7 +693,7 @@ export const grant_file_access_as_me = mutation({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				pairId: pair._id,
-				rootNodeId: node._id,
+				rootNodeId: args.rootNodeId,
 				requestedLevel: args.level,
 				appliedLevel: null,
 				areaEligible: false,
@@ -695,7 +705,7 @@ export const grant_file_access_as_me = mutation({
 				updatedAt: now,
 			});
 		}
-		if (node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
+		if (node && node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 			await files_subtree_ops_db_start_rebuild(ctx, {
 				kind: "scope",
@@ -752,7 +762,8 @@ export const revoke_file_access_as_me = mutation({
 			updatedAt: now,
 		});
 		// Giving up access must work after the person loses access to the item.
-		await plugins_file_grants_db_retire_anchor(ctx, { nodeId: consent.rootNodeId, userId: userAuth.id });
+		if (consent.rootNodeId !== null)
+			await plugins_file_grants_db_retire_anchor(ctx, { nodeId: consent.rootNodeId, userId: userAuth.id });
 		return Result({ _yay: null });
 	},
 });

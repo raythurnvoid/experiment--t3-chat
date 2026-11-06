@@ -3,7 +3,13 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_create_file_checker, access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { test_create_saved_text_file, test_move_nodes, test_rename_node, test_spy_handler } from "./setup.test.ts";
+import {
+	test_create_saved_text_file,
+	test_mocks_fill_db_with,
+	test_move_nodes,
+	test_rename_node,
+	test_spy_handler,
+} from "./setup.test.ts";
 import { rename_node } from "./files_nodes.ts";
 import { advance as advance_cohort, resume, handoff, wake_waiters } from "./files_move_cohorts.ts";
 import { advance_stage } from "./files_move_content.ts";
@@ -50,7 +56,7 @@ async function pair(
 async function consent(
 	f: Fixture,
 	pairId: Id<"plugins_file_pairs">,
-	rootNodeId: Id<"files_nodes">,
+	rootNodeId: Id<"files_nodes"> | null,
 	appliedLevel: "read" | "write" | null,
 ) {
 	const consentId = await f.t.run((ctx) =>
@@ -70,6 +76,7 @@ async function consent(
 			updatedAt: Date.now(),
 		}),
 	);
+	if (rootNodeId === null) return consentId;
 	const node = await f.t.run((ctx) => ctx.db.get("files_nodes", rootNodeId));
 	if (node!.restrictedScopeNodeId !== rootNodeId) {
 		await f.t.mutation(internal.files_subtree_ops.extend_node, {
@@ -125,6 +132,137 @@ test("an owner's plugin has no owner or open-workspace bypass", async () => {
 	const pairId = await pair(f);
 	expect(await levels(f, pairId, f.nodeId), "the owner's plugin needs its own selection").toEqual(denied);
 	expect(await levels(f, pairId, null), "a pair has no workspace-root grant").toEqual(denied);
+});
+
+test.each(["read", "write", null] as const)(
+	"workspace %s consent covers the root and future saved files",
+	async (level) => {
+		const f = await fixture();
+		const pairId = await pair(f);
+		await consent(f, pairId, null, level);
+		const expected = level === "write" ? write : level === "read" ? read : denied;
+		expect(await levels(f, pairId, null), "the workspace root uses applied View or Edit, never Manage").toEqual(
+			expected,
+		);
+		expect(await levels(f, pairId, f.nodeId), "existing open files use workspace consent").toEqual(expected);
+		const future = await folder(f, "/future");
+		const topFileId = await test_create_saved_text_file(f.t, {
+			membershipId: f.db.membershipId,
+			path: "/future.md",
+		});
+		for (const nodeId of [future.folderId, future.fileId, topFileId]) {
+			expect(await levels(f, pairId, nodeId), "future saved files need no new consent").toEqual(expected);
+		}
+	},
+);
+
+test("workspace consent stops at restricted and nested restricted folders", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	await consent(f, pairId, null, "write");
+	const privateFolder = await folder(f, "/private");
+	const nested = await folder(f, "/private/nested");
+	await restrict(f, privateFolder.folderId, true);
+	await restrict(f, nested.folderId, true);
+	expect(await levels(f, pairId, f.nodeId), "open files keep workspace access").toEqual(write);
+	for (const nodeId of [privateFolder.folderId, privateFolder.fileId, nested.folderId, nested.fileId]) {
+		expect(await levels(f, pairId, nodeId), "workspace consent cannot cross a restricted boundary").toEqual(denied);
+	}
+	await consent(f, pairId, privateFolder.folderId, "read");
+	expect(await levels(f, pairId, privateFolder.fileId), "separate consent opens the selected restricted area").toEqual(
+		read,
+	);
+	expect(await levels(f, pairId, nested.fileId), "the nested restriction still needs its own consent").toEqual(denied);
+});
+
+test("workspace consent stays with its pair, tenant and membership lifetime", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	await consent(f, pairId, null, "write");
+	expect(await levels(f, pairId, null), "the selected pair opens its workspace root").toEqual(write);
+	const otherPairId = await pair(f, f.memberMembershipId);
+	expect(await levels(f, otherPairId, null), "another pair has no workspace consent").toEqual(denied);
+	const foreign = await f.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "foreign" }));
+	const foreignAllowed = await f.t.run((ctx) =>
+		access_control_create_file_checker(ctx, {
+			organizationId: foreign.organizationId,
+			workspaceId: foreign.workspaceId,
+			subject: { kind: "plugin_pair", pairId },
+		}).can(null, "content.read"),
+	);
+	expect(foreignAllowed, "workspace consent cannot open another tenant root").toBe(false);
+	await f.t.run(async (ctx) => {
+		const lifetime = (await ctx.db
+			.query("organizations_membership_lifetimes")
+			.withIndex("by_workspace_user", (q) => q.eq("workspaceId", f.db.workspaceId).eq("userId", f.db.userId))
+			.first())!;
+		await ctx.db.patch("organizations_membership_lifetimes", lifetime._id, { lifetime: lifetime.lifetime + 1 });
+	});
+	expect(await levels(f, pairId, null), "old workspace consent cannot survive leaving and rejoining").toEqual(denied);
+	expect(await levels(f, pairId, f.nodeId), "old workspace consent cannot read saved files").toEqual(denied);
+});
+
+test("workspace consent does not expose private drafts", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	await consent(f, pairId, null, "write");
+	const created = await f.t.mutation(internal.files_nodes.create_private_node_by_path, {
+		organizationId: f.db.organizationId,
+		workspaceId: f.db.workspaceId,
+		userId: f.db.userId,
+		path: "/draft.md",
+		kind: "file",
+	});
+	expect(created._nay).toBeUndefined();
+	const readArgs = {
+		organizationId: f.db.organizationId,
+		workspaceId: f.db.workspaceId,
+		visibilityUserId: f.db.userId,
+		overlayUserId: f.db.userId,
+		subject: { kind: "plugin_pair", pairId } as const,
+	};
+	expect(
+		await f.t.query(internal.files_nodes.get_visible_entry_by_path, {
+			...readArgs,
+			path: "/draft.md",
+			subject: { kind: "user", userId: f.db.userId, plugin: null },
+		}),
+		"the person can read their private draft",
+	).toMatchObject({ kind: "private", path: "/draft.md" });
+	expect(
+		await f.t.query(internal.files_nodes.get_visible_entry_by_path, { ...readArgs, path: "/doc.md" }),
+		"workspace consent reads saved files",
+	).not.toBeNull();
+	expect(
+		await f.t.query(internal.files_nodes.get_visible_entry_by_path, { ...readArgs, path: "/draft.md" }),
+		"workspace consent still excludes private drafts",
+	).toBeNull();
+});
+
+test.each(["workspace", "folder"] as const)("removing %s consent keeps overlapping selections", async (removed) => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	const workspaceConsent = await consent(f, pairId, null, "read");
+	const selected = await folder(f, "/selected");
+	const folderConsent = await consent(f, pairId, selected.folderId, "write");
+	const privateFolder = await folder(f, "/private");
+	await restrict(f, privateFolder.folderId, true);
+	await consent(f, pairId, privateFolder.folderId, "read");
+	expect(await levels(f, pairId, selected.fileId), "folder Edit adds to workspace View").toEqual(write);
+	await f.t.run((ctx) =>
+		ctx.db.patch("plugins_file_consents", removed === "workspace" ? workspaceConsent : folderConsent, {
+			open: false,
+			appliedLevel: null,
+			state: "ended",
+		}),
+	);
+	expect(await levels(f, pairId, selected.fileId), "the remaining selection keeps its own level").toEqual(
+		removed === "workspace" ? write : read,
+	);
+	expect(await levels(f, pairId, null), "only workspace consent opens the root").toEqual(
+		removed === "workspace" ? denied : read,
+	);
+	expect(await levels(f, pairId, privateFolder.fileId), "the separate restricted selection stays open").toEqual(read);
 });
 
 test.each(["read", "write", null] as const)(
@@ -303,6 +441,41 @@ test("a pair uses the published Move placement while physical cleanup is pending
 	expect(result._nay).toBeUndefined();
 	expect(checkedPublishedPlacement, "the real Move reached publication before physical cleanup").toBe(true);
 	expect(await levels(f, pairId, moved.fileId)).toEqual(denied);
+});
+
+test.each(["into", "out of"] as const)("workspace consent follows a Move %s a restricted folder", async (direction) => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	const open = await folder(f, "/open");
+	const privateFolder = await folder(f, "/private");
+	const sourcePath = direction === "into" ? "/open/moved" : "/private/moved";
+	const targetPath = direction === "into" ? "/private/moved" : "/open/moved";
+	const moved = await folder(f, sourcePath);
+	await restrict(f, privateFolder.folderId, true);
+	await consent(f, pairId, null, "read");
+	expect(await levels(f, pairId, moved.fileId)).toEqual(direction === "into" ? read : denied);
+	let checked = false;
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const result = await test_move_nodes(f.t, f.asOwner, {
+		membershipId: f.db.membershipId,
+		itemIds: [moved.folderId],
+		targetParentId: direction === "into" ? privateFolder.folderId : open.folderId,
+		onStep: async () => {
+			const placements = await f.t.run(async (ctx) => ({
+				physical: await ctx.db.get("files_nodes", moved.fileId),
+				saved: await files_saved_placement_db_get_node(ctx.db, moved.fileId),
+			}));
+			if (placements.physical?.path !== `${sourcePath}/doc.md` || placements.saved?.path !== `${targetPath}/doc.md`)
+				return;
+			checked = true;
+			expect(await levels(f, pairId, moved.fileId), "workspace consent uses the published restricted scope").toEqual(
+				direction === "into" ? denied : read,
+			);
+		},
+	});
+	expect(result._nay).toBeUndefined();
+	expect(checked, "the real Move reached publication before physical cleanup").toBe(true);
+	expect(await levels(f, pairId, moved.fileId)).toEqual(direction === "into" ? denied : read);
 });
 
 test.each(["rename", "move"] as const)(

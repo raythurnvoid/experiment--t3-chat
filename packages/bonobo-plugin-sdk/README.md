@@ -347,9 +347,11 @@ Where a run may write depends on how it started:
 - `POST /api/v1/files/plugin-archive` (body `{ path }`, response `{ archivedNodes }`) lets an invoke run move a matching folder or file with its subtree to Trash. Every affected node must match and pass current permissions and locks before any changes happen. The call releases permitted plugin locks before moving items to Trash. A sealed service grant may move one matching file inside its destination to Trash. Upload-triggered runs cannot use ensure, access, or moves to Trash, even when their output has matching labels.
 - `activities/start` is optional: a run that never calls it stays out of the workspace activity feed. The host tracks targets from the start, and the run's outcome closes its Activity.
 
-Each person chooses saved files or folders in **My file permissions** for this
-installation. Calls use the applied Can view / Can edit level. Changes apply in
-background steps; calls keep the current applied level until its step finishes.
+Each person chooses saved files, folders, or **Whole workspace** in **My file
+permissions** for this installation. Whole workspace covers current and future open
+saved files. Restricted folders need separate consent. Calls use the applied
+Can view / Can edit level. Changes apply in background steps; calls keep the current
+applied level until its step finishes.
 Account grants and owner rights do not add plugin access. Credentials still require
 a live installation and the same membership lifetime. Ordinary Files sharing decides
 which people can open plugin output.
@@ -364,11 +366,12 @@ writes after the switch; already accepted writes may finish under their saved ru
 Start a fresh frame or run when the API asks you to do so.
 
 With `workspace.files.read`, runs and frames can call `POST /api/v1/files/trash/list`
-and `/api/v1/files/trash/areas`. Areas page selected folders in consent order.
+and `/api/v1/files/trash/areas`. Areas page selected folders and workspace consent
+in consent order. Applied Whole workspace consent adds `{areaNodeId:null,path:"/"}`.
 Use `{ folderNodeId }` to list deleted children of an ordinary selected folder,
 even when that folder is itself in Trash. `{ areaNodeId }` names a restricted area.
-There is no open-workspace area for plugins. A file-only choice adds no parent access
-or area. Guests and scheduled runs get 403; scheduled runs get the message
+Use `{areaNodeId:null}` to list the open workspace's Trash. A file-only choice adds
+no parent access or area. Guests and scheduled runs get 403; scheduled runs get the message
 `Scheduled plugin runs cannot use Trash yet.`. Items include `changedBy`.
 Plugin Restore is not available yet.
 

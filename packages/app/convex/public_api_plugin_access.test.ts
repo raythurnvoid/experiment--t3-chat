@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import { activities_db_start } from "./activities_db.ts";
 import { fixture, folder } from "./files_archive_runs.setup.test.ts";
 import { insert_installation, mock_share_storage } from "./files_share_links.setup.test.ts";
@@ -119,12 +120,12 @@ async function setup(personal = true) {
 				})
 			)._nay,
 		).toBeUndefined();
-	const select = async (nodeId = rootNodeId) => {
+	const select = async (nodeId: Id<"files_nodes"> | null = rootNodeId, level: "read" | "write" = "write") => {
 		const result = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
 			membershipId: f.db.membershipId,
 			installationId,
 			rootNodeId: nodeId,
-			level: "write",
+			level,
 		});
 		if (result._nay) throw new Error(result._nay.message);
 		while (true) {
@@ -258,6 +259,67 @@ test("a selected source file does not let an upload run write siblings", async (
 	expect((await f.prepare())._nay?.message, "source-only consent cannot create a sibling").toBe("Permission denied");
 	await f.select();
 	expect((await f.prepare())._nay, "parent consent allows the sibling").toBeUndefined();
+});
+
+test("workspace consent lets a root upload publish siblings through the upload baseline", async () => {
+	const f = await setup();
+	const sourceNodeId = await test_create_saved_text_file(f.t, {
+		membershipId: f.db.membershipId,
+		path: "/source.md",
+		textContent: "Source",
+	});
+	await f.t.run(async (ctx) => {
+		await ctx.db.patch("plugins_event_runs", f.runId, {
+			event: "files.upload.completed",
+			fileNodeId: sourceNodeId,
+			acceptedCapabilities: [],
+		});
+		await ctx.db.patch("plugins_workspace_installations", f.installationId, { acceptedCapabilities: [] });
+	});
+	await f.select(null, "read");
+	expect((await f.prepare("/source.md.summary.md"))._nay?.message, "workspace View cannot write a root sibling").toBe(
+		"Permission denied",
+	);
+	const consentId = await f.select(null);
+	const prepared = await f.prepare("/source.md.summary.md");
+	expect(
+		prepared._nay,
+		"workspace Edit allows a root upload sibling without manifest Files capabilities",
+	).toBeUndefined();
+	if (prepared._nay) throw new Error(prepared._nay.message);
+	const ref = `bonobo-file://${sourceNodeId}`;
+	const published = await f.t.mutation(internal.public_api.publish_file_write, {
+		stageId: prepared._yay.stageId,
+		content: `[Source](${ref})`,
+		targetAnchor: prepared._yay.targetAnchor,
+		nonCollaborative: true,
+		addedFileRefs: [ref],
+	});
+	expect(published._nay, "the root output publishes with its readable source reference").toBeUndefined();
+	expect((await f.prepare("/output/outside.md"))._nay?.message, "workspace Edit keeps the upload sibling rule").toBe(
+		"Permission denied",
+	);
+	const later = await f.prepare("/source.md.transcript.md");
+	if (later._nay) throw new Error(later._nay.message);
+	expect(
+		await f.asOwner.mutation(api.plugins_access.revoke_file_access_as_me, {
+			membershipId: f.db.membershipId,
+			installationId: f.installationId,
+			consentId,
+		}),
+	).toEqual({ _yay: null });
+	expect(
+		(
+			await f.t.mutation(internal.public_api.publish_file_write, {
+				stageId: later._yay.stageId,
+				content: "Text",
+				targetAnchor: later._yay.targetAnchor,
+				nonCollaborative: true,
+				addedFileRefs: [],
+			})
+		)._nay?.message,
+		"removing workspace consent blocks an already staged root output",
+	).toBe("Permission denied");
 });
 
 test("publishes readable media with the stage's personal consent", async () => {

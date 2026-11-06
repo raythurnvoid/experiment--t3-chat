@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { queryMock, consentMock, mutationMock, store } = vi.hoisted(() => ({
@@ -548,6 +548,125 @@ describe("PluginsMyFilePermissions", () => {
 			},
 			{ initialNumItems: 20 },
 		);
+	});
+
+	test.each([
+		["Can view", "read"],
+		["Can edit", "write"],
+	])("saves whole-workspace %s with no saved root", async (label, level) => {
+		const response = Promise.withResolvers<{ _yay: { consentId: string } }>();
+		mutationMock.mockReturnValue(response.promise);
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1", fileAccessModel: "personal" }]
+				: query === "file_grants"
+					? { results: [], status: "Exhausted", loadMore: vi.fn() }
+					: query === "visible_target"
+						? { target: { kind: "saved", id: "folder_1" }, kind: "folder" }
+						: null,
+		);
+		render(<TestMyFilePermissions />);
+		const fileScope = screen.getByRole("radio", { name: "File or folder" });
+		const workspaceScope = screen.getByRole("radio", { name: "Whole workspace" });
+		const view = screen.getByRole("radio", { name: "Can view" });
+		expect(fileScope).toHaveProperty("checked", true);
+		expect(workspaceScope.getAttribute("name")).not.toBe(view.getAttribute("name"));
+		const save = screen.getByRole("button", { name: "Save" });
+		expect(save).toHaveProperty("disabled", true);
+		fireEvent.change(screen.getByRole("textbox", { name: "File or folder path" }), {
+			target: { value: "/shared" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Use this folder: /shared" }));
+		workspaceScope.focus();
+		expect(document.activeElement, "the workspace choice must keep native radio focus").toBe(workspaceScope);
+		fireEvent.click(workspaceScope);
+		fireEvent.click(screen.getByRole("radio", { name: label }));
+		expect(workspaceScope).toHaveProperty("checked", true);
+		expect(screen.queryByRole("textbox", { name: "File or folder path" })).toBeNull();
+		expect(
+			screen.getByText("Includes current and future open files. Restricted folders need separate permission."),
+		).not.toBeNull();
+		fireEvent.click(save);
+		expect(mutationMock, "workspace consent must send null instead of the earlier saved folder").toHaveBeenCalledWith(
+			"grant_file",
+			{ membershipId: "membership_1", installationId: "installation_1", rootNodeId: null, level },
+		);
+		expect(workspaceScope).toHaveProperty("disabled", true);
+		expect(fileScope).toHaveProperty("disabled", true);
+		expect(view).toHaveProperty("disabled", true);
+		expect(save.getAttribute("aria-busy")).toBe("true");
+		fireEvent.click(save);
+		expect(mutationMock, "a pending save must not submit again").toHaveBeenCalledTimes(1);
+		await act(async () => response.resolve({ _yay: { consentId: "workspace_consent" } }));
+		const feedback = await screen.findByText("Your file permission was saved. The change is pending.");
+		await waitFor(() => expect(document.activeElement).toBe(feedback));
+		expect(workspaceScope).toHaveProperty("disabled", false);
+	});
+
+	test("stops saved path lookups while whole workspace is selected", () => {
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1" }]
+				: query === "file_grants"
+					? { results: [], status: "Exhausted", loadMore: vi.fn() }
+					: null,
+		);
+		render(<TestMyFilePermissions />);
+		fireEvent.change(screen.getByRole("textbox", { name: "File or folder path" }), {
+			target: { value: "/shared" },
+		});
+		queryMock.mockClear();
+		fireEvent.click(screen.getByRole("radio", { name: "Whole workspace" }));
+		expect(queryMock, "workspace consent must skip the saved-path lookup").toHaveBeenCalledWith(
+			"visible_target",
+			"skip",
+		);
+		expect(queryMock).not.toHaveBeenCalledWith("visible_target", { membershipId: "membership_1", path: "/shared" });
+		fireEvent.click(screen.getByRole("radio", { name: "File or folder" }));
+		expect(queryMock).toHaveBeenCalledWith("visible_target", { membershipId: "membership_1", path: "/shared" });
+		expect(screen.getByRole("button", { name: "Save" }), "changing scope must not select a saved path").toHaveProperty(
+			"disabled",
+			true,
+		);
+	});
+
+	test("keeps the whole-workspace label after removal and removes only that consent", async () => {
+		let grant = {
+			consentId: "workspace_consent",
+			rootNodeId: null,
+			path: "/",
+			requestedLevel: "read",
+			appliedLevel: "read" as string | null,
+			state: "applied",
+			open: true,
+			endedReason: null as string | null,
+		};
+		queryMock.mockImplementation((query: string) =>
+			query === "catalog"
+				? [{ installationId: "installation_1" }]
+				: query === "file_grants"
+					? { results: [grant], status: "Exhausted", loadMore: vi.fn() }
+					: null,
+		);
+		render(<TestMyFilePermissions />);
+		const row = screen.getByRole("listitem");
+		expect(within(row).queryByText("Whole workspace"), "workspace history must name its scope").not.toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Remove permission for whole workspace" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("revoke_file", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+				consentId: "workspace_consent",
+			}),
+		);
+		const feedback = await screen.findByText("Your file permission was removed.");
+		await waitFor(() => expect(document.activeElement).toBe(feedback));
+		grant = { ...grant, appliedLevel: null, state: "ended", open: false, endedReason: "You removed this permission." };
+		refreshQueries();
+		expect(within(row).queryByText("Whole workspace"), "ended workspace consent must keep its scope").not.toBeNull();
+		expect(within(row).getByText("Ended. You removed this permission.")).not.toBeNull();
+		expect(within(row).getByText("Current: No access")).not.toBeNull();
+		expect(within(row).queryByRole("button")).toBeNull();
 	});
 
 	test("removes a selection without looking up its file and focuses the result", async () => {

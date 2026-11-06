@@ -154,6 +154,39 @@ async function fixture() {
 			await fn({ ...ctx, db: capture.db });
 			await capture.flush();
 		});
+	const add_workspace = () =>
+		t.run(async (ctx) => {
+			const grant = (permission: "content.read" | "content.write") =>
+				ctx.db.insert("access_control_permission_grants", {
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					userId: data.userId,
+					resourceKind: "workspace",
+					resourceId: owner.workspaceId,
+					principalKind: "user",
+					permission,
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			const readGrant = await grant("content.read");
+			const writeGrant = await grant("content.write");
+			const consentId = await ctx.db.insert("plugins_file_consents", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				pairId: data.pair._id,
+				rootNodeId: null,
+				requestedLevel: "write",
+				appliedLevel: null,
+				areaEligible: false,
+				open: true,
+				revision: 1,
+				state: "pending",
+				endedReason: null,
+				createdAt: 1,
+				updatedAt: 1,
+			});
+			return { consentId, readGrant, writeGrant };
+		});
 	const queue = () => t.run((ctx) => plugins_file_grants_db_advance_authority(ctx, owner));
 	const job = () =>
 		t.run((ctx) =>
@@ -181,10 +214,125 @@ async function fixture() {
 		throw new Error("Grant job did not finish");
 	};
 	const consent = (id: Id<"plugins_file_consents">) => t.run((ctx) => ctx.db.get("plugins_file_consents", id));
-	return { t, owner, ...data, add, write, queue, job, step, drain, consent };
+	return { t, owner, ...data, add, add_workspace, write, queue, job, step, drain, consent };
 }
 
 describe("plugin file grant worker", () => {
+	test("workspace consent applies, lowers and ends with human access", async () => {
+		const f = await fixture();
+		const selected = await f.add_workspace();
+		await f.queue();
+		for (let i = 0; i < 3; i++) await f.step();
+		expect(await f.consent(selected.consentId), "workspace consent stays empty before apply").toMatchObject({
+			appliedLevel: null,
+			areaEligible: false,
+		});
+		await f.step();
+		expect(await f.consent(selected.consentId), "workspace consent applies without a saved root").toMatchObject({
+			appliedLevel: "write",
+			areaEligible: true,
+			state: "applied",
+		});
+		await f.drain();
+		await f.write((ctx) => ctx.db.delete("access_control_permission_grants", selected.writeGrant));
+		for (let i = 0; i < 3; i++) await f.step();
+		expect((await f.consent(selected.consentId))?.appliedLevel, "workspace Edit stays until its apply step").toBe(
+			"write",
+		);
+		await f.drain();
+		expect(await f.consent(selected.consentId), "lost human Write lowers workspace consent to View").toMatchObject({
+			requestedLevel: "write",
+			appliedLevel: "read",
+			areaEligible: true,
+			open: true,
+		});
+		const grant = (permission: "content.read" | "content.write") =>
+			f.write((ctx) =>
+				ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.owner.organizationId,
+					workspaceId: f.owner.workspaceId,
+					userId: f.userId,
+					resourceKind: "workspace",
+					resourceId: f.owner.workspaceId,
+					principalKind: "user",
+					permission,
+					createdAt: 1,
+					updatedAt: 1,
+				}),
+			);
+		await grant("content.write");
+		await f.drain();
+		expect((await f.consent(selected.consentId))?.appliedLevel, "requested workspace Edit can regain Write").toBe(
+			"write",
+		);
+		await f.write((ctx) =>
+			ctx.db.patch("plugins_file_consents", selected.consentId, {
+				requestedLevel: "read",
+				revision: 2,
+				state: "pending",
+			}),
+		);
+		await f.drain();
+		expect((await f.consent(selected.consentId))?.appliedLevel, "workspace View cannot gain unrequested Edit").toBe(
+			"read",
+		);
+		await f.write((ctx) => ctx.db.delete("access_control_permission_grants", selected.readGrant));
+		await expect(f.drain(), "workspace consent can end without a saved anchor").resolves.toBeUndefined();
+		expect(await f.consent(selected.consentId), "lost human Read ends workspace consent and its area").toMatchObject({
+			open: false,
+			appliedLevel: null,
+			areaEligible: false,
+			state: "ended",
+		});
+		await grant("content.read");
+		await f.drain();
+		expect((await f.consent(selected.consentId))?.open, "restored human Read cannot reopen workspace consent").toBe(
+			false,
+		);
+	});
+
+	test.each(["read", "apply"] as const)("a missing saved root at %s never becomes workspace consent", async (phase) => {
+		const f = await fixture();
+		const selected = await f.add();
+		await f.add_workspace();
+		await f.queue();
+		for (let i = 0; i < (phase === "read" ? 1 : 3); i++) await f.step();
+		await f.t.run((ctx) => ctx.db.delete("files_nodes", selected.rootNodeId));
+		await f.drain();
+		expect(
+			await f.consent(selected.consentId),
+			"missing saved IDs must end, not become workspace targets",
+		).toMatchObject({
+			rootNodeId: selected.rootNodeId,
+			appliedLevel: null,
+			areaEligible: false,
+			open: false,
+		});
+	});
+
+	test("workspace consent cannot apply an old membership lifetime", async () => {
+		const f = await fixture();
+		const selected = await f.add_workspace();
+		await f.queue();
+		for (let i = 0; i < 3; i++) await f.step();
+		await f.write(async (ctx) => {
+			const lifetime = (await ctx.db
+				.query("organizations_membership_lifetimes")
+				.withIndex("by_workspace_user", (q) => q.eq("workspaceId", f.owner.workspaceId).eq("userId", f.userId))
+				.first())!;
+			await ctx.db.patch("organizations_membership_lifetimes", lifetime._id, { lifetime: lifetime.lifetime + 1 });
+		});
+		await f.drain();
+		expect(
+			await f.consent(selected.consentId),
+			"workspace consent ends when its membership lifetime changes",
+		).toMatchObject({
+			open: false,
+			appliedLevel: null,
+			areaEligible: false,
+		});
+	});
+
 	test("new consent queues a pass and applied-only changes do not queue another", async () => {
 		const f = await fixture();
 		const selected = await f.add();

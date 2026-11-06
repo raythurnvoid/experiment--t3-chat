@@ -66,8 +66,11 @@ Read the person's current consent with `plugins_access.list_my_file_grants` befo
 Reuse a saved item from the QA catalog. New installations and installations switched to personal
 access use these choices. Older installations still show the note that these choices are not in use.
 
-- Fill `File or folder path`. Save stays disabled until `Use this file: <path>` or
+- With `File or folder`, fill `File or folder path`. Save stays disabled until `Use this file: <path>` or
   `Use this folder: <path>` is clicked. An unknown path shows a visible error after blur.
+- With `Whole workspace`, the path field disappears and Save needs no saved item.
+  The help says future open files are included and restricted folders need separate permission.
+  Read back `rootNodeId: null`. Do not treat a saved folder named `/` as workspace consent.
 - Choose `Can view` or `Can edit`, then Save.
   Wait for `Your file permission was saved. The change is pending.` before reading the stored result.
   The feedback receives focus.
@@ -75,6 +78,8 @@ access use these choices. Older installations still show the note that these cho
 - Find Remove by its full name, `Remove permission for <path>`. After removal, the feedback
   receives focus and the history row shows `Unavailable item`, `Current: No access`, and its
   end reason. Read back `open: false`, `appliedLevel: null`, and null path/kind. Keep this history.
+  Workspace history keeps `Whole workspace` and path `/`; its Remove name is
+  `Remove permission for whole workspace`.
 - Check the chosen item's scope fields return to their starting state after removing a new
   test consent. Do not remove a permission that existed before the test.
 - On a narrow screen, use `Minimize sidebar`, then restore it with `Expand sidebar` afterward.
@@ -82,6 +87,8 @@ access use these choices. Older installations still show the note that these cho
   `label.MyRadioButton` instead: it owns the visible click target. Also test keyboard Space.
 
 Verified with Save, Edit, Remove, persisted readback, and a 390px viewport on 2026-11-05.
+The workspace choice also passed keyboard Space, Tab into the level group, ArrowRight
+to Can edit, and the 390px layout check on 2026-11-05. The two radio groups stay separate.
 
 After an installation switches to personal access, open a fresh plugin frame. Its old token must
 refuse new Files work. Keep captured tokens only in Playwriter memory and remove capture listeners.
