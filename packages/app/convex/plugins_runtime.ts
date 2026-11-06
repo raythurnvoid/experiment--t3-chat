@@ -35,7 +35,7 @@ import {
 	activities_db_start,
 	activities_is_active,
 } from "./activities_db.ts";
-import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { access_control_create_file_checker, access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import {
@@ -112,7 +112,6 @@ async function db_ensure_file_pair(
 	args: { installation: Doc<"plugins_workspace_installations">; userId: Id<"users"> },
 ) {
 	const { installation, userId } = args;
-	if (installation.fileAccessModel !== "personal") return Result({ _yay: undefined });
 	const membership = await ctx.db
 		.query("organizations_workspaces_users")
 		.withIndex("by_user_organization_workspace_active", (q) =>
@@ -594,6 +593,7 @@ export const enqueue_account_deleted_runs = internalMutation({
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					actorUserId: args.userId,
+					filePairId: null,
 					installationId: installation._id,
 					serviceAccountId: installation.serviceAccountId,
 					pluginVersionId: version._id,
@@ -656,15 +656,13 @@ async function db_enqueue_scheduled_run(
 	// A follow-up keeps its parent's pin. Queued work never adopts a new pair.
 	const filePairId = parent
 		? parent.filePairId
-		: installation.fileAccessModel === "personal"
-			? (
-					await plugins_file_grants_db_ensure_pair(ctx, {
-						installation,
-						membership,
-						membershipLifetime: grant.runAs!.membershipLifetime,
-					})
-				)._id
-			: undefined;
+		: (
+				await plugins_file_grants_db_ensure_pair(ctx, {
+					installation,
+					membership,
+					membershipLifetime: grant.runAs!.membershipLifetime,
+				})
+			)._id;
 	const runId = await ctx.db.insert("plugins_event_runs", {
 		organizationId: installation.organizationId,
 		workspaceId: installation.workspaceId,
@@ -878,7 +876,11 @@ export const start_event_run = internalMutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (pluginRun.filePairId) {
+		// Account-deleted callbacks carry no Files authority. Every other run keeps its queued pair.
+		if (pluginRun.event !== ACCOUNT_DELETED_EVENT_TYPE) {
+			if (!pluginRun.filePairId) {
+				return Result({ _nay: { message: "File access changed. Start a new plugin run." } });
+			}
 			if (
 				!(await plugins_file_grants_db_validate_pair(ctx, {
 					pairId: pluginRun.filePairId,
@@ -893,7 +895,7 @@ export const start_event_run = internalMutation({
 				const checker = access_control_create_file_checker(ctx, {
 					organizationId: pluginRun.organizationId,
 					workspaceId: pluginRun.workspaceId,
-					subject: plugins_file_subject(installation, pluginRun.actorUserId, pluginRun.filePairId),
+					subject: { kind: "plugin_pair", pairId: pluginRun.filePairId },
 				});
 				if (!(await checker.can(fileNode, "content.read"))) {
 					return Result({
@@ -1032,11 +1034,10 @@ export const start_invoke_run = internalMutation({
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		if (installation.fileAccessModel === "personal" && !session.filePairId) {
+		if (!session.filePairId) {
 			return Result({ _nay: { message: "File access changed. Reopen this plugin." } });
 		}
 		if (
-			session.filePairId &&
 			!(await plugins_file_grants_db_validate_pair(ctx, {
 				pairId: session.filePairId,
 				installationId: installation._id,
@@ -1311,11 +1312,10 @@ export const finish_event_run = internalMutation({
 			const assignment = installation
 				? await plugins_scheduled_access_db_authorize_assignment(ctx, { installation, run: pluginRun })
 				: null;
-			if (installation?.fileAccessModel === "personal" && !pluginRun.filePairId) {
+			if (!pluginRun.filePairId) {
 				succeeded = false;
 				errorMessage = "File access changed. Start a new plugin run.";
 			} else if (
-				pluginRun.filePairId &&
 				!(await plugins_file_grants_db_validate_pair(ctx, {
 					pairId: pluginRun.filePairId,
 					installationId: pluginRun.installationId,
@@ -2077,11 +2077,10 @@ export const request_follow_up = internalMutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		const installation = await ctx.db.get("plugins_workspace_installations", run.installationId);
 		if (!installation) return Result({ _nay: { message: "Unauthenticated" } });
-		if (installation.fileAccessModel === "personal" && !run.filePairId) {
+		if (!run.filePairId) {
 			return Result({ _nay: { message: "File access changed. Start a new plugin run." } });
 		}
 		if (
-			run.filePairId &&
 			!(await plugins_file_grants_db_validate_pair(ctx, {
 				pairId: run.filePairId,
 				installationId: installation._id,

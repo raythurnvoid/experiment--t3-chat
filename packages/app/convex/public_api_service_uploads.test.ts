@@ -261,7 +261,35 @@ async function seed_installation(
 			createdBy: membership.userId,
 			updatedAt: now,
 		});
-		return { ...membership, pluginVersionId, installationId, serviceAccountId } as const;
+		const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation: (await ctx.db.get("plugins_workspace_installations", installationId))!,
+			membership: member,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+		});
+		const consentId = await ctx.db.insert("plugins_file_consents", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			pairId: pair._id,
+			rootNodeId: null,
+			requestedLevel: "write",
+			appliedLevel: "write",
+			areaEligible: true,
+			open: true,
+			revision: 1,
+			state: "applied",
+			endedReason: null,
+			createdAt: now,
+			updatedAt: now,
+		});
+		return {
+			...membership,
+			pluginVersionId,
+			installationId,
+			serviceAccountId,
+			filePairId: pair._id,
+			consentId,
+		} as const;
 	});
 
 	return installation;
@@ -278,6 +306,40 @@ async function seed_page_token(args: {
 	const token = `plu_${crypto_random_hex(32)}`;
 	const now = Date.now();
 	await t.run(async (ctx) => {
+		let filePairId = args.filePairId ?? fixture.filePairId;
+		if (args.filePairId === undefined && actorUserId !== fixture.userId) {
+			const membership = (await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", actorUserId)
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId),
+				)
+				.first())!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
+			filePairId = pair._id;
+			await ctx.db.insert("plugins_file_consents", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				pairId: pair._id,
+				rootNodeId: null,
+				requestedLevel: "write",
+				appliedLevel: "write",
+				areaEligible: true,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
+				createdAt: now,
+				updatedAt: now,
+			});
+		}
 		await ctx.db.insert("plugins_ui_sessions", {
 			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
@@ -285,7 +347,7 @@ async function seed_page_token(args: {
 			installationId: fixture.installationId,
 			pluginVersionId: fixture.pluginVersionId,
 			userId: actorUserId,
-			filePairId: args.filePairId,
+			filePairId,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt: now + 30 * 60 * 1000,
@@ -516,68 +578,75 @@ async function write_note(args: { t: ReturnType<typeof test_convex>; sealed: str
 }
 
 describe("service upload authorization", () => {
-	test("the switch keeps the actor's accepted legacy upload and refuses new work", async () => {
-		const t = test_convex();
-		const fixture = await seed_installation(t);
-		const sealed = await seal_token({ t, fixture });
-		const otherActor = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: null });
-			await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				userId,
-				active: true,
-				pendingOrganizationRemoval: false,
-				updatedAt: Date.now(),
-				displayName: "",
-				sortDisplayName: "",
-			});
-			await access_control_db_ensure_role_assignment(ctx, { ...fixture, userId, role: "member", now: Date.now() });
-			return userId;
-		});
-		const otherGrant = await seal_token({ t, fixture, actorUserId: otherActor });
-		const body = target_body();
-		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
-		);
-		const retryBody = { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey };
-		for (const path of [REMINT_PATH, FINALIZE_PATH]) {
+	test.each([CREATE_TARGET_PATH, REMINT_PATH, FINALIZE_PATH])(
+		"a fresh pair cannot adopt a null target through %s",
+		async (path) => {
+			const t = test_convex();
+			const fixture = await seed_installation(t);
+			const sealed = await seal_token({ t, fixture });
+			const body = target_body();
+			expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
+			const target = (await read_targets(t))[0]!;
+			await simulate_finalizer({ t, fixture, target, size: 2 * MIB });
+			await t.run((ctx) =>
+				ctx.db.patch("plugin_service_storage_targets", target._id, { filePairId: null, serviceAccountId: null }),
+			);
+			const retained = await read_targets(t);
+			const fresh = await seal_token({ t, fixture });
+			const retryBody = { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey };
 			expect(
-				(await call({ t, path, bearer: otherGrant, body: retryBody })).status,
-				"another actor cannot finish accepted legacy work",
+				(await call({ t, path, bearer: fresh, body: path === CREATE_TARGET_PATH ? body : retryBody })).status,
+				`a fresh pair cannot adopt a null target through ${path}`,
 			).toBe(403);
+			expect(await read_targets(t), "a refusal preserves the retained target").toEqual(retained);
 			expect(
-				(await call({ t, path, bearer: sealed, body: retryBody })).status,
-				"the original actor can finish accepted legacy work",
+				(
+					await call({
+						t,
+						path: CREATE_TARGET_PATH,
+						bearer: fresh,
+						body: target_body({ targetKey: "new", path: "/meetings/new.mp4" }),
+					})
+				).status,
+				"current consent can still create a fresh target",
 			).toBe(200);
-		}
-		expect(
-			(await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status,
-			"an exact old create replay keeps its target",
-		).toBe(200);
-		expect(
-			(
-				await call({
-					t,
-					path: CREATE_TARGET_PATH,
-					bearer: sealed,
-					body: target_body({ targetKey: "new", path: "/meetings/new.mp4" }),
-				})
-			).status,
-			"old authority cannot accept a new target",
-		).toBe(403);
-		expect(
-			(await call({ t, path: DELETE_PATH, bearer: sealed, body: retryBody })).status,
-			"a new delete is not upload completion",
-		).toBe(403);
-		expect(
-			(await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: "new-archive" } })).status,
-			"a new archive is not upload completion",
-		).toBe(403);
-		expect(await read_targets(t)).toHaveLength(1);
-		expect((await read_targets(t))[0]!.filePairId).toBeUndefined();
-	});
+		},
+	);
+
+	test.each([DELETE_PATH, ARCHIVE_PATH])(
+		"current consent can manage saved null-pair output through %s",
+		async (path) => {
+			const t = test_convex();
+			const fixture = await seed_installation(t);
+			const sealed = await seal_token({ t, fixture });
+			const body = target_body();
+			expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body })).status).toBe(200);
+			const target = (await read_targets(t))[0]!;
+			await simulate_finalizer({ t, fixture, target, size: 2 * MIB });
+			await t.run((ctx) =>
+				ctx.db.patch("plugin_service_storage_targets", target._id, { filePairId: null, serviceAccountId: null }),
+			);
+			const beforeReplay = { targets: await read_targets(t), quota: await read_quota(t, fixture) };
+			await simulate_finalizer({ t, fixture, target, size: 2 * MIB });
+			expect(
+				{ targets: await read_targets(t), quota: await read_quota(t, fixture) },
+				"a late event keeps null target pins and charged bytes",
+			).toEqual(beforeReplay);
+			const fresh = await seal_token({ t, fixture });
+			const response = await call({
+				t,
+				path,
+				bearer: fresh,
+				body:
+					path === DELETE_PATH
+						? { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey }
+						: { requestId: "old-output" },
+			});
+			expect(response.status, `current consent can manage saved null-pair output through ${path}`).toBe(200);
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId)))?.archiveOperationId).toBeTypeOf("string");
+			expect((await read_targets(t))[0]).toMatchObject({ _id: target._id, filePairId: null, serviceAccountId: null });
+		},
+	);
 
 	test("a narrow personal upload pins its pair and rechecks applied access on retries", async () => {
 		const t = test_convex();
@@ -637,7 +706,6 @@ describe("service upload authorization", () => {
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
-			await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
 			return { userId, pair, consentId };
 		});
 		const sealed = await seal_token({ t, fixture, actorUserId: personal.userId, filePairId: personal.pair._id });
@@ -663,7 +731,7 @@ describe("service upload authorization", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_file_consents", personal.consentId, { appliedLevel: "write" });
 			const target = (await ctx.db.query("plugin_service_storage_targets").collect())[0]!;
-			await ctx.db.patch("plugin_service_storage_targets", target._id, { filePairId: undefined });
+			await ctx.db.patch("plugin_service_storage_targets", target._id, { filePairId: null });
 		});
 		expect(
 			(await call({ t, path: REMINT_PATH, bearer: sealed, body: retryBody })).status,
@@ -706,6 +774,7 @@ describe("service upload authorization", () => {
 				pluginVersionId: fixture.pluginVersionId,
 				pluginName: "council",
 				actorUserId: fixture.userId,
+				filePairId: fixture.filePairId,
 				tokenHash: await crypto_sha256_hex(token),
 				scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
 				principalKey: `plugin_service:${fixture.organizationId}:${fixture.workspaceId}:${fixture.installationId}`,
@@ -790,23 +859,13 @@ describe("service upload authorization", () => {
 		expect(grants.every((grant) => grant.serviceAccountId === fixture.serviceAccountId)).toBe(true);
 	});
 
-	test("requires current account write grants but still settles an accepted upload", async () => {
+	test("requires current personal write consent but still settles an accepted upload", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token({ t, fixture });
 		expect((await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() })).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
-		await t.run(async (ctx) => {
-			expect(
-				await access_control_db_set_service_account_grant(ctx, {
-					organizationId: fixture.organizationId,
-					workspaceId: fixture.workspaceId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "workspace" },
-					level: "read",
-				}),
-			).toMatchObject({ _yay: { changed: true } });
-		});
+		await t.run((ctx) => ctx.db.patch("plugins_file_consents", fixture.consentId, { appliedLevel: "read" }));
 
 		for (const [path, body] of [
 			[CREATE_TARGET_PATH, target_body({ targetKey: "next", path: "/meetings/meeting-1/next.mp4" })],
@@ -1843,7 +1902,7 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
-	test("uses a restricted destination grant without requiring a workspace account grant", async () => {
+	test("uses restricted destination consent without requiring workspace consent", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const destinationId = await test_run_with_flush(t, async (ctx) => {
@@ -1860,20 +1919,7 @@ describe("service upload targets", () => {
 				throw new Error(created._nay.message);
 			}
 			await ctx.db.patch("files_nodes", created._yay, { restrictedScopeNodeId: created._yay });
-			for (const [resource, level] of [
-				[{ kind: "workspace" }, null],
-				[{ kind: "file", nodeId: created._yay }, "manage"],
-			] as const) {
-				expect(
-					await access_control_db_set_service_account_grant(ctx, {
-						organizationId: fixture.organizationId,
-						workspaceId: fixture.workspaceId,
-						serviceAccountId: fixture.serviceAccountId,
-						resource,
-						level,
-					}),
-				).toMatchObject({ _yay: { changed: true } });
-			}
+			await ctx.db.patch("plugins_file_consents", fixture.consentId, { rootNodeId: created._yay });
 			return created._yay;
 		});
 		const sealed = await seal_token({ t, fixture });
@@ -5247,14 +5293,6 @@ describe("service upload archive", () => {
 				now,
 			});
 
-			// Somebody restricted the meeting folder. The scope stamps the whole subtree, exactly as
-			// restricting a folder in the file tree does.
-			const nodes = await ctx.db.query("files_nodes").collect();
-			const destination = nodes.find((node) => node.path === "/meetings/meeting-1")!;
-			for (const node of nodes.filter((node) => node.path.startsWith("/meetings/meeting-1"))) {
-				await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: destination._id });
-			}
-
 			return userId;
 		});
 
@@ -5263,6 +5301,14 @@ describe("service upload archive", () => {
 			fixture,
 			destinationPathPrefix: "/meetings/meeting-1",
 			actorUserId: memberUserId,
+		});
+		// Restrict the destination after the seal. Workspace consent cannot enter it.
+		await t.run(async (ctx) => {
+			const nodes = await ctx.db.query("files_nodes").collect();
+			const destination = nodes.find((node) => node.path === "/meetings/meeting-1")!;
+			for (const node of nodes.filter((node) => node.path.startsWith("/meetings/meeting-1"))) {
+				await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: destination._id });
+			}
 		});
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: crypto.randomUUID() } });
 		expect(response.status).toBe(403);

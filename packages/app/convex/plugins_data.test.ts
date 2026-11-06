@@ -8,6 +8,7 @@ import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { organizations_db_create_workspace } from "./organizations.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import {
 	plugins_data_db_count_installation_docs,
 	plugins_data_max_last_append,
@@ -15,6 +16,7 @@ import {
 } from "./plugins_data.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
@@ -63,6 +65,53 @@ async function seed_service_account(
 		serviceAccountId,
 	});
 	return serviceAccountId;
+}
+
+async function seed_file_pair(
+	ctx: MutationCtx,
+	installationId: Id<"plugins_workspace_installations">,
+	userId: Id<"users">,
+) {
+	const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+	const membership = (await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_active_user_organization_workspace", (q) =>
+			q
+				.eq("active", true)
+				.eq("userId", userId)
+				.eq("organizationId", installation.organizationId)
+				.eq("workspaceId", installation.workspaceId),
+		)
+		.first())!;
+	const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+	return (await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime }))._id;
+}
+
+async function seed_file_consent(
+	ctx: MutationCtx,
+	fixture: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		filePairId: Id<"plugins_file_pairs">;
+	},
+	rootNodeId: Id<"files_nodes"> | null,
+	level: "read" | "write",
+) {
+	return await ctx.db.insert("plugins_file_consents", {
+		organizationId: fixture.organizationId,
+		workspaceId: fixture.workspaceId,
+		pairId: fixture.filePairId,
+		rootNodeId,
+		requestedLevel: level,
+		appliedLevel: level,
+		areaEligible: rootNodeId === null,
+		open: true,
+		revision: 1,
+		state: "applied",
+		endedReason: null,
+		createdAt: Date.now(),
+		updatedAt: Date.now(),
+	});
 }
 
 /**
@@ -153,6 +202,7 @@ async function seed_installation(
 			updatedAt: now,
 		});
 		const sourceToken = `plu_${crypto.randomUUID().replaceAll("-", "").repeat(2)}`;
+		const filePairId = await seed_file_pair(ctx, installationId, membership.userId);
 		const serviceSecretHash = await crypto_sha256_hex("plugin-data-service-test");
 		const registration = await ctx.db
 			.query("plugins_service_registrations")
@@ -173,6 +223,7 @@ async function seed_installation(
 			});
 		}
 		await ctx.db.insert("plugins_ui_sessions", {
+			filePairId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			installationId,
@@ -185,6 +236,7 @@ async function seed_installation(
 		});
 		return {
 			...membership,
+			filePairId,
 			pluginVersionId,
 			installationId,
 			serviceAccountId,
@@ -275,6 +327,7 @@ describe("create_plugin_service_grant", () => {
 		const grantCount = await t.run(async (ctx) => (await ctx.db.query("plugin_service_grants").collect()).length);
 		expect(grantCount).toBe(0);
 
+		await t.run((ctx) => seed_file_consent(ctx, fixture, null, "write"));
 		const withPrefix = await mint_service_grant({
 			t,
 			fixture,
@@ -315,6 +368,7 @@ describe("create_plugin_service_grant", () => {
 			await ctx.db.patch("plugins_service_registrations", registration!._id, {
 				scopes: ["plugin_data:read", "files:write"],
 			});
+			await seed_file_consent(ctx, live, null, "write");
 		});
 		const grant = await mint_service_grant({
 			t,
@@ -735,7 +789,9 @@ async function start_plugin_run(args: {
 			archiveOperationId: null,
 		});
 
+		await seed_file_consent(ctx, fixture, fileNodeId, "read");
 		const runId = await ctx.db.insert("plugins_event_runs", {
+			filePairId: fixture.filePairId,
 			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -1481,6 +1537,7 @@ describe("public API routes", () => {
 				endpointId: "chat",
 				serializationKey: "installation",
 				actorUserId: member.userId,
+				filePairId: await seed_file_pair(ctx, fixture.installationId, member.userId),
 				assetId: undefined,
 				fileNodeId: undefined,
 			});
@@ -1825,6 +1882,128 @@ describe("public API routes", () => {
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 	});
 
+	test.each([false, true])(
+		"a fresh personal grant keeps accepted data work (written before reconnect: %s)",
+		async (written) => {
+			const t = test_convex();
+			const fixture = await seed_installation(t);
+			const old = await mint_service_grant({ t, fixture });
+			if (old._nay) throw new Error(old._nay.message);
+			const request = (token: string, route: string, body: Record<string, unknown>) =>
+				t.fetch(`/api/v1/plugin-data/${route}`, {
+					method: "POST",
+					headers: service_headers(token),
+					body: JSON.stringify(body),
+				});
+			const reserveBody = {
+				collection: "meetings",
+				key: "accepted",
+				maximumBytes: 1000,
+				idempotencyKey: "accepted-reservation",
+				expiresAt: Date.now() + 60_000,
+			};
+			const writeBody = { collection: "meetings", key: "accepted", revision: 1, value: value_of_bytes(600) };
+			expect((await request(old._yay.token, "reserve", reserveBody)).status).toBe(200);
+			if (written) expect((await request(old._yay.token, "write-versioned", writeBody)).status).toBe(200);
+			const [reservation] = await read_reservations(t, fixture);
+			const before = await read_documents(t, fixture);
+			const usageBefore = await read_usage(t, fixture);
+			expect(usageBefore).toMatchObject({
+				usedBytes: written ? 600 : 0,
+				reservedBytes: written ? 400 : 1000,
+				usedDocuments: written ? 1 : 0,
+				reservedDocuments: written ? 0 : 1,
+				tombstoneDocuments: 0,
+			});
+			// Keep accepted work from before cutover. Null records the old grant's missing pair.
+			await t.run((ctx) =>
+				ctx.db.patch("plugin_service_grants", old._yay.grantId, { filePairId: null, revokedAt: Date.now() }),
+			);
+			const retired = await t.run((ctx) => ctx.db.get("plugin_service_grants", old._yay.grantId));
+			const fresh = await mint_service_grant({ t, fixture });
+			if (fresh._nay) throw new Error(fresh._nay.message);
+			expect(fresh._yay.grantId).not.toBe(old._yay.grantId);
+			const grant = (await t.run((ctx) => ctx.db.get("plugin_service_grants", fresh._yay.grantId)))!;
+			expect(grant.filePairId).toBe(fixture.filePairId);
+			expect(grant.principalKey, "a fresh grant keeps the accepted producer").toBe(retired!.principalKey);
+
+			const refused = await request(old._yay.token, "write-versioned", writeBody);
+			expect(refused.status, "the retired grant cannot finish accepted data work").toBe(401);
+			expect(await read_reservations(t, fixture)).toEqual([reservation]);
+			expect(await read_documents(t, fixture)).toEqual(before);
+			expect(await read_usage(t, fixture)).toEqual(usageBefore);
+
+			const reserved = await request(fresh._yay.token, "reserve", reserveBody);
+			expect(reserved.status, "a fresh grant replays the accepted reservation").toBe(200);
+			expect(await reserved.json()).toEqual({
+				reservationId: reservation._id,
+				remainingBytes: written ? 400 : 1000,
+				expiresAt: reserveBody.expiresAt,
+			});
+			expect(await read_reservations(t, fixture)).toEqual([reservation]);
+			expect(await read_usage(t, fixture)).toEqual(usageBefore);
+			const saved = await request(fresh._yay.token, "write-versioned", writeBody);
+			expect(saved.status, "a fresh grant finishes the accepted versioned write").toBe(200);
+			expect(await saved.json()).toEqual({ revision: 1, byteSize: 600 });
+			if (written) expect(await read_documents(t, fixture)).toEqual(before);
+			const savedDocuments = await read_documents(t, fixture);
+			const savedReservations = await read_reservations(t, fixture);
+			const savedUsage = await read_usage(t, fixture);
+			expect(savedReservations).toHaveLength(1);
+			expect(savedReservations[0]).toMatchObject({
+				_id: reservation._id,
+				remainingBytes: 400,
+				ownerPrincipalKey: grant.principalKey,
+			});
+			expect(savedDocuments).toHaveLength(1);
+			expect(savedDocuments[0]).toMatchObject({ revision: 1, byteSize: 600, producerPrincipalKey: grant.principalKey });
+			expect(savedUsage).toMatchObject({
+				usedBytes: 600,
+				reservedBytes: 400,
+				usedDocuments: 1,
+				reservedDocuments: 0,
+				tombstoneDocuments: 0,
+			});
+
+			const replayed = await request(fresh._yay.token, "write-versioned", writeBody);
+			expect(replayed.status).toBe(200);
+			expect(await replayed.json()).toEqual({ revision: 1, byteSize: 600 });
+			expect(await read_documents(t, fixture), "a retry keeps the saved revision and receipt").toEqual(savedDocuments);
+			expect(await read_reservations(t, fixture)).toEqual(savedReservations);
+			expect(await read_usage(t, fixture), "a retry does not charge bytes or slots twice").toEqual(savedUsage);
+
+			const next = await request(fresh._yay.token, "write-versioned", {
+				...writeBody,
+				revision: 2,
+				value: value_of_bytes(900),
+			});
+			expect(next.status).toBe(200);
+			expect(await next.json()).toEqual({ revision: 2, byteSize: 900 });
+			expect(await read_usage(t, fixture)).toMatchObject({
+				usedBytes: 900,
+				reservedBytes: 100,
+				usedDocuments: 1,
+				reservedDocuments: 0,
+				tombstoneDocuments: 0,
+			});
+			const released = await request(fresh._yay.token, "release-reservation", {
+				collection: reserveBody.collection,
+				key: reserveBody.key,
+				idempotencyKey: reserveBody.idempotencyKey,
+			});
+			expect(released.status).toBe(200);
+			expect(await released.json()).toEqual({ releasedBytes: 100 });
+			expect(await read_usage(t, fixture)).toMatchObject({
+				usedBytes: 900,
+				reservedBytes: 0,
+				usedDocuments: 1,
+				reservedDocuments: 0,
+				tombstoneDocuments: 0,
+			});
+			expect(await t.run((ctx) => ctx.db.get("plugin_service_grants", old._yay.grantId))).toEqual(retired);
+		},
+	);
+
 	test("answers a full store with 403, not the 400 every other refused body gets", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -1932,14 +2111,7 @@ describe("invoke file write preconditions", () => {
 			}),
 		);
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: "invoke-file-writer", external_id: userId });
-		expect(
-			await asUser.mutation(api.access_control.set_service_account_grant, {
-				membershipId: fixture.membershipId,
-				serviceAccountId: fixture.serviceAccountId,
-				resource: { kind: "workspace" },
-				level: "manage",
-			}),
-		).toEqual({ _yay: null });
+		await t.run((ctx) => seed_file_consent(ctx, fixture, null, "write"));
 		const folder = await t.mutation(internal.public_api_plugin_files.ensure_plugin_folder, {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -2008,7 +2180,7 @@ describe("invoke file write preconditions", () => {
 	});
 
 	test.each(["folder", "file"] as const)(
-		"a hidden %s returns 403 before parent details and a write grant restores access",
+		"a hidden %s returns 403 before parent details and personal consent restores access",
 		async (kind) => {
 			const t = test_convex();
 			const fixture = await seed_file_writer(t);
@@ -2035,16 +2207,10 @@ describe("invoke file write preconditions", () => {
 			).toEqual({ _yay: null });
 			await t.run(async (ctx) => {
 				await test_mocks_fill_db_with.plan(ctx, { userId: member.userId, plan: "Pay As You Go" });
-				await ctx.db.patch("plugins_event_runs", fixture.runId, { actorUserId: member.userId });
+				const filePairId = await seed_file_pair(ctx, fixture.installationId, member.userId);
+				await ctx.db.patch("plugins_event_runs", fixture.runId, { actorUserId: member.userId, filePairId });
+				await seed_file_consent(ctx, { ...fixture, filePairId }, null, "write");
 			});
-			expect(
-				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: fixture.membershipId,
-					serviceAccountId: fixture.serviceAccountId,
-					resource: { kind: "file", nodeId: restrictedNodeId },
-					level: "write",
-				}),
-			).toEqual({ _yay: null });
 			const parent = await t.run((ctx) => ctx.db.get("files_nodes", fixture.parentId));
 			if (!parent || parent.parentId === files_ROOT_ID) throw new Error("Expected a nested folder");
 			const request = () =>
@@ -2070,6 +2236,10 @@ describe("invoke file write preconditions", () => {
 					level: "write",
 				}),
 			).toEqual({ _yay: null });
+			await t.run(async (ctx) => {
+				const filePairId = await seed_file_pair(ctx, fixture.installationId, member.userId);
+				await seed_file_consent(ctx, { ...fixture, filePairId }, restrictedNodeId, "write");
+			});
 			const accessible = await request();
 			expect(accessible.status).toBe(409);
 			expect(await accessible.json()).toEqual({
@@ -2634,6 +2804,9 @@ describe("plugin-data credential revalidation", () => {
 				"actor",
 				"organization",
 				"workspace",
+				"missing_pair",
+				"null_pair",
+				"stale_pair",
 			] as const
 		).map((change) => ["plugin_run", change, "write"] as const),
 		...(["read", "write-batch", "delete"] as const).map((operation) => ["plugin_run", "revoke", operation] as const),
@@ -2641,6 +2814,8 @@ describe("plugin-data credential revalidation", () => {
 		["plugin_ui", "rebind", "read"],
 		["plugin_ui", "end", "read"],
 		["plugin_ui", "expire", "read"],
+		["plugin_ui", "missing_pair", "read"],
+		["plugin_ui", "stale_pair", "read"],
 		["plugin_service", "revoke", "read"],
 		["plugin_service", "revoke", "write"],
 		["plugin_service", "rebind", "read"],
@@ -2649,6 +2824,10 @@ describe("plugin-data credential revalidation", () => {
 		["plugin_service", "end", "write"],
 		["plugin_service", "expire", "read"],
 		["plugin_service", "expire", "write"],
+		["plugin_service", "missing_pair", "write"],
+		["plugin_service", "null_pair", "write"],
+		["plugin_service", "null_pair", "read"],
+		["plugin_service", "stale_pair", "write"],
 		["user_api_key", "revoke", "read"],
 		["user_api_key", "revoke", "write"],
 		["user_api_key", "rotate", "read"],
@@ -2683,7 +2862,26 @@ describe("plugin-data credential revalidation", () => {
 					throw new Error(`Initial auth failed: ${auth._nay.status}`);
 				}
 				const principal = auth._yay.principal;
-				if (change === "end" || change === "fail" || change === "expire" || change === "deadline") {
+				if (change === "missing_pair" || change === "null_pair" || change === "stale_pair") {
+					await t.run(async (ctx) => {
+						if (change === "stale_pair") {
+							const pair = (await ctx.db.get("plugins_file_pairs", fixture.filePairId))!;
+							await ctx.db.patch("plugins_file_pairs", pair._id, { membershipLifetime: pair.membershipLifetime + 1 });
+						} else if (principal.kind === "plugin_run") {
+							await ctx.db.patch("plugins_event_runs", principal.runId, {
+								filePairId: change === "missing_pair" ? undefined : null,
+							});
+						} else if (principal.kind === "plugin_service") {
+							await ctx.db.patch("plugin_service_grants", principal.grantId, {
+								filePairId: change === "missing_pair" ? undefined : null,
+							});
+						} else if (principal.kind === "plugin_ui") {
+							await ctx.db.patch("plugins_ui_sessions", principal.sessionId, { filePairId: undefined });
+						} else {
+							throw new Error("Expected a plugin credential");
+						}
+					});
+				} else if (change === "end" || change === "fail" || change === "expire" || change === "deadline") {
 					await t.run(async (ctx) => {
 						if (principal.kind === "plugin_run") {
 							if (change === "expire") {
@@ -2791,7 +2989,7 @@ describe("plugin-data credential revalidation", () => {
 				),
 			});
 			expect(paused).toHaveBeenCalledTimes(1);
-			expect(response.status).toBe(401);
+			expect(response.status, `${kind} must refuse ${change} before ${operation}`).toBe(401);
 			expect(await response.json()).toEqual({ message: "Unauthenticated" });
 			// Compare full docs so refused writes cannot change revision, ownership, or member charges.
 			expect(await read_documents(t, fixture)).toEqual(before);
@@ -2884,6 +3082,7 @@ async function seed_store_principal(args: {
 			return { principalKey, credentialRef: { kind, credentialId } } as const;
 		}
 		const pin = {
+			filePairId: await seed_file_pair(ctx, fixture.installationId, actorUserId),
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			installationId: fixture.installationId,
@@ -5312,9 +5511,11 @@ describe("db_authorize", () => {
 	test("refuses every principal whose actor lost the workspace, including a service grant", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
+		const principal = await seed_store_principal({ t, fixture });
+		const servicePrincipal = await seed_store_principal({ t, fixture, kind: "plugin_service" });
 
 		await t.mutation(internal.plugins_data.write_document, {
-			principal: await seed_store_principal({ t, fixture }),
+			principal,
 			collection: "meetings",
 			key: "a",
 			value: { n: 1 },
@@ -5335,20 +5536,20 @@ describe("db_authorize", () => {
 		});
 
 		const refusedRead = await t.query(internal.plugins_data.read_document, {
-			principal: await seed_store_principal({ t, fixture }),
+			principal,
 			collection: "meetings",
 			key: "a",
 		});
 		expect(refusedRead._nay?.message).toBe("Unauthenticated");
 		const refusedWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: await seed_store_principal({ t, fixture }),
+			principal,
 			collection: "meetings",
 			key: "b",
 			value: { n: 2 },
 		});
 		expect(refusedWrite._nay?.message).toBe("Unauthenticated");
 		const refusedDelete = await t.mutation(internal.plugins_data.delete_document, {
-			principal: await seed_store_principal({ t, fixture }),
+			principal,
 			collection: "meetings",
 			key: "a",
 		});
@@ -5358,7 +5559,7 @@ describe("db_authorize", () => {
 		// door takes no phase at all, so a sealed `processing` grant reaches this same check: the seal
 		// bounds where a grant writes, not whether its member may still write.
 		const service = await t.query(internal.plugins_data.read_document, {
-			principal: await seed_store_principal({ t, fixture, kind: "plugin_service" }),
+			principal: servicePrincipal,
 			collection: "meetings",
 			key: "a",
 		});
@@ -5388,6 +5589,7 @@ async function seed_page_session(
 	const sessionId = await t.run(async (ctx) => {
 		const now = Date.now();
 		return await ctx.db.insert("plugins_ui_sessions", {
+			filePairId: await seed_file_pair(ctx, args.installationId, args.userId),
 			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", args.installationId))!.serviceAccountId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -6779,6 +6981,92 @@ describe("user_put_owned_document", () => {
 });
 
 describe("db_authorize_page_write", () => {
+	test.each(["missing", "stale"] as const)("refuses a page with a %s original pair", async (change) => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const write = { collection: "messages", value: { text: "Preserve" }, clientRequestId: "pair-before" };
+		expect((await fixture.asPage.mutation(api.plugins_data.user_append_document, write))._nay).toBeUndefined();
+		expect(
+			(await fixture.asPage.query(api.plugins_data.watch_documents, { collection: "messages", limit: 10 }))?.docs,
+		).toHaveLength(1);
+		const before = await read_documents(t, fixture);
+		await t.run(async (ctx) => {
+			if (change === "missing") {
+				await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { filePairId: undefined });
+			} else {
+				const lifetime = (await ctx.db
+					.query("organizations_membership_lifetimes")
+					.withIndex("by_workspace_user", (q) => q.eq("workspaceId", fixture.workspaceId).eq("userId", fixture.userId))
+					.first())!;
+				await ctx.db.patch("organizations_membership_lifetimes", lifetime._id, { lifetime: lifetime.lifetime + 1 });
+			}
+		});
+		expect
+			.soft(
+				await fixture.asPage.query(api.plugins_data.watch_documents, { collection: "messages", limit: 10 }),
+				"original pair must gate native data read",
+			)
+			.toBeNull();
+		for (const clientRequestId of [write.clientRequestId, "pair-after"]) {
+			expect
+				.soft(
+					(await fixture.asPage.mutation(api.plugins_data.user_append_document, { ...write, clientRequestId }))._nay,
+					"original pair must gate native data write",
+				)
+				.toBeDefined();
+		}
+		expect(await read_documents(t, fixture)).toEqual(before);
+	});
+
+	test("refuses the old data page after account recovery and accepts a fresh page", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const clerkUserId = "page-pair-recovery";
+		const member = await join_member_with_role({ t, fixture, clerkUserId, role: "member" });
+		const email = "page-pair-recovery@example.test";
+		await t.run(async (ctx) => {
+			const anagraphic = await ctx.db.insert("users_anagraphics", {
+				userId: member.userId,
+				email,
+				displayName: "Recovered member",
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("users", member.userId, { anagraphic });
+		});
+		const write = { collection: "messages", key: "before", value: { text: "Preserve" } };
+		expect((await member.asPage.mutation(api.plugins_data.user_put_document, write))._nay).toBeUndefined();
+		const before = await read_documents(t, fixture);
+		const session = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", member.sessionId));
+		await t.mutation(internal.data_deletion.init_user_deletion, { userId: member.userId });
+		const restored = await t.mutation(internal.users.resolve_user, {
+			clerkUserId,
+			email,
+			displayName: "Recovered member",
+		});
+		expect(restored._yay?.restoredDeletedAccount).toBe(true);
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", member.sessionId))).toEqual(session);
+		expect
+			.soft(
+				await member.asPage.query(api.plugins_data.watch_documents, { collection: "messages", limit: 10 }),
+				"recovered account must not revive native data read through the old pair",
+			)
+			.toBeNull();
+		expect
+			.soft(
+				(await member.asPage.mutation(api.plugins_data.user_put_document, { ...write, key: "after" }))._nay,
+				"recovered account must not revive native data write through the old pair",
+			)
+			.toBeDefined();
+		expect(await read_documents(t, fixture)).toEqual(before);
+		const fresh = await seed_page_session(t, { ...fixture, userId: member.userId });
+		expect(
+			(await fresh.asPage.query(api.plugins_data.watch_documents, { collection: "messages", limit: 10 }))?.docs,
+		).toHaveLength(1);
+		expect(
+			(await fresh.asPage.mutation(api.plugins_data.user_put_document, { ...write, key: "fresh" }))._nay,
+		).toBeUndefined();
+	});
+
 	test.each(["revoked", "rebound"] as const)(
 		"closes the JWT read and write doors when its account is %s",
 		async (change) => {
@@ -9415,9 +9703,9 @@ describe("plugins_data_db_drain_batch", () => {
 			});
 		}
 
-		// The source frame, documents, usage and producer grant each need a pass, then an empty pass.
+		// The source frame, pair, documents, usage and producer grant need a pass, then an empty pass.
 		const passes = await drain_until_done(t, fixture);
-		expect(passes).toBe(5);
+		expect(passes).toBe(6);
 		expect(await read_all_store_tables(t, fixture)).toEqual({
 			documents: 0,
 			reservations: 0,
@@ -9479,7 +9767,7 @@ describe("plugins_data_db_drain_batch", () => {
 		expect(await read_documents(t, fixture)).toHaveLength(1);
 
 		// The rest still goes, one bounded pass at a time.
-		expect(await drain_until_done(t, fixture)).toBe(2);
+		expect(await drain_until_done(t, fixture)).toBe(3);
 		expect(await read_all_store_tables(t, fixture)).toEqual({
 			documents: 0,
 			reservations: 0,
@@ -9636,6 +9924,8 @@ describe("plugins_data_db_drain_batch", () => {
 		for (const deletedCount of [100, 1]) {
 			expect(await pass()).toEqual({ done: false, deletedCount });
 		}
+		// The personal pair remains after its data scope rows.
+		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
 		expect(await pass()).toEqual({ done: true, deletedCount: 0 });
 		expect(await counts()).toEqual({
 			target: { grants: 0, scopes: 0, fences: 0 },
@@ -10012,6 +10302,7 @@ describe("plugins_data_db_count_installation_docs", () => {
 			const now = Date.now();
 			for (let index = 0; index < 150; index += 1) {
 				await ctx.db.insert("plugin_service_grants", {
+					filePairId: fixture.filePairId,
 					serviceAccountId: fixture.serviceAccountId,
 					organizationId: fixture.organizationId,
 					workspaceId: fixture.workspaceId,

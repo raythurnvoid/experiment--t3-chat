@@ -23,7 +23,7 @@ async function live_installation(
 		serviceAccountId: Id<"access_control_service_accounts">;
 		actorUserId: Id<"users">;
 		serviceSecretHash: string;
-		filePairId?: Id<"plugins_file_pairs">;
+		filePairId?: Id<"plugins_file_pairs"> | null;
 	},
 ) {
 	const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
@@ -36,15 +36,14 @@ async function live_installation(
 	) {
 		return null;
 	}
-	// A retry must keep its original file authority. It cannot revive the old model.
+	// A retry must keep its original personal pair.
 	if (
-		args.filePairId
-			? !(await plugins_file_grants_db_validate_pair(ctx, {
-					pairId: args.filePairId,
-					installationId: installation._id,
-					userId: args.actorUserId,
-				}))
-			: installation.fileAccessModel === "personal"
+		!args.filePairId ||
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: args.filePairId,
+			installationId: installation._id,
+			userId: args.actorUserId,
+		}))
 	)
 		return null;
 	const [workspace, actor, registration, membership] = await Promise.all([
@@ -84,7 +83,7 @@ async function live_installation(
 		"plugin_data:write": "plugin.data.write",
 	} as const;
 	if (registration.scopes.some((scope) => !installation.acceptedCapabilities.includes(capability[scope]))) return null;
-	return { installation, registeredScopes: registration.scopes };
+	return { installation, registeredScopes: registration.scopes, filePairId: args.filePairId };
 }
 
 export async function plugins_service_grant_requests_db_source(
@@ -108,7 +107,7 @@ export async function plugins_service_grant_requests_db_source(
 			actorUserId: session.userId,
 			serviceSecretHash: args.serviceSecretHash,
 		});
-		return live ? { ...live, actorUserId: session.userId, filePairId: session.filePairId } : null;
+		return live ? { ...live, actorUserId: session.userId } : null;
 	}
 	const grant = await ctx.db
 		.query("plugin_service_grants")
@@ -123,7 +122,7 @@ export async function plugins_service_grant_requests_db_source(
 		return null;
 	const live = await live_installation(ctx, { ...grant, serviceSecretHash: args.serviceSecretHash });
 	return live && grant.scopes.every((scope) => live.registeredScopes.includes(scope))
-		? { ...live, actorUserId: grant.actorUserId, filePairId: grant.filePairId }
+		? { ...live, actorUserId: grant.actorUserId }
 		: null;
 }
 

@@ -134,7 +134,7 @@ import {
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
-import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import { plugins_service_db_can_write_destination } from "./plugins_service.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
@@ -815,7 +815,6 @@ export const create_plugin_service_grant = internalMutation({
 				return Result({ _nay: { message: "A file-write grant requires a destination path prefix" } });
 			}
 			if (
-				source.filePairId &&
 				!(await plugins_service_db_can_write_destination(ctx, {
 					installation,
 					actorUserId: args.actorUserId,
@@ -1472,8 +1471,7 @@ export const resolve_principal = internalQuery({
 				/**
 				 * Always null: a plugin run has no destination seal. The read routes call
 				 * `public_api_is_path_inside_prefix(path, principal.pathPrefix)`, which treats null as
-				 * "anywhere" — right here, because the run's real boundary is its `subject`: the person,
-				 * limited by the grants of the plugin's service account.
+				 * "anywhere" — right here, because the run's personal file consent bounds its `subject`.
 				 */
 				pathPrefix: v.null(),
 			}),
@@ -1534,7 +1532,7 @@ export const resolve_principal = internalQuery({
 				.query("plugins_event_runs")
 				.withIndex("by_apiTokenHash", (q) => q.eq("apiTokenHash", apiTokenHash))
 				.unique();
-			if (!pluginRun || !pluginRun.apiTokenExpiresAt) {
+			if (!pluginRun || !pluginRun.filePairId || !pluginRun.apiTokenExpiresAt) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 			const activity = await activities_db_require_by_source_id(ctx, pluginRun._id);
@@ -1586,7 +1584,6 @@ export const resolve_principal = internalQuery({
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 			if (
-				pluginRun.filePairId &&
 				!(await plugins_file_grants_db_validate_pair(ctx, {
 					pairId: pluginRun.filePairId,
 					installationId: installation._id,
@@ -1669,10 +1666,7 @@ export const resolve_principal = internalQuery({
 					scopes.push("volumes:write");
 				}
 			}
-			// Any run may read files under the same consent a frame reads with. The backend runs the
-			// same publisher code either way, the run reads as its person within its account's grants, and
-			// without this an invoke endpoint could not read the files it maintains. `files:download`
-			// stays source-only.
+			// Runs and frames use the same personal file consent. `files:download` stays source-only.
 			if (acceptedCapabilities.includes("workspace.files.read")) {
 				scopes.push("files:read", "files:list");
 			}
@@ -1691,16 +1685,11 @@ export const resolve_principal = internalQuery({
 			const effectiveScopes: Infer<typeof plugin_run_scopes_validator> = scheduledAssignment
 				? [...scopes.filter((scope) => consentScopes.includes(scope)), "runs:follow_up"]
 				: scopes;
-			// Old tokens may finish accepted writes, but cannot start another Files read after the switch.
-			const liveScopes =
-				installation.fileAccessModel === "personal" && !pluginRun.filePairId
-					? effectiveScopes.filter((scope) => !["files:read", "files:list", "files:download"].includes(scope))
-					: effectiveScopes;
 			return Result({
 				_yay: {
 					kind: "plugin_run" as const,
 					serviceAccountId: pluginRun.serviceAccountId,
-					subject: plugins_file_subject(installation, pluginRun.actorUserId, pluginRun.filePairId),
+					subject: { kind: "plugin_pair" as const, pairId: pluginRun.filePairId },
 					organizationId: pluginRun.organizationId,
 					workspaceId: pluginRun.workspaceId,
 					runId: pluginRun._id,
@@ -1713,7 +1702,7 @@ export const resolve_principal = internalQuery({
 					outputParentPath,
 					// The HTTP layer checks this clock after cache retrieval. Never cache a live-time verdict.
 					apiTokenExpiresAt: Math.min(pluginRun.apiTokenExpiresAt, activity.deadlineAt),
-					scopes: liveScopes,
+					scopes: effectiveScopes,
 					principalKey: `plugin_run:${pluginRun._id}`,
 					pathPrefix: null,
 				},
@@ -1732,7 +1721,7 @@ export const resolve_principal = internalQuery({
 				.query("plugins_ui_sessions")
 				.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
 				.unique();
-			if (!session) {
+			if (!session || !session.filePairId) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
@@ -1780,7 +1769,6 @@ export const resolve_principal = internalQuery({
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 			if (
-				session.filePairId &&
 				!(await plugins_file_grants_db_validate_pair(ctx, {
 					pairId: session.filePairId,
 					installationId: installation._id,
@@ -1796,9 +1784,9 @@ export const resolve_principal = internalQuery({
 			});
 
 			// Workspace file reads are consent-gated; UI sessions never get secrets or outbound scopes.
-			const scopes: Infer<typeof plugin_ui_scopes_validator> =
-				installation.acceptedCapabilities.includes("workspace.files.read") &&
-				(installation.fileAccessModel !== "personal" || session.filePairId !== undefined)
+			const scopes: Infer<typeof plugin_ui_scopes_validator> = installation.acceptedCapabilities.includes(
+				"workspace.files.read",
+			)
 				? ["files:list", "files:read", "files:download"]
 				: [];
 			// A frame may show what its plugin stored, but never write it. A UI session can belong to an
@@ -1817,7 +1805,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_ui" as const,
 					serviceAccountId: session.serviceAccountId,
-					subject: plugins_file_subject(installation, session.userId, session.filePairId),
+					subject: { kind: "plugin_pair" as const, pairId: session.filePairId },
 					organizationId: session.organizationId,
 					workspaceId: session.workspaceId,
 					userId: session.userId,
@@ -1841,7 +1829,7 @@ export const resolve_principal = internalQuery({
 				.query("plugin_service_grants")
 				.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
 				.unique();
-			if (!grant || grant.revokedAt != null) {
+			if (!grant || !grant.filePairId || grant.revokedAt != null) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
@@ -1898,7 +1886,6 @@ export const resolve_principal = internalQuery({
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 			if (
-				grant.filePairId &&
 				!(await plugins_file_grants_db_validate_pair(ctx, {
 					pairId: grant.filePairId,
 					installationId: installation._id,
@@ -1947,7 +1934,7 @@ export const resolve_principal = internalQuery({
 				_yay: {
 					kind: "plugin_service" as const,
 					serviceAccountId: grant.serviceAccountId,
-					subject: plugins_file_subject(installation, grant.actorUserId, grant.filePairId),
+					subject: { kind: "plugin_pair" as const, pairId: grant.filePairId },
 					organizationId: grant.organizationId,
 					workspaceId: grant.workspaceId,
 					grantId: grant._id,
@@ -2449,6 +2436,7 @@ export async function public_api_db_revalidate_live_plugin_run(
 	const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
 	if (
 		!pluginRun ||
+		!pluginRun.filePairId ||
 		!pluginRun.apiTokenHash ||
 		!pluginRun.apiTokenExpiresAt ||
 		pluginRun.apiTokenExpiresAt <= args.now ||
@@ -2483,7 +2471,6 @@ export async function public_api_db_revalidate_live_plugin_run(
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 	if (
-		pluginRun.filePairId &&
 		!(await plugins_file_grants_db_validate_pair(ctx, {
 			pairId: pluginRun.filePairId,
 			installationId: installation._id,
@@ -2492,14 +2479,7 @@ export async function public_api_db_revalidate_live_plugin_run(
 	) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
-	if (
-		(args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== (pluginRun.filePairId ?? null)) ||
-		(installation.fileAccessModel === "personal" &&
-			!pluginRun.filePairId &&
-			(args.requiredScope === "files:read" ||
-				args.requiredScope === "files:list" ||
-				(args.requiredScope === "files:write" && args.acceptedFilePairId === undefined)))
-	) {
+	if (args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== pluginRun.filePairId) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 	if (pluginRun.event === "schedule.interval.elapsed") {
@@ -2527,7 +2507,9 @@ export async function public_api_db_revalidate_live_plugin_run(
 			});
 	}
 
-	return Result({ _yay: { pluginRun, installation } });
+	return Result({
+		_yay: { pluginRun, installation, subject: { kind: "plugin_pair" as const, pairId: pluginRun.filePairId } },
+	});
 }
 
 // File I/O runs outside a transaction. Check the exact response and settle its call together.
@@ -2582,7 +2564,7 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
-					subject: plugins_file_subject(live._yay.installation, run.actorUserId, run.filePairId),
+					subject: live._yay.subject,
 					fileNode: node,
 					permission: "content.read",
 				}))
@@ -2633,7 +2615,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		expectedParentNodeId?: Id<"files_nodes">;
 		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
 		/**
-		 * Only publication passes the stage's saved pin. Null means accepted legacy work.
+		 * Publication must match the stage's saved pair. A null plugin pin is refused.
 		 */
 		acceptedFilePairId?: Id<"plugins_file_pairs"> | null;
 		now: number;
@@ -2727,7 +2709,7 @@ export async function public_api_db_revalidate_file_write_principal(
 			if (!invokeActorMembership || invokeActorMembership.pendingOrganizationRemoval) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			const subject = plugins_file_subject(installation, args.userId, pluginRun.filePairId);
+			const subject = liveRun._yay.subject;
 			if (
 				!(await has_workspace_content_permission(ctx, {
 					organizationId: args.organizationId,
@@ -2810,14 +2792,11 @@ export async function public_api_db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 		// Personal consent on the source alone cannot create a sibling. Its parent needs write.
-		const subject: access_control_Subject = pluginRun.filePairId
-			? plugins_file_subject(installation, args.userId, pluginRun.filePairId)
-			: { kind: "user", userId: args.userId, plugin: null };
-		const writeNode = pluginRun.filePairId
-			? sourceFileNode.parentId === files_ROOT_ID
+		const subject = liveRun._yay.subject;
+		const writeNode =
+			sourceFileNode.parentId === files_ROOT_ID
 				? null
-				: await files_saved_placement_db_get_node(ctx.db, sourceFileNode.parentId)
-			: sourceFileNode;
+				: await files_saved_placement_db_get_node(ctx.db, sourceFileNode.parentId);
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
@@ -2853,6 +2832,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		const grant = await ctx.db.get("plugin_service_grants", args.principalRef.grantId);
 		if (
 			!grant ||
+			!grant.filePairId ||
 			grant.revokedAt != null ||
 			grant.expiresAt <= args.now ||
 			grant.organizationId !== args.organizationId ||
@@ -2890,7 +2870,6 @@ export async function public_api_db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		if (
-			grant.filePairId &&
 			!(await plugins_file_grants_db_validate_pair(ctx, {
 				pairId: grant.filePairId,
 				installationId: installation._id,
@@ -2899,10 +2878,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		if (
-			(args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== (grant.filePairId ?? null)) ||
-			(installation.fileAccessModel === "personal" && !grant.filePairId && args.acceptedFilePairId === undefined)
-		) {
+		if (args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== grant.filePairId) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 		const actor = await ctx.db.get("users", grant.actorUserId);
@@ -2944,7 +2920,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		const subject = plugins_file_subject(installation, args.userId, grant.filePairId);
+		const subject = { kind: "plugin_pair" as const, pairId: grant.filePairId };
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
@@ -3075,10 +3051,6 @@ async function db_check_plugin_added_file_refs(
 		installation,
 		userId: args.stage.userId,
 		filePairId: args.stage.filePairId,
-		// Legacy upload runs may embed their source. Personal runs need applied read consent.
-		...(args.facts.pluginRun && args.facts.pluginRun.event !== "ui.invoke.requested" && args.facts.pluginRun.fileNodeId
-			? { sourceNodeId: args.facts.pluginRun.fileNodeId }
-			: {}),
 		addedFileRefs: args.addedFileRefs,
 	});
 }
@@ -3454,7 +3426,10 @@ export const prepare_file_write = internalMutation({
 		]);
 
 		const stageId = await ctx.db.insert("public_api_file_write_stages", {
-			filePairId: revalidated._yay.pluginRun?.filePairId ?? revalidated._yay.serviceGrant?.filePairId,
+			filePairId:
+				revalidated._yay.writeContext.subject.kind === "plugin_pair"
+					? revalidated._yay.writeContext.subject.pairId
+					: undefined,
 			force: args.force === true,
 			requestReadOnly: args.requestReadOnly === true,
 			organizationId: args.organizationId,

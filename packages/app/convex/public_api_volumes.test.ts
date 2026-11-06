@@ -24,6 +24,9 @@ import { getFunctionName } from "convex/server";
 import * as server from "./_generated/server.js";
 import { r2_create_asset_key } from "./r2_assets.ts";
 import { plugins_data_http_write } from "./plugins_data_http.ts";
+import { grant_plugin_file_access } from "./plugins.setup.test.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 
 const objects = new Map<string, string>();
 let onPut: ((key: string) => Promise<void>) | null = null;
@@ -179,7 +182,6 @@ async function fixture(
 							"secrets:read" as const,
 							"outbound:fetch" as const,
 						],
-						filesReadProof: { kind: "workspace" as const },
 					},
 				}
 			: {}),
@@ -193,8 +195,17 @@ async function fixture(
 	const runId = options.scheduled
 		? await start_scheduled_run({ t, asOwner, owner, installationId, tokenHash })
 		: await (async () => {
+				const pair = await t.run(async (ctx) => {
+					const membership = (await ctx.db.get("organizations_workspaces_users", owner.membershipId))!;
+					return await plugins_file_grants_db_ensure_pair(ctx, {
+						installation,
+						membership,
+						membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+					});
+				});
 				const sessionId = await t.run((ctx) =>
 					ctx.db.insert("plugins_ui_sessions", {
+						filePairId: pair._id,
 						organizationId: owner.organizationId,
 						workspaceId: owner.workspaceId,
 						installationId,
@@ -311,15 +322,13 @@ async function assign_scheduled_user(args: {
 	f: Awaited<ReturnType<typeof fixture>>;
 	member: Awaited<ReturnType<typeof invited_member>>;
 	scopes: NonNullable<Doc<"access_control_permission_grants">["runAs"]>["scopes"];
-	filesReadProof?: { kind: "file"; nodeId: Id<"files_nodes"> };
 }) {
-	const { f, member, filesReadProof, scopes } = args;
+	const { f, member, scopes } = args;
 
 	const granted = await member.asMember.mutation(api.plugins_access.grant_run_as_me, {
 		membershipId: member.membershipId,
 		installationId: f.installationId,
 		scopes,
-		...(filesReadProof ? { filesReadProof } : {}),
 	});
 	if (granted._nay) throw new Error(granted._nay.message);
 	await reset_manage_limit(f);
@@ -392,28 +401,31 @@ async function readable_file(f: Awaited<ReturnType<typeof fixture>>, path = "/no
 		});
 		return { nodeId: created._yay, assetId, path };
 	});
-	const allowed = await f.asOwner.mutation(api.access_control.set_service_account_grant, {
+	await reset_manage_limit(f);
+	const consent = await grant_plugin_file_access({
+		t: f.t,
+		userId: f.owner.userId,
 		membershipId: f.owner.membershipId,
-		serviceAccountId: f.installation.serviceAccountId,
-		resource: { kind: "file", nodeId: saved.nodeId },
+		installationId: f.installationId,
+		rootNodeId: saved.nodeId,
 		level: "read",
 	});
-	if (allowed._nay) throw new Error(allowed._nay.message);
-	return saved;
+	await reset_manage_limit(f);
+	return { ...saved, consentId: consent._id };
 }
 
-/**
- * Give the plugin's account read on the workspace. A plugin lists the root only with an open root:
- * the root is above a file root.
- */
+// Select the workspace too when a test must list above a selected file.
 async function open_root(f: Awaited<ReturnType<typeof fixture>>) {
-	const allowed = await f.asOwner.mutation(api.access_control.set_service_account_grant, {
+	await reset_manage_limit(f);
+	await grant_plugin_file_access({
+		t: f.t,
+		userId: f.owner.userId,
 		membershipId: f.owner.membershipId,
-		serviceAccountId: f.installation.serviceAccountId,
-		resource: { kind: "workspace" },
+		installationId: f.installationId,
+		rootNodeId: null,
 		level: "read",
 	});
-	if (allowed._nay) throw new Error(allowed._nay.message);
+	await reset_manage_limit(f);
 }
 
 function api_request(args: { f: Awaited<ReturnType<typeof fixture>>; path: string; body: unknown }) {
@@ -555,8 +567,23 @@ async function restart_run(f: Awaited<ReturnType<typeof fixture>>, userId: Id<"u
 	});
 	const installation = await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.installationId));
 	if (!installation) throw new Error("Expected installation");
+	const pair = await f.t.run(async (ctx) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) =>
+				q.eq("workspaceId", f.owner.workspaceId).eq("userId", userId).eq("active", true),
+			)
+			.unique();
+		if (!membership) throw new Error("Expected active membership");
+		return await plugins_file_grants_db_ensure_pair(ctx, {
+			installation,
+			membership,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+		});
+	});
 	const sessionId = await f.t.run((ctx) =>
 		ctx.db.insert("plugins_ui_sessions", {
+			filePairId: pair._id,
 			organizationId: f.owner.organizationId,
 			workspaceId: f.owner.workspaceId,
 			installationId: installation._id,
@@ -1164,25 +1191,26 @@ describe("scheduled Files response authority", () => {
 				nodeId: file.nodeId,
 			}),
 		).toEqual({ _yay: null });
-		// A restrict starts with only the person restricting it, so the plugin account is added back.
-		for (const principal of [
-			{ kind: "user" as const, userId: member.userId },
-			{ kind: "service_account" as const, serviceAccountId: f.installation.serviceAccountId },
-		]) {
-			expect(
-				await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-					membershipId: f.owner.membershipId,
-					nodeId: file.nodeId,
-					principal,
-					level: "read",
-				}),
-			).toEqual({ _yay: null });
-		}
+		expect(
+			await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: f.owner.membershipId,
+				nodeId: file.nodeId,
+				principal: { kind: "user", userId: member.userId },
+				level: "read",
+			}),
+		).toEqual({ _yay: null });
+		await grant_plugin_file_access({
+			t: f.t,
+			userId: member.userId,
+			membershipId: member.membershipId,
+			installationId: f.installationId,
+			rootNodeId: file.nodeId,
+			level: "read",
+		});
 		await assign_scheduled_user({
 			f,
 			member,
 			scopes: ["files:read", "files:list"],
-			filesReadProof: { kind: "file", nodeId: file.nodeId },
 		});
 		expect(
 			await member.asMember.query(api.access_control.get_current_user_workspace_permission, {
@@ -1195,7 +1223,7 @@ describe("scheduled Files response authority", () => {
 			headers: { Authorization: `Bearer ${f.token}` },
 			body: JSON.stringify({ path: file.path }),
 		});
-		expect(read.status, "the saved file proof must not add a workspace read gate").toBe(200);
+		expect(read.status, "personal file consent must not add a workspace read gate").toBe(200);
 		expect(await read.text()).toBe("read");
 		const listed = await f.t.fetch("/api/v1/files/list", {
 			method: "POST",
@@ -1214,7 +1242,7 @@ describe("scheduled Files response authority", () => {
 		expect(denied.status, "consent must not grant another file").toBe(403);
 	});
 
-	test("registered Files routes read with the user and account", async () => {
+	test("registered Files routes read within personal file selections", async () => {
 		const f = await fixture({ scheduled: true });
 		await readable_file(f);
 		// The plugin's only root is the file, so the root above it is locked, even though the person can
@@ -1276,21 +1304,34 @@ describe("scheduled Files response authority", () => {
 		expect((await calls(f)).at(-1)?.status).toBe("failed");
 	});
 
-	test.each(["read", "list"] as const)("%s rechecks the account's file permission after I/O", async (kind) => {
+	test.each(["read", "list"] as const)("%s rechecks personal file consent after I/O", async (kind) => {
 		const f = await fixture({ scheduled: true });
 		const file = await readable_file(f);
+		if (kind === "list") {
+			// Root consent allows the list, but this restricted file still needs its own consent.
+			expect(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.owner.membershipId,
+					nodeId: file.nodeId,
+				}),
+			).toEqual({ _yay: null });
+			await open_root(f);
+		}
+		let sawIo = false;
 		const afterIo = async () => {
+			sawIo = true;
 			// Remove the grant through the real door.
-			const removed = await f.asOwner.mutation(api.access_control.remove_service_account_grant, {
+			const removed = await f.asOwner.mutation(api.plugins_access.revoke_file_access_as_me, {
 				membershipId: f.owner.membershipId,
-				serviceAccountId: f.installation.serviceAccountId,
-				resource: { kind: "file", nodeId: file.nodeId },
+				installationId: f.installationId,
+				consentId: file.consentId,
 			});
 			if (removed._nay) throw new Error(removed._nay.message);
 		};
 		const response = kind === "read" ? await read_after_io(f, afterIo) : await list_after_io(f, afterIo);
 		// The file is still there, so losing the grant makes it locked, not missing.
-		expect(response.status, "scheduled Files responses must repeat live account permission").toBe(403);
+		expect(sawIo, "personal consent test must reach file I/O before revoking access").toBe(true);
+		expect(response.status, "scheduled Files responses must repeat personal file consent").toBe(403);
 		expect((await calls(f)).at(-1)?.status).toBe("failed");
 	});
 });

@@ -129,13 +129,34 @@ async function seed_installation(
 				updatedAt: now,
 			});
 		}
-		return { ...membership, pluginVersionId, installationId, serviceAccountId } as const;
+		const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation: (await ctx.db.get("plugins_workspace_installations", installationId))!,
+			membership: member,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+		});
+		await ctx.db.insert("plugins_file_consents", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			pairId: pair._id,
+			rootNodeId: null,
+			requestedLevel: "write",
+			appliedLevel: "write",
+			areaEligible: true,
+			open: true,
+			revision: 1,
+			state: "applied",
+			endedReason: null,
+			createdAt: now,
+			updatedAt: now,
+		});
+		return { ...membership, pluginVersionId, installationId, serviceAccountId, filePairId: pair._id } as const;
 	});
 }
 
 /**
- * Mint a page session directly. `mint_page_session` needs a signed-in identity and a passed page in
- * the manifest; neither is what these routes are about, and only the token hash matters here.
+ * Mint a page session directly with its real personal pair. These tests exercise the service routes,
+ * not the manifest page checks in `mint_page_session`.
  */
 async function seed_page_token(args: {
 	t: ReturnType<typeof test_convex>;
@@ -154,6 +175,7 @@ async function seed_page_token(args: {
 			installationId: fixture.installationId,
 			pluginVersionId: fixture.pluginVersionId,
 			userId: fixture.userId,
+			filePairId: fixture.filePairId,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt: args.expiresAt ?? now + 30 * 60 * 1000,
@@ -163,9 +185,8 @@ async function seed_page_token(args: {
 }
 
 /**
- * A page token held by a second workspace member who holds exactly the content permissions asked
- * for, `content.read` alone by default. The seal writes the meeting's files as the member behind the
- * grant, so this is the actor its write check exists for.
+ * Give a second member the requested content permissions and matching personal consent.
+ * The default is read-only. Plugin data still uses the member's content permissions.
  *
  * It has to be a second member. The organization owner passes every permission check without a grant
  * doc, so nothing can take a content permission away from the seeded fixture user.
@@ -181,7 +202,7 @@ async function seed_member_page_token(args: {
 	await t.run(async (ctx) => {
 		const now = Date.now();
 		const userId = await ctx.db.insert("users", { clerkUserId: "clerk-council-member" });
-		await ctx.db.insert("organizations_workspaces_users", {
+		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			userId,
@@ -204,6 +225,28 @@ async function seed_member_page_token(args: {
 				updatedAt: now,
 			});
 		}
+		const membership = (await ctx.db.get("organizations_workspaces_users", membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!,
+			membership,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+		});
+		const level = args.permissions?.includes("content.write") ? "write" : "read";
+		await ctx.db.insert("plugins_file_consents", {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			pairId: pair._id,
+			rootNodeId: null,
+			requestedLevel: level,
+			appliedLevel: level,
+			areaEligible: true,
+			open: true,
+			revision: 1,
+			state: "applied",
+			endedReason: null,
+			createdAt: now,
+			updatedAt: now,
+		});
 		await ctx.db.insert("plugins_ui_sessions", {
 			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
@@ -211,6 +254,7 @@ async function seed_member_page_token(args: {
 			installationId: fixture.installationId,
 			pluginVersionId: fixture.pluginVersionId,
 			userId,
+			filePairId: pair._id,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt: now + 30 * 60 * 1000,
@@ -282,8 +326,15 @@ async function pin_personal_page(
 		const installation = (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!;
 		const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
 		const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
-		await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
-		await ctx.db.patch("plugins_ui_sessions", session._id, { filePairId: pair._id });
+		const workspaceConsent = (await ctx.db
+			.query("plugins_file_consents")
+			.withIndex("by_pair_rootNode_open", (q) => q.eq("pairId", pair._id).eq("rootNodeId", null).eq("open", true))
+			.first())!;
+		await ctx.db.patch("plugins_file_consents", workspaceConsent._id, {
+			open: false,
+			state: "ended",
+			appliedLevel: null,
+		});
 		const rootNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: fixture.organizationId,
@@ -405,72 +456,62 @@ describe("personal service file authority", () => {
 		expect(recovered.status, "response recovery stops when removal starts").toBe(401);
 	});
 
-	test("the switch blocks old response recovery and new credentials while keeping non-Files calls", async () => {
-		const t = test_convex();
-		const fixture = await seed_installation(t);
-		const pageToken = await seed_page_token({ t, fixture });
-		const exchanged = await t.fetch(EXCHANGE_PATH, {
-			method: "POST",
-			headers: service_headers(pageToken),
-			body: JSON.stringify({ requestId: "connect" }),
-		});
-		expect(exchanged.status).toBe(200);
-		const interactive = (await exchanged.json()) as { token: string };
-		const renewed = await t.fetch(RENEW_PATH, {
-			method: "POST",
-			headers: service_headers(interactive.token),
-			body: JSON.stringify({ requestId: "renew" }),
-		});
-		expect(renewed.status).toBe(200);
-		const current = (await renewed.json()) as { token: string };
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
-		);
-		const recovered = await t.fetch("/api/v1/plugins/service-grants/recover", {
-			method: "POST",
-			headers: service_headers(interactive.token),
-			body: JSON.stringify({ operation: "renew", requestId: "renew" }),
-		});
-		expect(recovered.status, "recovery must not return old usable file authority").toBe(401);
-		const earlyReplay = await t.mutation(internal.public_api.rotate_plugin_service_grant, {
-			presented: interactive.token,
-			lifecycle: { requestId: "renew", serviceSecretHash: await crypto_sha256_hex(EXCHANGE_SECRET) },
-			now: Date.now(),
-		});
-		expect(earlyReplay._nay?.message, "rotation checks cutover before its receipt return").toBe("Unauthenticated");
-		for (const requestId of [undefined, "connect"]) {
-			const response = await t.fetch(EXCHANGE_PATH, {
+	test.each(["read", "write", "renew", "seal", "recover", "rotate replay"] as const)(
+		"a retained null-pair grant cannot %s",
+		async (operation) => {
+			const t = test_convex();
+			const fixture = await seed_installation(t);
+			const pageToken = await seed_page_token({ t, fixture });
+			const exchanged = await t.fetch(EXCHANGE_PATH, {
 				method: "POST",
 				headers: service_headers(pageToken),
-				body: JSON.stringify({ requestId }),
+				body: JSON.stringify({ requestId: "connect" }),
 			});
-			expect(response.status, "exchange source is checked with or without a retry ID").toBe(401);
-		}
-		expect(
-			(await t.fetch(RENEW_PATH, { method: "POST", headers: service_headers(current.token), body: "{}" })).status,
-		).toBe(401);
-		expect(
-			(
-				await t.fetch(SEAL_PROCESSING_PATH, {
+			expect(exchanged.status).toBe(200);
+			const interactive = (await exchanged.json()) as { token: string };
+			const renewed = await t.fetch(RENEW_PATH, {
+				method: "POST",
+				headers: service_headers(interactive.token),
+				body: JSON.stringify({ requestId: "renew" }),
+			});
+			expect(renewed.status).toBe(200);
+			const current = (await renewed.json()) as { token: string };
+			await t.run(async (ctx) => {
+				const grant = (await ctx.db.query("plugin_service_grants").first())!;
+				await ctx.db.patch("plugin_service_grants", grant._id, { filePairId: null });
+			});
+			const before = await read_grants(t);
+			const receipts = await t.run((ctx) => ctx.db.query("plugin_service_grant_requests").collect());
+			if (operation === "rotate replay") {
+				const replay = await t.mutation(internal.public_api.rotate_plugin_service_grant, {
+					presented: interactive.token,
+					lifecycle: { requestId: "renew", serviceSecretHash: await crypto_sha256_hex(EXCHANGE_SECRET) },
+					now: Date.now(),
+				});
+				expect(replay._nay?.message, "a null pair cannot replay rotation").toBe("Unauthenticated");
+			} else {
+				const requests = {
+					read: { path: "/api/v1/plugin-data/read", body: { collection: "meetings", key: "one" } },
+					write: { path: "/api/v1/files/write", body: { path: "/meetings/one.md", content: "one" } },
+					renew: { path: RENEW_PATH, body: {} },
+					seal: { path: SEAL_PROCESSING_PATH, body: { destinationPathPrefix: "/meetings" } },
+					recover: { path: "/api/v1/plugins/service-grants/recover", body: { operation: "renew", requestId: "renew" } },
+				};
+				const request = requests[operation];
+				const response = await t.fetch(request.path, {
 					method: "POST",
-					headers: service_headers(current.token),
-					body: JSON.stringify({ destinationPathPrefix: "/meetings" }),
-				})
-			).status,
-		).toBe(403);
-		const dataOnly = await t.fetch(VERIFY_LIVE_PATH, {
-			method: "POST",
-			headers: service_headers(current.token),
-			body: JSON.stringify({
-				installationId: fixture.installationId,
-				phase: "interactive",
-				destinationPathPrefix: null,
-				scopes: ["plugin_data:read"],
-			}),
-		});
-		expect(dataOnly.status, "the Files switch keeps non-Files human access").toBe(200);
-		expect(await read_grants(t)).toHaveLength(1);
-	});
+					headers: service_headers(operation === "recover" ? interactive.token : current.token),
+					body: JSON.stringify(request.body),
+				});
+				expect(response.status, `a null pair cannot ${operation}`).toBe(401);
+			}
+			expect(await read_grants(t), "denied calls keep the stored grant").toEqual(before);
+			expect(
+				await t.run((ctx) => ctx.db.query("plugin_service_grant_requests").collect()),
+				"denied calls keep receipts",
+			).toEqual(receipts);
+		},
+	);
 });
 
 describe("/api/v1/plugins/service-grants/exchange", () => {
@@ -1153,7 +1194,7 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 		expect(await readOnly.json()).toMatchObject({ contentPermissions: { read: true, write: false } });
 	});
 
-	test("refuses a sealed processing grant claiming files:write once its member lost content.write", async () => {
+	test("refuses a sealed processing grant claiming files:write once its pair loses write consent", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const memberPageToken = await seed_member_page_token({
@@ -1173,13 +1214,15 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 		expect(sealed.status).toBe(200);
 		const processingToken = ((await sealed.json()) as { token: string }).token;
 
-		// The seal is the only place `files:write` was ever checked against the member, and it runs
-		// before the meeting records. Revoke the write permission afterwards and the sealed grant still
-		// carries the scope for its whole six-day window while every upload it makes is refused.
+		// A sealed grant keeps its scopes, but every use checks current personal consent.
 		await t.run(async (ctx) => {
-			const grants = await ctx.db.query("access_control_permission_grants").collect();
-			const write = grants.find((grant) => grant.permission === "content.write");
-			await ctx.db.delete("access_control_permission_grants", write!._id);
+			const grant = (await ctx.db.query("plugin_service_grants").collect()).find(
+				(grant) => grant.phase === "processing",
+			)!;
+			const consent = (await ctx.db.query("plugins_file_consents").collect()).find(
+				(consent) => consent.pairId === grant.filePairId,
+			)!;
+			await ctx.db.patch("plugins_file_consents", consent._id, { appliedLevel: "read" });
 		});
 
 		// `plugin_data:read` is claimed alongside and still allowed, so only the `files:write` row of

@@ -39,7 +39,6 @@ async function fixture() {
 			acceptedUiOutboundOrigins: [],
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
-			serviceAccountGrants: [],
 		});
 		if (result._nay) throw new Error(result._nay.message);
 		return result._yay.installationId;

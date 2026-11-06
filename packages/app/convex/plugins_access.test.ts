@@ -179,7 +179,7 @@ describe("install_version scheduled consent", () => {
 		for (const docs of Object.values(setup)) expect(docs, "refused consent must leave setup empty").toEqual([]);
 	});
 
-	test("starts new installations with personal file access and no invented file consent", async () => {
+	test("starts new installations without a rollout marker or invented file consent", async () => {
 		const f = await scheduled_fixture();
 		const installed = await f.asOwner.mutation(api.plugins.install_version, {
 			...f.args,
@@ -191,30 +191,15 @@ describe("install_version scheduled consent", () => {
 			installation: await ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
 			consents: await ctx.db.query("plugins_file_consents").collect(),
 		}));
-		expect(saved.installation?.fileAccessModel, "a new installation must use personal file access").toBe("personal");
+		expect(saved.installation, "a new installation must not write the removed rollout marker").not.toHaveProperty(
+			"fileAccessModel",
+		);
 		expect(saved.consents, "run consent must not create file consent").toEqual([]);
 		const catalog = await f.asMember.query(api.plugins.list_published_plugins, { membershipId: f.membership._id });
-		expect(catalog[0]?.fileAccessModel, "non-managers must receive the actual file access model").toBe("personal");
+		expect(catalog[0], "the catalog must not return the removed rollout marker").not.toHaveProperty("fileAccessModel");
 	});
 
-	test.each(["personal", undefined] as const)("preserves the %s model when updating an installation", async (model) => {
-		const f = await scheduled_fixture();
-		const args = { ...f.args, scheduledRun: { kind: "me" as const, scopes: [] } };
-		const installed = await f.asOwner.mutation(api.plugins.install_version, args);
-		if (installed._nay) throw new Error(installed._nay.message);
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", installed._yay.installationId, { fileAccessModel: model }),
-		);
-		await reset_plugin_limit(f.t, f.owner.userId);
-		expect((await f.asOwner.mutation(api.plugins.install_version, args))._nay).toBeUndefined();
-		expect(
-			(await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId)))
-				?.fileAccessModel,
-			"an install update must preserve the existing access model",
-		).toBe(model);
-	});
-
-	test("refuses account file grants on fresh and personal installs without changing ordinary sharing", async () => {
+	test("rejects the removed account-grant input and preserves ordinary sharing on update", async () => {
 		const f = await fixture();
 		const pluginVersionId = await version({ t: f.t, userId: f.owner.userId });
 		const args = install_args(f.owner.membershipId, pluginVersionId);
@@ -222,10 +207,10 @@ describe("install_version scheduled consent", () => {
 			...args,
 			serviceAccountGrants: [{ resource: { kind: "workspace" as const }, level: "write" as const }],
 		};
-		expect(
-			(await f.asOwner.mutation(api.plugins.install_version, withAccountGrant))._nay?.message,
-			"fresh installs must direct file choices to personal consent",
-		).toContain("My file permissions");
+		await expect(
+			f.asOwner.mutation(api.plugins.install_version, withAccountGrant),
+			"install must reject the removed account-grant input",
+		).rejects.toThrow("serviceAccountGrants");
 		expect(await f.t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_service_accounts").collect())).toEqual([]);
 		await reset_plugin_limit(f.t, f.owner.userId);
@@ -244,11 +229,38 @@ describe("install_version scheduled consent", () => {
 		).toEqual({ _yay: null });
 		const grants = await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect());
 		await reset_plugin_limit(f.t, f.owner.userId);
-		expect(
-			(await f.asOwner.mutation(api.plugins.install_version, withAccountGrant))._nay?.message,
-			"personal updates must direct account sharing to its own controls",
-		).toContain("service account sharing");
+		await expect(
+			f.asOwner.mutation(api.plugins.install_version, withAccountGrant),
+			"updates must reject the removed account-grant input",
+		).rejects.toThrow("serviceAccountGrants");
+		expect((await f.asOwner.mutation(api.plugins.install_version, args))._nay).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(grants);
+	});
+
+	test("rejects removed file-proof inputs without writing or replacing consent", async () => {
+		const f = await scheduled_fixture();
+		const args = {
+			...f.args,
+			scheduledRun: { kind: "me" as const, scopes: [], filesReadProof: { kind: "workspace" as const } },
+		};
+		await expect(
+			f.asOwner.mutation(api.plugins.install_version, args),
+			"scheduled install must reject the removed file-proof input",
+		).rejects.toThrow("filesReadProof");
+		expect(await f.t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
+		const installed = await f.asOwner.mutation(api.plugins.install_version, {
+			...f.args,
+			scheduledRun: { kind: "me", scopes: [] },
+		});
+		if (installed._nay) throw new Error(installed._nay.message);
+		const access = { membershipId: f.owner.membershipId, installationId: installed._yay.installationId };
+		const before = await f.asOwner.query(api.plugins_access.get_my_run_as_grant, access);
+		const withProof = { ...access, scopes: [], filesReadProof: { kind: "workspace" as const } };
+		await expect(
+			f.asOwner.mutation(api.plugins_access.grant_run_as_me, withProof),
+			"run consent must reject the removed file-proof input",
+		).rejects.toThrow("filesReadProof");
+		expect(await f.asOwner.query(api.plugins_access.get_my_run_as_grant, access)).toEqual(before);
 	});
 
 	test("saves the self-grant, user pin and due handler together", async () => {
@@ -377,117 +389,6 @@ describe("grant_run_as_me", () => {
 				?.message,
 		).toContain("also needs");
 		expect((await f.asMember.query(api.plugins_access.get_my_run_as_grant, args))?.grant).toBeNull();
-	});
-
-	test("legacy consent uses a readable saved folder without requiring workspace read access", async () => {
-		const f = await scheduled_fixture();
-		const installed = await f.asOwner.mutation(api.plugins.install_version, {
-			...f.args,
-			scheduledRun: { kind: "me", scopes: [] },
-		});
-		if (installed._nay) throw new Error(installed._nay.message);
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", installed._yay.installationId, { fileAccessModel: undefined }),
-		);
-		await remove_workspace_read(f);
-		const folder = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
-			membershipId: f.owner.membershipId,
-			parentId: "root",
-			path: "shared",
-		});
-		if (folder._nay) throw new Error(folder._nay.message);
-		expect(
-			await f.asOwner.mutation(api.files_sharing.restrict_node, {
-				membershipId: f.owner.membershipId,
-				nodeId: folder._yay.nodeId,
-			}),
-		).toEqual({ _yay: null });
-		expect(
-			await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-				membershipId: f.owner.membershipId,
-				nodeId: folder._yay.nodeId,
-				principal: { kind: "user", userId: f.member.userId },
-				level: "read",
-			}),
-		).toEqual({ _yay: null });
-		const args = {
-			membershipId: f.membership._id,
-			installationId: installed._yay.installationId,
-			scopes: ["files:read", "files:list"] as const,
-		};
-		expect(
-			(
-				await f.asMember.mutation(api.plugins_access.grant_run_as_me, {
-					...args,
-					scopes: [...args.scopes],
-					filesReadProof: { kind: "workspace" },
-				})
-			)._nay?.message,
-		).toBe("Permission denied");
-		await reset_plugin_limit(f.t, f.member.userId);
-		expect(
-			(
-				await f.asMember.mutation(api.plugins_access.grant_run_as_me, {
-					...args,
-					scopes: [...args.scopes],
-					filesReadProof: { kind: "file", nodeId: folder._yay.nodeId },
-				})
-			)._nay,
-			"a saved readable folder must prove Files consent",
-		).toBeUndefined();
-	});
-
-	test("legacy consent refuses foreign and archived proof without replacing consent", async () => {
-		const f = await scheduled_fixture();
-		const installed = await f.asOwner.mutation(api.plugins.install_version, {
-			...f.args,
-			scheduledRun: { kind: "me", scopes: [] },
-		});
-		if (installed._nay) throw new Error(installed._nay.message);
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", installed._yay.installationId, { fileAccessModel: undefined }),
-		);
-		const foreign = await f.asMember.mutation(api.files_nodes.create_folder_node, {
-			membershipId: f.member.membershipId,
-			parentId: "root",
-			path: "private",
-		});
-		const saved = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
-			membershipId: f.owner.membershipId,
-			parentId: "root",
-			path: "archived",
-		});
-		if (foreign._nay || saved._nay) throw new Error("Expected saved folders");
-		expect(
-			(
-				await f.asOwner.mutation(api.files_nodes.archive_nodes, {
-					membershipId: f.owner.membershipId,
-					nodeIds: [saved._yay.nodeId],
-				})
-			)._nay,
-		).toBeUndefined();
-		const args = { membershipId: f.membership._id, installationId: installed._yay.installationId };
-		const granted = await f.asMember.mutation(api.plugins_access.grant_run_as_me, {
-			...args,
-			scopes: ["plugin_data:read"],
-		});
-		if (granted._nay) throw new Error(granted._nay.message);
-		for (const nodeId of [foreign._yay.nodeId, saved._yay.nodeId]) {
-			await reset_plugin_limit(f.t, f.member.userId);
-			expect(
-				(
-					await f.asMember.mutation(api.plugins_access.grant_run_as_me, {
-						...args,
-						scopes: ["files:read"],
-						filesReadProof: { kind: "file", nodeId },
-					})
-				)._nay,
-				"proof must be a live node in this workspace",
-			).toBeDefined();
-			expect((await f.asMember.query(api.plugins_access.get_my_run_as_grant, args))?.grant?.grantId).toBe(
-				granted._yay.grantId,
-			);
-		}
 	});
 
 	test("requires the human's own membership", async () => {

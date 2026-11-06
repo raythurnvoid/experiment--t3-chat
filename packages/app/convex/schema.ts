@@ -2185,7 +2185,7 @@ const app_convex_schema = defineSchema({
 		 * Present only for plugin_service writes; publication revalidates the sealed grant.
 		 */
 		grantId: v.optional(v.id("plugin_service_grants")),
-		// Keep accepted plugin authority. Missing means old-model work during rollout, or a key write.
+		// Plugin writes require their accepted pair. API-key writes have no plugin pair.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
 		/**
 		 * Trusted own-file service preconditions, checked again with publication and its receipt.
@@ -7701,7 +7701,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		// During rollout, missing keeps the old model until the audited switch.
+		// Keep this marker until the history migration removes it. Runtime access uses personal consent.
 		fileAccessModel: v.optional(v.literal("personal")),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
@@ -7957,8 +7957,9 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		// Missing on old-model runs during rollout and on fileless account-deleted events.
-		filePairId: v.optional(v.id("plugins_file_pairs")),
+		// Null means no Files authority, for finished history or account-deleted events.
+		// Remove optional after the retained-history migration.
+		filePairId: v.optional(v.union(v.id("plugins_file_pairs"), v.null())),
 		// The uploaded file the event fired for; plugin-written outputs are ordinary Markdown siblings.
 		// Both are absent for an event that fires on something other than a file.
 		assetId: v.optional(v.id("files_r2_assets")),
@@ -8059,7 +8060,8 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		// Missing means an old-model session during rollout. Refresh never adds a pair.
+		// Every new session stores its pair. A missing pair gives no access.
+		// Make this required after the retained-history audit.
 		filePairId: v.optional(v.id("plugins_file_pairs")),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
@@ -8748,8 +8750,9 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		serviceAccountId: v.id("access_control_service_accounts"),
-		// Missing means an old-model grant during rollout. Rotation never adds a pair.
-		filePairId: v.optional(v.id("plugins_file_pairs")),
+		// Null keeps a revoked credential as history with no live authority.
+		// Remove optional after the retained-history migration.
+		filePairId: v.optional(v.union(v.id("plugins_file_pairs"), v.null())),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
@@ -8799,10 +8802,12 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
-		// Keep the accepted pair through upload settlement. Missing means old-model work during rollout.
-		filePairId: v.optional(v.id("plugins_file_pairs")),
-		// Keep the accepted account for conversion. Missing means a target made before this rollout.
-		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
+		// Null records no accepted personal pair; it grants no access.
+		// Remove optional after the retained-history migration.
+		filePairId: v.optional(v.union(v.id("plugins_file_pairs"), v.null())),
+		// Null records no accepted account. Never fill it from today's installation.
+		// Remove optional after the retained-history migration.
+		serviceAccountId: v.optional(v.union(v.id("access_control_service_accounts"), v.null())),
 		/**
 		 * The upload run this file belongs to, chosen by the service. One processing run reuses one
 		 * key for all its files, so the same `targetKey` in a later run is a different file.

@@ -24,7 +24,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-async function plugin(f: Fixture, options: { member?: boolean; legacy?: boolean; scheduled?: boolean } = {}) {
+async function plugin(f: Fixture, options: { member?: boolean; scheduled?: boolean } = {}) {
 	const person = options.member ? await add_member(f) : f.db;
 	const installationId = await insert_installation(f);
 	const token = `plu_${await crypto_sha256_hex(installationId)}`;
@@ -36,7 +36,6 @@ async function plugin(f: Fixture, options: { member?: boolean; legacy?: boolean;
 		const capabilities = ["workspace.files.read", "plugin.schedule.run"] as const;
 		await ctx.db.patch("plugins_workspace_installations", installationId, {
 			pluginName,
-			fileAccessModel: options.legacy ? undefined : "personal",
 			acceptedCapabilities: [...capabilities],
 		});
 		await ctx.db.patch("plugins_versions", version._id, {
@@ -70,14 +69,13 @@ async function plugin(f: Fixture, options: { member?: boolean; legacy?: boolean;
 			membershipLifetime,
 			createdAt: Date.now(),
 		});
-		const pin = options.legacy ? {} : { filePairId: pairId };
 		await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
 			installationId,
 			pluginVersionId: version._id,
 			serviceAccountId: installation.serviceAccountId,
-			...pin,
+			filePairId: pairId,
 			userId: person.userId,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: Date.now(),
@@ -109,7 +107,7 @@ async function plugin(f: Fixture, options: { member?: boolean; legacy?: boolean;
 			installationId,
 			pluginVersionId: version._id,
 			serviceAccountId: installation.serviceAccountId,
-			...pin,
+			filePairId: pairId,
 			actorUserId: person.userId,
 			event,
 			eventId: "trash-test",
@@ -651,7 +649,7 @@ test("area paths use the published Move before physical cleanup", async () => {
 });
 
 test.each(["list", "areas"] as const)(
-	"%s refuses guests, legacy plugins, missing capability and scheduled runs",
+	"%s refuses guests, null-pair runs, missing capability and scheduled runs",
 	async (route) => {
 		const f = await fixture();
 		const guest = await plugin(f, { member: true });
@@ -668,11 +666,9 @@ test.each(["list", "areas"] as const)(
 			(await post(f, guest.token, route, { ...(route === "list" ? { folderNodeId: root } : {}) })).status,
 			"guests have no Trash even with applied consent",
 		).toBe(403);
-		const legacy = await plugin(f, { legacy: true });
-		expect(
-			(await post(f, legacy.token, route)).body.message,
-			"legacy credentials get a clear migration message",
-		).toContain("personal file permissions");
+		const noPair = await plugin(f);
+		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", noPair.runId, { filePairId: null }));
+		expect((await post(f, noPair.runToken, route)).status, "a null-pair run cannot read Trash").toBe(401);
 		const scheduled = await plugin(f, { scheduled: true });
 		await select(f, scheduled.pairId, null, true);
 		expect(await post(f, scheduled.runToken, route), "scheduled Trash gives a clear refusal").toMatchObject({

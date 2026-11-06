@@ -5,8 +5,10 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { plugins_service_events_db_sync_receiver } from "./plugins_service_events.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 
@@ -100,7 +102,14 @@ async function seed_installation(args: {
 		}
 		const token = `plu_${crypto_random_hex(32)}`;
 		const tokenHash = await crypto_sha256_hex(token);
+		const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation: (await ctx.db.get("plugins_workspace_installations", installationId))!,
+			membership: member,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+		});
 		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
+			filePairId: pair._id,
 			serviceAccountId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -186,6 +195,118 @@ async function all_events(args: {
 }
 
 describe("create_lease_facts", () => {
+	test.each(["missing", "stale"] as const)("refuses identity exchange with a %s original pair", async (change) => {
+		const t = test_convex();
+		const fixture = await seed_installation({ t });
+		expect((await lease({ t, fixture }))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			if (change === "missing") {
+				await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { filePairId: undefined });
+			} else {
+				const lifetime = (await ctx.db
+					.query("organizations_membership_lifetimes")
+					.withIndex("by_workspace_user", (q) => q.eq("workspaceId", fixture.workspaceId).eq("userId", fixture.userId))
+					.first())!;
+				await ctx.db.patch("organizations_membership_lifetimes", lifetime._id, { lifetime: lifetime.lifetime + 1 });
+			}
+		});
+		const before = await t.run(async (ctx) => ({
+			connections: await ctx.db.query("plugins_service_connections").collect(),
+			lifetimes: await ctx.db.query("organizations_membership_lifetimes").collect(),
+			pairs: await ctx.db.query("plugins_file_pairs").collect(),
+		}));
+		expect((await lease({ t, fixture }))._nay?.message, "original pair must gate identity exchange").toBe(
+			"Unauthorized",
+		);
+		expect(
+			await t.run(async (ctx) => ({
+				connections: await ctx.db.query("plugins_service_connections").collect(),
+				lifetimes: await ctx.db.query("organizations_membership_lifetimes").collect(),
+				pairs: await ctx.db.query("plugins_file_pairs").collect(),
+			})),
+		).toEqual(before);
+	});
+
+	test("refuses identity from the old page after account recovery and accepts a fresh page", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation({ t });
+		const clerkUserId = "identity-pair-recovery";
+		const email = "identity-pair-recovery@example.test";
+		const userId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId });
+			const anagraphic = await ctx.db.insert("users_anagraphics", {
+				userId,
+				email,
+				displayName: "Recovered member",
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("users", userId, { anagraphic });
+			return userId;
+		});
+		const owner = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
+		expect(
+			(
+				await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userIdToAdd: userId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const session = await t.run(async (ctx) => {
+			const membership = (await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", userId)
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId),
+				)
+				.first())!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
+			await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { userId, filePairId: pair._id });
+			return (await ctx.db.get("plugins_ui_sessions", fixture.sessionId))!;
+		});
+		expect((await lease({ t, fixture }))._yay).toMatchObject({ hostUserId: userId, membershipLifetime: 1 });
+		await t.mutation(internal.data_deletion.init_user_deletion, { userId });
+		const restored = await t.mutation(internal.users.resolve_user, {
+			clerkUserId,
+			email,
+			displayName: "Recovered member",
+		});
+		expect(restored._yay?.restoredDeletedAccount).toBe(true);
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", fixture.sessionId))).toEqual(session);
+		const before = await t.run((ctx) => ctx.db.query("plugins_service_connections").collect());
+		expect(
+			(await lease({ t, fixture }))._nay?.message,
+			"recovered account must not mint identity from the old pair",
+		).toBe("Unauthorized");
+		expect(await t.run((ctx) => ctx.db.query("plugins_service_connections").collect())).toEqual(before);
+		const tokenHash = await crypto_sha256_hex("fresh-identity-page");
+		await t.run(async (ctx) => {
+			const membership = (await ctx.db.get(
+				"organizations_workspaces_users",
+				(await ctx.db.get("plugins_file_pairs", session.filePairId!))!.membershipId,
+			))!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
+			const { _id, _creationTime, ...fields } = session;
+			await ctx.db.insert("plugins_ui_sessions", { ...fields, filePairId: pair._id, tokenHash });
+		});
+		expect((await lease({ t, fixture: { ...fixture, tokenHash } }))._yay).toMatchObject({
+			hostUserId: userId,
+			membershipLifetime: 2,
+		});
+	});
+
 	test("starts the ledger only after a valid exchange and preserves its revision on later exchanges", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation({ t });

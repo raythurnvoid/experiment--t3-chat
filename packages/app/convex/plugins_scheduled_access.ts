@@ -2,11 +2,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
-import {
-	access_control_db_authorize_membership,
-	access_control_db_authorize_node,
-	access_control_db_has_permission,
-} from "./access_control.ts";
+import { access_control_db_authorize_membership, access_control_db_has_permission } from "./access_control.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 
@@ -171,10 +167,9 @@ export async function plugins_scheduled_access_db_validate_consent(
 		version: Doc<"plugins_versions">;
 		installation?: Doc<"plugins_workspace_installations">;
 		scopes: RunAsScope[];
-		filesReadProof?: { kind: "workspace" } | { kind: "file"; nodeId: Id<"files_nodes"> };
 	},
 ) {
-	const { membership, version, installation, scopes, filesReadProof } = args;
+	const { membership, version, installation, scopes } = args;
 	const [user, organization, workspace] = await Promise.all([
 		ctx.db.get("users", membership.userId),
 		ctx.db.get("organizations", membership.organizationId),
@@ -203,32 +198,6 @@ export async function plugins_scheduled_access_db_validate_consent(
 			(installation && !installation.acceptedCapabilities.includes(capability))
 		)
 			return Result({ _nay: { message: "This plugin has not been granted that permission" } });
-	}
-	// New installs use personal selections. Old installs keep proof until their audit switches them.
-	if (
-		installation &&
-		installation.fileAccessModel !== "personal" &&
-		(scopes.includes("files:read") || scopes.includes("files:list"))
-	) {
-		if (!filesReadProof) return Result({ _nay: { message: "Choose a readable file or workspace as proof" } });
-		if (filesReadProof.kind === "file") {
-			const allowed = await access_control_db_authorize_node(ctx, {
-				userAuth: { id: membership.userId },
-				membership,
-				nodeId: filesReadProof.nodeId,
-				permission: "content.read",
-			});
-			if (allowed._nay) return allowed;
-			if (allowed._yay.fileNode.archiveOperationId !== null)
-				return Result({ _nay: { message: "Choose a saved file that is not in Trash" } });
-		} else {
-			const allowed = await access_control_db_authorize_membership(ctx, {
-				userAuth: { id: membership.userId },
-				membership,
-				permission: "content.read",
-			});
-			if (allowed._nay) return allowed;
-		}
 	}
 	for (const scope of ["plugin_data:read", "plugin_data:write"] as const) {
 		if (!scopes.includes(scope)) continue;

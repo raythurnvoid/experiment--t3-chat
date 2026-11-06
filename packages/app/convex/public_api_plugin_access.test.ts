@@ -17,7 +17,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-async function setup(personal = true) {
+async function setup() {
 	const f = await fixture();
 	const installationId = await insert_installation(f);
 	const token = `plr_${"a".repeat(64)}`;
@@ -32,7 +32,6 @@ async function setup(personal = true) {
 		const version = (await ctx.db.get("plugins_versions", installation.pluginVersionId))!;
 		const capabilities = ["workspace.files.read", "workspace.files.write", "workspace.files.own-write"] as const;
 		await ctx.db.patch("plugins_workspace_installations", installationId, {
-			fileAccessModel: personal ? "personal" : undefined,
 			acceptedCapabilities: [...capabilities],
 		});
 		await ctx.db.insert("plugins_service_account_bindings", {
@@ -52,7 +51,7 @@ async function setup(personal = true) {
 			installationId,
 			pluginVersionId: version._id,
 			serviceAccountId: installation.serviceAccountId,
-			filePairId: personal ? pair._id : undefined,
+			filePairId: pair._id,
 			actorUserId: f.db.userId,
 			event: "ui.invoke.requested",
 			eventId: "personal-file-test",
@@ -109,17 +108,6 @@ async function setup(personal = true) {
 		)._nay,
 	).toBeUndefined();
 	await test_finish_file_index(f.t, rootNodeId);
-	if (!personal)
-		expect(
-			(
-				await f.asOwner.mutation(api.access_control.set_service_account_grant, {
-					membershipId: f.db.membershipId,
-					serviceAccountId: data.serviceAccountId,
-					resource: { kind: "workspace" },
-					level: "write",
-				})
-			)._nay,
-		).toBeUndefined();
 	const select = async (nodeId: Id<"files_nodes"> | null = rootNodeId, level: "read" | "write" = "write") => {
 		const result = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
 			membershipId: f.db.membershipId,
@@ -198,17 +186,31 @@ test("uses applied personal write consent without the owner's workspace or accou
 	expect(published._nay?.message, "publication rechecks the applied grant").toBe("Permission denied");
 });
 
-test("lets accepted legacy work finish but refuses new work after the switch", async () => {
-	const f = await setup(false);
+test("refuses a null-pair run even when its old account can write", async () => {
+	const f = await setup();
+	await f.select();
 	const prepared = await f.prepare();
 	if (prepared._nay) throw new Error(prepared._nay.message);
-	await f.t.run((ctx) =>
-		ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
-	);
 	expect(
-		(await f.prepare("/output/later.md"))._nay?.message,
-		"old credentials cannot accept new writes after the switch",
-	).toBe("Permission denied");
+		(
+			await f.asOwner.mutation(api.access_control.set_service_account_grant, {
+				membershipId: f.db.membershipId,
+				serviceAccountId: f.serviceAccountId,
+				resource: { kind: "workspace" },
+				level: "write",
+			})
+		)._nay,
+	).toBeUndefined();
+	await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", f.runId, { filePairId: null }));
+	expect
+		.soft(
+			(await f.t.query(internal.public_api.resolve_principal, { presented: f.token }))._nay?.message,
+			"a null-pair run cannot authenticate",
+		)
+		.toBe("Unauthenticated");
+	expect
+		.soft((await f.prepare("/output/later.md"))._nay?.message, "a null-pair run cannot start a write")
+		.toBe("Unauthenticated");
 	const published = await f.t.mutation(internal.public_api.publish_file_write, {
 		stageId: prepared._yay.stageId,
 		content: "Text",
@@ -216,7 +218,7 @@ test("lets accepted legacy work finish but refuses new work after the switch", a
 		nonCollaborative: true,
 		addedFileRefs: [],
 	});
-	expect(published._nay, "an accepted legacy write can still publish").toBeUndefined();
+	expect.soft(published._nay?.message, "publication cannot replace a missing run pair").toBe("Unauthenticated");
 });
 
 test("rejects a changed stage pair and never replaces an old membership pin", async () => {

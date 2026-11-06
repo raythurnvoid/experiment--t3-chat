@@ -156,7 +156,6 @@ async function authorize_service_request<Body>(args: {
 			acceptedCapabilities: installation._yay.acceptedCapabilities,
 			registeredScopes: installation._yay.registration.scopes,
 			serviceSecretHash: installation._yay.registration.hash,
-			fileAccessModel: installation._yay.fileAccessModel,
 		},
 	});
 }
@@ -196,7 +195,6 @@ export const get_installation_capabilities = internalQuery({
 	returns: v_result({
 		_yay: v.object({
 			pluginName: v.string(),
-			fileAccessModel: v.optional(v.literal("personal")),
 			acceptedCapabilities: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedCapabilities,
 			registration: v.union(
 				v.object({
@@ -232,7 +230,6 @@ export const get_installation_capabilities = internalQuery({
 		return Result({
 			_yay: {
 				pluginName: installation.pluginName,
-				fileAccessModel: installation.fileAccessModel,
 				acceptedCapabilities: installation.acceptedCapabilities,
 				registration: registration ? { hash: registration.exchangeSecretHash, scopes: registration.scopes } : null,
 			},
@@ -542,14 +539,6 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 		}
 	}
 
-	// Personal Files access is checked at the destination in the mint transaction.
-	if (
-		principal.subject.kind !== "plugin_pair" &&
-		(auth._yay.fileAccessModel === "personal" || !principal.contentPermissions.write)
-	) {
-		return { status: 403, body: { message: "Permission denied" } } as const;
-	}
-
 	// The same pre-check the exchange does, for the same reason: the mint narrows a missing scope
 	// capability away instead of refusing, so ask first. The mint also refuses on its own through
 	// `requireAllRequestedScopes` in case a capability disappears between this query and the mutation.
@@ -784,12 +773,10 @@ export async function plugins_service_http_verify_live(ctx: ActionCtx, request: 
 	}
 	const filesAllowed =
 		!expected.scopes.includes("files:write") ||
-		(principal.subject.kind === "plugin_pair"
-			? await ctx.runQuery(internal.plugins_service.can_write_destination, {
-					grantId: principal.grantId,
-					tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
-				})
-			: auth._yay.fileAccessModel !== "personal" && principal.contentPermissions.write);
+		(await ctx.runQuery(internal.plugins_service.can_write_destination, {
+			grantId: principal.grantId,
+			tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
+		}));
 	if (
 		!filesAllowed ||
 		expected.scopes.some(

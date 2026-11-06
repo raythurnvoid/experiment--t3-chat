@@ -126,7 +126,6 @@ async function fixture() {
 			acceptedUiOutboundOrigins: [],
 			acceptedMcpServersFingerprint: "mcp-servers-hash",
 			acceptedSkillNames: [],
-			serviceAccountGrants: [],
 		});
 		if (installed._nay) throw new Error(installed._nay.message);
 		const selected = await actor.mutation(api.files_nodes.create_folder_node, {

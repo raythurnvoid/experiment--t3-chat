@@ -158,7 +158,6 @@ async function install(args: {
 		acceptedUiOutboundOrigins: version.uiOutboundOrigins,
 		acceptedMcpServersFingerprint: version.mcpServersFingerprint,
 		acceptedSkillNames: [],
-		serviceAccountGrants: [],
 	});
 }
 

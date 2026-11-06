@@ -4,12 +4,9 @@ import { describe, expect, test } from "vitest";
 import { api } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import {
-	access_control_db_ensure_role_assignment,
-	access_control_db_set_service_account_grant,
-	type access_control_Subject,
-} from "../convex/access_control.ts";
+import { access_control_db_ensure_role_assignment, type access_control_Subject } from "../convex/access_control.ts";
 import { insert_installation } from "../convex/files_share_links.setup.test.ts";
+import { grant_plugin_file_access } from "../convex/plugins.setup.test.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
@@ -24,6 +21,7 @@ import {
 	files_pending_overlay_search_name,
 } from "./files-pending-overlay.ts";
 import { files_saved_list_page } from "./files-saved-list.ts";
+import { files_content_heads_db_wrap } from "./files-content-heads.ts";
 import {
 	files_tree_walk_boundary_status,
 	files_tree_walk_db_resolve_stack,
@@ -368,6 +366,7 @@ describe("the walk at 500 levels", () => {
 		let parent: Doc<"files_nodes"> | null = null;
 		for (let start = 0; start < CHAIN_DEPTH; start += 50) {
 			parent = await t.run(async (ctx) => {
+				const content = files_content_heads_db_wrap(ctx);
 				let above = parent;
 				for (let depth = start + 1; depth <= Math.min(start + 50, CHAIN_DEPTH); depth++) {
 					const path = `${above?.path ?? ""}/a`;
@@ -392,7 +391,7 @@ describe("the walk at 500 levels", () => {
 						restrictedScopeNodeId: folderId,
 						parentScopeNodeId: above?._id ?? null,
 					});
-					await ctx.db.insert("files_nodes", {
+					await content.db.insert("files_nodes", {
 						...base,
 						parentId: folderId,
 						name: "x",
@@ -416,6 +415,7 @@ describe("the walk at 500 levels", () => {
 					});
 					above = (await ctx.db.get("files_nodes", folderId))!;
 				}
+				await content.flush();
 				return above;
 			});
 		}
@@ -527,22 +527,29 @@ describe("the walk at 500 levels", () => {
 	test("a list from the deepest folder stays under the limits, for a member and a plugin", async () => {
 		const { t, db, deepest, ctx, calls, args } = await seed_chain();
 		const installationId = await insert_installation({ t, db });
-		const serviceAccountId = await t.run(async (ctx) => {
-			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
-			const granted = await access_control_db_set_service_account_grant(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				serviceAccountId: installation.serviceAccountId,
-				resource: { kind: "file", nodeId: deepest._id },
-				level: "read",
-			});
-			if (granted._nay) throw new Error(granted._nay.message);
-			return installation.serviceAccountId;
+		const membership = await t.run(async (ctx) => {
+			return await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", args.visibilityUserId)
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId),
+				)
+				.first();
+		});
+		const consent = await grant_plugin_file_access({
+			t,
+			userId: args.visibilityUserId,
+			membershipId: membership!._id,
+			installationId,
+			rootNodeId: deepest._id,
+			level: "read",
 		});
 		const subjects = {
 			member: args.subject,
-			// The plugin check also reads its account's grants on the folder's chain.
-			plugin: { ...args.subject, plugin: { installationId, serviceAccountId } },
+			plugin: { kind: "plugin_pair" as const, pairId: consent.pairId },
 		};
 
 		for (const [name, subject] of Object.entries(subjects)) {
@@ -892,31 +899,38 @@ describe("the walk on a real database", () => {
 	}
 
 	/**
-	 * A plugin acting for the member, whose account can read only /reports.
+	 * A plugin acting for the member, who selected only /reports.
 	 */
 	async function seed_plugin_with_reports_grant(team: Awaited<ReturnType<typeof seed_team>>) {
 		const { t, seeded, ownerRunner, member } = team;
 		const installationId = await insert_installation({ t, db: seeded });
 		const reportsId = await get_seeded_node_id(ownerRunner, "/reports");
-		const serviceAccountId = await t.run(async (ctx) => {
-			const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
-			const granted = await access_control_db_set_service_account_grant(ctx, {
-				organizationId: seeded.organizationId,
-				workspaceId: seeded.workspaceId,
-				serviceAccountId: installation.serviceAccountId,
-				resource: { kind: "file", nodeId: reportsId },
-				level: "read",
-			});
-			if (granted._nay) throw new Error(granted._nay.message);
-			return installation.serviceAccountId;
+		const membership = await t.run(async (ctx) => {
+			return await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", member.visibilityUserId)
+						.eq("organizationId", seeded.organizationId)
+						.eq("workspaceId", seeded.workspaceId),
+				)
+				.first();
+		});
+		const consent = await grant_plugin_file_access({
+			t,
+			userId: member.visibilityUserId,
+			membershipId: membership!._id,
+			installationId,
+			rootNodeId: reportsId,
+			level: "read",
 		});
 		await drain_scheduled_continuations(ownerRunner);
 		return {
 			...member,
 			subject: {
-				kind: "user" as const,
-				userId: member.visibilityUserId,
-				plugin: { installationId, serviceAccountId },
+				kind: "plugin_pair" as const,
+				pairId: consent.pairId,
 			},
 		};
 	}
@@ -1026,30 +1040,34 @@ describe("the walk on a real database", () => {
 		expect(fromRoot.denied).toEqual(["/docs"]);
 	});
 
-	test("a plugin lists only the folders its account can read, and the root is Permission denied", async () => {
+	test("a plugin lists only selected folders, and the root is Permission denied", async () => {
 		const team = await seed_team();
 		const plugin = await seed_plugin_with_reports_grant(team);
 
-		// The account has no grant on the workspace, so the root is locked for the plugin.
+		// The member did not select the workspace, so the root is locked for the plugin.
 		await expect(team.list(plugin)).rejects.toThrow("Permission denied");
 		expect(await team.list(plugin, { folderPath: "/reports" })).toEqual({ paths: ["/reports/summary.md"], denied: [] });
 	});
 
-	test("find -mmin in a folder the plugin's account can read reads no row outside it", async () => {
+	test("find -mmin in a selected plugin folder reads no row outside it", async () => {
 		const now = Date.now();
-		const team = await seed_team(
-			Array.from({ length: 100 }, (_, index) => ({ path: `/r-${index}.md`, updatedAt: now - 60_000 })),
-		);
-		const plugin = await seed_plugin_with_reports_grant(team);
-		team.calls.length = 0;
-
-		const listed = await team.list(plugin, { folderPath: "/reports", updated: { from: now - 3_600_000, to: null } });
-
-		const documents = team.calls
-			.filter((call) => call.name === "files_visible:internal_list_subtree_recent_saved")
-			.reduce((sum, call) => sum + call.documents, 0);
-		expect(documents, "the per-folder read skips the 100 recent docs outside the account's folder").toBeLessThan(50);
-		expect(listed).toEqual({ paths: ["/reports/summary.md"], denied: [] });
+		const reads: number[] = [];
+		for (const count of [0, 100]) {
+			const team = await seed_team(
+				Array.from({ length: count }, (_, index) => ({ path: `/r-${index}.md`, updatedAt: now - 60_000 })),
+			);
+			const plugin = await seed_plugin_with_reports_grant(team);
+			team.calls.length = 0;
+			const listed = await team.list(plugin, { folderPath: "/reports", updated: { from: now - 3_600_000, to: null } });
+			reads.push(
+				team.calls
+					.filter((call) => call.name === "files_visible:internal_list_subtree_recent_saved")
+					.reduce((sum, call) => sum + call.documents, 0),
+			);
+			expect(listed).toEqual({ paths: ["/reports/summary.md"], denied: [] });
+		}
+		expect(reads[0], "the test measures a real list read").toBeGreaterThan(0);
+		expect(reads[1], "100 recent files outside the selected folder add no reads").toBe(reads[0]);
 	});
 
 	test("a depth walk lists each folder's levels in order over any page size and stops at the limit", async () => {

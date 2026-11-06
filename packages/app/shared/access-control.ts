@@ -248,7 +248,7 @@ export const access_control_FILE_SHARE_PERMISSIONS = access_control_FILE_SHARE_L
 
 /** Only a person acting alone sees their own drafts. Accounts and plugins read saved files only. */
 export function access_control_subject_reads_drafts(subject: access_control_Subject) {
-	return subject.kind === "user" && subject.plugin === null;
+	return subject.kind === "user";
 }
 
 /**

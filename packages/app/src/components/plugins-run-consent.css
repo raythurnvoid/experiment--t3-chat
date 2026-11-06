@@ -1,6 +1,5 @@
 @layer components {
-	.PluginsRunConsent,
-	.PluginsRunConsent-proof {
+	.PluginsRunConsent {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
@@ -19,10 +18,6 @@
 		font-size: 13px;
 		line-height: 1.5;
 		color: var(--color-fg-08);
-	}
-
-	.PluginsRunConsent-error {
-		color: var(--color-red-09);
 	}
 
 	.PluginsMyRunPermissions {

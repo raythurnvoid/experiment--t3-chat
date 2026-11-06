@@ -385,7 +385,6 @@ function published_plugin(overrides: {
 	canInstall?: boolean;
 	canManage?: boolean;
 	installationId?: string | null;
-	fileAccessModel?: "personal";
 	configuration?: { description: string; defaultYaml: string } | null;
 	mounts?: NonNullable<PublishedPlugin["mounts"]>;
 	events?: PublishedPlugin["events"];
@@ -420,7 +419,6 @@ function published_plugin(overrides: {
 		canInstall: overrides.canInstall ?? true,
 		canManage: overrides.canManage ?? false,
 		installationId: overrides.installationId ?? null,
-		fileAccessModel: overrides.fileAccessModel,
 		configuration: overrides.configuration ?? null,
 		mounts: overrides.mounts ?? [],
 		events: overrides.events ?? [],
@@ -442,7 +440,6 @@ function installed_item(plugin: ReturnType<typeof published_plugin>) {
 			serviceAccountId: "account_1",
 			_id: "installation_1",
 			pluginName: plugin.name,
-			fileAccessModel: plugin.fileAccessModel,
 			status: "enabled",
 			configurationYaml: "note: server\n",
 		},
@@ -690,7 +687,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 	});
 
 	test("personal settings and updates use the selected-file controls", () => {
-		const plugin = published_plugin({ name: "media", canProcessFiles: true, fileAccessModel: "personal" });
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		const installed = installed_item(plugin);
 		installed.version.version = "0.1.0";
 		setQueries({ plugin, installations: [installed] });
@@ -706,12 +703,11 @@ describe("RoutePluginsPluginConsentModal", () => {
 		);
 	});
 
-	test("members see the personal model from the public catalog", () => {
+	test("members see active personal file choices from the public catalog", () => {
 		const plugin = published_plugin({
 			name: "media",
 			canProcessFiles: true,
 			installationId: "installation_1",
-			fileAccessModel: "personal",
 		});
 		setQueries({ plugin, installations: [], canManageAccounts: false });
 		render(<PageComponent />);
@@ -719,7 +715,7 @@ describe("RoutePluginsPluginConsentModal", () => {
 			screen.queryByText(
 				"Access changes apply in the background. The plugin keeps its current access until each change finishes.",
 			),
-			"members must see the actual installation model",
+			"members must see active personal file choices",
 		).not.toBeNull();
 	});
 
@@ -757,45 +753,6 @@ describe("RoutePluginsPluginConsentModal", () => {
 		);
 		const args = mutationMock.mock.calls.find((call) => call[0] === "plugins.install_version")?.[1];
 		expect(args).not.toHaveProperty("serviceAccountId");
-	});
-
-	test("submits only a grant the user added to the consent form", async () => {
-		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		const installed = installed_item(plugin);
-		installed.version.version = "0.1.0";
-		setQueries({ plugin, installations: [installed] });
-		mutationMock.mockResolvedValue({ _yay: null });
-		render(<PageComponent />);
-		fireEvent.click(screen.getByRole("button", { name: "Update" }));
-		expect(screen.getByRole("heading", { name: "Folders this plugin can use" })).toBeTruthy();
-		fireEvent.click(screen.getByRole("button", { name: "Add reviewed grant" }));
-		expect(mutationMock).not.toHaveBeenCalled();
-		fireEvent.click(screen.getByRole("button", { name: "Accept and update" }));
-		await waitFor(() =>
-			expect(mutationMock).toHaveBeenCalledWith(
-				"plugins.install_version",
-				expect.objectContaining({ serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }] }),
-			),
-		);
-	});
-
-	test("drops old account choices when an open update switches to personal access", async () => {
-		const plugin = published_plugin({ name: "media", canProcessFiles: true });
-		const installed = installed_item(plugin);
-		installed.version.version = "0.1.0";
-		setQueries({ plugin, installations: [installed] });
-		mutationMock.mockResolvedValue({ _yay: null });
-		render(<PageComponent />);
-		fireEvent.click(screen.getByRole("button", { name: "Update" }));
-		fireEvent.click(screen.getByRole("button", { name: "Add reviewed grant" }));
-		installed.installation.fileAccessModel = "personal";
-		setQueries({ plugin: { ...plugin, fileAccessModel: "personal" }, installations: [installed] });
-		fireEvent.click(screen.getByRole("button", { name: "Accept and update" }));
-		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
-		expect(
-			mutationMock.mock.calls[0]![1],
-			"a personal update must not submit old account grant choices",
-		).not.toHaveProperty("serviceAccountGrants");
 	});
 
 	test("rebinds only through the explicit account action", async () => {
@@ -947,7 +904,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		const dialog = screen.getByRole("dialog");
 		expect(
 			within(dialog).queryByRole("checkbox", { name: "Read my selected files" }),
-			"first install must pass personal mode into run consent",
+			"first install must show personal file operations",
 		).not.toBeNull();
 		expect(within(dialog).queryByRole("textbox", { name: "Readable file or folder path" })).toBeNull();
 		fireEvent.click(
@@ -960,7 +917,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 			expect(mutationMock).toHaveBeenCalledWith(
 				"plugins.install_version",
 				expect.objectContaining({
-					scheduledRun: { kind: "me", scopes: ["files:list", "files:read"], filesReadProof: undefined },
+					scheduledRun: { kind: "me", scopes: ["files:list", "files:read"] },
 				}),
 			),
 		);
@@ -992,7 +949,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 				"plugins.install_version",
 				expect.objectContaining({
 					configurationYaml: "mount:\n  name: fresh\nschedule:\n  everyMinutes: 45\n",
-					scheduledRun: { kind: "me", scopes: ["volumes:write"], filesReadProof: undefined },
+					scheduledRun: { kind: "me", scopes: ["volumes:write"] },
 				}),
 			),
 		);
@@ -1358,7 +1315,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 			expect(mutationMock).toHaveBeenCalledWith(
 				"plugins.install_version",
 				expect.objectContaining({
-					scheduledRun: { kind: "me", scopes: ["volumes:write"], filesReadProof: undefined },
+					scheduledRun: { kind: "me", scopes: ["volumes:write"] },
 				}),
 			),
 		);

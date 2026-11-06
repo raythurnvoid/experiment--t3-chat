@@ -53,10 +53,6 @@ const run_as_scope_validator = v.union(
 	v.literal("secrets:read"),
 	v.literal("outbound:fetch"),
 );
-const files_read_proof_validator = v.union(
-	v.object({ kind: v.literal("workspace") }),
-	v.object({ kind: v.literal("file"), nodeId: v.id("files_nodes") }),
-);
 
 function principal_key(principal: Infer<typeof management_principal_validator>) {
 	return principal.kind === "user" ? `user:${principal.userId}` : `role:${principal.role}`;
@@ -509,7 +505,6 @@ export const grant_run_as_me = mutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		installationId: v.id("plugins_workspace_installations"),
 		scopes: v.array(run_as_scope_validator),
-		filesReadProof: v.optional(files_read_proof_validator),
 	},
 	returns: v_result({ _yay: v.object({ grantId: v.id("access_control_permission_grants") }) }),
 	handler: async (ctx, args) => {

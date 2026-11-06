@@ -889,7 +889,6 @@ export type BonoboHttpApi = {
 						receipt: {
 							_id: import("convex/values").GenericId<"plugins_external_file_receipts">;
 							_creationTime: number;
-							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
 							createdAt: number;
@@ -900,6 +899,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							contentRevision: string | null;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
+							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "archive" | "read_only" | "write";
 							fingerprint: string;
 						};
@@ -1396,7 +1396,6 @@ export type BonoboHttpApi = {
 						receipt: {
 							_id: import("convex/values").GenericId<"plugins_external_file_receipts">;
 							_creationTime: number;
-							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
 							createdAt: number;
@@ -1407,6 +1406,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							contentRevision: string | null;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
+							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "archive" | "read_only" | "write";
 							fingerprint: string;
 						};
@@ -1497,7 +1497,6 @@ export type BonoboHttpApi = {
 						receipt: {
 							_id: import("convex/values").GenericId<"plugins_external_file_receipts">;
 							_creationTime: number;
-							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
 							createdAt: number;
@@ -1508,6 +1507,7 @@ export type BonoboHttpApi = {
 							sequence: number;
 							contentRevision: string | null;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
+							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "archive" | "read_only" | "write";
 							fingerprint: string;
 						};
@@ -1683,7 +1683,6 @@ export type BonoboHttpApi = {
 					body: {
 						_id: import("convex/values").GenericId<"plugins_external_file_receipts">;
 						_creationTime: number;
-						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 						organizationId: import("convex/values").GenericId<"organizations">;
 						workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
 						createdAt: number;
@@ -1694,6 +1693,7 @@ export type BonoboHttpApi = {
 						sequence: number;
 						contentRevision: string | null;
 						nodeId: import("convex/values").GenericId<"files_nodes">;
+						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 						operation: "fence" | "archive" | "read_only" | "write";
 						fingerprint: string;
 					};
@@ -2436,7 +2436,7 @@ export type BonoboHttpApi = {
 						errorCode?: undefined;
 						ok?: undefined;
 					} | {
-						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "Plugin run chain limit exceeded" | "File access changed. Start a new plugin run." | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
+						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "File access changed. Start a new plugin run." | "Plugin run chain limit exceeded" | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
 						errorCode?: undefined;
 						ok?: undefined;
 					};
@@ -2449,7 +2449,7 @@ export type BonoboHttpApi = {
 						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "Scheduled plugin runs cannot use Trash yet." | "Plugin API call limit exceeded";
 						retryAfterMs?: undefined;
 					} | {
-						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "Plugin run chain limit exceeded" | "File access changed. Start a new plugin run." | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
+						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "File access changed. Start a new plugin run." | "Plugin run chain limit exceeded" | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
 						errorCode?: undefined;
 						ok?: undefined;
 					};
@@ -2459,7 +2459,7 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "Plugin run chain limit exceeded" | "File access changed. Start a new plugin run." | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
+						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "File access changed. Start a new plugin run." | "Plugin run chain limit exceeded" | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
 						errorCode: "follow_up_already_requested" | "chain_limit";
 						ok?: undefined;
 					};
@@ -2472,7 +2472,7 @@ export type BonoboHttpApi = {
 						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "Scheduled plugin runs cannot use Trash yet." | "Plugin API call limit exceeded";
 						retryAfterMs?: undefined;
 					} | {
-						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "Plugin run chain limit exceeded" | "File access changed. Start a new plugin run." | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
+						message: "Unauthenticated" | "Unauthorized" | "Permission denied" | "The scheduled user must grant access again" | "The scheduled user is not an active workspace member" | "Choose a scheduled user with their own permission grant" | "This schedule is not available" | "The scheduled assignment changed" | "File access changed. Start a new plugin run." | "Plugin run chain limit exceeded" | "A follow-up is already requested" | "Follow-up state must be at most 16 KiB" | "Follow-up state must be valid JSON";
 						errorCode?: undefined;
 						ok?: undefined;
 					};

@@ -1006,7 +1006,7 @@ export async function public_api_files_organize_http_trash_list(args: {
 				status: 403,
 				body: await fail({
 					status: 403,
-					message: "Switch this plugin to personal file permissions to use Trash.",
+					message: "Permission denied",
 					errorCode: "permission_denied",
 				}),
 			} as const;
@@ -1536,7 +1536,7 @@ export async function public_api_files_organize_http_trash_areas(args: {
 				status: 403,
 				body: await fail({
 					status: 403,
-					message: "Switch this plugin to personal file permissions to use Trash.",
+					message: "Permission denied",
 					errorCode: "permission_denied",
 				}),
 			} as const;

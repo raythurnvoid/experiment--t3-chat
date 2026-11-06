@@ -318,14 +318,12 @@ export const media_plugin_consent: {
 	acceptedUiOutboundOrigins: string[];
 	acceptedMcpServersFingerprint: string;
 	acceptedSkillNames: string[];
-	serviceAccountGrants: Array<{ resource: { kind: "workspace" }; level: "manage" }>;
 } = {
 	acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 	acceptedOutboundOrigins: [],
 	acceptedUiOutboundOrigins: [],
 	acceptedMcpServersFingerprint: "mcp-servers-hash",
 	acceptedSkillNames: [],
-	serviceAccountGrants: [],
 };
 
 export async function grant_plugin_file_access(args: {
@@ -333,7 +331,7 @@ export async function grant_plugin_file_access(args: {
 	userId: Id<"users">;
 	membershipId: Id<"organizations_workspaces_users">;
 	installationId: Id<"plugins_workspace_installations">;
-	rootNodeId: Id<"files_nodes">;
+	rootNodeId: Id<"files_nodes"> | null;
 	level: "read" | "write";
 }) {
 	const { t, userId, ...grantArgs } = args;

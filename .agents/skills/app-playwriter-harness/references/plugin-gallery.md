@@ -51,7 +51,7 @@ Then wait for 12 tiles and `Load more`, rename an empty QA folder in the same wo
 
 ## Live check of locked tiles (second user)
 
-Gallery is installed in `chitchat-qa/xfer-qa-0914`. There, `/g4-media/shapes.png` and `/g4-media/speakers.mp4` are restricted files that `qa.perm.member` cannot open, while `/g4-media` stays readable, so the recursive list returns them as `locked: true`. Sign `qa.perm.member` into a scratch browser (`clerk-test-accounts.md`), register `request`/`response` listeners on `state.page` for `/api/v1/files/` before you open `/w/chitchat-qa/xfer-qa-0914/plugins/gallery/pages/gallery`, then read the frame. Expected (verified 2026-10-22 on 0.1.26): 4 tiles, 2 of them `[data-locked]`, no failed tile, and the `download-urls` bodies hold only the two open ids. The owner can open both files, so an owner run proves nothing about a member's locked rows. On 2026-11-01 an owner run also showed those two tiles as locked, while the owner's own API key read both files. Both files are restricted (each is its own restricted root) and not read-only, and the Gallery service account has one workspace-wide read grant. A plugin reads only what its person and its account can both read. A workspace grant does not reach inside a restricted folder, so Gallery shows them locked for everybody. Expected, not a bug.
+Gallery is installed in `chitchat-qa/xfer-qa-0914`. There, `/g4-media/shapes.png` and `/g4-media/speakers.mp4` are restricted files that `qa.perm.member` cannot open, while `/g4-media` stays readable. Use the scratch browser from `clerk-test-accounts.md` for this second user. Before opening Gallery, save Whole workspace Can view in that person's **My file permissions** and wait for it to apply. Register `request`/`response` listeners on `state.page` for `/api/v1/files/`, then open `/w/chitchat-qa/xfer-qa-0914/plugins/gallery/pages/gallery`. Both restricted tiles must be locked, with no download request for their IDs. The owner can read both files directly, but Gallery needs that owner's separate consent for each restricted file. Whole workspace consent does not cross restricted boundaries. The 2026-10-22 four-tile check predates personal consent; use the current fixture count.
 
 ## Live check of the list end
 
@@ -59,7 +59,7 @@ Register a `response` listener on `state.page` for `/api/v1/files/list` before y
 
 ## Known hazards
 
-- A plugin installed from the CLI without `serviceAccountGrants` gives its service account no grant, and every Gallery list then answers 403 `Permission denied: /` even for a member with `content.read`. The plugin check needs the person and the account. Read the account's grants on the plugin page first; see the `install_version` note in `snippets.md`.
+- Installation gives Gallery no personal file consent. Without applied Whole workspace Can view, its root list answers 403 `Permission denied: /`. Save that choice in **My file permissions** and wait for it to apply. Account grants add no plugin access; see the `install_version` note in `snippets.md`.
 
 - `fetch()` from the plugin page to R2 fails by design because CSP limits `connect-src` to the Convex origin. Probe media via element `readyState`/`naturalWidth`, not fetch.
 - The extension relay does not support `Emulation.*` CDP methods: `page.emulateMedia()` and `page.unrouteAll()` fail. To restore real network after `page.route()` interception, register a later route with the same pattern that calls `route.continue()` (last-registered wins).

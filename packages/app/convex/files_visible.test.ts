@@ -12,6 +12,8 @@ import type { files_PendingParent } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { insert_installation } from "./files_share_links.setup.test.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -1299,9 +1301,7 @@ describe("internal_search_name_saved", () => {
 	 * folder holds `hits` files the member cannot open. The search starts at `/t/m`, since a walk
 	 * from `/` stops at the locked `/t`.
 	 *
-	 * With `plugin`, a plugin's account gets the same grants as the member, so a plugin subject walks
-	 * each chain twice: once for the member and once for the account. The account also has a role, so
-	 * its walk reads role grants too, like the member's.
+	 * With `plugin`, the person's pair has consent at the same chain roots.
 	 */
 	async function seed_deep_chains(
 		f: Awaited<ReturnType<typeof fixture>>,
@@ -1310,11 +1310,12 @@ describe("internal_search_name_saved", () => {
 		const { chains, hits, plugin } = args;
 		const member = await add_member(f);
 		const installationId = plugin ? await insert_installation({ t: f.t, db: f.db }) : null;
-		const serviceAccountId = installationId
+		const pairId = installationId
 			? await f.t.run(async (ctx) => {
 					const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
-					await ctx.db.patch("access_control_service_accounts", installation.serviceAccountId, { role: "member" });
-					return installation.serviceAccountId;
+					const membership = (await ctx.db.get("organizations_workspaces_users", member.membershipId))!;
+					const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+					return (await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime }))._id;
 				})
 			: null;
 		await f.t.run(async (ctx) => {
@@ -1362,22 +1363,26 @@ describe("internal_search_name_saved", () => {
 				extendedScopeNodeId: mId,
 				parentExtendedScopeNodeId: null,
 			});
-			const grant_account = async (nodeId: Id<"files_nodes">) => {
-				if (!serviceAccountId) return;
-				await ctx.db.insert("access_control_permission_grants", {
+			const grant_pair = async (nodeId: Id<"files_nodes">) => {
+				if (!pairId) return;
+				await ctx.db.insert("plugins_file_consents", {
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
-					resourceKind: "file",
-					resourceId: String(nodeId),
-					principalKind: "service_account",
-					serviceAccountId,
-					permission: "content.read",
+					pairId,
+					rootNodeId: nodeId,
+					requestedLevel: "read",
+					appliedLevel: "read",
+					areaEligible: false,
+					open: true,
+					revision: 1,
+					state: "applied",
+					endedReason: null,
 					createdAt: 1,
 					updatedAt: 1,
 				});
 			};
 			await grant(mId, member.userId);
-			await grant_account(mId);
+			await grant_pair(mId);
 			for (const chain of chains) {
 				let parent = { _id: mId, path: "/t/m" };
 				for (let depth = 0; depth < chain.depth; depth++) {
@@ -1391,7 +1396,7 @@ describe("internal_search_name_saved", () => {
 						ancestor2: mId,
 					});
 					await grant(nodeId, depth === 0 ? member.userId : strangerId);
-					if (depth === 0) await grant_account(nodeId);
+					if (depth === 0) await grant_pair(nodeId);
 					parent = { _id: nodeId, path };
 				}
 				for (let index = 0; index < hits; index++) {
@@ -1408,11 +1413,9 @@ describe("internal_search_name_saved", () => {
 			}
 			await content.flush();
 		});
-		const subject = {
-			kind: "user" as const,
-			userId: member.userId,
-			plugin: installationId && serviceAccountId ? { installationId, serviceAccountId } : null,
-		};
+		const subject = pairId
+			? { kind: "plugin_pair" as const, pairId }
+			: { kind: "user" as const, userId: member.userId, plugin: null };
 		return { ...member, subject };
 	}
 
@@ -1441,9 +1444,7 @@ describe("internal_search_name_saved", () => {
 	}
 
 	// The owner's reader resolves each hit's path within its own read limit, so its chain is shorter.
-	// A plugin still checks the folder once, but that check walks the chain for the member and for its
-	// account. So its chain is shorter too: after a 500-level check of a plugin, no other hit fits the
-	// same call, and each call returns one hit.
+	// A plugin checks its pair's consent through the same saved chain.
 	test.each([
 		{ overlay: true, depth: 200, plugin: false },
 		{ overlay: false, depth: 500, plugin: false },

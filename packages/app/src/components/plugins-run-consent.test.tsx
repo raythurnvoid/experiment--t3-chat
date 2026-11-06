@@ -53,14 +53,13 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { PluginsMyFilePermissions, PluginsMyRunPermissions, PluginsRunConsent } from "./plugins-run-consent.tsx";
 
-function TestConsent(props: { capabilities?: string[]; canManage?: boolean; fileAccessModel?: "personal" }) {
+function TestConsent(props: { capabilities?: string[]; canManage?: boolean }) {
 	const { membershipId } = AppTenantProvider.useContext();
 	return (
 		<PluginsRunConsent
 			membershipId={membershipId}
 			capabilities={props.capabilities ?? ["workspace.files.read"]}
 			canManage={props.canManage ?? true}
-			fileAccessModel={props.fileAccessModel}
 			onChange={consentMock}
 		/>
 	);
@@ -70,12 +69,7 @@ function TestMyPermissions() {
 	const { membershipId } = AppTenantProvider.useContext();
 	const plugin = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId })?.at(0);
 	return plugin?.installationId ? (
-		<PluginsMyRunPermissions
-			membershipId={membershipId}
-			installationId={plugin.installationId}
-			canManage={false}
-			fileAccessModel={plugin.fileAccessModel}
-		/>
+		<PluginsMyRunPermissions membershipId={membershipId} installationId={plugin.installationId} canManage={false} />
 	) : null;
 }
 
@@ -83,11 +77,7 @@ function TestMyFilePermissions() {
 	const { membershipId } = AppTenantProvider.useContext();
 	const plugin = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId })?.at(0);
 	return plugin?.installationId ? (
-		<PluginsMyFilePermissions
-			membershipId={membershipId}
-			installationId={plugin.installationId}
-			fileAccessModel={plugin.fileAccessModel}
-		/>
+		<PluginsMyFilePermissions membershipId={membershipId} installationId={plugin.installationId} />
 	) : null;
 }
 
@@ -113,7 +103,7 @@ afterEach(cleanup);
 describe("PluginsRunConsent", () => {
 	test("allows personal file operations without a workspace or file proof", async () => {
 		queryMock.mockImplementation((query: string) => (query === "workspace_permission" ? false : null));
-		render(<TestConsent fileAccessModel="personal" />);
+		render(<TestConsent />);
 		expect(
 			queryMock.mock.calls.filter(([query, args]) => query === "workspace_permission" && args !== "skip"),
 			"personal Files consent must skip the workspace Read query",
@@ -128,7 +118,6 @@ describe("PluginsRunConsent", () => {
 		await waitFor(() =>
 			expect(consentMock, "personal run consent must not need a file proof").toHaveBeenLastCalledWith({
 				scopes: ["files:list", "files:read"],
-				filesReadProof: undefined,
 			}),
 		);
 	});
@@ -137,7 +126,6 @@ describe("PluginsRunConsent", () => {
 		queryMock.mockImplementation((query: string) => (query === "workspace_permission" ? false : null));
 		render(
 			<TestConsent
-				fileAccessModel="personal"
 				capabilities={["workspace.files.read", "plugin.data.read", "plugin.data.write"]}
 				canManage={false}
 			/>,
@@ -149,9 +137,7 @@ describe("PluginsRunConsent", () => {
 		expect(screen.getByRole("checkbox", { name: "Read this plugin's stored data" })).toHaveProperty("disabled", true);
 		expect(screen.getByRole("checkbox", { name: "Write this plugin's stored data" })).toHaveProperty("disabled", true);
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		await waitFor(() =>
-			expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["files:list", "files:read"], filesReadProof: undefined }),
-		);
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["files:list", "files:read"] }));
 	});
 
 	test("keeps consent empty until the user explicitly allows Me", async () => {
@@ -161,78 +147,17 @@ describe("PluginsRunConsent", () => {
 		await waitFor(() =>
 			expect(consentMock).toHaveBeenLastCalledWith({
 				scopes: ["files:list", "files:read"],
-				filesReadProof: { kind: "workspace" },
 			}),
 		);
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		expect(consentMock).toHaveBeenLastCalledWith(null);
-	});
-
-	test("uses a readable saved folder as proof and drops it after replacement", async () => {
-		let target = { target: { kind: "saved", id: "folder_1" }, kind: "folder" };
-		queryMock.mockImplementation((query: string, args: { path?: string } | "skip") =>
-			query === "workspace_permission"
-				? false
-				: query === "visible_target" && args !== "skip" && args.path === "/shared"
-					? target
-					: null,
-		);
-		render(<TestConsent />);
-		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		const path = screen.getByRole("textbox", { name: "Readable file or folder path" });
-		fireEvent.change(path, { target: { value: "/shared" } });
-		expect(consentMock).toHaveBeenLastCalledWith(null);
-		fireEvent.click(await screen.findByRole("button", { name: "Use this folder: /shared" }));
-		await waitFor(() =>
-			expect(consentMock).toHaveBeenLastCalledWith({
-				scopes: ["files:list", "files:read"],
-				filesReadProof: { kind: "file", nodeId: "folder_1" },
-			}),
-		);
-		target = { target: { kind: "saved", id: "folder_2" }, kind: "folder" };
-		refreshQueries();
-		expect(consentMock, "a replacement must not keep the old saved-target proof").toHaveBeenLastCalledWith(null);
-		fireEvent.click(screen.getByRole("button", { name: "Use this folder: /shared" }));
-		await waitFor(() =>
-			expect(consentMock).toHaveBeenLastCalledWith(
-				expect.objectContaining({ filesReadProof: { kind: "file", nodeId: "folder_2" } }),
-			),
-		);
-		fireEvent.change(path, { target: { value: "/missing" } });
-		expect(consentMock).toHaveBeenLastCalledWith(null);
-	});
-
-	test.each(["unavailable", "private"])("does not accept a %s path as saved Files proof", async (kind) => {
-		queryMock.mockImplementation((query: string) =>
-			query === "workspace_permission"
-				? false
-				: query === "visible_target"
-					? kind === "private"
-						? { target: { kind: "private", id: "draft_1" }, kind: "file" }
-						: null
-					: null,
-		);
-		render(<TestConsent />);
-		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		const path = screen.getByRole("textbox", { name: "Readable file or folder path" });
-		fireEvent.change(path, { target: { value: "/candidate" } });
-		fireEvent.blur(path);
-		expect(await screen.findByRole("alert")).toHaveProperty(
-			"textContent",
-			"Choose a saved file or folder you can read.",
-		);
-		expect(path).toHaveProperty("validity.valid", false);
-		expect(screen.queryByRole("button", { name: /Use this/ })).toBeNull();
 		expect(consentMock).toHaveBeenLastCalledWith(null);
 	});
 
 	test("allows a list-only grant and uses only the accepted live capabilities", async () => {
 		render(<TestConsent capabilities={["workspace.files.read", "plugin.schedule.run"]} canManage={false} />);
-		fireEvent.click(screen.getByRole("checkbox", { name: "Read files I can read" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: "Read my selected files" }));
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		await waitFor(() =>
-			expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["files:list"], filesReadProof: { kind: "workspace" } }),
-		);
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["files:list"] }));
 		expect(screen.queryByRole("checkbox", { name: /Write read-only Mounts/ })).toBeNull();
 	});
 
@@ -246,45 +171,8 @@ describe("PluginsRunConsent", () => {
 			"a viewer must not be offered plugin data write permission",
 		).toHaveProperty("disabled", true);
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		await waitFor(() =>
-			expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["plugin_data:read"], filesReadProof: undefined }),
-		);
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["plugin_data:read"] }));
 	});
-
-	test.each(["file", "folder"] as const)(
-		"keeps a readable %s proof available without workspace KV access",
-		async (kind) => {
-			queryMock.mockImplementation((query: string) =>
-				query === "workspace_permission"
-					? false
-					: query === "visible_target"
-						? { target: { kind: "saved", id: "node_1" }, kind }
-						: null,
-			);
-			render(
-				<TestConsent
-					capabilities={["workspace.files.read", "plugin.data.read", "plugin.data.write"]}
-					canManage={false}
-				/>,
-			);
-			expect(screen.getByRole("checkbox", { name: "Read this plugin's stored data" })).toHaveProperty("disabled", true);
-			expect(screen.getByRole("checkbox", { name: "Write this plugin's stored data" })).toHaveProperty(
-				"disabled",
-				true,
-			);
-			fireEvent.change(screen.getByRole("textbox", { name: "Readable file or folder path" }), {
-				target: { value: "/shared" },
-			});
-			fireEvent.click(screen.getByRole("button", { name: `Use this ${kind}: /shared` }));
-			fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-			await waitFor(() =>
-				expect(consentMock).toHaveBeenLastCalledWith({
-					scopes: ["files:list", "files:read"],
-					filesReadProof: { kind: "file", nodeId: "node_1" },
-				}),
-			);
-		},
-	);
 
 	test("clears plugin data write when read is unchecked or live write is lost", async () => {
 		let canWrite = true;
@@ -296,7 +184,6 @@ describe("PluginsRunConsent", () => {
 		await waitFor(() =>
 			expect(consentMock).toHaveBeenLastCalledWith({
 				scopes: ["plugin_data:read", "plugin_data:write"],
-				filesReadProof: undefined,
 			}),
 		);
 		const read = screen.getByRole("checkbox", { name: "Read this plugin's stored data" });
@@ -304,7 +191,7 @@ describe("PluginsRunConsent", () => {
 		fireEvent.click(read);
 		expect(write, "plugin data write must not remain selected without read").toHaveProperty("checked", false);
 		expect(write).toHaveProperty("disabled", true);
-		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: [], filesReadProof: undefined }));
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: [] }));
 		fireEvent.click(read);
 		expect(write).toHaveProperty("checked", false);
 		fireEvent.click(write);
@@ -312,9 +199,7 @@ describe("PluginsRunConsent", () => {
 		refreshQueries();
 		expect(write).toHaveProperty("checked", false);
 		expect(write).toHaveProperty("disabled", true);
-		await waitFor(() =>
-			expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["plugin_data:read"], filesReadProof: undefined }),
-		);
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["plugin_data:read"] }));
 	});
 
 	test("keeps management scopes unchecked for a member without installation management", async () => {
@@ -329,32 +214,30 @@ describe("PluginsRunConsent", () => {
 			true,
 		);
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: [], filesReadProof: undefined }));
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: [] }));
 	});
 
 	test("narrows a draft when accepted capabilities or management access change", async () => {
 		const { rerender } = render(<TestConsent capabilities={["workspace.volumes.write"]} canManage />);
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
-		await waitFor(() =>
-			expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["volumes:write"], filesReadProof: undefined }),
-		);
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["volumes:write"] }));
 		rerender(<TestConsent capabilities={["workspace.volumes.write"]} canManage={false} />);
 		expect(screen.getByRole("checkbox", { name: "Write read-only Mounts, billed to the owner" })).toHaveProperty(
 			"checked",
 			false,
 		);
-		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: [], filesReadProof: undefined }));
+		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: [] }));
 		rerender(<TestConsent capabilities={["plugin.schedule.run"]} canManage={false} />);
 		expect(screen.queryByRole("checkbox", { name: /Write read-only Mounts/ })).toBeNull();
-		expect(consentMock).toHaveBeenLastCalledWith({ scopes: [], filesReadProof: undefined });
+		expect(consentMock).toHaveBeenLastCalledWith({ scopes: [] });
 	});
 });
 
 describe("PluginsMyRunPermissions", () => {
-	test("uses the installation's personal model for saved run permissions", () => {
+	test("uses personal file choices for saved run permissions", () => {
 		queryMock.mockImplementation((query: string) =>
 			query === "catalog"
-				? [{ installationId: "installation_1", fileAccessModel: "personal" }]
+				? [{ installationId: "installation_1" }]
 				: query === "my_grant"
 					? {
 							capabilities: ["workspace.files.read"],
@@ -396,7 +279,6 @@ describe("PluginsMyRunPermissions", () => {
 				membershipId: "membership_1",
 				installationId: "installation_1",
 				scopes: [],
-				filesReadProof: undefined,
 			}),
 		);
 		expect(mutationMock.mock.calls[0]![1]).not.toHaveProperty("userId");
@@ -416,9 +298,7 @@ describe("PluginsMyRunPermissions", () => {
 		);
 		render(<TestMyPermissions />);
 		expect(
-			screen.getByText(
-				"Permission granted for this workspace membership. Each operation still checks your current access.",
-			),
+			screen.getByText("Permission granted for this workspace membership. File access comes from My file permissions."),
 		).not.toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Revoke my run permissions" }));
 		await waitFor(() =>
@@ -434,19 +314,15 @@ describe("PluginsMyRunPermissions", () => {
 });
 
 describe("PluginsMyFilePermissions", () => {
-	test("changes the rollout text when the installation switches to personal access", () => {
-		let personal = false;
+	test("shows that personal file choices are active", () => {
 		queryMock.mockImplementation((query: string) =>
 			query === "catalog"
-				? [{ installationId: "installation_1", fileAccessModel: personal ? "personal" : undefined }]
+				? [{ installationId: "installation_1" }]
 				: query === "file_grants"
 					? { results: [], status: "Exhausted", loadMore: vi.fn() }
 					: null,
 		);
 		render(<TestMyFilePermissions />);
-		expect(screen.getByText("Plugins do not use these choices yet. They will after a later update.")).not.toBeNull();
-		personal = true;
-		refreshQueries();
 		expect(
 			screen.queryByText("Plugins do not use these choices yet. They will after a later update."),
 			"personal file controls must not claim that choices are inactive",
@@ -528,10 +404,6 @@ describe("PluginsMyFilePermissions", () => {
 		);
 		render(<TestMyFilePermissions />);
 		expect(screen.getByText("Chosen: Can edit")).not.toBeNull();
-		expect(
-			screen.queryByText("Plugins do not use these choices yet. They will after a later update."),
-			"the rollout note must say these choices are not active yet",
-		).not.toBeNull();
 		expect(screen.getByText("Current: Can view")).not.toBeNull();
 		expect(screen.getByText("Change pending.")).not.toBeNull();
 		expect(screen.getByText("Ended. Access ended.")).not.toBeNull();
@@ -558,7 +430,7 @@ describe("PluginsMyFilePermissions", () => {
 		mutationMock.mockReturnValue(response.promise);
 		queryMock.mockImplementation((query: string) =>
 			query === "catalog"
-				? [{ installationId: "installation_1", fileAccessModel: "personal" }]
+				? [{ installationId: "installation_1" }]
 				: query === "file_grants"
 					? { results: [], status: "Exhausted", loadMore: vi.fn() }
 					: query === "visible_target"

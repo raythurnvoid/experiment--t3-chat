@@ -66,8 +66,6 @@ import {
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 	access_control_db_has_permission,
-	access_control_db_authorize_service_account_grant,
-	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import { rate_limiter_get_plugin_volume_daily_files_left, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2, r2_fetch_object_from_bucket, r2_put_object } from "./r2_client.ts";
@@ -3715,28 +3713,11 @@ export const install_version = mutation({
 							v.literal("outbound:fetch"),
 						),
 					),
-					filesReadProof: v.optional(
-						v.union(
-							v.object({ kind: v.literal("workspace") }),
-							v.object({ kind: v.literal("file"), nodeId: v.id("files_nodes") }),
-						),
-					),
 				}),
 				v.object({ kind: v.literal("user"), userId: v.id("users"), grantId: v.id("access_control_permission_grants") }),
 			),
 		),
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
-		serviceAccountGrants: v.optional(
-			v.array(
-				v.object({
-					resource: v.union(
-						v.object({ kind: v.literal("workspace") }),
-						v.object({ kind: v.literal("file"), nodeId: v.id("files_nodes") }),
-					),
-					level: v.union(v.literal("read"), v.literal("write"), v.literal("manage")),
-				}),
-			),
-		),
 	},
 	returns: v_result({
 		_yay: v.object({ installationId: v.id("plugins_workspace_installations") }),
@@ -3932,20 +3913,10 @@ export const install_version = mutation({
 			)
 			.first();
 
-		const grants = args.serviceAccountGrants ?? [];
-		if ((!existingInstallation || existingInstallation.fileAccessModel === "personal") && grants.length > 0) {
-			return Result({
-				_nay: {
-					message:
-						"Choose this plugin's files in My file permissions. Change ordinary account grants in service account sharing.",
-				},
-			});
-		}
 		if (
 			(!existingInstallation && binding) ||
 			(existingInstallation && !binding) ||
-			args.serviceAccountId !== undefined ||
-			grants.length > 0
+			args.serviceAccountId !== undefined
 		) {
 			const allowed = await access_control_db_has_permission(ctx, {
 				organizationId: installationScope.organizationId,
@@ -3977,24 +3948,6 @@ export const install_version = mutation({
 			return Result({ _nay: { message: "Choose an active service account" } });
 		}
 
-		const resources = new Set<string>();
-		for (const grant of grants) {
-			const key = grant.resource.kind === "workspace" ? "workspace" : grant.resource.nodeId;
-			if (resources.has(key)) {
-				return Result({ _nay: { message: "Choose each grant resource once" } });
-			}
-			resources.add(key);
-
-			const allowed = await access_control_db_authorize_service_account_grant(ctx, {
-				userAuth,
-				membership: authorization._yay.membership,
-				...grant,
-			});
-			if (allowed._nay) {
-				return allowed;
-			}
-		}
-
 		const serviceAccountId =
 			account?._id ??
 			(await ctx.db.insert("access_control_service_accounts", {
@@ -4012,18 +3965,6 @@ export const install_version = mutation({
 			binding,
 			serviceAccountId,
 		});
-
-		for (const grant of grants) {
-			const result = await access_control_db_set_service_account_grant(ctx, {
-				...installationScope,
-				serviceAccountId,
-				...grant,
-			});
-			// A resource limit must roll back every grant and the account choice together.
-			if (result._nay) {
-				throw convex_error(result._nay);
-			}
-		}
 
 		if (existingInstallation) {
 			installationId = existingInstallation._id;
@@ -4064,8 +4005,6 @@ export const install_version = mutation({
 				serviceAccountId,
 				pluginName: pluginVersion.name,
 				status: "enabled",
-				// New installs start personal. Existing installations keep their model until the audited switch.
-				fileAccessModel: "personal",
 				managementAccess: "selected",
 				configurationYaml,
 				acceptedCapabilities: pluginVersion.capabilities,
@@ -4848,7 +4787,6 @@ export const list_published_plugins = query({
 			canInstall: v.boolean(),
 			canManage: v.boolean(),
 			installationId: v.union(v.id("plugins_workspace_installations"), v.null()),
-			fileAccessModel: doc(app_convex_schema, "plugins_workspace_installations").fields.fileAccessModel,
 			configuration: doc(app_convex_schema, "plugins_versions").fields.configuration,
 			mounts: doc(app_convex_schema, "plugins_versions").fields.mounts,
 			events: doc(app_convex_schema, "plugins_versions").fields.events,
@@ -4937,7 +4875,6 @@ export const list_published_plugins = query({
 					canInstall: installation === null && workspaceCanInstall,
 					canManage,
 					installationId: installation?._id ?? null,
-					fileAccessModel: installation?.fileAccessModel,
 					configuration: version.configuration,
 					mounts: version.mounts,
 					events: version.events,

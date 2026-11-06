@@ -51,7 +51,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import * as pending_overlay from "../server/files-pending-overlay.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
-import { access_control_db_set_service_account_grant } from "./access_control.ts";
+import { grant_plugin_file_access } from "./plugins.setup.test.ts";
 
 vi.mock("ai", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("ai")>();
@@ -325,6 +325,7 @@ async function install_upload_plugin(
 		displayName: string;
 		description: string;
 		contentTypes: string[];
+		selectWorkspace?: boolean;
 	},
 ) {
 	const repositoryId = await t.run(async (ctx) => {
@@ -429,19 +430,16 @@ async function install_upload_plugin(
 	if (installed._nay) {
 		throw new Error(installed._nay.message);
 	}
-	// These upload-event fixtures keep the old model. Personal media cases set their own pair below.
-	await t.run(async (ctx) => {
-		const installation = (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!;
-		await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: undefined });
-		const granted = await access_control_db_set_service_account_grant(ctx, {
-			organizationId: installation.organizationId,
-			workspaceId: installation.workspaceId,
-			serviceAccountId: installation.serviceAccountId,
-			resource: { kind: "workspace" },
+	if (args.selectWorkspace !== false) {
+		await grant_plugin_file_access({
+			t,
+			userId: args.userId,
+			membershipId: args.membershipId,
+			installationId: installed._yay.installationId,
+			rootNodeId: null,
 			level: "write",
 		});
-		if (granted._nay) throw new Error(granted._nay.message);
-	});
+	}
 	return installed._yay.installationId;
 }
 
@@ -460,6 +458,7 @@ async function create_volume_fixture(
 		displayName: "PDF",
 		description: "Test mount owner",
 		contentTypes: ["application/pdf"],
+		selectWorkspace: false,
 	});
 	return await t.run(async (ctx) =>
 		ctx.db.insert("plugins_volumes", {
@@ -2436,10 +2435,10 @@ describe("r2 asset content", () => {
 		expect(docs.generated).toBeNull();
 	});
 
-	test("archives active generated output name conflicts before plugin writes", async () => {
+	test("keeps a noneditable name conflict when the plugin has only personal Edit", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const installationId = await install_upload_plugin(t, {
+		await install_upload_plugin(t, {
 			userId: db.userId,
 			membershipId: db.membershipId,
 			name: "pdf",
@@ -2497,19 +2496,7 @@ describe("r2 asset content", () => {
 			}),
 		);
 
-		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installationId));
-		if (!installation) {
-			throw new Error("Expected plugin installation");
-		}
-		// Replacing an existing plugin output also changes its access state.
-		expect(
-			await asUser.mutation(api.access_control.set_service_account_grant, {
-				membershipId: db.membershipId,
-				serviceAccountId: installation.serviceAccountId,
-				resource: { kind: "file", nodeId: existingGeneratedId },
-				level: "write",
-			}),
-		).toEqual({ _yay: null });
+		const before = await t.run((ctx) => ctx.db.get("files_nodes", existingGeneratedId));
 
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		if (!asset) {
@@ -2521,6 +2508,7 @@ describe("r2 asset content", () => {
 			assetId: asset._id,
 		});
 
+		let written: { status: number; body: unknown } | null = null;
 		stub_r2_and_modal_fetch({
 			onPluginRunnerRequest: async (body) => {
 				const host = body.host as { token: string };
@@ -2536,7 +2524,7 @@ describe("r2 asset content", () => {
 						content: "# Collision replacement\n\nPLUGIN_COLLISION_E2E_2026",
 					}),
 				});
-				expect(writeResponse.status).toBe(200);
+				written = { status: writeResponse.status, body: await writeResponse.json() };
 				return plugin_runner_event_response(String(body.pluginRunId));
 			},
 		});
@@ -2593,19 +2581,14 @@ describe("r2 asset content", () => {
 			return { fileNode, oldGenerated, activeGeneratedAtPath, activeGeneratedAsset };
 		});
 
-		expect(docs.oldGenerated?.archiveOperationId).toEqual(expect.any(String));
-		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
-		expect(docs.activeGeneratedAtPath?.name).toBe("collision.pdf.md");
-		expect(docs.activeGeneratedAtPath?._id).not.toBe(existingGeneratedId);
-		expect(docs.activeGeneratedAtPath).toMatchObject({
-			name: "collision.pdf.md",
-			contentType: "text/markdown;charset=utf-8",
-			yjsSnapshotId: expect.any(String),
+		expect(written, "personal Edit cannot replace a file and change its sharing").toEqual({
+			status: 403,
+			body: { message: "Permission denied", errorCode: "permission_denied" },
 		});
-		expect(docs.activeGeneratedAtPath?.archiveOperationId).toBeNull();
-		expect(docs.activeGeneratedAsset?.r2Key ? r2_text(docs.activeGeneratedAsset.r2Key) : null).toContain(
-			"PLUGIN_COLLISION_E2E_2026",
-		);
+		expect(docs.oldGenerated, "refused replacement leaves the old file unchanged").toEqual(before);
+		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
+		expect(docs.activeGeneratedAtPath?._id).toBe(existingGeneratedId);
+		expect(docs.activeGeneratedAsset).toBeNull();
 	});
 });
 
@@ -4374,6 +4357,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			displayName: "Image",
 			description: "Image markdown generation",
 			contentTypes: ["image/png"],
+			selectWorkspace: false,
 		});
 		return await t.run(async (ctx) => {
 			const now = Date.now();
@@ -4381,6 +4365,9 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			if (!installation) {
 				throw new Error("Expected plugin installation");
 			}
+			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
+			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
 			await ctx.db.insert("quotas", {
 				quotaName: "stored_file_bytes",
 				organizationId: db.organizationId,
@@ -4391,6 +4378,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				updatedAt: now,
 			});
 			const targetId = await ctx.db.insert("plugin_service_storage_targets", {
+				filePairId: pair._id,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				installationId,
@@ -4501,7 +4489,6 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			const membership = (await ctx.db.get("organizations_workspaces_users", db.membershipId))!;
 			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
 			const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
-			await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
 			await ctx.db.patch("plugin_service_storage_targets", targetId, { filePairId: pair._id });
 			const nodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
@@ -4515,7 +4502,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				treePath: "/media.png/",
 				contentType: "image/png",
 			});
-			// Legacy account read is broad. The target's pair must still control this conversion.
+			// Account read is broad. The target's pair must still control this conversion.
 			await ctx.db.insert("access_control_permission_grants", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -4610,7 +4597,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		);
 	});
 
-	test.each([true, false])("old service targets without pins check the live account: %s", async (accountLive) => {
+	test.each(["pair", "account", "both"])("old targets keep bytes without their original %s", async (missing) => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture({
@@ -4620,13 +4607,27 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			contentType: "text/markdown;charset=utf-8",
 		});
 		const { targetId } = await seed_non_collaborative_service_target({ t, db, upload });
-		const { mediaId, accountId } = await test_run_with_flush(t, async (ctx) => {
+		const mediaId = await test_run_with_flush(t, async (ctx) => {
 			const target = (await ctx.db.get("plugin_service_storage_targets", targetId))!;
-			const installation = (await ctx.db.get("plugins_workspace_installations", target.installationId))!;
-			// Targets accepted before the rollout have neither pin.
+			// The current pair can read the media, but it cannot replace a missing original pin.
+			await ctx.db.insert("plugins_file_consents", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				pairId: target.filePairId!,
+				rootNodeId: null,
+				requestedLevel: "read",
+				appliedLevel: "read",
+				areaEligible: true,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
 			await ctx.db.patch("plugin_service_storage_targets", targetId, {
-				filePairId: undefined,
-				serviceAccountId: undefined,
+				filePairId: missing === "account" ? target.filePairId : null,
+				serviceAccountId: missing === "pair" ? target.serviceAccountId : null,
 			});
 			const mediaId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
@@ -4640,19 +4641,10 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				treePath: "/old-media.png/",
 				contentType: "image/png",
 			});
-			return { mediaId, accountId: installation.serviceAccountId };
+			return mediaId;
 		});
 		const content = `# Old transcript\n\n![media](bonobo-file://${mediaId})`;
 		await confirm_upload_put({ t, upload, content, messageId: "old-service-media" });
-		if (!accountLive) {
-			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-			expect(
-				await asOwner.mutation(api.access_control.revoke_service_account, {
-					membershipId: db.membershipId,
-					serviceAccountId: accountId,
-				}),
-			).toEqual({ _yay: null });
-		}
 		await t.action(internal.r2.finalize_uploaded_text_file, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -4660,9 +4652,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			eventId: "old-service-media",
 		});
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", upload.nodeId));
-		expect(node?.textKind, "old target conversion uses its live installation account").toBe(
-			accountLive ? "rich_text" : null,
-		);
+		expect(node?.textKind, "a target without original pins cannot use the current installation account").toBeNull();
 		await flush_scheduled(t);
 		expect(r2Objects.get(upload.key), "old target cleanup keeps the accepted bytes unchanged").toEqual(
 			new TextEncoder().encode(content),

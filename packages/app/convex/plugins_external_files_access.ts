@@ -3,7 +3,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
-import { plugins_db_get_live_service_account, plugins_file_subject } from "./plugins_service_accounts.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { files_db_get_visible_node_by_path, files_ROOT_ID } from "../server/files.ts";
 import {
@@ -39,6 +39,7 @@ export async function plugins_external_files_db_authorize(
 	const grant = await ctx.db.get("plugin_service_grants", args.grantId);
 	if (
 		!grant ||
+		!grant.filePairId ||
 		grant.revokedAt != null ||
 		grant.expiresAt <= now ||
 		grant.phase !== "processing" ||
@@ -76,14 +77,12 @@ export async function plugins_external_files_db_authorize(
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 	if (
-		(args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== (grant.filePairId ?? null)) ||
-		(args.acceptedFilePairId === undefined && !grant.filePairId && installation.fileAccessModel === "personal") ||
-		(grant.filePairId &&
-			!(await plugins_file_grants_db_validate_pair(ctx, {
-				pairId: grant.filePairId,
-				installationId: installation._id,
-				userId: grant.actorUserId,
-			})))
+		(args.acceptedFilePairId !== undefined && args.acceptedFilePairId !== grant.filePairId) ||
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: grant.filePairId,
+			installationId: installation._id,
+			userId: grant.actorUserId,
+		}))
 	)
 		return Result({ _nay: { message: "Permission denied" } });
 	if (
@@ -149,7 +148,7 @@ export async function plugins_external_files_db_authorize(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 	const writeContext: files_nodes_WriteContext = {
-		subject: plugins_file_subject(installation, grant.actorUserId, grant.filePairId),
+		subject: { kind: "plugin_pair", pairId: grant.filePairId },
 		force: args.force === true,
 		actorUserId: grant.actorUserId,
 		resourceScope: node

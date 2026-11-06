@@ -135,7 +135,6 @@ async function fixture(
 				"secrets:read",
 				"outbound:fetch",
 			],
-			filesReadProof: { kind: "workspace" },
 		},
 	});
 	if (installed._nay) throw new Error(installed._nay.message);
@@ -256,20 +255,11 @@ const successful_outcome = {
 } as const;
 
 describe("personal file credential pins", () => {
-	async function personal_fixture() {
+	async function invoke_fixture() {
 		const f = await fixture();
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
-		);
-		return f;
-	}
-
-	async function invoke_fixture(personal = true) {
-		const f = personal ? await personal_fixture() : await fixture();
 		await f.t.run(async (ctx) => {
 			const installation = await ctx.db.get("plugins_workspace_installations", f.installationId);
 			await ctx.db.patch("plugins_workspace_installations", f.installationId, {
-				fileAccessModel: personal ? "personal" : undefined,
 				acceptedCapabilities: [...installation!.acceptedCapabilities, "plugin.backend.invoke"],
 			});
 			await ctx.db.patch("plugins_versions", f.pluginVersionId, {
@@ -303,7 +293,7 @@ describe("personal file credential pins", () => {
 	}
 
 	test("pins scheduled roots and follow-ups without creating file consent", async () => {
-		const f = await personal_fixture();
+		const f = await fixture();
 		const root = await root_run(f);
 		expect(root.filePairId, "a newly queued schedule must pin its pair").toBeDefined();
 		const { token, run } = await start_run(f, root._id);
@@ -320,61 +310,150 @@ describe("personal file credential pins", () => {
 		expect(docs.consents).toEqual([]);
 	});
 
-	test("starts an old queued run without changing its authority and refuses a new follow-up", async () => {
+	test.each([null, undefined])("refuses a queued run with pair %s without minting authority", async (filePairId) => {
 		const f = await fixture();
-		// New installs are personal. Seed the old model before this pre-switch run enters its queue.
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: undefined }),
-		);
 		const root = await root_run(f);
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
+		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", root._id, { filePairId }));
+		const before = await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id));
+		const pairs = await f.t.run((ctx) => ctx.db.query("plugins_file_pairs").collect());
+		expect(
+			(
+				await f.t.mutation(internal.plugins_runtime.start_event_run, {
+					runId: root._id,
+					apiTokenHash: "missing-pair",
+				})
+			)._nay?.message,
+			"a queued run without a pair must not start",
+		).toBe("File access changed. Start a new plugin run.");
+		expect(await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id))).toEqual(before);
+		expect(await f.t.run((ctx) => ctx.db.query("plugins_file_pairs").collect())).toEqual(pairs);
+	});
+
+	test("does not mint a follow-up when its pair is lost after the request", async () => {
+		const f = await fixture();
+		const root = await root_run(f);
+		const { token } = await start_run(f, root._id);
+		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
+		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", root._id, { filePairId: null }));
+		const finished = await f.t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId: root._id,
+			outcome: successful_outcome,
+		});
+		expect(finished._yay?.errorMessage, "finish must refuse a follow-up without its original pair").toBe(
+			"File access changed. Start a new plugin run.",
 		);
-		const { run, tokenHash } = await start_run(f, root._id);
-		expect(run.filePairId, "an old queue must not acquire a fresh pair").toBeUndefined();
+		expect(await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toHaveLength(1);
+	});
+
+	test("refuses a follow-up request after its pair is lost", async () => {
+		const f = await fixture();
+		const root = await root_run(f);
+		const { tokenHash } = await start_run(f, root._id);
 		const call = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {
 			runId: root._id,
 			kind: "api_request",
 			route: "/api/v1/plugin-runs/follow-up",
 			requiredScope: "runs:follow_up",
 		});
-		expect(call._nay).toBeUndefined();
+		if (call._nay) throw new Error(call._nay.message);
+		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", root._id, { filePairId: null }));
 		expect(
 			(
 				await f.t.mutation(internal.plugins_runtime.request_follow_up, {
 					runId: root._id,
-					callId: call._yay!.callId,
+					callId: call._yay.callId,
 					apiTokenHash: tokenHash,
 					state: "{}",
 				})
 			)._nay?.message,
-			"a legacy token cannot request a new run after the switch",
+			"a follow-up request must keep its original pair",
 		).toBe("File access changed. Start a new plugin run.");
+		expect((await f.t.run((ctx) => ctx.db.get("plugins_event_runs", root._id)))?.followUpState).toBeUndefined();
 	});
 
-	test("does not mint a follow-up when the model changes after its request", async () => {
+	test.each([
+		{ filePairId: null, orphan: false },
+		{ filePairId: null, orphan: true },
+		{ filePairId: undefined, orphan: true },
+	])("keeps finished history after callback replays (case %#)", async ({ filePairId, orphan }) => {
 		const f = await fixture();
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: undefined }),
-		);
 		const root = await root_run(f);
-		const { token } = await start_run(f, root._id);
-		expect((await follow_up({ f, token, state: "{}" })).status).toBe(200);
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
-		);
-		const finished = await f.t.mutation(internal.plugins_runtime.finish_event_run, {
-			runId: root._id,
-			outcome: successful_outcome,
+		await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome });
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("plugins_event_runs", root._id, { filePairId });
+			if (orphan) await ctx.db.delete("plugins_workspace_installations", f.installationId);
 		});
-		expect(finished._yay?.errorMessage, "finish must recheck the model before creating another token").toBe(
-			"File access changed. Start a new plugin run.",
-		);
-		expect(await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toHaveLength(1);
+		const before = await f.t.run(async (ctx) => ({
+			run: await ctx.db.get("plugins_event_runs", root._id),
+			installation: await ctx.db.get("plugins_workspace_installations", f.installationId),
+			activity: await ctx.db
+				.query("activities")
+				.withIndex("by_source_id", (q) => q.eq("source.id", root._id))
+				.unique(),
+			pairs: await ctx.db.query("plugins_file_pairs").collect(),
+		}));
+		expect(
+			(await f.t.mutation(internal.plugins_runtime.start_event_run, { runId: root._id, apiTokenHash: "replayed" }))._nay
+				?.message,
+			"a finished null-pair run must not restart",
+		).toBe("Not found");
+		expect(
+			await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: root._id, outcome: successful_outcome }),
+			"a finished null-pair run must keep its result",
+		).toEqual({ _yay: { status: "succeeded", errorMessage: null, canRelayResponse: false } });
+		expect(
+			await f.t.run(async (ctx) => ({
+				run: await ctx.db.get("plugins_event_runs", root._id),
+				installation: await ctx.db.get("plugins_workspace_installations", f.installationId),
+				activity: await ctx.db
+					.query("activities")
+					.withIndex("by_source_id", (q) => q.eq("source.id", root._id))
+					.unique(),
+				pairs: await ctx.db.query("plugins_file_pairs").collect(),
+			})),
+			"a finished null-pair run must keep history and mint no authority",
+		).toEqual(before);
+	});
+
+	test("account-deleted callbacks store null and finish without Files authority", async () => {
+		const f = await fixture();
+		const member = await assign_member(f);
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("users", member.member.userId, { deletedAt: Date.now() });
+			await ctx.db.patch("organizations_workspaces_users", member.membership._id, { active: false });
+			await ctx.db.insert("plugins_workspace_event_handlers", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				installationId: f.installationId,
+				pluginVersionId: f.pluginVersionId,
+				pluginName: f.name,
+				event: "users.account.deleted",
+				installationCreatedAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+		});
+		await f.t.mutation(internal.plugins_runtime.enqueue_account_deleted_runs, { userId: member.member.userId });
+		const runs = await f.t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toHaveLength(1);
+		const run = runs[0]!;
+		expect(run.filePairId, "account-deleted callbacks must store null authority").toBeNull();
+		const pairs = await f.t.run((ctx) => ctx.db.query("plugins_file_pairs").collect());
+		const started = await f.t.mutation(internal.plugins_runtime.start_event_run, {
+			runId: run._id,
+			apiTokenHash: "deleted-account-callback",
+		});
+		expect(started._nay, "an account-deleted callback must start after membership ends").toBeUndefined();
+		expect(started._yay?.pluginRun.filePairId, "a fileless callback must not gain a pair").toBeNull();
+		expect(
+			(await f.t.mutation(internal.plugins_runtime.finish_event_run, { runId: run._id, outcome: successful_outcome }))
+				._yay?.status,
+			"account-deleted callbacks must finish without Files authority",
+		).toBe("succeeded");
+		expect(await f.t.run((ctx) => ctx.db.query("plugins_file_pairs").collect())).toEqual(pairs);
 	});
 
 	test("checks pair Read before returning an upload source to the runner", async () => {
-		const f = await personal_fixture();
+		const f = await fixture();
 		vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (key) => ({
 			key: key ?? "source",
 			url: "https://files.test/upload",
@@ -471,7 +550,7 @@ describe("personal file credential pins", () => {
 	});
 
 	test("a queued personal run cannot move to a new membership lifetime", async () => {
-		const f = await personal_fixture();
+		const f = await fixture();
 		const root = await root_run(f);
 		await f.t.run(async (ctx) => {
 			const pair = (await ctx.db.get("plugins_file_pairs", root.filePairId!))!;
@@ -508,14 +587,12 @@ describe("personal file credential pins", () => {
 		},
 	);
 
-	test("an old frame cannot mint personal authority after the switch", async () => {
-		const { f, args } = await invoke_fixture(false);
-		await f.t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", f.installationId, { fileAccessModel: "personal" }),
-		);
+	test("a frame without a pair cannot mint personal authority", async () => {
+		const { f, args, session } = await invoke_fixture();
+		await f.t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session._id, { filePairId: undefined }));
 		expect(
 			(await f.t.mutation(internal.plugins_runtime.start_invoke_run, args))._nay?.message,
-			"legacy frames must reopen before invoke",
+			"a frame without a pair must reopen before invoke",
 		).toBe("File access changed. Reopen this plugin.");
 	});
 
@@ -562,7 +639,7 @@ describe("personal file credential pins", () => {
 	});
 
 	test("scheduled Trash calls give a clear refusal before consuming a slot", async () => {
-		const f = await personal_fixture();
+		const f = await fixture();
 		const root = await root_run(f);
 		const { token } = await start_run(f, root._id);
 		const denied = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {
@@ -585,7 +662,7 @@ describe("personal file credential pins", () => {
 	});
 
 	test.each(["request", "finish"] as const)("follow-up %s checks the original pair lifetime", async (step) => {
-		const f = await personal_fixture();
+		const f = await fixture();
 		const root = await root_run(f);
 		const { tokenHash } = await start_run(f, root._id);
 		const call = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {

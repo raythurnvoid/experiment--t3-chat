@@ -30,7 +30,7 @@ Service grant (publisher-registered services):
 
 The host exchange works for any plugin whose publisher registered a service secret with the host; the publisher settings screen issues the secret once and can rotate it. A plugin with no registration cannot obtain a service grant.
 
-- `plugin.service.connect` — lets the plugin's UI token from a page or a file view participate in the exchange, but grants no API scope itself. The exchange reads only the session's installation and member, so both frame kinds work the same. The service must also authenticate with the publisher's registered service secret. Declaring it requires `plugin.data.read`, `workspace.files.write`, or `workspace.members.read`. A Files-only registration may receive an empty-scope interactive grant; file authority begins only after sealing.
+- `plugin.service.connect` — lets the plugin's UI token from a page or a file view participate in the exchange, but grants no API scope itself. The exchange checks the session's installation, member, and original file-consent pair, so both frame kinds work the same. The service must also authenticate with the publisher's registered service secret. Declaring it requires `plugin.data.read`, `workspace.files.write`, or `workspace.members.read`. A Files-only registration may receive an empty-scope interactive grant; file authority begins only after sealing.
 - `plugin.data.read` — an eligible service grant may read the plugin's own document store.
 - `plugin.data.write` — an eligible service grant may write the plugin's document store. A frame's UI token never receives this scope, whatever the installation accepted: a UI session can belong to an anonymous identity and is the surface an XSS reaches first, so a write from there would become injected input the backend later acts on with its secrets.
 - `workspace.files.write` — authorizes `files:write` on a sealed processing-phase service grant, capped by an exact destination path prefix. The interactive exchange still never mints this scope; the service gets it by sealing (below). A sealed grant may call the `/api/v1/files/service-uploads/*` routes, `/api/v1/files/write` for editable text, and `/api/v1/files/plugin-archive` for one matching file. Existing files need exact `plugin-name` metadata matching the installation, including same-plugin invoke output or member-labeled files. Live grant, capability, applied file consent, seal, and locks still apply. Registered writer requests also reach the public folder, access, inspection, and generation contracts below. Removing a label does not cancel an accepted upload or change its separate target cleanup rules.
@@ -163,6 +163,8 @@ Bonobo Senate returns `{jwt}` after checking the exact live installation, regist
 session, member, and consent. The JWT uses ES256, issuer `<Bonobo Senate HTTP origin>/plugins-services`,
 audience `bonobo-plugin:<plugin name>`, and the normal Bonobo Senate JWKS. Verify its signature, audience,
 issuer, exchange ID, subject, and expiry. The deadline is at most 30 seconds after validation.
+The frame's original personal pair must still be valid. After account recovery,
+reopen the page; its old frame cannot get a new lease.
 
 The signed facts include the user and membership IDs, membership lifetime, tenant and installation,
 version and account, display name, read/write/owner flags, and required access revision. Cache them
@@ -360,10 +362,14 @@ An upload run needs Can view on its source before receiving file metadata. It al
 needs Can edit on the source's parent to create a sibling. A file-only choice cannot
 grant that parent access. Added `bonobo-file://` references need Can view too.
 
-Old installations keep their earlier account rules until the audited switch.
-New credentials then use personal consent. Old credentials cannot start new file
-writes after the switch; already accepted writes may finish under their saved rules.
-Start a fresh frame or run when the API asks you to do so.
+Every live credential needs its original personal pair. A missing or null pair
+cannot use Files or plugin data, renew, seal, or recover a token. Start a fresh
+frame, run, or service connection when the API asks you to do so.
+Accepted uploads keep their original pair and account. A fresh connection cannot
+adopt a request with a missing, null, or different pair. It can manage saved old
+output when current consent allows it. Plugin-data reservations keep their
+installation owner across connections, so a fresh connection can finish and replay
+the same write.
 
 With `workspace.files.read`, runs and frames can call `POST /api/v1/files/trash/list`
 and `/api/v1/files/trash/areas`. Areas page selected folders and workspace consent

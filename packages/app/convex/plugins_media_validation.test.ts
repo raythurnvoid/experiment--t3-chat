@@ -115,12 +115,36 @@ async function fixture() {
 			createdBy: membership.userId,
 			updatedAt: now,
 		});
+		const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+		const installation = (await ctx.db.get("plugins_workspace_installations", installationId))!;
+		const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, member);
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation,
+			membership: member,
+			membershipLifetime,
+		});
+		const workspaceConsentId = await ctx.db.insert("plugins_file_consents", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			pairId: pair._id,
+			rootNodeId: null,
+			requestedLevel: "write",
+			appliedLevel: "write",
+			areaEligible: true,
+			open: true,
+			revision: 1,
+			state: "applied",
+			endedReason: null,
+			createdAt: now,
+			updatedAt: now,
+		});
 		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			installationId,
 			pluginVersionId,
 			serviceAccountId,
+			filePairId: pair._id,
 			userId: membership.userId,
 			tokenHash: "reader-clock-session",
 			createdAt: now,
@@ -158,6 +182,8 @@ async function fixture() {
 			sessionId,
 			readerId,
 			readerMembershipId,
+			filePairId: pair._id,
+			workspaceConsentId,
 		};
 	});
 	const owner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -173,6 +199,7 @@ async function fixture() {
 	const sourceToken = `psg_${"1".repeat(64)}`;
 	await t.run(async (ctx) => {
 		await ctx.db.insert("plugin_service_grants", {
+			filePairId: db.filePairId,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			serviceAccountId: db.serviceAccountId,
@@ -239,8 +266,35 @@ function file_grants(records: Awaited<ReturnType<typeof snapshot>>, nodeId: Id<"
 }
 
 describe("plugin file media validation clocks", () => {
+	test.each(["missing", "null", "stale"])("file refs refuse a %s pair even without new refs", async (change) => {
+		const f = await fixture();
+		const installation = (await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", f.db.installationId)))!;
+		if (change === "stale") {
+			await f.t.run((ctx) => ctx.db.patch("plugins_file_pairs", f.db.filePairId, { membershipLifetime: 0 }));
+		}
+		const checked = await f.t.run((ctx) =>
+			files_media_refs_db_check_plugin_added(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				installation,
+				userId: f.db.userId,
+				filePairId: change === "missing" ? undefined : change === "null" ? null : f.db.filePairId,
+				addedFileRefs: [],
+			}),
+		);
+		expect(checked._nay?.name, "media publication requires its original live pair").toBe("file_reference_denied");
+	});
+
 	test("a personal pair needs read consent even for an upload source reference", async () => {
 		const f = await fixture();
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_file_consents", f.db.workspaceConsentId, {
+				open: false,
+				appliedLevel: null,
+				state: "ended",
+				areaEligible: false,
+			}),
+		);
 		const saved = await test_run_with_flush(f.t, async (ctx) => {
 			const installation = (await ctx.db.get("plugins_workspace_installations", f.db.installationId))!;
 			const membership = (await ctx.db.get("organizations_workspaces_users", f.db.membershipId))!;
@@ -268,7 +322,6 @@ describe("plugin file media validation clocks", () => {
 					installation: saved.installation,
 					userId: f.db.userId,
 					filePairId: saved.pair._id,
-					sourceNodeId: saved.nodeId,
 					addedFileRefs: [`bonobo-file://${saved.nodeId}`],
 				}),
 			);

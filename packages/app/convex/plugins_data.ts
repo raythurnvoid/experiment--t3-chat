@@ -16,6 +16,7 @@ import { plugins_db_get_live_service_account } from "./plugins_service_accounts.
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { plugins_volumes_db_drain_batch } from "./plugins_volumes.ts";
 import { plugins_file_grants_db_drain_installation } from "./plugins_file_grants_cleanup.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -434,7 +435,7 @@ async function db_authorize(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	// Keep the original credential live through this transaction, including its saved account pin.
+	// Keep the original credential live through this transaction, including its account and pair pins.
 	const now = Date.now();
 	const scope = args.permission === "content.read" ? "plugin_data:read" : "plugin_data:write";
 
@@ -459,6 +460,7 @@ async function db_authorize(
 		const run = await ctx.db.get("plugins_event_runs", credentialRef.runId);
 		if (
 			!run ||
+			!run.filePairId ||
 			!run.apiTokenExpiresAt ||
 			run.apiTokenExpiresAt <= now ||
 			run.organizationId !== installation.organizationId ||
@@ -468,6 +470,16 @@ async function db_authorize(
 			run.actorUserId !== args.principal.actorUserId ||
 			`plugin_run:${run._id}` !== args.principal.principalKey ||
 			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: run.serviceAccountId }))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		if (
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: run.filePairId,
+				installationId: installation._id,
+				userId: run.actorUserId,
+			}))
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
@@ -507,6 +519,7 @@ async function db_authorize(
 		const session = await ctx.db.get("plugins_ui_sessions", credentialRef.sessionId);
 		if (
 			!session ||
+			!session.filePairId ||
 			session.expiresAt <= now ||
 			session.organizationId !== installation.organizationId ||
 			session.workspaceId !== installation.workspaceId ||
@@ -519,10 +532,20 @@ async function db_authorize(
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+		if (
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: session.filePairId,
+				installationId: installation._id,
+				userId: session.userId,
+			}))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 	} else {
 		const grant = await ctx.db.get("plugin_service_grants", credentialRef.grantId);
 		if (
 			!grant ||
+			!grant.filePairId ||
 			grant.revokedAt != null ||
 			grant.expiresAt <= now ||
 			grant.organizationId !== installation.organizationId ||
@@ -533,6 +556,15 @@ async function db_authorize(
 			grant.principalKey !== args.principal.principalKey ||
 			!installation.acceptedCapabilities.includes("plugin.service.connect") ||
 			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: grant.filePairId,
+				installationId: installation._id,
+				userId: grant.actorUserId,
+			}))
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
@@ -2402,11 +2434,9 @@ async function db_authorize_page_write(
 	if (!pluginSession) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
-	// The session doc is the kill switch: revoke, expiry, uninstall, and account deletion all
-	// delete it. Expiry deletes it through a scheduled job that can lag behind the wall clock,
-	// so the door also compares expiresAt itself instead of trusting that the doc is gone.
+	// Expiry cleanup can lag behind the clock, so check the stored deadline too.
 	const session = await ctx.db.get("plugins_ui_sessions", pluginSession.sessionId);
-	if (!session || session.expiresAt <= Date.now()) {
+	if (!session || !session.filePairId || session.expiresAt <= Date.now()) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
@@ -2423,6 +2453,17 @@ async function db_authorize_page_write(
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 	if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId }))) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+
+	// Account recovery must not give an old page a new membership lifetime.
+	if (
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: session.filePairId,
+			installationId: installation._id,
+			userId: session.userId,
+		}))
+	) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
@@ -4977,7 +5018,7 @@ async function db_authorize_page_read(ctx: QueryCtx) {
 	}
 
 	const session = await ctx.db.get("plugins_ui_sessions", pluginSession.sessionId);
-	if (!session || session.expiresAt <= Date.now()) {
+	if (!session || !session.filePairId || session.expiresAt <= Date.now()) {
 		return null;
 	}
 
@@ -4993,6 +5034,15 @@ async function db_authorize_page_read(ctx: QueryCtx) {
 		return null;
 	}
 	if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId }))) {
+		return null;
+	}
+	if (
+		!(await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: session.filePairId,
+			installationId: installation._id,
+			userId: session.userId,
+		}))
+	) {
 		return null;
 	}
 	const user = await ctx.db.get("users", session.userId);

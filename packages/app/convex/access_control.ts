@@ -1160,27 +1160,14 @@ async function db_has_account_scope_grant(
 }
 
 /**
- * Who one request acts as. People and service accounts use ordinary sharing. Old plugin credentials
- * check their person and account together. New plugin credentials use their own applied file grants.
+ * Who one request acts as. People and service accounts use ordinary sharing.
+ * Plugin credentials use their person's applied file grants for that installation.
  */
 export const access_control_subject_validator = v.union(
 	v.object({
 		kind: v.literal("user"),
 		userId: v.id("users"),
-		/**
-		 * Set for plugin credentials. The plugin acts as its person, and it is also limited by the normal
-		 * grants of the installation's service account. Null for people (UI, Bash, chat).
-		 */
-		plugin: v.union(
-			v.null(),
-			v.object({
-				installationId: v.id("plugins_workspace_installations"),
-				/**
-				 * The installation's live account. The code that builds the subject checks the pin.
-				 */
-				serviceAccountId: v.id("access_control_service_accounts"),
-			}),
-		),
+		plugin: v.null(),
 	}),
 	v.object({
 		kind: v.literal("service_account"),
@@ -1195,7 +1182,7 @@ export const access_control_subject_validator = v.union(
 export type access_control_Subject = Infer<typeof access_control_subject_validator>;
 
 /**
- * One principal the checker asks about. Old plugin subjects still ask about a person and an account.
+ * One principal the checker asks about.
  */
 type CheckedPrincipal =
 	| { kind: "user"; userId: Id<"users"> }
@@ -1416,7 +1403,7 @@ export function access_control_create_file_checker(
 				});
 				return false;
 			}
-			return subject.kind === "user" && subject.plugin === null;
+			return subject.kind === "user";
 		}
 
 		if (subject.kind === "plugin_pair") {
@@ -1442,21 +1429,7 @@ export function access_control_create_file_checker(
 		if (subject.kind === "service_account") {
 			return await scope_allows(tenant, subject, node, scopeNodeId, permission);
 		}
-		if (!(await scope_allows(tenant, { kind: "user", userId: subject.userId }, node, scopeNodeId, permission))) {
-			return false;
-		}
-		// A plugin acts as its person and is also limited by its account's normal grants, the same ones
-		// an API key bound to that account uses. Both checks read only indexed grant docs.
-		return (
-			subject.plugin === null ||
-			(await scope_allows(
-				tenant,
-				{ kind: "service_account", serviceAccountId: subject.plugin.serviceAccountId },
-				node,
-				scopeNodeId,
-				permission,
-			))
-		);
+		return await scope_allows(tenant, { kind: "user", userId: subject.userId }, node, scopeNodeId, permission);
 	};
 
 	return { can };

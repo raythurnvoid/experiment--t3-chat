@@ -59,6 +59,8 @@ The public member and access-change APIs use `plugins_service_connections`. A li
 the exact registration, installation version, service account, and accepted member capability.
 An old or removed connection gets control events only. Another plugin's secret never authenticates
 that connection. A valid page identity exchange is the only way to update its pins.
+It checks the page's original personal pair and membership lifetime first. Account
+recovery cannot revive an old page or let it create a new identity lease.
 
 Plugin backends apply these facts and enforce their own access lease, which lasts at most 30 seconds.
 They own their private groups and live queries. Bonobo Senate owns workspace membership, Files grants,
@@ -138,9 +140,8 @@ grant access. See the channels spec for counts, restore work and exact membershi
 
 ## Personal plugin file grants
 
-New installations use personal consent. Their runs, frame sessions and service
-grants pin one `filePairId` when created. Existing installations keep the old
-person-and-account checks until their audited switch. Never retag an old token
+All installations use personal consent. Their runs, frame sessions and service
+grants pin one `filePairId` when created. Never give an old token a new pair
 or copy account grants into personal consent.
 **My file permissions** is the user name for these `plugins_file_consents` docs.
 Each doc records consent for a saved item or the whole workspace. Its applied level is the grant.
@@ -170,15 +171,14 @@ The worker updates applied access and indexed eligibility together. Credential,
 tenant and membership-lifetime checks remain separate live gates.
 
 Accepted file stages and upload targets keep the credential's pair ID. Publication
-must match that ID and check its applied access. After an installation switches,
-an old token may finish accepted work under its old checks. It cannot start a new
-write, seal or token renewal. Switching waits for the installation's live runs to
-finish. Audit accepted work before switching, then remove the old checks after it
-settles. Non-Files permissions keep their own live human checks.
+must match that ID and check its applied access. Missing or null pairs give no live
+authority. Retained null-pair history cannot adopt a current pair or account.
+Non-Files permissions keep their own live human checks.
 
-New upload targets also pin their service account. Background conversion checks
-the live trusted binding before adding file references. Revocation or replacement
-keeps the accepted upload as a stored file; account grants never expand personal consent.
+Upload targets also pin their service account. Background conversion requires both
+original pins and checks the live trusted binding before adding file references.
+Revocation or replacement keeps the accepted upload as a stored file; account
+grants never expand personal consent.
 
 The exclusive `{ kind: "plugin_pair", pairId }` file subject reads only open
 consents for that pair. It has no owner, role, account, public or workspace fallback,
@@ -212,9 +212,8 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
 
 - Every file check acts as one **subject** (`access_control_Subject`).
   - A person (UI, Bash, chat, jobs): `{ kind: "user", userId, plugin: null }`.
-  - A personal-model plugin run, page or service grant: `{ kind: "plugin_pair", pairId }`,
-    built by `plugins_file_subject` from its stored pin. It uses applied personal consent.
-    Old credentials keep the person-and-account subject only during the audited rollout.
+  - A plugin run, page or service grant: `{ kind: "plugin_pair", pairId }`,
+    from its stored pin. It uses applied personal consent.
   - An account-bound API key: `{ kind: "service_account", serviceAccountId }`. The key acts as the
     account. Its sponsor's own access does not matter. So a person who may manage service accounts
     can act as any account through a key. A delete, move, copy, or restore job the key starts acts
@@ -284,8 +283,8 @@ owner rights, billing rights, public fallback, or private plugin-data scope righ
 
 An allowed plugin installer may create an empty identity for a fresh trusted tuple. It gives no
 file grants. Choosing an account, adding grants, or reusing a retained binding after uninstall
-still needs account management. Install/update grants are explicit input, with the same actor
-ceiling. Omitted grants stay unchanged. Updates, ensure calls, and reinstall never recreate grants
+still needs account management. Install and update do not accept account grants. Edit account
+grants through ordinary account sharing. Updates, ensure calls, and reinstall never recreate grants
 or reactivate an account. Explicit installation rebind changes only its trusted tuple binding and
 installation pin. It does not move policies, copy grants, or rewrite old run/session/grant pins.
 `plugins_db_get_live_service_account` checks the active account, saved pin, current version, and
@@ -835,14 +834,10 @@ product decision, so record the answer here before changing the behaviour. An en
   re-resolves the principal before signing. The re-resolve is a workspace question, and only the nodes
   that were materialized are read again. A per-file grant revoked during a slow materialization is
   therefore still signed for the other files in the same batch.
-- **A `plugin_ui` file-view token is not scoped to its file.** `mint_file_view_session` stores
-  `fileNodeId` on the session (`plugins_ui.ts`), but `resolve_principal` never carries it into the
-  principal (`public_api.ts`), so the token reaches files list/read/download for everything the
-  minting user may read, gated only by the install-time `workspace.files.read` capability. Confirmed
-  in the browser on 2026-08-02: a token minted for `/speakers.mp4` returned 404 for that file and
-  **200 with full content** for `/README.md`. This is bounded by the minting user's own authority, so
-  it is not a privilege leak — but `plugin_run` **is** pinned to its `sourceFileNodeId`, and that
-  asymmetry plus the stored-but-ignored field is undecided. Do not "fix" it silently either way.
+- **A plugin file-view token is not restricted to its displayed file.** It uses its original
+  pair's applied file consent and accepted read capability. The saved file-view node ID does not
+  itself limit other reads. The 2026-08-02 browser result predates personal consent and does not
+  prove the current access rule.
 - **`github_mounts` never checks that a mounted repo is public.** `github_fetch_repo_head` parses only
   `default_branch` and never `private`/`visibility`, while `github_headers` attaches
   `GITHUB_TOKEN_IMPORT` to every request including codeload. Mount content lands in the reserved
@@ -929,8 +924,7 @@ cannot open is a **locked row**: name, type, size and created/updated dates only
 403 / "Permission denied". Inside a locked folder every path answers the same 403, whether it exists
 or not. Recursive reads (`ls -R`, `find`, `tree`, API `recursive: true`) stop at locked folders and
 say "Permission denied". Each request uses one subject: a user, a service account, or a personal
-plugin pair. Personal plugins use applied consent. Old-model plugins check both the person and
-account until their audited switch. All checks use index lookups.
+plugin pair. Plugins use their pair's applied consent. All checks use index lookups.
 
 **Why hiding was removed. Do not bring it back.**
 
@@ -938,8 +932,6 @@ account until their audited switch. All checks use index lookups.
   an index already holds "what this reader can see". That multiplies by files × readers, and every
   share change rewrites it. Reading a page and dropping rows instead gives short or empty pages and
   cursors that show where hidden rows are.
-- An old-model plugin list would need a second per-row filter for its account. Under hiding that filter gives
-  short or empty pages.
 - With locked rows, a folder list reads one index range for everyone. A recursive read only has to
   check the restricted folders on its way, not every row.
 
@@ -1200,8 +1192,7 @@ no id field, and only `content.read`. Decided 2026-10-27.
   plus this grant.
 - **Users only.** Service accounts and personal plugin pairs get nothing from this grant.
   A person can select a readable item in **My file permissions** for a personal plugin.
-  Old-model plugins still need their account grant too. The extended chain (added people)
-  and the public-link checks never read this grant.
+  The extended chain (added people) and the public-link checks never read this grant.
 - **Only where the workspace has access above.** `set_node_workspace_view` turns it on only when
   the item's parent area is open, or is a restricted folder that has this grant too. Inside any
   other restricted folder it refuses: it would open the item past that folder's list, and members
@@ -1606,16 +1597,16 @@ change this: a key without `files:download` can add a reference, and visitors se
 it is public. Only the link and upload doors in "The public flag" below set the flag. A save reads
 no images, so it stays fast.
 
-A plugin write that adds a new `bonobo-file://` ref needs applied Read on the referenced file.
-Old-model plugins check both the person and account instead. A denied ref gets 403
-`file_reference_denied`, and more than 50 new refs get 400
-`file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs the file already had stay,
-and only an old-model upload run has the source-file exception. A write that keeps old refs is refused
-with 409 when the file changed after the route read them. A plugin service upload of Markdown with
-such a ref stays a stored file. The check reads the plugin's text
-and that text after one rebuild from the document, because the rebuild is not always the same text
-(a code block that held a fence once broke open). Later rebuilds, such as a person saving the file, can
-still change it. A newly exposed reference still shows only a public image.
+A plugin write that adds a new `bonobo-file://` ref needs applied Read on the
+referenced file. A denied ref gets 403 `file_reference_denied`, and more than 50 new
+refs get 400 `file_reference_limit` (`files_media_refs_db_check_plugin_added`). Refs
+the file already had stay, including a ref to the triggering upload. A write that
+keeps old refs is refused with 409 when the file changed after the route read them.
+A plugin service upload of Markdown with such a ref stays a stored file. The check
+reads the plugin's text and that text after one rebuild from the document, because
+the rebuild is not always the same text (a code block that held a fence once broke
+open). Later rebuilds, such as a person saving the file, can still change it. A
+newly exposed reference still shows only a public image.
 
 Private API download scopes do not change. A file id alone never opens a file, and a public image
 gets no link of its own. See the
@@ -1820,17 +1811,10 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   `allowDbFilesMkdir: false` refuses all app-file writes while leaving thread `/tmp` writable.
   Code execution uses separate current/home read grants with one shared byte budget. The public
   API checks each grant and its original source again. New internal callers must keep these checks.
-- **Old-model plugin runs still use actor/source and account grants until their audited switch.** A
-  run gets the platform baseline needed to download its exact triggering upload and write Markdown
-  siblings. `db_revalidate_file_write_principal` then reloads the run, installation, source node, and
-  actor's active membership in both the prepare and publish transactions. It requires the actor's
-  current `content.write` on the source node before output can land. The separate intrinsic
-  write-policy check also protects the output destination, even for an owner-backed run. The pinned
-  service account must independently hold the required grant on the actual target. This does not turn
-  accepted plugin capabilities into ACL permissions; it is a live actor/source ceiling on the
-  platform baseline. Personal runs use applied consent from **My file permissions** instead.
-  They need applied Read for source metadata and applied Edit on the parent for a new sibling.
-  Their live credential, tenant, account binding and membership checks still apply.
+- **Plugin runs use their pair's applied consent.** Source metadata needs Can view. Creating a
+  sibling needs Can edit on the parent; a file-only choice does not grant it. The write transaction
+  checks the run, installation, original pair and account, membership, destination, and file write
+  policy again.
 - **The global presence roster is readable by any account, and the `listRoom` gate does not change
   that.** Read this bullet as one fact, not two: `listRoom` refuses a caller with no identity and
   refuses `app_presence_GLOBAL_ROOM_ID` outright, and **that closes one door of two**. The other door

@@ -17,6 +17,8 @@ import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_content_type_index_fields } from "../shared/files.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 
 const r2Objects = new Map<string, BodyInit>();
 
@@ -193,6 +195,7 @@ async function install_gallery_plugin(
 		capabilities?: plugins_Capability[];
 		uiOutboundOrigins?: string[];
 		fileViews?: { id: string; title: string; entry: string; contentTypes: string[] }[];
+		fileConsent?: boolean;
 	} = {},
 ) {
 	const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -216,27 +219,39 @@ async function install_gallery_plugin(
 	if (installed._nay) {
 		throw new Error(installed._nay.message);
 	}
-	// These existing session checks start with an installation from before the switch.
-	const installation = await t.run(async (ctx) => {
-		await ctx.db.patch("plugins_workspace_installations", installed._yay.installationId, {
-			fileAccessModel: undefined,
+	const { installation, pair } = await t.run(async (ctx) => {
+		const installation = (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!;
+		const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation,
+			membership: member,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
 		});
-		return (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!;
+		if (args.fileConsent !== false)
+			await ctx.db.insert("plugins_file_consents", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				pairId: pair._id,
+				rootNodeId: null,
+				requestedLevel: "read",
+				appliedLevel: "read",
+				areaEligible: true,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+		return { installation, pair };
 	});
-	expect(
-		await asOwner.mutation(api.access_control.set_service_account_grant, {
-			membershipId: membership.membershipId,
-			serviceAccountId: installation.serviceAccountId,
-			resource: { kind: "workspace" },
-			level: "read",
-		}),
-	).toEqual({ _yay: null });
 	return {
 		membership,
 		asOwner,
 		pluginVersionId: registered.pluginVersionId,
 		installationId: installed._yay.installationId,
 		serviceAccountId: installation.serviceAccountId,
+		filePairId: pair._id,
 	};
 }
 
@@ -281,7 +296,28 @@ async function seed_reader_member(
 			createdAt: now,
 			updatedAt: now,
 		});
-		return { userId, membershipId, grantId };
+		const member = (await ctx.db.get("organizations_workspaces_users", membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!,
+			membership: member,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+		});
+		const consentId = await ctx.db.insert("plugins_file_consents", {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			pairId: pair._id,
+			rootNodeId: null,
+			requestedLevel: "read",
+			appliedLevel: "read",
+			areaEligible: true,
+			open: true,
+			revision: 1,
+			state: "applied",
+			endedReason: null,
+			createdAt: now,
+			updatedAt: now,
+		});
+		return { userId, membershipId, grantId, consentId };
 	});
 }
 
@@ -458,7 +494,14 @@ async function seed_sibling_gallery_installation(args: {
 		pluginName: name,
 		pluginVersionId,
 	});
-	return (await ctx.db.get("plugins_workspace_installations", id))!;
+	const sibling = (await ctx.db.get("plugins_workspace_installations", id))!;
+	const member = (await ctx.db.get("organizations_workspaces_users", fixture.membership.membershipId))!;
+	const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+		installation: sibling,
+		membership: member,
+		membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+	});
+	return { ...sibling, filePairId: pair._id };
 }
 
 async function seed_session_token(args: {
@@ -479,6 +522,7 @@ async function seed_session_token(args: {
 			installationId: fixture.installationId,
 			pluginVersionId: fixture.pluginVersionId,
 			userId: fixture.membership.userId,
+			filePairId: fixture.filePairId,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt: now + (args.expiresInMs ?? 30 * 60 * 1000),
@@ -665,10 +709,8 @@ describe("personal file session pins", () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, {
 			fileViews: [{ id: "player", title: "Player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] }],
+			fileConsent: false,
 		});
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
-		);
 		const page = await fixture.asOwner.mutation(internal.plugins_ui.insert_page_session, {
 			membershipId: fixture.membership.membershipId,
 			pluginName: "gallery",
@@ -692,18 +734,16 @@ describe("personal file session pins", () => {
 		expect(docs.consents, "minting does not grant any file").toEqual([]);
 	});
 
-	test("cannot renew a legacy session after the installation switches", async () => {
+	test("cannot renew a session without its original pair", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		const session = await mint_session_token(fixture);
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
-		);
+		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { filePairId: undefined }));
 		const rotated = await fixture.asOwner.mutation(internal.plugins_ui.rotate_ui_session, {
 			membershipId: fixture.membership.membershipId,
 			sessionId: session.sessionId,
 		});
-		expect(rotated._nay?.message, "legacy refresh must ask for a new frame").toBe(
+		expect(rotated._nay?.message, "refresh without a pair must ask for a new frame").toBe(
 			"File access changed. Reopen this plugin.",
 		);
 		expect((await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId)))?.filePairId).toBeUndefined();
@@ -712,9 +752,6 @@ describe("personal file session pins", () => {
 	test("refresh keeps its pair and refuses a later membership lifetime", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
-		);
 		const session = await mint_session_token(fixture);
 		const original = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
 		expect(
@@ -1141,6 +1178,7 @@ describe("plugin ui sessions", () => {
 				installationId,
 				pluginVersionId: sibling.pluginVersionId,
 				userId: fixture.membership.userId,
+				filePairId: sibling.filePairId,
 				tokenHash: await crypto_sha256_hex(isolatedToken),
 				createdAt: now,
 				expiresAt: now + 60_000,
@@ -1193,7 +1231,7 @@ describe("plugin ui sessions", () => {
 			["z-photo.png", "image/png"] as const,
 			["z-video.mp4", "video/mp4"] as const,
 		];
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			for (const [name, contentType] of files) {
 				await ctx.db.insert("files_nodes", {
@@ -1419,7 +1457,7 @@ describe("plugin ui sessions", () => {
 		expect(body.truncated).toBe(false);
 	});
 
-	test("suppresses signed urls when content.read is revoked during signing", async () => {
+	test("suppresses signed urls when personal View consent is revoked during signing", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		const seeded = await seed_upload_node({ t, fixture, filename: "photo.png", contentType: "image/png" });
@@ -1443,7 +1481,13 @@ describe("plugin ui sessions", () => {
 			body: JSON.stringify({ fileNodeIds: [seeded.nodeId] }),
 		});
 		await signing.started;
-		await t.run((ctx) => ctx.db.delete("access_control_permission_grants", reader.grantId));
+		expect(
+			await t.withIdentity(user_identity(reader.userId)).mutation(api.plugins_access.revoke_file_access_as_me, {
+				membershipId: reader.membershipId,
+				installationId: fixture.installationId,
+				consentId: reader.consentId,
+			}),
+		).toEqual({ _yay: null });
 		signing.release();
 
 		const response = await responsePromise;
@@ -1721,7 +1765,7 @@ describe("plugin ui sessions", () => {
 	});
 
 	test("uninstall revokes an unbounded session set and drains it in installation-scoped pages", async () => {
-		const t = test_convex({ transactionLimits: { bytesRead: 100_000 } });
+		const t = test_convex({ transactionLimits: { bytesRead: 120_000 } });
 		const fixture = await install_gallery_plugin(t);
 		const siblingInstallationId = await t.run(async (ctx) => {
 			const now = Date.now();
@@ -1735,6 +1779,7 @@ describe("plugin ui sessions", () => {
 					installationId: fixture.installationId,
 					pluginVersionId: fixture.pluginVersionId,
 					userId: fixture.membership.userId,
+					filePairId: fixture.filePairId,
 					tokenHash: `${"t".repeat(64)}-${index}`,
 					createdAt: now,
 					expiresAt: now + 30 * 60 * 1000,
@@ -1748,6 +1793,7 @@ describe("plugin ui sessions", () => {
 					installationId,
 					pluginVersionId: sibling.pluginVersionId,
 					userId: fixture.membership.userId,
+					filePairId: sibling.filePairId,
 					tokenHash: `${"s".repeat(64)}-${index}`,
 					createdAt: now,
 					expiresAt: now + 30 * 60 * 1000,
@@ -1773,7 +1819,7 @@ describe("plugin ui sessions", () => {
 		expect(uninstalled._nay).toBeUndefined();
 		expect(await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId))).toBeNull();
 
-		for (const deletedCount of [100, 100, 100]) {
+		for (const deletedCount of [100, 100, 100, 1, 1]) {
 			expect(
 				await t.mutation(internal.plugins_data.drain_uninstalled_installation, {
 					organizationId: fixture.membership.organizationId,

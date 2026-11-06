@@ -16,6 +16,7 @@ import {
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 
 const test = baseTest.sequential;
 import {
@@ -7040,6 +7041,12 @@ describe("hard_delete_user_data", () => {
 			if (!installation || !session || !membership) {
 				throw new Error("Failed to seed plugin frame");
 			}
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
+			await ctx.db.patch("plugins_ui_sessions", session._id, { filePairId: pair._id });
 			const now = Date.now();
 			await Promise.all([
 				ctx.db.insert("public_api_grants", {
@@ -7173,7 +7180,7 @@ describe("hard_delete_user_data", () => {
 					value: { text: "blocked at the first purge step" },
 					clientRequestId: "reset-private-first-fence",
 				});
-				expect(staleWrite._nay?.message).toBe("Not found");
+				expect(staleWrite._nay?.message).toBe("Unauthorized");
 				reachedEarlyFence = true;
 			}
 			if (state.scopes.length === 0 && state.fences.length === 0 && state.installation && state.session) {

@@ -9,7 +9,6 @@ import { access_control_db_can_act_on_file_node, type access_control_Subject } f
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_set_restricted_scope } from "./files_sharing_db.ts";
-import { plugins_file_subject } from "./plugins_service_accounts.ts";
 import { plugins_external_files_db_authorize } from "./plugins_external_files_access.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
@@ -109,7 +108,28 @@ async function setup(options?: { publicWriter: true }) {
 			createdBy: membership.userId,
 			updatedAt: now,
 		});
-		return { ...membership, serviceAccountId, pluginVersionId, installationId };
+		const member = (await ctx.db.get("organizations_workspaces_users", membership.membershipId))!;
+		const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation: (await ctx.db.get("plugins_workspace_installations", installationId))!,
+			membership: member,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, member),
+		});
+		const consentId = await ctx.db.insert("plugins_file_consents", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			pairId: pair._id,
+			rootNodeId: null,
+			requestedLevel: "write",
+			appliedLevel: "write",
+			areaEligible: true,
+			open: true,
+			revision: 1,
+			state: "applied",
+			endedReason: null,
+			createdAt: now,
+			updatedAt: now,
+		});
+		return { ...membership, serviceAccountId, pluginVersionId, installationId, filePairId: pair._id, consentId };
 	});
 	const owner = t.withIdentity({
 		issuer: "https://clerk.test",
@@ -136,6 +156,7 @@ async function setup(options?: { publicWriter: true }) {
 			pluginVersionId: fixture.pluginVersionId,
 			pluginName,
 			actorUserId: fixture.userId,
+			filePairId: fixture.filePairId,
 			tokenHash: await crypto_sha256_hex(sourceToken),
 			scopes: [],
 			principalKey: `plugin_service:${fixture.installationId}`,
@@ -224,8 +245,11 @@ describe("public conditional file writes", () => {
 			const membership = (await ctx.db.get("organizations_workspaces_users", fixture.membershipId))!;
 			const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
 			const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
-			await ctx.db.patch("plugins_workspace_installations", installation._id, { fileAccessModel: "personal" });
-			await ctx.db.patch("plugin_service_grants", credentials.grantId, { filePairId: pair._id });
+			await ctx.db.patch("plugins_file_consents", fixture.consentId, {
+				open: false,
+				state: "ended",
+				appliedLevel: null,
+			});
 			const consentId = await ctx.db.insert("plugins_file_consents", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
@@ -548,6 +572,18 @@ describe("public plugin writer access", () => {
 				updatedAt: Date.now(),
 			});
 			const sourceToken = `psg_${"2".repeat(64)}`;
+			const membership = (await ctx.db.get("organizations_workspaces_users", fixture.membershipId))!;
+			const pair = await plugins_file_grants_db_ensure_pair(ctx, {
+				installation: (await ctx.db.get("plugins_workspace_installations", installationId))!,
+				membership,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+			});
+			const {
+				_id: _consentId,
+				_creationTime: _consentTime,
+				...consent
+			} = (await ctx.db.get("plugins_file_consents", fixture.consentId))!;
+			await ctx.db.insert("plugins_file_consents", { ...consent, pairId: pair._id });
 			await ctx.db.insert("plugin_service_grants", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
@@ -556,6 +592,7 @@ describe("public plugin writer access", () => {
 				pluginVersionId,
 				pluginName: "daily-reports",
 				actorUserId: fixture.userId,
+				filePairId: pair._id,
 				tokenHash: await crypto_sha256_hex(sourceToken),
 				scopes: [],
 				principalKey: `plugin_service:${installationId}`,
@@ -1100,58 +1137,71 @@ describe("external file writes", () => {
 		).not.toBeNull();
 	});
 
-	test("a prepared legacy external write finishes after the switch but cannot accept another write", async () => {
-		const { t, fixture, credentials, root } = await setup();
-		const request = {
-			force: true,
-			organizationId: fixture.organizationId,
-			workspaceId: fixture.workspaceId,
-			userId: fixture.userId,
-			principalRef: { kind: "plugin_service" as const, grantId: credentials.grantId },
-			path: `${ROOT}/accepted.md`,
-			expectedParentNodeId: root.folderNodeId,
-			externalFileWrite: {
+	test.each(["null grant", "missing stage pair", "null grant new stage"] as const)(
+		"a prepared external write refuses a %s",
+		async (change) => {
+			const { t, fixture, credentials, root } = await setup();
+			const request = {
 				force: true,
-				tokenHash: credentials.tokenHash,
-				serviceSecretHash: credentials.serviceSecretHash,
-				writerId: root.writerId,
-				writerGeneration: 1,
-				operationId: "accepted",
-				sequence: 1,
-				contentHash: await crypto_sha256_hex("accepted"),
-				expectedNodeId: null,
-				expectedContentRevision: null,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: fixture.userId,
+				principalRef: { kind: "plugin_service" as const, grantId: credentials.grantId },
+				path: `${ROOT}/accepted.md`,
+				expectedParentNodeId: root.folderNodeId,
+				externalFileWrite: {
+					force: true,
+					tokenHash: credentials.tokenHash,
+					serviceSecretHash: credentials.serviceSecretHash,
+					writerId: root.writerId,
+					writerGeneration: 1,
+					operationId: "accepted",
+					sequence: 1,
+					contentHash: await crypto_sha256_hex("accepted"),
+					expectedNodeId: null,
+					expectedContentRevision: null,
+					contentType: "text/markdown;charset=utf-8",
+					nonCollaborative: true,
+					requestReadOnly: false,
+				},
+				overwrite: "fail" as const,
+				contentSize: 8,
+				yjsSnapshotSize: 0,
 				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text" as const,
+			};
+			const prepared = await t.mutation(internal.public_api.prepare_file_write, request);
+			if (prepared._nay) throw new Error(prepared._nay.message);
+			await t.run(async (ctx) => {
+				if (change !== "missing stage pair")
+					await ctx.db.patch("plugin_service_grants", credentials.grantId, { filePairId: null });
+				else await ctx.db.patch("public_api_file_write_stages", prepared._yay.stageId, { filePairId: undefined });
+			});
+			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+			if (change === "null grant new stage") {
+				const next = await t.mutation(internal.public_api.prepare_file_write, {
+					...request,
+					path: `${ROOT}/next.md`,
+					externalFileWrite: { ...request.externalFileWrite, operationId: "next", sequence: 2 },
+				});
+				expect(next._nay?.message, "a null grant cannot accept another stage").toBe("Unauthenticated");
+				return;
+			}
+			const published = await t.mutation(internal.public_api.publish_file_write, {
+				stageId: prepared._yay.stageId,
+				targetAnchor: prepared._yay.targetAnchor,
+				content: "accepted",
 				nonCollaborative: true,
-				requestReadOnly: false,
-			},
-			overwrite: "fail" as const,
-			contentSize: 8,
-			yjsSnapshotSize: 0,
-			contentType: "text/markdown;charset=utf-8",
-			yjsRootKind: "rich_text" as const,
-		};
-		const prepared = await t.mutation(internal.public_api.prepare_file_write, request);
-		if (prepared._nay) throw new Error(prepared._nay.message);
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { fileAccessModel: "personal" }),
-		);
-		const published = await t.mutation(internal.public_api.publish_file_write, {
-			stageId: prepared._yay.stageId,
-			targetAnchor: prepared._yay.targetAnchor,
-			content: "accepted",
-			nonCollaborative: true,
-			addedFileRefs: [],
-		});
-		expect(published._nay, "the stored legacy stage can finish").toBeUndefined();
-		const next = await t.mutation(internal.public_api.prepare_file_write, {
-			...request,
-			path: `${ROOT}/next.md`,
-			externalFileWrite: { ...request.externalFileWrite, operationId: "next", sequence: 2 },
-		});
-		expect(next._nay?.message, "the old external grant cannot accept another stage").toBe("Permission denied");
-		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toHaveLength(0);
-	});
+				addedFileRefs: [],
+			});
+			expect(published._nay?.message, `a prepared write cannot use a ${change}`).toBe(
+				change === "null grant" ? "Unauthenticated" : "Permission denied",
+			);
+			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect()), "a denied publish keeps saved Files").toEqual(
+				before,
+			);
+		},
+	);
 
 	test("a writer fence rejects an already prepared write without publishing content", async () => {
 		const { t, fixture, credentials, root } = await setup();
@@ -1336,7 +1386,7 @@ describe("archive", () => {
 		expect(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).toEqual(before);
 	});
 
-	test.each(["account grant", "file policy", "parent policy"] as const)(
+	test.each(["personal consent", "file policy", "parent policy"] as const)(
 		"%s decides an archived-file acknowledgement",
 		async (condition) => {
 			const { t, fixture, owner, token, root } = await setup();
@@ -1389,16 +1439,10 @@ describe("archive", () => {
 			});
 			expect(archived.status, await archived.clone().text()).toBe(200);
 
-			if (condition === "account grant") {
-				expect(
-					(
-						await owner.mutation(api.access_control.remove_service_account_grant, {
-							membershipId: fixture.membershipId,
-							serviceAccountId: fixture.serviceAccountId,
-							resource: { kind: "workspace" },
-						})
-					)._nay,
-				).toBeUndefined();
+			if (condition === "personal consent") {
+				await t.run((ctx) =>
+					ctx.db.patch("plugins_file_consents", fixture.consentId, { open: false, state: "ended", appliedLevel: null }),
+				);
 			} else {
 				expect(
 					(
@@ -1433,8 +1477,9 @@ describe("archive", () => {
 					headers,
 					body: JSON.stringify({ force: true, ...request }),
 				});
-				expect(blocked.status, await blocked.clone().text()).toBe(condition === "account grant" ? 403 : 409);
-				if (condition !== "account grant") expect(await blocked.json()).toEqual({ message: "This item is read-only." });
+				expect(blocked.status, await blocked.clone().text()).toBe(condition === "personal consent" ? 403 : 409);
+				if (condition !== "personal consent")
+					expect(await blocked.json()).toEqual({ message: "This item is read-only." });
 			}
 
 			expect(
@@ -1777,10 +1822,14 @@ describe("ensure_writer", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+		await t.run(async (ctx) => {
+			const { _id, _creationTime, ...consent } = (await ctx.db.get("plugins_file_consents", fixture.consentId))!;
+			await ctx.db.insert("plugins_file_consents", { ...consent, rootNodeId: privateId });
+		});
 		return privateId;
 	}
 
-	test("a plugin and a key of its account open a folder the account has a grant on, also one ensure made", async () => {
+	test("a plugin and an account key open a folder through their own grants, also one ensure made", async () => {
 		const f = await setup();
 		const { t, fixture, credentials, token, root } = f;
 		install_object_uploads();
@@ -1794,7 +1843,7 @@ describe("ensure_writer", () => {
 			resourceKey: "private",
 			rootNodeId: root.rootNodeId,
 		});
-		expect(ensured._nay, "the plugin may create a folder where its account has a grant").toBeUndefined();
+		expect(ensured._nay, "the plugin may create a folder where its pair has consent").toBeUndefined();
 		const writer = ensured._yay!;
 
 		const content = "# team\n";
@@ -1835,8 +1884,7 @@ describe("ensure_writer", () => {
 					permission: "content.read",
 				}),
 			);
-		const installation = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId)))!;
-		expect(await can(plugins_file_subject(installation, fixture.userId, undefined), writer.folderNodeId)).toBe(true);
+		expect(await can({ kind: "plugin_pair", pairId: fixture.filePairId }, writer.folderNodeId)).toBe(true);
 		expect(await can({ kind: "service_account", serviceAccountId: fixture.serviceAccountId }, fileNodeId)).toBe(true);
 	});
 

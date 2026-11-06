@@ -25,7 +25,7 @@ import {
 	access_control_db_set_service_account_grant,
 	type access_control_Subject,
 } from "./access_control.ts";
-import { plugins_file_subject } from "./plugins_service_accounts.ts";
+import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import {
 	organizations_db_create,
@@ -1246,7 +1246,7 @@ describe("access_control_db_has_permission service accounts", () => {
 describe("plugin subject", () => {
 	/**
 	 * An open folder `/o` with `a.md`, and a restricted folder `/r` with `x.md`. Only the owner reads
-	 * `/r`. The plugin's account has no grant yet.
+	 * `/r`. Neither person has given the plugin file consent yet.
 	 */
 	async function seed() {
 		const t = test_convex();
@@ -1275,7 +1275,7 @@ describe("plugin subject", () => {
 				pathDepth: path.split("/").length - 1,
 				restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
 			});
-			if (restrict) await ctx.db.patch("files_nodes", id, { restrictedScopeNodeId: id });
+			if (restrict) await ctx.db.patch("files_nodes", id, { restrictedScopeNodeId: id, isRestrictedScopeRoot: true });
 			return (await ctx.db.get("files_nodes", id))!;
 		};
 		const nodes = await test_run_with_flush(t, async (ctx) => {
@@ -1289,42 +1289,71 @@ describe("plugin subject", () => {
 		const installation = (await t.run(
 			async (ctx) => await ctx.db.get("plugins_workspace_installations", installationId),
 		))!;
-		const plugin = (userId: Id<"users">) => plugins_file_subject(installation, userId, undefined);
+		const pairs = await t.run(async (ctx) => {
+			const pairs = new Map<Id<"users">, Id<"plugins_file_pairs">>();
+			for (const userId of [fixture.ownerId, fixture.memberId]) {
+				const membership = (await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", userId)
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId),
+					)
+					.first())!;
+				const membershipLifetime = await organizations_membership_lifetimes_db_ensure(ctx, membership);
+				const pair = await plugins_file_grants_db_ensure_pair(ctx, { installation, membership, membershipLifetime });
+				pairs.set(userId, pair._id);
+			}
+			return [...pairs];
+		});
+		const pairsByUser = new Map(pairs);
+		const plugin = (userId: Id<"users">) => ({ kind: "plugin_pair" as const, pairId: pairsByUser.get(userId)! });
 		const can = (
 			subject: access_control_Subject,
 			fileNode: Doc<"files_nodes"> | null,
 			permission: "content.read" | "content.write" = "content.read",
 		) => t.run((ctx) => access_control_db_can_act_on_file_node(ctx, { ...scope, subject, fileNode, permission }));
-		/** Give the plugin's account a normal grant, like the share dialog does. */
+		/** Applied consent for the owner only. Each member has a separate pair. */
 		const grant = (
 			resource: { kind: "workspace" } | { kind: "file"; nodeId: Id<"files_nodes"> },
 			level: "read" | "write" | "manage",
 		) =>
-			t.run((ctx) =>
-				access_control_db_set_service_account_grant(ctx, {
+			t.run(async (ctx) => {
+				await ctx.db.insert("plugins_file_consents", {
 					...scope,
-					serviceAccountId: installation.serviceAccountId,
-					resource,
-					level,
-				}),
-			);
+					pairId: plugin(fixture.ownerId).pairId,
+					rootNodeId: resource.kind === "workspace" ? null : resource.nodeId,
+					requestedLevel: level === "manage" ? "write" : level,
+					appliedLevel: level === "manage" ? "write" : level,
+					areaEligible: true,
+					open: true,
+					revision: 1,
+					state: "applied",
+					endedReason: null,
+					createdAt: 1,
+					updatedAt: 1,
+				});
+				return { _nay: undefined };
+			});
 		return { t, fixture, installationId, insert, nodes, scope, plugin, can, grant };
 	}
 
-	test("a plugin cannot open a folder its account has no grant on, even when its person can", async () => {
+	test("a plugin needs personal consent even when its person can open the folder", async () => {
 		const { nodes, plugin, can, grant, fixture } = await seed();
 		expect(await can({ kind: "user", userId: fixture.ownerId, plugin: null }, nodes.x)).toBe(true);
-		expect(await can(plugin(fixture.ownerId), nodes.x), "the account has no grant on /r").toBe(false);
+		expect(await can(plugin(fixture.ownerId), nodes.x), "the person has not selected /r").toBe(false);
 
 		expect((await grant({ kind: "file", nodeId: nodes.r._id }, "read"))._nay).toBeUndefined();
 		expect(await can(plugin(fixture.ownerId), nodes.x)).toBe(true);
 		expect(await can(plugin(fixture.ownerId), nodes.x, "content.write")).toBe(false);
 	});
 
-	test("a plugin never reaches beyond its person", async () => {
+	test("one person's consent gives no access to another person's plugin", async () => {
 		const { nodes, plugin, can, grant, fixture } = await seed();
 		expect((await grant({ kind: "file", nodeId: nodes.r._id }, "manage"))._nay).toBeUndefined();
-		// The member cannot read `/r`, so its plugin cannot either, whatever the account's grant says.
+		// Only the owner selected `/r` for this plugin.
 		expect(await can(plugin(fixture.memberId), nodes.x)).toBe(false);
 		expect(await can(plugin(fixture.ownerId), nodes.x)).toBe(true);
 	});
@@ -1343,7 +1372,7 @@ describe("plugin subject", () => {
 		const last = folders[20]!;
 		expect(
 			(await grant({ kind: "file", nodeId: last._id }, "write"))._nay,
-			"the 21st grant is a normal grant",
+			"the 21st consent remains available",
 		).toBeUndefined();
 		expect(await can(plugin(fixture.ownerId), last, "content.write")).toBe(true);
 	});

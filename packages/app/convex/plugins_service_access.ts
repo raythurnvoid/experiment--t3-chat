@@ -17,6 +17,7 @@ import { plugins_service_events_db_wake_installation } from "./plugins_service_e
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 
 const LEASE_MS = 30_000;
 const SNAPSHOT_PAGE_SIZE = 50;
@@ -167,7 +168,8 @@ export const create_lease_facts = internalMutation({
 			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash))
 			.first();
 		const now = Date.now();
-		if (!session || session.expiresAt <= now) return Result({ _nay: { message: "Unauthorized" } });
+		if (!session || !session.filePairId || session.expiresAt <= now)
+			return Result({ _nay: { message: "Unauthorized" } });
 
 		const live = await db_live_installation(ctx, session.installationId);
 		if (
@@ -177,6 +179,16 @@ export const create_lease_facts = internalMutation({
 			live.installation.serviceAccountId !== session.serviceAccountId ||
 			live.installation.organizationId !== session.organizationId ||
 			live.installation.workspaceId !== session.workspaceId
+		)
+			return Result({ _nay: { message: "Unauthorized" } });
+
+		// Validate the original page before creating lifetime or connection facts.
+		if (
+			!(await plugins_file_grants_db_validate_pair(ctx, {
+				pairId: session.filePairId,
+				installationId: live.installation._id,
+				userId: session.userId,
+			}))
 		)
 			return Result({ _nay: { message: "Unauthorized" } });
 

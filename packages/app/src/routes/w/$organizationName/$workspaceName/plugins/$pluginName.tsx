@@ -106,11 +106,6 @@ import {
 	plugins_validate_secret_value,
 	type plugins_McpServer,
 } from "../../../../../../shared/plugins.ts";
-import {
-	access_control_FILE_SHARE_LEVEL_KEYS,
-	access_control_FILE_SHARE_LEVELS,
-	type access_control_FileShareLevel,
-} from "../../../../../../shared/access-control.ts";
 
 type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
@@ -2766,7 +2761,6 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		canInstall: false,
 		canManage: false,
 		installationId: null,
-		fileAccessModel: undefined,
 		configuration: version.configuration,
 		mounts: version.mounts,
 		events: version.events,
@@ -2783,169 +2777,6 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 		organizationPolicy: "allowed",
 	};
 }
-
-type PluginServiceAccountGrants = NonNullable<
-	app_convex_FunctionArgs<typeof app_convex_api.plugins.install_version>["serviceAccountGrants"]
->;
-
-const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccountGrants(props: {
-	serviceAccountId: app_convex_Id<"access_control_service_accounts">;
-	grants: PluginServiceAccountGrants;
-	disabled: boolean;
-	onChange: (grants: PluginServiceAccountGrants) => void;
-}) {
-	const { serviceAccountId, grants, disabled, onChange } = props;
-	const { membershipId } = AppTenantProvider.useContext();
-	const [resourceKind, setResourceKind] = useState<"workspace" | "file">("workspace");
-	const [path, setPath] = useState("");
-	const [level, setLevel] = useState<access_control_FileShareLevel>("read");
-	const [resourceLabels, setResourceLabels] = useState<Record<string, string>>({});
-
-	const node = useQuery(
-		app_convex_api.files_nodes.get_authorized_by_path,
-		resourceKind === "file" && path.startsWith("/") ? { membershipId, path } : "skip",
-	);
-	const grantManagement = useQuery(
-		app_convex_api.access_control.get_service_account_grant_management_state,
-		resourceKind === "workspace"
-			? { membershipId, serviceAccountId, resource: { kind: "workspace" } }
-			: node
-				? { membershipId, serviceAccountId, resource: { kind: "file", nodeId: node.nodeId } }
-				: "skip",
-	);
-
-	const get_resource_key = (resource: PluginServiceAccountGrants[number]["resource"]) =>
-		resource.kind === "workspace" ? "workspace" : resource.nodeId;
-
-	const handleAddGrant = () => {
-		if (disabled || !grantManagement?.canManage || !grantManagement.grantableLevels.includes(level)) {
-			return;
-		}
-
-		const key = get_resource_key(grantManagement.resource);
-		setResourceLabels({
-			...resourceLabels,
-			[key]:
-				grantManagement.resource.kind === "workspace"
-					? "Workspace"
-					: `${grantManagement.file?.path ?? "Protected item"} — ${grantManagement.file?.scope === "restricted_scope" ? "This restricted scope" : "This item and what is inside it"}`,
-		});
-		onChange([
-			...grants.filter((grant) => get_resource_key(grant.resource) !== key),
-			{ resource: grantManagement.resource, level },
-		]);
-	};
-
-	return (
-		<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
-			<h3>Folders this plugin can use</h3>
-			<p>Only grants you add below will be changed. Existing grants stay as they are.</p>
-			<MySelect
-				value={resourceKind}
-				setValue={(value) => {
-					if (!disabled && (value === "workspace" || value === "file")) {
-						setResourceKind(value);
-					}
-				}}
-			>
-				<MySelectLabel>Grant resource</MySelectLabel>
-				<MySelectTrigger disabled={disabled}>
-					<MyButton variant="outline">
-						{resourceKind === "workspace" ? "Workspace" : "File or folder"}
-						<MySelectOpenIndicator />
-					</MyButton>
-				</MySelectTrigger>
-				<MySelectPopover>
-					<MySelectPopoverContent>
-						<MySelectItem value="workspace">Workspace</MySelectItem>
-						<MySelectItem value="file">File or folder</MySelectItem>
-					</MySelectPopoverContent>
-				</MySelectPopover>
-			</MySelect>
-			{resourceKind === "file" ? (
-				<MyInput layout="stacked">
-					<MyInputLabel>Grant file or folder path</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={path}
-							placeholder="/logs"
-							onChange={(event) => {
-								if (!disabled) {
-									setPath(event.currentTarget.value);
-								}
-							}}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-			) : null}
-			{grantManagement ? (
-				<p>
-					{grantManagement.file?.path ?? "Workspace"}:{" "}
-					{grantManagement.resource.kind === "workspace"
-						? "Unrestricted workspace content"
-						: grantManagement.file?.scope === "restricted_scope"
-							? "This restricted scope"
-							: "This item and what is inside it"}
-				</p>
-			) : null}
-			<MySelect
-				value={level}
-				setValue={(value) => {
-					if (!disabled) {
-						setLevel(value as access_control_FileShareLevel);
-					}
-				}}
-			>
-				<MySelectLabel>Grant access level</MySelectLabel>
-				<MySelectTrigger disabled={disabled}>
-					<MyButton variant="outline">
-						{access_control_FILE_SHARE_LEVELS[level].label}
-						<MySelectOpenIndicator />
-					</MyButton>
-				</MySelectTrigger>
-				<MySelectPopover>
-					<MySelectPopoverContent>
-						{access_control_FILE_SHARE_LEVEL_KEYS.map((key) => (
-							<MySelectItem key={key} value={key} disabled={!grantManagement?.grantableLevels.includes(key)}>
-								{access_control_FILE_SHARE_LEVELS[key].label}
-							</MySelectItem>
-						))}
-					</MySelectPopoverContent>
-				</MySelectPopover>
-			</MySelect>
-			<MyButton
-				variant="outline"
-				disabled={disabled || !grantManagement?.canManage || !grantManagement.grantableLevels.includes(level)}
-				onClick={handleAddGrant}
-			>
-				Add reviewed grant
-			</MyButton>
-			<ul>
-				{grants.map((grant) => (
-					<li key={get_resource_key(grant.resource)}>
-						{resourceLabels[get_resource_key(grant.resource)] ?? "Selected resource"}:{" "}
-						{access_control_FILE_SHARE_LEVELS[grant.level].label}
-						<MyButton
-							variant="ghost"
-							disabled={disabled}
-							onClick={() =>
-								onChange(
-									grants.filter(
-										(candidate) => get_resource_key(candidate.resource) !== get_resource_key(grant.resource),
-									),
-								)
-							}
-						>
-							Remove from install
-						</MyButton>
-					</li>
-				))}
-			</ul>
-		</div>
-	);
-});
 
 function RoutePluginsPlugin() {
 	const { pluginName } = Route.useParams();
@@ -2980,7 +2811,6 @@ function RoutePluginsPlugin() {
 	const [installAccountId, setInstallAccountId] = useState<
 		app_convex_Id<"access_control_service_accounts"> | undefined
 	>();
-	const [installGrants, setInstallGrants] = useState<PluginServiceAccountGrants>([]);
 	const [rebindAccountId, setRebindAccountId] = useState<app_convex_Id<"access_control_service_accounts"> | null>(null);
 	const [rebinding, setRebinding] = useState(false);
 	const [installing, setInstalling] = useState(false);
@@ -3005,9 +2835,6 @@ function RoutePluginsPlugin() {
 	const installedItem = installations?.find((item) => item.installation.pluginName === plugin?.name) ?? null;
 	const installedVersion = installedItem?.version;
 	const installationId = plugin?.installationId ?? installedItem?.installation._id ?? null;
-	const fileAccessModel = installationId
-		? (installedItem?.installation.fileAccessModel ?? plugin?.fileAccessModel)
-		: "personal";
 	const hasSchedule = plugin?.events.some((event) => event.type === "schedule.interval.elapsed") ?? false;
 	const installConfiguration = plugin?.configuration
 		? plugins_parse_installation_configuration_yaml({
@@ -3238,8 +3065,7 @@ function RoutePluginsPlugin() {
 			(hasSchedule && !installRunUser && !installConsent) ||
 			(hasSchedule && installRunUser && !installRunUserValid) ||
 			installConfiguration?._nay ||
-			(canManageAccounts !== true &&
-				(installAccountId !== undefined || (fileAccessModel !== "personal" && installGrants.length > 0)))
+			(canManageAccounts !== true && installAccountId !== undefined)
 		) {
 			return;
 		}
@@ -3268,7 +3094,6 @@ function RoutePluginsPlugin() {
 						}
 					: {}),
 				...(installAccountId ? { serviceAccountId: installAccountId } : {}),
-				...(fileAccessModel !== "personal" && installGrants.length > 0 ? { serviceAccountGrants: installGrants } : {}),
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -3415,7 +3240,6 @@ function RoutePluginsPlugin() {
 		}
 
 		setInstallAccountId(undefined);
-		setInstallGrants([]);
 		setInstallYaml(installedItem?.installation.configurationYaml ?? plugin.configuration?.defaultYaml ?? "");
 		setInstallConsent(null);
 		setInstallConsentSession((session) => session + 1);
@@ -3633,7 +3457,6 @@ function RoutePluginsPlugin() {
 						key={`file-permissions:${installationId}`}
 						membershipId={membershipId}
 						installationId={installationId}
-						fileAccessModel={fileAccessModel}
 					/>
 				) : null}
 				{installationId ? (
@@ -3642,7 +3465,6 @@ function RoutePluginsPlugin() {
 						membershipId={membershipId}
 						installationId={installationId}
 						canManage={installedItem !== null}
-						fileAccessModel={fileAccessModel}
 					/>
 				) : null}
 				{installedItem ? (
@@ -3840,7 +3662,6 @@ function RoutePluginsPlugin() {
 										membershipId={membershipId}
 										capabilities={plugin.capabilities}
 										canManage
-										fileAccessModel={fileAccessModel}
 										disabled={installing}
 										onChange={handleInstallConsentChange}
 									/>
@@ -3864,14 +3685,12 @@ function RoutePluginsPlugin() {
 								onChange={(value) => {
 									if (!installing && canManageAccounts === true) {
 										setInstallAccountId(value ?? undefined);
-										setInstallGrants([]);
 									}
 								}}
 							/>
 							<p>
-								{fileAccessModel === "personal"
-									? "Each person chooses this plugin's files in My file permissions. The service account identifies the installation; its grants do not give this plugin file access."
-									: "Updates keep existing grants unless you add a reviewed grant below."}
+								Each person chooses this plugin's files in My file permissions. The service account identifies the
+								installation; its grants do not give this plugin file access.
 							</p>
 							{!installedItem && canManageAccounts !== true ? (
 								<p>
@@ -3879,23 +3698,11 @@ function RoutePluginsPlugin() {
 									service accounts.
 								</p>
 							) : null}
-							{fileAccessModel !== "personal" &&
-							canManageAccounts === true &&
-							(installAccountId ?? installedItem?.installation.serviceAccountId) ? (
-								<RoutePluginsServiceAccountGrants
-									key={installAccountId ?? installedItem?.installation.serviceAccountId}
-									serviceAccountId={(installAccountId ?? installedItem?.installation.serviceAccountId)!}
-									grants={installGrants}
-									disabled={installing}
-									onChange={setInstallGrants}
-								/>
-							) : null}
 						</div>
 						{plugin.canProcessFiles ? (
 							<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
-								{fileAccessModel === "personal"
-									? "This plugin can read the triggering upload with Can view on it or its folder. Creating files beside it also needs Can edit on its folder."
-									: "This plugin can read the triggering upload and create Markdown files beside it when its account grants allow it."}
+								This plugin can read the triggering upload with Can view on it or its folder. Creating files beside it
+								also needs Can edit on its folder.
 							</p>
 						) : null}
 
@@ -4102,8 +3909,7 @@ function RoutePluginsPlugin() {
 										((hasSchedule && !installRunUser && !installConsent) ||
 											(hasSchedule && !!installRunUser && !installRunUserValid) ||
 											!!installConfiguration?._nay)) ||
-									(canManageAccounts !== true &&
-										(installAccountId !== undefined || (fileAccessModel !== "personal" && installGrants.length > 0)))
+									(canManageAccounts !== true && installAccountId !== undefined)
 								}
 								aria-busy={installing}
 								onClick={() => handleAcceptAndInstall(plugin)}

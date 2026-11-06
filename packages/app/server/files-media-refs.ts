@@ -5,7 +5,6 @@ import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import { access_control_create_file_checker } from "../convex/access_control.ts";
 import { files_pending_nodes_db_resolve_read_target } from "../convex/files_pending_nodes_db.ts";
-import { plugins_file_subject } from "../convex/plugins_service_accounts.ts";
 import { files_media_parse_src } from "../shared/files-media.ts";
 import type { files_YjsRootKind } from "../shared/files.ts";
 import { files_share_rich_text_MAX_MEDIA, files_share_rich_text_prepare } from "../shared/files-share-rich-text.ts";
@@ -80,9 +79,7 @@ export async function files_media_refs_db_check_plugin_added(
 		workspaceId: Id<"organizations_workspaces">;
 		installation: Doc<"plugins_workspace_installations">;
 		userId: Id<"users">;
-		filePairId?: Id<"plugins_file_pairs">;
-		/** Only legacy upload runs may use their source-file exception. */
-		sourceNodeId?: Id<"files_nodes">;
+		filePairId?: Id<"plugins_file_pairs"> | null;
 		addedFileRefs: string[];
 	},
 ) {
@@ -95,7 +92,7 @@ export async function files_media_refs_db_check_plugin_added(
 		});
 	}
 	if (
-		args.filePairId &&
+		!args.filePairId ||
 		!(await plugins_file_grants_db_validate_pair(ctx, {
 			pairId: args.filePairId,
 			installationId: args.installation._id,
@@ -107,7 +104,7 @@ export async function files_media_refs_db_check_plugin_added(
 	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId };
 	const checker = access_control_create_file_checker(ctx, {
 		...scope,
-		subject: plugins_file_subject(args.installation, args.userId, args.filePairId),
+		subject: { kind: "plugin_pair", pairId: args.filePairId },
 	});
 	for (const src of args.addedFileRefs) {
 		const parsed = files_media_parse_src(src);
@@ -131,7 +128,7 @@ export async function files_media_refs_db_check_plugin_added(
 			node.workspaceId !== scope.workspaceId ||
 			node.archiveOperationId !== null ||
 			node.kind !== "file" ||
-			((args.filePairId !== undefined || node._id !== args.sourceNodeId) && !(await checker.can(node, "content.read")))
+			!(await checker.can(node, "content.read"))
 		) {
 			return Result({
 				_nay: {

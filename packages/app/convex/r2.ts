@@ -801,13 +801,13 @@ async function db_check_service_upload_file_refs(
 	const target = await ctx.db.get("plugin_service_storage_targets", args.targetId);
 	const installation = target ? await ctx.db.get("plugins_workspace_installations", target.installationId) : null;
 	if (!target || !installation) return "The plugin installation is gone";
-	// Conversion has no live token resolver. Refuse personal targets without a saved account.
-	// Old targets use the installation's account. Remove that fallback after the rollout audit.
+	// Conversion has no live token resolver. It must keep its accepted pair and account.
 	if (
-		(target.filePairId && !target.serviceAccountId) ||
+		!target.filePairId ||
+		!target.serviceAccountId ||
 		!(await plugins_db_get_live_service_account(ctx, {
 			installation,
-			serviceAccountId: target.serviceAccountId ?? installation.serviceAccountId,
+			serviceAccountId: target.serviceAccountId,
 		}))
 	) {
 		return "This plugin's service account has changed or ended";

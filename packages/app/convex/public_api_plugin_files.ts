@@ -13,7 +13,6 @@ import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
-import { plugins_file_subject } from "./plugins_service_accounts.ts";
 import { files_nodes_db_require_read_only_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_set_read_only } from "./files_nodes.ts";
 import {
@@ -164,7 +163,7 @@ export const ensure_plugin_folder = internalMutation({
 		}
 
 		const writeContext: files_nodes_WriteContext = {
-			subject: plugins_file_subject(installation, args.userId, pluginRun.filePairId),
+			subject: liveRun._yay.subject,
 			force: args.force === true,
 			actorUserId: args.userId,
 			resourceScope:
@@ -363,7 +362,7 @@ export const archive_plugin_path = internalMutation({
 			}
 			principalKey = `plugin_archive:${installation._id}:${args.userId}`;
 			writeContext = {
-				subject: plugins_file_subject(installation, args.userId, run.filePairId),
+				subject: live._yay.subject,
 				actorUserId: args.userId,
 				resourceScope: { kind: "workspace" },
 				force: args.force === true,

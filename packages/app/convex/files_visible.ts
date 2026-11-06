@@ -103,12 +103,7 @@ const STREAM_RECENT_READ_PAGE = 100;
 // The most index ranges one folder access check can read: a folder 500 levels deep in an Add-people
 // chain with the grant only at its top. The cost test under `internal_search_name_saved` measured
 // about 2,100 for a person.
-//
-// A plugin walks the chain for its person and for its account, and an account with a role also reads
-// role grants: about 3,100. A name search starts a new check only while it still fits the Convex
-// limit of 4,096, so a plugin search starts fewer checks per call.
 const SEARCH_PARENT_CHECK_MAX_RANGES = 2_300;
-const SEARCH_PARENT_CHECK_MAX_RANGES_PLUGIN = 3_200;
 
 /**
  * Whether a private node is still preparing: it has no create intent yet, or it is a text file whose
@@ -2539,10 +2534,6 @@ export const internal_search_name_saved = internalQuery({
 		// A locked hit shows, name only, when its parent folder is readable, like in `ls`. Each parent
 		// is checked once, and the checks share one checker, so hits in one folder read its chain once.
 		const checker = access_control_create_file_checker(ctx, args);
-		const checkMaxRanges =
-			args.subject.kind === "user" && args.subject.plugin
-				? SEARCH_PARENT_CHECK_MAX_RANGES_PLUGIN
-				: SEARCH_PARENT_CHECK_MAX_RANGES;
 		const parentChecks = new Map<Doc<"files_nodes">["parentId"], Promise<boolean>>();
 		const parent_readable = async (parentId: Doc<"files_nodes">["parentId"]) => {
 			if (parentId === files_ROOT_ID) return await (reader ? reader.canRead(null) : checker.can(null, "content.read"));
@@ -2562,7 +2553,7 @@ export const internal_search_name_saved = internalQuery({
 				// A new parent check can read a long chain after the budget check of the row. End the page
 				// instead when it might not fit; the first row always has room.
 				const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
-				if (index > 0 && used + checkMaxRanges > 4_096) return "retry";
+				if (index > 0 && used + SEARCH_PARENT_CHECK_MAX_RANGES > 4_096) return "retry";
 				check = parent_readable(parentId);
 				parentChecks.set(parentId, check);
 			}
@@ -2606,7 +2597,7 @@ export const internal_search_name_saved = internalQuery({
 			if (!areaId) return false;
 			if (!areaChecks.has(areaId)) {
 				const used = (await ctx.meta.getTransactionMetrics()).databaseQueries.used;
-				if (index > 0 && used + checkMaxRanges > 4_096) return "retry";
+				if (index > 0 && used + SEARCH_PARENT_CHECK_MAX_RANGES > 4_096) return "retry";
 			}
 			return await area_reached(areaId);
 		};
@@ -2996,7 +2987,7 @@ async function db_reads_every_area(ctx: QueryCtx, args: StreamOpenArgs) {
 		organizations_is_global_organization_id(args.organizationId)
 	)
 		return true;
-	if (args.subject.kind !== "user" || args.subject.plugin !== null) return false;
+	if (args.subject.kind !== "user") return false;
 	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
 	const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
 	return organization?.ownerUserId === args.subject.userId;

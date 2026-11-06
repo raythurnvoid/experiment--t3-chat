@@ -285,14 +285,11 @@ export const insert_page_session = internalMutation({
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
-		const filePair =
-			installation.fileAccessModel === "personal"
-				? await plugins_file_grants_db_ensure_pair(ctx, {
-						installation,
-						membership,
-						membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
-					})
-				: null;
+		const filePair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation,
+			membership,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+		});
 		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -300,7 +297,7 @@ export const insert_page_session = internalMutation({
 			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: installation.pluginVersionId,
 			userId: userAuth.id,
-			filePairId: filePair?._id,
+			filePairId: filePair._id,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt,
@@ -462,14 +459,11 @@ export const insert_file_view_session = internalMutation({
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
-		const filePair =
-			installation.fileAccessModel === "personal"
-				? await plugins_file_grants_db_ensure_pair(ctx, {
-						installation,
-						membership,
-						membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
-					})
-				: null;
+		const filePair = await plugins_file_grants_db_ensure_pair(ctx, {
+			installation,
+			membership,
+			membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, membership),
+		});
 		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -477,7 +471,7 @@ export const insert_file_view_session = internalMutation({
 			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: installation.pluginVersionId,
 			userId: userAuth.id,
-			filePairId: filePair?._id,
+			filePairId: filePair._id,
 			fileNodeId: fileNode._id,
 			fileViewId: fileView.id,
 			tokenHash: await crypto_sha256_hex(token),
@@ -589,12 +583,11 @@ export const rotate_ui_session = internalMutation({
 		if (!(await db_plugin_workspace_is_live(ctx, session))) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		// Refresh keeps the original authority. Reopen an old frame after the switch.
-		if (installation.fileAccessModel === "personal" && !session.filePairId) {
+		// Refresh keeps the original pair and never gives an old frame new authority.
+		if (!session.filePairId) {
 			return Result({ _nay: { message: "File access changed. Reopen this plugin." } });
 		}
 		if (
-			session.filePairId &&
 			!(await plugins_file_grants_db_validate_pair(ctx, {
 				pairId: session.filePairId,
 				installationId: installation._id,
