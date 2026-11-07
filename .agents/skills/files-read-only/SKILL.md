@@ -212,6 +212,11 @@ still selects the ordinary full check; waiting for it could create a cycle in th
 Keep the global running Move/scope checks. This path index does not replace the general queue
 blocker and waiter scans in `files_subtree_ops_db_find_blocker`.
 
+TODO: replace that queue scan with an indexed path lookup that keeps running jobs and earlier
+queued jobs as blockers. Restore uses it during admission and later work. Many unrelated jobs
+can make it hit the database read limit. The user accepted keeping this scan for development
+and Plugin Restore on 2026-11-06. Keep the overlap check; this exception allows no new scans.
+
 Accepted limitation: an ordinary move to Trash does not repeat flag or ACL checks during its later stamp
 walk. A flag set after its check may not stop that move to Trash. This window also exists when a bulk job
 sets flags. Do not describe ordinary moves to Trash as checking each final stamp.

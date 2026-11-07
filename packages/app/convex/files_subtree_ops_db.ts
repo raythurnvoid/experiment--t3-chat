@@ -93,6 +93,8 @@ export async function files_subtree_ops_db_find_blocker(
 		waiter: Doc<"files_subtree_ops"> | null;
 	},
 ) {
+	// TODO: Find overlapping jobs through a path index, keeping running and earlier queued jobs.
+	// This workspace scan can hit the read limit. Accepted for development and Plugin Restore on 2026-11-06.
 	for await (const op of ctx.db
 		.query("files_subtree_ops")
 		.withIndex("by_organization_workspace_kind", (q) =>
