@@ -8,6 +8,17 @@ type Scope = { organizationId: Id<"organizations">; workspaceId: Id<"organizatio
 
 const JOB_WATCHDOG_MS = 60_000;
 
+/**
+ * Most open file choices one person can have for one plugin.
+ *
+ * The plugin file check reads all open choices of a pair at once and matches them by path. Without a
+ * limit that read grows forever. With it, a check costs the same on a deep tree as on a flat one.
+ *
+ * Somebody who needs more can choose a folder above them or the whole workspace. Every app platform
+ * we compared offers that wider choice, and their caps start above 100.
+ */
+export const plugins_file_grants_MAX_OPEN_CONSENTS = 100;
+
 export async function plugins_file_grants_db_get_pair(
 	ctx: Pick<QueryCtx, "db">,
 	args: {

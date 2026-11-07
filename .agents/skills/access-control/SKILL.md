@@ -150,6 +150,13 @@ Each doc records consent for a saved item or the whole workspace. Its applied le
 `plugins_file_consents` stores each target, requested View/Edit level,
 applied level, open/ended state and Trash-area eligibility. A new selection starts
 pending with no applied access. A fresh selection after removal gets a new doc.
+One pair can have at most 100 open selections (`plugins_file_grants_MAX_OPEN_CONSENTS`,
+checked in `grant_file_access_as_me`). Changing the level of an open selection is not a new
+one. The refusal tells the person to remove one or choose a folder above or the whole
+workspace. The file check reads all open selections at once per checker, so this limit keeps
+each checker bounded.
+App platforms we compared (Microsoft Graph, GitHub Apps, Android) cap at 128 or more and
+offer the same wider choice.
 The personal doors in `plugins_access.ts` resolve the signed-in person; managers
 cannot select files for somebody else. Lists use `by_pair` pages, including ended
 and unreadable selections, so a person can still remove them.
@@ -185,9 +192,28 @@ grants never expand personal consent.
 The exclusive `{ kind: "plugin_pair", pairId }` file subject reads only open
 consents for that pair. It has no owner, role, account, public or workspace fallback,
 and never grants permission management. A selected file grants only that file.
-A folder follows the existing extended-scope chain up to a restricted boundary;
-a separately selected restricted root starts its own area. Ordinary shares and
-open plugin consents keep the same extended root alive.
+A selected folder reaches the items inside it up to a restricted boundary;
+a separately selected restricted root starts its own area. For a live item, the
+checker does not walk the "Add people" chain for a pair. It reads the pair's open
+selections once (`by_pair_open`, bounded by the limit above) and allows the item when
+a live selected folder's `treePath` starts the item's `treePath` and both store the same
+`restrictedScopeNodeId`. That is the chain's area rule, at a cost that does not grow
+with depth. So a folder selection reaches the items inside as soon as it applies,
+without waiting for the scope job to write each item. Removal still takes effect at
+once. People and service accounts keep the chain and its per-file timing. Ordinary
+shares and open plugin consents still keep the same extended root alive.
+
+Trash keeps paths, so the path match runs only between a live item and a live selected
+folder; live paths are unique. A selected folder in Trash gives no live item access, so a
+new item created at its old path stays locked. An item in Trash follows its stored chain
+instead, like people do. This keeps a selected folder's Trash items (and the items of a
+selected folder in Trash) readable. An item that was already in Trash when the folder was
+selected becomes readable once the selection's scope job writes its chain. So keep the
+extended root that `grant_file_access_as_me` writes.
+
+The selections load once per checker, up to 100 roots. A loop over many items must share
+one checker (`access_control_create_file_checker`), not call
+`access_control_db_can_act_on_file_node` per item, or each item loads them again.
 
 `server/files-access-version.ts` captures human read/write/manage, membership,
 role, owner and saved scope changes in its existing mutation wrapper. It also
@@ -1244,6 +1270,12 @@ inside it. Everybody who had access before keeps it: added people only add acces
   depth cap. The checker caches each root's answer per request. Cost tests in
   `files_sharing.extended.test.ts` use 64 nested folders, following the
   [Files depth test rule](../../../AGENTS.md#reads-must-scale-no-scans).
+- Known limit: a list whose rows sit under many separate deep chains of shared folders pays a
+  few reads per root for each row. 100 rows under 100 separate 64-root chains cost about 13,000
+  queries, over the 4,096 limit. Plugin pairs avoid this for live items with their bounded
+  selections (see "Personal plugin file grants"). Their Trash items still walk the chain. People
+  and service accounts have no per-subject grant limit, so they still walk the chain. Not fixed
+  yet.
 - Levels: added people get **Can view** or **Can edit** only. `manage` is only on a restricted root
   or from the workspace, so `content.permissions.manage` never comes from the chain. Message:
   `access_control_ADDED_PEOPLE_LEVEL_MESSAGE`.

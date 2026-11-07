@@ -3,7 +3,7 @@ import { doc } from "convex-helpers/validators";
 import { internalQuery } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema from "./schema.ts";
-import { access_control_db_can_act_on_file_node } from "./access_control.ts";
+import { access_control_create_file_checker, access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_read_only_management } from "./files_write_policy_db.ts";
 import { files_nodes_db_archive_nodes, files_nodes_db_set_read_only } from "./files_nodes.ts";
@@ -394,6 +394,11 @@ export const change_scope = internalMutation({
 				const writable = await public_api_file_archives_db_check_node(ctx, {
 					node,
 					writeContext: facts._yay.writeContext,
+					checker: access_control_create_file_checker(ctx, {
+						organizationId: node.organizationId,
+						workspaceId: node.workspaceId,
+						subject: facts._yay.writeContext.subject,
+					}),
 				});
 				if (writable._nay) return writable;
 			}

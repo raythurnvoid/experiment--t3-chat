@@ -5,6 +5,7 @@ import { access_control_create_file_checker, access_control_db_ensure_role_assig
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import {
 	test_create_saved_text_file,
+	test_mocks,
 	test_mocks_fill_db_with,
 	test_move_nodes,
 	test_rename_node,
@@ -17,6 +18,7 @@ import { accept_input, seal, advance as advance_transfer, settle_cohort } from "
 import { run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import { expect_under_convex_limits, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { public_api_file_archives_db_archive } from "./public_api_file_archives.ts";
 import {
 	fixture,
 	insert_installation,
@@ -304,6 +306,32 @@ test("a selected folder stops at the next restricted boundary", async () => {
 	);
 	await consent(f, pairId, inner.folderId, "read");
 	expect(await levels(f, pairId, inner.fileId), "a separate restricted-root selection reaches its child").toEqual(read);
+});
+
+test("a chosen folder keeps its Trash items but gives a new item at its old path nothing", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	const chosen = await folder(f, "/docs");
+	const goneId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/docs/gone.md" });
+	await consent(f, pairId, chosen.folderId, "write");
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	const archive = async (nodeId: Id<"files_nodes">) => {
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const result = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [nodeId],
+		});
+		expect(result._nay).toBeUndefined();
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	};
+
+	await archive(goneId);
+	expect(await levels(f, pairId, goneId), "a file moved to Trash inside the chosen folder").toEqual(write);
+	await archive(chosen.folderId);
+	expect(await levels(f, pairId, chosen.fileId), "a file of the chosen folder in Trash").toEqual(write);
+
+	const freshId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/docs/secret.md" });
+	expect(await levels(f, pairId, freshId), "a new item at a chosen folder's Trash path stays denied").toEqual(denied);
 });
 
 test("a separately selected child survives ended parent consent", async () => {
@@ -602,3 +630,194 @@ test.each(["rename", "move"] as const)(
 	},
 	120_000,
 );
+
+test("100 checks on separate deep chains of shared folders fit one transaction", async () => {
+	const f = await fixture();
+	const installationId = await insert_installation(f);
+	const pairId = await pair(f, f.memberMembershipId, installationId);
+	const otherPairId = await pair(f, f.db.membershipId, installationId);
+	const leaves: Array<Id<"files_nodes">> = [];
+	const tops: Array<Id<"files_nodes">> = [];
+	for (let chain = 0; chain < 100; chain++) {
+		const made = await f.t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				kind: "folder" as const,
+				restrictedScopeNodeId: null,
+			};
+			let parentId: Id<"files_nodes"> | "root" = "root";
+			let parentExtendedScopeNodeId: Id<"files_nodes"> | null = null;
+			let path = "";
+			let topId: Id<"files_nodes"> | null = null;
+			// 64 levels, each an "Add people" root of another pair. That pair's choices give this pair nothing.
+			for (let depth = 0; depth < 64; depth++) {
+				const name = depth === 0 ? `c${chain}` : "x";
+				path += `/${name}`;
+				const nodeId: Id<"files_nodes"> = await ctx.db.insert("files_nodes", {
+					...base,
+					parentId,
+					name,
+					sortName: name,
+					path,
+					treePath: `${path}/`,
+					pathDepth: depth + 1,
+					parentExtendedScopeNodeId,
+					extendedScopeNodeId: null,
+				});
+				await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId });
+				await ctx.db.insert("plugins_file_consents", {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					pairId: otherPairId,
+					rootNodeId: nodeId,
+					requestedLevel: "read",
+					appliedLevel: "read",
+					areaEligible: false,
+					open: true,
+					revision: 1,
+					state: "applied",
+					endedReason: null,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+				topId ??= nodeId;
+				parentId = nodeId;
+				parentExtendedScopeNodeId = nodeId;
+			}
+			const leafId = await ctx.db.insert("files_nodes", {
+				...base,
+				parentId,
+				name: "leaf",
+				sortName: "leaf",
+				path: `${path}/leaf`,
+				treePath: `${path}/leaf/`,
+				pathDepth: 65,
+				extendedScopeNodeId: parentExtendedScopeNodeId,
+			});
+			return { topId: topId!, leafId };
+		});
+		tops.push(made.topId);
+		leaves.push(made.leafId);
+	}
+	await consent(f, pairId, tops[0]!, "read");
+
+	const result = await f.t.run(async (ctx) => {
+		const before = await ctx.meta.getTransactionMetrics();
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			subject: { kind: "plugin_pair", pairId },
+		});
+		const allowed: boolean[] = [];
+		for (const leafId of leaves) {
+			allowed.push(await checker.can((await files_saved_placement_db_get_node(ctx.db, leafId))!, "content.read"));
+		}
+		return { allowed, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
+	});
+	expect(result.allowed[0], "the chosen top folder reaches its item 64 levels down").toBe(true);
+	expect(result.allowed.slice(1).filter(Boolean), "the other 99 chains give this pair nothing").toEqual([]);
+	expect(result.cost.databaseQueries, "100 plugin checks fit the 4,096-query transaction limit").toBeLessThan(4096);
+}, 120_000);
+
+test("a plugin delete loads the pair's choices once, not once per item", async () => {
+	const costs: number[] = [];
+	for (const choices of [1, 100]) {
+		const f = await fixture();
+		const pairId = await pair(f);
+		const deletedId = await f.t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				kind: "folder" as const,
+				restrictedScopeNodeId: null,
+			};
+			let folderId: Id<"files_nodes"> | null = null;
+			for (let index = 0; index < choices; index++) {
+				const name = `r${index}`;
+				const rootId = await ctx.db.insert("files_nodes", {
+					...base,
+					parentId: "root",
+					name,
+					sortName: name,
+					path: `/${name}`,
+					treePath: `/${name}/`,
+					pathDepth: 1,
+					extendedScopeNodeId: null,
+					parentExtendedScopeNodeId: null,
+				});
+				await ctx.db.patch("files_nodes", rootId, { extendedScopeNodeId: rootId });
+				await ctx.db.insert("plugins_file_consents", {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					pairId,
+					rootNodeId: rootId,
+					requestedLevel: "write",
+					appliedLevel: "write",
+					areaEligible: false,
+					open: true,
+					revision: 1,
+					state: "applied",
+					endedReason: null,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				});
+				if (index > 0) continue;
+				// A 30-item folder inside the first chosen folder. Each item is checked on its own.
+				folderId = await ctx.db.insert("files_nodes", {
+					...base,
+					parentId: rootId,
+					name: "del",
+					sortName: "del",
+					path: "/r0/del",
+					treePath: "/r0/del/",
+					pathDepth: 2,
+					extendedScopeNodeId: rootId,
+				});
+				for (let child = 0; child < 29; child++) {
+					const childName = `k${child}`;
+					await ctx.db.insert("files_nodes", {
+						...base,
+						parentId: folderId,
+						name: childName,
+						sortName: childName,
+						path: `/r0/del/${childName}`,
+						treePath: `/r0/del/${childName}/`,
+						pathDepth: 3,
+						extendedScopeNodeId: rootId,
+					});
+				}
+			}
+			return folderId!;
+		});
+
+		const result = await f.t.run(async (ctx) => {
+			const root = (await files_saved_placement_db_get_node(ctx.db, deletedId))!;
+			const before = await ctx.meta.getTransactionMetrics();
+			const archived = await public_api_file_archives_db_archive(ctx, {
+				root,
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				writeContext: {
+					subject: { kind: "plugin_pair", pairId },
+					force: false,
+					actorUserId: f.db.userId,
+					resourceScope: { kind: "workspace" },
+				},
+				maxNodes: 256,
+				accept: async () => null,
+			});
+			return { archived, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
+		});
+		expect(result.archived._yay?.archivedNodes, "the whole folder moved to Trash").toBe(30);
+		costs.push(result.cost.databaseQueries);
+	}
+	// One load reads at most 100 roots and their consent range. A load per item would cost thousands.
+	expect(costs[1]! - costs[0]!, "100 choices add one load, not one load per item").toBeLessThan(400);
+}, 120_000);

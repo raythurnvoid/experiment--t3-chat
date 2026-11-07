@@ -174,6 +174,8 @@ Workspace consent keeps the label "Whole workspace". It covers current and futur
 open files and the root. Restricted folders need separate consent. The person must
 have workspace Read, and Write for Edit, to choose it. Do not hide these controls
 based on manifest Files capabilities: upload runs have their own Files baseline.
+Save shows the refusal when the person reaches the limit of open selections. See
+[personal plugin file grants](../access-control/SKILL.md#personal-plugin-file-grants).
 
 All installations use personal file consent. Do not infer consent from account
 grants or give an old credential a new pair.

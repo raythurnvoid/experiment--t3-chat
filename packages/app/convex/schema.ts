@@ -7778,6 +7778,8 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_pair_rootNode_open", ["pairId", "rootNodeId", "open"])
+		// Open consents of one pair. `plugins_file_grants_MAX_OPEN_CONSENTS` bounds this range.
+		.index("by_pair_open", ["pairId", "open"])
 		.index("by_pair", ["pairId"])
 		.index("by_rootNode_open", ["rootNodeId", "open"])
 		.index("by_organization_workspace_open", ["organizationId", "workspaceId", "open"])

@@ -149,6 +149,45 @@ describe("personal plugin file grants", () => {
 		).toBe("You cannot edit /. Ask for Can edit access first.");
 	});
 
+	test("refuses a new choice past the per-plugin limit but still changes an existing one", async () => {
+		const f = await fixture();
+		const args = { membershipId: f.owner.membershipId, installationId: f.installationId };
+		const first = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
+			...args,
+			rootNodeId: null,
+			level: "read",
+		});
+		if (first._nay) throw new Error(first._nay.message);
+		await f.t.run(async (ctx) => {
+			const { _id, _creationTime, ...template } = (await ctx.db.get("plugins_file_consents", first._yay.consentId))!;
+			for (let index = 1; index < 100; index++) {
+				await ctx.db.insert("plugins_file_consents", { ...template, rootNodeId: f.nodes.openId });
+			}
+		});
+		await f.reset(f.owner.userId);
+		expect(
+			(
+				await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
+					...args,
+					rootNodeId: f.nodes.grantedId,
+					level: "read",
+				})
+			)._nay?.message,
+			"the 101st open choice is refused",
+		).toBe(
+			"You already chose 100 files and folders for file-consent, which is the most you can choose. Remove one, or choose a folder above them or the whole workspace.",
+		);
+		await f.reset(f.owner.userId);
+		expect(
+			await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
+				...args,
+				rootNodeId: null,
+				level: "write",
+			}),
+			"changing the level of an existing choice is not a new choice",
+		).toEqual(first);
+	});
+
 	test("workspace choices keep their target, applied access and ended history", async () => {
 		const f = await fixture();
 		const args = { membershipId: f.owner.membershipId, installationId: f.installationId, rootNodeId: null };

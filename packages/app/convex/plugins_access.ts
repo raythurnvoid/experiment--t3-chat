@@ -32,7 +32,11 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
-import { plugins_file_grants_db_ensure_pair, plugins_file_grants_db_get_pair } from "../server/plugins-file-grants.ts";
+import {
+	plugins_file_grants_db_ensure_pair,
+	plugins_file_grants_db_get_pair,
+	plugins_file_grants_MAX_OPEN_CONSENTS,
+} from "../server/plugins-file-grants.ts";
 
 export const experimental_reuseContext = true;
 
@@ -672,6 +676,20 @@ export const grant_file_access_as_me = mutation({
 				q.eq("pairId", pair._id).eq("rootNodeId", args.rootNodeId).eq("open", true),
 			)
 			.unique();
+		// Count only new choices. Refuse here, after the ensure calls above. A pair with 100 open choices
+		// already exists, so those calls wrote nothing.
+		if (!previous) {
+			const openConsents = await ctx.db
+				.query("plugins_file_consents")
+				.withIndex("by_pair_open", (q) => q.eq("pairId", pair._id).eq("open", true))
+				.take(plugins_file_grants_MAX_OPEN_CONSENTS);
+			if (openConsents.length >= plugins_file_grants_MAX_OPEN_CONSENTS)
+				return Result({
+					_nay: {
+						message: `You already chose ${plugins_file_grants_MAX_OPEN_CONSENTS} files and folders for ${installation.pluginName}, which is the most you can choose. Remove one, or choose a folder above them or the whole workspace.`,
+					},
+				});
+		}
 		const now = Date.now();
 		let consentId: Id<"plugins_file_consents">;
 		if (previous) {
@@ -700,6 +718,8 @@ export const grant_file_access_as_me = mutation({
 				updatedAt: now,
 			});
 		}
+		// Keep this anchor. Live items match the pair's choices by path, but an item in Trash still follows
+		// the stored "Add people" chain that this scope job writes.
 		if (node && node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 			await files_subtree_ops_db_start_rebuild(ctx, {

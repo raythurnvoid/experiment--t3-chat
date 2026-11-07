@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { access_control_db_can_act_on_file_node } from "./access_control.ts";
+import { access_control_create_file_checker } from "./access_control.ts";
 import { files_nodes_db_archive_node } from "./files_nodes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
@@ -89,6 +89,12 @@ export async function public_api_file_archives_db_result(
 	args: { receipt: Receipt; writeContext: files_nodes_WriteContext },
 ) {
 	const refused = [];
+	// One checker for all refused items, so they share the checker's reads.
+	const checker = access_control_create_file_checker(ctx, {
+		organizationId: args.receipt.organizationId,
+		workspaceId: args.receipt.workspaceId,
+		subject: args.writeContext.subject,
+	});
 	for (const item of args.receipt.refused) {
 		const node = await files_saved_placement_db_get_node(ctx.db, item.nodeId);
 		const readable =
@@ -96,13 +102,7 @@ export async function public_api_file_archives_db_result(
 			node.organizationId === args.receipt.organizationId &&
 			node.workspaceId === args.receipt.workspaceId &&
 			(node.path === args.receipt.path || node.path.startsWith(`${args.receipt.path}/`)) &&
-			(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.receipt.organizationId,
-				workspaceId: args.receipt.workspaceId,
-				subject: args.writeContext.subject,
-				fileNode: node,
-				permission: "content.read",
-			}));
+			(await checker.can(node, "content.read"));
 		refused.push({
 			path: readable ? node.path : null,
 			message:
@@ -125,10 +125,17 @@ export async function public_api_file_archives_db_result(
 
 /**
  * Check the item and the direct list that removing it changes.
+ *
+ * Pass one `checker` for every node of a delete, so its nodes share the checker's reads. The checks run
+ * before any write, so the checker never misses a grant change.
  */
 export async function public_api_file_archives_db_check_node(
 	ctx: MutationCtx,
-	args: { node: Doc<"files_nodes">; writeContext: files_nodes_WriteContext },
+	args: {
+		node: Doc<"files_nodes">;
+		writeContext: files_nodes_WriteContext;
+		checker: ReturnType<typeof access_control_create_file_checker>;
+	},
 ) {
 	const parent =
 		args.node.parentId === files_ROOT_ID ? null : await files_saved_placement_db_get_node(ctx.db, args.node.parentId);
@@ -136,16 +143,7 @@ export async function public_api_file_archives_db_check_node(
 		return Result({ _nay: { name: "conflict", message: "The parent folder changed" } });
 	}
 	for (const node of [args.node, parent]) {
-		if (
-			!(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.node.organizationId,
-				workspaceId: args.node.workspaceId,
-				subject: args.writeContext.subject,
-				fileNode: node,
-				permission: "content.write",
-			}))
-		)
-			return Result({ _nay: { message: "Permission denied" } });
+		if (!(await args.checker.can(node, "content.write"))) return Result({ _nay: { message: "Permission denied" } });
 		if (!node) continue;
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: node.organizationId,
@@ -207,13 +205,18 @@ export async function public_api_file_archives_db_archive(
 	const pending = [args.root];
 	const allowed: Doc<"files_nodes">[] = [];
 	const refused: Receipt["refused"] = [];
+	const checker = access_control_create_file_checker(ctx, { ...scope, subject: args.writeContext.subject });
 	let visited = 0;
 	while (pending.length) {
 		const node = pending.pop()!;
 		if (++visited > args.maxNodes)
 			return Result({ _nay: { message: `A delete can visit at most ${args.maxNodes} files and folders` } });
 		if (node.archiveOperationId !== null) continue;
-		const checked = await public_api_file_archives_db_check_node(ctx, { node, writeContext: args.writeContext });
+		const checked = await public_api_file_archives_db_check_node(ctx, {
+			node,
+			writeContext: args.writeContext,
+			checker,
+		});
 		const failure = checked._nay ?? (await args.accept(node));
 		if (failure) {
 			if (!args.writeContext.force) return Result({ _nay: failure });

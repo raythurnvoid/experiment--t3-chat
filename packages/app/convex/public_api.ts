@@ -9,6 +9,7 @@ import { doc } from "convex-helpers/validators";
 import app_convex_schema, { ai_chat_workspaces_source_validator } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope, ai_chat_workspaces_db_resolve } from "./ai_chat_workspaces.ts";
 import {
+	access_control_create_file_checker,
 	access_control_db_can_act_on_file_node,
 	access_control_db_has_permission,
 	access_control_subject_validator,
@@ -2550,6 +2551,12 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 			call.route !== (args.requiredScope === "files:list" ? "/api/v1/files/list" : "/api/v1/files/read")
 		)
 			return Result({ _nay: { message: "File unavailable" } });
+		// One checker for up to 100 files, so they share the checker's reads.
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			subject: live._yay.subject,
+		});
 		for (const item of args.nodes) {
 			const node = await files_saved_placement_db_get_node(ctx.db, item.nodeId);
 			if (
@@ -2560,15 +2567,7 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 				node.path !== item.path
 			)
 				return Result({ _nay: { message: "File unavailable" } });
-			if (
-				!(await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: run.organizationId,
-					workspaceId: run.workspaceId,
-					subject: live._yay.subject,
-					fileNode: node,
-					permission: "content.read",
-				}))
-			)
+			if (!(await checker.can(node, "content.read")))
 				// The node is still there, so it is locked, not missing.
 				return Result({ _nay: { name: "locked", message: `Permission denied: ${item.path}` } });
 		}

@@ -16,6 +16,7 @@ import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+	access_control_create_file_checker,
 	access_control_db_authorize_membership,
 	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
@@ -1969,6 +1970,8 @@ export const restore_items = internalMutation({
 			const selectors = selectorsByOperationId.get(node.archiveOperationId!) ?? [];
 			selectorsByOperationId.set(node.archiveOperationId!, [...selectors, selector]);
 		};
+		// One checker for all selectors, so up to 100 items share its reads. Nothing here changes grants.
+		const checker = access_control_create_file_checker(ctx, { ...args, subject });
 		for (const path of args.paths) {
 			// Two reads are enough to tell one archived item from several.
 			const archived = await ctx.db
@@ -2001,12 +2004,7 @@ export const restore_items = internalMutation({
 			// An archived item the key cannot open is locked, like a locked row in its folder.
 			let isReadable = true;
 			for (const fileNode of archived) {
-				isReadable &&= await access_control_db_can_act_on_file_node(ctx, {
-					...args,
-					subject,
-					fileNode,
-					permission: "content.read",
-				});
+				isReadable &&= await checker.can(fileNode, "content.read");
 			}
 			if (!isReadable) {
 				refused.push({ path, message: "Permission denied" });
@@ -2048,14 +2046,7 @@ export const restore_items = internalMutation({
 				continue;
 			}
 			// Check access before the item's state, so a locked item does not tell whether it changed.
-			if (
-				!(await access_control_db_can_act_on_file_node(ctx, {
-					...args,
-					subject,
-					fileNode: node,
-					permission: "content.read",
-				}))
-			) {
+			if (!(await checker.can(node, "content.read"))) {
 				refused.push({ nodeId: selector.nodeId, path: null, message: "Permission denied" });
 				continue;
 			}
@@ -2831,18 +2822,16 @@ export const get_job = internalQuery({
 			.take(JOB_REFUSED_PAGE_SIZE);
 
 		const forcedRefused = [];
+		// One checker for the whole page, so its items share the checker's reads.
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			subject: writeContext.subject,
+		});
 		for (const item of items) {
 			if (item.kind !== "force_archive") continue;
 			const node = await files_saved_placement_db_get_node(ctx.db, item.nodeId);
-			const readable =
-				node &&
-				(await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: run.organizationId,
-					workspaceId: run.workspaceId,
-					subject: writeContext.subject,
-					fileNode: node,
-					permission: "content.read",
-				}));
+			const readable = node && (await checker.can(node, "content.read"));
 			forcedRefused.push({
 				path: readable ? node.path : null,
 				message:

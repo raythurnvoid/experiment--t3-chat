@@ -1267,10 +1267,79 @@ export function access_control_create_file_checker(
 		return consent?.appliedLevel === "write" || (permission === "content.read" && consent?.appliedLevel === "read");
 	};
 
+	// The write limit `plugins_file_grants_MAX_OPEN_CONSENTS` bounds this range. Read it once per checker.
+	const load_pair_choices = (pairId: Id<"plugins_file_pairs">) =>
+		once(`pair_choices:${pairId}`, async () => {
+			const consents = await ctx.db
+				.query("plugins_file_consents")
+				.withIndex("by_pair_open", (q) => q.eq("pairId", pairId).eq("open", true))
+				.collect();
+			return await Promise.all(
+				consents.map(async (consent) => ({
+					consent,
+					root: consent.rootNodeId === null ? null : await get_node(consent.rootNodeId),
+				})),
+			);
+		});
+
+	/**
+	 * A plugin's folder choice: a chosen folder above the node, in the same restricted area. This is the
+	 * area rule of the "Add people" chain. But it reads the pair's few choices instead of every shared
+	 * folder above the node, so a deep tree costs no more than a flat one.
+	 *
+	 * Unlike the chain, a choice reaches the items inside as soon as it applies, without waiting for the
+	 * scope job to write each item. Access only grows to what the person chose. Ending a choice closes
+	 * its consent doc, so removal still takes effect at once.
+	 *
+	 * Trash keeps paths, so the path match runs only between live items. Live paths are unique, so a
+	 * live chosen folder whose path starts a live item's path is really above it. A chosen folder in
+	 * Trash gives no live item anything: a new item with the same path is not inside it. While Trash
+	 * stamps a big folder, its children that are not stamped yet get no access until Trash stamps them.
+	 */
+	const pair_choice_allows = async (
+		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		pairId: Id<"plugins_file_pairs">,
+		node: FileNodeRef,
+		permission: access_control_Permission,
+	) => {
+		const full = await get_node(node._id);
+		if (!full) {
+			return false;
+		}
+
+		// An item in Trash can share its path with a live item or with another deleted item. So follow
+		// its stored "Add people" chain, which links it to its own folders. Each root's answer is one
+		// exact lookup, cached for the checker.
+		if (full.archiveOperationId !== null) {
+			return await access_control_db_extended_chain_allows(ctx, {
+				...tenant,
+				node: { ...full, restrictedScopeNodeId: node.restrictedScopeNodeId },
+				get_node,
+				root_allows: (rootId) => pair_root_allows(pairId, rootId, permission),
+			});
+		}
+
+		for (const { consent, root } of await load_pair_choices(pairId)) {
+			if (
+				root &&
+				root.organizationId === tenant.organizationId &&
+				root.workspaceId === tenant.workspaceId &&
+				root.archiveOperationId === null &&
+				// A file's `treePath` has no trailing `/`, so only a folder can be above the node.
+				(root._id === node._id || (root.kind === "folder" && full.treePath.startsWith(root.treePath))) &&
+				root.restrictedScopeNodeId === node.restrictedScopeNodeId &&
+				(consent.appliedLevel === "write" || (permission === "content.read" && consent.appliedLevel === "read"))
+			) {
+				return true;
+			}
+		}
+		return false;
+	};
+
 	/** "Add people": a grant on an extended root at or above the node. Each root's answer is shared. */
 	const chain_allows = async (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
-		principal: CheckedPrincipal,
+		principal: Exclude<CheckedPrincipal, { kind: "plugin_pair" }>,
 		node: FileNodeRef,
 		permission: access_control_Permission,
 	) => {
@@ -1290,9 +1359,6 @@ export function access_control_create_file_checker(
 			get_node,
 			root_allows: (rootId) =>
 				once(`root:${principal.kind}:${rootId}:${permission}`, async () => {
-					if (principal.kind === "plugin_pair") {
-						return await pair_root_allows(principal.pairId, rootId, permission);
-					}
 					if (principal.kind === "user") {
 						const userId = principal.userId;
 						return await has_restricted_file_permission(ctx, {
@@ -1330,7 +1396,11 @@ export function access_control_create_file_checker(
 			// Workspace consent stops at a restricted boundary, like an ordinary workspace grant.
 			if (scopeNodeId === null && (await pair_root_allows(principal.pairId, null, permission))) return true;
 			if (!node) return false;
+			// Check the node's own choice first. It is one exact read, so a check on a chosen item does not
+			// load every choice of the pair.
 			if (await pair_root_allows(principal.pairId, node._id, permission)) return true;
+			// Match the live scope here. A node whose saved scope pointer is out of date still reaches a
+			// chosen restricted root before its scope job runs. The path match below compares saved pointers.
 			if (scopeNodeId) {
 				const scope = await get_node(scopeNodeId);
 				const full = node.treePath === undefined ? await get_node(node._id) : node;
@@ -1342,7 +1412,7 @@ export function access_control_create_file_checker(
 					return true;
 				}
 			}
-			return await chain_allows(tenant, principal, node, permission);
+			return await pair_choice_allows(tenant, principal.pairId, node, permission);
 		}
 		if (principal.kind === "service_account") {
 			const base = await once(`account:${scopeNodeId}:${permission}`, () =>

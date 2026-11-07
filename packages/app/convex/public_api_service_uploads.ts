@@ -17,7 +17,11 @@ import type { RegisteredMutation } from "convex/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_can_act_on_file_node, type access_control_Subject } from "./access_control.ts";
+import {
+	access_control_create_file_checker,
+	access_control_db_can_act_on_file_node,
+	type access_control_Subject,
+} from "./access_control.ts";
 import { billing_pick_billed_user_id } from "./billing_db.ts";
 import { files_stored_uploads_db_admit, files_stored_uploads_db_settle } from "./files_stored_uploads.ts";
 import { files_nodes_db_archive_nodes, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
@@ -1558,6 +1562,12 @@ export const delete_upload_target = internalMutation({
 		}
 
 		// Check every matching node before deleting targets or archiving files.
+		// One checker for all matches, so they share the checker's reads.
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			subject: authorized._yay.subject,
+		});
 		for (const match of matches) {
 			if (!match.node) {
 				continue;
@@ -1568,18 +1578,14 @@ export const delete_upload_target = internalMutation({
 				actorUserId: args.principal.actorUserId,
 				resourceScope: { kind: "node", nodeId: match.node._id },
 			};
-			if (
-				!(await access_control_db_can_act_on_file_node(ctx, {
-					organizationId: args.principal.organizationId,
-					workspaceId: args.principal.workspaceId,
-					subject: authorized._yay.subject,
-					fileNode: match.node,
-					permission: "content.write",
-				}))
-			) {
+			if (!(await checker.can(match.node, "content.write"))) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			const writable = await public_api_file_archives_db_check_node(ctx, { node: match.node, writeContext });
+			const writable = await public_api_file_archives_db_check_node(ctx, {
+				node: match.node,
+				writeContext,
+				checker,
+			});
 			if (writable._nay) {
 				return writable;
 			}
