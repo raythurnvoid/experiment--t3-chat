@@ -424,6 +424,15 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   read `archiveOperationId`, compare it with `null`. Do not use `?? fallback`, which also replaces a
   real `null`. Restore `copy-4` and move the file back to the root afterwards. The pending-delete
   recipe further down polls search the same way.
+- New folder at the path of a folder still moving to Trash (verified 2026-11-08 as `qa.perm.member`
+  with `chitchat-qa/xfer-qa-0914:/u55`, 23 subfolders): in ONE page-context call, run
+  `archive_nodes` for the folder, then at once `files_nodes.create_folder_node({ membershipId,
+  parentId: "root", path: "u55" })`. The request puts only the top item in Trash, so the first create
+  must refuse with `path_busy` and `"/u55" is still being updated. Wait for it to finish, or use another
+  name.` For the API, call `POST /api/v1/files/mkdir` with `{ paths: ["/u55"] }` from the same call
+  with a member key (`files:write`) held in `state`: it answers 409 with the same message. Stop at the
+  first `path_busy`, because a create after the job ends makes a real folder. When
+  `/u55/c22/sibling.md` no longer resolves, `unarchive_nodes` brings `/u55` back with the same ids.
 
 ### Shared Cloud Browser End To End
 

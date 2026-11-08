@@ -139,6 +139,9 @@ state.page.goto("http://localhost:5173/__qa-signin").catch(() => {});
 // fill .cl-otpCodeField input with 424242.
 ```
 
+In a new scratch profile the Clerk script can take about 15 s to load (seen 2026-11-08), so a 4 s
+wait for `#identifier-field` times out. Poll `window.__mounted` in short calls before you fill the form.
+
 After the code, Clerk itself moves the tab into the app (`/w/personal/home/files`), so the call that typed the code can end in a Playwright error. The sign-in has landed anyway. In the next call, read `window.Clerk.user` and check that `localStorage["app::auth::anonymous_token"]` is `null`, then `unroute` the scratch URL. No anonymous user is created this way.
 
 If the app was already loaded, use the cleanup path below.

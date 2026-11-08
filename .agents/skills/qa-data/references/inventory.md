@@ -266,6 +266,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-11-08: `path_busy` checks as `qa.perm.member` in `chitchat-qa/xfer-qa-0914` moved `/u55` to Trash twice and restored it each time, with the same ids (recipe in `files.md`). The member key `trash path busy qa` (`files:write`) was created and revoked (verify 401). No new file, tenant or user.
 - 2026-11-01: approved Trash cleanup for the new top-item index erased all 7,732 old Trash items across six workspaces. Full readback found zero Trash items. All 84,325 prior active items kept the same saved fields. No tenant or user was created or erased.
 - 2026-11-01: the equal-path Trash check passed in `chitchat-qa/xfer-qa-0914` with existing `/g4-a` and `/g4-b`. Both IDs appeared in the UI and across one-item query pages. Both folders are restored at their original paths. No new fixture was created.
 - 2026-11-01: the Restore to the Trash path check passed with `chitchat-qa/xfer-qa-0914:/g4-a/source.md` (recipe in `files.md`). The two folders the check made were deleted permanently. `/g4-a`, `source.md` and `media-note.md` are back with their original ids and paths, and no Trash row is left. A full read before the push found zero Trash items, so no old Trash needed erasing.
