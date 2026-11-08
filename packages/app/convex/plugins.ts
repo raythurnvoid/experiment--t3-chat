@@ -1599,6 +1599,7 @@ export const delete_review_source_tree = internalMutation({
 			await ctx.db.patch("files_nodes", root._id, {
 				archiveOperationId: files_archive_operation_id_new(Date.now()),
 				archivedPath: root.path,
+				archiveTopNodeId: root._id,
 			});
 		const deleted = await files_nodes_db_delete_subtree_batch(ctx, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,

@@ -20,10 +20,13 @@ afterEach(() => {
 });
 
 /**
- * Give Trash entries to seeded items, like the step that moves an item to Trash on its own does.
+ * Give Trash entries and tops to seeded items, like the step that moves an item to Trash on its own does.
  */
 async function insert_entries(ctx: MutationCtx, nodeIds: Array<Id<"files_nodes">>) {
-	for (const nodeId of nodeIds) await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", nodeId))!);
+	for (const nodeId of nodeIds) {
+		await ctx.db.patch("files_nodes", nodeId, { archiveTopNodeId: nodeId });
+		await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", nodeId))!);
+	}
 }
 
 async function seed_archive() {
@@ -42,7 +45,8 @@ async function seed_archive() {
 		const big = await insert({ parentId: "root", path: "/big", kind: "folder", archiveOperationId: opNew });
 		// More items than a page, archived with their folder.
 		for (let index = 0; index < 60; index++) {
-			await insert({ parentId: big, path: `/big/f${index}.md`, kind: "file", archiveOperationId: opNew });
+			const child = await insert({ parentId: big, path: `/big/f${index}.md`, kind: "file", archiveOperationId: opNew });
+			await ctx.db.patch("files_nodes", child, { archiveTopNodeId: big });
 		}
 		const locked = await insert({
 			parentId: "root",

@@ -125,6 +125,7 @@ export function files_tree_db_get_public_node_fields(
 		contentTypeFamily: _contentTypeFamily,
 		archivedPathLength: _archivedPathLength,
 		archivedPath: _archivedPath,
+		archiveTopNodeId: _archiveTopNodeId,
 		purgeRunId: _purgeRunId,
 		...fields
 	} = fileNode;

@@ -536,6 +536,7 @@ describe("reviewed Move graph", () => {
 				if (childState !== "active") {
 					await ctx.db.patch("files_nodes", child._id, {
 						archiveOperationId: "earlier-archive",
+						archiveTopNodeId: child._id,
 						sortName: files_sort_text_key(child.name),
 						...(childState === "read_only" ? { readOnly: true, readOnlyDecisionId: crypto.randomUUID() } : {}),
 					});

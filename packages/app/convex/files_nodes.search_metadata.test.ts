@@ -2357,6 +2357,7 @@ describe("list_tree_children_sorted", () => {
 			files_nodes_db_archive_node(ctx, {
 				node: (await ctx.db.get("files_nodes", fileId))!,
 				archiveOperationId: "op-1",
+				archiveTopNodeId: fileId,
 				updatedBy: db.userId,
 				now: Date.now(),
 				savedScope: "follow",
@@ -2429,6 +2430,7 @@ describe("list_tree_children_sorted", () => {
 			files_nodes_db_archive_node(ctx, {
 				node: (await ctx.db.get("files_nodes", fileId))!,
 				archiveOperationId: "op-1",
+				archiveTopNodeId: fileId,
 				updatedBy: db.userId,
 				now: Date.now(),
 				savedScope: "follow",
@@ -2499,6 +2501,7 @@ describe("list_tree_children_sorted", () => {
 			files_nodes_db_archive_node(ctx, {
 				node: (await ctx.db.get("files_nodes", fileId!))!,
 				archiveOperationId: "op-1",
+				archiveTopNodeId: fileId!,
 				updatedBy: db.userId,
 				now: Date.now(),
 				savedScope: "follow",

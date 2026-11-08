@@ -4543,6 +4543,10 @@ describe("service upload archive", () => {
 			"/meetings/meeting-1/recording.mp4",
 		]);
 		expect(new Set(archived.map((node) => node.archiveOperationId)).size).toBe(1);
+		expect(
+			new Set(archived.map((node) => node.archiveTopNodeId)),
+			"the meeting folder is the top of everything inside it",
+		).toEqual(new Set([archived.find((node) => node.path === "/meetings/meeting-1")!._id]));
 		// The folder above the destination is not this grant's to touch. Check it is still there and
 		// active: a door that deleted it would pass an `undefined` read just as well.
 		const parent = nodes.find((node) => node.path === "/meetings");

@@ -17,7 +17,9 @@ import {
 	with_scope_repair,
 	add_member,
 	read_activity,
+	archive_to_end,
 } from "./files_archive_runs.setup.test.ts";
+import { test_rename_node } from "./setup.test.ts";
 
 // A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
 // file in the isolated "Convex" project.
@@ -161,6 +163,23 @@ describe("archive_nodes", () => {
 
 		await run_to_end(f, job);
 		expect((await create())._nay).toBeUndefined();
+	});
+
+	test("a rename in Trash keeps the deleted folder as the top of the item and of the folder it makes", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "gone", folderCount: 1, filesPerFolder: 1 });
+		await archive_to_end(f, tree.topId);
+
+		const renamed = await test_rename_node(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			nodeId: tree.fileIds[0]!,
+			path: "sub/moved.md",
+		});
+		expect(renamed._nay).toBeUndefined();
+		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/gone/d0/sub/moved.md");
+		// The new folder `sub` is in Trash with the same delete, so it and the item take the folder's top.
+		await expect_consistent(f);
+		expect((await read_node(f, tree.fileIds[0]!)).archiveTopNodeId).toBe(tree.topId);
 	});
 
 	test("has no Stop, and an item archived on its own keeps its operation through Archive and Restore", async () => {

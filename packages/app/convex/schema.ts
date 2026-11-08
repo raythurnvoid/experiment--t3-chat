@@ -539,6 +539,8 @@ const files_saved_placement_fields = {
 	archivedPathLength: v.optional(v.number()),
 	// Same as the `files_nodes` field.
 	archivedPath: v.optional(v.string()),
+	// Same as the `files_nodes` field.
+	archiveTopNodeId: v.optional(v.id("files_nodes")),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
 	// Same as the `files_nodes` fields.
@@ -5320,6 +5322,18 @@ const app_convex_schema = defineSchema({
 		 */
 		archivedPath: v.optional(v.string()),
 		/**
+		 * The top item of the node's delete. Set on every archived node, missing on active nodes. It is the
+		 * node itself when its folder is not in Trash with the same delete id, else the folder's top.
+		 *
+		 * The step that stamps the node writes it, and a Move job sets it again with the same rule. An area
+		 * change or a later delete never changes it. Only a forced delete that keeps a folder, and a restore
+		 * that ends early, change it for items they did not stamp (`files-read-only` skill).
+		 *
+		 * A restore that stopped halfway can leave an item at an older path with its old top. So a reader
+		 * checks that the top is in Trash with the same delete and above the item.
+		 */
+		archiveTopNodeId: v.optional(v.id("files_nodes")),
+		/**
 		 * The purge run that is deleting this node for good. Set in its first delete step, and the
 		 * node doc goes away with it. Missing: no purge has started on the node. Every write refuses
 		 * a node that has it (`files_nodes_db_require_writable`).
@@ -7271,10 +7285,17 @@ const app_convex_schema = defineSchema({
 				afterName: v.union(v.string(), v.null()),
 				/**
 				 * Set once the job keeps this folder out of Trash. The items it moved to Trash inside the
-				 * folder are then in Trash on their own, and get Trash entries page by page. Null before the
-				 * first page, else a native page cursor.
+				 * folder are then in Trash on their own, and get Trash entries page by page. Each one becomes
+				 * its own top, and each folder among them gets a `topCursor` row. Null before the first page,
+				 * else a native page cursor.
 				 */
 				promoteCursor: v.optional(v.union(v.string(), v.null())),
+				/**
+				 * Set on a row the job adds for a folder it moved to Trash inside a kept folder. That folder
+				 * is now the top of the items inside it, so the job rewrites their `archiveTopNodeId` page by
+				 * page. `afterTreePath` is where the next page starts.
+				 */
+				topCursor: v.optional(v.object({ afterTreePath: v.string() })),
 			}),
 		),
 		restoredParent: v.optional(
