@@ -155,6 +155,42 @@ describe("start", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toHaveLength(0);
 	});
 
+	test("waits to copy a folder while the items of the folder in its place still move to Trash", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { t, db, asUser, folders } = fixture;
+		// A running copy stops neither a create nor a move to Trash. So after the copy has planned its
+		// items, someone makes a folder with the same name and moves it to Trash.
+		const runId = await start_copy(fixture, [folders.get("/source")!]);
+		await finish_discovery(fixture, runId);
+		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/target/source/old",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [(await get_node(fixture, "/target/source"))!._id],
+		});
+		if (archived._nay) throw new Error(archived._nay.message);
+		// The request stamps only the named folder. `old` stays live under `/target/source/` until the job.
+		expect(await get_node(fixture, "/target/source/old")).not.toBeNull();
+
+		await t.mutation(internal.files_transfer.advance, { runId });
+		const item = await t.run((ctx) =>
+			ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.first(),
+		);
+		expect(item?.state, "the folder item waits in the queue").toBe("pending");
+
+		await test_finish_archive_jobs(t);
+		expect((await finish_folder_copy(fixture, runId)).activity.status).toBe("succeeded");
+		expect(await get_node(fixture, "/target/source")).not.toBeNull();
+	});
+
 	test("keeps a run private from another member of the same workspace", async () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const member = await add_member(fixture);

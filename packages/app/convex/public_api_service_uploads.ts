@@ -986,11 +986,12 @@ export const create_upload_target = internalMutation({
 		if (tooLong._nay) {
 			return tooLong;
 		}
-		// Refuse before the asset insert below: the create meets a Move only after it.
+		// Refuse before the asset insert below: the create meets a Move or a running Trash job only after it.
 		const busy = await files_nodes_db_check_create_busy(ctx, {
 			...args.principal,
 			parentNode: effectiveDestinationAclNode,
 			name: segments[parentDepth]!,
+			kind: segments.length - parentDepth > 1 ? "folder" : "file",
 		});
 		if (busy._nay) {
 			return busy;

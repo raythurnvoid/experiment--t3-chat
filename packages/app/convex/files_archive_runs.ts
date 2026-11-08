@@ -59,7 +59,10 @@ import {
 	files_nodes_db_archive_node,
 	files_nodes_db_restore_node,
 } from "./files_nodes.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
+import {
+	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_db_find_live_under_path,
+} from "./files_nodes_create_db.ts";
 import {
 	files_nodes_db_require_user_writable,
 	files_nodes_db_require_writable,
@@ -2036,7 +2039,13 @@ async function db_restore_top(
 				writeContext: args.writeContext,
 				now: args.now,
 			});
-			if (created._nay) return { kind: "failed", nay: created._nay };
+			if (created._nay) {
+				if (created._nay.name === "path_busy") {
+					const path = path_join(target.folder?.path ?? "/", names[0]!);
+					return await db_wait_for_path({ ctx, ...previousArgs, path });
+				}
+				return { kind: "failed", nay: created._nay };
+			}
 			args.writeState.isWritten = true;
 
 			// The walk found these paths missing. Read them again.
@@ -2098,6 +2107,10 @@ async function db_land_node(
 
 	const { run, progress } = previousArgs;
 	const landingParentId = landing?._id ?? files_ROOT_ID;
+	// The path wait below saves the run. Before that wait, put these two fields back. Then the Keep both
+	// answer is still in the run when the restore wakes, and the longer name is not counted twice.
+	const choiceBefore = run.choice;
+	const maxPathLengthBefore = run.maxPathLength;
 
 	let name = node.name;
 	let replacedNode: Doc<"files_nodes"> | null = null;
@@ -2217,6 +2230,22 @@ async function db_land_node(
 		return null;
 	}
 
+	// A folder must not land where live items still sit under its path, or it would share their paths
+	// (see `files_nodes_db_find_live_under_path`). Replace needs a folder with no live child
+	// (`db_can_replace`), so a replaced folder never trips this check.
+	if (
+		node.kind === "folder" &&
+		(await files_nodes_db_find_live_under_path(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			treePath: `${path}/`,
+		}))
+	) {
+		run.choice = choiceBefore;
+		run.maxPathLength = maxPathLengthBefore;
+		return await db_wait_for_path({ ctx, ...previousArgs, path });
+	}
+
 	await files_nodes_db_restore_node(ctx, {
 		node,
 		parent: landing,
@@ -2258,6 +2287,31 @@ async function db_land_node(
 	args.writeState.isWritten = true;
 	progress.completed += 1;
 	return null;
+}
+
+/**
+ * Wait for the job that leaves live items under the folder `path`, like the purge waits. The job
+ * wakes this restore when it ends, and the step lands the item again. With no such job the restore
+ * fails.
+ */
+async function db_wait_for_path(args: StepArgs & { ctx: MutationCtx; path: string }): Promise<StepOutcome> {
+	const { ctx, run } = args;
+	const op = await ctx.db.get("files_subtree_ops", args.opId);
+	if (!op) throw should_never_happen("Restore is missing its subtree op", { opId: args.opId });
+	const blocker = await files_subtree_ops_db_find_blocker(ctx, {
+		organizationId: run.organizationId,
+		workspaceId: run.workspaceId,
+		treePaths: [`${args.path}/`],
+		waiter: op,
+	});
+	if (!blocker) {
+		return {
+			kind: "failed",
+			nay: { message: `"${args.path}" is still being updated. Wait for it to finish, then restore again.` },
+		};
+	}
+	await ctx.db.patch("files_subtree_ops", op._id, { status: "queued", blockedByOpId: blocker._id });
+	return { kind: "blocked" };
 }
 
 /**

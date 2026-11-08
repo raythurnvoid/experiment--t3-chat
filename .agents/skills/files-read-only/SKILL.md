@@ -217,6 +217,16 @@ queued jobs as blockers. Restore uses it during admission and later work. Many u
 can make it hit the database read limit. The user accepted keeping this scan for development
 and Plugin Restore on 2026-11-06. Keep the overlap check; this exception allows no new scans.
 
+A folder's name stays taken while its move to Trash runs. The job stamps the items inside page by
+page, and until it ends they are still live under the old path. A new folder at that path, from a
+create, upload, `mkdir`, import or copy, would share their paths. So it is refused with `path_busy`:
+`"/A" is still being updated. Wait for it to finish, or use another name.` A copy tries again every
+second. A Restore that would land a folder there waits for the job, which wakes it when it ends.
+The same holds while a Move job rewrites child paths. Files are not refused: a file has no items
+under it. One indexed read of live items (archive operation `null`) under the new path decides
+it (`files_nodes_db_find_live_under_path`), so the refusal ends with the job. This keeps live
+paths unique, which the plugin folder-choice check needs (see the `access-control` skill).
+
 Accepted limitation: an ordinary move to Trash does not repeat flag or ACL checks during its later stamp
 walk. A flag set after its check may not stop that move to Trash. This window also exists when a bulk job
 sets flags. Do not describe ordinary moves to Trash as checking each final stamp.

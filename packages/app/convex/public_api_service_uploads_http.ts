@@ -59,7 +59,7 @@ function upload_failure(failure: { name?: string; message: string }) {
 	if (failure.name === REFUSAL_OUTSIDE_DESTINATION) {
 		return { status: 403, body: { message } } as const;
 	}
-	if (failure.name === "read_only" || failure.name === "move_busy") {
+	if (failure.name === "read_only" || failure.name === "move_busy" || failure.name === "path_busy") {
 		return { status: 409, body: { message } } as const;
 	}
 	if (failure.name === "too_many_folders") {

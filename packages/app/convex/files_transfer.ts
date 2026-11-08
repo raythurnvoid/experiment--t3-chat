@@ -4098,6 +4098,24 @@ async function db_advance(
 				readOnly: copiedFlags.sourceReadOnly ?? false,
 				now: Date.now(),
 			});
+			// A job still moves the old items under this path. Put the item back in the queue with its old
+			// attempt, so the wait spends no attempt, and try again when the job may have ended. Like the Move waits,
+			// push the deadline, because a big folder can take minutes to reach Trash.
+			if (copied._nay?.name === "path_busy") {
+				await ctx.db.patch("files_transfer_items", item._id, {
+					state: "pending",
+					attempt: item.attempt,
+					attemptExpiresAt: null,
+				});
+				if (run.step === "reserve")
+					await ctx.db.patch("files_transfer_runs", run._id, { reserveCursor: run.reserveCursor });
+				await ctx.db.patch("activities", activity._id, {
+					updatedAt: Date.now(),
+					deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
+				});
+				await ctx.scheduler.runAfter(1000, internal.files_transfer.advance, args);
+				return null;
+			}
 			if (copied._nay) throw convex_error({ message: "Could not copy folder", cause: copied._nay });
 
 			await files_transfer_db_complete_copy_item(ctx, {

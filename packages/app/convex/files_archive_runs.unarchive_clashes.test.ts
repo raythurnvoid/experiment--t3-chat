@@ -18,6 +18,7 @@ import {
 	restore,
 	read_node,
 	archive_to_end,
+	folder,
 } from "./files_archive_runs.setup.test.ts";
 
 // Scheduled steps never run on their own under fake timers. Each test drives the op's steps itself.
@@ -291,6 +292,48 @@ describe("unarchive_nodes", () => {
 			expect(ended.activity.progress).toMatchObject({ completed: 0, skipped: 2 });
 			const skipped = await read_node(f, tree.fileIds[0]!);
 			expect(skipped.archiveOperationId).toBe((await read_run(f, job.runId)).skipOperationId);
+		});
+
+		test("a folder waits to come back while the items of the folder in its place still move to Trash", async () => {
+			const f = await fixture();
+			const old = await seed_tree(f, { name: "twin", folderCount: 1, filesPerFolder: 1 });
+			await archive_to_end(f, old.topId);
+			const newTopId = await folder(f, "/twin");
+			const newChildId = await folder(f, "/twin/x");
+			const job = (await restore(f, [old.topId]))._yay!;
+			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+
+			// The new `/twin` goes to Trash. Its item `x` stays live under `/twin/` until that job ends.
+			const archiveJob = (await archive(f, [newTopId]))._yay!;
+			expect((await read_node(f, newChildId)).archiveOperationId).toBeNull();
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
+			await step(f, job.runId);
+			expect((await read_node(f, old.topId)).archiveOperationId, "the old folder waits in Trash").not.toBeNull();
+
+			await run_to_end(f, archiveJob);
+			expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
+			expect((await read_node(f, old.topId)).archiveOperationId).toBeNull();
+		});
+
+		test("a Keep both answer stays while the folder waits for its new name to be free", async () => {
+			const f = await fixture();
+			const old = await seed_tree(f, { name: "twin", folderCount: 1, filesPerFolder: 1 });
+			await archive_to_end(f, old.topId);
+			await folder(f, "/twin");
+			const takenId = await folder(f, "/twin-2");
+			await folder(f, "/twin-2/x");
+			const job = (await restore(f, [old.topId]))._yay!;
+			expect((await run_to_end(f, job)).activity.status).toBe("awaiting_input");
+
+			// `/twin-2` goes to Trash, so Keep both picks that name. Its item `x` stays live until that job ends.
+			const archiveJob = (await archive(f, [takenId]))._yay!;
+			expect(await resolve({ f, runId: job.runId, choice: "keep_both" })).toEqual({ _yay: null });
+			await step(f, job.runId);
+			expect((await read_node(f, old.topId)).archiveOperationId).not.toBeNull();
+
+			await run_to_end(f, archiveJob);
+			expect((await run_to_end(f, job)).activity.status, "the Keep both answer is still there").toBe("succeeded");
+			expect((await read_node(f, old.topId)).name).toBe("twin-2");
 		});
 
 		test("a pull that finds only the top items it queued before in the step fails instead of repeating", async () => {

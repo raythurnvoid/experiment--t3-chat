@@ -5015,17 +5015,6 @@ export const create_file_upload_targets = internalMutation({
 				});
 				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
 			}
-			// The write pass meets a Move only after it wrote the earlier items, so refuse the batch here.
-			const busy = item.collidingNodeId
-				? await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: item.collidingNodeId } })
-				: await files_nodes_db_check_create_busy(ctx, {
-						...args,
-						parentNode,
-						name: segments[parentDepth]!,
-					});
-			if (busy._nay) {
-				return { ...busy, _nay: { ...busy._nay, data: { path: item.path } } };
-			}
 			const target = { kind: "create" as const, parentNode, path: item.path };
 			const writable = await files_nodes_db_require_writable(ctx, {
 				organizationId: args.organizationId,
@@ -5035,6 +5024,20 @@ export const create_file_upload_targets = internalMutation({
 			});
 			if (writable._nay) {
 				return { ...writable, _nay: { ...writable._nay, data: { path: item.path } } };
+			}
+			// The write pass meets a Move or a running Trash job only after it wrote the earlier items, so
+			// refuse the batch here.
+			// Check after write access, so a busy path tells nothing to a caller who cannot write there.
+			const busy = item.collidingNodeId
+				? await files_move_reservations_db_check(ctx.db, { source: { kind: "saved", id: item.collidingNodeId } })
+				: await files_nodes_db_check_create_busy(ctx, {
+						...args,
+						parentNode,
+						name: segments[parentDepth]!,
+						kind: segments.length - parentDepth > 1 ? "folder" : "file",
+					});
+			if (busy._nay) {
+				return { ...busy, _nay: { ...busy._nay, data: { path: item.path } } };
 			}
 		}
 
@@ -8823,6 +8826,7 @@ export async function public_api_http_upload_urls(args: {
 					? 403
 					: isReadOnly ||
 						  created._nay.name === "move_busy" ||
+						  created._nay.name === "path_busy" ||
 						  created._nay.message === "A file already exists at this path" ||
 						  created._nay.message === "The path cannot point to a folder" ||
 						  created._nay.message === files_PATH_BELOW_FILE_MESSAGE

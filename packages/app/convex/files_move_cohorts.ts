@@ -802,6 +802,10 @@ async function db_allocate_private(
 	});
 	if (opted._nay) return opted;
 	// This output is after-only. Its final parent is resolved after every selected draft has an ID.
+	//
+	// Unlike a create, it skips `files_nodes_db_find_live_under_path`. A Move begins only when no
+	// archive or Move job runs (`files_subtree_ops_db_find_repair`), so no live item is left under an
+	// old folder path.
 	const path = path_join("/", node.name);
 	const intent = proposal.createIntent;
 	const contentType = intent.kind === "folder" ? null : intent.contentType;
@@ -1139,6 +1143,7 @@ async function db_rename_parents(
 				? await db_claim_slot(ctx, cohort, { parentId: cursor.parentId, name })
 				: Result({ _yay: null });
 		if (claimed._nay) return claimed;
+		// No `files_nodes_db_find_live_under_path` check (see `db_allocate_private`).
 		const nodeId = await ctx.db.insert("files_nodes", {
 			organizationId: cohort.organizationId,
 			workspaceId: cohort.workspaceId,

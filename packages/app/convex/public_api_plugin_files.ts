@@ -563,7 +563,12 @@ function writer_failure(error: { message: string; name?: string }) {
 	if (error.message === "Unauthenticated" || error.message === "Unauthorized")
 		return { status: 401, body: { message: "Unauthenticated" } } as const;
 	if (error.message === "Permission denied") return { status: 403, body: { message: error.message } } as const;
-	if (error.name === "stale_write" || error.name === "read_only")
+	if (
+		error.name === "stale_write" ||
+		error.name === "read_only" ||
+		error.name === "move_busy" ||
+		error.name === "path_busy"
+	)
 		return { status: 409, body: { message: error.message } } as const;
 	return { status: 400, body: { message: error.message } } as const;
 }

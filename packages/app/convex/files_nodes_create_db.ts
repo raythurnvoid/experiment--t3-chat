@@ -2,7 +2,7 @@
 // Keep editor, chunker, and upload handlers out of this module.
 
 import { Result } from "common/errors-as-values-utils.ts";
-import { path_extract_segments_from, path_join } from "../server/server-utils.ts";
+import { path_extract_segments_from, path_join, path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { files_metadata_apply_set_and_remove, type files_metadata_Entry } from "../shared/files-metadata.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -455,24 +455,67 @@ async function db_insert_node(
 	return Result({ _yay: nodeId });
 }
 /**
+ * Find a live item under `treePath`, the tree path of a folder that does not exist yet.
+ *
+ * Live paths are unique only while no job is halfway. An archive job stamps the children of a deleted
+ * folder page by page, and a Move job rewrites child paths page by page. Until the job ends, live
+ * items can keep a path under an old folder path. A new folder there would share their paths. The
+ * plugin checker matches live items by path (`access_control.ts`), so the new folder could open the
+ * old items. Callers refuse or wait while this finds a doc.
+ */
+export async function files_nodes_db_find_live_under_path(
+	ctx: MutationCtx,
+	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId" | "treePath">,
+) {
+	return await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("moveCohortId", undefined)
+				.eq("archiveOperationId", null)
+				.gt("treePath", args.treePath)
+				.lt("treePath", path_tree_prefix_upper_bound(args.treePath)),
+		)
+		.first();
+}
+/**
  * Refuse a create while a Move holds its parent or its first missing name. Batch doors call this in
  * their validation pass, so the item is refused before earlier items are written.
+ *
+ * A new folder is also refused while live items still sit under its path (see
+ * `files_nodes_db_find_live_under_path`).
  */
 export async function files_nodes_db_check_create_busy(
 	ctx: MutationCtx,
 	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId"> & {
 		parentNode: Doc<"files_nodes"> | null;
 		name: string;
+		kind: Doc<"files_nodes">["kind"];
 	},
 ) {
 	const organizationId = ctx.db.normalizeId("organizations", args.organizationId);
 	const workspaceId = ctx.db.normalizeId("organizations_workspaces", args.workspaceId);
 	if (!organizationId || !workspaceId) return Result({ _yay: null });
 	const parentId = args.parentNode?._id ?? files_ROOT_ID;
-	return await files_move_reservations_db_check(ctx.db, {
+	const moveBusy = await files_move_reservations_db_check(ctx.db, {
 		parent: parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: parentId },
 		slot: { organizationId, workspaceId, parentId, name: args.name },
 	});
+	// A file has no children, so only a new folder can share a path with live items.
+	if (moveBusy._nay || args.kind !== "folder") return moveBusy;
+
+	const path = path_join(args.parentNode?.path ?? "/", args.name);
+	if (await files_nodes_db_find_live_under_path(ctx, { organizationId, workspaceId, treePath: `${path}/` })) {
+		return Result({
+			_nay: {
+				name: "path_busy",
+				message: `"${path}" is still being updated. Wait for it to finish, or use another name.`,
+			},
+		});
+	}
+	return moveBusy;
 }
 /**
  * Create a node from a path, creating each missing parent folder segment before
@@ -677,7 +720,12 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	}
 
 	if (missingNames[0] !== undefined) {
-		const busy = await files_nodes_db_check_create_busy(ctx, { ...args, parentNode, name: missingNames[0] });
+		const busy = await files_nodes_db_check_create_busy(ctx, {
+			...args,
+			parentNode,
+			name: missingNames[0],
+			kind: missingNames.length > 1 ? "folder" : args.kind,
+		});
 		if (busy._nay) return busy;
 	}
 

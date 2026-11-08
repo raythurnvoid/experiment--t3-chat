@@ -204,12 +204,13 @@ once. People and service accounts keep the chain and its per-file timing. Ordina
 shares and open plugin consents still keep the same extended root alive.
 
 Trash keeps paths, so the path match runs only between a live item and a live selected
-folder; live paths are unique. A selected folder in Trash gives no live item access, so a
-new item created at its old path stays locked. An item in Trash follows its stored chain
-instead, like people do. This keeps a selected folder's Trash items (and the items of a
-selected folder in Trash) readable. An item that was already in Trash when the folder was
-selected becomes readable once the selection's scope job writes its chain. So keep the
-extended root that `grant_file_access_as_me` writes.
+folder; live paths are unique. Creates and Restores keep them unique while a Trash or Move
+job is halfway (see "Trash and Restore" in the `files-read-only` skill). A selected folder
+in Trash gives no live item access, so a new item created at its old path stays locked.
+An item in Trash follows its stored chain instead, like people do. This keeps a selected
+folder's Trash items (and the items of a selected folder in Trash) readable. An item that
+was already in Trash when the folder was selected becomes readable once the selection's
+scope job writes its chain. So keep the extended root that `grant_file_access_as_me` writes.
 
 The selections load once per checker, up to 100 roots. A loop over many items must share
 one checker (`access_control_create_file_checker`), not call

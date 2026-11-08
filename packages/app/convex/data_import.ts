@@ -25,7 +25,10 @@ import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadat
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
 import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
-import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
+import {
+	files_nodes_db_check_create_busy,
+	files_nodes_db_create_node_recursively_at_path,
+} from "./files_nodes_create_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 import { r2 } from "./r2_client.ts";
 import { r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_assets.ts";
@@ -201,6 +204,15 @@ export const create_upload_targets = internalMutation({
 				const tooLong = files_check_name_and_path_length({ names: segments.slice(existingDepth), path: item.path });
 				if (tooLong._nay) return Result({ _nay: { message: tooLong._nay.message, data: { path: item.path } } });
 			}
+			// The write pass would meet a Move or a running Trash job only after earlier items are written.
+			const busy = await files_nodes_db_check_create_busy(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				parentNode: ancestor,
+				name: segments[existingDepth]!,
+				kind: segments.length - existingDepth > 1 ? "folder" : "file",
+			});
+			if (busy._nay) return Result({ _nay: { ...busy._nay, data: { path: item.path } } });
 		}
 
 		// Write pass. Items run in order so later items reuse folders created by earlier ones.
@@ -262,7 +274,7 @@ export const create_upload_targets = internalMutation({
 				],
 				now,
 			});
-			// Validation already checked name conflicts, parent conflicts, locks, and owner permission.
+			// Validation already checked name conflicts, parent conflicts, locks, owner permission, and busy paths.
 			// Throw on any later error so Convex rolls back the whole batch.
 			if (nodeIdResult._nay) {
 				const errorMessage = "create_node_recursively_at_path failed after batch validation";

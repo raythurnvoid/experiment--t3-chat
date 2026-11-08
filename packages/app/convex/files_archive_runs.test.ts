@@ -144,6 +144,25 @@ describe("archive_nodes", () => {
 		expect((await read_node(f, created)).archiveOperationId).toBe((await read_node(f, tree.topId)).archiveOperationId);
 	});
 
+	test("a new folder cannot take the path of a folder whose items are still moving to Trash", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "taken", folderCount: 1, filesPerFolder: 1 });
+		const job = (await archive(f, [tree.topId]))._yay!;
+		// The request stamps only the named folder. Its items stay live under `/taken/` until the job stamps them.
+		expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId).toBeNull();
+		const create = () =>
+			f.t.mutation(internal.files_nodes.create_folder_node_by_path, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				path: "/taken",
+			});
+		expect((await create())._nay?.name).toBe("path_busy");
+
+		await run_to_end(f, job);
+		expect((await create())._nay).toBeUndefined();
+	});
+
 	test("has no Stop, and an item archived on its own keeps its operation through Archive and Restore", async () => {
 		const f = await fixture();
 		// 153 items. One file is archived first, so 152 active items are left: more than the request and

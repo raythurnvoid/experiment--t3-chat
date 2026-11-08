@@ -33,6 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
@@ -61,6 +62,40 @@ describe("data_import.create_upload_targets", () => {
 				assets: await ctx.db.query("files_r2_assets").collect(),
 			})),
 		).toEqual({ nodes: [], assets: [] });
+	});
+
+	test("a folder whose old items still move to Trash refuses the batch before any write", async () => {
+		// Hold the archive job's scheduled steps, so its items stay live.
+		vi.useFakeTimers();
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const old = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/busy/old",
+		});
+		if (old._nay) throw new Error(old._nay.message);
+		const busyId = (await t.run((ctx) => ctx.db.get("files_nodes", old._yay.nodeId)))!.parentId as Id<"files_nodes">;
+		// The request stamps only `/busy`. Its item `old` stays live under `/busy/` until the job.
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [busyId],
+		});
+		if (archived._nay) throw new Error(archived._nay.message);
+
+		const created = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			items: [
+				{ path: "/free.pdf", contentType: "application/pdf", size: 10 },
+				{ path: "/busy/new.pdf", contentType: "application/pdf", size: 10 },
+			],
+		});
+		expect(created._nay).toMatchObject({ name: "path_busy", data: { path: "/busy/new.pdf" } });
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual([]);
 	});
 
 	test("a path over 4,096 characters refuses the batch before any lookup, like any new path over the limit", async () => {

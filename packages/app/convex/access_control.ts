@@ -1291,10 +1291,15 @@ export function access_control_create_file_checker(
 	 * scope job to write each item. Access only grows to what the person chose. Ending a choice closes
 	 * its consent doc, so removal still takes effect at once.
 	 *
-	 * Trash keeps paths, so the path match runs only between live items. Live paths are unique, so a
-	 * live chosen folder whose path starts a live item's path is really above it. A chosen folder in
-	 * Trash gives no live item anything: a new item with the same path is not inside it. While Trash
-	 * stamps a big folder, its children that are not stamped yet get no access until Trash stamps them.
+	 * Trash keeps paths, so the path match runs only between live items. Live paths are unique: a new
+	 * folder is refused, and a Restore waits, while live items still sit under its path
+	 * (`files_nodes_db_find_live_under_path`). So a live chosen folder whose path starts a live item's
+	 * path is really above it. A chosen folder in Trash gives no live item anything: a new item with the
+	 * same path is not inside it.
+	 *
+	 * While Trash stamps a big folder, its children that are not stamped yet are still live. If the
+	 * chosen folder itself goes to Trash, those children get no access through it. A chosen folder
+	 * above it still reaches them until Trash stamps them.
 	 */
 	const pair_choice_allows = async (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,

@@ -2161,7 +2161,8 @@ export const create_upload_nodes = mutation({
 			),
 			// "conflict" covers every refusal about the target file itself, including permission
 			// refusals, so the payload never says which paths are restricted. "path_blocked" means
-			// the path cannot hold a file at all: a folder owns it, or a file owns an ancestor.
+			// the path cannot hold a file now: a folder owns it, a file owns an ancestor, or a Move or a
+			// running Trash job still holds the path.
 			// "storage_full" means the file does not fit the storage left after the earlier files.
 			skipped: v.array(
 				v.object({
@@ -2585,8 +2586,9 @@ export const create_upload_nodes = mutation({
 				],
 				now,
 			});
-			// The checks above should make this branch unreachable.
-			// Keep it so a future change cannot leave an asset doc without a node.
+			// The checks above do not cover a Move that holds the parent or the new name (`move_busy`), or
+			// live items of a running Trash or Move job under a new folder's path (`path_busy`). Skip that
+			// item as `path_blocked`, and keep the others.
 			// Use "conflict" for permission and read-only errors, like the checks above.
 			if (nodeIdResult._nay) {
 				await ctx.db.delete("files_r2_assets", assetId);
