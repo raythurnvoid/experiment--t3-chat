@@ -120,3 +120,29 @@ Rules:
 - Observed 2026-08-14 against the Gallery installation, which consents to `workspace.files.read` only:
   `/api/v1/files/list` returned 200 while all four `/api/v1/plugin-data/*` routes returned 403
   `Permission denied` for the same token.
+
+## Checking plugin access to Trash items
+
+Passed 2026-11-08 in `chitchat-qa/xfer-qa-0914`. The QA Edge profile was signed out, so it ran as the
+seeded `qa.perm.member` in a scratch Chrome (`clerk-test-accounts.md`). The same steps work as the owner.
+
+- The init script above also runs inside the plugin frame. Read `window.__capturedInit` with
+  `frame.evaluate`, not on the host page.
+- A member gets `[]` from `plugins.list_installations`. Read the installation id with
+  `convex data plugins_workspace_installations` and match the `workspaceId`.
+- Save and remove choices from the signed-in tab with `plugins_access.grant_file_access_as_me`
+  (`{ membershipId, installationId, rootNodeId, level: "read" }`) and `revoke_file_access_as_me`.
+  Read `list_my_file_grants` until the choice shows `state: "applied"`. On a small folder it took
+  under 6 s.
+
+Steps, with empty folders only:
+
+1. Make `/x/a/sub` and `/x/b/sub` (`files_nodes.create_folder_node`, `parentId: "root"`, path
+   `x/a/sub`). Choose `/x/a`.
+2. Move `a` and `b` to Trash in one `archive_nodes` call.
+3. As the plugin: `files/trash/list` with `{ folderNodeId: a }` answers 200 with `sub` unlocked. With
+   `b` or the live `/x` it answers 403.
+4. Make a new live `/x/a/new`. `files/list` with `{ path: "/x/a" }` answers 403: a choice in Trash
+   gives nothing to a new item at its old path.
+5. Choose the live `/x`. Now `b` and `/x` answer 200 with every row unlocked.
+6. Remove both choices (the lists answer 403 again) and move `/x` to Trash.

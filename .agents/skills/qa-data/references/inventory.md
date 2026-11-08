@@ -266,6 +266,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-11-08: the plugin Trash check (recipe in `plugin-gallery.md`) ran as `qa.perm.member` in `chitchat-qa/xfer-qa-0914`. It made the empty folders `/b2-live/a/sub`, `/b2-live/b/sub` and `/b2-live/a/new`, and left all of them in Trash. Both Gallery choices it saved are ended. No upload, tenant or user.
 - 2026-11-08: `path_busy` checks as `qa.perm.member` in `chitchat-qa/xfer-qa-0914` moved `/u55` to Trash twice and restored it each time, with the same ids (recipe in `files.md`). The member key `trash path busy qa` (`files:write`) was created and revoked (verify 401). No new file, tenant or user.
 - 2026-11-01: approved Trash cleanup for the new top-item index erased all 7,732 old Trash items across six workspaces. Full readback found zero Trash items. All 84,325 prior active items kept the same saved fields. No tenant or user was created or erased.
 - 2026-11-01: the equal-path Trash check passed in `chitchat-qa/xfer-qa-0914` with existing `/g4-a` and `/g4-b`. Both IDs appeared in the UI and across one-item query pages. Both folders are restored at their original paths. No new fixture was created.
