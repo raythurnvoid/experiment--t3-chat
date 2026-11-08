@@ -207,10 +207,26 @@ Trash keeps paths, so the path match runs only between a live item and a live se
 folder; live paths are unique. Creates and Restores keep them unique while a Trash or Move
 job is halfway (see "Trash and Restore" in the `files-read-only` skill). A selected folder
 in Trash gives no live item access, so a new item created at its old path stays locked.
-An item in Trash follows its stored chain instead, like people do. This keeps a selected
-folder's Trash items (and the items of a selected folder in Trash) readable. An item that
-was already in Trash when the folder was selected becomes readable once the selection's
-scope job writes its chain. So keep the extended root that `grant_file_access_as_me` writes.
+
+An item in Trash is matched by ids, not by paths (`trash_place` in `access_control.ts`).
+The checker climbs by `parentId`. Inside one delete it jumps to the stored top
+(`archiveTopNodeId`, see the `files-explorer-tree` skill). A selected folder reaches the
+item when it is the top of a delete on the way up, or that delete's item on the way up (the
+item itself for the first delete), or when it is live and at or
+above the first live folder above the item. So a selection on a live folder reaches its
+Trash items at once, like its live items.
+
+A selected folder inside a delete, below its top, uses the item's stored chain from that
+delete, stopped at the folder. So an item that was already in Trash when that folder was
+selected becomes readable once the selection's scope job writes its chain. Keep the
+extended root that `grant_file_access_as_me` writes.
+
+The checker denies on the safe side when the stored top does not fit (another delete, not a
+folder above the item, or not the highest folder of its delete). It also denies while a
+forced delete has not fixed the tops of a folder it keeps, and while a restore puts that
+part of a delete back. The restore deny covers every Trash item under the selected items,
+also while the restore waits for a name choice, which can last up to 24 hours. It stops a
+choice on the old top from reaching an item that the restore already moved out of it.
 
 The selections load once per checker, up to 100 roots. A loop over many items must share
 one checker (`access_control_create_file_checker`), not call
@@ -1274,9 +1290,9 @@ inside it. Everybody who had access before keeps it: added people only add acces
 - Known limit: a list whose rows sit under many separate deep chains of shared folders pays a
   few reads per root for each row. 100 rows under 100 separate 64-root chains cost about 13,000
   queries, over the 4,096 limit. Plugin pairs avoid this for live items with their bounded
-  selections (see "Personal plugin file grants"). Their Trash items still walk the chain. People
-  and service accounts have no per-subject grant limit, so they still walk the chain. Not fixed
-  yet.
+  selections (see "Personal plugin file grants"). Their Trash items jump to the top of each
+  delete, and walk the chain only below a selected folder inside a delete. People and service
+  accounts have no per-subject grant limit, so they still walk the chain. Not fixed yet.
 - Levels: added people get **Can view** or **Can edit** only. `manage` is only on a restricted root
   or from the workspace, so `content.permissions.manage` never comes from the chain. Message:
   `access_control_ADDED_PEOPLE_LEVEL_MESSAGE`.

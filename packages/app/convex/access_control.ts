@@ -1051,6 +1051,11 @@ export async function access_control_db_extended_chain_allows(
 		node: Pick<Doc<"files_nodes">, "_id" | "treePath" | "restrictedScopeNodeId" | "extendedScopeNodeId">;
 		get_node: (nodeId: Id<"files_nodes">) => Promise<Doc<"files_nodes"> | null>;
 		root_allows: (rootId: Id<"files_nodes">) => Promise<boolean>;
+		/**
+		 * Stop, closed, at a root with a shorter path. A caller that only asks about roots up to one folder
+		 * passes that folder's path length, so the walk does not read the roots above it.
+		 */
+		minPathLength?: number;
 	},
 ) {
 	let pointer = args.node.extendedScopeNodeId;
@@ -1064,6 +1069,7 @@ export async function access_control_db_extended_chain_allows(
 			// A file's `treePath` has no trailing `/`, so only a folder can be above the node.
 			!(root._id === args.node._id || (root.kind === "folder" && args.node.treePath.startsWith(root.treePath))) ||
 			root.treePath.length >= lastPathLength ||
+			root.treePath.length < (args.minPathLength ?? 0) ||
 			root.restrictedScopeNodeId !== args.node.restrictedScopeNodeId
 		) {
 			return false;
@@ -1282,6 +1288,107 @@ export function access_control_create_file_checker(
 			);
 		});
 
+	// Find the parent by its id, not by its path. In Trash, paths can repeat and can be out of date.
+	// Null means deny.
+	const get_parent = async (tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>, node: Doc<"files_nodes">) => {
+		if (node.parentId === files_ROOT_ID) return files_ROOT_ID;
+		const parent = await get_node(node.parentId);
+		if (
+			!parent ||
+			parent.organizationId !== tenant.organizationId ||
+			parent.workspaceId !== tenant.workspaceId ||
+			parent.kind !== "folder"
+		) {
+			return null;
+		}
+		return parent;
+	};
+
+	// The selected items of a restore that is putting items of this delete back now. Null when none.
+	const load_restore_roots = (
+		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		archiveOperationId: string,
+	) =>
+		once(`restore:${archiveOperationId}`, async () => {
+			const run = await ctx.db
+				.query("files_archive_runs")
+				.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
+					q
+						.eq("organizationId", tenant.organizationId)
+						.eq("workspaceId", tenant.workspaceId)
+						.eq("archiveOperationId", archiveOperationId)
+						.eq("active", true),
+				)
+				.first();
+			return run?.kind === "restore" && run.phase === "apply" ? run.restoreRoots : null;
+		});
+
+	/**
+	 * Where an item in Trash sits, found by ids. Null means deny.
+	 *
+	 * Each layer is one delete on the way up. `top` is the top item of that delete. `item` is the item of
+	 * that delete on the way up. In the first layer, it is the item itself. `live` is the first live
+	 * folder above them, or the root.
+	 *
+	 * Inside one delete, jump to the stored top (`archiveTopNodeId`) instead of walking each folder. A
+	 * top must be in the same delete, be a folder above the item, and have no folder of the same delete
+	 * above it. If not, the stored top is out of date (for example after a restore stopped halfway), and
+	 * the item is denied.
+	 *
+	 * While a restore puts part of a delete back, its items move out of Trash one page at a time. Deny
+	 * the items of that part until the restore ends.
+	 */
+	const trash_place = (
+		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
+		node: Doc<"files_nodes">,
+	): Promise<{
+		live: Doc<"files_nodes"> | typeof files_ROOT_ID;
+		layers: Array<{ top: Doc<"files_nodes">; item: Doc<"files_nodes"> }>;
+	} | null> =>
+		once(`trash_place:${node._id}`, async () => {
+			// Only items in Trash get here: `pair_choice_allows` checks it, and the climb stops at a live parent.
+			const archiveOperationId = node.archiveOperationId!;
+			let top = node;
+			let parent = await get_parent(tenant, node);
+			if (parent !== files_ROOT_ID && parent?.archiveOperationId === archiveOperationId) {
+				const stored = node.archiveTopNodeId ? await get_node(node.archiveTopNodeId) : null;
+				if (
+					!stored ||
+					stored.organizationId !== tenant.organizationId ||
+					stored.workspaceId !== tenant.workspaceId ||
+					stored.archiveOperationId !== archiveOperationId ||
+					stored.kind !== "folder" ||
+					// A shorter path keeps the climb going up, so bad data cannot loop back to this item.
+					stored.treePath.length >= node.treePath.length ||
+					!node.treePath.startsWith(stored.treePath)
+				) {
+					return null;
+				}
+				top = stored;
+				parent = await get_parent(tenant, top);
+				if (parent !== files_ROOT_ID && parent?.archiveOperationId === archiveOperationId) return null;
+			}
+			if (!parent) return null;
+
+			// The same rule as `is_in_restore_selection` in `files_archive_runs.ts`: the selected id, or an
+			// item inside a selected folder. Two folders can share a path, so a path alone does not count.
+			const restoreRoots = await load_restore_roots(tenant, archiveOperationId);
+			if (
+				restoreRoots?.some(
+					(root) =>
+						root.nodeId === node._id ||
+						(root.treePath.endsWith("/") && node.treePath > root.treePath && node.treePath.startsWith(root.treePath)),
+				)
+			) {
+				return null;
+			}
+
+			const layer = { top, item: node };
+			if (parent === files_ROOT_ID || parent.archiveOperationId === null) return { live: parent, layers: [layer] };
+			const above = await trash_place(tenant, parent);
+			return above && { live: above.live, layers: [layer, ...above.layers] };
+		});
+
 	/**
 	 * A plugin's folder choice: a chosen folder above the node, in the same restricted area. This is the
 	 * area rule of the "Add people" chain. But it reads the pair's few choices instead of every shared
@@ -1300,6 +1407,9 @@ export function access_control_create_file_checker(
 	 * While Trash stamps a big folder, its children that are not stamped yet are still live. If the
 	 * chosen folder itself goes to Trash, those children get no access through it. A chosen folder
 	 * above it still reaches them until Trash stamps them.
+	 *
+	 * An item in Trash is matched by ids (`trash_place`). A choice on a live folder reaches its Trash items
+	 * at once, like its live items.
 	 */
 	const pair_choice_allows = async (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
@@ -1312,16 +1422,54 @@ export function access_control_create_file_checker(
 			return false;
 		}
 
-		// An item in Trash can share its path with a live item or with another deleted item. So follow
-		// its stored "Add people" chain, which links it to its own folders. Each root's answer is one
-		// exact lookup, cached for the checker.
+		// An item in Trash can share its path with a live item or with another deleted item. So find its
+		// folders by ids (`trash_place`), then match each choice against them.
 		if (full.archiveOperationId !== null) {
-			return await access_control_db_extended_chain_allows(ctx, {
-				...tenant,
-				node: { ...full, restrictedScopeNodeId: node.restrictedScopeNodeId },
-				get_node,
-				root_allows: (rootId) => pair_root_allows(pairId, rootId, permission),
-			});
+			const place = await trash_place(tenant, full);
+			if (!place) return false;
+			for (const { consent, root } of await load_pair_choices(pairId)) {
+				if (
+					!root ||
+					root.organizationId !== tenant.organizationId ||
+					root.workspaceId !== tenant.workspaceId ||
+					root.kind !== "folder" ||
+					root.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
+					!(consent.appliedLevel === "write" || (permission === "content.read" && consent.appliedLevel === "read"))
+				) {
+					continue;
+				}
+
+				// The chosen folder is the top or the item of one of the deletes on the way up.
+				if (place.layers.some((layer) => layer.top._id === root._id || layer.item._id === root._id)) return true;
+
+				// A live chosen folder at or above the first live folder. Live paths are unique (see above).
+				// `live` is a folder, so its own path starts with its path.
+				if (root.archiveOperationId === null) {
+					if (place.live !== files_ROOT_ID && place.live.treePath.startsWith(root.treePath)) return true;
+					continue;
+				}
+
+				// A chosen folder inside one of the deletes, below its top. Follow the stored "Add people"
+				// chain from that delete's item, which links it to its own folders by ids, and stop at the
+				// chosen folder. Out of date Trash paths can only close the chain.
+				const rootLayer = place.layers.find(
+					(layer) =>
+						root.archiveOperationId === layer.top.archiveOperationId && root.archiveTopNodeId === layer.top._id,
+				);
+				if (
+					rootLayer &&
+					(await access_control_db_extended_chain_allows(ctx, {
+						...tenant,
+						node: { ...rootLayer.item, restrictedScopeNodeId: node.restrictedScopeNodeId },
+						get_node,
+						root_allows: (rootId) => pair_root_allows(pairId, rootId, permission),
+						minPathLength: root.treePath.length,
+					}))
+				) {
+					return true;
+				}
+			}
+			return false;
 		}
 
 		for (const { consent, root } of await load_pair_choices(pairId)) {

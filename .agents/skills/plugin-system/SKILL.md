@@ -208,7 +208,8 @@ output-folder rules out of the platform, so lists, links, Move and Trash agree.
 
 Plugin runs and frames with `workspace.files.read` may list Trash through
 `files/trash/list` and `files/trash/areas`. Applied folder consent is enough,
-including a folder already in Trash. Areas page eligible consents in consent order.
+including a folder already in Trash. Consent on a live folder covers the Trash items under
+it at once (rules in the `access-control` skill). Areas page eligible consents in consent order.
 Applied workspace View or Edit adds the open area (`areaNodeId: null`, path `/`)
 in that same page. File-only consent adds no parent access or area.
 Guests and scheduled runs are refused. `changedBy` is visible to every caller.

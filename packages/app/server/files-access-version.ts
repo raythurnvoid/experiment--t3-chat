@@ -57,7 +57,13 @@ const MESSAGES_FIELDS = {
 	files_saved_places: [...MESSAGES_FILE_FIELDS, "cohortId", "view"],
 };
 
-const PLUGIN_FILE_FIELDS = [...MESSAGES_FILE_FIELDS, "isRestrictedScopeRoot", "treePath", "archiveOperationId"];
+const PLUGIN_FILE_FIELDS = [
+	...MESSAGES_FILE_FIELDS,
+	"isRestrictedScopeRoot",
+	"treePath",
+	"archiveOperationId",
+	"archiveTopNodeId",
+];
 const PLUGIN_FIELDS: Partial<Record<TableNames, readonly string[]>> = {
 	...FIELDS,
 	organizations_workspaces: ["organizationId", "pluginDataPurgeStartedAt"],

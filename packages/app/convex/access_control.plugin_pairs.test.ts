@@ -19,6 +19,8 @@ import { run_job as run_overlay_job } from "./files_pending_overlay.ts";
 import { expect_under_convex_limits, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { public_api_file_archives_db_archive } from "./public_api_file_archives.ts";
+import { files_archive_operation_id_new } from "../shared/files.ts";
+import { read_node, restore, seed_tree, step } from "./files_archive_runs.setup.test.ts";
 import {
 	fixture,
 	insert_installation,
@@ -121,6 +123,16 @@ async function restrict(f: Fixture, nodeId: Id<"files_nodes">, restricted: boole
 			nodeId,
 		},
 	);
+	expect(result._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+}
+
+async function archive(f: Fixture, nodeId: Id<"files_nodes">) {
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const result = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+		membershipId: f.db.membershipId,
+		nodeIds: [nodeId],
+	});
 	expect(result._nay).toBeUndefined();
 	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 }
@@ -315,23 +327,58 @@ test("a chosen folder keeps its Trash items but gives a new item at its old path
 	const goneId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/docs/gone.md" });
 	await consent(f, pairId, chosen.folderId, "write");
 	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-	const archive = async (nodeId: Id<"files_nodes">) => {
-		await reset_rate_limits(f.t, [f.db.userId]);
-		const result = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: f.db.membershipId,
-			nodeIds: [nodeId],
-		});
-		expect(result._nay).toBeUndefined();
-		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-	};
 
-	await archive(goneId);
+	await archive(f, goneId);
 	expect(await levels(f, pairId, goneId), "a file moved to Trash inside the chosen folder").toEqual(write);
-	await archive(chosen.folderId);
+	await archive(f, chosen.folderId);
 	expect(await levels(f, pairId, chosen.fileId), "a file of the chosen folder in Trash").toEqual(write);
+	expect(
+		await levels(f, pairId, goneId),
+		"a file deleted earlier inside the chosen folder, after the folder moved to Trash too",
+	).toEqual(write);
 
 	const freshId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/docs/secret.md" });
 	expect(await levels(f, pairId, freshId), "a new item at a chosen folder's Trash path stays denied").toEqual(denied);
+});
+
+test("a choice on a new folder at a Trash path, deleted later, gives the older Trash items nothing", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	const outer = await folder(f, "/p");
+	const old = await folder(f, "/p/x");
+	await archive(f, old.folderId);
+	const fresh = await folder(f, "/p/x");
+	await consent(f, pairId, fresh.folderId, "write");
+	await archive(f, outer.folderId);
+	expect(
+		await levels(f, pairId, fresh.fileId),
+		"the new folder keeps its own item, below the top of the delete",
+	).toEqual(write);
+	expect(await levels(f, pairId, old.fileId), "the old folder's item at the same path").toEqual(denied);
+	expect(await levels(f, pairId, old.folderId), "the old folder at the same path").toEqual(denied);
+});
+
+test("a choice on a Trash top gives nothing to an item a running restore is moving out of it", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	// 400 files make the restore take several steps, so it lands d0 before it reaches w.
+	const tree = await seed_tree(f, { name: "t", folderCount: 1, filesPerFolder: 400 });
+	const deep = await folder(f, "/t/d0/zz/w");
+	await consent(f, pairId, tree.topId, "write");
+	await archive(f, tree.topId);
+	expect(await levels(f, pairId, deep.fileId), "a Trash item under the chosen folder").toEqual(write);
+
+	const restored = await restore(f, [tree.folderIds[0]!]);
+	expect(restored._nay).toBeUndefined();
+	for (let count = 0; count < 20 && (await read_node(f, tree.folderIds[0]!)).archiveOperationId !== null; count++) {
+		await step(f, restored._yay!.runId);
+	}
+	expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId, "d0 landed under a new live /t").toBeNull();
+	expect((await read_node(f, deep.fileId)).archiveTopNodeId, "w's item still names the old top").toBe(tree.topId);
+	expect(
+		await levels(f, pairId, deep.fileId),
+		"an item of the running restore, whose stored top is no longer above it",
+	).toEqual(denied);
 });
 
 test("a separately selected child survives ended parent consent", async () => {
@@ -721,6 +768,96 @@ test("100 checks on separate deep chains of shared folders fit one transaction",
 	expect(result.allowed[0], "the chosen top folder reaches its item 64 levels down").toBe(true);
 	expect(result.allowed.slice(1).filter(Boolean), "the other 99 chains give this pair nothing").toEqual([]);
 	expect(result.cost.databaseQueries, "100 plugin checks fit the 4,096-query transaction limit").toBeLessThan(4096);
+}, 120_000);
+
+test("100 checks on deep Trash items under a chosen live folder fit one transaction", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	const chosen = await folder(f, "/c");
+	await consent(f, pairId, chosen.folderId, "read");
+	const archiveOperationId = files_archive_operation_id_new(Date.now());
+	const base = {
+		...test_mocks.files.base(),
+		organizationId: f.db.organizationId,
+		workspaceId: f.db.workspaceId,
+		createdBy: f.db.userId,
+		updatedBy: f.db.userId,
+		kind: "folder" as const,
+		restrictedScopeNodeId: null,
+		archiveOperationId,
+	};
+	// One delete of /c/d. Its top has its own "Add people" root, so each item's chain must climb.
+	const topId = await f.t.run(async (ctx) => {
+		const nodeId = await ctx.db.insert("files_nodes", {
+			...base,
+			parentId: chosen.folderId,
+			name: "d",
+			sortName: "d",
+			path: "/c/d",
+			treePath: "/c/d/",
+			pathDepth: 2,
+			parentExtendedScopeNodeId: chosen.folderId,
+			extendedScopeNodeId: null,
+		});
+		await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId, archiveTopNodeId: nodeId });
+		return nodeId;
+	});
+	const leaves: Array<Id<"files_nodes">> = [];
+	for (let branch = 0; branch < 100; branch++) {
+		leaves.push(
+			await f.t.run(async (ctx) => {
+				let parentId = topId;
+				let path = "/c/d";
+				// 61 levels. Every folder in it is an "Add people" root, so a check that walked the chain
+				// would read about 64 roots per item. With /c, /c/d and the leaf that makes 64 nested folders.
+				for (let depth = 0; depth < 61; depth++) {
+					const name = depth === 0 ? `b${branch}` : "x";
+					path += `/${name}`;
+					const nodeId: Id<"files_nodes"> = await ctx.db.insert("files_nodes", {
+						...base,
+						parentId,
+						name,
+						sortName: name,
+						path,
+						treePath: `${path}/`,
+						pathDepth: depth + 3,
+						parentExtendedScopeNodeId: parentId,
+						extendedScopeNodeId: null,
+						archiveTopNodeId: topId,
+					});
+					await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId });
+					parentId = nodeId;
+				}
+				return await ctx.db.insert("files_nodes", {
+					...base,
+					parentId,
+					name: "leaf",
+					sortName: "leaf",
+					path: `${path}/leaf`,
+					treePath: `${path}/leaf/`,
+					pathDepth: 64,
+					extendedScopeNodeId: parentId,
+					archiveTopNodeId: topId,
+				});
+			}),
+		);
+	}
+
+	const result = await f.t.run(async (ctx) => {
+		const before = await ctx.meta.getTransactionMetrics();
+		const checker = access_control_create_file_checker(ctx, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			subject: { kind: "plugin_pair", pairId },
+		});
+		const allowed: boolean[] = [];
+		for (const leafId of leaves) {
+			allowed.push(await checker.can((await files_saved_placement_db_get_node(ctx.db, leafId))!, "content.read"));
+		}
+		return { allowed, cost: transaction_cost(before, await ctx.meta.getTransactionMetrics()) };
+	});
+	expect(result.allowed.filter(Boolean).length, "the chosen live folder reaches every Trash item").toBe(100);
+	expect(result.cost.databaseQueries, "100 Trash checks fit the 4,096-query transaction limit").toBeLessThan(4096);
 }, 120_000);
 
 test("a plugin delete loads the pair's choices once, not once per item", async () => {
