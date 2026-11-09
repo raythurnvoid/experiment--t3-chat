@@ -1,11 +1,23 @@
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { activities_db_start } from "./activities_db.ts";
+import { files_archive_runs_PLUGIN_RESTORE_MESSAGES } from "./files_archive_runs.ts";
+import { files_nodes_db_restore_named_nodes } from "./files_nodes.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { list_plugin_trash_areas_page, list_trash_page } from "./public_api_files_organize.ts";
-import { fixture, add_member, folder, archive, run_to_end, type Fixture } from "./files_archive_runs.setup.test.ts";
+import {
+	fixture,
+	add_member,
+	folder,
+	archive,
+	run_to_end,
+	read_activity,
+	read_node,
+	lock,
+	type Fixture,
+} from "./files_archive_runs.setup.test.ts";
 import { insert_installation, reset_rate_limits } from "./files_share_links.setup.test.ts";
 import {
 	test_finish_saved_scope_jobs,
@@ -144,6 +156,7 @@ async function select(
 	pairId: Id<"plugins_file_pairs">,
 	rootNodeId: Id<"files_nodes"> | null,
 	areaEligible = false,
+	level: "read" | "write" = "read",
 ) {
 	const consentId = await f.t.run((ctx) =>
 		ctx.db.insert("plugins_file_consents", {
@@ -151,8 +164,8 @@ async function select(
 			workspaceId: f.db.workspaceId,
 			pairId,
 			rootNodeId,
-			requestedLevel: "read",
-			appliedLevel: "read",
+			requestedLevel: level,
+			appliedLevel: level,
 			areaEligible,
 			open: true,
 			revision: 1,
@@ -817,4 +830,305 @@ test("a restricted child stays locked inside a selected folder", async () => {
 		(await post(f, p.token, "list", { areaNodeId: child })).status,
 		"a parent selection cannot open the child's area",
 	).toBe(403);
+});
+
+describe("files_nodes_db_restore_named_nodes", () => {
+	const PLUGIN_LOST = "The plugin that started this job was updated or removed, or it lost access to these files.";
+
+	// The person is the owner, who passes every check. So only the plugin's own access can stop a job.
+	async function restorer(f: Fixture) {
+		const p = await plugin(f);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", p.installationId, {
+				acceptedCapabilities: ["workspace.files.read", "workspace.files.write", "workspace.files.restore"],
+			}),
+		);
+		return p;
+	}
+
+	// Restore as the plugin run, with the pins the installation has now.
+	async function restore_as(
+		f: Fixture,
+		p: Awaited<ReturnType<typeof plugin>>,
+		nodeIds: Array<Id<"files_nodes">>,
+		options: { force?: boolean; onConflict?: "keep_both" | "skip" } = {},
+	) {
+		const onConflict = options.onConflict ?? "keep_both";
+		return await test_run_with_flush(f.t, async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", p.installationId))!;
+			const nodes = [];
+			for (const nodeId of nodeIds) nodes.push((await ctx.db.get("files_nodes", nodeId))!);
+			return await files_nodes_db_restore_named_nodes(ctx, {
+				userAuth: { id: p.userId },
+				membership: (await ctx.db.get("organizations_workspaces_users", p.membershipId))!,
+				nodes,
+				credentialId: null,
+				plugin: {
+					installationId: installation._id,
+					filePairId: p.pairId,
+					pluginVersionId: installation.pluginVersionId,
+					serviceAccountId: installation.serviceAccountId,
+					capabilitiesAcceptedAt: installation.capabilitiesAcceptedAt,
+				},
+				force: options.force,
+				applyToRemaining: { file: onConflict, folder: onConflict },
+				stopAtRefusal: false,
+			});
+		});
+	}
+
+	async function file(f: Fixture, parentId: Id<"files_nodes"> | "root", path: string) {
+		const name = path.split("/").at(-1)!;
+		return await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId,
+				kind: "file",
+				name,
+				sortName: name,
+				path,
+				treePath: path,
+				pathDepth: path.split("/").length - 1,
+			}),
+		);
+	}
+
+	// More files than one request restores, so the restore goes on in scheduled steps.
+	async function folder_with_files(f: Fixture, path: string) {
+		const folderId = await folder(f, path);
+		for (let index = 0; index < 40; index++) await file(f, folderId, `${path}/f${String(index).padStart(2, "0")}.md`);
+		return folderId;
+	}
+
+	async function to_trash(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
+		const archived = await archive(f, nodeIds);
+		expect(archived._nay).toBeUndefined();
+		if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
+	}
+
+	async function count_restored(f: Fixture, treePath: string) {
+		const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+		return nodes.filter((node) => node.treePath.startsWith(treePath) && node.archiveOperationId === null).length;
+	}
+
+	test("a folder choice restores every item of a multi-step job", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		const chosen = await folder(f, "/chosen");
+		await select(f, p.pairId, chosen, false, "write");
+		const big = await folder_with_files(f, "/chosen/big");
+		await to_trash(f, [big]);
+
+		const restored = await restore_as(f, p, [big]);
+		expect(restored.refusals).toEqual([]);
+		const ended = await run_to_end(f, restored.jobs[0]!);
+		expect(await count_restored(f, "/chosen/big/"), "restores every item of a multi-step job").toBe(41);
+		expect(ended.steps, "the job runs more than one step").toBeGreaterThan(1);
+		expect(ended.activity.status).toBe("succeeded");
+	});
+
+	test("a later job checks each item against the plugin's choices at that step", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		const big = await folder_with_files(f, "/a-big");
+		await select(f, p.pairId, big, false, "write");
+		const x = await file(f, "root", "/b-x.md");
+		const y = await file(f, "root", "/b-y.md");
+		// Skip the "Add people" marks, so both files share one scope key. Only the choices tell them apart.
+		await select(f, p.pairId, x, true, "write");
+		const yConsent = await select(f, p.pairId, y, true, "write");
+		await to_trash(f, [big]);
+		await to_trash(f, [x, y]);
+
+		// The first job does not end in the request, so the second one waits for it.
+		const restored = await restore_as(f, p, [big, x, y]);
+		expect(restored.refusals).toEqual([]);
+		expect(restored.jobs).toHaveLength(2);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_file_consents", yConsent, { open: false, appliedLevel: null, state: "ended" }),
+		);
+		expect((await run_to_end(f, restored.jobs[0]!)).activity.status).toBe("succeeded");
+		const second = await run_to_end(f, restored.jobs[1]!);
+		expect((await read_node(f, y)).archiveOperationId, "the removed choice refuses the second root").not.toBeNull();
+		expect(second.activity).toMatchObject({ status: "failed", errorCode: "permission_denied" });
+	});
+
+	test.each<[string, (f: Fixture, p: Awaited<ReturnType<typeof plugin>>) => Promise<unknown>]>([
+		[
+			"an upgrade",
+			(f, p) =>
+				f.t.run(async (ctx) => {
+					const installation = (await ctx.db.get("plugins_workspace_installations", p.installationId))!;
+					const { _id, _creationTime, ...version } = (await ctx.db.get(
+						"plugins_versions",
+						installation.pluginVersionId,
+					))!;
+					await ctx.db.patch("plugins_workspace_installations", p.installationId, {
+						pluginVersionId: await ctx.db.insert("plugins_versions", { ...version, version: "2.0.0" }),
+						capabilitiesAcceptedAt: installation.capabilitiesAcceptedAt + 1,
+					});
+				}),
+		],
+		[
+			"an upgrade and a downgrade back to the same version",
+			(f, p) =>
+				f.t.run(async (ctx) => {
+					const installation = (await ctx.db.get("plugins_workspace_installations", p.installationId))!;
+					await ctx.db.patch("plugins_workspace_installations", p.installationId, {
+						capabilitiesAcceptedAt: installation.capabilitiesAcceptedAt + 2,
+					});
+				}),
+		],
+		["an uninstall", (f, p) => f.t.run((ctx) => ctx.db.delete("plugins_workspace_installations", p.installationId))],
+		["a lost file pair", (f, p) => f.t.run((ctx) => ctx.db.delete("plugins_file_pairs", p.pairId))],
+		[
+			"a leave and re-join",
+			(f, p) =>
+				f.t.run(async (ctx) => {
+					const { _id, _creationTime, ...membership } = (await ctx.db.get(
+						"organizations_workspaces_users",
+						p.membershipId,
+					))!;
+					await ctx.db.patch("organizations_workspaces_users", p.membershipId, { active: false });
+					const membershipId = await ctx.db.insert("organizations_workspaces_users", membership);
+					await organizations_membership_lifetimes_db_ensure(
+						ctx,
+						(await ctx.db.get("organizations_workspaces_users", membershipId))!,
+					);
+				}),
+		],
+	])("%s stops the job before its next write", async (_, change) => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const top = await folder_with_files(f, "/fence");
+		await to_trash(f, [top]);
+
+		const restored = await restore_as(f, p, [top]);
+		const restoredCount = await count_restored(f, "/fence/");
+		expect(restoredCount, "the request restores part of the folder").toBeGreaterThan(0);
+		await change(f, p);
+		const ended = await run_to_end(f, restored.jobs[0]!);
+
+		// The owner may write every item, so a job that acted as the person would succeed.
+		expect(ended.activity, "the job stops on its plugin's pins").toMatchObject({
+			status: "failed",
+			errorCode: "stopped",
+			errorMessage: expect.stringContaining(PLUGIN_LOST),
+		});
+		expect(await count_restored(f, "/fence/"), "restored items stay, and nothing more is restored").toBe(restoredCount);
+		const left = await f.t.run(async (ctx) => {
+			const nodes = await ctx.db.query("files_nodes").collect();
+			const entryNodeIds = new Set((await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId));
+			const live = new Set(nodes.filter((node) => node.archiveOperationId === null).map((node) => node._id));
+			return nodes
+				.filter((node) => node.archiveOperationId !== null && live.has(node.parentId as Id<"files_nodes">))
+				.map((node) => entryNodeIds.has(node._id));
+		});
+		expect(left.length).toBeGreaterThan(0);
+		expect(left, "each item left in a restored folder gets its Trash entry").not.toContain(false);
+	});
+
+	test("a forced restore into a read-only folder needs Read-only management", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const readOnly = await folder(f, "/ro");
+		const item = await file(f, readOnly, "/ro/item.md");
+		await to_trash(f, [item]);
+		await lock({ f, nodeId: readOnly, locked: true });
+
+		expect((await restore_as(f, p, [item])).refusals, "the refusal names no folder").toEqual([
+			expect.objectContaining({
+				nay: { name: "read_only", message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only },
+			}),
+		]);
+		expect(await restore_as(f, p, [item], { force: true }), "force needs Read-only management").toEqual({
+			jobs: [],
+			refusals: [expect.objectContaining({ nay: { message: "Permission denied" } })],
+		});
+		expect((await read_node(f, item)).archiveOperationId).not.toBeNull();
+
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", p.installationId, {
+				acceptedCapabilities: [
+					"workspace.files.read",
+					"workspace.files.write",
+					"workspace.files.restore",
+					"workspace.files.manage-read-only",
+				],
+			}),
+		);
+		await restore_as(f, p, [item], { force: true });
+		expect((await read_node(f, item)).archiveOperationId, "force with Read-only management restores").toBeNull();
+	});
+
+	test("a name clash never waits for an answer", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const kept = await file(f, "root", "/kept.md");
+		const skipped = await file(f, "root", "/skipped.md");
+		const full = await file(f, "root", "/full.md");
+		for (const nodeId of [kept, skipped, full]) await to_trash(f, [nodeId]);
+		for (const path of ["/kept.md", "/skipped.md", "/full.md"]) await file(f, "root", path);
+		for (let counter = 2; counter <= 100; counter++) await file(f, "root", `/full-${counter}.md`);
+
+		const read_job = async (job: { runId: Id<"files_archive_runs">; activityId: Id<"activities"> }) => ({
+			status: (await read_activity(f, job.activityId)).status,
+			items: await f.t.run((ctx) =>
+				ctx.db
+					.query("files_archive_run_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", job.runId))
+					.collect(),
+			),
+		});
+		const keptBoth = await restore_as(f, p, [kept]);
+		expect(await read_job(keptBoth.jobs[0]!), "Keep both lists the new name").toMatchObject({
+			status: "succeeded",
+			items: [{ kind: "plugin_restore", nodeId: kept, path: "/kept.md", newPath: "/kept-2.md" }],
+		});
+		const skip = await restore_as(f, p, [skipped], { onConflict: "skip" });
+		expect(await read_job(skip.jobs[0]!), "Skip lists the item it leaves in the Trash").toMatchObject({
+			status: "succeeded",
+			items: [{ kind: "plugin_restore", nodeId: skipped, path: "/skipped.md", newPath: null }],
+		});
+		expect(await restore_as(f, p, [full]), "no free name fails at once with the fixed message").toEqual({
+			jobs: [],
+			refusals: [
+				expect.objectContaining({
+					nay: { name: "name_conflict", message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.name_conflict },
+				}),
+			],
+		});
+	});
+
+	test("a small plugin restore keeps its job and pins", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const item = await file(f, "root", "/small.md");
+		await to_trash(f, [item]);
+
+		const restored = await restore_as(f, p, [item]);
+		expect(restored.jobs, "the job ends in the request").toEqual([expect.objectContaining({ isDone: true })]);
+		const job = restored.jobs[0]!;
+		const installation = (await f.t.run((ctx) => ctx.db.get("plugins_workspace_installations", p.installationId)))!;
+		expect(await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)), "the job keeps its pins").toMatchObject(
+			{
+				plugin: {
+					installationId: p.installationId,
+					filePairId: p.pairId,
+					pluginVersionId: installation.pluginVersionId,
+					serviceAccountId: installation.serviceAccountId,
+					capabilitiesAcceptedAt: installation.capabilitiesAcceptedAt,
+				},
+			},
+		);
+		expect((await read_activity(f, job.activityId)).status).toBe("succeeded");
+	});
 });

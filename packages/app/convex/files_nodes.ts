@@ -3897,7 +3897,8 @@ export const empty_archive = mutation({
 /**
  * Restore each named node and the items inside it that were moved to Trash with it.
  * The caller checked the membership, the rate limit, the item count, and write access on each node.
- * `credentialId` is the API key that asked, or null for the app.
+ * `credentialId` is the API key that asked, or null for the app and for a plugin. `plugin` holds the
+ * pins of the plugin run that asked. Each job checks them again at every step.
  *
  * Each operation is one unit. A refused operation keeps the operations restored before it. With
  * `stopAtRefusal` the rest are not started. Without it they are, like `rm` with several files.
@@ -3909,6 +3910,7 @@ export async function files_nodes_db_restore_named_nodes(
 		membership: Doc<"organizations_workspaces_users">;
 		nodes: Doc<"files_nodes">[];
 		credentialId: Id<"api_credentials"> | null;
+		plugin?: NonNullable<Doc<"files_archive_runs">["plugin"]>;
 		force?: boolean;
 		applyToRemaining: Doc<"files_archive_runs">["applyToRemaining"];
 		stopAtRefusal: boolean;
@@ -3948,6 +3950,7 @@ export async function files_nodes_db_restore_named_nodes(
 			userAuth: args.userAuth,
 			membership,
 			credentialId: args.credentialId,
+			plugin: args.plugin,
 			archiveOperationId,
 			rootNodeIds: [],
 			restoreRoots,

@@ -5,7 +5,11 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { files_ROOT_ID } from "../server/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { access_control_db_authorize_node, access_control_db_can_act_on_file_node } from "./access_control.ts";
+import {
+	access_control_create_file_checker,
+	access_control_db_authorize_node,
+	access_control_db_can_act_on_file_node,
+} from "./access_control.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import {
 	type files_nodes_WriteContext,
@@ -82,6 +86,12 @@ export async function files_write_policy_db_has_write_context_permission(
 		 * job step. Pass it so each node check skips reading the user and the membership again.
 		 */
 		membership?: Doc<"organizations_workspaces_users">;
+		/**
+		 * One checker that every check of a job step shares, made for this write context's subject. A
+		 * plugin pair has access per chosen folder or file, so the step cannot keep one answer per scope.
+		 * The checker keeps its answers per item instead. Null makes a new checker for this check.
+		 */
+		checker?: ReturnType<typeof access_control_create_file_checker> | null;
 	},
 ) {
 	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
@@ -123,17 +133,22 @@ export async function files_write_policy_db_has_write_context_permission(
 		}
 	}
 
+	// Leave out the "Add people" pointer, so the checker reads it where a saved Move shows the node.
+	// The node doc keeps its old place until the Move's cleanup step runs.
+	const fileNode = args.node && {
+		_id: args.node._id,
+		restrictedScopeNodeId: args.node.restrictedScopeNodeId ?? null,
+		treePath: args.node.treePath,
+	};
+	if (args.checker) {
+		return await args.checker.can(fileNode, args.permission);
+	}
+
 	return await access_control_db_can_act_on_file_node(ctx, {
 		organizationId,
 		workspaceId,
 		subject,
-		// Leave out the "Add people" pointer, so the checker reads it where a saved Move shows the node.
-		// The node doc keeps its old place until the Move's cleanup step runs.
-		fileNode: args.node && {
-			_id: args.node._id,
-			restrictedScopeNodeId: args.node.restrictedScopeNodeId ?? null,
-			treePath: args.node.treePath,
-		},
+		fileNode,
 		permission: args.permission,
 	});
 }

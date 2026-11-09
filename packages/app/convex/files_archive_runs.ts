@@ -39,6 +39,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { mutation } from "./functions.ts";
 import {
+	access_control_create_file_checker,
 	access_control_db_authorize_file_write,
 	access_control_db_authorize_membership,
 	access_control_db_can_act_on_file_node,
@@ -99,6 +100,7 @@ import {
 	organizations_membership_lifetimes_db_ensure,
 	organizations_membership_lifetimes_db_get,
 } from "./organizations_membership_lifetimes.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	public_api_credentials_db_get_write_context,
@@ -118,6 +120,7 @@ import {
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { files_trash_entries_db_insert, files_trash_entries_order } from "../server/files-trash-entries.ts";
+import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import {
 	path_extract_segments_from,
 	path_join,
@@ -193,9 +196,15 @@ type StepArgs = {
 	userAuth: { id: Id<"users"> };
 	/**
 	 * Who the archive and restore checks act as. A job that an API key bound to a service account
-	 * started checks access as the account.
+	 * started checks access as the account. A plugin's Restore job checks access as its saved file pair.
 	 */
 	writeContext: files_nodes_WriteContext;
+	/**
+	 * Plugin Restore: one file checker for the whole step, passed to every item check. A pair has access
+	 * per chosen folder or file, so one answer per scope (`checkedScopes`) could let an item through on
+	 * the answer of another item. Null for people and API keys.
+	 */
+	fileChecker: ReturnType<typeof access_control_create_file_checker> | null;
 	/**
 	 * Null when the requester left the workspace. The archive stamp walk goes on without them. The
 	 * checks and a restore stop.
@@ -251,6 +260,44 @@ const API_KEY_LOST = {
 	kind: "failed",
 	nay: { message: "The API key that started this job was revoked or lost a required file scope." },
 } as const satisfies StepOutcome;
+
+const PLUGIN_LOST = {
+	kind: "failed",
+	nay: { message: "The plugin that started this job was updated or removed, or it lost access to these files." },
+} as const satisfies StepOutcome;
+
+/**
+ * The only refusal messages a plugin gets for its Restore, by code. The job's own message can name an
+ * item or a folder the plugin may not read. So a plugin reads the code, and the person's Activity keeps
+ * the full message. The first three are for the request, before any job starts.
+ */
+export const files_archive_runs_PLUGIN_RESTORE_MESSAGES = {
+	not_in_trash: "Not in the Trash",
+	changed: "This Trash item changed. List the Trash and pick it again.",
+	ambiguous: "Several deleted items have this path. Find the one you want in files/trash/list and restore it by nodes.",
+	permission_denied: "Permission denied",
+	read_only: "An item or a folder is read-only. Unlock it, then restore again.",
+	name_conflict:
+		"An item with the same name is in the way, and Keep both found no name that fits. Rename or move that item, then restore again.",
+	path_too_long: "Some paths would be too long. Shorten a folder name, then restore again.",
+	busy: "Another job is changing these items. Wait for it to finish, then restore again.",
+	stopped: "The restore stopped. Items it already restored stay restored.",
+};
+
+/**
+ * The fixed refusal a plugin gets instead of a step's own message. `name` is its code.
+ */
+function get_plugin_restore_refusal(nay: { name?: string; message: string }) {
+	const name =
+		nay.message === "Permission denied"
+			? "permission_denied"
+			: nay.name === "read_only" || nay.name === "name_conflict" || nay.name === "path_too_long" || nay.name === "busy"
+				? nay.name
+				: nay.name === "file_in_the_way"
+					? "name_conflict"
+					: "stopped";
+	return { name, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES[name] };
+}
 
 async function db_require_activity(ctx: QueryCtx | MutationCtx, runId: Id<"files_archive_runs">) {
 	const activity = await activities_db_require_by_source_id(ctx, runId);
@@ -324,6 +371,76 @@ async function db_get_run_membership(args: {
 	return await organizations_db_get_membership(ctx, { userId: run.userId, membershipId: activity.membershipId });
 }
 
+/**
+ * The write context of a plugin's Restore job: its saved file pair, acting for the person who asked.
+ * Every step asks this once. It never reads the plugin token or the run that asked, so the job goes on
+ * after that run ends.
+ *
+ * `isLost` is true when a saved pin no longer holds. The installation was removed, disabled, upgraded,
+ * or accepted its capabilities again (even back to the same version). Its trusted account changed. The
+ * pair or the person's membership ended. The installation no longer accepts Restore, or Read-only
+ * management for a forced job. Or the person became a guest, who has no Trash. Then the job stops.
+ * It never acts as the person instead, because the person may have more access than the plugin.
+ */
+async function db_get_plugin_write_context(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		run: Pick<RunFields, "organizationId" | "workspaceId" | "userId" | "force">;
+		plugin: NonNullable<RunFields["plugin"]>;
+		/**
+		 * The membership and its lifetime that the job's Activity keeps. A leave and re-join gives a new
+		 * lifetime, so it stops the job.
+		 */
+		membershipId: Id<"organizations_workspaces_users">;
+		membershipLifetime: number | undefined;
+	},
+) {
+	const { run, plugin } = args;
+
+	const writeContext = {
+		subject: { kind: "plugin_pair", pairId: plugin.filePairId },
+		actorUserId: run.userId,
+		resourceScope: { kind: "workspace" },
+		force: run.force,
+	} satisfies files_nodes_WriteContext;
+	// A lost job gets no membership, so no check reads this context. It still never acts as the person.
+	const lost = { writeContext: { ...writeContext, force: false }, isLost: true };
+
+	const installation = await ctx.db.get("plugins_workspace_installations", plugin.installationId);
+	if (
+		!installation ||
+		installation.status !== "enabled" ||
+		installation.organizationId !== run.organizationId ||
+		installation.workspaceId !== run.workspaceId ||
+		installation.pluginVersionId !== plugin.pluginVersionId ||
+		installation.capabilitiesAcceptedAt !== plugin.capabilitiesAcceptedAt ||
+		!installation.acceptedCapabilities.includes("workspace.files.restore") ||
+		(run.force && !installation.acceptedCapabilities.includes("workspace.files.manage-read-only"))
+	)
+		return lost;
+	if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: plugin.serviceAccountId })))
+		return lost;
+
+	const pair = await plugins_file_grants_db_validate_pair(ctx, {
+		pairId: plugin.filePairId,
+		installationId: installation._id,
+		userId: run.userId,
+	});
+	if (!pair || pair.membershipId !== args.membershipId || pair.membershipLifetime !== args.membershipLifetime)
+		return lost;
+
+	// Guests have no Trash, like on the plugin Trash doors. Check it once per step, not per item.
+	const membership = (await ctx.db.get("organizations_workspaces_users", pair.membershipId))!;
+	const readable = await access_control_db_authorize_membership(ctx, {
+		userAuth: { id: run.userId },
+		membership,
+		permission: "content.read",
+	});
+	if (readable._nay) return lost;
+
+	return { writeContext, isLost: false };
+}
+
 async function db_get_owned_run(
 	ctx: QueryCtx | MutationCtx,
 	args: { membershipId: Id<"organizations_workspaces_users">; runId: Id<"files_archive_runs"> },
@@ -339,9 +456,10 @@ async function db_get_owned_run(
 }
 
 /**
- * The job's write context (the person, or the service account of its API key) must still write each
- * node the job changes: the node's own lock, and write access where it lives. Access is asked once per restricted scope, and once for the unrestricted part of
- * the workspace, so an ordinary tree costs one check per step.
+ * The job's write context (the person, the service account of its API key, or a plugin's file pair)
+ * must still write each node the job changes: the node's own lock, and write access where it lives.
+ * Access is asked once per restricted scope, and once for the unrestricted part of the workspace, so
+ * an ordinary tree costs one check per step. A plugin pair is asked per item through the step's checker.
  * A lock refusal also returns the locked node. The caller passed the write check for it, so they
  * may read it, and the refusal may name it.
  */
@@ -357,9 +475,10 @@ async function db_check_writable_nodes(
 	if (!membership) return MEMBERSHIP_LOST;
 
 	for (const node of nodes) {
-		// Added people change access inside a scope, so the key is the pair.
-		const scopeKey = `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}`;
-		let allowed = args.checkedScopes.get(scopeKey);
+		// Added people change access inside a scope, so the key is the pair. A plugin pair has access per
+		// chosen item, so it keeps no answer per scope. Its checker keeps the answers per item.
+		const scopeKey = args.fileChecker ? null : `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}`;
+		let allowed = scopeKey === null ? undefined : args.checkedScopes.get(scopeKey);
 		if (allowed === undefined) {
 			allowed = await files_write_policy_db_has_write_context_permission(ctx, {
 				organizationId: membership.organizationId,
@@ -368,8 +487,9 @@ async function db_check_writable_nodes(
 				membership,
 				node,
 				permission: "content.write",
+				checker: args.fileChecker,
 			});
-			args.checkedScopes.set(scopeKey, allowed);
+			if (scopeKey !== null) args.checkedScopes.set(scopeKey, allowed);
 		}
 		if (!allowed) return { kind: "failed", nay: { message: "Permission denied" } } as const;
 		// Restore preserves the archived item's flag. Its live parent list is checked separately.
@@ -486,6 +606,7 @@ async function db_check_restore_folder(
 			membership,
 			node: folder,
 			permission: "content.write",
+			checker: args.fileChecker,
 		}))
 	)
 		return { kind: "failed", nay: { message: "Permission denied" } } as const;
@@ -558,6 +679,7 @@ async function db_check_restore_move(
 			membership,
 			node: destParent,
 			permission: "content.write",
+			checker: args.fileChecker,
 		}))
 	)
 		return { kind: "failed", nay: { message: "Permission denied" } } as const;
@@ -1699,6 +1821,7 @@ async function db_check_restore_create(
 		membership,
 		node: null,
 		permission: "content.write",
+		checker: args.fileChecker,
 	});
 	return authorized ? null : ({ kind: "failed", nay: { message: "Permission denied" } } as const);
 }
@@ -2221,12 +2344,14 @@ async function db_land_node(
 					occupant,
 				})))
 		) {
-			// Nobody can answer a question for an API job, so it stops with the reason, like an API move.
-			// The API sets a choice for files and folders, so only a Keep both with no free name gets here.
-			if (run.credentialId !== undefined) {
+			// Nobody can answer a question for an API key's or a plugin's job, so it stops with the reason,
+			// like an API move. The API sets a choice for files and folders, so only a Keep both with no free
+			// name gets here.
+			if (run.credentialId !== undefined || run.plugin !== undefined) {
 				return {
 					kind: "failed",
 					nay: {
+						name: "name_conflict",
 						message: `"${node.name}" clashes with an item in the folder it comes back to, and Keep both found no name that fits. Rename or move that item, then restore again.`,
 					},
 				};
@@ -2276,17 +2401,8 @@ async function db_land_node(
 			// Its folder is out of Trash, so it is in Trash on its own. What is inside joins it as the walk goes.
 			trashEntry: true,
 		});
-		// Nobody saw the clash of an API job, so list the item. It stays in the Trash.
-		if (isSkipped && run.credentialId !== undefined) {
-			await ctx.db.insert("files_archive_run_items", {
-				runId: args.runId,
-				order: progress.completed + progress.skipped,
-				kind: "restore",
-				// The item keeps its old path in the Trash. `path` is where it would have landed.
-				path: node.path,
-				newPath: null,
-			});
-		}
+		// Nobody saw the clash of an API or plugin job, so list the item. It stays in the Trash.
+		if (isSkipped) await db_insert_clash_outcome({ ctx, ...previousArgs, node, newPath: null });
 		args.writeState.isWritten = true;
 		progress.skipped += 1;
 		return null;
@@ -2337,19 +2453,44 @@ async function db_land_node(
 		});
 		args.budget.nodes -= 1;
 	}
-	// Nobody saw the clash of an API job, so list the new name. Otherwise the caller cannot find the item.
-	if (name !== node.name && run.credentialId !== undefined) {
-		await ctx.db.insert("files_archive_run_items", {
-			runId: args.runId,
-			order: progress.completed + progress.skipped,
-			kind: "restore",
-			path: node.path,
-			newPath: path,
-		});
-	}
+	// Nobody saw the clash of an API or plugin job, so list the new name. Otherwise the caller cannot find
+	// the item.
+	if (name !== node.name) await db_insert_clash_outcome({ ctx, ...previousArgs, node, newPath: path });
 	args.writeState.isWritten = true;
 	progress.completed += 1;
 	return null;
+}
+
+/**
+ * List one item that an API key's or a plugin's restore renamed with Keep both, or left in the Trash
+ * with Skip (`newPath` null). `path` is the path the item had in the Trash. The app asks the person at
+ * each clash, so its jobs list nothing. A plugin's row keeps the node id, so its job reader can check
+ * the plugin's current access before it shows either path.
+ */
+async function db_insert_clash_outcome(
+	args: StepArgs & { ctx: MutationCtx; node: Doc<"files_nodes">; newPath: string | null },
+) {
+	const { ctx, run, progress, node } = args;
+
+	const order = progress.completed + progress.skipped;
+	if (run.plugin !== undefined) {
+		await ctx.db.insert("files_archive_run_items", {
+			runId: args.runId,
+			order,
+			kind: "plugin_restore",
+			nodeId: node._id,
+			path: node.path,
+			newPath: args.newPath,
+		});
+	} else if (run.credentialId !== undefined) {
+		await ctx.db.insert("files_archive_run_items", {
+			runId: args.runId,
+			order,
+			kind: "restore",
+			path: node.path,
+			newPath: args.newPath,
+		});
+	}
 }
 
 /**
@@ -3044,6 +3185,10 @@ async function db_settle_step(
 				runId: args.runId,
 				status: status === "succeeded" && args.run.longPathOperationId !== undefined ? "partial" : status,
 				errorMessage: get_long_paths_end_text(args.run),
+				// The message names an item. A plugin reads only the code (see `get_plugin_restore_refusal`).
+				...(args.run.plugin !== undefined && args.run.longPathOperationId !== undefined
+					? { errorCode: "path_too_long" }
+					: {}),
 				now: args.now,
 			});
 			return;
@@ -3061,7 +3206,9 @@ async function db_settle_step(
 				]
 					.filter((text) => text !== null)
 					.join(" "),
-				errorCode: "failed",
+				// The person's Activity keeps the full message. A plugin reads only this code, because the
+				// message can name items the plugin may not read.
+				errorCode: args.run.plugin !== undefined ? get_plugin_restore_refusal(args.outcome.nay).name : "failed",
 				now: args.now,
 			});
 			return;
@@ -3254,9 +3401,14 @@ export async function files_archive_runs_db_start(
 		userAuth: { id: Id<"users"> };
 		membership: Doc<"organizations_workspaces_users">;
 		/**
-		 * The API key that started the job, or null for the app.
+		 * The API key that started the job, or null for the app and for a plugin.
 		 */
 		credentialId: Id<"api_credentials"> | null;
+		/**
+		 * Restore: the pins of the plugin run that started the job. The job then acts as the saved file
+		 * pair at every step. Missing for the app and for an API key.
+		 */
+		plugin?: NonNullable<RunFields["plugin"]>;
 		force?: boolean;
 		archiveOperationId: string;
 		/**
@@ -3302,8 +3454,30 @@ export async function files_archive_runs_db_start(
 	},
 ) {
 	const force = args.force ?? false;
+	// A plugin job checks its pins now, like every later step does. For a forced job this also asks for
+	// Read-only management in the installation's current capabilities.
+	const plugin =
+		args.plugin &&
+		(await db_get_plugin_write_context(ctx, {
+			run: {
+				organizationId: args.membership.organizationId,
+				workspaceId: args.membership.workspaceId,
+				userId: args.userAuth.id,
+				force,
+			},
+			plugin: args.plugin,
+			membershipId: args.membership._id,
+			membershipLifetime: (
+				await organizations_membership_lifetimes_db_get(ctx, {
+					workspaceId: args.membership.workspaceId,
+					userId: args.userAuth.id,
+				})
+			)?.lifetime,
+		}));
+	if (plugin?.isLost) return Result({ _nay: { message: "Permission denied" } });
 	if (
 		force &&
+		!plugin &&
 		(args.credentialId === null ||
 			!(await public_api_credentials_db_is_live(ctx, {
 				credentialId: args.credentialId,
@@ -3326,13 +3500,15 @@ export async function files_archive_runs_db_start(
 			.first();
 		if (busy) {
 			return Result({
-				_nay: {
-					name: "busy",
-					message:
-						busy.kind === "archive"
-							? "These items are being moved to Trash. Wait for it to finish."
-							: "These items are being restored. Wait for it to finish.",
-				},
+				_nay: args.plugin
+					? { name: "busy", message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy }
+					: {
+							name: "busy",
+							message:
+								busy.kind === "archive"
+									? "These items are being moved to Trash. Wait for it to finish."
+									: "These items are being restored. Wait for it to finish.",
+						},
 			});
 		}
 	}
@@ -3361,6 +3537,7 @@ export async function files_archive_runs_db_start(
 		workspaceId: args.membership.workspaceId,
 		userId: args.userAuth.id,
 		credentialId: args.credentialId ?? undefined,
+		plugin: args.plugin,
 		force,
 		kind: args.kind,
 		archiveOperationId: args.archiveOperationId,
@@ -3444,11 +3621,21 @@ export async function files_archive_runs_db_start(
 		run,
 		progress,
 		userAuth: args.userAuth,
-		writeContext: await public_api_credentials_db_get_write_context(ctx, {
-			credentialId: args.credentialId,
-			userId: args.userAuth.id,
-			force,
-		}),
+		writeContext:
+			plugin?.writeContext ??
+			(await public_api_credentials_db_get_write_context(ctx, {
+				credentialId: args.credentialId,
+				userId: args.userAuth.id,
+				force,
+			})),
+		fileChecker: plugin
+			? access_control_create_file_checker(ctx, {
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					subject: plugin.writeContext.subject,
+					restoreRunId: runId,
+				})
+			: null,
 		membership: args.membership,
 		now,
 		budget: args.budget,
@@ -3469,17 +3656,19 @@ export async function files_archive_runs_db_start(
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
 	// refused a named item keeps its job, so its Activity can list what was not archived. So does a
 	// restore that kept items archived because their paths got too long, so its Activity says so. So
-	// does a restore an API key started, so a retry with the same request id finds it.
+	// does a restore an API key or a plugin started, so a retry with the same request id finds it.
 	if (
 		(outcome?.kind === "done" &&
 			progress.blocked === 0 &&
 			run.longPathOperationId === undefined &&
-			!(args.kind === "restore" && args.credentialId !== null)) ||
+			!(args.kind === "restore" && (args.credentialId !== null || args.plugin !== undefined))) ||
 		(outcome?.kind === "failed" && !stepArgs.writeState.isWritten)
 	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });
 		await ctx.db.delete("files_archive_runs", runId);
-		return outcome.kind === "done" ? Result({ _yay: null }) : Result({ _nay: outcome.nay });
+		return outcome.kind === "done"
+			? Result({ _yay: null })
+			: Result({ _nay: args.plugin ? get_plugin_restore_refusal(outcome.nay) : outcome.nay });
 	}
 
 	const activityId = await activities_db_start(ctx, {
@@ -3506,13 +3695,15 @@ export async function files_archive_runs_db_start(
 		// A request that failed after some writes keeps them and a failed Activity. Answer with the error, so
 		// the caller does not say the work goes on in the background. `data` names the job, so an API
 		// caller can read what the job did before it stopped. A restore that changed items still runs
-		// a few "stopping" steps for their Trash entries, so it is not done yet.
+		// a few "stopping" steps for their Trash entries, so it is not done yet. A plugin gets only the
+		// fixed message, because the step's own message can name an item it may not read.
 		if (outcome.kind === "failed") {
 			const isDone = !activities_is_active((await ctx.db.get("activities", activityId))!.status);
+			const nay = args.plugin ? get_plugin_restore_refusal(outcome.nay) : outcome.nay;
 			return Result({
 				_nay: {
-					...outcome.nay,
-					message: `Stopped partway: ${outcome.nay.message}`,
+					...nay,
+					message: `Stopped partway: ${nay.message}`,
 					data: { runId, activityId, isDone },
 				},
 			});
@@ -3660,6 +3851,7 @@ export async function files_archive_runs_db_start_purge(
 			userId: args.userAuth.id,
 			force: false,
 		}),
+		fileChecker: null,
 		membership: args.membership,
 		now,
 		budget: {
@@ -3753,6 +3945,16 @@ export async function files_archive_runs_db_advance(
 			workspaceId: storedRun.workspaceId,
 			scopes: storedRun.force ? ["files:write", "files:read-only"] : ["files:write"],
 		}));
+	// A plugin's Restore job checks its pins at every step, before it writes anything. When a pin fails,
+	// it stops like a lost key, and it never acts as the person.
+	const plugin =
+		storedRun.plugin &&
+		(await db_get_plugin_write_context(ctx, {
+			run: storedRun,
+			plugin: storedRun.plugin,
+			membershipId: activity.membershipId,
+			membershipLifetime: activity.membershipLifetime,
+		}));
 	const stepOutcome = await db_step(ctx, {
 		opId: args.op._id,
 		runId,
@@ -3761,12 +3963,23 @@ export async function files_archive_runs_db_advance(
 		userAuth: { id: storedRun.userId },
 		// When the key is lost, the step gets no membership, so no check runs. So read the key only while
 		// it is live. A data purge may have deleted it.
-		writeContext: await public_api_credentials_db_get_write_context(ctx, {
-			credentialId: isApiKeyLost ? null : (storedRun.credentialId ?? null),
-			userId: storedRun.userId,
-			force: !isApiKeyLost && storedRun.force,
-		}),
-		membership: isApiKeyLost ? null : membership,
+		writeContext:
+			plugin?.writeContext ??
+			(await public_api_credentials_db_get_write_context(ctx, {
+				credentialId: isApiKeyLost ? null : (storedRun.credentialId ?? null),
+				userId: storedRun.userId,
+				force: !isApiKeyLost && storedRun.force,
+			})),
+		fileChecker:
+			plugin && !plugin.isLost
+				? access_control_create_file_checker(ctx, {
+						organizationId: storedRun.organizationId,
+						workspaceId: storedRun.workspaceId,
+						subject: plugin.writeContext.subject,
+						restoreRunId: runId,
+					})
+				: null,
+		membership: isApiKeyLost || plugin?.isLost ? null : membership,
 		now: args.now,
 		budget: {
 			nodes: files_archive_runs_STEP_MAX_NODES,
@@ -3779,7 +3992,14 @@ export async function files_archive_runs_db_advance(
 		restoredParents: new Map(),
 		isStopping: activity.status === "stopping",
 	});
-	const outcome = isApiKeyLost && stepOutcome === MEMBERSHIP_LOST ? API_KEY_LOST : stepOutcome;
+	const outcome =
+		stepOutcome !== MEMBERSHIP_LOST
+			? stepOutcome
+			: isApiKeyLost
+				? API_KEY_LOST
+				: plugin?.isLost
+					? PLUGIN_LOST
+					: stepOutcome;
 
 	await db_settle_step(ctx, {
 		opId: args.op._id,

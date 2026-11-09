@@ -1217,6 +1217,11 @@ export function access_control_create_file_checker(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		subject: access_control_Subject;
+		/**
+		 * A plugin's Restore job that checks its own items while it puts them back. Only this run's
+		 * items skip the Restore deny of `trash_place`. Status, retry and recovery reads pass nothing.
+		 */
+		restoreRunId?: Id<"files_archive_runs">;
 	},
 ) {
 	const { subject } = args;
@@ -1304,7 +1309,8 @@ export function access_control_create_file_checker(
 		return parent;
 	};
 
-	// The selected items of a restore that is putting items of this delete back now. Null when none.
+	// The selected items of a restore that is putting items of this delete back now. Null when none, or
+	// when that restore is the one asking (`restoreRunId`).
 	const load_restore_roots = (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
 		archiveOperationId: string,
@@ -1320,7 +1326,9 @@ export function access_control_create_file_checker(
 						.eq("active", true),
 				)
 				.first();
-			return run?.kind === "restore" && run.phase === "apply" ? run.restoreRoots : null;
+			return run?.kind === "restore" && run.phase === "apply" && run._id !== args.restoreRunId
+				? run.restoreRoots
+				: null;
 		});
 
 	/**
@@ -1336,7 +1344,8 @@ export function access_control_create_file_checker(
 	 * the item is denied.
 	 *
 	 * While a restore puts part of a delete back, its items move out of Trash one page at a time. Deny
-	 * the items of that part until the restore ends.
+	 * the items of that part until the restore ends. A plugin's own Restore job is the exception: its
+	 * steps must still check the items it is putting back (`restoreRunId`).
 	 */
 	const trash_place = (
 		tenant: NonNullable<Awaited<ReturnType<typeof load_tenant>>>,
