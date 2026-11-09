@@ -636,14 +636,16 @@ test("materialize_file_content saves and indexes every field beyond the old fron
 		targetSequence: pushResult._yay.newSequence,
 	});
 	expect(materialized._nay).toBeUndefined();
-	await t.mutation(internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		nodeId,
-		logOwnerId: (await test_get_file_yjs_pointers(t, nodeId)).logOwnerId,
-		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
-		throughSequence: pushResult._yay.newSequence,
-	});
+	// Cleanup deletes one covered update per call. The next call finds none and deletes the settled job.
+	for (let call = 0; call < 2; call++)
+		await t.mutation(internal.files_nodes_content.cleanup_file_materialization_covered_rows, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			logOwnerId: (await test_get_file_yjs_pointers(t, nodeId)).logOwnerId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+			throughSequence: pushResult._yay.newSequence,
+		});
 
 	const afterReject = await t.run(async (ctx) => {
 		const fileNode = await ctx.db.get("files_nodes", nodeId);

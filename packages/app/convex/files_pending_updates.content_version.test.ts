@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex } from "./setup.test.ts";
+import { test_convex, test_run_with_flush } from "./setup.test.ts";
 import {
 	mock_pending_updates_storage,
 	seed_non_collaborative_file,
@@ -26,7 +26,7 @@ describe("pending content versions", () => {
 			target: { kind: "saved" as const, id: file.nodeId },
 			expectedPendingContentVersion: 1,
 		};
-		await t.run((ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
+		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
 
 		const old = await t.mutation(
 			internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
@@ -63,7 +63,7 @@ describe("pending content versions", () => {
 			},
 		);
 		if (admitted._nay) throw new Error(admitted._nay.message);
-		await t.run((ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
+		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
 		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_state_page_internal, {
 			organizationId: file.organizationId,
 			workspaceId: file.workspaceId,
@@ -97,7 +97,7 @@ describe("pending content versions", () => {
 		expect((await asUser.query(api.files_pending_updates.get_file_pending_update_last_sequence_saved, args))?._id).toBe(
 			markerId,
 		);
-		await t.run((ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
+		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
 		expect(await asUser.query(api.files_pending_updates.get_file_pending_update_last_sequence_saved, args)).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates_last_sequence_saved", markerId))).not.toBeNull();
 		await t.run((ctx) =>
@@ -153,7 +153,7 @@ describe("pending content versions", () => {
 						expectedYjsLastSequenceId: source.node.yjsLastSequenceId!,
 					}
 				: { ...common, kind: "saved_asset" as const, publish: null };
-			await t.run((ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
+			await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", file.nodeId, { pendingContentVersion: 2 }));
 
 			const result = await t.mutation(internal.files_pending_updates.commit_prepared_content, {
 				userId: file.userId,

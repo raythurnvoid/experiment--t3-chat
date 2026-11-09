@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import {
+	test_finish_file_index,
 	test_run_with_flush,
 	test_save_file_pending_update,
 } from "./setup.test.ts";
@@ -56,6 +57,8 @@ describe("full metadata maps", () => {
 		}), "Properties reads the full ordered map").toEqual(entries);
 		const stored = await t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "saved", id: nodeId }));
 		expect(stored).toMatchObject({ entries, revision: 1 });
+		// The table reads the published index, which builds in the background.
+		await test_finish_file_index(t, nodeId);
 		expect(await asUser.query(api.files_metadata.get_field_values, {
 			membershipId: db.membershipId,
 			target: { kind: "saved", id: nodeId },

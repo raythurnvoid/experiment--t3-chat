@@ -1125,6 +1125,10 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   and `kind`, in four streams: their own shares, their two roles, and everyone. So the index never
   reads a restricted file. Guests get no areas and an empty list. A gone area falls back to
   `Workspace`.
+- Items in Trash may share a name and a path, with each other and with an active item. Windows
+  Recycle Bin, macOS Trash, Google Drive and Dropbox all allow this. So moving to Trash does not
+  check names, and a Trash name clash is not a bug to fix. The name check happens at Restore, which
+  asks Keep both, Replace or Skip. Decided 2026-11-08.
 - The list (`files_tree.list_trash_entries`) shows the Trash entries of the area (`files_trash_entries`,
   `server/files-trash-entries.ts`), newest delete first, then by the path the item had when it moved
   to Trash. An entry is an item in Trash on its own: its folder is not in Trash with the same delete

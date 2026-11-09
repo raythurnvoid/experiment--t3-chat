@@ -9,6 +9,7 @@ import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import { ai_chat_message_fits_storage } from "../server/ai-chat-tool-budget.ts";
 import { ai_chat_tool_output_keep, ai_chat_tool_output_reserve } from "../server/ai-chat-tool-output.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 
 const TRANSCRIPT_PATH = "/api/v1/ai-chat/threads/transcript";
@@ -587,8 +588,9 @@ describe("AI transcript API", () => {
 
 	test("preserves sent quote text after the linked file becomes unavailable", async () => {
 		const f = await fixture();
+		// Give the saved file the content head a save makes.
 		const fileNodeId = await f.t.run((ctx) =>
-			ctx.db.insert("files_nodes", {
+			files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.db.organizationId,
 				workspaceId: f.db.workspaceId,

@@ -6,6 +6,7 @@ import {
 	test_mocks,
 	test_mocks_fill_db_with,
 	test_move_nodes,
+	test_run_with_flush,
 	test_spy_handler,
 } from "./setup.test.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
@@ -207,9 +208,9 @@ describe("set_node_share_link", () => {
 		expect((await on(folder._yay!.nodeId))._nay?.message).toBe("Only a file can have a public link");
 
 		// A text type stored as plain bytes has no committed text for the public reader.
-		await f.t.run((ctx) => ctx.db.patch("files_nodes", f.nodeId, { textKind: null }));
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", f.nodeId, { textKind: null }));
 		expect((await on(f.nodeId))._nay?.message).toBe("This type of file cannot have a public link");
-		await f.t.run((ctx) => ctx.db.patch("files_nodes", f.nodeId, { textKind: "rich_text" }));
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", f.nodeId, { textKind: "rich_text" }));
 
 		const node = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId));
 		await f.t.run((ctx) =>

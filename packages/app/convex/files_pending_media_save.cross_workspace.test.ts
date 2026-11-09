@@ -144,7 +144,13 @@ describe("cross-workspace Copy from public Save", () => {
 				status: "succeeded",
 				progress: { completed: 1, blocked: 0 },
 			});
-			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
+			// Review prepares a new content head even for unchanged text, and publication selects it.
+			// Every other field of the saved file stays the same.
+			const { contentHeadId: _beforeHeadId, ...beforeFields } = before!;
+			const { contentHeadId: _afterHeadId, ...afterFields } = (await f.t.run((ctx) =>
+				ctx.db.get("files_nodes", nodeId),
+			))!;
+			expect(afterFields).toEqual(beforeFields);
 			expect(await f.t.run((ctx) => ctx.db.get("files_pending_updates", full._id))).toBeNull();
 		},
 	);

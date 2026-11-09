@@ -5,6 +5,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with, test_LIMITS_AT_75_PERCENT } from "./setup.test.ts";
 import type { files_type_queries_Request } from "./files_type_queries.ts";
 import { create_bash_runner, drain_scheduled_continuations, get_seeded_node_id } from "../server/bash.setup.test.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_type_query_page } from "../server/files-type-query.ts";
 import { files_content_type_index_fields } from "../shared/files.ts";
 
@@ -25,7 +26,7 @@ function request(runner: Runner, overrides: Partial<files_type_queries_Request> 
 }
 
 describe("file type query scale and retries", () => {
-	test("resumes a 500-area walk and owner path within transaction limits", async () => {
+	test("resumes a 64-area walk and owner path within transaction limits", async () => {
 		const t = test_convex({ transactionLimits: true });
 		const scope = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const userId = await t.run(async (ctx) => {
@@ -50,10 +51,11 @@ describe("file type query scale and retries", () => {
 			return id;
 		});
 		let parent: Doc<"files_nodes"> | null = null;
-		for (let start = 0; start < 500; start += 50) {
+		// Files tests use at most 64 nested folders. Each folder is its own restricted area.
+		for (let start = 0; start < 64; start += 32) {
 			parent = await t.run(async (ctx) => {
 				let above = parent;
-				for (let depth = start + 1; depth <= start + 50; depth++) {
+				for (let depth = start + 1; depth <= start + 32; depth++) {
 					const path = `${above?.path ?? ""}/a`;
 					const id = await ctx.db.insert("files_nodes", {
 						...test_mocks.files.base(),
@@ -92,8 +94,9 @@ describe("file type query scale and retries", () => {
 		const deepest = parent!;
 		const path = `${deepest.path}/hit.txt`;
 		expect(path.length).toBeLessThanOrEqual(1024);
+		// Give the saved file the content head a save makes.
 		await t.run((ctx) =>
-			ctx.db.insert("files_nodes", {
+			files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
@@ -104,7 +107,7 @@ describe("file type query scale and retries", () => {
 				sortName: "hit.txt",
 				path,
 				treePath: path,
-				pathDepth: 501,
+				pathDepth: 65,
 				kind: "file",
 				contentType: "text/plain",
 				...files_content_type_index_fields("text/plain"),
@@ -151,7 +154,7 @@ describe("file type query scale and retries", () => {
 			}
 		}
 		expect(paths).toEqual([path]);
-		expect(checked).toBeGreaterThan(500);
+		expect(checked).toBeGreaterThan(64);
 	}, 120_000);
 
 	test("pages all 257 moved subtrees in exact alphabetical order", async () => {

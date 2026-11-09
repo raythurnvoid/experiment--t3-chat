@@ -1969,7 +1969,7 @@ describe("r2 asset content", () => {
 		},
 	);
 
-	test("converts an over-cap frontmatter upload with the frontmatter marker instead of throwing", async () => {
+	test("converts an over-cap frontmatter upload and indexes all of its frontmatter", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		// The installed plugin subscribes to the Markdown type. Successful conversion suppresses the upload event
@@ -2010,8 +2010,8 @@ describe("r2 asset content", () => {
 		});
 		// 129 frontmatter fields, mirroring the qa-frontmatter-overcap.md fixture: over the field
 		// cap while the byte size stays far under the content cap. The markdown itself is valid,
-		// so the conversion must publish an editable node instead of throwing the insert
-		// backstop inside the infinite-retry workpool.
+		// so the conversion must publish an editable node and never throw inside the
+		// infinite-retry workpool.
 		const overCapMarkdown = `---\n${Array.from({ length: files_metadata_MAX_FRONTMATTER_FIELDS + 1 }, (_, index) => `field_${index}: ${index}`).join("\n")}\n---\n\n# Body\n`;
 		r2Objects.set(assetR2Key, new TextEncoder().encode(overCapMarkdown));
 
@@ -2068,17 +2068,16 @@ describe("r2 asset content", () => {
 			return { fileNode, asset, metadataDocs, pluginRun };
 		});
 
-		// The node publishes editable with the marker pair set from its first publish, exactly
-		// like a materialization settle would set it.
+		// The node publishes editable. Like Save, the background index worker indexes all of the
+		// frontmatter in pages, so the over-cap marker pair stays clear.
 		expect(docs.fileNode?.textKind).toBe("rich_text");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
-		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBe(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
-		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
-			files_metadata_MAX_FRONTMATTER_FIELDS + 1,
-		);
+		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBeNull();
+		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 		expect(docs.asset?.processingWorkId).toBeNull();
-		// The over-cap frontmatter is committed as chunk content but never indexed.
-		expect(docs.metadataDocs.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(0);
+		expect(
+			docs.metadataDocs.filter((doc) => doc.docKind === "field" && doc.fieldPath.startsWith("frontmatter.")),
+		).toHaveLength(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
 		// The publish writes no metadata of its own, so the map is still exactly what the create
 		// stamped. A publish-time write that replaced instead of merging would delete these.
 		const metadataValues = Object.fromEntries(
@@ -2095,7 +2094,7 @@ describe("r2 asset content", () => {
 		expect(docs.pluginRun).toBeNull();
 	});
 
-	test("converts an upload whose frontmatter values overflow the index-document cap with the marker pair", async () => {
+	test("converts an upload whose frontmatter values overflow the index-document cap and indexes every value", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -2158,6 +2157,7 @@ describe("r2 asset content", () => {
 			assetId: upload._yay.assetId,
 			eventId: "event_frontmatter_values_overcap",
 		});
+		await test_finish_file_index(t, upload._yay.nodeId);
 
 		const docs = await t.run(async (ctx) => {
 			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
@@ -2175,17 +2175,15 @@ describe("r2 asset content", () => {
 			return { fileNode, asset, metadataDocs };
 		});
 
-		// The index-document half of the pair is the one this content crosses; the field count is
-		// recorded beside it as the fresh preflight measured it.
+		// The 601 index documents are over the old upload cap. The paged worker indexes them all.
 		expect(docs.fileNode?.textKind).toBe("rich_text");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
-		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBe(1);
-		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBe(601);
-		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
-			files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
-		);
+		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBeNull();
+		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 		expect(docs.asset?.processingWorkId).toBeNull();
-		expect(docs.metadataDocs.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(0);
+		const tagDocs = docs.metadataDocs.filter((doc) => doc.fieldPath === "frontmatter.tags");
+		expect(tagDocs.length).toBeGreaterThan(files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS);
+		expect(tagDocs).toHaveLength(601);
 	});
 
 	test("falls back to the stored blob on invalid UTF-8 and dispatches the plugin upload event", async () => {
@@ -5148,6 +5146,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				}
 			},
 		});
+		// The background index worker writes the search chunks from the node's placement.
+		await test_finish_file_index(t, upload.nodeId);
 
 		const published = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", upload.nodeId),

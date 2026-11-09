@@ -22,8 +22,8 @@ const ctxData = {
 };
 
 function create_command_runner() {
-	// Keep the real merge. The saved view is normal, the walk starts at the root, and each stream is empty
-	// and done.
+	// Keep the real merge. The saved and index views are normal, the walk starts at the root, and each
+	// stream is empty and done.
 	const runQuery = vi.fn(async (ref: FunctionReference<"query">, _args: unknown) => {
 		switch (getFunctionName(ref)) {
 			case "files_visible:internal_get_move_view":
@@ -34,6 +34,8 @@ function create_command_runner() {
 					searchGeneration: 0,
 					migrationDirection: null,
 				};
+			case "files_visible:internal_get_index_view":
+				return { cohortId: null, view: null, generation: 0, migrationDirection: null };
 			case "files_visible:internal_get_walk_start":
 				return { _yay: { root: { kind: "root" }, start: { scopeNodeId: null, treePath: "/" } } };
 			case "files_visible:internal_list_subtree_boundaries":

@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } 
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
-import { test_convex, test_folder_chain_path, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_finish_file_index,
+	test_folder_chain_path,
+	test_mocks,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import {
 	files_NAME_MAX_LENGTH,
@@ -180,7 +187,7 @@ describe("data_import.create_upload_targets", () => {
 		// Names saved before the limit existed.
 		const folderName = "f".repeat(files_NAME_MAX_LENGTH + 1);
 		const fileName = `${"n".repeat(files_NAME_MAX_LENGTH)}.pdf`;
-		const oldFileId = await t.run(async (ctx) => {
+		const oldFileId = await test_run_with_flush(t, async (ctx) => {
 			const insert_old = (name: string, kind: "file" | "folder") =>
 				ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -297,6 +304,8 @@ describe("data_import.create_upload_targets", () => {
 			throw new Error(created._nay.message);
 		}
 
+		// The create saves the metadata map. A background index run writes the searchable docs.
+		await test_finish_file_index(t, created._yay[0]!.nodeId);
 		const metadataDocs = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
@@ -831,7 +840,7 @@ describe("data_import.verify_metadata", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		const nodeId = await t.run(async (ctx) => {
+		const nodeId = await test_run_with_flush(t, async (ctx) => {
 			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -907,7 +916,7 @@ describe("data_import.verify_metadata", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,

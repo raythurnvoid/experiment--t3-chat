@@ -30,6 +30,8 @@ import {
 } from "../server/files.ts";
 import { delay } from "../shared/async-utils.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
+import type { MutationCtx } from "./_generated/server.js";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_NAME_MAX_LENGTH, files_PATH_MAX_LENGTH } from "../shared/files.ts";
 import {
@@ -89,6 +91,42 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
+
+/**
+ * Turn a fixture folder into a saved file. Every saved file needs a content head, but the content
+ * writer adds one only when a file is inserted, not when a folder is patched. So add the head here.
+ * Run this through the content writer and set the file fields after it, so the head copies them.
+ */
+async function make_saved_file(ctx: MutationCtx, nodeId: Id<"files_nodes">) {
+	const node = (await ctx.db.get("files_nodes", nodeId))!;
+	const contentHeadId = await ctx.db.insert("files_saved_content_heads", {
+		organizationId: node.organizationId,
+		workspaceId: node.workspaceId,
+		fileNodeId: node._id,
+		yjsContentHeadId: null,
+		contentType: node.contentType,
+		assetId: node.assetId,
+		pendingContentVersion: node.pendingContentVersion,
+		contentByteSize: node.contentByteSize,
+		textKind: node.textKind,
+		collaborationEnabled: node.collaborationEnabled,
+		yjsSnapshotId: node.yjsSnapshotId,
+		yjsLastSequenceId: node.yjsLastSequenceId,
+		statsId: node.statsId,
+		contentTooLargeByteSize: node.contentTooLargeByteSize,
+		contentShapeMismatchAt: node.contentShapeMismatchAt,
+		contentYjsStateTooLargeByteSize: node.contentYjsStateTooLargeByteSize,
+		contentFrontmatterTooLargeFieldCount: node.contentFrontmatterTooLargeFieldCount,
+		contentFrontmatterTooLargeIndexDocumentCount: node.contentFrontmatterTooLargeIndexDocumentCount,
+		updatedAt: node.updatedAt,
+		updatedBy: node.updatedBy,
+		snapshotAssetId: null,
+		sequence: null,
+		ready: true,
+		retired: false,
+	});
+	await ctx.db.patch("files_nodes", nodeId, { kind: "file", treePath: node.path, contentHeadId });
+}
 
 // #region move nodes
 
@@ -360,7 +398,8 @@ describe("reviewed Move graph", () => {
 					unmaterializedUpdateCount: 0,
 					unmaterializedUpdateBytes: 0,
 				});
-				await ctx.db.patch("files_nodes", source._id, { kind: "file", treePath: source.path });
+				await make_saved_file(ctx, source._id);
+				await make_saved_file(ctx, occupant._id);
 				await ctx.db.patch("files_nodes", occupant._id, {
 					kind: "file",
 					treePath: occupant.path,
@@ -455,6 +494,7 @@ describe("reviewed Move graph", () => {
 					unmaterializedUpdateBytes: 0,
 				});
 				for (const node of [source, occupant]) {
+					await make_saved_file(ctx, node._id);
 					await ctx.db.patch("files_nodes", node._id, {
 						kind: "file",
 						treePath: node.path,
@@ -648,6 +688,7 @@ describe("reviewed Move graph", () => {
 		const source = db.files.file_root_2;
 		const occupant = db.files.file_root_1_child_2;
 		await test_run_with_flush(t, async (ctx) => {
+			await make_saved_file(ctx, sourceKind === "file" ? source._id : occupant._id);
 			await ctx.db.patch("files_nodes", source._id, {
 				kind: sourceKind,
 				treePath: source.path + (sourceKind === "folder" ? "/" : ""),
@@ -928,6 +969,7 @@ describe("paged folder moves and scope jobs", () => {
 		const { source, target } = await seed_wide_source({ t, db, childCount: 0, metadataPerNode: 0 });
 		// Each replace of `report.md` archives the old one, so a folder can collect many items with one name.
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			for (let index = 0; index < BIG_FOLDER_CHILDREN; index += 1) {
 				await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
@@ -1035,6 +1077,7 @@ describe("files_nodes_db_get_content_version", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
 		await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const node = db.files.file_root_2;
 			expect(await files_nodes_db_get_content_version(ctx, node)).toBeNull();
 			const assetId = await ctx.db.insert("files_r2_assets", {
@@ -1056,6 +1099,7 @@ describe("files_nodes_db_get_content_version", () => {
 				unmaterializedUpdateCount: 20,
 				unmaterializedUpdateBytes: 1000,
 			});
+			await make_saved_file(ctx, node._id);
 			await ctx.db.patch("files_nodes", node._id, {
 				kind: "file",
 				assetId,
@@ -1067,6 +1111,7 @@ describe("files_nodes_db_get_content_version", () => {
 			});
 			expect(await files_nodes_db_get_content_version(ctx, (await ctx.db.get("files_nodes", node._id))!)).toEqual({
 				kind: "yjs",
+				pendingContentVersion: node.pendingContentVersion,
 				lastSequenceId,
 				lineageGeneration: 3,
 				sequence: 42,
@@ -1377,6 +1422,7 @@ describe("reviewed Move names and paths", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
 		const sources = await t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const files: Array<{
 				nodeId: Id<"files_nodes">;
 				assetId: Id<"files_r2_assets">;
@@ -1624,6 +1670,7 @@ test("move_nodes leaves generated siblings independent from the source", async (
 		throw new Error(targetFolder._nay.message);
 	}
 	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 		const sourceNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: db.organizationId,
@@ -1686,7 +1733,7 @@ test("home file can be renamed and moved like any file", async () => {
 	});
 
 	const homeNodeId = await t.run(async (ctx) =>
-		ctx.db.insert("files_nodes", {
+		files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
 			pendingContentVersion: 1,
@@ -1760,7 +1807,7 @@ test("home file can be archived like any file", async () => {
 	});
 
 	const homeNodeId = await t.run(async (ctx) =>
-		ctx.db.insert("files_nodes", {
+		files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 			contentType: null,
 			assetId: null,
 			pendingContentVersion: 1,
@@ -1844,7 +1891,7 @@ test("create_folder_node rejects active file at leaf path", async () => {
 	});
 
 	await t.run(async (ctx) =>
-		ctx.db.insert("files_nodes", {
+		files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -1880,7 +1927,7 @@ test("create_folder_node rejects active file at intermediate path without creati
 	});
 
 	const fileNodeId = await t.run(async (ctx) =>
-		ctx.db.insert("files_nodes", {
+		files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,

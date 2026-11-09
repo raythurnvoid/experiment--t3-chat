@@ -60,6 +60,9 @@ map is readable at once. `files_index.ts` captures that map and the source head,
 frontmatter and metadata indexes in pages. A later write replaces only the waiting request; the
 active build can finish. Search and metadata table readers keep the last complete published view.
 The user sees no indexing status. `plugin-name` selection reads the full map, never the delayed index.
+Upload conversion in `r2.ts` works like Save. It stores the exact text and requests indexing, so the
+worker indexes all of the frontmatter in pages, also over-cap frontmatter. It never sets the
+`contentFrontmatterTooLarge*` marker pair.
 
 Index publication shares the workspace queue with Move and Review. Its slot covers tagging the old
 docs, installing the candidate, selecting one complete view and cleanup. All writes pass through
@@ -201,7 +204,7 @@ inside a deployed function.
 
 Rules for the callers (`files_metadata_db_insert_committed`, `files_metadata_db_replace_pending`,
 materialization, repair and the non-collaborative content replacement in `files_nodes_content.ts`,
-the upload publish in `r2.ts`, and the pending-update preflight in `files_pending_updates.ts`):
+the index worker in `files_index.ts`, and the pending-update preflight in `files_pending_updates.ts`):
 
 - Never fail the save on `_nay`. Index no frontmatter, log a warning, continue.
 - Whole-text Save does not refuse a file because its frontmatter needs many index docs. Its worker

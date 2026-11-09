@@ -5494,13 +5494,7 @@ const app_convex_schema = defineSchema({
 			"path",
 			"archiveOperationId",
 		])
-		.index("by_organization_workspace_archiveOperation", [
-			"organizationId",
-			"workspaceId",
-			"moveCohortId",
-			"archiveOperationId",
-		])
-		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "moveCohortId", "treePath"])
+		.index("by_organization_workspace_treePath",["organizationId", "workspaceId", "moveCohortId", "treePath"])
 		// Archive can find one active Read-only descendant without reading editable or trashed nodes.
 		.index("by_org_ws_archive_readOnly_treePath", [
 			"organizationId",

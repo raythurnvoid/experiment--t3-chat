@@ -269,7 +269,11 @@ describe("files_move_owner_work", () => {
 				count === 101 ? [100, 101] : [9],
 			);
 			await read_list("before");
-			await advance();
+			// The publish phase first checks Messages links in its own steps, then switches the view.
+			for (let pass = 0; (await refresh())!.workPhase === "publish"; pass++) {
+				if (pass === 100) throw new Error("Native Move did not publish");
+				await advance();
+			}
 			expect((await refresh())!.publishedAt).not.toBeNull();
 			expect(list_ids(await read_docs(id, "before")), "publication keeps Before IDs until cleanup").toEqual(original);
 			expect(list_ids(await read_docs(id, "after")), "publication keeps every staged After ID").toEqual(stagedAfter);

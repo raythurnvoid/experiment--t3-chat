@@ -9,7 +9,13 @@ import {
 } from "./files_transfer.ts";
 import { advance as advance_subtree } from "./files_subtree_ops.ts";
 import { compact_metadata_catalog, run_job as run_overlay_job } from "./files_pending_overlay.ts";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_file_index,
+	test_mocks_fill_db_with,
+	test_spy_handler,
+} from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
 import { files_metadata_preflight_frontmatter } from "../shared/files-metadata.ts";
@@ -67,6 +73,8 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 			metadataYaml,
 		}),
 	).toEqual({ _yay: null });
+	// The background index writes the saved search docs in many small steps.
+	await test_finish_file_index(t, heavyId);
 	await t.finishAllScheduledFunctions(vi.runAllTimers);
 	console.info("Move budget fixture: committed text and maximum metadata ready");
 
@@ -123,6 +131,8 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 						eventId: `move-budget-${item.assetId}`,
 					}),
 				).toEqual({ _yay: null });
+				// Each upload indexes its upload metadata. Index runs publish one at a time per workspace.
+				await test_finish_file_index(t, item.nodeId);
 			}
 			const nodes = await t.run((ctx) =>
 				Promise.all(created.map(async (item) => (await ctx.db.get("files_nodes", item.nodeId))!)),
@@ -280,7 +290,7 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		})
 		: null;
 	if (args.dense)
-		expect(savedTextBeforeMove?.content, "Save puts a blank line after the rich-text frontmatter").toBe(frontmatter + "\n" + body);
+		expect(savedTextBeforeMove?.content, "Save keeps the exact text").toBe(textContent);
 
 	const { peaks, record, check } = budget_recorder();
 	const metadataPages = measure_cohort(record, metadataBeforeMove);

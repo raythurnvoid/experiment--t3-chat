@@ -778,7 +778,7 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"find -maxdepth N and find -mindepth N filter non-search app subtree results by depth.",
+					"find -maxdepth N and find -mindepth N filter non-search app subtree results by depth; in an app folder, -maxdepth 2 or more works with no filter or with -type d.",
 				),
 			}),
 		);

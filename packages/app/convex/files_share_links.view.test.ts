@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { R2 } from "@convex-dev/r2";
 import { api, components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_create_saved_text_file, test_mocks, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
 import { access_control_db_set_service_account_grant } from "./access_control.ts";
 import { files_subtree_ops_STEP_MAX_NODES } from "./files_subtree_ops_rebuild.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
@@ -207,6 +207,8 @@ describe("get_share_link_view", () => {
 			const image = await ctx.db.get("files_nodes", otherImageId);
 			const tenant = { organizationId: other.organizationId, workspaceId: other.workspaceId };
 			await ctx.db.patch("files_nodes", otherImageId, tenant);
+			// The saved content head belongs to the same workspace as its file.
+			await ctx.db.patch("files_saved_content_heads", image!.contentHeadId!, tenant);
 			await ctx.db.patch("files_r2_assets", image!.assetId!, tenant);
 		});
 		const nodeId = await test_create_saved_text_file(f.t, {
@@ -592,7 +594,7 @@ describe("create_share_link_download_urls", () => {
 
 		// A new version of a file gets a new asset, like an upload that replaces it in place.
 		const replace_asset = (id: Id<"files_nodes">) =>
-			f.t.run(async (ctx) => {
+			test_run_with_flush(f.t, async (ctx) => {
 				const node = await ctx.db.get("files_nodes", id);
 				const { _id, _creationTime, ...asset } = (await ctx.db.get("files_r2_assets", node!.assetId!))!;
 				const assetId = await ctx.db.insert("files_r2_assets", { ...asset, r2Key: `${asset.r2Key}-v2` });

@@ -9,6 +9,7 @@ import {
 	test_convex,
 	test_rename_node,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { quotas_db_ensure } from "./quotas.ts";
@@ -1094,7 +1095,7 @@ describe("upsert_file_pending_update", () => {
 		// deleted both rows (as it does behind a newer snapshot) while the base walker still
 		// holds the older header. The one-row reader then reports "done" before the walk reaches
 		// `throughSequence`.
-		await t.run(async (ctx) => {
+		await test_run_with_flush(t, async (ctx) => {
 			const rowIds = await Promise.all(
 				[1, 2].map((sequence) =>
 					ctx.db.insert("files_yjs_updates", {
@@ -1455,7 +1456,7 @@ describe("upsert_file_pending_update", () => {
 		expect(readState?.content).toBe(pendingText);
 	});
 
-	test("the agent read serves the committed text, not the stale pending text, after a lineage bump", async () => {
+	test("the agent read keeps serving the retained draft after a lineage bump", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1489,9 +1490,9 @@ describe("upsert_file_pending_update", () => {
 		});
 		expect(beforeBump?.content).toContain("Pending draft");
 
-		// A repair replaced the document history: the proposal's base generation is now stale, so
-		// the commit gate would refuse it and the read must not present it as current either.
-		await t.run(async (ctx) => {
+		// A repair replaced the document history: the proposal's base generation is now stale. The
+		// commit gate refuses it, but the owner's read still shows the retained draft.
+		await test_run_with_flush(t, async (ctx) => {
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
 			if (!node?.yjsLastSequenceId) {
 				throw new Error("Expected the seeded node to have a last-sequence doc");
@@ -1506,9 +1507,9 @@ describe("upsert_file_pending_update", () => {
 			subject: { kind: "user", userId: seeded.userId, plugin: null },
 			path: "/pending-stale-lineage.md",
 		});
-		expect(afterBump?.content).toBe(seeded.baseMarkdown);
+		expect(afterBump?.content).toBe(beforeBump?.content);
 		// The doc keeps its id, so the agent's next write mixes onto it and rebuilds the family.
-		expect(afterBump?.pendingUpdateId).not.toBeNull();
+		expect(afterBump?.pendingUpdateId).toBe(beforeBump?.pendingUpdateId);
 	});
 
 	test("both pending branches store LF with the leading BOM dropped", async () => {

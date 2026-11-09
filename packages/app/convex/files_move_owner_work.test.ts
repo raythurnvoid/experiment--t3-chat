@@ -15,6 +15,7 @@ import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_finish_pending_update_run,
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
@@ -550,13 +551,19 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 			"before point reads keep every original chunk",
 		).toEqual(before.plain.map((doc) => doc._id));
 	}
-	const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
-	await f.t.action(internal.files_move_run.run, {
-		cohortId: f.cohortId,
-		step: cohort.step,
-		runGeneration: cohort.runJob?.generation ?? null,
-		mode: "step",
-	});
+	// The publish phase first checks Messages links in its own steps, then switches the view.
+	for (let pass = 0; ; pass++) {
+		const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
+		if (cohort.workPhase !== "publish") break;
+		if (pass === 100) throw new Error("Native Move did not publish");
+		await f.t.action(internal.files_move_run.run, {
+			cohortId: f.cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
+	}
+	expect((await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.publishedAt).not.toBeNull();
 	for (const proposal of f.proposals) {
 		const metadata = await f.t.query(internal.files_metadata.get_index_values_by_path, {
 			organizationId: f.db.organizationId,
@@ -1159,6 +1166,8 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 			if (!entry?.pendingUpdate) throw new Error("Expected the unrelated native proposal");
 			unrelated.push({ proposal: entry.pendingUpdate, path });
 		}
+		// Saved metadata gets its index docs from the background index worker.
+		await test_finish_file_index(t, incomingId);
 	}
 	expect(
 		(
@@ -1428,14 +1437,18 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 		expect(affectedMetadata?.fields).toEqual(["metadata.affected"]);
 	}
 	await check_unrelated(false);
-	await t.action(internal.files_move_run.run, {
-		cohortId,
-		step: cohort.step,
-		runGeneration: cohort.runJob?.generation ?? null,
-		mode: "step",
-	});
+	// The publish phase first checks Messages links in its own steps, then switches the view.
+	for (let pass = 0; cohort.workPhase === "publish"; pass++) {
+		if (pass === 100) throw new Error("Native anchor Move did not publish");
+		await t.action(internal.files_move_run.run, {
+			cohortId,
+			step: cohort.step,
+			runGeneration: cohort.runJob?.generation ?? null,
+			mode: "step",
+		});
+		cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
+	}
 	await check_unrelated(true);
-	cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
 	expect(cohort.phase).toBe("published");
 	for (let pass = 0; pass < 1000; pass++) {
 		await t.action(internal.files_move_run.run, {

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 
 async function fixture() {
@@ -191,10 +192,23 @@ describe("set_folder_sort", () => {
 		});
 		expect(badField._nay?.message).toBe("This field cannot be sorted.");
 
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", folderId, { kind: "file" }));
+		// Give the saved file the content head a save makes.
+		const fileId = await t.run((ctx) =>
+			files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				kind: "file",
+				name: "note.md",
+				path: "/note.md",
+				treePath: "/note.md",
+				createdBy: scope.userId,
+				updatedBy: scope.userId,
+			}),
+		);
 		const notFolder = await asOwner.mutation(api.files_folder_sorts.set_folder_sort, {
 			membershipId: scope.membershipId,
-			folderId,
+			folderId: fileId,
 			sort: [{ field: "updated", direction: "asc" }],
 		});
 		expect(notFolder._nay?.message).toBe("Not found");

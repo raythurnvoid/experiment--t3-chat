@@ -931,15 +931,19 @@ describe("bash_run_command", () => {
 			},
 		);
 
-		test("refuses cached cat text after access changes during its second size lookup", async () => {
+		test("refuses cached cat text after access changes during its second metadata lookup", async () => {
 			const f = await create_volume_runner();
 			const baseQuery = f.runner.runQuery.getMockImplementation()!;
-			let sizeReads = 0;
+			// The saved size comes with the entry, so the entry lookup is the last read before the text.
+			let entryReads = 0;
 			f.runner.runQuery.mockImplementation(async (ref, args) => {
 				const result = await baseQuery(ref, args);
-				if (function_name_of(ref) === "r2:get_asset_by_id" && args.assetId === f.nodes[0].assetId) {
-					sizeReads += 1;
-					if (sizeReads === 2)
+				if (
+					function_name_of(ref) === "files_nodes:get_visible_entry_by_path" &&
+					args.path === `/${f.generationId}/notes.md`
+				) {
+					entryReads += 1;
+					if (entryReads === 2)
 						await f.runner.t.run((ctx) =>
 							ctx.db.patch("plugins_workspace_installations", f.installationId, { status: "disabled" }),
 						);
@@ -947,7 +951,7 @@ describe("bash_run_command", () => {
 				return result;
 			});
 			const result = await f.runner.run({ command: `cat ${VOLUME_PATH}; cat ${VOLUME_PATH}` });
-			expect(sizeReads).toBe(2);
+			expect(entryReads).toBe(2);
 			expect(result.stdout, "cached content must not be released after the volume becomes unreadable").toBe(
 				VOLUME_TEXT,
 			);
@@ -955,7 +959,7 @@ describe("bash_run_command", () => {
 		});
 
 		test.each(["disabled", "replacement"] as const)(
-			"rechecks exact file metadata after the size lookup (%s)",
+			"rechecks exact file metadata after the first metadata lookup (%s)",
 			async (state) => {
 				const f = await create_volume_runner();
 				let arrive = () => {};
@@ -970,7 +974,12 @@ describe("bash_run_command", () => {
 				let intercepted = false;
 				f.runner.runQuery.mockImplementation(async (ref, args) => {
 					const result = await baseQuery(ref, args);
-					if (!intercepted && function_name_of(ref) === "r2:get_asset_by_id" && args.assetId === f.nodes[0].assetId) {
+					// The saved size comes with this entry, so pause here before stat checks the target again.
+					if (
+						!intercepted &&
+						function_name_of(ref) === "files_nodes:get_visible_entry_by_path" &&
+						args.path === `/${f.generationId}/notes.md`
+					) {
 						intercepted = true;
 						arrive();
 						await paused;

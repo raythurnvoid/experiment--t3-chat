@@ -37,7 +37,9 @@ storage. A pending hold keeps the node until it ends (`../data-deletion/SKILL.md
 
 Saved content belongs to `files_saved_content_heads`. The file points to its current head.
 Review prepares a separate head, even when it accepts unchanged text. Publication selects that
-head. Ordinary Save keeps the public Yjs sequence ID, so open editors stay connected.
+head. Before publication, an explicit After read already uses the head of a sealed candidate, so
+Review validation (for example media proof) checks the content it will publish. Ordinary Save
+keeps the public Yjs sequence ID, so open editors stay connected.
 Text and Yjs reads use the selected head. Search chunks and `frontmatter.*` docs also use the
 selected location view, because Move and Move to Trash copy them. Pending docs and user-written
 `metadata.*` keep their own owners.

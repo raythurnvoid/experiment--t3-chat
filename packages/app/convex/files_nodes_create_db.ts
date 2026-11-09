@@ -316,7 +316,6 @@ function node_insert_fields(args: {
 	contentType?: Doc<"files_nodes">["contentType"];
 	assetId?: Id<"files_r2_assets">;
 	contentByteSize?: number;
-	archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	restrictedScopeNodeId: Doc<"files_nodes">["restrictedScopeNodeId"];
 	extendedScopeNodeId: Id<"files_nodes"> | null;
 	readOnly?: boolean;
@@ -355,9 +354,7 @@ function node_insert_fields(args: {
 		extendedScopeNodeId: args.extendedScopeNodeId,
 		readOnly: args.readOnly ?? false,
 		readOnlyDecisionId: args.readOnly ? (args.preservedReadOnlyDecisionId ?? crypto.randomUUID()) : null,
-		archiveOperationId: args.archiveOperationId ?? null,
-		// A node made directly in Trash comes back at the path it was made with.
-		...(args.archiveOperationId != null ? { archivedPath: args.path } : {}),
+		archiveOperationId: null,
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: args.now,
@@ -375,7 +372,6 @@ async function db_insert_node(
 		kind: Doc<"files_nodes">["kind"];
 		contentType?: Doc<"files_nodes">["contentType"];
 		assetId?: Id<"files_r2_assets">;
-		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		/**
 		 * Set when the caller inserts the file's content docs right after this insert, in the same
 		 * mutation, via `files_nodes_db_insert_file_content_docs` (files_nodes_content.ts). Skips
@@ -534,7 +530,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		kind: Doc<"files_nodes">["kind"];
 		contentType?: Doc<"files_nodes">["contentType"];
 		assetId?: Id<"files_r2_assets">;
-		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		/** Forwarded to `db_insert_node` for the leaf only; see the arg doc there. */
 		expectsTextContent?: true;
 		/**
@@ -642,9 +637,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			if (isLeaf && args.archiveOperationId != null) {
-				break;
-			}
 			return Result({
 				_nay: { message: isLeaf && args.kind === "file" ? "This file already exists." : "This folder already exists." },
 			});
@@ -745,7 +737,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			kind: isLeaf ? args.kind : "folder",
 			contentType: isLeaf ? args.contentType : undefined,
 			assetId: isLeaf ? args.assetId : undefined,
-			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
 			readOnly: isLeaf ? args.readOnly : false,
 			preservedReadOnlyDecisionId: isLeaf && args.keepsReplacedReadOnly ? args.preservedReadOnlyDecisionId : undefined,

@@ -2011,6 +2011,21 @@ describe("organization structure at batch size one", () => {
 			.withIndex("by_organization_workspace", (q) => q.eq("organizationId", user.defaultOrganizationId).eq("workspaceId", user.defaultWorkspaceId))
 			.collect());
 		expect(await read_maps()).toHaveLength(101);
+		// The saves queued background index work. Reset deletes it before the maps.
+		const index_tables = [
+			"files_index_runs",
+			"files_index_states",
+			"files_index_tickets",
+			"files_content_save_requests",
+		] as const;
+		const count_index_docs = async () =>
+			(await t.run((ctx) => Promise.all(index_tables.map((table) => ctx.db.query(table).collect())))).flat().length;
+		while ((await count_index_docs()) > 0) {
+			await expect(
+				t.mutation(internal.data_deletion.hard_delete_user_data, { userId: user.userId }),
+			).resolves.toHaveProperty("done", false);
+			expect(await read_maps(), "Index work goes before any map").toHaveLength(101);
+		}
 		let remaining = 101;
 		const batches = [];
 		while (remaining > 0) {

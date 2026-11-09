@@ -3,7 +3,14 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import {
+	test_convex,
+	test_finish_file_index,
+	test_meta_search,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "../convex/setup.test.ts";
+import { files_content_heads_db_wrap } from "./files-content-heads.ts";
 import {
 	files_pending_overlay_list,
 	files_pending_overlay_search_name,
@@ -216,6 +223,8 @@ describe("files_pending_overlay_list", () => {
 				metadataYaml: "tag: x\n",
 			});
 			expect(set).toEqual({ _yay: null });
+			// Saved metadata gets its index docs from the background index worker.
+			await test_finish_file_index(f.t, fileNodeId);
 		}
 		await f.move({ userId: f.db.userId, nodeId: outside, destId: box, destName: "a-moved" });
 
@@ -235,11 +244,11 @@ describe("files_pending_overlay_list", () => {
 		for (const name of ["Zeta", "b", "n"]) await f.saved(`box/${name}`);
 		const elsewhere = await f.saved("elsewhere");
 
-		// Insert saved files directly. The listing reads only the node fields.
+		// Insert saved files directly, with the content head a save makes. The listing reads only the node fields.
 		const insert_file = (parentId: Id<"files_nodes"> | "root", path: string) =>
 			f.t.run(async (ctx) => {
 				const name = path.slice(path.lastIndexOf("/") + 1);
-				return await ctx.db.insert("files_nodes", {
+				return await files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,

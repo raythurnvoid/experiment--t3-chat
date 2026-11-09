@@ -242,9 +242,12 @@ describe("initial Move publication", () => {
 			return result;
 		});
 		// Old final-flush counts use this same fixture and both directions.
+		// Publication now also writes the Messages proof (3 or 4 writes, plus one cohort and one activity
+		// patch for each extra proof step), the Messages clock when access changed (3, to-root only) and
+		// the plugin file clock (3 or 2). So the write limits are the old 102 and 121 plus 11 and 10.
 		const targets = [
-			{ direction: "to-root", parentId: "root" as const, path: "/new-folder", queries: 417, writes: 102 },
-			{ direction: "to-a", parentId: aId, path: "/target/new-folder", queries: 537, writes: 121 },
+			{ direction: "to-root", parentId: "root" as const, path: "/new-folder", queries: 417, writes: 113 },
+			{ direction: "to-a", parentId: aId, path: "/target/new-folder", queries: 537, writes: 131 },
 		];
 		const runs: Id<"files_transfer_runs">[] = [];
 		for (const target of targets) {

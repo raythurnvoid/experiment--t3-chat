@@ -11,6 +11,7 @@ import {
 	ai_chat_context_read_instructions,
 } from "../server/ai-chat-context.ts";
 import { files_agent_write_file_text } from "../server/bash-utils.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 
@@ -530,6 +531,8 @@ describe("ai_chat_context_discover_sources", () => {
 		const exampleId = await f.create({ path: "/.agents/skills/example/SKILL.md", textContent: skillText });
 		// Clone it as `/.agents/skills/secret/SKILL.md`: discovery reads paths and access, not content.
 		const secret = await f.t.run(async (ctx) => {
+			// Give each cloned file its own content head, like a save does.
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const { _id, _creationTime, ...file } = (await ctx.db.get("files_nodes", exampleId))!;
 			const {
 				_id: _folderId,
@@ -589,6 +592,8 @@ describe("ai_chat_context_discover_sources", () => {
 		] as const) {
 			const fileId = await f.create({ path: "/.agents/skills/skill-0/SKILL.md", textContent: skillText, workspace });
 			await f.t.run(async (ctx) => {
+				// Give each cloned file its own content head, like a save does.
+				ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 				const { _id, _creationTime, ...file } = (await ctx.db.get("files_nodes", fileId))!;
 				const folder = (await ctx.db.get("files_nodes", file.parentId as Id<"files_nodes">))!;
 				const { _id: _folderId, _creationTime: _folderCreationTime, ...folderFields } = folder;

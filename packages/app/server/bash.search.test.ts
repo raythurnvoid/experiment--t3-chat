@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "../convex/_generated/api.js";
 import type { ai_chat_files_patch_thread_tmp_files_Args } from "../convex/ai_chat_files.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
-import { test_convex, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import { test_convex, test_finish_file_index, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { bash_COMMAND_EXIT_USAGE, bash_READ_INLINE_MAX_BYTES } from "./bash-utils.ts";
 import { ai_chat_tool_create_set_file_metadata } from "./server-ai-tools.ts";
 import {
@@ -1349,6 +1349,8 @@ describe("bash_run_command", () => {
 				{ field: "metadata.reviewed", valueKind: "boolean", value: false },
 			],
 		});
+		// meta get reads the full map at once. meta search reads the index, which builds in the background.
+		await test_finish_file_index(runner.t, await get_seeded_node_id(runner, "/docs"));
 		const search = await runner.run({ command: `meta search --where '{"eq":["metadata.plugin-name","chitchat"]}'` });
 		expect(search.metadata.exitCode).toBe(0);
 		expect(search.stdout).toBe(`${test_db_files_mount}/docs\n`);
@@ -1859,7 +1861,7 @@ describe("bash_run_command", () => {
 		expect(result.stdout).toContain("not POSIX permissions, owner, group, inode, or blocks");
 	});
 
-	test("stat reports non-editable asset size through the shared size helper", async () => {
+	test("stat reports non-editable asset size from the saved node without an asset read", async () => {
 		const { run, runQuery } = await create_bash_runner();
 		const sourcePath = `${test_db_files_mount}/source.pdf`;
 		runQuery.mockClear();
@@ -1868,7 +1870,8 @@ describe("bash_run_command", () => {
 
 		expect(result.metadata.exitCode).toBe(0);
 		expect(result.stdout).toBe("4096\n");
-		expect(runQuery.mock.calls.filter(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toHaveLength(1);
+		// The saved size comes from the file's content head, so stat needs no asset read.
+		expect(runQuery.mock.calls.filter(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toHaveLength(0);
 	});
 
 	test("stat reports unsaved edit size before the committed asset size", async () => {

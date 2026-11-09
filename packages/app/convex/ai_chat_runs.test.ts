@@ -3,6 +3,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { ai_chat_runs_db_insert_node, ai_chat_runs_LEASE_MS } from "./ai_chat_runs.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 
 async function fixture() {
@@ -81,8 +82,9 @@ async function answer_turn(args: {
 describe("thread_run_begin", () => {
 	test("checks quote file access before writes and preserves selected text after the file is archived", async () => {
 		const fx = await fixture();
+		// Give the saved file the content head a save makes.
 		const fileNodeId = await fx.t.run((ctx) =>
-			ctx.db.insert("files_nodes", {
+			files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				...{ organizationId: fx.db.organizationId, workspaceId: fx.db.workspaceId },
 				kind: "file",

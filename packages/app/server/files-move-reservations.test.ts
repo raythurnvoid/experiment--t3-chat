@@ -777,7 +777,7 @@ describe("Move write reservations", () => {
 		expect((await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))?.parentScopeNodeId).toBe(null);
 	});
 
-	test("restricting a node that a Move holds tags its metadata docs", async () => {
+	test("restricting a node that a Move holds queues its metadata docs for the Move end", async () => {
 		const f = await fixture();
 		await f.t.run(async (ctx) => {
 			await ctx.db.insert("files_move_source_reservations", {
@@ -818,9 +818,24 @@ describe("Move write reservations", () => {
 				.collect(),
 		);
 		expect(docs).toHaveLength(4);
-		expect(docs.map((doc) => doc.sourceKind === "committed" && doc.restrictedScopeNodeId)).toEqual(
-			Array(4).fill(f.nodeId),
-		);
+		// Move cleanup keeps only the winning view's docs, so a saved scope job tags them after the Move.
+		// files_move_plain_chunks.test.ts checks the end state with a real Move.
+		const read_job = () =>
+			f.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_overlay_jobs")
+					.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", f.nodeId))
+					.unique(),
+			);
+		const job = await read_job();
+		if (!job?.cursor) throw new Error("Expected the metadata scope job");
+		expect(JSON.parse(job.cursor), "only the area changed").toMatchObject({ metadataOnly: true });
+		await f.t.mutation(internal.files_pending_overlay.run_job, {
+			kind: job.kind,
+			key: job.key,
+			nextAttemptAt: job.nextAttemptAt,
+		});
+		expect(await read_job(), "the job waits for the Move").toMatchObject({ blockedByCohortId: f.cohortId });
 	});
 
 	test("a native accepted content job pauses before a failure marker and keeps its author", async () => {

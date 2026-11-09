@@ -12,6 +12,7 @@ import {
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 	test_apply_file_pending_move,
+	test_finish_file_index,
 } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { activities_db_require_by_source_id, activities_db_start } from "./activities_db.ts";
@@ -32,6 +33,7 @@ import { r2, r2_confirmed_object_delete } from "./r2_client.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_assets.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { files_db_insert_pending_update, files_ROOT_ID } from "../server/files.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops_rebuild.ts";
 import { files_pending_review_facts_db_get_state } from "../server/files-pending-review-facts.ts";
@@ -111,6 +113,9 @@ async function data_deletion_test_seed_page(
 		tag: string;
 	},
 ) {
+	// Keep the saved content head in sync, like registered mutations do.
+	ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
+
 	const nodeId = await ctx.db.insert("files_nodes", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -673,6 +678,9 @@ async function data_deletion_test_seed_workspace_content_bulk(
 		tag: string;
 	},
 ) {
+	// Keep the saved content heads in sync, like registered mutations do.
+	ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
+
 	const r2Keys: string[] = [];
 	const apiOrganizationId = ctx.db.normalizeId("organizations", args.organizationId);
 	const apiWorkspaceId = ctx.db.normalizeId("organizations_workspaces", args.workspaceId);
@@ -4629,6 +4637,8 @@ describe("process_workspace_deletion_request", () => {
 			};
 		});
 
+		// The save writes the metadata map. A background index run writes the searchable docs.
+		for (const nodeId of metadataFolderIds) await test_finish_file_index(t, nodeId);
 		const beforeMetadata = await t.run(async (ctx) =>
 			(await ctx.db.query("files_metadata_docs").collect())
 				.filter((doc) => doc.sourceKind === "committed")
@@ -4747,6 +4757,7 @@ describe("process_workspace_deletion_request", () => {
 			const workspaceId = victimWorkspace._yay.workspaceId;
 			const now = Date.now();
 
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			const nodeId = await ctx.db.insert("files_nodes", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId,
@@ -5024,10 +5035,12 @@ describe("process_workspace_deletion_request", () => {
 				return { ...scope, taskId, assetId, requestId, putMayArriveUntil };
 			});
 			const r2Key = r2_create_asset_key(seeded);
-			await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
-				requestId: seeded.requestId,
-				_test_batchSize: 1,
-			});
+			// The first pass deletes the file's saved content head. The second pass hands off the task.
+			for (let pass = 0; pass < 2; pass++)
+				await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+					requestId: seeded.requestId,
+					_test_batchSize: 1,
+				});
 			const handedOff = await t.run(async (ctx) => ({
 				task: await ctx.db.get("files_yjs_cleanup_tasks", seeded.taskId),
 				asset: await ctx.db.get("files_r2_assets", seeded.assetId),
@@ -6494,6 +6507,8 @@ describe("process_workspace_deletion_request", () => {
 			remove: [],
 		});
 		if (written._nay) throw new Error(written._nay.message);
+		// The save writes the metadata map. A background index run writes the docs that feed the catalog.
+		await test_finish_file_index(t, folder._yay.nodeId);
 		const marker = await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").first());
 		vi.setSystemTime(Date.now() + 5001);
 		await t.mutation(internal.files_pending_overlay.compact_metadata_catalog, { markerId: marker!._id });
@@ -6504,6 +6519,7 @@ describe("process_workspace_deletion_request", () => {
 			set: [{ key: "owner", value: "me" }],
 			remove: [],
 		});
+		await test_finish_file_index(t, folder._yay.nodeId);
 		const count_docs = () =>
 			t.run(
 				async (ctx) =>
@@ -8760,6 +8776,7 @@ describe("finalize_user_deletion_data", () => {
 			tag: string,
 		) {
 			return await t.run(async (ctx) => {
+				ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 				const now = Date.now();
 				const nodeId = await ctx.db.insert("files_nodes", {
 					organizationId: user.defaultOrganizationId,

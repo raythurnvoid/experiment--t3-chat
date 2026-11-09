@@ -3175,11 +3175,12 @@ async function db_advance_step(
 		0,
 		false,
 	);
-	// Commit the new view before doing physical repair.
+	// Commit the new view before doing physical repair, so only the real publication ends this transaction.
+	// A Messages proof step does not change the view yet, so the next step can join it.
 	return {
 		kind: "next" as const,
 		step: cohort.step + 1,
-		yield: result._yay.parentPage === true || cohort.workPhase === "publish",
+		yield: result._yay.parentPage === true || (cohort.workPhase === "publish" && result._yay.done),
 	};
 }
 

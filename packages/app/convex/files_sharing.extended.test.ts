@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { test_create_saved_text_file, test_move_nodes, test_run_with_flush, test_spy_handler } from "./setup.test.ts";
+import {
+	test_create_saved_text_file,
+	test_finish_file_index,
+	test_move_nodes,
+	test_run_with_flush,
+	test_spy_handler,
+} from "./setup.test.ts";
 import { get_node_share_state } from "./files_sharing.ts";
 import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { expect_under_convex_limits, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
@@ -941,6 +947,8 @@ test("an item everyone can view shows in a member's filtered table, and not in a
 			entries: [{ key: "status", value: "open" }],
 		}),
 	);
+	// The field docs build in the background. Finish them so the filtered table can see them.
+	await test_finish_file_index(f.t, fileId);
 	// The share rows serve only custom-field filters.
 	const read = async () =>
 		(

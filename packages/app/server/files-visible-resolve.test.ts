@@ -4,6 +4,7 @@ import type { Id } from "../convex/_generated/dataModel.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import type { files_PendingParent, files_PendingTarget } from "../shared/files.ts";
+import { files_content_heads_db_wrap } from "./files-content-heads.ts";
 import { files_visible_resolve_db_create, type files_visible_resolve_Store } from "./files-visible-resolve.ts";
 import {
 	files_pending_overlay_db_flush,
@@ -426,6 +427,7 @@ describe("files_visible_resolve_db_create", () => {
 		// The owner drafts `mv /a /b/`, then another user saves `mv /b /a/`.
 		await f.draft_move(a, b, "a");
 		const files = await f.t.run(async (ctx) => {
+			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 			await ctx.db.patch("files_nodes", b.id, { parentId: a.id, path: "/a/b" });
 			const insert = async (parentId: Id<"files_nodes">, name: string, kind: "file" | "folder") =>
 				await ctx.db.insert("files_nodes", {

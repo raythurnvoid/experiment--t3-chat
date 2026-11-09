@@ -11629,7 +11629,8 @@ describe("service file writes", () => {
 		expect(await userKeyLocked.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 	});
 
-	test.each(["missing consent", "outer member lock"] as const)(
+	// Replacing a stored file changes its sharing and needs Can manage. Personal plugin consent never gives it.
+	test.each(["missing consent", "missing manage permission"] as const)(
 		"replacement refuses %s before archiving the stored file",
 		async (refusal) => {
 			const t = test_convex();
@@ -11669,16 +11670,6 @@ describe("service file writes", () => {
 						acceptedCapabilities: ["plugin.service.connect", "workspace.files.write"],
 					}),
 				);
-			} else {
-				expect(
-					(
-						await asUser.mutation(api.files_nodes.read_only_set, {
-							readOnly: true,
-							membershipId: db.membershipId,
-							nodeId: folder!._id,
-						})
-					)._nay,
-				).toBeUndefined();
 			}
 
 			const beforeNode = await t.run((ctx) => ctx.db.get("files_nodes", upload._yay.nodeId));
@@ -11689,7 +11680,7 @@ describe("service file writes", () => {
 				content: "# Replace\n",
 				readOnly: refusal === "missing consent",
 			});
-			expect(response.status).toBe(refusal === "outer member lock" ? 409 : 403);
+			expect(response.status, await response.clone().text()).toBe(403);
 			expect(await find_active_node({ t, db, path: "/meetings/stored.md" })).toEqual(beforeNode);
 			expect(
 				await asUser.query(api.files_metadata.get_entries, {
@@ -11703,94 +11694,6 @@ describe("service file writes", () => {
 			expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 		},
 	);
-
-	test("force replaces a Read-only upload and ordinary writes respect a later lock", async () => {
-		const t = test_convex();
-		install_r2_object_reads();
-		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-target" });
-		const service = await seed_sealed_service({ t, db });
-
-		// A committed read-only upload target: the flow a transcript upload uses before the
-		// service rewrites the file through the write door.
-		const enqueueActionSpy = vi
-			.spyOn(Workpool.prototype, "enqueueAction")
-			.mockResolvedValue("work_service_write_target" as never);
-		const createdTarget = await t.fetch("/api/v1/files/service-uploads/create-target", {
-			method: "POST",
-			headers: auth_headers(service.token),
-			body: JSON.stringify({
-				idempotencyKey: "meeting-1",
-				targetKey: "notes",
-				path: "/meetings/meeting-1/notes.md",
-				contentType: "text/markdown",
-				size: 16,
-				readOnly: true,
-				nonCollaborative: false,
-			}),
-		});
-		expect(createdTarget.status).toBe(200);
-		const target = await t.run(async (ctx) => (await ctx.db.query("plugin_service_storage_targets").collect())[0]!);
-		await t.mutation(internal.r2.process_uploaded_asset_event, {
-			assetId: target.assetId,
-			r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${target.assetId}`,
-			size: 16,
-			etag: "etag-service-write-target",
-			eventId: "service-write-target-event",
-		});
-		enqueueActionSpy.mockRestore();
-		const storedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
-		expect(storedNode).toMatchObject({
-			readOnly: true,
-		});
-
-		// Force is explicit even when the same service created this file.
-		const replaced = await service_write({
-			t,
-			token: service.token,
-			path: "/meetings/meeting-1/notes.md",
-			content: "# Notes\n\nRewritten as text\n",
-			force: true,
-		});
-		expect(replaced.status).toBe(200);
-		const replacedBody = (await replaced.json()) as { nodeId: string };
-		expect(replacedBody.nodeId).not.toBe(String(storedNode!._id));
-		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", storedNode!._id))).toMatchObject({
-			archiveOperationId: expect.any(String),
-		});
-		const replacedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			subject: "clerk-service-write-target",
-			external_id: db.userId,
-		});
-		expect(
-			await asUser.query(api.files_metadata.get_entries, {
-				membershipId: db.membershipId,
-				fileNodeId: replacedNode!._id,
-			}),
-		).toEqual([
-			{ key: "source", value: "plugin" },
-			{ key: "plugin-name", value: "council" },
-		]);
-
-		expect(
-			(
-				await asUser.mutation(api.files_nodes.read_only_set, {
-					membershipId: db.membershipId,
-					nodeId: replacedNode!._id,
-					readOnly: true,
-				})
-			)._nay,
-		).toBeUndefined();
-		const refused = await service_write({
-			t,
-			token: service.token,
-			path: "/meetings/meeting-1/notes.md",
-			content: "# Notes\n\nTaken\n",
-		});
-		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
-	});
 
 	test("forced plugin archive preserves Read-only", async () => {
 		const t = test_convex();

@@ -22,19 +22,22 @@ export async function files_saved_content_db_get_head(
 			(fixedView && fixedView.cohortId !== cohort._id)
 		)
 			throw should_never_happen("Saved content cohort is missing or changed", { nodeId: node._id });
-		// Staging can preview a new location before its content is ready.
-		if (cohort.publishedAt !== null && (fixedView?.view ?? cohort.visibleView) === "after") {
+		const published = cohort.publishedAt !== null;
+		// Only an explicit After read sees the After view before publication.
+		if ((fixedView?.view ?? cohort.visibleView) === "after") {
 			const content = await db
 				.query("files_move_cohort_content")
 				.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", node._id))
 				.unique();
-			if (content && (!content.beforeHeadId || !content.afterHeadId))
+			if (published && content && (!content.beforeHeadId || !content.afterHeadId))
 				throw should_never_happen("Saved content candidate has no head", { contentId: content._id });
 			// A later replacement owns its new head, even while Review still owns the location.
 			if (content && content.beforeHeadId === headId) {
-				if (!content.sealed || !content.afterHeadId)
+				if (published && (!content.sealed || !content.afterHeadId))
 					throw should_never_happen("Saved content candidate is not sealed", { contentId: content._id });
-				headId = content.afterHeadId;
+				// Staging can preview a new location before its content is ready. Once sealed, the After
+				// view shows the new content, so Review validation checks the asset it will publish.
+				if (content.sealed && content.afterHeadId) headId = content.afterHeadId;
 			}
 		}
 	}

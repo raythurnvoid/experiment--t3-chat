@@ -19,6 +19,7 @@ import {
 	read_activity,
 	archive_to_end,
 } from "./files_archive_runs.setup.test.ts";
+import { files_nodes_db_archive_nodes } from "./files_nodes.ts";
 import { test_rename_node } from "./setup.test.ts";
 
 // A check step reads at most 100 nodes here instead of 500, so small trees cross it. The mock puts this
@@ -264,4 +265,27 @@ describe("archive_nodes", () => {
 		expect(archivedTree).toHaveLength(152);
 		expect(archivedTree.every((node) => node.archiveOperationId !== null)).toBe(true);
 	}, 120_000);
+});
+
+describe("files_nodes_db_archive_nodes", () => {
+	test("a folder named with everything inside it is the top of every item", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "named", folderCount: 1, filesPerFolder: 1 });
+
+		// Name the items before their folders, so the top is not just the first id.
+		await f.t.run((ctx) =>
+			files_nodes_db_archive_nodes({
+				ctx,
+				nodeIds: [tree.fileIds[0]!, tree.folderIds[0]!, tree.topId],
+				updatedBy: f.db.userId,
+				now: Date.now(),
+			}),
+		);
+
+		const nodes = (await read_state(f)).nodes.filter((node) => node.path.startsWith("/named"));
+		expect(
+			nodes.map((node) => node.archiveTopNodeId),
+			"the top folder is the top of itself, its folder and its file",
+		).toEqual([tree.topId, tree.topId, tree.topId]);
+	});
 });

@@ -5,6 +5,7 @@ import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { db_insert_file_text_content } from "./files_nodes_create.ts";
 import { test_convex, test_meta_search, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -31,6 +32,8 @@ async function fixture() {
 		membershipLifetime: captured._yay.membershipLifetime,
 	};
 	const saved = await t.run(async (ctx) => {
+		// Give the saved file the content head a save makes.
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 		const now = Date.now();
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
 			name: "repo-reader",

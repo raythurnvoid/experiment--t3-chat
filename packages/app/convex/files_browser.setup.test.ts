@@ -3,7 +3,12 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_file_index,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
@@ -521,6 +526,8 @@ export async function node_metadata(args: {
 }) {
 	const { t, fixture, nodeId } = args;
 
+	// The save writes the metadata map. A background index run writes the searchable docs.
+	await test_finish_file_index(t, nodeId);
 	const docs = await t.run((ctx) =>
 		ctx.db
 			.query("files_metadata_docs")

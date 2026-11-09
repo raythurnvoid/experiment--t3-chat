@@ -5,8 +5,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { ActionCtx } from "./_generated/server.js";
-import { test_convex, test_create_saved_text_file, test_meta_search, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_file_index,
+	test_meta_search,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 
 const text = "Private notebook\nSecond line\n";
@@ -44,6 +51,8 @@ async function seed_file(t: ReturnType<typeof test_convex>, membershipId: Id<"or
 			metadataYaml: "topic: notebook",
 		}),
 	).toEqual({ _yay: null });
+	// The metadata index builds in the background. Finish it so the index doors see the field.
+	await test_finish_file_index(t, nodeId);
 	return { nodeId, folderId: node.parentId };
 }
 
@@ -456,6 +465,8 @@ describe("agent file read source", () => {
 async function force_content_fallback(f: Awaited<ReturnType<typeof fixture>>) {
 	// Missing chunks force the existing R2 fallback without replacing the saved file.
 	await f.t.run(async (ctx) => {
+		// Clear the stats link through the content owner, which is where saved reads look for it.
+		ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
 		for (const chunk of await ctx.db.query("files_text_chunks").collect()) {
 			if (chunk.sourceKind === "committed" && chunk.fileNodeId === f.nodeId)
 				await ctx.db.delete("files_text_chunks", chunk._id);

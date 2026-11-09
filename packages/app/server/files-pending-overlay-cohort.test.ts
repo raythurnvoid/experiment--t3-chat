@@ -8,6 +8,7 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import {
 	test_convex,
 	test_create_saved_text_file,
+	test_finish_file_index,
 	test_finish_transfer_run,
 	test_mocks_fill_db_with,
 } from "../convex/setup.test.ts";
@@ -294,6 +295,8 @@ describe("Move owner views", () => {
 					metadataYaml: "note: current",
 				}),
 			).toEqual({ _yay: null });
+			// Saved metadata gets its index docs from the background index worker.
+			await test_finish_file_index(t, nodeId);
 			expect(
 				(
 					await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
@@ -332,6 +335,8 @@ describe("Move owner views", () => {
 					),
 				}),
 			).toEqual({ _yay: null });
+			// The index publication asks for the saved-place refresh.
+			await test_finish_file_index(t, nodeId);
 			// Start a real partial field copy before Move tags the owner view.
 			for (let step = 0; step < 3; step++) {
 				const refresh = await t.run((ctx) =>

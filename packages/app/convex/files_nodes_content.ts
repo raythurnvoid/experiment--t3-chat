@@ -622,7 +622,6 @@ async function action_create_file_node(
 		 */
 		contentType: files_ContentType;
 		rootKind: files_YjsRootKind;
-		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	},
 ): Promise<action_files_nodes_create_Result> {
 	// Check the destination before writing any asset doc or R2 file.
@@ -643,7 +642,7 @@ async function action_create_file_node(
 	}
 
 	// Refuse an occupied target here so no R2 work is needed.
-	if (preflight.targetNodeId !== null && args.archiveOperationId === undefined) {
+	if (preflight.targetNodeId !== null) {
 		return Result({ _nay: { name: "nay", message: "This file already exists." } });
 	}
 
@@ -736,7 +735,6 @@ async function action_create_file_node(
 		textContent: args.textContent,
 		rootKind: args.rootKind,
 		readOnly: false,
-		archiveOperationId: args.archiveOperationId ?? undefined,
 		unpublishedAssetIds: assetIds,
 	})) as files_nodes_create_Result;
 	// The mutation already added deletion jobs and deleted both asset docs when it refused.

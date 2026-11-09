@@ -14,6 +14,7 @@ import {
 	test_run_with_flush,
 } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_pending_overlay_list } from "../server/files-pending-overlay.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { type files_PendingParent, type files_PendingTarget } from "../shared/files.ts";
@@ -30,7 +31,8 @@ export async function insert_saved_node(
 	args: { parent: Doc<"files_nodes"> | null; name: string; kind: "file" | "folder" },
 ) {
 	const path = `${args.parent?.path ?? ""}/${args.name}`;
-	const nodeId = await ctx.db.insert("files_nodes", {
+	// Give a saved file the content head a save makes.
+	const nodeId = await files_content_heads_db_wrap(ctx).db.insert("files_nodes", {
 		...test_mocks.files.base(),
 		organizationId: scope.organizationId,
 		workspaceId: scope.workspaceId,

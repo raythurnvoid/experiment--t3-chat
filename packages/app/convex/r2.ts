@@ -66,15 +66,13 @@ import {
 	type files_ContentType,
 	type files_YjsRootKind,
 } from "../server/files.ts";
-import {
-	files_metadata_MAX_FRONTMATTER_FIELDS,
-	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
-	files_metadata_preflight_frontmatter,
-} from "../shared/files-metadata.ts";
 import app_convex_schema, { files_pending_target_validator } from "./schema.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { db_get_file_content_materialization_db_state } from "./files_nodes_db.ts";
-import { db_insert_file_text_content } from "./files_nodes_create.ts";
+import { files_compute_wc_counts, files_nodes_db_upsert_file_stats } from "./files_nodes_create_db.ts";
+import { files_chunk_markdown_bounds } from "../server/files-markdown-chunking-mastra.ts";
+import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
+import { files_index_db_request } from "../server/files-index.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_resolve_read_target,
@@ -839,8 +837,6 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		fileNodeId: Id<"files_nodes">;
-		path: Doc<"files_nodes">["path"];
-		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		userId: Id<"users">;
 		/**
 		 * The shape of the Yjs document this node gets. Written as `files_nodes.textKind` in
@@ -868,51 +864,41 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		now: number;
 	},
 ) {
-	// Mirror the materializer's frontmatter preflight (`finalize_file_yjs_repair` uses the same
-	// escape). An uploaded `.md` can carry over-cap frontmatter while the markdown itself is
-	// valid, so it must still convert. Letting the metadata insert helper's over-cap backstop
-	// throw here would wedge the infinite-retry conversion workpool instead: every retry
-	// re-uploads both R2 objects and inserts two more unfinalized asset docs, and the upload
-	// never publishes. Commit the chunks without the metadata index, set the marker pair in the
-	// same publish patch, and publish normally; the user's next fitting edit clears the pair
-	// through normal materialization.
-	const frontmatter = args.rootKind === "rich_text" ? files_metadata_preflight_frontmatter(args.text) : null;
-	// An uploaded `.md` can carry frontmatter this parser cannot read. Publish it anyway with no
-	// frontmatter index, the same escape the over-cap case takes. The markers stay clear, because
-	// they mean over-cap and this file has no counts to show.
-	if (frontmatter?._nay) {
-		console.warn("Publishing upload without frontmatter metadata: the frontmatter could not be parsed", {
-			fileNodeId: args.fileNodeId,
-			error: frontmatter._nay,
-		});
-	}
-
-	// Keep the counts only while they are over the caps, so the marker pair below reads them
-	// straight from here and a fitting upload cannot leave a stale count behind.
-	const frontmatterOverCapCounts =
-		frontmatter?._yay != null &&
-		(frontmatter._yay.fieldCount > files_metadata_MAX_FRONTMATTER_FIELDS ||
-			frontmatter._yay.indexDocumentCount > files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS)
-			? frontmatter._yay
-			: null;
-
-	// There is nothing to index when the frontmatter is over the caps or could not be read.
-	const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
-
-	const chunks = await db_insert_file_text_content(ctx, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		nodeId: args.fileNodeId,
-		path: args.path,
-		archiveOperationId: args.archiveOperationId ?? undefined,
-		yjsSequence: 0,
-		rootKind: args.rootKind,
-		textContent: args.text,
-		skipFrontmatterIndex,
-	});
+	// Store only the exact text here, like Save and materialization. The background index worker
+	// builds the search chunks and the frontmatter docs in pages, so over-cap frontmatter cannot
+	// throw inside the infinite-retry conversion workpool.
+	const chunks =
+		args.rootKind === "rich_text"
+			? await files_chunk_markdown_bounds(args.text)
+			: Result({ _yay: files_chunk_plain_text(args.text) });
 	if (chunks._nay) {
 		throw convex_error({ message: "Failed to chunk file content", cause: chunks._nay });
 	}
+	for (let start = 0; start < chunks._yay.length; start += 100)
+		await Promise.all(
+			chunks._yay.slice(start, start + 100).map((chunk) =>
+				ctx.db.insert("files_text_chunks", {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: args.fileNodeId,
+					sourceKind: "committed",
+					yjsSequence: 0,
+					chunkIndex: chunk.chunkIndex,
+					textChunk: chunk.textChunk,
+					startIndex: chunk.startIndex,
+					endIndex: chunk.endIndex,
+					lineStart: chunk.lineStart,
+					lineEnd: chunk.lineEnd,
+					chunkFlags: chunk.chunkFlags,
+				}),
+			),
+		);
+	await files_nodes_db_upsert_file_stats(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.fileNodeId,
+		...files_compute_wc_counts(args.text),
+	});
 
 	let yjsSnapshotId: Id<"files_yjs_snapshots"> | null = null;
 	let yjsLastSequenceId: Id<"files_yjs_docs_last_sequences"> | null = null;
@@ -967,14 +953,6 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			// Record the shape beside the other Yjs pointers, in the same publish patch, so the
 			// node and its document can never be born disagreeing.
 			textKind: args.rootKind,
-			// A node born with over-cap frontmatter carries the marker pair from its first
-			// publish, exactly like a materialization settle would set it.
-			...(frontmatterOverCapCounts !== null
-				? {
-						contentFrontmatterTooLargeFieldCount: frontmatterOverCapCounts.fieldCount,
-						contentFrontmatterTooLargeIndexDocumentCount: frontmatterOverCapCounts.indexDocumentCount,
-					}
-				: {}),
 			updatedBy: args.userId,
 			updatedAt: args.now,
 		}),
@@ -1021,6 +999,9 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		}),
 	]);
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.fileNodeId });
+	// An index run that the upload's metadata started may have read the file before this text
+	// existed. This request makes the worker index the stored text after that run ends.
+	await files_index_db_request(ctx, { nodeId: args.fileNodeId });
 
 	return Result({ _yay: null });
 }
@@ -1057,10 +1038,8 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 			workspaceId: args.workspaceId,
 		});
 
-		// A member can archive or move the node while the calling action runs its R2 work, so the
-		// node state that action read at enqueue time can be stale. Read the node here instead: this
-		// mutation is atomic, so the chunks below are born with the same path and archive state the
-		// node has when they commit.
+		// A member can archive, move or replace the node while the calling action runs its R2 work,
+		// so the node state that action read at enqueue time can be stale. Read the node here instead.
 		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
 		if (fileNode?.assetId === args.versionSnapshotAssetId) {
 			return null;
@@ -1098,8 +1077,6 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 			...args,
 			organizationId: finalizeScope.organizationId,
 			workspaceId: finalizeScope.workspaceId,
-			path: fileNode.path,
-			archiveOperationId: fileNode.archiveOperationId,
 			now,
 		});
 		return null;

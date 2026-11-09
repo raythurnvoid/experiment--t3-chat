@@ -9,6 +9,7 @@ import {
 	test_move_nodes,
 	test_mocks,
 	test_mocks_fill_db_with,
+	test_run_with_flush,
 	test_spy_handler,
 } from "./setup.test.ts";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
@@ -1127,7 +1128,7 @@ describe("review jobs", () => {
 		const f = await fixture();
 		const parentId = await saved_folder(f, "big");
 		// 9 files pass the 8-node page, and their 180 metadata docs fill two 64-row pages and part of a third.
-		const fileIds = await f.t.run(async (ctx) => {
+		const fileIds = await test_run_with_flush(f.t, async (ctx) => {
 			const ids: Id<"files_nodes">[] = [];
 			for (let index = 0; index < 9; index++) {
 				const name = `f${String(index).padStart(3, "0")}.md`;

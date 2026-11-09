@@ -142,10 +142,11 @@ describe("files_metadata_extract_frontmatter", () => {
 	});
 
 	test("returns a Result for deep nesting in a small file, instead of throwing", () => {
-		// Flow style needs no indentation, so 1000 levels fit in about 5 KB. That depth is enough to
-		// fill Node's stack, which is the runtime this test runs in; the Convex runtime needs more.
+		// Flow style needs no indentation, so 3000 levels fit in about 15 KB. Node's stack fills at about
+		// 1000 levels, but the exact point moves with the free stack space of the test worker. So use 3000
+		// levels, well past it, to make the parse throw on every run. The Convex runtime needs more.
 		// Every caller is a file save, so a throw here would stop the user saving their own text.
-		const markdown = `---\na: ${"{b: ".repeat(1000)}v${"}".repeat(1000)}\n---\n`;
+		const markdown = `---\na: ${"{b: ".repeat(3000)}v${"}".repeat(3000)}\n---\n`;
 		expect(markdown.length).toBeLessThan(16 * 1024);
 		expect(() => files_metadata_extract_frontmatter(markdown)).not.toThrow();
 		expect(files_metadata_extract_frontmatter(markdown)._nay?.message).toBe("Failed to parse frontmatter");
@@ -156,7 +157,7 @@ describe("files_metadata_extract_frontmatter", () => {
 		expect(preflight._yay?.fieldCount).toBe(1);
 		expect(preflight._yay?.indexDocumentCount).toBe(2);
 
-		const unreadable = `---\na: ${"{b: ".repeat(1000)}v${"}".repeat(1000)}\n---\n`;
+		const unreadable = `---\na: ${"{b: ".repeat(3000)}v${"}".repeat(3000)}\n---\n`;
 		expect(files_metadata_preflight_frontmatter(unreadable)._nay?.message).toBe("Failed to parse frontmatter");
 	});
 

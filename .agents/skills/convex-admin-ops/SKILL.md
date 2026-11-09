@@ -55,6 +55,13 @@ as `_system/frontend/clearTablePage`. A missing-function error makes no changes.
 one-time table erase, use a bounded internal mutation in the owning module when no existing cleanup
 door fits. Fix the table name in its code, verify the empty table, then remove the temporary function.
 
+To call a public app door as a member (for example `files_nodes:purge_nodes` when the QA browser is
+signed out), pass `run --identity '<json>'` with `external_id` set to the member's `users` id and their
+`email`. A runner should read both from the database itself, pass them in memory, and print neither.
+`server_convex_get_user_fallback_to_anonymous` treats any issuer other than the two custom ones as Clerk.
+The door then runs every check it runs for the app. Print a write's whole answer the first time: running
+the write again only to read its output is a second write. Seen 2026-11-09.
+
 For read-only system queries such as `_system/frontend/getSchemas` and
 `_system/frontend/indexes`, use `run --watch`, read one valid result, then close only that
 owned subscription. Plain `run` cannot dispatch these queries. The root app's index query

@@ -97,39 +97,42 @@ describe("saved placement foundation", () => {
 	test.each([
 		{ before: 1030, after: undefined },
 		{ before: undefined, after: 1031 },
-	])("selects the archived allowance over the physical value (%o)", async ({ before, after }) => {
+	])("selects the archived allowance and top over the physical value (%o)", async ({ before, after }) => {
 		const f = await fixture();
+		// Plugin access reads the top through this view, so a top from the other view would be wrong.
 		await f.t.run(async (ctx) => {
 			const record = (await ctx.db.get("files_move_cohort_nodes", f.recordId))!;
 			await ctx.db.patch("files_saved_places", record.beforePlaceId!, {
 				archiveOperationId: "archive-before",
 				archivedPathLength: before,
+				archiveTopNodeId: f.nodeId,
 			});
 			await ctx.db.patch("files_saved_places", record.afterPlaceId!, {
 				archiveOperationId: "archive-after",
 				archivedPathLength: after,
+				archiveTopNodeId: f.parentId,
 			});
 			// Physical cleanup may already hold the other view.
 			await ctx.db.patch("files_nodes", f.nodeId, {
 				archiveOperationId: "archive-after",
 				archivedPathLength: after,
+				archiveTopNodeId: f.parentId,
 			});
 		});
-		expect(
-			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.archivedPathLength,
-			"the before view selects its numeric or absent allowance",
-		).toBe(before);
+		const beforeView = await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId));
+		expect(beforeView?.archivedPathLength, "the before view selects its numeric or absent allowance").toBe(before);
+		expect(beforeView?.archiveTopNodeId, "the before view selects its top").toBe(f.nodeId);
 		await f.t.run((ctx) =>
 			ctx.db.patch("files_nodes", f.nodeId, {
 				archiveOperationId: "archive-before",
 				archivedPathLength: before,
+				archiveTopNodeId: f.nodeId,
 			}),
 		);
 		await f.publish();
-		expect(
-			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.archivedPathLength,
-			"the after view selects its numeric or absent allowance",
-		).toBe(after);
+		const afterView = await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId));
+		expect(afterView?.archivedPathLength, "the after view selects its numeric or absent allowance").toBe(after);
+		expect(afterView?.archiveTopNodeId, "the after view selects its top").toBe(f.parentId);
 	});
 
 	test("uses exact slot claims for both paths and never fills a claimed empty slot", async () => {

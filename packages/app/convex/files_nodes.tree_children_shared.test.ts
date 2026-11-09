@@ -120,13 +120,18 @@ describe("list_tree_children_shared", () => {
 					: member.as.query(api.files_tree.list_tree_children_shared, { ...args, principalIndex: 0 });
 			};
 			for (const view of ["before", "after"] as const) {
-				if (view === "after")
+				// Publish first pages the Messages access proof, one node per step, then switches the view.
+				for (let step = 0; view === "after" && step < 100; step++) {
+					const current = await readCohort();
+					if (current?.visibleView === "after") break;
+					if (!current) throw new Error("Expected the Move cohort");
 					await f.t.mutation(internal.files_move_cohorts.advance, {
-						cohortId: cohort._id,
-						step: cohort.step,
-						runGeneration: cohort.runJob?.generation ?? null,
+						cohortId: current._id,
+						step: current.step,
+						runGeneration: current.runJob?.generation ?? null,
 						join: false,
 					});
+				}
 				const expectedView = { cohortId: cohort._id, view };
 				for (const owner of [false, true]) {
 					const first = await read(owner);

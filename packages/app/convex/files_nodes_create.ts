@@ -51,12 +51,6 @@ export async function db_insert_file_text_content(
 		 */
 		rootKind: files_YjsRootKind;
 		textContent: string;
-		/**
-		 * Repair-only escape: commit the chunks of a text whose frontmatter is over the index
-		 * caps without inserting metadata docs, so the insert helper's over-cap backstop cannot
-		 * throw mid-repair. The caller keeps the frontmatter marker pair set instead.
-		 */
-		skipFrontmatterIndex?: boolean;
 	},
 ) {
 	const chunks =
@@ -79,7 +73,7 @@ export async function db_insert_file_text_content(
 
 	// Frontmatter is a rich-text (Markdown) concept only: a `.yaml` opening with `---` is plain
 	// text and must not be frontmatter-indexed.
-	if (args.rootKind === "rich_text" && !args.skipFrontmatterIndex) {
+	if (args.rootKind === "rich_text") {
 		await files_metadata_db_insert_committed(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -311,7 +305,6 @@ export const create_file_node = internalMutation({
 		contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 		assetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
-		archiveOperationId: v.optional(v.string()),
 		textContent: v.string(),
 		/**
 		 * The document shape written on the node for writable files. Read-only mount files have
@@ -462,9 +455,8 @@ export const create_file_node = internalMutation({
 				return await refuse(anchorWritable._nay);
 			}
 
-			// A normal create needs an empty target path.
-			// An archived replacement may share its path with an active node.
-			if (destination.targetNode !== null && args.archiveOperationId === undefined) {
+			// A create needs an empty target path.
+			if (destination.targetNode !== null) {
 				return await refuse({ name: "nay", message: "This file already exists." });
 			}
 		}
@@ -479,7 +471,6 @@ export const create_file_node = internalMutation({
 			kind: "file",
 			contentType: args.contentType,
 			assetId: args.assetId,
-			archiveOperationId: args.archiveOperationId ?? undefined,
 			expectsTextContent: true,
 			metadata: args.metadata,
 			now,
@@ -507,7 +498,6 @@ export const create_file_node = internalMutation({
 			nodeId: insertedNode._id,
 			path: insertedNode.path,
 			parentId: args.parentId,
-			archiveOperationId: insertedNode.archiveOperationId ?? undefined,
 			contentType: args.contentType,
 			rootKind: args.rootKind,
 			textContent: args.textContent,
